@@ -8,6 +8,7 @@ real hooks files (key names and nesting) with dummy commands.  The verify tests 
 subprocesses through the installed shim, so they prove the same path a platform uses; they use a
 generous timeout because the machine running them may be loaded.
 """
+
 from __future__ import annotations
 
 import ast
@@ -41,7 +42,7 @@ REGISTRY_FILE = SCRIPTS_DIR.parent / "fleet-apps.json"
 SHA = "0123456789abcdef0123456789abcdef01234567"
 SHA2 = "fedcba9876543210fedcba9876543210fedcba98"
 TIMEOUT = 90.0
-STAMP = 1_790_000_000.0          # a fixed clock for backup names
+STAMP = 1_790_000_000.0  # a fixed clock for backup names
 # The minimal-PATH probe needs /usr/bin/python3, which a bare container image may lack.  There the
 # product's FAIL is correct; the tests that are not about that fall back to one probe run.
 MINIMAL = os.path.exists("/usr/bin/python3")
@@ -72,64 +73,146 @@ def evaluate(payload, ctx=None):
 
 # --------------------------------------------------------------------------- shapes of the real files
 
+
 def claude_settings() -> dict:
     """The shape of ~/.claude/settings.json: env block, permissions, and several PreToolUse groups."""
     return {
         "env": {"EXAMPLE_API_TOKEN": "dummy-secret-value-0123456789", "OTHER": "1"},
         "permissions": {"allow": ["Bash(git status)"], "deny": []},
         "hooks": {
-            "Notification": [{"matcher": "*", "hooks": [{"type": "command", "command": "/x/notify.sh"}]}],
-            "PreToolUse": [
-                {"matcher": "Agent|Task|Workflow", "hooks": [
-                    {"type": "command", "command": "python3 ~/.claude/hooks/economy.py", "timeout": 5,
-                     "statusMessage": "Checking subagent model tier"}]},
-                {"matcher": "Bash", "hooks": [
-                    {"type": "command", "command": "[ -f scripts/board-check.sh ] && bash scripts/board-check.sh || true",
-                     "timeout": 10, "statusMessage": "Checking effort-log protocol"},
-                    {"type": "command", "command": "python3 ~/.claude/hooks/command-class.py", "timeout": 3}]},
-                {"matcher": "*", "hooks": [{"type": "command", "command": "node /x/remote-pre.js"}]},
-                {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "python3 /x/block-xcode.py"}]},
-                {"hooks": [{"type": "command", "command": "/x/cc-status"},
-                           {"type": "command", "command": "curl -H 'Author" "ization: Bea" "rer Zq9fakeSecret" "TokenValue77' http://127.0.0.1:1/x"}]},
+            "Notification": [
+                {"matcher": "*", "hooks": [{"type": "command", "command": "/x/notify.sh"}]}
             ],
-            "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "node /x/post.js"}]}],
+            "PreToolUse": [
+                {
+                    "matcher": "Agent|Task|Workflow",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python3 ~/.claude/hooks/economy.py",
+                            "timeout": 5,
+                            "statusMessage": "Checking subagent model tier",
+                        }
+                    ],
+                },
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "[ -f scripts/board-check.sh ] && bash scripts/board-check.sh || true",
+                            "timeout": 10,
+                            "statusMessage": "Checking effort-log protocol",
+                        },
+                        {
+                            "type": "command",
+                            "command": "python3 ~/.claude/hooks/command-class.py",
+                            "timeout": 3,
+                        },
+                    ],
+                },
+                {
+                    "matcher": "*",
+                    "hooks": [{"type": "command", "command": "node /x/remote-pre.js"}],
+                },
+                {
+                    "matcher": "Edit|Write",
+                    "hooks": [{"type": "command", "command": "python3 /x/block-xcode.py"}],
+                },
+                {
+                    "hooks": [
+                        {"type": "command", "command": "/x/cc-status"},
+                        {
+                            "type": "command",
+                            "command": "curl -H 'Author"
+                            "ization: Bea"
+                            "rer Zq9fakeSecret"
+                            "TokenValue77' http://127.0.0.1:1/x",
+                        },
+                    ]
+                },
+            ],
+            "PostToolUse": [
+                {"matcher": "*", "hooks": [{"type": "command", "command": "node /x/post.js"}]}
+            ],
         },
         "theme": "dark",
     }
 
 
 def codex_hooks() -> dict:
-    return {"hooks": {"PreToolUse": [
-        {"matcher": "Agent|Task|Workflow", "hooks": [{"type": "command", "command": "python3 '/x/economy.py'", "timeout": 5}]},
-        {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 '/x/secret-guard.py'", "timeout": 5}]},
-        {"matcher": "*", "hooks": [{"type": "command", "command": "node '/x/remote.js'"}]},
-    ], "Stop": [{"hooks": [{"type": "command", "command": "/x/cc-status"}]}]}}
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Agent|Task|Workflow",
+                    "hooks": [
+                        {"type": "command", "command": "python3 '/x/economy.py'", "timeout": 5}
+                    ],
+                },
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {"type": "command", "command": "python3 '/x/secret-guard.py'", "timeout": 5}
+                    ],
+                },
+                {"matcher": "*", "hooks": [{"type": "command", "command": "node '/x/remote.js'"}]},
+            ],
+            "Stop": [{"hooks": [{"type": "command", "command": "/x/cc-status"}]}],
+        }
+    }
 
 
 def cursor_hooks() -> dict:
-    return {"version": 1, "hooks": {
-        "sessionStart": [{"command": "./hooks/check.sh", "timeout": 8, "failClosed": False}],
-        "afterFileEdit": [{"command": "'/x/node' '/x/otlp.mjs' cursor", "timeout": 3}],
-    }}
+    return {
+        "version": 1,
+        "hooks": {
+            "sessionStart": [{"command": "./hooks/check.sh", "timeout": 8, "failClosed": False}],
+            "afterFileEdit": [{"command": "'/x/node' '/x/otlp.mjs' cursor", "timeout": 3}],
+        },
+    }
 
 
 def gemini_hooks() -> dict:
-    return {"agent-hook-otlp": {
-        "PostInvocation": [{"command": "'/x/node' '/x/otlp.mjs' antigravity", "timeout": 3, "type": "command"}],
-        "Stop": [{"command": "'/x/node' '/x/otlp.mjs' antigravity", "timeout": 3, "type": "command"}],
-        "enabled": True}}
+    return {
+        "agent-hook-otlp": {
+            "PostInvocation": [
+                {"command": "'/x/node' '/x/otlp.mjs' antigravity", "timeout": 3, "type": "command"}
+            ],
+            "Stop": [
+                {"command": "'/x/node' '/x/otlp.mjs' antigravity", "timeout": 3, "type": "command"}
+            ],
+            "enabled": True,
+        }
+    }
 
 
 def grok_imported() -> dict:
-    return {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
-        {"type": "command", "command": "python3 ~/.claude/hooks/secret-guard.py", "timeout": 5}]}]}}
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python3 ~/.claude/hooks/secret-guard.py",
+                            "timeout": 5,
+                        }
+                    ],
+                }
+            ]
+        }
+    }
 
 
 MUSE_SETTINGS = {"schema_version": 1, "provider": "x", "model": "y", "tui": {}, "permissions": {}}
 
 SHAPES = {
-    ".claude/settings.json": claude_settings, ".codex/hooks.json": codex_hooks,
-    ".cursor/hooks.json": cursor_hooks, ".gemini/config/hooks.json": gemini_hooks,
+    ".claude/settings.json": claude_settings,
+    ".codex/hooks.json": codex_hooks,
+    ".cursor/hooks.json": cursor_hooks,
+    ".gemini/config/hooks.json": gemini_hooks,
     ".grok/hooks/imported-from-claude.json": grok_imported,
     ".config/muse/settings.json": lambda: copy.deepcopy(MUSE_SETTINGS),
 }
@@ -152,8 +235,11 @@ def snapshot(root: Path) -> dict:
         for f in filenames:
             p = Path(dirpath) / f
             st = p.lstat()
-            out[str(p.relative_to(root))] = ("file", hashlib.sha256(p.read_bytes()).hexdigest() if stat.S_ISREG(st.st_mode) else "link",
-                                             stat.S_IMODE(st.st_mode))
+            out[str(p.relative_to(root))] = (
+                "file",
+                hashlib.sha256(p.read_bytes()).hexdigest() if stat.S_ISREG(st.st_mode) else "link",
+                stat.S_IMODE(st.st_mode),
+            )
     return out
 
 
@@ -163,14 +249,20 @@ def run_main(*argv: str) -> tuple[int, str, str]:
     return rc, out.getvalue(), err.getvalue()
 
 
-REAL_MUSE = shutil.which("muse")          # looked up before any test changes PATH; only one opt-in test may run it
+REAL_MUSE = shutil.which(
+    "muse"
+)  # looked up before any test changes PATH; only one opt-in test may run it
 REAL_MUSE_OPT_IN = "FLEET_LANES_TEST_REAL_MUSE"
 
 
 def path_without_muse() -> str:
     """PATH with every directory that holds a `muse` removed, so no test but the one dedicated to it reaches the
     real Muse Code, and a machine with muse and one without give the same results."""
-    keep = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and not os.path.exists(os.path.join(d, "muse"))]
+    keep = [
+        d
+        for d in os.environ.get("PATH", "").split(os.pathsep)
+        if d and not os.path.exists(os.path.join(d, "muse"))
+    ]
     return os.pathsep.join(keep)
 
 
@@ -191,7 +283,9 @@ class World(unittest.TestCase):
 
     # -- builders
 
-    def make_source(self, name: str, with_lane: bool = True, guard: str | None = None, sha: str = SHA) -> T.Source:
+    def make_source(
+        self, name: str, with_lane: bool = True, guard: str | None = None, sha: str = SHA
+    ) -> T.Source:
         pkg = self.tmp / name / "scripts" / "fleet_lanes"
         pkg.mkdir(parents=True)
         for m in T.REQUIRED_MODULES:
@@ -203,16 +297,28 @@ class World(unittest.TestCase):
         shutil.copy(REGISTRY_FILE, self.tmp / name / "fleet-apps.json")
         hooks = self.tmp / name / "scripts" / "hooks"
         hooks.mkdir(parents=True)
-        shutil.copy(SCRIPTS_DIR / "hooks" / "secret-guard-pretooluse.py", hooks / "secret-guard-pretooluse.py")
-        return T.Source(str(self.tmp / name / "scripts"), str(self.tmp / name / "fleet-apps.json"), sha)
+        shutil.copy(
+            SCRIPTS_DIR / "hooks" / "secret-guard-pretooluse.py",
+            hooks / "secret-guard-pretooluse.py",
+        )
+        return T.Source(
+            str(self.tmp / name / "scripts"), str(self.tmp / name / "fleet-apps.json"), sha
+        )
 
     def seed(self, *rels: str) -> None:
         for rel in rels or tuple(SHAPES):
-            write_json(self.home / rel, SHAPES[rel](), 0o600 if rel == ".claude/settings.json" else None)
+            write_json(
+                self.home / rel, SHAPES[rel](), 0o600 if rel == ".claude/settings.json" else None
+            )
 
     def seed_platforms(self) -> None:
-        self.seed(".claude/settings.json", ".codex/hooks.json", ".cursor/hooks.json",
-                  ".gemini/config/hooks.json", ".grok/hooks/imported-from-claude.json")
+        self.seed(
+            ".claude/settings.json",
+            ".codex/hooks.json",
+            ".cursor/hooks.json",
+            ".gemini/config/hooks.json",
+            ".grok/hooks/imported-from-claude.json",
+        )
 
     def install(self, platforms: tuple = T.SUPPORTED_KEYS, source: T.Source | None = None) -> None:
         """apply tools and the platforms without probing (verify does the proving in the tests)."""
@@ -229,7 +335,9 @@ class World(unittest.TestCase):
         return json.loads(self.config(key).read_text(encoding="utf-8"))
 
     def verify(self, key: str, minimal_path: bool = False, timeout: float = TIMEOUT) -> list:
-        return T.verify_platform(T.PLATFORMS[key], self.paths, timeout=timeout, minimal_path=minimal_path)
+        return T.verify_platform(
+            T.PLATFORMS[key], self.paths, timeout=timeout, minimal_path=minimal_path
+        )
 
     def statuses(self, checks: list) -> set:
         return {c.status for c in checks}
@@ -242,13 +350,17 @@ class World(unittest.TestCase):
         fails = [c for c in checks if c.status == "FAIL"]
         self.assertTrue(fails, "expected a FAIL, got:\n" + "\n".join(c.line() for c in checks))
         if needle:
-            self.assertTrue(any(needle in c.line() for c in fails), f"no FAIL mentions {needle!r}:\n" + "\n".join(c.line() for c in fails))
+            self.assertTrue(
+                any(needle in c.line() for c in fails),
+                f"no FAIL mentions {needle!r}:\n" + "\n".join(c.line() for c in fails),
+            )
 
     def backups(self, directory: Path) -> list[Path]:
         return sorted(p for p in directory.iterdir() if ".bak-lane-guard-" in p.name)
 
 
 # --------------------------------------------------------------------------- the probes themselves
+
 
 class ProbeTests(unittest.TestCase):
     """The probes are copies of fixture rows; the guard must really decide them."""
@@ -270,7 +382,9 @@ class ProbeTests(unittest.TestCase):
     def test_every_payload_shape_is_decided_by_the_real_guard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = os.path.realpath(tmp)
-            ctx = G.make_context({"HOME": home, "FLEET_APPS_JSON": str(REGISTRY_FILE)}, home=home)   # no AGENT_SEAT
+            ctx = G.make_context(
+                {"HOME": home, "FLEET_APPS_JSON": str(REGISTRY_FILE)}, home=home
+            )  # no AGENT_SEAT
             for shape in ("claude", "antigravity", "cursor"):
                 with self.subTest(shape):
                     d = G.evaluate(T.probe_payload(shape, T.DENY_COMMAND, home), ctx)
@@ -281,8 +395,13 @@ class ProbeTests(unittest.TestCase):
     def test_check_deny_output_per_format(self) -> None:
         reason = "no clone at /tmp/hh-verify please"
         good = {
-            "claude": {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                              "permissionDecisionReason": reason}},
+            "claude": {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            },
             "grok": {"decision": "deny", "reason": reason},
             "cursor": {"permission": "deny", "user_message": "blocked", "agent_message": reason},
         }
@@ -295,18 +414,36 @@ class ProbeTests(unittest.TestCase):
         self.assertIsNotNone(T.check_deny_output("cursor", json.dumps(good["claude"]).encode()))
         self.assertIsNotNone(T.check_deny_output("claude", json.dumps(good["grok"]).encode()))
         self.assertIsNotNone(T.check_deny_output("grok", json.dumps(good["cursor"]).encode()))
-        self.assertIsNotNone(T.check_deny_output("grok", json.dumps({"decision": "allow", "reason": reason}).encode()))
-        self.assertIsNotNone(T.check_deny_output("grok", json.dumps({"decision": "deny", "reason": "other"}).encode()))
+        self.assertIsNotNone(
+            T.check_deny_output(
+                "grok", json.dumps({"decision": "allow", "reason": reason}).encode()
+            )
+        )
+        self.assertIsNotNone(
+            T.check_deny_output(
+                "grok", json.dumps({"decision": "deny", "reason": "other"}).encode()
+            )
+        )
         self.assertIn("no output", T.check_deny_output("claude", b"") or "")
         self.assertIsNotNone(T.check_deny_output("claude", b"not json"))
         self.assertIsNotNone(T.check_deny_output("claude", b"[1]"))
 
     def test_probe_env_scrubs_and_pins(self) -> None:
-        base = {"PATH": "/a:/b", "HOME": "/real", "PYTHONPATH": "/x", "PYTHONHOME": "/y", "FLEET_APPS_JSON": "/z",
-                "FLEET_LANE_GUARD": "off", "AGENT_SEAT": "CLAUDE", "KEEP": "1"}
+        base = {
+            "PATH": "/a:/b",
+            "HOME": "/real",
+            "PYTHONPATH": "/x",
+            "PYTHONHOME": "/y",
+            "FLEET_APPS_JSON": "/z",
+            "FLEET_LANE_GUARD": "off",
+            "AGENT_SEAT": "CLAUDE",
+            "KEEP": "1",
+        }
         env = T.probe_env("/fake", None, base)
         self.assertEqual(env, {"PATH": "/a:/b", "HOME": "/fake", "KEEP": "1"})
-        self.assertEqual(T.probe_env("/fake", T.MINIMAL_PATH, base)["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin")
+        self.assertEqual(
+            T.probe_env("/fake", T.MINIMAL_PATH, base)["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin"
+        )
 
     def test_run_shell_times_out_and_kills_the_group(self) -> None:
         t0 = time.time()
@@ -322,13 +459,23 @@ class ProbeTests(unittest.TestCase):
         py = "/usr/bin/python3"
         if not os.path.exists(py):
             self.skipTest("no /usr/bin/python3")
-        p = subprocess.run([py, "-c", "import fleet_lanes.install_tools as m; print(','.join(sorted(m.PLATFORMS)))"],
-                           cwd=str(SCRIPTS_DIR), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+        p = subprocess.run(
+            [
+                py,
+                "-c",
+                "import fleet_lanes.install_tools as m; print(','.join(sorted(m.PLATFORMS)))",
+            ],
+            cwd=str(SCRIPTS_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=TIMEOUT,
+        )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn(b"claude", p.stdout)
 
 
 # --------------------------------------------------------------------------- merge (pure)
+
 
 class MergeTests(unittest.TestCase):
     P = T.make_paths("/h")
@@ -362,13 +509,15 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(action, "added")
         groups = new["hooks"]["PreToolUse"]
         self.assertEqual(len(groups), len(orig["hooks"]["PreToolUse"]) + 1)
-        self.assertEqual(groups[:-1], orig["hooks"]["PreToolUse"])            # positions unchanged (Codex trust is positional)
+        self.assertEqual(
+            groups[:-1], orig["hooks"]["PreToolUse"]
+        )  # positions unchanged (Codex trust is positional)
         self.assertEqual(groups[-1]["matcher"], "Bash")
         self.assertEqual(groups[-1]["hooks"][0]["command"], self.cmd("claude"))
         trimmed = copy.deepcopy(new)
         trimmed["hooks"]["PreToolUse"].pop()
         self.assertEqual(trimmed, orig)
-        self.assertEqual(list(new), list(orig))                                # key order kept
+        self.assertEqual(list(new), list(orig))  # key order kept
         self.assertTrue(T._is_extension(orig, new))
 
     def test_claude_already_installed_is_unchanged(self) -> None:
@@ -379,8 +528,18 @@ class MergeTests(unittest.TestCase):
 
     def test_claude_stale_command_is_updated_and_custom_fields_survive(self) -> None:
         doc = claude_settings()
-        doc["hooks"]["PreToolUse"].append({"matcher": "Bash", "hooks": [
-            {"type": "command", "command": "/old/place/lane-guard-hook --format claude", "timeout": 9}]})
+        doc["hooks"]["PreToolUse"].append(
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "/old/place/lane-guard-hook --format claude",
+                        "timeout": 9,
+                    }
+                ],
+            }
+        )
         new, action, notes = self.merge("claude", doc)
         self.assertEqual(action, "updated")
         hook = new["hooks"]["PreToolUse"][-1]["hooks"][0]
@@ -389,13 +548,31 @@ class MergeTests(unittest.TestCase):
         self.assertTrue(notes)
 
     def test_claude_wrong_matcher_is_corrected(self) -> None:
-        doc = {"hooks": {"PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": self.cmd("claude")}]}]}}
+        doc = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Edit",
+                        "hooks": [{"type": "command", "command": self.cmd("claude")}],
+                    }
+                ]
+            }
+        }
         new, action, _ = self.merge("claude", doc)
         self.assertEqual(action, "updated")
         self.assertEqual(new["hooks"]["PreToolUse"][0]["matcher"], "Bash")
 
     def test_an_entry_under_another_event_does_not_count(self) -> None:
-        doc = {"hooks": {"PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": self.cmd("claude")}]}]}}
+        doc = {
+            "hooks": {
+                "PostToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command", "command": self.cmd("claude")}],
+                    }
+                ]
+            }
+        }
         plat = T.PLATFORMS["claude"]
         self.assertEqual(T.locate(doc, plat), [])
         self.assertEqual(T.count_ours(doc), 1)
@@ -404,15 +581,31 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(T.count_ours(new), 2)
 
     def test_duplicates_are_left_alone_with_a_note(self) -> None:
-        doc = {"hooks": {"PreToolUse": [
-            {"matcher": "Bash", "hooks": [{"type": "command", "command": self.cmd("claude")}]},
-            {"matcher": "Bash", "hooks": [{"type": "command", "command": self.cmd("claude")}]}]}}
+        doc = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command", "command": self.cmd("claude")}],
+                    },
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command", "command": self.cmd("claude")}],
+                    },
+                ]
+            }
+        }
         new, action, notes = self.merge("claude", doc)
         self.assertEqual((action, new), ("unchanged", doc))
         self.assertTrue(any("duplicate" in n for n in notes))
 
     def test_shape_errors_refuse(self) -> None:
-        for doc in ({"hooks": []}, {"hooks": "x"}, {"hooks": {"PreToolUse": "x"}}, {"hooks": {"PreToolUse": {}}}):
+        for doc in (
+            {"hooks": []},
+            {"hooks": "x"},
+            {"hooks": {"PreToolUse": "x"}},
+            {"hooks": {"PreToolUse": {}}},
+        ):
             with self.subTest(doc), self.assertRaises(T.ShapeError):
                 self.merge("claude", copy.deepcopy(doc))
         with self.assertRaises(T.ShapeError):
@@ -435,9 +628,14 @@ class MergeTests(unittest.TestCase):
         empty, action, _ = self.merge("cursor", {})
         self.assertEqual((action, empty["version"]), ("added", 1))
         stale = copy.deepcopy(new)
-        stale["hooks"]["beforeShellExecution"][0]["command"] = "/old/lane-guard-hook --format claude"
+        stale["hooks"]["beforeShellExecution"][0]["command"] = (
+            "/old/lane-guard-hook --format claude"
+        )
         fixed, action, _ = self.merge("cursor", stale)
-        self.assertEqual((action, fixed["hooks"]["beforeShellExecution"][0]["command"]), ("updated", self.cmd("cursor")))
+        self.assertEqual(
+            (action, fixed["hooks"]["beforeShellExecution"][0]["command"]),
+            ("updated", self.cmd("cursor")),
+        )
 
     def test_antigravity_merge(self) -> None:
         orig = gemini_hooks()
@@ -451,7 +649,12 @@ class MergeTests(unittest.TestCase):
         again, action, _ = self.merge("antigravity", new)
         self.assertEqual((action, again), ("unchanged", new))
         # an existing lane-guard group without our entry gets it appended
-        partial = {"lane-guard": {"PreToolUse": [{"command": "/x/other", "type": "command"}], "enabled": False}}
+        partial = {
+            "lane-guard": {
+                "PreToolUse": [{"command": "/x/other", "type": "command"}],
+                "enabled": False,
+            }
+        }
         got, action, _ = self.merge("antigravity", partial)
         self.assertEqual(action, "added")
         self.assertEqual(len(got["lane-guard"]["PreToolUse"]), 2)
@@ -469,15 +672,19 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(label, "hooks.PreToolUse")
         self.assertEqual(sub, doc["hooks"]["PreToolUse"])
         text = "\n".join(T._json_lines(sub))
-        self.assertNotIn("dummy-secret-value", text)                       # the env block is not in the subtree
+        self.assertNotIn("dummy-secret-value", text)  # the env block is not in the subtree
         red = T.redact(text)
         self.assertNotIn("Zq9fakeSecretTokenValue77", red)
         self.assertIn("<redacted>", red)
-        self.assertEqual(T.redact('  "EXAMPLE_API_TOKEN": "hunter2hunter2"'), '  "EXAMPLE_API_TOKEN": "<redacted>"')
+        self.assertEqual(
+            T.redact('  "EXAMPLE_API_TOKEN": "hunter2hunter2"'),
+            '  "EXAMPLE_API_TOKEN": "<redacted>"',
+        )
         self.assertEqual(T.redact("git status"), "git status")
 
 
 # --------------------------------------------------------------------------- reading and writing configs
+
 
 class LoadConfigTests(World):
     def write(self, text: str, name: str = "c.json") -> str:
@@ -487,10 +694,12 @@ class LoadConfigTests(World):
 
     def test_round_trip_formats(self) -> None:
         doc = {"a": [1, {"b": "é"}], "c": None}
-        for label, text in (("indent2", json.dumps(doc, indent=2) + "\n"),
-                            ("indent4-no-newline", json.dumps(doc, indent=4)),
-                            ("tab", json.dumps(doc, indent="\t") + "\n"),
-                            ("utf8-literal", json.dumps(doc, indent=2, ensure_ascii=False) + "\n")):
+        for label, text in (
+            ("indent2", json.dumps(doc, indent=2) + "\n"),
+            ("indent4-no-newline", json.dumps(doc, indent=4)),
+            ("tab", json.dumps(doc, indent="\t") + "\n"),
+            ("utf8-literal", json.dumps(doc, indent=2, ensure_ascii=False) + "\n"),
+        ):
             with self.subTest(label):
                 cfg = T.load_config(self.write(text))
                 self.assertTrue(cfg.exact, cfg.note)
@@ -508,8 +717,13 @@ class LoadConfigTests(World):
         self.assertEqual((gone.doc, gone.exists, gone.mode), ({}, False, None))
 
     def test_refusals(self) -> None:
-        for label, text in (("garbage", "{not json"), ("list", "[1, 2]"), ("scalar", "3"), ("trailing", '{"a":1} x'),
-                            ("bom", "\ufeff{}")):
+        for label, text in (
+            ("garbage", "{not json"),
+            ("list", "[1, 2]"),
+            ("scalar", "3"),
+            ("trailing", '{"a":1} x'),
+            ("bom", "\ufeff{}"),
+        ):
             with self.subTest(label), self.assertRaises(T.Refused):
                 T.load_config(self.write(text))
         with self.assertRaises(T.Refused):
@@ -518,7 +732,9 @@ class LoadConfigTests(World):
 
 class ApplyPlatformTests(World):
     def apply(self, key: str, **kw) -> T.Result:
-        return T.apply_platform(T.PLATFORMS[key], self.paths, now=lambda: STAMP, shim_proven=True, **kw)
+        return T.apply_platform(
+            T.PLATFORMS[key], self.paths, now=lambda: STAMP, shim_proven=True, **kw
+        )
 
     def test_merge_into_populated_backs_up_and_keeps_mode(self) -> None:
         self.seed_platforms()
@@ -537,7 +753,9 @@ class ApplyPlatformTests(World):
         self.assertEqual(len(T.locate(doc, T.PLATFORMS["claude"])), 1)
         self.assertEqual(doc["env"], claude_settings()["env"])
         self.assertTrue(cfg.read_text().endswith("\n"))
-        self.assertEqual(sorted(p.name for p in cfg.parent.iterdir() if p.name.startswith(".")), [])   # no temp files
+        self.assertEqual(
+            sorted(p.name for p in cfg.parent.iterdir() if p.name.startswith(".")), []
+        )  # no temp files
 
     def test_second_apply_changes_nothing_and_makes_no_backup(self) -> None:
         self.seed_platforms()
@@ -568,7 +786,7 @@ class ApplyPlatformTests(World):
         write_json(self.config("cursor"), doc)
         doc["hooks"]["beforeShellExecution"][0]["command"] = "/old/lane-guard-hook --format cursor"
         write_json(self.config("cursor"), doc)
-        res = self.apply("cursor")                      # same fixed clock as the first apply
+        res = self.apply("cursor")  # same fixed clock as the first apply
         self.assertEqual(res.status, "updated", res)
         names = [p.name for p in self.backups(self.config("cursor").parent)]
         self.assertEqual(len(names), 2, names)
@@ -576,7 +794,11 @@ class ApplyPlatformTests(World):
 
     def test_invalid_json_is_refused_and_untouched(self) -> None:
         self.seed_platforms()
-        for label, text in (("garbage", "{oops"), ("list", "[]"), ("hooks-wrong-type", '{"hooks": []}')):
+        for label, text in (
+            ("garbage", "{oops"),
+            ("list", "[]"),
+            ("hooks-wrong-type", '{"hooks": []}'),
+        ):
             with self.subTest(label):
                 p = self.config("claude")
                 p.write_text(text, encoding="utf-8")
@@ -606,9 +828,14 @@ class ApplyPlatformTests(World):
         res = self.apply("grok")
         self.assertEqual(res.status, "added", res)
         self.assertEqual(self.config("grok").name, "lane-guard.json")
-        self.assertEqual((self.home / ".grok/hooks/imported-from-claude.json").read_bytes(), imported)
+        self.assertEqual(
+            (self.home / ".grok/hooks/imported-from-claude.json").read_bytes(), imported
+        )
         self.assertIsNone(res.backup)
-        self.assertEqual(self.load("grok")["hooks"]["PreToolUse"][0]["hooks"][0]["command"], T.hook_command(self.paths, "grok"))
+        self.assertEqual(
+            self.load("grok")["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            T.hook_command(self.paths, "grok"),
+        )
 
     def test_grok_creates_the_hooks_dir_when_grok_exists(self) -> None:
         (self.home / ".grok").mkdir()
@@ -621,7 +848,9 @@ class ApplyPlatformTests(World):
         real.parent.mkdir()
         shutil.move(str(self.config("claude")), str(real))
         os.symlink(real, self.config("claude"))
-        self.assertEqual(self.apply("claude").status, "refused")                # outside --home: needs --follow-symlinks
+        self.assertEqual(
+            self.apply("claude").status, "refused"
+        )  # outside --home: needs --follow-symlinks
         res = self.apply("claude", follow_symlinks=True)
         self.assertEqual(res.status, "added", res)
         self.assertTrue(os.path.islink(self.config("claude")))
@@ -640,7 +869,7 @@ class ApplyPlatformTests(World):
         self.assertIn("disk full", res.detail)
         self.assertEqual(cfg.read_bytes(), original)
         new_names = {p.name for p in cfg.parent.iterdir()} - names_before
-        self.assertEqual(len(new_names), 1, new_names)                  # only the backup, no temp file
+        self.assertEqual(len(new_names), 1, new_names)  # only the backup, no temp file
         self.assertIn(".bak-lane-guard-", next(iter(new_names)))
 
     def test_a_concurrent_change_aborts_the_write(self) -> None:
@@ -674,13 +903,20 @@ class ApplyPlatformTests(World):
     def test_refuses_to_wire_in_a_shim_that_fails_its_probes(self) -> None:
         self.seed_platforms()
         before = snapshot(self.home)
-        res = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False)
-        self.assertEqual(res.status, "refused", res)                       # no shim installed at all
+        res = T.apply_platform(
+            T.PLATFORMS["claude"],
+            self.paths,
+            now=lambda: STAMP,
+            timeout=TIMEOUT,
+            minimal_path=False,
+        )
+        self.assertEqual(res.status, "refused", res)  # no shim installed at all
         self.assertIn("apply tools", res.detail)
         self.assertEqual(snapshot(self.home), before)
 
 
 # --------------------------------------------------------------------------- tools
+
 
 class ToolsTests(World):
     def stable(self) -> Path:
@@ -691,7 +927,9 @@ class ToolsTests(World):
         self.assertEqual(res.status, "installed", res)
         s = self.stable()
         names = sorted(p.name for p in (s / "fleet_lanes").iterdir())
-        self.assertEqual(names, sorted(list(T.REQUIRED_MODULES) + ["lane.py", T.SECRET_GUARD_MODULE]))        # no tests, no __pycache__
+        self.assertEqual(
+            names, sorted(list(T.REQUIRED_MODULES) + ["lane.py", T.SECRET_GUARD_MODULE])
+        )  # no tests, no __pycache__
         self.assertFalse((s / "fleet_lanes" / "tests").exists())
         self.assertTrue((s / "fleet-apps.json").is_file())
         ver = T.parse_version((s / "VERSION").read_text())
@@ -704,14 +942,16 @@ class ToolsTests(World):
         self.assertTrue(os.access(hook, os.X_OK))
         text = hook.read_text()
         self.assertEqual(text, T.render_hook_shim())
-        self.assertNotIn(str(s), text)                                                # relocatable: derives its own dir
+        self.assertNotIn(str(s), text)  # relocatable: derives its own dir
         self.assertIn("python3 -I", text)
         lane = Path(self.paths.lane_shim)
         self.assertTrue(os.access(lane, os.X_OK))
         self.assertEqual(lane.read_text(), T.render_lane_shim(str(s)))
         self.assertIn("fleet_lanes.lane", lane.read_text())
         self.assertIn("FLEET_APPS_JSON", text)
-        self.assertEqual(sorted(p.name for p in s.parent.iterdir()), ["lane", "lane-tools"])   # no stage dir left over
+        self.assertEqual(
+            sorted(p.name for p in s.parent.iterdir()), ["lane", "lane-tools"]
+        )  # no stage dir left over
 
     def test_stable_copy_contains_no_pycache_even_after_the_probes_ran(self) -> None:
         T.apply_tools(self.source, self.paths, timeout=TIMEOUT, minimal_path=False)
@@ -763,9 +1003,14 @@ class ToolsTests(World):
 
     def test_a_foreign_lane_shim_is_left_alone_and_does_not_block_the_guard(self) -> None:
         lane = Path(self.paths.lane_shim)
-        for label, make in (("file", lambda: lane.write_text("#!/bin/sh\necho mine\n")),
-                            ("symlink to a checkout shim", lambda: os.symlink(self.tmp / "checkout" / "bin" / "lane", lane)),
-                            ("directory", lambda: lane.mkdir())):
+        for label, make in (
+            ("file", lambda: lane.write_text("#!/bin/sh\necho mine\n")),
+            (
+                "symlink to a checkout shim",
+                lambda: os.symlink(self.tmp / "checkout" / "bin" / "lane", lane),
+            ),
+            ("directory", lambda: lane.mkdir()),
+        ):
             with self.subTest(label):
                 if lane.is_symlink() or lane.is_file():
                     lane.unlink()
@@ -774,20 +1019,42 @@ class ToolsTests(World):
                 shutil.rmtree(self.stable(), ignore_errors=True)
                 lane.parent.mkdir(parents=True, exist_ok=True)
                 make()
-                mine = os.readlink(lane) if lane.is_symlink() else (lane.read_text() if lane.is_file() else None)
+                mine = (
+                    os.readlink(lane)
+                    if lane.is_symlink()
+                    else (lane.read_text() if lane.is_file() else None)
+                )
                 res = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False)
                 self.assertEqual(res.status, "installed", res)
                 self.assertIn("lane shim NOT written", res.detail)
                 self.assertTrue(os.access(self.paths.hook_shim, os.X_OK))
-                self.assertEqual(os.readlink(lane) if lane.is_symlink() else (lane.read_text() if lane.is_file() else None), mine)
+                self.assertEqual(
+                    os.readlink(lane)
+                    if lane.is_symlink()
+                    else (lane.read_text() if lane.is_file() else None),
+                    mine,
+                )
                 checks = T.verify_tools(self.paths, timeout=TIMEOUT)
                 self.assertEqual({c.name: c.status for c in checks}["lane"], "WARN")
                 self.assertNotIn("FAIL", self.statuses(checks))
-                self.assertIn("NOT the stable copy", next(c for c in checks if c.name == "lane").detail)
-                self.assertEqual(T.apply_tools(self.source, self.paths, probes=False).status, "unchanged")
+                self.assertIn(
+                    "NOT the stable copy", next(c for c in checks if c.name == "lane").detail
+                )
+                self.assertEqual(
+                    T.apply_tools(self.source, self.paths, probes=False).status, "unchanged"
+                )
                 tp = T.plan_tools(self.source, self.paths)
                 self.assertEqual((tp.lane_shim_state, tp.problems), ("foreign", []))
-        rc, out, _ = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "tools")
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "tools",
+        )
         self.assertEqual(rc, 0, out)
         self.assertIn("LEFT ALONE", out)
 
@@ -815,7 +1082,7 @@ class ToolsTests(World):
                 src = self.make_source(name)
                 Path(src.registry).write_text(text)
                 self.assertEqual(T.apply_tools(src, self.paths, probes=False).status, "refused")
-        self.assertFalse(os.path.exists(self.paths.apps_dir))                         # refused before anything was created
+        self.assertFalse(os.path.exists(self.paths.apps_dir))  # refused before anything was created
 
     def test_a_staged_copy_that_fails_its_probes_is_never_swapped_in(self) -> None:
         self.install(())
@@ -825,7 +1092,10 @@ class ToolsTests(World):
         self.assertEqual(res.status, "refused", res)
         self.assertIn("staged copy failed", res.detail)
         after = snapshot(self.tmp)
-        self.assertEqual({k: v for k, v in after.items() if k.startswith("home")}, {k: v for k, v in before.items() if k.startswith("home")})
+        self.assertEqual(
+            {k: v for k, v in after.items() if k.startswith("home")},
+            {k: v for k, v in before.items() if k.startswith("home")},
+        )
         self.assertEqual(T.parse_version((self.stable() / "VERSION").read_text())["sha"], SHA)
 
     def test_swap_failure_restores_the_installed_copy(self) -> None:
@@ -836,14 +1106,14 @@ class ToolsTests(World):
 
         def flaky(a: str, b: str) -> None:
             calls.append((a, b))
-            if len(calls) == 2:                       # the stage-to-final rename
+            if len(calls) == 2:  # the stage-to-final rename
                 raise OSError("rename failed")
             real_rename(a, b)
 
         with mock.patch.object(T.os, "rename", side_effect=flaky):
             res = T.apply_tools(newer, self.paths, probes=False)
         self.assertEqual(res.status, "failed", res)
-        self.assertEqual(snapshot(self.home), before)                                  # also proves no stage or .old dir remains
+        self.assertEqual(snapshot(self.home), before)  # also proves no stage or .old dir remains
 
     def test_plan_tools_reports_state(self) -> None:
         plan = T.plan_tools(self.source, self.paths)
@@ -854,15 +1124,29 @@ class ToolsTests(World):
         self.assertEqual(plan.state, "current")
         (self.stable() / "fleet_lanes" / "stray.py").write_text("x")
         plan = T.plan_tools(self.source, self.paths)
-        self.assertEqual((plan.state, [f.rel for f in plan.files if f.status == "stale"]), ("stale", ["fleet_lanes/stray.py"]))
+        self.assertEqual(
+            (plan.state, [f.rel for f in plan.files if f.status == "stale"]),
+            ("stale", ["fleet_lanes/stray.py"]),
+        )
 
 
 # --------------------------------------------------------------------------- plan is read-only
 
+
 class PlanTests(World):
     def plan_args(self, *extra: str) -> list[str]:
-        return ["plan", "--home", str(self.home), "--source", self.source.scripts_dir,
-                "--registry", self.source.registry, "--sha", SHA, *extra]
+        return [
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--registry",
+            self.source.registry,
+            "--sha",
+            SHA,
+            *extra,
+        ]
 
     def test_plan_never_writes_anything(self) -> None:
         self.seed()
@@ -882,10 +1166,27 @@ class PlanTests(World):
         self.seed()
         rc, out, _ = run_main(*self.plan_args())
         self.assertEqual(rc, 0)
-        for needle in ("== tools", "VERSION would read", f"sha={SHA}", "python3 -I -c", "+++ ", "--- ", "@@ ",
-                       f"{self.paths.stable}/lane-guard-hook --format claude", "--format codex", "--format grok",
-                       "--format antigravity", "--format cursor", "== muse", "UNVERIFIED", "failClosed",
-                       "[plugin bundle new]", "OWNER ACTIONS", "lane-guard.json", "/hooks in Codex"):
+        for needle in (
+            "== tools",
+            "VERSION would read",
+            f"sha={SHA}",
+            "python3 -I -c",
+            "+++ ",
+            "--- ",
+            "@@ ",
+            f"{self.paths.stable}/lane-guard-hook --format claude",
+            "--format codex",
+            "--format grok",
+            "--format antigravity",
+            "--format cursor",
+            "== muse",
+            "UNVERIFIED",
+            "failClosed",
+            "[plugin bundle new]",
+            "OWNER ACTIONS",
+            "lane-guard.json",
+            "/hooks in Codex",
+        ):
             self.assertIn(needle, out)
         self.assertIn("shim " + self.paths.lane_shim + " [new]", out)
 
@@ -896,21 +1197,23 @@ class PlanTests(World):
         self.assertNotIn("dummy-secret-value", out)
         self.assertNotIn("EXAMPLE_API_TOKEN", out)
         self.assertNotIn("Zq9fakeSecretTokenValue77", out)
-        self.assertNotIn("Authorization", out)                                    # other hooks are counted, not echoed
+        self.assertNotIn("Authorization", out)  # other hooks are counted, not echoed
         self.assertIn("other hooks under hooks.PreToolUse are left untouched and not shown", out)
 
     def test_plan_exit_codes(self) -> None:
         self.seed()
-        self.assertEqual(run_main(*self.plan_args())[0], 0)                       # muse is listed, not failed
-        self.assertEqual(run_main(*self.plan_args("muse"))[0], 0)                 # informational: it writes nothing itself
+        self.assertEqual(run_main(*self.plan_args())[0], 0)  # muse is listed, not failed
+        self.assertEqual(
+            run_main(*self.plan_args("muse"))[0], 0
+        )  # informational: it writes nothing itself
         self.config("claude").write_text("{nope")
         rc, out, _ = run_main(*self.plan_args("claude"))
         self.assertEqual(rc, 1)
         self.assertIn("not valid JSON", out)
         self.assertEqual(run_main(*self.plan_args("cursor"))[0], 0)
         shutil.rmtree(self.home / ".cursor")
-        self.assertEqual(run_main(*self.plan_args("cursor"))[0], 1)               # named but not installed
-        self.assertEqual(run_main(*self.plan_args("all"))[0], 1)                  # claude is still invalid JSON
+        self.assertEqual(run_main(*self.plan_args("cursor"))[0], 1)  # named but not installed
+        self.assertEqual(run_main(*self.plan_args("all"))[0], 1)  # claude is still invalid JSON
 
     def test_plan_of_an_installed_platform_says_unchanged(self) -> None:
         self.seed()
@@ -922,6 +1225,7 @@ class PlanTests(World):
 
 
 # --------------------------------------------------------------------------- verify: the proof
+
 
 class VerifyTests(World):
     def setUp(self) -> None:
@@ -935,28 +1239,45 @@ class VerifyTests(World):
                 checks = self.verify(key, minimal_path=MINIMAL)
                 self.assertAllPass(checks)
                 names = [c.name for c in checks]
-                for n in ("deny/login-PATH", "allow/login-PATH") + (("deny/minimal-PATH", "allow/minimal-PATH") if MINIMAL else ()):
+                for n in ("deny/login-PATH", "allow/login-PATH") + (
+                    ("deny/minimal-PATH", "allow/minimal-PATH") if MINIMAL else ()
+                ):
                     self.assertIn(n, names)
                 deny = next(c for c in checks if c.name == "deny/login-PATH")
-                self.assertIn("permission" if key == "cursor" else ("decision" if key in ("grok", "antigravity") else "hookSpecificOutput"),
-                              deny.detail)                                            # the observed bytes are printed
+                self.assertIn(
+                    "permission"
+                    if key == "cursor"
+                    else ("decision" if key in ("grok", "antigravity") else "hookSpecificOutput"),
+                    deny.detail,
+                )  # the observed bytes are printed
                 self.assertIn("exit=0", deny.detail)
         self.assertAllPass(T.verify_tools(self.paths, timeout=TIMEOUT))
 
     def test_cli_verify_prints_pass_lines_and_exits_zero(self) -> None:
-        rc, out, err = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        rc, out, err = run_main(
+            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path"
+        )
         self.assertEqual((rc, err), (0, ""), out)
         self.assertIn("PASS  claude", out)
         self.assertNotIn("FAIL", out.replace("0 FAIL", ""))
         self.assertIn("-> healthy", out)
-        self.assertIn("(see WARN)", out)                                              # Codex trust is pending in a fake home
+        self.assertIn("(see WARN)", out)  # Codex trust is pending in a fake home
 
     def test_fails_when_the_stable_dir_is_missing(self) -> None:
         os.rename(self.paths.stable, self.paths.stable + ".gone")
         checks = self.verify("claude")
         self.assertFails(checks, "exit 127")
         self.assertFails(T.verify_tools(self.paths, timeout=TIMEOUT), "does not exist")
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "claude", "tools")
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "claude",
+            "tools",
+        )
         self.assertEqual(rc, 1, out)
         self.assertIn("NOT HEALTHY", out)
 
@@ -970,17 +1291,21 @@ class VerifyTests(World):
                 off.unlink()
             guard.write_bytes(original)
 
-        for label, action in (("renamed", lambda: guard.rename(off)),
-                              ("syntax error", lambda: guard.write_text("def evaluate(:\n")),
-                              ("raises", lambda: guard.write_text(BROKEN_GUARD))):
+        for label, action in (
+            ("renamed", lambda: guard.rename(off)),
+            ("syntax error", lambda: guard.write_text("def evaluate(:\n")),
+            ("raises", lambda: guard.write_text(BROKEN_GUARD)),
+        ):
             with self.subTest(label):
                 restore()
                 action()
                 checks = self.verify("claude")
                 self.assertFails(checks, "no output")
                 deny = next(c for c in checks if c.name == "deny/login-PATH")
-                self.assertIn("exit=0", deny.detail)                                  # fails open: exit 0, nothing printed
-                self.assertEqual(self.statuses([c for c in checks if c.name.startswith("allow")]), {"PASS"})
+                self.assertIn("exit=0", deny.detail)  # fails open: exit 0, nothing printed
+                self.assertEqual(
+                    self.statuses([c for c in checks if c.name.startswith("allow")]), {"PASS"}
+                )
         restore()
         self.assertAllPass(self.verify("claude"))
 
@@ -989,13 +1314,19 @@ class VerifyTests(World):
         guard.rename(guard.with_suffix(".off"))
         old = os.getcwd()
         self.addCleanup(os.chdir, old)
-        os.chdir(SCRIPTS_DIR)                                                         # holds the real, working fleet_lanes
+        os.chdir(SCRIPTS_DIR)  # holds the real, working fleet_lanes
         with mock.patch.dict(os.environ, {"PYTHONPATH": str(SCRIPTS_DIR)}):
             self.assertFails(self.verify("claude"), "no output")
             # and the shim itself, run by hand from there, does not reach the repo copy either
             payload = json.dumps(T.probe_payload("claude", T.DENY_COMMAND, str(self.home))).encode()
-            p = subprocess.run([self.paths.hook_shim, "--format", "claude"], input=payload, cwd=str(SCRIPTS_DIR),
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+            p = subprocess.run(
+                [self.paths.hook_shim, "--format", "claude"],
+                input=payload,
+                cwd=str(SCRIPTS_DIR),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=TIMEOUT,
+            )
         self.assertEqual((p.returncode, p.stdout), (0, b""), p.stderr)
 
     def test_fails_when_the_shim_is_not_executable(self) -> None:
@@ -1007,7 +1338,9 @@ class VerifyTests(World):
     def test_fails_when_the_config_command_was_edited(self) -> None:
         # a path that does not exist
         doc = self.load("claude")
-        doc["hooks"]["PreToolUse"][-1]["hooks"][0]["command"] = "/nonexistent/dir/lane-guard-hook --format claude"
+        doc["hooks"]["PreToolUse"][-1]["hooks"][0]["command"] = (
+            "/nonexistent/dir/lane-guard-hook --format claude"
+        )
         write_json(self.config("claude"), doc)
         self.assertFails(self.verify("claude"), "exit 127")
         # the wrong format for the platform: Cursor handed the Claude shape
@@ -1024,7 +1357,7 @@ class VerifyTests(World):
     def test_fails_when_the_entry_is_not_where_the_platform_gates_on_it(self) -> None:
         doc = self.load("claude")
         group = doc["hooks"]["PreToolUse"].pop()
-        doc["hooks"]["PostToolUse"].append(group)                                     # runs, prints a deny, protects nothing
+        doc["hooks"]["PostToolUse"].append(group)  # runs, prints a deny, protects nothing
         write_json(self.config("claude"), doc)
         checks = self.verify("claude")
         self.assertEqual(len(checks), 1)
@@ -1047,14 +1380,22 @@ class VerifyTests(World):
         self.assertFails(self.verify("grok"), "no hook installed")
         self.config("codex").write_text("{broken")
         self.assertFails(self.verify("codex"), "not valid JSON")
-        self.assertAllPass([c for c in self.verify("muse") if c.status != "SKIP"])      # muse is a plugin now, see the Muse tests
+        self.assertAllPass(
+            [c for c in self.verify("muse") if c.status != "SKIP"]
+        )  # muse is a plugin now, see the Muse tests
 
     def test_fails_on_a_hook_that_hangs_exits_nonzero_or_prints_nothing(self) -> None:
         shim = Path(self.paths.hook_shim)
-        for label, body, needle in (("hang", "#!/bin/sh\nexec sleep 30\n", "timed out"),
-                                    ("nonzero", "#!/bin/sh\ncat >/dev/null\nexit 3\n", "exit 3"),
-                                    ("silent allow", "#!/bin/sh\ncat >/dev/null\nexit 0\n", "no output"),
-                                    ("noise on allow", '#!/bin/sh\ncat >/dev/null\necho \'{"decision": "deny"}\'\n', "allow probe")):
+        for label, body, needle in (
+            ("hang", "#!/bin/sh\nexec sleep 30\n", "timed out"),
+            ("nonzero", "#!/bin/sh\ncat >/dev/null\nexit 3\n", "exit 3"),
+            ("silent allow", "#!/bin/sh\ncat >/dev/null\nexit 0\n", "no output"),
+            (
+                "noise on allow",
+                '#!/bin/sh\ncat >/dev/null\necho \'{"decision": "deny"}\'\n',
+                "allow probe",
+            ),
+        ):
             with self.subTest(label):
                 shim.write_text(body)
                 os.chmod(shim, 0o755)
@@ -1063,32 +1404,67 @@ class VerifyTests(World):
     def test_a_platform_that_is_not_installed_is_a_skip_unless_named(self) -> None:
         shutil.rmtree(self.home / ".cursor")
         self.assertEqual({c.status for c in self.verify("cursor")}, {"SKIP"})
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        rc, out, _ = run_main(
+            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path"
+        )
         self.assertEqual(rc, 0, out)
         self.assertIn("SKIP", out)
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "cursor")
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "cursor",
+        )
         self.assertEqual(rc, 1, out)
 
     def test_codex_trust_record(self) -> None:
         def trust():
             return next(c for c in self.verify("codex") if c.name == "trust")
 
-        self.assertEqual(trust().status, "WARN")                                      # no config.toml at all
+        self.assertEqual(trust().status, "WARN")  # no config.toml at all
         entry = T.locate(self.load("codex"), T.PLATFORMS["codex"])[0]
         key = f"{self.config('codex')}:pre_tool_use:{entry.group_index}:{entry.hook_index}"
         toml = self.home / ".codex" / "config.toml"
-        toml.write_text('[features]\nhooks = true\n')
+        toml.write_text("[features]\nhooks = true\n")
         self.assertEqual(trust().status, "WARN")
         self.assertIn("NOT TRUSTED YET", trust().detail)
-        toml.write_text('[features]\nhooks = true\n\n[hooks.state."%s"]\ntrusted_hash = "sha256:%s"\n' % (key, "ab" * 32))
-        self.assertEqual(trust().status, "WARN")                                      # a record is found, but its hash is not recomputed
+        toml.write_text(
+            '[features]\nhooks = true\n\n[hooks.state."%s"]\ntrusted_hash = "sha256:%s"\n'
+            % (key, "ab" * 32)
+        )
+        self.assertEqual(
+            trust().status, "WARN"
+        )  # a record is found, but its hash is not recomputed
         self.assertIn("UNCHECKED", trust().detail)
         self.assertNotIn("NOT TRUSTED YET", trust().detail)
-        toml.write_text('[hooks.state."%s"]\nenabled = true\n\n[other]\ntrusted_hash = "sha256:%s"\n' % (key, "ab" * 32))
-        self.assertIn("NOT TRUSTED YET", trust().detail)                              # the hash belongs to another table
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "codex", "--strict")
+        toml.write_text(
+            '[hooks.state."%s"]\nenabled = true\n\n[other]\ntrusted_hash = "sha256:%s"\n'
+            % (key, "ab" * 32)
+        )
+        self.assertIn("NOT TRUSTED YET", trust().detail)  # the hash belongs to another table
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "codex",
+            "--strict",
+        )
         self.assertEqual(rc, 1, out)
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "codex")
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "codex",
+        )
         self.assertEqual(rc, 0, out)
 
     def test_tools_verify_catches_tampering(self) -> None:
@@ -1097,7 +1473,7 @@ class VerifyTests(World):
         with open(stable / "fleet_lanes" / "layout.py", "a") as fh:
             fh.write("\n# edited\n")
         self.assertFails(T.verify_tools(self.paths, timeout=TIMEOUT), "VERSION's tree digest")
-        self.install()                                                                # re-apply heals it
+        self.install()  # re-apply heals it
         self.assertAllPass(T.verify_tools(self.paths, timeout=TIMEOUT))
         (stable / "fleet_lanes" / "added.py").write_text("x = 1\n")
         self.assertFails(T.verify_tools(self.paths, timeout=TIMEOUT), "digest")
@@ -1115,18 +1491,30 @@ class VerifyTests(World):
         self.assertFails(T.verify_tools(self.paths, timeout=TIMEOUT), "VERSION")
 
     def test_lane_shim_runs_the_installed_module(self) -> None:
-        p = subprocess.run([self.paths.lane_shim, "ls", "--x"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           cwd=str(SCRIPTS_DIR), timeout=TIMEOUT)
+        p = subprocess.run(
+            [self.paths.lane_shim, "ls", "--x"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(SCRIPTS_DIR),
+            timeout=TIMEOUT,
+        )
         self.assertEqual((p.returncode, p.stdout.strip()), (0, b"lane-stub-ok ls --x"), p.stderr)
 
 
 # --------------------------------------------------------------------------- command line
 
+
 class CliTests(World):
     def test_usage_errors_exit_64(self) -> None:
         h = ["--home", str(self.home)]
-        for argv in ([], ["apply"] + h, ["apply", "nonsense"] + h, ["plan", "--bogus"], ["verify", "everything"] + h,
-                     ["nonsense"]):
+        for argv in (
+            [],
+            ["apply"] + h,
+            ["apply", "nonsense"] + h,
+            ["plan", "--bogus"],
+            ["verify", "everything"] + h,
+            ["nonsense"],
+        ):
             with self.subTest(argv):
                 rc, out, err = run_main(*argv)
                 self.assertEqual(rc, T.EXIT_USAGE, (out, err))
@@ -1144,8 +1532,19 @@ class CliTests(World):
 
     def test_apply_all_then_verify_then_again(self) -> None:
         self.seed_platforms()
-        base = ["--home", str(self.home), "--source", self.source.scripts_dir, "--registry", self.source.registry,
-                "--sha", SHA, "--timeout", str(TIMEOUT), *MINIMAL_ARGS]
+        base = [
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--registry",
+            self.source.registry,
+            "--sha",
+            SHA,
+            "--timeout",
+            str(TIMEOUT),
+            *MINIMAL_ARGS,
+        ]
         rc, out, err = run_main("apply", *base, "all")
         self.assertEqual((rc, err), (0, ""), out)
         self.assertIn("INSTALLED  tools", out)
@@ -1168,8 +1567,18 @@ class CliTests(World):
 
     def test_apply_a_skipped_platform_is_a_failure_only_when_named(self) -> None:
         self.seed(".claude/settings.json")
-        base = ["--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "--timeout", str(TIMEOUT),
-                "--no-minimal-path", "--no-verify"]
+        base = [
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "--no-verify",
+        ]
         rc, out, _ = run_main("apply", *base, "all")
         self.assertEqual(rc, 0, out)
         self.assertIn("SKIPPED    cursor", out)
@@ -1180,7 +1589,15 @@ class CliTests(World):
         self.seed_platforms()
         self.install(())
         Path(self.paths.hook_shim).write_text("#!/bin/sh\nexit 0\n")
-        rc, out, _ = run_main("apply", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "claude")
+        rc, out, _ = run_main(
+            "apply",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "claude",
+        )
         self.assertEqual(rc, 1, out)
         self.assertIn("REFUSED", out)
         self.assertEqual(self.backups(self.config("claude").parent), [])
@@ -1193,7 +1610,7 @@ class CliTests(World):
         self.assertEqual(rc, 0, text)
         self.assertIn("self-test PASS", text)
         self.assertIn("with guard.py renamed", text)
-        self.assertIn("FAIL  claude", text)                                            # the failures it provoked are printed
+        self.assertIn("FAIL  claude", text)  # the failures it provoked are printed
         self.assertNotIn("self-test FAIL", text)
 
     def test_self_test_reports_a_verify_that_cannot_fail(self) -> None:
@@ -1213,6 +1630,7 @@ class CliTests(World):
 #
 # Each class below reproduces one confirmed review finding.  The values that look like credentials are
 # fakes assembled from pieces, so no literal in this file looks like a live key.
+
 
 class StableDirOwnershipTests(World):
     """A --stable-dir that this tool did not create is never emptied, whatever file sits at its root."""
@@ -1240,21 +1658,47 @@ class StableDirOwnershipTests(World):
         res = T.apply_tools(self.source, paths, probes=False)
         self.assertEqual(res.status, "refused", res)
         self.assertEqual(snapshot(proj), before)
-        rc, out, _ = run_main("apply", "--home", str(self.home), "--stable-dir", str(proj), "--source", self.source.scripts_dir,
-                              "--sha", SHA, "--no-minimal-path", "--no-verify", "tools")
+        rc, out, _ = run_main(
+            "apply",
+            "--home",
+            str(self.home),
+            "--stable-dir",
+            str(proj),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "--no-minimal-path",
+            "--no-verify",
+            "tools",
+        )
         self.assertEqual(rc, 1, out)
         self.assertEqual(snapshot(proj), before)
         self.assertTrue((proj / "src" / "precious.txt").exists())
         # plan says so too, and lists nothing as a deletion
-        rc, out, _ = run_main("plan", "--home", str(self.home), "--stable-dir", str(proj), "--source", self.source.scripts_dir,
-                              "--sha", SHA, "tools")
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--stable-dir",
+            str(proj),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "tools",
+        )
         self.assertEqual(rc, 1, out)
         self.assertIn("REFUSE", out)
         self.assertNotIn("WILL DELETE", out)
 
     def test_a_version_file_must_look_like_ours_to_count(self) -> None:
-        for label, text in (("sha only", "sha=abc1234\n"), ("tree is not a digest", "sha=abc1234\ntree=nope\n"),
-                            ("tree only", "tree=" + "a" * 64 + "\n"), ("empty sha", "sha=\ntree=" + "a" * 64 + "\n")):
+        for label, text in (
+            ("sha only", "sha=abc1234\n"),
+            ("tree is not a digest", "sha=abc1234\ntree=nope\n"),
+            ("tree only", "tree=" + "a" * 64 + "\n"),
+            ("empty sha", "sha=\ntree=" + "a" * 64 + "\n"),
+        ):
             with self.subTest(label):
                 proj = self.tmp / ("p-" + label.replace(" ", "-"))
                 proj.mkdir()
@@ -1263,10 +1707,15 @@ class StableDirOwnershipTests(World):
                 before = snapshot(proj)
                 paths = self.paths_for(proj)
                 self.assertEqual(T.plan_tools(self.source, paths).state, "foreign")
-                self.assertEqual(T.apply_tools(self.source, paths, probes=False, replace_extra=True).status, "refused")
+                self.assertEqual(
+                    T.apply_tools(self.source, paths, probes=False, replace_extra=True).status,
+                    "refused",
+                )
                 self.assertEqual(snapshot(proj), before)
 
-    def test_a_forged_version_without_our_hook_shim_is_foreign_even_with_replace_extra(self) -> None:
+    def test_a_forged_version_without_our_hook_shim_is_foreign_even_with_replace_extra(
+        self,
+    ) -> None:
         version = "sha=abc1234\npackage=0.1.0\nfiles=1\ntree=" + "0" * 64 + "\n"
         for label, shim in (("no shim", None), ("someone else's shim", "#!/bin/sh\necho mine\n")):
             with self.subTest(label):
@@ -1278,8 +1727,13 @@ class StableDirOwnershipTests(World):
                     (proj / "lane-guard-hook").write_text(shim)
                 before = snapshot(proj)
                 paths = self.paths_for(proj)
-                self.assertEqual(T.plan_tools(self.source, paths, replace_extra=True).state, "foreign")
-                self.assertEqual(T.apply_tools(self.source, paths, probes=False, replace_extra=True).status, "refused")
+                self.assertEqual(
+                    T.plan_tools(self.source, paths, replace_extra=True).state, "foreign"
+                )
+                self.assertEqual(
+                    T.apply_tools(self.source, paths, probes=False, replace_extra=True).status,
+                    "refused",
+                )
                 self.assertEqual(snapshot(proj), before)
 
     def test_unexpected_files_in_an_installed_dir_need_replace_extra(self) -> None:
@@ -1297,11 +1751,25 @@ class StableDirOwnershipTests(World):
         self.assertEqual(snapshot(self.home), before)
         plan = T.plan_tools(self.source, self.paths, replace_extra=True)
         self.assertEqual(plan.state, "stale")
-        self.assertEqual(sorted(f.rel for f in plan.files if f.status == "stale"), ["link", "notes.txt", "sub/deep.txt"])
+        self.assertEqual(
+            sorted(f.rel for f in plan.files if f.status == "stale"),
+            ["link", "notes.txt", "sub/deep.txt"],
+        )
         res = T.apply_tools(self.source, self.paths, probes=False, replace_extra=True)
         self.assertEqual(res.status, "installed", res)
-        self.assertEqual(sorted(p.name for p in stable.iterdir()),
-                         ["VERSION", "clutch", "fleet-apps.json", "fleet-guard-hook", "fleet_lanes", "lane-guard-hook", "muse-plugin", "muse-seat"])
+        self.assertEqual(
+            sorted(p.name for p in stable.iterdir()),
+            [
+                "VERSION",
+                "clutch",
+                "fleet-apps.json",
+                "fleet-guard-hook",
+                "fleet_lanes",
+                "lane-guard-hook",
+                "muse-plugin",
+                "muse-seat",
+            ],
+        )
 
     def test_leftovers_this_tool_makes_itself_are_not_extras(self) -> None:
         self.install(())
@@ -1330,33 +1798,47 @@ class StableDirOwnershipTests(World):
                 plan = T.plan_tools(self.source, self.paths, replace_extra=True)
                 self.assertEqual(plan.state, "foreign")
                 self.assertTrue(any(".git" in p for p in plan.problems), plan.problems)
-                self.assertEqual(T.apply_tools(self.source, self.paths, probes=False, replace_extra=True).status, "refused")
+                self.assertEqual(
+                    T.apply_tools(self.source, self.paths, probes=False, replace_extra=True).status,
+                    "refused",
+                )
                 self.assertEqual(snapshot(self.home), before)
 
     def test_a_stable_dir_that_holds_the_source_is_refused_even_with_replace_extra(self) -> None:
         self.install(())
         stable = self.stable()
         shutil.copytree(self.tmp / "src", stable / "checkout")
-        inner = T.Source(str(stable / "checkout" / "scripts"), str(stable / "checkout" / "fleet-apps.json"), SHA)
+        inner = T.Source(
+            str(stable / "checkout" / "scripts"), str(stable / "checkout" / "fleet-apps.json"), SHA
+        )
         before = snapshot(self.home)
         plan = T.plan_tools(inner, self.paths, replace_extra=True)
         self.assertEqual(plan.state, "foreign")
         self.assertTrue(any("source" in p for p in plan.problems), plan.problems)
-        self.assertEqual(T.apply_tools(inner, self.paths, probes=False, replace_extra=True).status, "refused")
+        self.assertEqual(
+            T.apply_tools(inner, self.paths, probes=False, replace_extra=True).status, "refused"
+        )
         self.assertEqual(snapshot(self.home), before)
 
     def test_a_stable_dir_that_holds_the_home_is_refused_even_with_replace_extra(self) -> None:
         box = self.tmp / "box"
         (box / "h").mkdir(parents=True)
-        T._write_tree(str(box), T.build_files(self.source, self.paths))      # an otherwise valid install, around the home
+        T._write_tree(
+            str(box), T.build_files(self.source, self.paths)
+        )  # an otherwise valid install, around the home
         (box / "Documents").mkdir()
         (box / "Documents" / "thesis.txt").write_text("mine")
         for home in (box / "h", box):
             with self.subTest(str(home)):
                 paths = T.Paths(home=str(home), stable=str(box))
                 before = snapshot(box)
-                self.assertEqual(T.plan_tools(self.source, paths, replace_extra=True).state, "foreign")
-                self.assertEqual(T.apply_tools(self.source, paths, probes=False, replace_extra=True).status, "refused")
+                self.assertEqual(
+                    T.plan_tools(self.source, paths, replace_extra=True).state, "foreign"
+                )
+                self.assertEqual(
+                    T.apply_tools(self.source, paths, probes=False, replace_extra=True).status,
+                    "refused",
+                )
                 self.assertEqual(snapshot(box), before)
         self.assertTrue((box / "Documents" / "thesis.txt").exists())
 
@@ -1380,7 +1862,16 @@ class StableDirOwnershipTests(World):
     def test_replace_extra_is_a_flag_of_plan_and_apply(self) -> None:
         self.install(())
         (self.stable() / "notes.txt").write_text("mine")
-        args = ["--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "--timeout", str(TIMEOUT)]
+        args = [
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "--timeout",
+            str(TIMEOUT),
+        ]
         rc, out, _ = run_main("plan", *args, "tools")
         self.assertEqual(rc, 1, out)
         rc, out, _ = run_main("plan", *args, "--replace-extra", "tools")
@@ -1390,7 +1881,9 @@ class StableDirOwnershipTests(World):
         rc, out, _ = run_main("apply", *args, "--no-minimal-path", "--no-verify", "tools")
         self.assertEqual(rc, 1, out)
         self.assertTrue((self.stable() / "notes.txt").exists())
-        rc, out, _ = run_main("apply", *args, "--no-minimal-path", "--no-verify", "--replace-extra", "tools")
+        rc, out, _ = run_main(
+            "apply", *args, "--no-minimal-path", "--no-verify", "--replace-extra", "tools"
+        )
         self.assertEqual(rc, 0, out)
         self.assertFalse((self.stable() / "notes.txt").exists())
 
@@ -1415,8 +1908,16 @@ class InertHookVerifyTests(World):
         self.edit("claude", disableAllHooks=True)
         checks = self.verify("claude")
         self.assertFails(checks, "disableAllHooks")
-        self.assertEqual(self.probes(checks), {"PASS"})                  # the trap: the command itself works
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "claude")
+        self.assertEqual(self.probes(checks), {"PASS"})  # the trap: the command itself works
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "claude",
+        )
         self.assertEqual(rc, 1, out)
         self.assertIn("NOT HEALTHY", out)
         self.edit("claude", disableAllHooks=False)
@@ -1447,26 +1948,48 @@ class InertHookVerifyTests(World):
     def test_the_off_values_are_the_guards_own(self) -> None:
         name, off = T.guard_switch()
         self.assertEqual((name, off), (G.ENV_GUARD, G._OFF_VALUES))
-        self.assertEqual(T._FALLBACK_OFF_VALUES, G._OFF_VALUES)          # the copy used when guard.py cannot be imported
+        self.assertEqual(
+            T._FALLBACK_OFF_VALUES, G._OFF_VALUES
+        )  # the copy used when guard.py cannot be imported
 
     def test_a_kill_switch_in_the_callers_environment_is_a_warning_not_silence(self) -> None:
         with mock.patch.dict(os.environ, {"FLEET_LANE_GUARD": "off"}):
             checks = self.verify("claude")
         warn = [c for c in checks if c.status == "WARN" and "FLEET_LANE_GUARD" in c.detail]
         self.assertTrue(warn, "\n".join(c.line() for c in checks))
-        self.assertNotIn("FAIL", self.statuses(checks))                    # the probes scrub it, so they still pass
+        self.assertNotIn("FAIL", self.statuses(checks))  # the probes scrub it, so they still pass
         with mock.patch.dict(os.environ, {"FLEET_LANE_GUARD": "on"}):
             self.assertFalse([c for c in self.verify("claude") if "FLEET_LANE_GUARD" in c.detail])
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "claude", "--strict")
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "claude",
+            "--strict",
+        )
         self.assertEqual(rc, 0, out)
         with mock.patch.dict(os.environ, {"FLEET_LANE_GUARD": "off"}):
-            rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "claude", "--strict")
+            rc, out, _ = run_main(
+                "verify",
+                "--home",
+                str(self.home),
+                "--timeout",
+                str(TIMEOUT),
+                "--no-minimal-path",
+                "claude",
+                "--strict",
+            )
         self.assertEqual(rc, 1, out)
 
     def test_apply_notes_a_switch_that_would_make_the_new_hook_inert(self) -> None:
         self.seed(".claude/settings.json")
         self.edit("claude", disableAllHooks=True)
-        res = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True)
+        res = T.apply_platform(
+            T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True
+        )
         self.assertEqual(res.status, "added", res)
         self.assertIn("disableAllHooks", res.detail)
 
@@ -1492,16 +2015,27 @@ class CodexChecksTests(World):
         self.toml_path.write_text("[features]\nhooks = false\n\n" + self.record())
         checks = self.verify("codex")
         self.assertFails(checks, "features")
-        self.assertEqual({c.status for c in checks if c.name.startswith(("deny", "allow"))}, {"PASS"})
+        self.assertEqual(
+            {c.status for c in checks if c.name.startswith(("deny", "allow"))}, {"PASS"}
+        )
 
     def test_features_hooks_spellings(self) -> None:
-        cases = (("[features]\nhooks = false\n", True), ("features.hooks = false\n", True),
-                 ('[features]\nhooks = "true"\n', True), ("[ features ]\nhooks=false\n", True),
-                 ("features = { hooks = false }\n", True), ('["features"]\nhooks = false\n', True),
-                 ("[features]\nhooks = true\n", False), ("[features]\nhooks = true # on\n", False),
-                 ("features.hooks = true\n", False), ("[features]\nother = 1\n", False),
-                 ("[other]\nhooks = false\n", False), ("[features]\nx = 1\n[other]\nhooks = false\n", False),
-                 ("# [features]\n# hooks = false\n", False), ("", False))
+        cases = (
+            ("[features]\nhooks = false\n", True),
+            ("features.hooks = false\n", True),
+            ('[features]\nhooks = "true"\n', True),
+            ("[ features ]\nhooks=false\n", True),
+            ("features = { hooks = false }\n", True),
+            ('["features"]\nhooks = false\n', True),
+            ("[features]\nhooks = true\n", False),
+            ("[features]\nhooks = true # on\n", False),
+            ("features.hooks = true\n", False),
+            ("[features]\nother = 1\n", False),
+            ("[other]\nhooks = false\n", False),
+            ("[features]\nx = 1\n[other]\nhooks = false\n", False),
+            ("# [features]\n# hooks = false\n", False),
+            ("", False),
+        )
         for text, fails in cases:
             with self.subTest(text):
                 self.toml_path.write_text(text + "\n" + self.record())
@@ -1515,10 +2049,18 @@ class CodexChecksTests(World):
         (trust,) = self.named("trust")
         self.assertEqual(trust.status, "WARN")
         self.assertIn("UNCHECKED", trust.detail)
-        base = ["verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "codex"]
+        base = [
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "codex",
+        ]
         self.assertEqual(run_main(*base)[0], 0)
         rc, out, _ = run_main(*base, "--strict")
-        self.assertEqual(rc, 1, out)                                       # --strict can never pass for codex
+        self.assertEqual(rc, 1, out)  # --strict can never pass for codex
 
     def test_a_missing_record_still_says_not_trusted(self) -> None:
         self.toml_path.write_text("[features]\nhooks = true\n")
@@ -1528,9 +2070,13 @@ class CodexChecksTests(World):
 
     def test_an_updated_entry_says_the_old_trust_record_is_stale(self) -> None:
         doc = self.load("codex")
-        doc["hooks"]["PreToolUse"][-1]["hooks"][0]["command"] = "/old/place/lane-guard-hook --format codex"
+        doc["hooks"]["PreToolUse"][-1]["hooks"][0]["command"] = (
+            "/old/place/lane-guard-hook --format codex"
+        )
         write_json(self.config("codex"), doc)
-        res = T.apply_platform(T.PLATFORMS["codex"], self.paths, now=lambda: STAMP, shim_proven=True)
+        res = T.apply_platform(
+            T.PLATFORMS["codex"], self.paths, now=lambda: STAMP, shim_proven=True
+        )
         self.assertEqual(res.status, "updated", res)
         self.assertIn("trust record", res.detail)
         self.assertIn("stale", res.detail)
@@ -1544,7 +2090,7 @@ class HomeArgumentTests(World):
 
     def setUp(self) -> None:
         super().setUp()
-        self.real = self.tmp / "realhome"                       # stands in for the real home: HOME points here
+        self.real = self.tmp / "realhome"  # stands in for the real home: HOME points here
         (self.real / ".claude").mkdir(parents=True)
         (self.real / ".claude" / "settings.json").write_text('{\n  "theme": "dark"\n}\n')
 
@@ -1552,10 +2098,20 @@ class HomeArgumentTests(World):
         before = snapshot(self.real)
         src = ["--source", self.source.scripts_dir, "--sha", SHA]
         with mock.patch.dict(os.environ, {"HOME": str(self.real)}):
-            for argv in (["plan"], ["verify"], ["apply", "--no-verify", "tools", "claude"], ["apply", "tools"],
-                         ["apply", "--no-verify", "claude"], ["plan", "claude"]):
+            for argv in (
+                ["plan"],
+                ["verify"],
+                ["apply", "--no-verify", "tools", "claude"],
+                ["apply", "tools"],
+                ["apply", "--no-verify", "claude"],
+                ["plan", "claude"],
+            ):
                 with self.subTest(argv):
-                    rc, out, err = run_main(*argv, *src, "--home", "") if argv[0] != "verify" else run_main(*argv, "--home", "")
+                    rc, out, err = (
+                        run_main(*argv, *src, "--home", "")
+                        if argv[0] != "verify"
+                        else run_main(*argv, "--home", "")
+                    )
                     self.assertEqual(rc, T.EXIT_USAGE, (out, err))
                     self.assertIn("--home", err)
         self.assertEqual(snapshot(self.real), before)
@@ -1565,8 +2121,19 @@ class HomeArgumentTests(World):
         before = snapshot(self.tmp)
         for argv in (["plan"], ["verify"], ["apply", "--no-verify", "tools"]):
             with self.subTest(argv):
-                rc, out, err = run_main(*argv, "--home", str(self.home), "--stable-dir", "", "--source", self.source.scripts_dir
-                                        ) if argv[0] != "verify" else run_main(*argv, "--home", str(self.home), "--stable-dir", "")
+                rc, out, err = (
+                    run_main(
+                        *argv,
+                        "--home",
+                        str(self.home),
+                        "--stable-dir",
+                        "",
+                        "--source",
+                        self.source.scripts_dir,
+                    )
+                    if argv[0] != "verify"
+                    else run_main(*argv, "--home", str(self.home), "--stable-dir", "")
+                )
                 self.assertEqual(rc, T.EXIT_USAGE, (out, err))
         self.assertEqual(snapshot(self.tmp), before)
 
@@ -1574,8 +2141,11 @@ class HomeArgumentTests(World):
         for argv in (["plan"], ["verify"], ["apply", "--no-verify", "tools"]):
             with self.subTest(argv):
                 ghost = self.tmp / "typo" / "home"
-                rc, out, err = run_main(*argv, "--home", str(ghost), "--source", self.source.scripts_dir
-                                        ) if argv[0] != "verify" else run_main(*argv, "--home", str(ghost))
+                rc, out, err = (
+                    run_main(*argv, "--home", str(ghost), "--source", self.source.scripts_dir)
+                    if argv[0] != "verify"
+                    else run_main(*argv, "--home", str(ghost))
+                )
                 self.assertEqual(rc, T.EXIT_USAGE, (out, err))
                 self.assertFalse(ghost.exists())
                 self.assertFalse(ghost.parent.exists())
@@ -1589,7 +2159,9 @@ class HomeArgumentTests(World):
 
     def test_the_default_still_comes_from_the_home_variable(self) -> None:
         with mock.patch.dict(os.environ, {"HOME": str(self.real)}):
-            rc, out, err = run_main("plan", "claude", "--source", self.source.scripts_dir, "--sha", SHA)
+            rc, out, err = run_main(
+                "plan", "claude", "--source", self.source.scripts_dir, "--sha", SHA
+            )
         self.assertEqual((rc, err), (0, ""), out)
         self.assertIn(str(self.real), out)
 
@@ -1609,7 +2181,9 @@ class ConfigFidelityTests(World):
         os.chmod(self.settings, 0o600)
 
     def apply(self, **kw) -> T.Result:
-        return T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True, **kw)
+        return T.apply_platform(
+            T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True, **kw
+        )
 
     def assertRefusedUntouched(self, needle: str) -> None:
         original = self.settings.read_bytes()
@@ -1631,10 +2205,14 @@ class ConfigFidelityTests(World):
         self.assertRefusedUntouched("duplicate")
 
     def test_numbers_json_cannot_hold_are_refused(self) -> None:
-        for label, text in (("overflow", '{\n  "n": 1e999,\n  "hooks": {}\n}\n'),
-                            ("negative overflow", '{\n  "n": -1e999\n}\n'),
-                            ("NaN", '{\n  "n": NaN\n}\n'), ("Infinity", '{\n  "n": Infinity\n}\n'),
-                            ("-Infinity", '{\n  "n": -Infinity\n}\n'), ("nested", '{\n  "a": [{"b": 1e999}]\n}\n')):
+        for label, text in (
+            ("overflow", '{\n  "n": 1e999,\n  "hooks": {}\n}\n'),
+            ("negative overflow", '{\n  "n": -1e999\n}\n'),
+            ("NaN", '{\n  "n": NaN\n}\n'),
+            ("Infinity", '{\n  "n": Infinity\n}\n'),
+            ("-Infinity", '{\n  "n": -Infinity\n}\n'),
+            ("nested", '{\n  "a": [{"b": 1e999}]\n}\n'),
+        ):
             with self.subTest(label):
                 self.put(text)
                 original = self.settings.read_bytes()
@@ -1645,15 +2223,20 @@ class ConfigFidelityTests(World):
                 self.assertEqual(self.backups(self.settings.parent), [])
 
     def test_numbers_that_would_change_value_are_refused(self) -> None:
-        for label, text in (("underflow", '{\n  "n": 1e-400\n}\n'),
-                            ("too many digits", '{\n  "n": 3.141592653589793238462643383279\n}\n')):
+        for label, text in (
+            ("underflow", '{\n  "n": 1e-400\n}\n'),
+            ("too many digits", '{\n  "n": 3.141592653589793238462643383279\n}\n'),
+        ):
             with self.subTest(label):
                 self.put(text)
                 self.assertRefusedUntouched("number")
 
     def test_ordinary_files_still_merge(self) -> None:
-        for label, text in (("canonical", '{\n  "n": 1.5,\n  "big": 12345678901234567890,\n  "e": "\u00e9"\n}\n'),
-                            ("compact", '{"n":1.5,"e":"\u00e9"}'), ("exponent", '{\n  "n": 1E5,\n  "m": 2.50\n}\n')):
+        for label, text in (
+            ("canonical", '{\n  "n": 1.5,\n  "big": 12345678901234567890,\n  "e": "\u00e9"\n}\n'),
+            ("compact", '{"n":1.5,"e":"\u00e9"}'),
+            ("exponent", '{\n  "n": 1E5,\n  "m": 2.50\n}\n'),
+        ):
             with self.subTest(label):
                 self.put(text)
                 before = json.loads(text)
@@ -1667,19 +2250,21 @@ class ConfigFidelityTests(World):
                     b.unlink()
 
     def test_text_that_cannot_be_encoded_is_not_a_traceback_and_keeps_its_content(self) -> None:
-        text = '{\n  "a": "\u00e9",\n  "b": "\\ud800"\n}\n'                 # a raw e-acute and an escaped lone surrogate
+        text = '{\n  "a": "\u00e9",\n  "b": "\\ud800"\n}\n'  # a raw e-acute and an escaped lone surrogate
         self.put(text)
         before = json.loads(text)
         plan = T.plan_platform(T.PLATFORMS["claude"], self.paths)
         self.assertEqual(plan.action, "add", plan)
-        plan.new_text.encode("utf-8")                                          # encodable
+        plan.new_text.encode("utf-8")  # encodable
         res = self.apply()
         self.assertEqual(res.status, "added", res)
         after = self.load("claude")
         after.pop("hooks")
         self.assertEqual(after, before)
 
-    def test_verify_reads_duplicates_the_way_the_platform_does_but_fails_on_numbers_it_rejects(self) -> None:
+    def test_verify_reads_duplicates_the_way_the_platform_does_but_fails_on_numbers_it_rejects(
+        self,
+    ) -> None:
         self.seed(".claude/settings.json")
         r = self.apply()
         self.assertEqual(r.status, "added", r)
@@ -1687,7 +2272,7 @@ class ConfigFidelityTests(World):
         dup = text.replace('"theme": "dark"', '"theme": "dark",\n  "theme": "light"')
         self.assertNotEqual(dup, text)
         self.settings.write_text(dup)
-        self.assertAllPass(self.verify("claude"))                                         # last one wins, as in JSON.parse
+        self.assertAllPass(self.verify("claude"))  # last one wins, as in JSON.parse
         bad = text.replace('"theme": "dark"', '"theme": 1e999')
         self.settings.write_text(bad)
         self.assertFails(self.verify("claude"), "1e999")
@@ -1716,10 +2301,21 @@ class ReadOnlyConfigTests(World):
         self.assertIn("not overriding", res.detail)
         self.assertEqual(snapshot(self.home), before)
         self.assertEqual(stat.S_IMODE(cfg.stat().st_mode), 0o444)
-        rc, out, _ = run_main("apply", "--home", str(self.home), "--no-minimal-path", "--no-verify", "claude")
+        rc, out, _ = run_main(
+            "apply", "--home", str(self.home), "--no-minimal-path", "--no-verify", "claude"
+        )
         self.assertEqual(rc, 1, out)
         self.assertIn("read-only", out)
-        rc, out, _ = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "claude")
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "claude",
+        )
         self.assertEqual(rc, 1, out)
         self.assertIn("read-only", out)
 
@@ -1751,7 +2347,9 @@ class SymlinkedConfigTests(World):
         self.outside.mkdir()
 
     def apply(self, **kw) -> T.Result:
-        return T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True, **kw)
+        return T.apply_platform(
+            T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, shim_proven=True, **kw
+        )
 
     def link(self) -> Path:
         return self.home / ".claude" / "settings.json"
@@ -1775,7 +2373,9 @@ class SymlinkedConfigTests(World):
         os.symlink(self.tmp / "nowhere" / "hooks", self.home / ".grok" / "hooks")
         before = snapshot(self.tmp)
         for kw in ({}, {"follow_symlinks": True}):
-            res = T.apply_platform(T.PLATFORMS["grok"], self.paths, now=lambda: STAMP, shim_proven=True, **kw)
+            res = T.apply_platform(
+                T.PLATFORMS["grok"], self.paths, now=lambda: STAMP, shim_proven=True, **kw
+            )
             self.assertEqual(res.status, "refused", res)
             self.assertIn("dangling", res.detail)
         self.assertEqual(snapshot(self.tmp), before)
@@ -1794,7 +2394,9 @@ class SymlinkedConfigTests(World):
         self.assertEqual(res.status, "refused", res)
         self.assertEqual(snapshot(self.tmp), before)
         self.assertEqual(self.backups(self.outside), [])
-        rc, out, _ = run_main("apply", "--home", str(self.home), "--no-minimal-path", "--no-verify", "claude")
+        rc, out, _ = run_main(
+            "apply", "--home", str(self.home), "--no-minimal-path", "--no-verify", "claude"
+        )
         self.assertEqual(rc, 1, out)
         self.assertEqual(snapshot(self.tmp), before)
 
@@ -1804,8 +2406,17 @@ class SymlinkedConfigTests(World):
         os.symlink(real, self.link())
         plan = T.plan_platform(T.PLATFORMS["claude"], self.paths, follow_symlinks=True)
         self.assertEqual(plan.action, "add", plan)
-        rc, out, _ = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA,
-                              "--follow-symlinks", "claude")
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "--follow-symlinks",
+            "claude",
+        )
         self.assertEqual(rc, 0, out)
         self.assertIn(f"symlink -> {real}", out)
         res = self.apply(follow_symlinks=True)
@@ -1818,7 +2429,16 @@ class SymlinkedConfigTests(World):
         real = self.home / "dotfiles" / "settings.json"
         write_json(real, claude_settings(), 0o600)
         os.symlink(real, self.link())
-        rc, out, _ = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "claude")
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "claude",
+        )
         self.assertEqual(rc, 0, out)
         self.assertIn(f"symlink -> {real}", out)
         res = self.apply()
@@ -1850,8 +2470,19 @@ class ApplyAllProbeTests(World):
         return src
 
     def base(self, src: T.Source) -> list:
-        return ["--home", str(self.home), "--source", src.scripts_dir, "--registry", src.registry, "--sha", src.sha,
-                "--timeout", str(TIMEOUT), "--no-minimal-path"]
+        return [
+            "--home",
+            str(self.home),
+            "--source",
+            src.scripts_dir,
+            "--registry",
+            src.registry,
+            "--sha",
+            src.sha,
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+        ]
 
     def test_a_broken_grok_output_is_not_wired_in(self) -> None:
         self.seed_platforms()
@@ -1867,10 +2498,14 @@ class ApplyAllProbeTests(World):
     def test_the_staging_probes_cover_every_supported_format(self) -> None:
         self.install(())
         good = T.parse_version((Path(self.paths.stable) / "VERSION").read_text())["sha"]
-        res = T.apply_tools(self.broken_grok_source("bgrok2", SHA2), self.paths, timeout=TIMEOUT, minimal_path=False)
+        res = T.apply_tools(
+            self.broken_grok_source("bgrok2", SHA2), self.paths, timeout=TIMEOUT, minimal_path=False
+        )
         self.assertEqual(res.status, "refused", res)
         self.assertIn("staged copy failed", res.detail)
-        self.assertEqual(T.parse_version((Path(self.paths.stable) / "VERSION").read_text())["sha"], good)
+        self.assertEqual(
+            T.parse_version((Path(self.paths.stable) / "VERSION").read_text())["sha"], good
+        )
 
     def test_the_cli_never_passes_a_platform_off_as_already_proven(self) -> None:
         self.seed_platforms()
@@ -1884,11 +2519,13 @@ class ApplyAllProbeTests(World):
         with mock.patch.object(T, "apply_platform", side_effect=spy):
             rc, out, _ = run_main("apply", *self.base(self.source), "--no-verify", "all")
         self.assertEqual(rc, 0, out)
-        self.assertEqual(len(calls), len(T.SUPPORTED_KEYS))
+        self.assertEqual(len(calls), len(T.ALL_KEYS))
         self.assertFalse(any(calls), calls)
         with mock.patch.object(T, "apply_platform", side_effect=spy):
             calls.clear()
-            rc, out, _ = run_main("apply", *self.base(self.source), "--no-verify", "all")      # tools are unchanged now
+            rc, out, _ = run_main(
+                "apply", *self.base(self.source), "--no-verify", "all"
+            )  # tools are unchanged now
         self.assertIn("UNCHANGED  tools", out)
         self.assertFalse(any(calls), calls)
 
@@ -1897,11 +2534,22 @@ class ApplyAllProbeTests(World):
         self.install(())
         hook = Path(self.paths.package_dir) / "lane_guard_hook.py"
         text = hook.read_text(encoding="utf-8")
-        hook.write_text(text.replace('if fmt in ("grok", "antigravity"):', 'if fmt in ("antigravity",):'), encoding="utf-8")
-        res = T.apply_platform(T.PLATFORMS["grok"], self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False)
+        hook.write_text(
+            text.replace('if fmt in ("grok", "antigravity"):', 'if fmt in ("antigravity",):'),
+            encoding="utf-8",
+        )
+        res = T.apply_platform(
+            T.PLATFORMS["grok"], self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False
+        )
         self.assertEqual(res.status, "refused", res)
         self.assertFalse(self.config("grok").exists())
-        ok = T.apply_platform(T.PLATFORMS["claude"], self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False)
+        ok = T.apply_platform(
+            T.PLATFORMS["claude"],
+            self.paths,
+            now=lambda: STAMP,
+            timeout=TIMEOUT,
+            minimal_path=False,
+        )
         self.assertEqual(ok.status, "added", ok)
 
 
@@ -1921,15 +2569,30 @@ class PlanEchoTests(World):
     def seeded(self) -> dict:
         s = self.secrets()
         doc = claude_settings()
-        doc["hooks"]["PreToolUse"].append({"matcher": "Bash", "hooks": [
-            {"type": "command", "command": f"{s['aws']} {s['pw']} run", "timeout": 3},
-            {"type": "command", "command": f"{s['curl']} && {s['flag']}", "timeout": 3},
-            {"type": "command", "command": f"env {s['stripe']} {s['gitlab']} true"}]})
+        doc["hooks"]["PreToolUse"].append(
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {"type": "command", "command": f"{s['aws']} {s['pw']} run", "timeout": 3},
+                    {"type": "command", "command": f"{s['curl']} && {s['flag']}", "timeout": 3},
+                    {"type": "command", "command": f"env {s['stripe']} {s['gitlab']} true"},
+                ],
+            }
+        )
         write_json(self.home / ".claude" / "settings.json", doc, 0o600)
         return s
 
     def plan(self, *extra: str) -> str:
-        rc, out, err = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, *extra)
+        rc, out, err = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            *extra,
+        )
         self.assertEqual((rc, err), (0, ""), out)
         return out
 
@@ -1938,13 +2601,31 @@ class PlanEchoTests(World):
         out = self.plan("claude")
         for name, secret in s.items():
             self.assertNotIn(secret, out, name)
-        for fragment in ("hunt3r2", "s3cr3t", "pa55wd", "wJalrXUtn", "4eC39HqLyjWDarjtT1zdp7dc", "abcdefghij0123456789",
-                         "economy.py", "board-check", "command-class", "remote-pre", "Zq9fakeSecretTokenValue77", "notify.sh"):
+        for fragment in (
+            "hunt3r2",
+            "s3cr3t",
+            "pa55wd",
+            "wJalrXUtn",
+            "4eC39HqLyjWDarjtT1zdp7dc",
+            "abcdefghij0123456789",
+            "economy.py",
+            "board-check",
+            "command-class",
+            "remote-pre",
+            "Zq9fakeSecretTokenValue77",
+            "notify.sh",
+        ):
             self.assertNotIn(fragment, out)
         self.assertIn("other hook", out)
         self.assertIn("not shown", out)
         # the diff still shows what will be added, in diff form
-        for needle in ("+++ ", "--- ", "@@ ", "+", f"{self.paths.stable}/lane-guard-hook --format claude"):
+        for needle in (
+            "+++ ",
+            "--- ",
+            "@@ ",
+            "+",
+            f"{self.paths.stable}/lane-guard-hook --format claude",
+        ):
             self.assertIn(needle, out)
 
     def test_an_updated_entry_shows_only_our_old_and_new_command(self) -> None:
@@ -1955,9 +2636,21 @@ class PlanEchoTests(World):
         ours.holder["command"] = "/old/place/lane-guard-hook --format claude"
         write_json(self.config("claude"), doc, 0o600)
         out = self.plan("claude")
-        self.assertTrue(any(ln.strip().startswith('-') and "/old/place/lane-guard-hook" in ln for ln in out.splitlines()), out)
-        self.assertTrue(any(ln.strip().startswith('+') and f"{self.paths.stable}/lane-guard-hook --format claude" in ln
-                            for ln in out.splitlines()), out)
+        self.assertTrue(
+            any(
+                ln.strip().startswith("-") and "/old/place/lane-guard-hook" in ln
+                for ln in out.splitlines()
+            ),
+            out,
+        )
+        self.assertTrue(
+            any(
+                ln.strip().startswith("+")
+                and f"{self.paths.stable}/lane-guard-hook --format claude" in ln
+                for ln in out.splitlines()
+            ),
+            out,
+        )
         self.assertIn("[update]", out)
         for secret in self.secrets().values():
             self.assertNotIn(secret, out)
@@ -1965,33 +2658,61 @@ class PlanEchoTests(World):
     def test_every_platform_style_elides_other_hooks(self) -> None:
         self.seed()
         out = self.plan()
-        for needle in ("/x/otlp.mjs", "/x/node", "./hooks/check.sh", "python3 '/x/economy.py'", "secret-guard"):
+        for needle in (
+            "/x/otlp.mjs",
+            "/x/node",
+            "./hooks/check.sh",
+            "python3 '/x/economy.py'",
+            "secret-guard",
+        ):
             self.assertNotIn(needle, out)
         self.assertIn("lane-guard", out)
 
     def test_redact_covers_the_shapes_that_used_to_leak(self) -> None:
         for name, secret, leak in (
-                ("aws secret", "AWS_SECRET_ACCESS_KEY=" + "wJalrXUtn" + "FEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY", "wJalrXUtn"),
-                ("short password", "DB_PASSWORD=" + "hunt3r2", "hunt3r2"),
-                ("curl -u", "curl -u " + "alice:" + "s3cr3t" + " https://example.invalid", "s3cr3t"),
-                ("--password", "tool --password " + "pa55wd --go", "pa55wd"),
-                ("--password=", "tool --password=" + "pa55wd --go", "pa55wd"),
-                ("stripe", "x sk_live_" + "4eC39HqLyjWDarjtT1zdp7dc y", "4eC39HqLyjWDarjtT1zdp7dc"),
-                ("stripe restricted", "x rk_live_" + "4eC39HqLyjWDarjtT1zdp7dc y", "4eC39HqLyjWDarjtT1zdp7dc"),
-                ("gitlab", "x glpat-" + "abcdefghij0123456789 y", "abcdefghij0123456789"),
-                ("twilio sid", "x AC" + "0123456789abcdef" + "0123456789abcdef y", "0123456789abcdef0123456789abcdef"),
-                ("json api_key", '"api_key": "' + 'abc123' + '"', "abc123"),
-                ("json secret", '  "client_secret": "' + 'xyz' + '"', "xyz"),
-                ("bare 40 char secret", "key " + "wJalrXUtn" + "FEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY" + " end", "K7MDENG")):
+            (
+                "aws secret",
+                "AWS_SECRET_ACCESS_KEY=" + "wJalrXUtn" + "FEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY",
+                "wJalrXUtn",
+            ),
+            ("short password", "DB_PASSWORD=" + "hunt3r2", "hunt3r2"),
+            ("curl -u", "curl -u " + "alice:" + "s3cr3t" + " https://example.invalid", "s3cr3t"),
+            ("--password", "tool --password " + "pa55wd --go", "pa55wd"),
+            ("--password=", "tool --password=" + "pa55wd --go", "pa55wd"),
+            ("stripe", "x sk_live_" + "4eC39HqLyjWDarjtT1zdp7dc y", "4eC39HqLyjWDarjtT1zdp7dc"),
+            (
+                "stripe restricted",
+                "x rk_live_" + "4eC39HqLyjWDarjtT1zdp7dc y",
+                "4eC39HqLyjWDarjtT1zdp7dc",
+            ),
+            ("gitlab", "x glpat-" + "abcdefghij0123456789 y", "abcdefghij0123456789"),
+            (
+                "twilio sid",
+                "x AC" + "0123456789abcdef" + "0123456789abcdef y",
+                "0123456789abcdef0123456789abcdef",
+            ),
+            ("json api_key", '"api_key": "' + "abc123" + '"', "abc123"),
+            ("json secret", '  "client_secret": "' + "xyz" + '"', "xyz"),
+            (
+                "bare 40 char secret",
+                "key " + "wJalrXUtn" + "FEMI/K7MDENG/" + "bPxRfiCYEXAMPLEKEY" + " end",
+                "K7MDENG",
+            ),
+        ):
             with self.subTest(name):
                 out = T.redact(secret)
                 self.assertNotIn(leak, out)
                 self.assertIn("<redacted>", out)
 
     def test_redact_leaves_ordinary_commands_and_our_own_alone(self) -> None:
-        for text in ("python3 ~/.claude/hooks/economy.py", "/usr/bin/env python3 -I -c 'import sys'",
-                     "'/private/var/folders/zz/abcdefghijklmn/T/lane-tools-test-x/home/apps/lane-tools/lane-guard-hook' --format claude",
-                     '"statusMessage": "Checking checkout location"', "git status", "ls -la /usr/local/share/man/man1/something"):
+        for text in (
+            "python3 ~/.claude/hooks/economy.py",
+            "/usr/bin/env python3 -I -c 'import sys'",
+            "'/private/var/folders/zz/abcdefghijklmn/T/lane-tools-test-x/home/apps/lane-tools/lane-guard-hook' --format claude",
+            '"statusMessage": "Checking checkout location"',
+            "git status",
+            "ls -la /usr/local/share/man/man1/something",
+        ):
             with self.subTest(text):
                 self.assertEqual(T.redact(text), text)
 
@@ -2002,7 +2723,9 @@ class PlanEchoTests(World):
 # trigger the guard.  The classes below prove that is a superset of the guard's own early exit and that it never
 # changes an answer.  A fake python3 first on PATH records every call, so "Python did not start" is observable.
 
-SHELLS = [("sh", "/bin/sh")] + [(n, p) for n in ("dash", "bash", "ksh") for p in [shutil.which(n)] if p]
+SHELLS = [("sh", "/bin/sh")] + [
+    (n, p) for n in ("dash", "bash", "ksh") for p in [shutil.which(n)] if p
+]
 
 
 class Recorder:
@@ -2013,10 +2736,12 @@ class Recorder:
         self.bin.mkdir()
         self.log = root / "python-calls.log"
         self.stdin_copy = root / "python-stdin.bin"
-        script = ("#!/bin/sh\n"
-                  f"echo called >> {shlex.quote(str(self.log))}\n"
-                  f"cat > {shlex.quote(str(self.stdin_copy))}\n"
-                  "exit 0\n")
+        script = (
+            "#!/bin/sh\n"
+            f"echo called >> {shlex.quote(str(self.log))}\n"
+            f"cat > {shlex.quote(str(self.stdin_copy))}\n"
+            "exit 0\n"
+        )
         fake = self.bin / "python3"
         fake.write_text(script, encoding="utf-8")
         os.chmod(fake, 0o755)
@@ -2035,15 +2760,31 @@ class Recorder:
                 p.unlink()
 
 
-def run_bytes(argv: list, payload: bytes, env: dict, timeout: float = TIMEOUT, cwd: str | None = None) -> tuple:
-    p = subprocess.run(argv, input=payload, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       timeout=timeout)
+def run_bytes(
+    argv: list, payload: bytes, env: dict, timeout: float = TIMEOUT, cwd: str | None = None
+) -> tuple:
+    p = subprocess.run(
+        argv,
+        input=payload,
+        env=env,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+    )
     return p.returncode, p.stdout, p.stderr
 
 
-def bash_payload(command: str, tool: str = "Bash", ensure_ascii: bool = True, **extra: object) -> bytes:
-    doc = {"session_id": "t", "hook_event_name": "PreToolUse", "tool_name": tool,
-           "tool_input": {"command": command, "description": "test"}, "cwd": "/Users/jay"}
+def bash_payload(
+    command: str, tool: str = "Bash", ensure_ascii: bool = True, **extra: object
+) -> bytes:
+    doc = {
+        "session_id": "t",
+        "hook_event_name": "PreToolUse",
+        "tool_name": tool,
+        "tool_input": {"command": command, "description": "test"},
+        "cwd": "/Users/jay",
+    }
     doc.update(extra)
     return json.dumps(doc, ensure_ascii=ensure_ascii).encode("utf-8")
 
@@ -2061,9 +2802,13 @@ class GuardFactsTests(World):
         f = T.read_guard_facts()
         self.assertEqual(f.words, tuple(G._TRIGGER.pattern.split("|")))
         self.assertEqual(f.max_chars, G.MAX_COMMAND_CHARS)
-        self.assertEqual(f.shell_hints, tuple(dict.fromkeys(("bash",) + tuple(G._SHELL_TOOL_HINTS))))
+        self.assertEqual(
+            f.shell_hints, tuple(dict.fromkeys(("bash",) + tuple(G._SHELL_TOOL_HINTS)))
+        )
         self.assertEqual(f.problems, ())
-        self.assertEqual(set(f.lookalikes), {"\u0130", "\u0131", "\u212a"})        # dotted I, dotless i, Kelvin sign
+        self.assertEqual(
+            set(f.lookalikes), {"\u0130", "\u0131", "\u212a"}
+        )  # dotted I, dotless i, Kelvin sign
         self.assertEqual(T.read_guard_facts(str(SCRIPTS_DIR)), f)
 
     def test_the_text_reader_agrees_with_the_import(self) -> None:
@@ -2071,19 +2816,30 @@ class GuardFactsTests(World):
         self.assertEqual(T.read_guard_facts(self.source.scripts_dir), T.read_guard_facts())
 
     def test_nothing_above_the_basic_plane_folds_onto_a_trigger_letter(self) -> None:
-        letters = "".join(sorted({c for w in G._TRIGGER.pattern.split("|") for c in w if c.isalpha()}))
+        letters = "".join(
+            sorted({c for w in G._TRIGGER.pattern.split("|") for c in w if c.isalpha()})
+        )
         cls = re.compile("[" + letters + "]", re.IGNORECASE)
-        hits = [hex(cp) for cp in range(0x80, 0x110000) if not 0xD800 <= cp < 0xE000 and cls.fullmatch(chr(cp))]
+        hits = [
+            hex(cp)
+            for cp in range(0x80, 0x110000)
+            if not 0xD800 <= cp < 0xE000 and cls.fullmatch(chr(cp))
+        ]
         self.assertEqual(hits, [hex(ord(c)) for c in T.read_guard_facts().lookalikes])
 
     def test_the_letters_lower_can_make_from_non_ascii_are_all_known(self) -> None:
         # guard._extract lower()s the tool name; a character outside ASCII whose lower() holds a letter of a shell
         # word could complete that word without its ASCII spelling, so the Muse wrapper passes such a character on.
-        letters = "".join(sorted({c for h in T.read_guard_facts().shell_hints for c in h if c.isalpha()}))
-        hits = [hex(cp) for cp in range(0x80, 0x110000)
-                if not 0xD800 <= cp < 0xE000 and set(letters).intersection(chr(cp).lower())]
+        letters = "".join(
+            sorted({c for h in T.read_guard_facts().shell_hints for c in h if c.isalpha()})
+        )
+        hits = [
+            hex(cp)
+            for cp in range(0x80, 0x110000)
+            if not 0xD800 <= cp < 0xE000 and set(letters).intersection(chr(cp).lower())
+        ]
         self.assertEqual(hits, [hex(ord(c)) for c in T._lower_lookalikes(letters)])
-        self.assertEqual(T._lower_lookalikes(letters), ("İ",))                  # dotted capital I lowers to i
+        self.assertEqual(T._lower_lookalikes(letters), ("İ",))  # dotted capital I lowers to i
         self.assertIn("*'\"tool_name\"'*İ*) return 1 ;;", T.render_muse_wrapper("/s"))
 
     def test_a_trigger_that_is_not_plain_words_gives_no_prefilter_and_a_warning(self) -> None:
@@ -2116,20 +2872,37 @@ class GuardFactsTests(World):
                 f = T.read_guard_facts(src.scripts_dir)
                 self.assertEqual(f.words, (), f)
                 self.assertTrue(f.problems, f)
-        ok = self.make_source("fewer", guard=self.guard_with("r\"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index\"",
-                                                             "r\"clone|pull\""))
+        ok = self.make_source(
+            "fewer",
+            guard=self.guard_with(
+                'r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index"',
+                'r"clone|pull"',
+            ),
+        )
         self.assertEqual(T.read_guard_facts(ok.scripts_dir).words, ("clone", "pull"))
         gone = Path(ok.scripts_dir) / "fleet_lanes" / "guard.py"
         gone.unlink()
         self.assertEqual(T.read_guard_facts(ok.scripts_dir).words, ())
 
     def test_plan_and_apply_say_when_there_is_no_prefilter(self) -> None:
-        src = self.make_source("noprefilter", guard=self.guard_with('r"clone|worktree', 'r"clon.|worktree'))
+        src = self.make_source(
+            "noprefilter", guard=self.guard_with('r"clone|worktree', 'r"clon.|worktree')
+        )
         tp = T.plan_tools(src, self.paths)
         self.assertTrue(tp.warnings and "NO prefilter" in tp.warnings[0])
         self.assertNotIn("case $_lg_in", tp.hook_shim_text)
-        rc, out, _ = run_main("plan", "--home", str(self.home), "--source", src.scripts_dir, "--registry", src.registry,
-                              "--sha", SHA, "tools")
+        rc, out, _ = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            src.scripts_dir,
+            "--registry",
+            src.registry,
+            "--sha",
+            SHA,
+            "tools",
+        )
         self.assertEqual(rc, 0, out)
         self.assertIn("WARNING: ", out)
         res = T.apply_tools(src, self.paths, timeout=TIMEOUT, probes=False)
@@ -2148,21 +2921,32 @@ class GuardFactsTests(World):
 
     def test_the_generated_patterns_are_exactly_the_guards_words(self) -> None:
         text = T.render_hook_shim()
-        clauses = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("*") and ln.strip().endswith(") ;;")]
+        clauses = [
+            ln.strip()
+            for ln in text.splitlines()
+            if ln.strip().startswith("*") and ln.strip().endswith(") ;;")
+        ]
         words = list(G._TRIGGER.pattern.split("|"))
-        self.assertEqual(len(clauses), len(words) + 1 + 3, clauses)                # words, the \u escape, 3 lookalikes
+        self.assertEqual(
+            len(clauses), len(words) + 1 + 3, clauses
+        )  # words, the \u escape, 3 lookalikes
         for word, clause in zip(words, clauses):
             self.assertEqual(clause, T._ci_glob(word) + ") ;;")
-            self.assertNotIn(word, clause)                                         # spelled with bracket pairs, not literally
+            self.assertNotIn(word, clause)  # spelled with bracket pairs, not literally
         self.assertIn("*'\\u'*) ;;", clauses)
         self.assertEqual(T.empty_prefilter(text).count(") ;;"), 0)
         self.assertIn("*) exit 0 ;;", T.empty_prefilter(text))
-        self.assertEqual(T.empty_prefilter(T.render_hook_shim(T.GuardFacts())), T.render_hook_shim(T.GuardFacts()))
-        self.assertIn(f'-le {G.MAX_COMMAND_CHARS} ]', text)
+        self.assertEqual(
+            T.empty_prefilter(T.render_hook_shim(T.GuardFacts())),
+            T.render_hook_shim(T.GuardFacts()),
+        )
+        self.assertIn(f"-le {G.MAX_COMMAND_CHARS} ]", text)
 
     def test_the_shim_text_is_ascii_safe_to_print(self) -> None:
         text = T.render_hook_shim()
-        self.assertTrue(any(ord(c) > 127 for c in text))                           # the lookalike letters are raw bytes in the file
+        self.assertTrue(
+            any(ord(c) > 127 for c in text)
+        )  # the lookalike letters are raw bytes in the file
         printed = "\n".join(T._printable(ln) for ln in text.splitlines())
         self.assertTrue(all(ord(c) < 128 for c in printed))
         self.assertIn("<U+212A>", printed)
@@ -2172,8 +2956,14 @@ class PrefilterShimTests(World):
     """The installed hook shim, run for real, against the guard it fronts."""
 
     FORMATS = ("claude", "codex", "grok", "antigravity", "cursor", "muse")
-    SHAPE = {"claude": "claude", "codex": "claude", "grok": "claude", "antigravity": "antigravity",
-             "cursor": "cursor", "muse": "muse"}
+    SHAPE = {
+        "claude": "claude",
+        "codex": "claude",
+        "grok": "claude",
+        "antigravity": "antigravity",
+        "cursor": "cursor",
+        "muse": "muse",
+    }
 
     def setUp(self) -> None:
         super().setUp()
@@ -2188,14 +2978,18 @@ class PrefilterShimTests(World):
     def shim_env(self) -> dict:
         return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": F.HOME}
 
-    def run_shim(self, payload: bytes, *args: str, env: dict | None = None, shell: str | None = None) -> tuple:
+    def run_shim(
+        self, payload: bytes, *args: str, env: dict | None = None, shell: str | None = None
+    ) -> tuple:
         argv = ([shell] if shell else []) + [self.shim, *(args or ("--format", "claude"))]
         return run_bytes(argv, payload, env if env is not None else self.shim_env())
 
     def py_calls(self, payload: bytes, *, shell: str | None = None, env: dict | None = None) -> int:
         """How many times the fake python3 started for this payload (0 means the shell decided alone)."""
         self.rec.reset()
-        rc, out, err = self.run_shim(payload, env=env if env is not None else self.rec.env(), shell=shell)
+        rc, out, err = self.run_shim(
+            payload, env=env if env is not None else self.rec.env(), shell=shell
+        )
         self.assertEqual((rc, out), (0, b""), err)
         return self.rec.calls()
 
@@ -2220,7 +3014,7 @@ class PrefilterShimTests(World):
     # -- (a) the property: the shim never changes an answer
 
     def test_every_fixture_row_gives_the_same_bytes_through_the_shim_and_directly(self) -> None:
-        jobs = []                        # (label, payload, fmt, env, expected)
+        jobs = []  # (label, payload, fmt, env, expected)
         for fx in F.FIXTURES:
             env = self.row_env(fx)
             for fmt in self.FORMATS:
@@ -2240,7 +3034,9 @@ class PrefilterShimTests(World):
         bad = []
         for job, (label, rc, out, err) in zip(jobs, got):
             if (rc, out) != job[4]:
-                bad.append(f"{label}: shim {(rc, out[:160])} != direct {(job[4][0], job[4][1][:160])} stderr={err[:200]!r}")
+                bad.append(
+                    f"{label}: shim {(rc, out[:160])} != direct {(job[4][0], job[4][1][:160])} stderr={err[:200]!r}"
+                )
         self.assertEqual(bad[:5], [], f"{len(bad)} of {len(jobs)} differ")
         # the table really exercised both outcomes
         outcomes = {(j[4][0], bool(j[4][1])) for j in jobs}
@@ -2255,17 +3051,26 @@ class PrefilterShimTests(World):
                 with self.subTest(f"{fx.id}/{fmt}"):
                     payload = self.payload_for(fx, fmt)
                     full_env = dict(env, PATH=os.environ.get("PATH", "/usr/bin:/bin"))
-                    proc = run_bytes([sys.executable, "-m", "fleet_lanes.lane_guard_hook", "--format", fmt], payload,
-                                     full_env, cwd=str(SCRIPTS_DIR))
+                    proc = run_bytes(
+                        [sys.executable, "-m", "fleet_lanes.lane_guard_hook", "--format", fmt],
+                        payload,
+                        full_env,
+                        cwd=str(SCRIPTS_DIR),
+                    )
                     via_shim = run_bytes([self.shim, "--format", fmt], payload, full_env)
                     self.assertEqual((via_shim[0], via_shim[1]), (proc[0], proc[1]), via_shim[2])
 
     def test_a_json_escaped_trigger_word_is_still_denied(self) -> None:
         # "clone" decodes to "clone"; a prefilter that only looked at the raw text would let it through
         command = "gh repo cl\\u006fne Simple-With-Us/HogHunter /tmp/hh-verify"
-        raw = ('{"tool_name":"Bash","tool_input":{"command":"' + command + '"},"cwd":"/Users/jay"}').encode("ascii")
+        raw = (
+            '{"tool_name":"Bash","tool_input":{"command":"' + command + '"},"cwd":"/Users/jay"}'
+        ).encode("ascii")
         self.assertNotIn(b"clone", raw)
-        self.assertEqual(json.loads(raw)["tool_input"]["command"], "gh repo clone Simple-With-Us/HogHunter /tmp/hh-verify")
+        self.assertEqual(
+            json.loads(raw)["tool_input"]["command"],
+            "gh repo clone Simple-With-Us/HogHunter /tmp/hh-verify",
+        )
         rc, out, err = self.run_shim(raw, env=dict(self.shim_env(), AGENT_SEAT="CLAUDE"))
         self.assertEqual(rc, 0, err)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny", out)
@@ -2277,7 +3082,9 @@ class PrefilterShimTests(World):
                 self.assertEqual(self.py_calls(bash_payload("ls -la"), shell=shell), 0)
                 self.assertEqual(self.py_calls(bash_payload("git clone x y"), shell=shell), 1)
                 self.assertEqual(self.py_calls(bash_payload("git CLONE x y"), shell=shell), 1)
-                self.assertEqual(self.py_calls(bash_payload("echo \u212a", ensure_ascii=False), shell=shell), 1)
+                self.assertEqual(
+                    self.py_calls(bash_payload("echo \u212a", ensure_ascii=False), shell=shell), 1
+                )
                 # and the real guard behind it still denies
                 rc, out, err = self.run_shim(bash_payload(T.DENY_COMMAND), shell=shell)
                 self.assertEqual(rc, 0, err)
@@ -2298,8 +3105,10 @@ class PrefilterShimTests(World):
             out.append(("zsh-as-sh", str(link)))
         return out
 
-    SJIS_REPRO = ('{"tool_name":"Bash","tool_input":{"command":"c=あclone; gh repo ${c#あ} '
-                  'Simple-With-Us/HogHunter /tmp/hh-verify"},"cwd":"/Users/jay"}').encode("utf-8")
+    SJIS_REPRO = (
+        '{"tool_name":"Bash","tool_input":{"command":"c=あclone; gh repo ${c#あ} '
+        'Simple-With-Us/HogHunter /tmp/hh-verify"},"cwd":"/Users/jay"}'
+    ).encode()
 
     def test_a_multibyte_locale_cannot_hide_a_trigger_word(self) -> None:
         # In ja_JP.SJIS and zh_CN.GB18030 an ASCII byte can be the second byte of a character.  A shell that honours
@@ -2308,12 +3117,14 @@ class PrefilterShimTests(World):
         # locales are not installed (a bare Linux image) the shell falls back to C and this passes trivially.
         raw = self.SJIS_REPRO
         direct = self.direct(raw, "claude", dict(F.BASE_ENV, FLEET_APPS_JSON=self.source.registry))
-        self.assertIn(b"permissionDecision", direct[1])                            # the guard denies it
+        self.assertIn(b"permissionDecision", direct[1])  # the guard denies it
         for name, shell in self.shells_with_zsh_as_sh():
             for var in ("LC_ALL", "LC_CTYPE", "LANG"):
                 for locale in ("ja_JP.SJIS", "zh_CN.GB18030"):
                     with self.subTest(shell=name, var=var, locale=locale):
-                        self.assertEqual(self.py_calls(raw, shell=shell, env=self.rec.env(**{var: locale})), 1)
+                        self.assertEqual(
+                            self.py_calls(raw, shell=shell, env=self.rec.env(**{var: locale})), 1
+                        )
         for var in ("LC_ALL", "LC_CTYPE", "LANG"):
             with self.subTest(real_guard=var):
                 rc, out, err = self.run_shim(raw, env=dict(self.shim_env(), **{var: "ja_JP.SJIS"}))
@@ -2323,32 +3134,56 @@ class PrefilterShimTests(World):
     def test_python_gets_the_callers_locale_unchanged(self) -> None:
         env_log = self.tmp / "env.log"
         fake = self.rec.bin / "python3"
-        fake.write_text("#!/bin/sh\nenv > %s\ncat >/dev/null\n" % shlex.quote(str(env_log)), encoding="utf-8")
+        fake.write_text(
+            "#!/bin/sh\nenv > %s\ncat >/dev/null\n" % shlex.quote(str(env_log)), encoding="utf-8"
+        )
         os.chmod(fake, 0o755)
         for name, shell in self.shells_with_zsh_as_sh():
-            for given, line in (({"LC_ALL": "ja_JP.SJIS"}, "LC_ALL=ja_JP.SJIS"), ({"LC_ALL": ""}, "LC_ALL="),
-                                ({}, None)):
+            for given, line in (
+                ({"LC_ALL": "ja_JP.SJIS"}, "LC_ALL=ja_JP.SJIS"),
+                ({"LC_ALL": ""}, "LC_ALL="),
+                ({}, None),
+            ):
                 with self.subTest(shell=name, given=given):
                     if env_log.exists():
                         env_log.unlink()
-                    self.run_shim(bash_payload("git clone x y"), env=self.rec.env(LANG="ja_JP.SJIS", **given), shell=shell)
+                    self.run_shim(
+                        bash_payload("git clone x y"),
+                        env=self.rec.env(LANG="ja_JP.SJIS", **given),
+                        shell=shell,
+                    )
                     text = env_log.read_text()
-                    self.assertEqual([ln for ln in text.splitlines() if ln.startswith("LC_ALL=")],
-                                     [line] if line is not None else [])
+                    self.assertEqual(
+                        [ln for ln in text.splitlines() if ln.startswith("LC_ALL=")],
+                        [line] if line is not None else [],
+                    )
                     self.assertIn("LANG=ja_JP.SJIS", text.splitlines())
                     self.assertNotIn("_lg_lc", text)
 
     # -- (b) a benign payload never starts Python
 
     def test_a_benign_payload_exits_without_starting_python(self) -> None:
-        for command in ("ls -la", "git status", "npm test", "echo hello && pwd", "cat README.md",
-                        "git commit -m 'fix the thing' && git push origin HEAD", "python3 -m unittest discover",
-                        "rm -rf node_modules .next", "caf\u00e9 \u2014 na\u00efve \u65e5\u672c\u8a9e"):
+        for command in (
+            "ls -la",
+            "git status",
+            "npm test",
+            "echo hello && pwd",
+            "cat README.md",
+            "git commit -m 'fix the thing' && git push origin HEAD",
+            "python3 -m unittest discover",
+            "rm -rf node_modules .next",
+            "caf\u00e9 \u2014 na\u00efve \u65e5\u672c\u8a9e",
+        ):
             with self.subTest(command):
                 self.assertEqual(self.py_calls(bash_payload(command, ensure_ascii=False)), 0)
                 for locale in ("C", "en_US.UTF-8", "ja_JP.SJIS", "zh_CN.GB18030"):
-                    self.assertEqual(self.py_calls(bash_payload(command, ensure_ascii=False),
-                                                   env=self.rec.env(LC_ALL=locale)), 0)
+                    self.assertEqual(
+                        self.py_calls(
+                            bash_payload(command, ensure_ascii=False),
+                            env=self.rec.env(LC_ALL=locale),
+                        ),
+                        0,
+                    )
         for raw in (b"", b"   ", b"\n", b"not json", b"{", b"null", b"[]", b'{"tool_name":"Bash"}'):
             with self.subTest(raw=raw):
                 self.assertEqual(self.py_calls(raw), 0)
@@ -2361,7 +3196,7 @@ class PrefilterShimTests(World):
 
     def test_a_benign_escape_is_not_a_reason_to_start_python(self) -> None:
         # \n, \t and \" are JSON escapes that cannot spell a letter
-        doc = json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo \"a\"\n\tls\\"}})
+        doc = json.dumps({"tool_name": "Bash", "tool_input": {"command": 'echo "a"\n\tls\\'}})
         self.assertIn("\\n", doc)
         self.assertNotIn("\\u", doc)
         self.assertEqual(self.py_calls(doc.encode()), 0)
@@ -2370,21 +3205,32 @@ class PrefilterShimTests(World):
 
     def test_each_trigger_word_starts_python_in_any_letter_case(self) -> None:
         for word in G._TRIGGER.pattern.split("|"):
-            for variant in (word, word.upper(), word.capitalize(), "".join(c.upper() if i % 2 else c for i, c in enumerate(word))):
+            for variant in (
+                word,
+                word.upper(),
+                word.capitalize(),
+                "".join(c.upper() if i % 2 else c for i, c in enumerate(word)),
+            ):
                 with self.subTest(variant):
                     self.assertEqual(self.py_calls(bash_payload(f"echo {variant}")), 1)
                     # also when the word is only in another field of the payload (a superset is fine)
                     self.assertEqual(self.py_calls(bash_payload("ls", cwd=f"/x/{variant}")), 1)
 
     def test_a_json_u_escape_starts_python(self) -> None:
-        for raw in (b'{"tool_input":{"command":"gh repo cl\\u006fne a b"}}', b'{"a":"\\u0063lone"}', b'\\u'):
+        for raw in (
+            b'{"tool_input":{"command":"gh repo cl\\u006fne a b"}}',
+            b'{"a":"\\u0063lone"}',
+            b"\\u",
+        ):
             with self.subTest(raw=raw):
                 self.assertEqual(self.py_calls(raw), 1)
 
     def test_the_non_ascii_letters_that_fold_onto_a_trigger_letter_start_python(self) -> None:
         for ch in T.read_guard_facts().lookalikes:
             word = "wor" + ch + "tree" if ch == "\u212a" else "arch" + ch + "ve"
-            self.assertIsNotNone(G._TRIGGER.search(word), "the guard's own trigger matches this spelling")
+            self.assertIsNotNone(
+                G._TRIGGER.search(word), "the guard's own trigger matches this spelling"
+            )
             payload = bash_payload(f"git {word} add x", ensure_ascii=False)
             self.assertNotIn(b"\\u", payload)
             for locale in ("C", "en_US.UTF-8", "tr_TR.UTF-8"):
@@ -2437,22 +3283,31 @@ class PrefilterShimTests(World):
     def test_the_arguments_reach_python_too(self) -> None:
         argv_log = self.tmp / "argv.log"
         fake = self.rec.bin / "python3"
-        fake.write_text("#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > %s\ncat >/dev/null\n" % shlex.quote(str(argv_log)),
-                        encoding="utf-8")
+        fake.write_text(
+            '#!/bin/sh\nfor a in "$@"; do echo "$a"; done > %s\ncat >/dev/null\n'
+            % shlex.quote(str(argv_log)),
+            encoding="utf-8",
+        )
         os.chmod(fake, 0o755)
-        self.run_shim(bash_payload("git clone a b"), "--format", "cursor", "--exit2", env=self.rec.env())
+        self.run_shim(
+            bash_payload("git clone a b"), "--format", "cursor", "--exit2", env=self.rec.env()
+        )
         self.assertEqual(argv_log.read_text().splitlines()[-3:], ["--format", "cursor", "--exit2"])
 
     def test_the_arguments_are_not_needed_to_decide(self) -> None:
         # an unknown or missing flag never changes the early exit
         self.assertEqual(self.py_calls(bash_payload("ls")), 0)
-        rc, out, _ = self.run_shim(bash_payload("ls"), "--bogus", "--format", "nope", env=self.rec.env())
+        rc, out, _ = self.run_shim(
+            bash_payload("ls"), "--bogus", "--format", "nope", env=self.rec.env()
+        )
         self.assertEqual((rc, out), (0, b""))
 
     def test_the_shell_variable_does_not_leak_into_pythons_environment(self) -> None:
         env_log = self.tmp / "env.log"
         fake = self.rec.bin / "python3"
-        fake.write_text("#!/bin/sh\nenv > %s\ncat >/dev/null\n" % shlex.quote(str(env_log)), encoding="utf-8")
+        fake.write_text(
+            "#!/bin/sh\nenv > %s\ncat >/dev/null\n" % shlex.quote(str(env_log)), encoding="utf-8"
+        )
         os.chmod(fake, 0o755)
         self.run_shim(bash_payload("git clone " + "a" * 5000), env=self.rec.env())
         self.assertNotIn("_lg_in", env_log.read_text())
@@ -2463,10 +3318,24 @@ class PrefilterShimTests(World):
     # -- (d) malformed input still ends in exit 0 with no output
 
     def test_malformed_input_is_an_allow_through_the_real_guard(self) -> None:
-        cases = [b"", b"not json clone", b"{clone", b'{"tool_name": "Bash", "tool_input": {"command": "clone', b"\xff\xfe\x00clone",
-                 b"null", b"[]", b'"clone"', b"12 clone", b'{"tool_input": "clone"}', b'{"tool_name": 5, "command": "git clone x"}',
-                 b'{"tool_name":"Bash","tool_input":{"command":["git","clone"]}}', b"clone\x00 \x00",
-                 json.dumps({"tool_name": "Bash", "tool_input": {"command": "x" * 400_000 + " clone"}}).encode()]
+        cases = [
+            b"",
+            b"not json clone",
+            b"{clone",
+            b'{"tool_name": "Bash", "tool_input": {"command": "clone',
+            b"\xff\xfe\x00clone",
+            b"null",
+            b"[]",
+            b'"clone"',
+            b"12 clone",
+            b'{"tool_input": "clone"}',
+            b'{"tool_name": 5, "command": "git clone x"}',
+            b'{"tool_name":"Bash","tool_input":{"command":["git","clone"]}}',
+            b"clone\x00 \x00",
+            json.dumps(
+                {"tool_name": "Bash", "tool_input": {"command": "x" * 400_000 + " clone"}}
+            ).encode(),
+        ]
         for raw in cases:
             with self.subTest(raw=raw[:40]):
                 rc, out, err = self.run_shim(raw)
@@ -2490,8 +3359,10 @@ class PrefilterShimTests(World):
 
         benign = timed(bash_payload("ls -la"), 5)
         python = timed(bash_payload("git clone https://example.com/x.git y"), 3)
-        sys.stderr.write(f"\nlatency (recorded, not asserted): benign Bash call {benign * 1000:.0f} ms through the shell "
-                         f"prefilter, a call that reaches Python {python * 1000:.0f} ms\n")
+        sys.stderr.write(
+            f"\nlatency (recorded, not asserted): benign Bash call {benign * 1000:.0f} ms through the shell "
+            f"prefilter, a call that reaches Python {python * 1000:.0f} ms\n"
+        )
         self.assertGreater(benign, 0)
 
     # -- verify stays honest
@@ -2509,10 +3380,18 @@ class PrefilterShimTests(World):
             with self.subTest(key):
                 checks = self.verify(key)
                 self.assertFails(checks, "no output")
-                self.assertTrue(any(c.name == "deny/login-PATH" and c.status == "FAIL" for c in checks))
+                self.assertTrue(
+                    any(c.name == "deny/login-PATH" and c.status == "FAIL" for c in checks)
+                )
         # Muse Code's wrapper runs the fleet hook now, not this shim, so this edit leaves it passing (its own tests
         # break the fleet shim instead: MuseFleetGuardTests)
-        self.assertAllPass([c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL) if c.status != "SKIP"])
+        self.assertAllPass(
+            [
+                c
+                for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+                if c.status != "SKIP"
+            ]
+        )
         # and verify tools sees the edit twice: the digest and the shim text
         tools = T.verify_tools(self.paths, timeout=TIMEOUT)
         self.assertFails(tools, "differs")
@@ -2525,7 +3404,12 @@ class PrefilterShimTests(World):
     def test_verify_fails_when_one_trigger_word_is_missing_from_the_patterns(self) -> None:
         shim = Path(self.shim)
         text = shim.read_text(encoding="utf-8")
-        cut = "\n".join(ln for ln in text.splitlines() if ln.strip() != T._ci_glob("worktree") + ") ;;") + "\n"
+        cut = (
+            "\n".join(
+                ln for ln in text.splitlines() if ln.strip() != T._ci_glob("worktree") + ") ;;"
+            )
+            + "\n"
+        )
         self.assertNotEqual(cut, text)
         shim.write_text(cut, encoding="utf-8")
         os.chmod(shim, 0o755)
@@ -2543,6 +3427,7 @@ class PrefilterShimTests(World):
 
 # --------------------------------------------------------------------------- Muse Code: the plugin bundle
 
+
 class MuseBundleTests(World):
     def test_apply_tools_writes_the_bundle_and_the_seat_shim(self) -> None:
         res = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, minimal_path=False)
@@ -2558,8 +3443,15 @@ class MuseBundleTests(World):
         self.assertEqual(seat.read_text(), T.render_muse_seat())
         self.assertTrue(os.access(wrapper, os.X_OK) and os.access(seat, os.X_OK))
         self.assertEqual(stat.S_IMODE(manifest.stat().st_mode), 0o644)
-        self.assertEqual((self.paths.muse_bundle, self.paths.muse_manifest, self.paths.muse_wrapper, self.paths.muse_seat),
-                         (str(s / "muse-plugin" / "fleet-lane-guard"), str(manifest), str(wrapper), str(seat)))
+        self.assertEqual(
+            (
+                self.paths.muse_bundle,
+                self.paths.muse_manifest,
+                self.paths.muse_wrapper,
+                self.paths.muse_seat,
+            ),
+            (str(s / "muse-plugin" / "fleet-lane-guard"), str(manifest), str(wrapper), str(seat)),
+        )
         # they are part of the digest, like every other file in the stable dir
         ver = T.parse_version((s / "VERSION").read_text())
         files = T.read_tree(str(s))
@@ -2567,9 +3459,13 @@ class MuseBundleTests(World):
         self.assertEqual(ver["tree"], T.tree_digest(files))
         self.assertIn("muse-seat", files)
         self.assertIn("muse-plugin/fleet-lane-guard/hooks/lane-guard.sh", files)
-        self.assertEqual(sorted(p.name for p in s.parent.iterdir()), ["lane", "lane-tools"])    # no stage dir left over
+        self.assertEqual(
+            sorted(p.name for p in s.parent.iterdir()), ["lane", "lane-tools"]
+        )  # no stage dir left over
 
-    def test_a_second_apply_is_unchanged_and_a_changed_stable_path_is_not_a_foreign_dir(self) -> None:
+    def test_a_second_apply_is_unchanged_and_a_changed_stable_path_is_not_a_foreign_dir(
+        self,
+    ) -> None:
         self.install(())
         res = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False)
         self.assertEqual(res.status, "unchanged", res)
@@ -2582,11 +3478,17 @@ class MuseBundleTests(World):
         for path in (self.paths.muse_seat, self.paths.muse_wrapper):
             with self.subTest(path):
                 os.chmod(path, 0o644)
-                self.assertFails([c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)], "not executable")
+                self.assertFails(
+                    [c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)],
+                    "not executable",
+                )
                 res = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False)
                 self.assertEqual(res.status, "installed", res)
                 self.assertTrue(os.access(path, os.X_OK))
-                self.assertEqual(T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False).status, "unchanged")
+                self.assertEqual(
+                    T.apply_tools(self.source, self.paths, timeout=TIMEOUT, probes=False).status,
+                    "unchanged",
+                )
 
     def test_the_manifest_has_the_shape_muse_validated(self) -> None:
         doc = json.loads(T.render_muse_manifest("/stable dir/lane-tools"))
@@ -2595,10 +3497,16 @@ class MuseBundleTests(World):
         hooks = doc["capabilities"]["hooks"]
         self.assertEqual(len(hooks), 1)
         hook = hooks[0]
-        self.assertEqual((hook["id"], hook["event"], hook["timeoutMs"]), ("lane-guard", "PreToolUse", T.MUSE_HOOK_TIMEOUT_MS))
+        self.assertEqual(
+            (hook["id"], hook["event"], hook["timeoutMs"]),
+            ("lane-guard", "PreToolUse", T.MUSE_HOOK_TIMEOUT_MS),
+        )
         self.assertEqual(T.MUSE_HOOK_TIMEOUT_MS, 15000)
-        self.assertNotIn("matcher", hook)                                          # Muse rejects it
-        self.assertEqual(hook["command"], ["/bin/sh", "/stable dir/lane-tools/muse-plugin/fleet-lane-guard/hooks/lane-guard.sh"])
+        self.assertNotIn("matcher", hook)  # Muse rejects it
+        self.assertEqual(
+            hook["command"],
+            ["/bin/sh", "/stable dir/lane-tools/muse-plugin/fleet-lane-guard/hooks/lane-guard.sh"],
+        )
         self.assertTrue(all(os.path.isabs(a) for a in hook["command"]))
         self.assertEqual(T.muse_hook_argv("/stable dir/lane-tools"), hook["command"])
         for key in ("skills", "commands", "mcpServers", "reminders"):
@@ -2619,8 +3527,13 @@ class MuseBundleTests(World):
         if not REAL_MUSE:
             self.skipTest("muse is not on PATH")
         self.install(())
-        with mock.patch.dict(os.environ, {"PATH": os.path.dirname(REAL_MUSE) + os.pathsep + os.environ.get("PATH", "")}):
-            checks = {c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)}
+        with mock.patch.dict(
+            os.environ,
+            {"PATH": os.path.dirname(REAL_MUSE) + os.pathsep + os.environ.get("PATH", "")},
+        ):
+            checks = {
+                c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+            }
         self.assertEqual(checks["muse validate"].status, "PASS", checks["muse validate"].line())
 
 
@@ -2642,17 +3555,25 @@ def muse_shapes() -> tuple:
         "tool_name-null-tab": '{"tool_name":\tnull, %s, "cwd": "/"}' % inp,
         "tool_name-null-newline": '{\n  "tool_name":\n    null,\n  %s,\n  "cwd": "/"\n}' % inp,
         "toolName-null": '{"toolName": null, %s, "cwd": "/"}' % inp,
-        "tool_name-null+toolName-read": '{"tool_name": null, "toolName": "read", %s, "cwd": "/"}' % inp,
-        "toolName-read+tool_name-null": '{"toolName": "read", "tool_name": null, %s, "cwd": "/"}' % inp,
-        "nested-tool_name-no-top-key": '{"tool_input": {"command": %s, "tool_name": "x"}, "cwd": "/"}' % cmd,
+        "tool_name-null+toolName-read": '{"tool_name": null, "toolName": "read", %s, "cwd": "/"}'
+        % inp,
+        "toolName-read+tool_name-null": '{"toolName": "read", "tool_name": null, %s, "cwd": "/"}'
+        % inp,
+        "nested-tool_name-no-top-key": '{"tool_input": {"command": %s, "tool_name": "x"}, "cwd": "/"}'
+        % cmd,
         "nested-tool_name-first": '{"meta": {"tool_name": "read"}, %s, "cwd": "/"}' % inp,
         "tool_name-as-a-value": '{%s, "cwd": "/", "source": "tool_name"}' % inp,
-        "cursor-shape+toolName-value": ('{"hook_event_name": "beforeShellExecution", "command": %s, "cwd": "/", '
-                                        '"workspace_roots": ["/"], "meta": {"label": "toolName"}}' % cmd),
+        "cursor-shape+toolName-value": (
+            '{"hook_event_name": "beforeShellExecution", "command": %s, "cwd": "/", '
+            '"workspace_roots": ["/"], "meta": {"label": "toolName"}}' % cmd
+        ),
         "bash-before-key-only": '{"cwd": "/bash", "tool_name": null, %s}' % inp,
-        "toolName-Bash+nested-tool_name-read": '{"meta": {"tool_name": "read"}, "toolName": "Bash", %s, "cwd": "/"}' % inp,
-        "duplicate-tool_name-last-Bash": '{"tool_name": "read", %s, "cwd": "/", "tool_name": "Bash"}' % inp,
-        "duplicate-tool_name-last-null": '{"tool_name": "read", %s, "cwd": "/", "tool_name": null}' % inp,
+        "toolName-Bash+nested-tool_name-read": '{"meta": {"tool_name": "read"}, "toolName": "Bash", %s, "cwd": "/"}'
+        % inp,
+        "duplicate-tool_name-last-Bash": '{"tool_name": "read", %s, "cwd": "/", "tool_name": "Bash"}'
+        % inp,
+        "duplicate-tool_name-last-null": '{"tool_name": "read", %s, "cwd": "/", "tool_name": null}'
+        % inp,
         "escaped-quote-in-a-key": '{"x\\"tool_name": "read", %s, "cwd": "/"}' % inp,
         "space-before-colon-Bash": '{"tool_name" : "Bash", %s, "cwd": "/"}' % inp,
         "escaped-quote-then-bash": '{"tool_name": "x\\"bash", %s, "cwd": "/"}' % inp,
@@ -2660,24 +3581,43 @@ def muse_shapes() -> tuple:
         "json-escaped-shell-word": '{"tool_name": "\\u0062ash", %s, "cwd": "/"}' % inp,
     }
     fast = {
-        "read-compact": '{"hook_event_name":"PreToolUse","tool_name":"read","tool_input":{"command":%s},"cwd":"/"}' % cmd,
-        "read-default-separators": json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "cwd": "/",
-                                               "permission_mode": "default", "tool_name": "read",
-                                               "tool_input": {"command": T.DENY_COMMAND}}),
-        "read-indented": json.dumps({"hook_event_name": "PreToolUse", "tool_name": "read",
-                                     "tool_input": {"command": T.DENY_COMMAND}}, indent=2),
+        "read-compact": '{"hook_event_name":"PreToolUse","tool_name":"read","tool_input":{"command":%s},"cwd":"/"}'
+        % cmd,
+        "read-default-separators": json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "s",
+                "cwd": "/",
+                "permission_mode": "default",
+                "tool_name": "read",
+                "tool_input": {"command": T.DENY_COMMAND},
+            }
+        ),
+        "read-indented": json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "read",
+                "tool_input": {"command": T.DENY_COMMAND},
+            },
+            indent=2,
+        ),
         "toolName-read": '{"toolName":"read","toolInput":{"command":%s},"cwd":"/"}' % cmd,
     }
     either = {
-        "write-whose-content-says-bash": json.dumps({"tool_name": "write", "tool_input": {
-            "file_path": "/x", "content": "run it in bash: " + T.DENY_COMMAND}, "cwd": "/"}),
+        "write-whose-content-says-bash": json.dumps(
+            {
+                "tool_name": "write",
+                "tool_input": {"file_path": "/x", "content": "run it in bash: " + T.DENY_COMMAND},
+                "cwd": "/",
+            }
+        ),
         "tool_name-number": '{"tool_name": 5, %s, "cwd": "/"}' % inp,
         "space-before-colon-read": '{"tool_name" : "read", %s, "cwd": "/"}' % inp,
         "tool_name-after-a-nested-object": '{%s, "tool_name": "read", "cwd": "/"}' % inp,
         "dotted-capital-I": '{"tool_name": "termİnal", %s, "cwd": "/"}' % inp,
         "top-level-array": '[{"tool_name": "Bash", %s, "cwd": "/"}]' % inp,
     }
-    enc = lambda d: {k: v.encode("utf-8") for k, v in d.items()}                    # noqa: E731
+    enc = lambda d: {k: v.encode("utf-8") for k, v in d.items()}
     return enc(shell), enc(fast), enc(either)
 
 
@@ -2691,18 +3631,23 @@ class MuseWrapperTests(World):
         self.calls = self.tmp / "guard-calls.log"
         self.stdin_copy = self.tmp / "guard-stdin.bin"
         fake = self.stable / "fleet-guard-hook"
-        fake.write_text("#!/bin/sh\n"
-                        f"echo \"$@\" >> {shlex.quote(str(self.calls))}\n"
-                        f"cat > {shlex.quote(str(self.stdin_copy))}\n"
-                        "echo '{\"fake\": \"deny\"}'\n"
-                        "exit 3\n", encoding="utf-8")
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'echo "$@" >> {shlex.quote(str(self.calls))}\n'
+            f"cat > {shlex.quote(str(self.stdin_copy))}\n"
+            'echo \'{"fake": "deny"}\'\n'
+            "exit 3\n",
+            encoding="utf-8",
+        )
         os.chmod(fake, 0o755)
         self.wrapper = self.tmp / "lane-guard.sh"
         self.wrapper.write_text(T.render_muse_wrapper(str(self.stable)), encoding="utf-8")
         os.chmod(self.wrapper, 0o755)
 
     def run_wrapper(self, payload: bytes, env: dict | None = None) -> tuple:
-        res = T.run_argv(["/bin/sh", str(self.wrapper)], payload, {} if env is None else env, TIMEOUT, cwd="/")
+        res = T.run_argv(
+            ["/bin/sh", str(self.wrapper)], payload, {} if env is None else env, TIMEOUT, cwd="/"
+        )
         return res.returncode, res.stdout
 
     def reached(self, payload: bytes) -> bool:
@@ -2710,19 +3655,27 @@ class MuseWrapperTests(World):
             if p.exists():
                 p.unlink()
         rc, out = self.run_wrapper(payload)
-        self.assertEqual(rc, 0)                                                  # always: a hook failure is never a block
+        self.assertEqual(rc, 0)  # always: a hook failure is never a block
         reached = self.calls.exists()
         if reached:
             self.assertEqual(self.calls.read_text().strip(), "--format muse")
             self.assertEqual(self.stdin_copy.read_bytes(), payload)
-            self.assertEqual(out, b'{"fake": "deny"}\n')                         # its stdout, passed through
+            self.assertEqual(out, b'{"fake": "deny"}\n')  # its stdout, passed through
         else:
             self.assertEqual(out, b"")
         return reached
 
     def payload(self, tool: str, command: str = "ls") -> bytes:
-        return json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "cwd": "/", "permission_mode": "default",
-                           "tool_name": tool, "tool_input": {"command": command, "description": "d"}}).encode()
+        return json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "s",
+                "cwd": "/",
+                "permission_mode": "default",
+                "tool_name": tool,
+                "tool_input": {"command": command, "description": "d"},
+            }
+        ).encode()
 
     def test_shell_tool_calls_reach_the_guard_in_any_letter_case(self) -> None:
         for tool in ("bash", "Bash", "BASH", "bAsH"):
@@ -2735,9 +3688,20 @@ class MuseWrapperTests(World):
                 self.assertTrue(self.reached(self.payload(tool)))
 
     def test_tools_that_are_not_shell_tools_exit_before_the_guard(self) -> None:
-        for tool in ("read", "write", "edit", "grep", "glob", "web_fetch", "task", "mcp__thing__lookup"):
+        for tool in (
+            "read",
+            "write",
+            "edit",
+            "grep",
+            "glob",
+            "web_fetch",
+            "task",
+            "mcp__thing__lookup",
+        ):
             with self.subTest(tool):
-                self.assertFalse(self.reached(self.payload(tool, command="git clone https://example.com/a b")))
+                self.assertFalse(
+                    self.reached(self.payload(tool, command="git clone https://example.com/a b"))
+                )
 
     def test_the_tool_filter_is_a_superset_not_a_parse(self) -> None:
         # the word is looked for after the tool_name key anywhere in the payload, so a non-shell tool whose input
@@ -2779,20 +3743,38 @@ class MuseWrapperTests(World):
                     self.assertEqual(self.calls.exists(), label in shell, res.stdout)
 
     def test_a_lookalike_letter_in_the_tool_name_reaches_the_guard(self) -> None:
-        self.assertTrue(self.reached('{"tool_name":"termİnal","tool_input":{"command":"ls"}}'.encode("utf-8")))
+        self.assertTrue(
+            self.reached('{"tool_name":"termİnal","tool_input":{"command":"ls"}}'.encode())
+        )
 
     def test_a_big_payload_never_makes_the_wrapper_slow(self) -> None:
         # Only case globs scan the whole payload; they stay linear in every shell.  `${x#*key}` and `${x%%key*}` do
         # not (dash took 4 s on a 20 KB payload, bash 3.2 about 2 s on 256 KB), which is why the wrapper never runs
         # them on a key that is not in its first MUSE_KEY_WINDOW bytes.  A hook that times out is never a deny.
-        content = ('a\\n{"b": [1]}\\\\ bash ' * 14000)[:256 * 1024]
+        content = ('a\\n{"b": [1]}\\\\ bash ' * 14000)[: 256 * 1024]
         shapes = {
-            "key-first": (json.dumps({"tool_name": "read", "tool_input": {"content": content}}), True),
-            "key-after-the-content": (json.dumps({"tool_input": {"content": content}, "tool_name": "read"}), True),
-            "key-after-a-long-flat-value": (json.dumps({"cwd": "x" * (256 * 1024), "tool_name": "read"}), True),
+            "key-first": (
+                json.dumps({"tool_name": "read", "tool_input": {"content": content}}),
+                True,
+            ),
+            "key-after-the-content": (
+                json.dumps({"tool_input": {"content": content}, "tool_name": "read"}),
+                True,
+            ),
+            "key-after-a-long-flat-value": (
+                json.dumps({"cwd": "x" * (256 * 1024), "tool_name": "read"}),
+                True,
+            ),
             "no-key": (json.dumps({"tool_input": {"content": content}}), True),
-            "key-first-no-shell-word": (json.dumps({"tool_name": "read", "tool_input": {
-                "content": content.replace("bash", "bush")}}), False),
+            "key-first-no-shell-word": (
+                json.dumps(
+                    {
+                        "tool_name": "read",
+                        "tool_input": {"content": content.replace("bash", "bush")},
+                    }
+                ),
+                False,
+            ),
         }
         for name, sh in SHELLS:
             for label, (raw, reaches) in shapes.items():
@@ -2804,14 +3786,16 @@ class MuseWrapperTests(World):
                     res = T.run_argv([sh, str(self.wrapper)], raw.encode(), {}, TIMEOUT, cwd="/")
                     took = time.perf_counter() - t0
                     self.assertFalse(res.timed_out)
-                    self.assertEqual((res.returncode, self.calls.exists()), (0, reaches), res.stderr)
-                    self.assertLess(took, 20.0, f"{took:.1f}s")                    # the quadratic forms take minutes
+                    self.assertEqual(
+                        (res.returncode, self.calls.exists()), (0, reaches), res.stderr
+                    )
+                    self.assertLess(took, 20.0, f"{took:.1f}s")  # the quadratic forms take minutes
                     sys.stderr.write(f"\n{name} {label}: {took * 1000:.0f} ms (recorded)")
 
     def test_a_multibyte_locale_cannot_hide_a_shell_word(self) -> None:
         # In ja_JP.SJIS and zh_CN.GB18030 an ASCII byte can be the second byte of a character, so a shell that
         # honours the locale would read the last byte of a UTF-8 character and the next letter as one character.
-        raw = '{"tool_name":"あbash","tool_input":{"command":"ls"}}'.encode("utf-8")
+        raw = '{"tool_name":"あbash","tool_input":{"command":"ls"}}'.encode()
         for var in ("LC_ALL", "LC_CTYPE", "LANG"):
             for locale in ("ja_JP.SJIS", "zh_CN.GB18030"):
                 with self.subTest(var=var, locale=locale):
@@ -2824,9 +3808,14 @@ class MuseWrapperTests(World):
 
     def test_the_guard_gets_the_callers_locale_unchanged(self) -> None:
         env_log = self.tmp / "guard-env.log"
-        (self.stable / "fleet-guard-hook").write_text(f"#!/bin/sh\nenv > {shlex.quote(str(env_log))}\ncat >/dev/null\n",
-                                                     encoding="utf-8")
-        for given, line in (({"LC_ALL": "ja_JP.SJIS"}, "LC_ALL=ja_JP.SJIS"), ({"LC_ALL": ""}, "LC_ALL="), ({}, None)):
+        (self.stable / "fleet-guard-hook").write_text(
+            f"#!/bin/sh\nenv > {shlex.quote(str(env_log))}\ncat >/dev/null\n", encoding="utf-8"
+        )
+        for given, line in (
+            ({"LC_ALL": "ja_JP.SJIS"}, "LC_ALL=ja_JP.SJIS"),
+            ({"LC_ALL": ""}, "LC_ALL="),
+            ({}, None),
+        ):
             with self.subTest(given=given):
                 if env_log.exists():
                     env_log.unlink()
@@ -2836,7 +3825,7 @@ class MuseWrapperTests(World):
 
     def test_input_that_names_no_tool_is_passed_on_and_the_guard_decides(self) -> None:
         for raw in (b"", b"\xff\xfe", b"garbage"):
-            self.assertTrue(self.reached(raw))                                     # exit 0 either way (asserted inside)
+            self.assertTrue(self.reached(raw))  # exit 0 either way (asserted inside)
 
     def test_a_missing_guard_is_an_allow(self) -> None:
         (self.stable / "fleet-guard-hook").unlink()
@@ -2854,7 +3843,9 @@ class MuseWrapperTests(World):
         self.assertEqual((rc, out), (0, b'{"fake": "deny"}\n'))
 
     def test_without_hint_facts_every_call_reaches_the_guard(self) -> None:
-        self.wrapper.write_text(T.render_muse_wrapper(str(self.stable), T.GuardFacts()), encoding="utf-8")
+        self.wrapper.write_text(
+            T.render_muse_wrapper(str(self.stable), T.GuardFacts()), encoding="utf-8"
+        )
         self.assertTrue(self.reached(self.payload("read")))
         self.assertNotIn("case $_lg_in", T.render_muse_wrapper(str(self.stable), T.GuardFacts()))
 
@@ -2878,8 +3869,16 @@ class MuseWrapperRealGuardTests(World):
         return out.getvalue().encode("utf-8")
 
     def via_wrapper(self, raw: bytes, env: dict | None = None) -> bytes:
-        res = T.run_argv(T.muse_hook_argv(self.paths.stable), raw, self.hook_env if env is None else env, TIMEOUT, cwd="/")
-        self.assertEqual((res.returncode, res.timed_out, res.error or ""), (0, False, ""), res.stderr)
+        res = T.run_argv(
+            T.muse_hook_argv(self.paths.stable),
+            raw,
+            self.hook_env if env is None else env,
+            TIMEOUT,
+            cwd="/",
+        )
+        self.assertEqual(
+            (res.returncode, res.timed_out, res.error or ""), (0, False, ""), res.stderr
+        )
         return res.stdout
 
     def test_the_wrapper_never_changes_the_guards_answer(self) -> None:
@@ -2897,12 +3896,16 @@ class MuseWrapperRealGuardTests(World):
             self.assertIn(b'"permissionDecision": "deny"', self.direct(raw), label)
 
     def test_a_multibyte_locale_changes_nothing(self) -> None:
-        raw = '{"tool_name":"あbash","tool_input":{"command":%s},"cwd":"/"}' % json.dumps(T.DENY_COMMAND)
+        raw = '{"tool_name":"あbash","tool_input":{"command":%s},"cwd":"/"}' % json.dumps(
+            T.DENY_COMMAND
+        )
         want = self.direct(raw.encode("utf-8"))
         self.assertTrue(want)
         for locale in ("ja_JP.SJIS", "zh_CN.GB18030"):
             with self.subTest(locale):
-                self.assertEqual(self.via_wrapper(raw.encode("utf-8"), dict(self.hook_env, LC_ALL=locale)), want)
+                self.assertEqual(
+                    self.via_wrapper(raw.encode("utf-8"), dict(self.hook_env, LC_ALL=locale)), want
+                )
 
 
 class MuseSeatTests(World):
@@ -2913,26 +3916,41 @@ class MuseSeatTests(World):
         self.fakebin = self.tmp / "muse-bin"
         self.fakebin.mkdir()
         fake = self.fakebin / "muse"
-        fake.write_text("#!/bin/sh\n"
-                        "echo \"seat=$AGENT_SEAT tag=$AGENT_TAG argc=$#\"\n"
-                        "for a in \"$@\"; do echo \"arg=[$a]\"; done\n", encoding="utf-8")
+        fake.write_text(
+            "#!/bin/sh\n"
+            'echo "seat=$AGENT_SEAT tag=$AGENT_TAG argc=$#"\n'
+            'for a in "$@"; do echo "arg=[$a]"; done\n',
+            encoding="utf-8",
+        )
         os.chmod(fake, 0o755)
         self.emptybin = self.tmp / "empty-bin"
         self.emptybin.mkdir()
 
-    def run_seat(self, *args: str, path: str | None = None, extra: dict | None = None, via: str | None = None) -> tuple:
-        env = {"PATH": path if path is not None else f"{self.fakebin}:/usr/bin:/bin", "HOME": str(self.home)}
+    def run_seat(
+        self, *args: str, path: str | None = None, extra: dict | None = None, via: str | None = None
+    ) -> tuple:
+        env = {
+            "PATH": path if path is not None else f"{self.fakebin}:/usr/bin:/bin",
+            "HOME": str(self.home),
+        }
         env.update(extra or {})
-        p = subprocess.run([via or self.seat, *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           timeout=TIMEOUT)
+        p = subprocess.run(
+            [via or self.seat, *args],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=TIMEOUT,
+        )
         return p.returncode, p.stdout.decode(), p.stderr.decode()
 
     def test_it_sets_the_seat_and_passes_every_argument_through(self) -> None:
-        rc, out, err = self.run_seat("--model", "x y", "", "-p", "it's \"quoted\"")
+        rc, out, err = self.run_seat("--model", "x y", "", "-p", 'it\'s "quoted"')
         self.assertEqual((rc, err), (0, ""), out)
         lines = out.splitlines()
         self.assertEqual(lines[0], "seat=MC tag=MC argc=5")
-        self.assertEqual(lines[1:], ["arg=[--model]", "arg=[x y]", "arg=[]", "arg=[-p]", "arg=[it's \"quoted\"]"])
+        self.assertEqual(
+            lines[1:], ["arg=[--model]", "arg=[x y]", "arg=[]", "arg=[-p]", 'arg=[it\'s "quoted"]']
+        )
 
     def test_it_replaces_a_seat_that_was_already_set(self) -> None:
         rc, out, _ = self.run_seat(extra={"AGENT_SEAT": "CLAUDE", "AGENT_TAG": "CLAUDE"})
@@ -2968,7 +3986,10 @@ class MuseSeatTests(World):
             "#!/bin/sh\n"
             f"echo hop >> {shlex.quote(str(hops))}\n"
             f"[ $(wc -l < {shlex.quote(str(hops))}) -gt 5 ] && exit 99\n"
-            + ("exec " if use_exec else "") + f"{shlex.quote(self.seat)} \"$@\"\n", encoding="utf-8")
+            + ("exec " if use_exec else "")
+            + f'{shlex.quote(self.seat)} "$@"\n',
+            encoding="utf-8",
+        )
         os.chmod(self.fakebin / "muse", 0o755)
         return hops
 
@@ -2978,11 +3999,18 @@ class MuseSeatTests(World):
             for use_exec in (True, False):
                 with self.subTest(shell=name, exec=use_exec):
                     hops = self.wrapper_named_muse(use_exec)
-                    p = subprocess.run([shell, self.seat, "a"], env={"PATH": f"{self.fakebin}:/usr/bin:/bin"},
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+                    p = subprocess.run(
+                        [shell, self.seat, "a"],
+                        env={"PATH": f"{self.fakebin}:/usr/bin:/bin"},
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=TIMEOUT,
+                    )
                     rc, out, err = p.returncode, p.stdout.decode(), p.stderr.decode()
                     self.assertEqual((rc, out), (127, ""), err)
-                    self.assertEqual(hops.read_text().splitlines(), ["hop"])          # one hop, then the refusal
+                    self.assertEqual(
+                        hops.read_text().splitlines(), ["hop"]
+                    )  # one hop, then the refusal
                     self.assertIn("muse-seat: muse-seat is already running", err)
 
     def test_a_session_it_started_cannot_start_it_again(self) -> None:
@@ -2994,7 +4022,10 @@ class MuseSeatTests(World):
         self.assertEqual((rc, out), (127, ""))
         self.assertIn("run muse itself", err)
         fake = self.fakebin / "muse"
-        fake.write_text("#!/bin/sh\necho \"active=${_MUSE_SEAT_ACTIVE-unset} seat=$AGENT_SEAT\"\n", encoding="utf-8")
+        fake.write_text(
+            '#!/bin/sh\necho "active=${_MUSE_SEAT_ACTIVE-unset} seat=$AGENT_SEAT"\n',
+            encoding="utf-8",
+        )
         rc, out, _ = self.run_seat()
         self.assertEqual((rc, out.strip()), (0, "active=1 seat=MC"))
 
@@ -3006,22 +4037,38 @@ class MuseSeatTests(World):
 
     def test_it_works_when_started_by_name_from_path(self) -> None:
         env = {"PATH": f"{self.paths.stable}:{self.fakebin}:/usr/bin:/bin", "HOME": str(self.home)}
-        p = subprocess.run(["/bin/sh", "-c", "muse-seat one two"], env=env, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=TIMEOUT)
+        p = subprocess.run(
+            ["/bin/sh", "-c", "muse-seat one two"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=TIMEOUT,
+        )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn(b"seat=MC tag=MC argc=2", p.stdout)
         # and a symlink named muse that comes first is caught by name too
         os.symlink(self.seat, self.emptybin / "muse")
         env["PATH"] = f"{self.emptybin}:{self.paths.stable}:{self.fakebin}:/usr/bin:/bin"
-        p = subprocess.run(["/bin/sh", "-c", "muse"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+        p = subprocess.run(
+            ["/bin/sh", "-c", "muse"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=TIMEOUT,
+        )
         self.assertEqual(p.returncode, 127)
         self.assertIn(b"is this wrapper itself", p.stderr)
 
     def test_the_seat_shim_runs_under_every_installed_shell(self) -> None:
         for name, shell in SHELLS:
             with self.subTest(name):
-                p = subprocess.run([shell, self.seat, "x"], env={"PATH": f"{self.fakebin}:/usr/bin:/bin"},
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+                p = subprocess.run(
+                    [shell, self.seat, "x"],
+                    env={"PATH": f"{self.fakebin}:/usr/bin:/bin"},
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=TIMEOUT,
+                )
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertIn(b"seat=MC tag=MC argc=1", p.stdout)
 
@@ -3036,25 +4083,41 @@ class MusePlanApplyVerifyTests(World):
         self.fakebin = self.tmp / "fake-muse-bin"
         self.fakebin.mkdir()
         self.set_fake_muse('{"valid": true}', 0)
-        self.path_env = mock.patch.dict(os.environ, {"PATH": f"{self.fakebin}:{os.environ.get('PATH', '/usr/bin:/bin')}"})
+        self.path_env = mock.patch.dict(
+            os.environ, {"PATH": f"{self.fakebin}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+        )
         self.path_env.start()
         self.addCleanup(self.path_env.stop)
 
     def set_fake_muse(self, body: str, rc: int) -> None:
         fake = self.fakebin / "muse"
-        fake.write_text("#!/bin/sh\n"
-                        f"echo \"$@\" >> {shlex.quote(str(self.muse_log))}\n"
-                        f"echo \"$HOME\" >> {shlex.quote(str(self.muse_log) + '.home')}\n"
-                        f"echo {shlex.quote(body)}\n"
-                        f"exit {rc}\n", encoding="utf-8")
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'echo "$@" >> {shlex.quote(str(self.muse_log))}\n'
+            f'echo "$HOME" >> {shlex.quote(str(self.muse_log) + ".home")}\n'
+            f"echo {shlex.quote(body)}\n"
+            f"exit {rc}\n",
+            encoding="utf-8",
+        )
         os.chmod(fake, 0o755)
 
     def muse_calls(self) -> list:
         return self.muse_log.read_text().splitlines() if self.muse_log.exists() else []
 
     def base(self) -> list:
-        return ["--home", str(self.home), "--source", self.source.scripts_dir, "--registry", self.source.registry,
-                "--sha", SHA, "--timeout", str(TIMEOUT), "--no-minimal-path"]
+        return [
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--registry",
+            self.source.registry,
+            "--sha",
+            SHA,
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+        ]
 
     # -- plan
 
@@ -3069,15 +4132,18 @@ class MusePlanApplyVerifyTests(World):
         self.assertIn(f"     1. muse plugins install {bundle} --scope user\n", out)
         self.assertIn("     2. muse plugins approve fleet-lane-guard\n", out)
         self.assertIn("     3. start a new Muse Code session\n", out)
-        self.assertIn("OWNER ACTIONS (yours to run; this tool never edits Muse's config, and the only muse it runs "
-                      "is `muse plugins validate` in verify, confined to a throwaway HOME)", out)
+        self.assertIn(
+            "OWNER ACTIONS (yours to run; this tool never edits Muse's config, and the only muse it runs "
+            "is `muse plugins validate` in verify, confined to a throwaway HOME)",
+            out,
+        )
         self.assertIn("MUSE_EXPERIMENTAL_PLUGINS=1 may have to be set", out)
         self.assertIn("UNVERIFIED", out)
         self.assertIn(f"run {self.paths.muse_seat} instead of `muse`", out)
         self.assertIn("AGENT_SEAT=MC and AGENT_TAG=MC", out)
         self.assertIn("[plugin bundle new]", out)
-        self.assertIn("/bin/sh", out)                                              # the manifest is shown
-        self.assertNotIn('"matcher"', out)                                          # the manifest shown has no matcher key
+        self.assertIn("/bin/sh", out)  # the manifest is shown
+        self.assertNotIn('"matcher"', out)  # the manifest shown has no matcher key
 
     def test_plan_muse_follows_the_installed_state(self) -> None:
         self.install(())
@@ -3112,11 +4178,16 @@ class MusePlanApplyVerifyTests(World):
         cfg_before = (cfg.read_bytes(), cfg.stat().st_mtime_ns)
         rc, out, err = run_main("apply", *self.base(), "--no-verify", "muse")
         self.assertEqual((rc, err), (0, ""), out)
-        self.assertIn("INSTALLED  tools", out)                                      # the bundle is written with the stable copy
+        self.assertIn("INSTALLED  tools", out)  # the bundle is written with the stable copy
         self.assertIn("UNCHANGED  muse", out)
         self.assertTrue(os.access(self.paths.muse_wrapper, os.X_OK))
-        self.assertEqual(Path(self.paths.muse_manifest).read_text(), T.render_muse_manifest(self.paths.stable))
-        self.assertIn(f"OWNER ACTION 1 muse plugins install {shlex.quote(self.paths.muse_bundle)} --scope user\n", out)
+        self.assertEqual(
+            Path(self.paths.muse_manifest).read_text(), T.render_muse_manifest(self.paths.stable)
+        )
+        self.assertIn(
+            f"OWNER ACTION 1 muse plugins install {shlex.quote(self.paths.muse_bundle)} --scope user\n",
+            out,
+        )
         self.assertEqual(self.muse_calls(), [])
         self.assertEqual((cfg.read_bytes(), cfg.stat().st_mtime_ns), cfg_before)
         self.assertFalse((self.home / ".config" / "muse" / "plugins").exists())
@@ -3127,7 +4198,9 @@ class MusePlanApplyVerifyTests(World):
         rc, out, _ = run_main("apply", *self.base(), "--no-verify", "muse")
         self.assertEqual(rc, 0, out)
         self.assertIn("INSTALLED  tools", out)
-        self.assertEqual(Path(self.paths.muse_wrapper).read_text(), T.render_muse_wrapper(self.paths.stable))
+        self.assertEqual(
+            Path(self.paths.muse_wrapper).read_text(), T.render_muse_wrapper(self.paths.stable)
+        )
         before = snapshot(self.tmp)
         rc, out, _ = run_main("apply", *self.base(), "--no-verify", "muse")
         self.assertEqual(rc, 0, out)
@@ -3137,13 +4210,15 @@ class MusePlanApplyVerifyTests(World):
     def test_apply_muse_refuses_when_the_stable_copy_cannot_be_installed(self) -> None:
         stable = Path(self.paths.stable)
         stable.mkdir(parents=True)
-        (stable / "mine.txt").write_text("not yours")                               # a foreign stable dir
+        (stable / "mine.txt").write_text("not yours")  # a foreign stable dir
         rc, out, _ = run_main("apply", *self.base(), "--no-verify", "muse")
         self.assertEqual(rc, 1, out)
         self.assertIn("REFUSED", out)
         self.assertEqual([p.name for p in stable.iterdir()], ["mine.txt"])
 
-    def test_apply_tools_then_muse_prints_the_owner_actions_and_never_runs_muse_or_edits_its_config(self) -> None:
+    def test_apply_tools_then_muse_prints_the_owner_actions_and_never_runs_muse_or_edits_its_config(
+        self,
+    ) -> None:
         self.seed(".config/muse/settings.json")
         cfg = self.home / ".config" / "muse" / "settings.json"
         cfg_before = (cfg.read_bytes(), cfg.stat().st_mtime_ns)
@@ -3152,8 +4227,8 @@ class MusePlanApplyVerifyTests(World):
         before = snapshot(self.tmp)
         rc, out, err = run_main("apply", *self.base(), "--no-verify", "muse")
         self.assertEqual((rc, err), (0, ""), out)
-        self.assertEqual(snapshot(self.tmp), before)                               # a current stable copy: nothing is written
-        self.assertEqual(self.muse_calls(), [])                                    # and muse is not run
+        self.assertEqual(snapshot(self.tmp), before)  # a current stable copy: nothing is written
+        self.assertEqual(self.muse_calls(), [])  # and muse is not run
         self.assertIn("UNCHANGED  tools", out)
         self.assertIn("UNCHANGED  muse", out)
         bundle = shlex.quote(self.paths.muse_bundle)
@@ -3172,7 +4247,7 @@ class MusePlanApplyVerifyTests(World):
         rc, out, _ = run_main("apply", *self.base(), "--no-verify", "tools")
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.muse_calls(), [])
-        self.assertFalse((self.home / ".config").exists())                          # nothing was created for Muse
+        self.assertFalse((self.home / ".config").exists())  # nothing was created for Muse
 
     def test_apply_muse_refuses_a_stale_bundle(self) -> None:
         self.install(())
@@ -3186,7 +4261,7 @@ class MusePlanApplyVerifyTests(World):
         self.assertEqual(plat.kind, "plugin")
         self.assertNotIn("muse", T.SUPPORTED_KEYS)
         self.assertEqual(T.plan_platform(plat, self.paths).action, "unsupported")
-        self.assertEqual(T.apply_platform(plat, self.paths).status, "refused")        # no bundle yet
+        self.assertEqual(T.apply_platform(plat, self.paths).status, "refused")  # no bundle yet
         self.install(())
         self.assertEqual(T.apply_platform(plat, self.paths).status, "unchanged")
         self.assertIn(("muse", "muse"), T.probe_formats())
@@ -3198,8 +4273,18 @@ class MusePlanApplyVerifyTests(World):
         checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
         self.assertAllPass([c for c in checks if c.status != "SKIP"])
         names = {c.name: c for c in checks}
-        for n in ("plugin.json", "hooks/lane-guard.sh", "shim muse-seat", "hook command", "deny/hook-env", "deny-Bash/hook-env",
-                  "allow/hook-env", "other-tool/hook-env", "muse validate", "owner actions"):
+        for n in (
+            "plugin.json",
+            "hooks/lane-guard.sh",
+            "shim muse-seat",
+            "hook command",
+            "deny/hook-env",
+            "deny-Bash/hook-env",
+            "allow/hook-env",
+            "other-tool/hook-env",
+            "muse validate",
+            "owner actions",
+        ):
             self.assertIn(n, names)
         self.assertIn("hookSpecificOutput", names["deny/hook-env"].detail)
         self.assertEqual(names["allow/hook-env"].status, "PASS")
@@ -3207,15 +4292,19 @@ class MusePlanApplyVerifyTests(World):
         self.assertEqual(names["owner actions"].status, "SKIP")
         self.assertEqual(self.muse_calls(), [f"plugins validate {self.paths.muse_bundle} --json"])
 
-    def test_validate_runs_with_a_throwaway_home_so_muses_own_directory_is_never_touched(self) -> None:
+    def test_validate_runs_with_a_throwaway_home_so_muses_own_directory_is_never_touched(
+        self,
+    ) -> None:
         self.install(())
         self.seed(".config/muse/settings.json")
+
         # The installed hook runs with an empty environment, so on Linux (/usr/bin/python3 has no
         # pycache prefix) Python writes bytecode beside the installed module.  The product allows
         # that on purpose (the tree digest and the staleness scan ignore __pycache__); only the rest
         # of the home must stay untouched.
         def without_bytecode(snap: dict) -> dict:
             return {k: v for k, v in snap.items() if "__pycache__" not in k.split(os.sep)}
+
         before = without_bytecode(snapshot(self.home))
         T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
         self.assertEqual(without_bytecode(snapshot(self.home)), before)
@@ -3233,35 +4322,58 @@ class MusePlanApplyVerifyTests(World):
         self.install(())
         env_log = self.tmp / "validate-env.log"
         fake = self.fakebin / "muse"
-        fake.write_text("#!/bin/sh\n"
-                        f"env > {shlex.quote(str(env_log))}\n"
-                        'd=$(dirname "$0")\n'
-                        '[ "${MUSE_LAUNCHER_INSTALL-}" = 1 ] && : > "$d/installed-by-validate"\n'
-                        '[ "${MUSE_NO_AUTO_UPDATE-}" = 1 ] || : > "$d/.muse-update-checked-at"\n'
-                        "echo '{\"valid\": true}'\n", encoding="utf-8")
+        fake.write_text(
+            "#!/bin/sh\n"
+            f"env > {shlex.quote(str(env_log))}\n"
+            'd=$(dirname "$0")\n'
+            '[ "${MUSE_LAUNCHER_INSTALL-}" = 1 ] && : > "$d/installed-by-validate"\n'
+            '[ "${MUSE_NO_AUTO_UPDATE-}" = 1 ] || : > "$d/.muse-update-checked-at"\n'
+            "echo '{\"valid\": true}'\n",
+            encoding="utf-8",
+        )
         os.chmod(fake, 0o755)
         real_xdg = self.tmp / "real-xdg"
-        leaked = {"XDG_CONFIG_HOME": str(real_xdg / "config"), "XDG_DATA_HOME": str(real_xdg / "data"),
-                  "XDG_CACHE_HOME": str(real_xdg / "cache"), "XDG_STATE_HOME": str(real_xdg / "state"),
-                  "MUSE_LAUNCHER_INSTALL": "1", "MUSE_SYNC_UPDATE": "1", "MUSE_CHANNEL": "muse-canary",
-                  "MUSE_LOGIN": "1", "MUSE_EXPERIMENTAL_PLUGINS": "1"}
+        leaked = {
+            "XDG_CONFIG_HOME": str(real_xdg / "config"),
+            "XDG_DATA_HOME": str(real_xdg / "data"),
+            "XDG_CACHE_HOME": str(real_xdg / "cache"),
+            "XDG_STATE_HOME": str(real_xdg / "state"),
+            "MUSE_LAUNCHER_INSTALL": "1",
+            "MUSE_SYNC_UPDATE": "1",
+            "MUSE_CHANNEL": "muse-canary",
+            "MUSE_LOGIN": "1",
+            "MUSE_EXPERIMENTAL_PLUGINS": "1",
+        }
         with mock.patch.dict(os.environ, leaked):
-            checks = {c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)}
+            checks = {
+                c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+            }
         self.assertEqual(checks["muse validate"].status, "PASS", checks["muse validate"].line())
-        self.assertEqual(sorted(p.name for p in self.fakebin.iterdir()), ["muse"])      # no stamp, no install
+        self.assertEqual(
+            sorted(p.name for p in self.fakebin.iterdir()), ["muse"]
+        )  # no stamp, no install
         self.assertFalse(real_xdg.exists())
         seen = dict(ln.split("=", 1) for ln in env_log.read_text().splitlines() if "=" in ln)
         scratch = seen["HOME"]
         self.assertTrue(os.path.basename(scratch).startswith("lane-muse-validate-"), scratch)
         self.assertFalse(os.path.exists(scratch), "the throwaway home is removed afterwards")
-        for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
-                     "TMPDIR", "MUSE_AUTH_PATH"):
+        for name in (
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+            "XDG_RUNTIME_DIR",
+            "TMPDIR",
+            "MUSE_AUTH_PATH",
+        ):
             with self.subTest(name):
-                self.assertTrue(seen.get(name, "").startswith(scratch + os.sep), (name, seen.get(name)))
+                self.assertTrue(
+                    seen.get(name, "").startswith(scratch + os.sep), (name, seen.get(name))
+                )
         self.assertEqual((seen.get("MUSE_NO_AUTO_UPDATE"), seen.get("MUSE_LOGIN")), ("1", "0"))
         for name in ("MUSE_LAUNCHER_INSTALL", "MUSE_SYNC_UPDATE", "MUSE_CHANNEL"):
             self.assertNotIn(name, seen)
-        self.assertEqual(seen.get("MUSE_EXPERIMENTAL_PLUGINS"), "1")                  # a feature switch, not a path
+        self.assertEqual(seen.get("MUSE_EXPERIMENTAL_PLUGINS"), "1")  # a feature switch, not a path
         self.assertEqual(seen.get("PATH"), os.environ.get("PATH"))
 
     def test_the_probes_run_with_an_empty_environment(self) -> None:
@@ -3274,9 +4386,11 @@ class MusePlanApplyVerifyTests(World):
             return real(argv, stdin, env, timeout, cwd)
 
         with mock.patch.object(T, "run_argv", side_effect=spy):
-            T.verify_muse(self.paths, timeout=TIMEOUT)                                 # the default: an empty environment
+            T.verify_muse(self.paths, timeout=TIMEOUT)  # the default: an empty environment
         hook_runs = [s for s in seen if s[0][:1] == ["/bin/sh"]]
-        self.assertEqual(len(hook_runs), len(T._muse_cases()))                          # six: two deny, a ps, an allow, two other tools
+        self.assertEqual(
+            len(hook_runs), len(T._muse_cases())
+        )  # six: two deny, a ps, an allow, two other tools
         self.assertEqual(len(hook_runs), 6)
         for argv, env, cwd in hook_runs:
             self.assertEqual((argv, env, cwd), (T.muse_hook_argv(self.paths.stable), {}, "/"))
@@ -3294,33 +4408,51 @@ class MusePlanApplyVerifyTests(World):
     def test_verify_muse_reports_a_bundle_that_muse_rejects(self) -> None:
         self.install(())
         self.set_fake_muse('{"error": {"code": "unsupported-field"}}', 1)
-        checks = {c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)}
+        checks = {
+            c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+        }
         self.assertEqual(checks["muse validate"].status, "FAIL")
         self.set_fake_muse('{"valid": false}', 0)
-        checks = {c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)}
+        checks = {
+            c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+        }
         self.assertEqual(checks["muse validate"].status, "FAIL")
         self.set_fake_muse("not json at all", 0)
-        checks = {c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)}
-        self.assertEqual(checks["muse validate"].status, "WARN")                    # no verdict is not a failure
+        checks = {
+            c.name: c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+        }
+        self.assertEqual(checks["muse validate"].status, "WARN")  # no verdict is not a failure
 
     def test_verify_muse_fails_when_the_wrapper_cannot_deny(self) -> None:
         self.install(())
         wrapper = Path(self.paths.muse_wrapper)
         original = wrapper.read_bytes()
-        for label, text in (("allows everything", "#!/bin/sh\nexit 0\n"),
-                            ("prints junk", "#!/bin/sh\necho junk\n"),
-                            ("exits non-zero", "#!/bin/sh\nexit 3\n"),
-                            ("hangs", "#!/bin/sh\nsleep 30\n")):
+        for label, text in (
+            ("allows everything", "#!/bin/sh\nexit 0\n"),
+            ("prints junk", "#!/bin/sh\necho junk\n"),
+            ("exits non-zero", "#!/bin/sh\nexit 3\n"),
+            ("hangs", "#!/bin/sh\nsleep 30\n"),
+        ):
             with self.subTest(label):
                 wrapper.write_text(text)
                 os.chmod(wrapper, 0o755)
-                checks = T.verify_muse(self.paths, timeout=2.0 if label == "hangs" else TIMEOUT, minimal_path=MINIMAL)
+                checks = T.verify_muse(
+                    self.paths, timeout=2.0 if label == "hangs" else TIMEOUT, minimal_path=MINIMAL
+                )
                 self.assertFails(checks)
                 self.assertFails(checks, "differs")
-                self.assertTrue(any(c.name.startswith("deny") and c.status == "FAIL" for c in checks), label)
+                self.assertTrue(
+                    any(c.name.startswith("deny") and c.status == "FAIL" for c in checks), label
+                )
         wrapper.write_bytes(original)
         os.chmod(wrapper, 0o755)
-        self.assertAllPass([c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL) if c.status != "SKIP"])
+        self.assertAllPass(
+            [
+                c
+                for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+                if c.status != "SKIP"
+            ]
+        )
 
     def test_verify_muse_fails_when_the_manifest_is_wrong(self) -> None:
         self.install(())
@@ -3329,23 +4461,39 @@ class MusePlanApplyVerifyTests(World):
         doc = json.loads(original)
         doc["capabilities"]["hooks"][0]["matcher"] = "bash"
         manifest.write_text(json.dumps(doc))
-        self.assertFails(T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL), "matcher")
+        self.assertFails(
+            T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL), "matcher"
+        )
         doc = json.loads(original)
-        doc["capabilities"]["hooks"][0]["command"] = ["sh", "hooks/lane-guard.sh"]           # relative: not found with no cwd
+        doc["capabilities"]["hooks"][0]["command"] = [
+            "sh",
+            "hooks/lane-guard.sh",
+        ]  # relative: not found with no cwd
         manifest.write_text(json.dumps(doc))
         checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
         self.assertFails(checks, "hook command")
         self.assertFails(checks, "not run")
         manifest.write_text("{nope")
-        self.assertFails(T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL), "cannot read the hook command")
+        self.assertFails(
+            T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL),
+            "cannot read the hook command",
+        )
         manifest.write_text(original)
-        self.assertAllPass([c for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL) if c.status != "SKIP"])
+        self.assertAllPass(
+            [
+                c
+                for c in T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
+                if c.status != "SKIP"
+            ]
+        )
 
     def test_verify_muse_fails_when_the_guard_behind_it_is_broken_or_missing(self) -> None:
         self.install(())
         guard = Path(self.paths.package_dir) / "guard.py"
         guard.write_text(BROKEN_GUARD)
-        self.assertFails(T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL), "no output")
+        self.assertFails(
+            T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL), "no output"
+        )
         guard.unlink()
         os.rename(self.paths.stable, self.paths.stable + ".gone")
         checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=MINIMAL)
@@ -3355,15 +4503,28 @@ class MusePlanApplyVerifyTests(World):
     def test_the_cli_verify_default_covers_muse_and_a_named_muse_works(self) -> None:
         self.seed_platforms()
         self.install()
-        rc, out, err = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        rc, out, err = run_main(
+            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path"
+        )
         self.assertEqual((rc, err), (0, ""), out)
         self.assertRegex(out, r"PASS\s+muse\s+deny/hook-env")
         self.assertRegex(out, r"SKIP\s+muse\s+owner actions")
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), *MINIMAL_ARGS, "muse")
+        rc, out, _ = run_main(
+            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), *MINIMAL_ARGS, "muse"
+        )
         self.assertEqual(rc, 0, out)
         self.assertIn("-> healthy", out)
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), *MINIMAL_ARGS, "--strict", "muse")
-        self.assertEqual(rc, 0, out)                                               # nothing the owner has to clear shows as a WARN
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            *MINIMAL_ARGS,
+            "--strict",
+            "muse",
+        )
+        self.assertEqual(rc, 0, out)  # nothing the owner has to clear shows as a WARN
 
     def test_the_cli_verify_of_muse_fails_without_the_bundle(self) -> None:
         rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "muse")
@@ -3380,8 +4541,10 @@ class MusePlanApplyVerifyTests(World):
 
 # --------------------------------------------------------------------------- the fleet hook: lane guard plus secret guard
 
+
 def _load_secret_guard_module():
     import importlib.util
+
     path = Path(T.__file__).resolve().parents[1] / "hooks" / "secret-guard-pretooluse.py"
     spec = importlib.util.spec_from_file_location("secret_guard_under_test", path)
     mod = importlib.util.module_from_spec(spec)
@@ -3392,28 +4555,74 @@ def _load_secret_guard_module():
 # Commands the real secret guard denies, one family per rule (A dump of a secret file, B an authorization value in
 # arguments, C ps, C2 pgrep -l, D stderr merged into a secret path, E byte-dump or cut of a key variable).
 SECRET_DENY_CORPUS = (
-    "cat ~/.secrets/global-api-keys", "head -3 /x/credentials.json", "xxd client_info.json", "tail ~/proj/.env",
-    "bat ~/.ssh/id_rsa", "less server.pem", "base64 cert.p12", "strings server.key", "cut -c1-5 ~/.secrets/x",
-    "od -c ~/.secrets/x | head", "/usr/bin/xxd ~/.secrets/x",
-    "curl -H 'Authorization: Bearer abc' https://example.invalid", "curl -H 'Authorization:token' https://example.invalid",
-    "ps aux", "ps -ef | grep x", "(ps -o comm= -p 1)", "x=$(ps -p 1)", "/bin/ps aux", "exec ps aux", "echo a\nps aux",
-    "ps\taux", "ps aux", "ps　aux", "ps aux", "ps\x0baux",
-    "pgrep -fl node", "pgrep -l x", "pgrep -lf y",
-    "source ~/.secrets/global-api-keys 2>&1", "grep -c foo ~/.secrets/x 2>&1", "ls credentials.json 2>&1",
-    'od -c <<< "$MY_API_KEY"', 'xxd <<< "${GH_TOKEN}"', "printf %s \"$DB_PASSWORD\"", 'cut -c1-4 <<< "$X_SECRET"',
-    'hexdump -C <<< "$SENTRY_DSN"', 'strings <<< "$LOGIN_PASSWD"', 'base64 <<< "$APIKEY"', 'od -c <<< "$KEY"',
+    "cat ~/.secrets/global-api-keys",
+    "head -3 /x/credentials.json",
+    "xxd client_info.json",
+    "tail ~/proj/.env",
+    "bat ~/.ssh/id_rsa",
+    "less server.pem",
+    "base64 cert.p12",
+    "strings server.key",
+    "cut -c1-5 ~/.secrets/x",
+    "od -c ~/.secrets/x | head",
+    "/usr/bin/xxd ~/.secrets/x",
+    "curl -H 'Authorization: Bearer abc' https://example.invalid",
+    "curl -H 'Authorization:token' https://example.invalid",
+    "ps aux",
+    "ps -ef | grep x",
+    "(ps -o comm= -p 1)",
+    "x=$(ps -p 1)",
+    "/bin/ps aux",
+    "exec ps aux",
+    "echo a\nps aux",
+    "ps\taux",
+    "ps aux",
+    "ps　aux",
+    "ps aux",
+    "ps\x0baux",
+    "pgrep -fl node",
+    "pgrep -l x",
+    "pgrep -lf y",
+    "source ~/.secrets/global-api-keys 2>&1",
+    "grep -c foo ~/.secrets/x 2>&1",
+    "ls credentials.json 2>&1",
+    'od -c <<< "$MY_API_KEY"',
+    'xxd <<< "${GH_TOKEN}"',
+    'printf %s "$DB_PASSWORD"',
+    'cut -c1-4 <<< "$X_SECRET"',
+    'hexdump -C <<< "$SENTRY_DSN"',
+    'strings <<< "$LOGIN_PASSWD"',
+    'base64 <<< "$APIKEY"',
+    'od -c <<< "$KEY"',
 )
 ORDINARY_COMMANDS = (
-    "git status", "ls -la ~/apps", "python3 -m unittest fleet_lanes.tests.test_x", "cd /Users/jay/apps/lanes && ls",
-    "echo hi && pwd", "cat README.md", "gh pr merge 5 --squash --auto", "grep -rn foo scripts | head -20",
-    "sed -n 1,20p scripts/fleet_lanes/layout.py", "xcodebuild -scheme App build",
-    "npm run build && npm test", "printf '%s' hello", "find . -name '*.py' -newer x",
+    "git status",
+    "ls -la ~/apps",
+    "python3 -m unittest fleet_lanes.tests.test_x",
+    "cd /Users/jay/apps/lanes && ls",
+    "echo hi && pwd",
+    "cat README.md",
+    "gh pr merge 5 --squash --auto",
+    "grep -rn foo scripts | head -20",
+    "sed -n 1,20p scripts/fleet_lanes/layout.py",
+    "xcodebuild -scheme App build",
+    "npm run build && npm test",
+    "printf '%s' hello",
+    "find . -name '*.py' -newer x",
 )
 
 
 def _payload(command: str, ascii_only: bool) -> bytes:
-    return json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": "/Users/jay/apps/lanes/X/y",
-                       "session_id": "s1", "hook_event_name": "PreToolUse"}, ensure_ascii=ascii_only).encode("utf-8")
+    return json.dumps(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "cwd": "/Users/jay/apps/lanes/X/y",
+            "session_id": "s1",
+            "hook_event_name": "PreToolUse",
+        },
+        ensure_ascii=ascii_only,
+    ).encode("utf-8")
 
 
 class FleetShimPrefilterTests(World):
@@ -3439,8 +4648,13 @@ class FleetShimPrefilterTests(World):
     def starts_python(self, command: str, ascii_only: bool = True) -> bool:
         if self.marker.exists():
             self.marker.unlink()
-        subprocess.run([str(self.shim), "--format", "claude"], input=_payload(command, ascii_only),
-                       env={"PATH": f"{self.bin}:/usr/bin:/bin"}, check=False, capture_output=True)
+        subprocess.run(
+            [str(self.shim), "--format", "claude"],
+            input=_payload(command, ascii_only),
+            env={"PATH": f"{self.bin}:/usr/bin:/bin"},
+            check=False,
+            capture_output=True,
+        )
         return self.marker.exists()
 
     def test_the_corpus_is_denied_by_the_real_secret_guard(self) -> None:
@@ -3456,7 +4670,10 @@ class FleetShimPrefilterTests(World):
         for cmd in SECRET_DENY_CORPUS:
             for ascii_only in (True, False):
                 with self.subTest(cmd=cmd, ascii_only=ascii_only):
-                    self.assertTrue(self.starts_python(cmd, ascii_only), "the prefilter let a denied command through")
+                    self.assertTrue(
+                        self.starts_python(cmd, ascii_only),
+                        "the prefilter let a denied command through",
+                    )
 
     def test_ordinary_shell_calls_never_start_python(self) -> None:
         for cmd in ORDINARY_COMMANDS:
@@ -3464,8 +4681,13 @@ class FleetShimPrefilterTests(World):
                 self.assertFalse(self.starts_python(cmd), "an ordinary call cost a Python start")
 
     def test_the_lane_guards_own_words_still_reach_python(self) -> None:
-        for cmd in ("git clone https://example.invalid/x.git", "git worktree add ../x", "curl -L codeload.github.com/x",
-                    "git fetch origin", "gh api repos/x/y/tarball"):
+        for cmd in (
+            "git clone https://example.invalid/x.git",
+            "git worktree add ../x",
+            "curl -L codeload.github.com/x",
+            "git fetch origin",
+            "gh api repos/x/y/tarball",
+        ):
             with self.subTest(cmd=cmd):
                 self.assertTrue(self.starts_python(cmd))
 
@@ -3473,8 +4695,13 @@ class FleetShimPrefilterTests(World):
         raw = b'{"tool_name":"Bash","tool_input":{"command":"\\u0070s aux"}}'
         if self.marker.exists():
             self.marker.unlink()
-        subprocess.run([str(self.shim), "--format", "claude"], input=raw, env={"PATH": f"{self.bin}:/usr/bin:/bin"},
-                       check=False, capture_output=True)
+        subprocess.run(
+            [str(self.shim), "--format", "claude"],
+            input=raw,
+            env={"PATH": f"{self.bin}:/usr/bin:/bin"},
+            check=False,
+            capture_output=True,
+        )
         self.assertTrue(self.marker.exists())
 
     def test_the_words_cover_the_secret_guards_own_tables(self) -> None:
@@ -3482,6 +4709,7 @@ class FleetShimPrefilterTests(World):
 
         def covered(text: str) -> bool:
             return any(w in text.lower() for w in words)
+
         for pat in self.sg.SECRET_FILE_PATTERNS:
             literal = re.sub(r"\(\?!.*?\)|\\b", "", pat).replace("\\", "")
             with self.subTest(pattern=pat):
@@ -3506,22 +4734,35 @@ class FleetShimPrefilterTests(World):
             raw = ('{"tool_name":"Bash","tool_input":{"command":"ps\\%saux"}}' % esc).encode()
             if self.marker.exists():
                 self.marker.unlink()
-            subprocess.run([str(self.shim)], input=raw, env={"PATH": f"{self.bin}:/usr/bin:/bin"}, check=False,
-                           capture_output=True)
+            subprocess.run(
+                [str(self.shim)],
+                input=raw,
+                env={"PATH": f"{self.bin}:/usr/bin:/bin"},
+                check=False,
+                capture_output=True,
+            )
             self.assertTrue(self.marker.exists(), esc)
 
     def test_the_installed_shim_denies_the_whole_corpus_end_to_end(self) -> None:
         self.install(())
         for cmd in SECRET_DENY_CORPUS:
             with self.subTest(cmd=cmd):
-                res = subprocess.run([self.paths.fleet_shim, "--format", "claude"], input=_payload(cmd, True),
-                                     capture_output=True, timeout=60)
+                res = subprocess.run(
+                    [self.paths.fleet_shim, "--format", "claude"],
+                    input=_payload(cmd, True),
+                    capture_output=True,
+                    timeout=60,
+                )
                 self.assertEqual(res.returncode, 0)
                 self.assertIn(b'"permissionDecision": "deny"', res.stdout)
         for cmd in ORDINARY_COMMANDS:
             with self.subTest(cmd=cmd):
-                res = subprocess.run([self.paths.fleet_shim, "--format", "claude"], input=_payload(cmd, True),
-                                     capture_output=True, timeout=60)
+                res = subprocess.run(
+                    [self.paths.fleet_shim, "--format", "claude"],
+                    input=_payload(cmd, True),
+                    capture_output=True,
+                    timeout=60,
+                )
                 self.assertEqual((res.returncode, res.stdout), (0, b""))
 
     def test_emptying_the_prefilter_makes_verify_fail(self) -> None:
@@ -3534,7 +4775,11 @@ class FleetShimPrefilterTests(World):
     def test_a_shim_made_with_lane_words_only_is_not_the_installed_one(self) -> None:
         """verify compares the installed bytes with what this tool would write, so dropping the secret words fails."""
         self.install(())
-        lane_only = T.render_hook_shim(T.read_guard_facts(), module="fleet_lanes.fleet_guard_hook", purpose=T.FLEET_SHIM_PURPOSE)
+        lane_only = T.render_hook_shim(
+            T.read_guard_facts(),
+            module="fleet_lanes.fleet_guard_hook",
+            purpose=T.FLEET_SHIM_PURPOSE,
+        )
         self.assertNotEqual(lane_only, T.render_fleet_hook_shim())
         Path(self.paths.fleet_shim).write_text(lane_only)
         self.assertFails(T.verify_tools(self.paths, timeout=TIMEOUT), "shim fleet-guard-hook")
@@ -3543,12 +4788,18 @@ class FleetShimPrefilterTests(World):
 class FleetHookStableCopyTests(World):
     """fleet-guard-hook, the secret guard copy and Clutch's hooks.json travel in the stable dir with everything else."""
 
-    def test_build_files_carries_the_fleet_hook_the_secret_guard_and_the_clutch_hooks_file(self) -> None:
+    def test_build_files_carries_the_fleet_hook_the_secret_guard_and_the_clutch_hooks_file(
+        self,
+    ) -> None:
         files = T.build_files(self.source, self.paths)
         self.assertIn("fleet-guard-hook", files)
-        self.assertEqual(files["fleet_lanes/secret_guard.py"],
-                         (Path(self.source.scripts_dir) / "hooks" / "secret-guard-pretooluse.py").read_bytes())
-        self.assertEqual(files["clutch/hooks.json"].decode(), T.render_clutch_hooks(self.paths.stable))
+        self.assertEqual(
+            files["fleet_lanes/secret_guard.py"],
+            (Path(self.source.scripts_dir) / "hooks" / "secret-guard-pretooluse.py").read_bytes(),
+        )
+        self.assertEqual(
+            files["clutch/hooks.json"].decode(), T.render_clutch_hooks(self.paths.stable)
+        )
         self.assertEqual(files["fleet-guard-hook"].decode(), T.render_fleet_hook_shim())
         for rel in ("fleet-guard-hook", "lane-guard-hook"):
             self.assertEqual(T.file_mode(rel), 0o755)
@@ -3565,22 +4816,36 @@ class FleetHookStableCopyTests(World):
         self.assertIn("case $_lg_in", text)
         self.assertEqual(text, T.render_fleet_hook_shim(T.read_guard_facts()))
         no_lane_words = T.render_fleet_hook_shim(T.GuardFacts())
-        self.assertNotIn("case $_lg_in", no_lane_words, "without the lane guard's words there is no prefilter at all")
+        self.assertNotIn(
+            "case $_lg_in",
+            no_lane_words,
+            "without the lane guard's words there is no prefilter at all",
+        )
         self.assertIn("fleet_lanes.fleet_guard_hook", no_lane_words)
         self.assertIn("fleet_lanes.fleet_guard_hook", text)
         self.assertNotIn("fleet_lanes.lane_guard_hook", text)
         self.assertIn(T.GENERATED_MARK, text)
-        self.assertEqual(T.render_hook_shim(), T.render_hook_shim(T.read_guard_facts()))      # the lane shim is unchanged
+        self.assertEqual(
+            T.render_hook_shim(), T.render_hook_shim(T.read_guard_facts())
+        )  # the lane shim is unchanged
 
     def test_both_names_are_ours_and_lookalikes_are_not(self) -> None:
-        for cmd in ("/h/apps/lane-tools/fleet-guard-hook --format kimi", "'/h x/fleet-guard-hook' --format claude"):
+        for cmd in (
+            "/h/apps/lane-tools/fleet-guard-hook --format kimi",
+            "'/h x/fleet-guard-hook' --format claude",
+        ):
             self.assertTrue(T.is_ours(cmd), cmd)
         for cmd in ("fleet-guard-hooks-extra", "my-fleet-guard-hook-2", "ps aux"):
             self.assertFalse(T.is_ours(cmd), cmd)
 
     def test_the_installed_tree_has_the_new_files_and_stays_owned(self) -> None:
         self.install(())
-        for rel in ("fleet-guard-hook", "clutch/hooks.json", "fleet_lanes/secret_guard.py", "fleet_lanes/fleet_guard_hook.py"):
+        for rel in (
+            "fleet-guard-hook",
+            "clutch/hooks.json",
+            "fleet_lanes/secret_guard.py",
+            "fleet_lanes/fleet_guard_hook.py",
+        ):
             self.assertTrue((Path(self.paths.stable) / rel).is_file(), rel)
         self.assertTrue(os.access(self.paths.fleet_shim, os.X_OK))
         plan = T.plan_tools(self.source, self.paths)
@@ -3595,7 +4860,10 @@ class FleetHookStableCopyTests(World):
         self.install(())
         os.unlink(os.path.join(self.paths.package_dir, T.SECRET_GUARD_MODULE))
         checks = T.verify_tools(self.paths, timeout=TIMEOUT)
-        self.assertTrue(any(c.name == "secret guard" and c.status == "FAIL" for c in checks), [c.line() for c in checks])
+        self.assertTrue(
+            any(c.name == "secret guard" and c.status == "FAIL" for c in checks),
+            [c.line() for c in checks],
+        )
 
     def test_the_staged_copy_is_probed_with_the_secret_case(self) -> None:
         calls: list = []
@@ -3604,6 +4872,7 @@ class FleetHookStableCopyTests(World):
         def spy(command, **kw):
             calls.append((command, kw.get("secret", False), kw["fmt"]))
             return real(command, **kw)
+
         with mock.patch.object(T, "probe_command", side_effect=spy):
             r = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertTrue(r.ok, r)
@@ -3621,19 +4890,39 @@ class FleetHookStableCopyTests(World):
     def test_probe_command_secret_case_fails_a_lane_only_command(self) -> None:
         self.install(())
         lane_only = T.hook_command(self.paths, "claude")
-        checks = T.probe_command(lane_only, target="t", fmt="claude", shape="claude", home=str(self.home),
-                                 timeout=TIMEOUT, minimal_path=False, secret=True)
+        checks = T.probe_command(
+            lane_only,
+            target="t",
+            fmt="claude",
+            shape="claude",
+            home=str(self.home),
+            timeout=TIMEOUT,
+            minimal_path=False,
+            secret=True,
+        )
         self.assertEqual([c.name for c in checks if c.status == "FAIL"], ["secret/login-PATH"])
-        both = T.probe_command(T.fleet_hook_command(self.paths, "claude"), target="t", fmt="claude", shape="claude",
-                               home=str(self.home), timeout=TIMEOUT, minimal_path=False, secret=True)
+        both = T.probe_command(
+            T.fleet_hook_command(self.paths, "claude"),
+            target="t",
+            fmt="claude",
+            shape="claude",
+            home=str(self.home),
+            timeout=TIMEOUT,
+            minimal_path=False,
+            secret=True,
+        )
         self.assertEqual({c.status for c in both}, {"PASS"})
 
     def test_the_exit2_contract_is_checked_as_exit_two_with_stderr(self) -> None:
         ok = T.RunResult(2, b"", b"blocked `ps` here")
         self.assertIsNone(T.check_exit2_output(ok, "`ps`"))
         self.assertIn("expected 2", T.check_exit2_output(T.RunResult(0, b"", b""), "`ps`"))
-        self.assertIn("stdout is not empty", T.check_exit2_output(T.RunResult(2, b"{}", b"`ps`"), "`ps`"))
-        self.assertIn("stderr does not name", T.check_exit2_output(T.RunResult(2, b"", b"nope"), "`ps`"))
+        self.assertIn(
+            "stdout is not empty", T.check_exit2_output(T.RunResult(2, b"{}", b"`ps`"), "`ps`")
+        )
+        self.assertIn(
+            "stderr does not name", T.check_exit2_output(T.RunResult(2, b"", b"nope"), "`ps`")
+        )
 
 
 class MuseFleetGuardTests(World):
@@ -3652,19 +4941,25 @@ class MuseFleetGuardTests(World):
         doc = json.loads(Path(self.paths.muse_manifest).read_text())
         self.assertEqual(doc["displayName"], "Fleet Guards")
         self.assertIn("secret guard", doc["description"])
-        self.assertEqual(doc["name"], T.MUSE_PLUGIN_ID, "the plugin id is unchanged, so an approval is not lost")
+        self.assertEqual(
+            doc["name"], T.MUSE_PLUGIN_ID, "the plugin id is unchanged, so an approval is not lost"
+        )
 
     def test_verify_muse_runs_the_secret_and_the_other_tool_probes(self) -> None:
         checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertAllPass([c for c in checks if c.status != "SKIP"])
         names = {c.name for c in checks}
-        self.assertTrue({"secret/hook-env", "other-tool-ps/hook-env", "shim fleet-guard-hook"} <= names, names)
+        self.assertTrue(
+            {"secret/hook-env", "other-tool-ps/hook-env", "shim fleet-guard-hook"} <= names, names
+        )
 
     def test_a_muse_install_whose_fleet_hook_allows_everything_fails_verify(self) -> None:
         Path(self.paths.fleet_shim).write_text("#!/bin/sh\nexit 0\n")
         checks = T.verify_muse(self.paths, timeout=TIMEOUT, minimal_path=False)
         failed = {c.name for c in checks if c.status == "FAIL"}
-        self.assertTrue({"deny/hook-env", "secret/hook-env", "shim fleet-guard-hook"} <= failed, failed)
+        self.assertTrue(
+            {"deny/hook-env", "secret/hook-env", "shim fleet-guard-hook"} <= failed, failed
+        )
 
     def test_a_missing_secret_guard_fails_only_the_secret_probe(self) -> None:
         os.unlink(os.path.join(self.paths.package_dir, T.SECRET_GUARD_MODULE))
@@ -3675,7 +4970,7 @@ class MuseFleetGuardTests(World):
 
 # --------------------------------------------------------------------------- clutch and kimi: a marked block
 
-FAKE_DSH = '''#!{python}
+FAKE_DSH = """#!{python}
 import os, sys
 home = os.environ["DSH_HOME"]
 path = os.path.join(home, "cordis.patch.yml")
@@ -3692,7 +4987,7 @@ if "dsh-hooks-claude-code" in patch:
     print("@deepseek-ai/dsh-hooks-claude-code")
 if "profile" in sys.argv:
     pass
-'''
+"""
 
 
 class ClutchBlockTests(World):
@@ -3707,8 +5002,18 @@ class ClutchBlockTests(World):
         web = self.home / ".clutch" / "dsh" / "profiles" / "web"
         web.mkdir(parents=True)
         (web / "cordis.yml").write_text("plugins: []\n")
-        (web / "package.json").write_text('{"dsh": {"profile": {"bundles": [], "patchReload": "live"}}}')
-        self.plugin_dir = self.home / ".clutch" / "dsh" / "profiles" / "node_modules" / "@deepseek-ai" / "dsh-hooks-claude-code"
+        (web / "package.json").write_text(
+            '{"dsh": {"profile": {"bundles": [], "patchReload": "live"}}}'
+        )
+        self.plugin_dir = (
+            self.home
+            / ".clutch"
+            / "dsh"
+            / "profiles"
+            / "node_modules"
+            / "@deepseek-ai"
+            / "dsh-hooks-claude-code"
+        )
         self.plugin_dir.mkdir(parents=True)
         self.plat = T.PLATFORMS["clutch"]
         self.install(())
@@ -3718,7 +5023,9 @@ class ClutchBlockTests(World):
         return Path(self.paths.clutch_patch)
 
     def apply(self, **kw):
-        return T.apply_platform(self.plat, self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False, **kw)
+        return T.apply_platform(
+            self.plat, self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False, **kw
+        )
 
     def test_the_platform_is_not_part_of_all_or_the_config_platforms(self) -> None:
         self.assertNotIn("clutch", T.SUPPORTED_KEYS)
@@ -3727,13 +5034,24 @@ class ClutchBlockTests(World):
 
     def test_plan_is_read_only_and_shows_the_block(self) -> None:
         before = snapshot(self.tmp)
-        rc, out, err = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "clutch")
+        rc, out, err = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "clutch",
+        )
         self.assertEqual((rc, err), (0, ""), out)
         self.assertEqual(snapshot(self.tmp), before)
-        self.assertIn("# fleet:begin hooks-fleet-guards (managed by fleet_lanes.install_tools)", out)
+        self.assertIn(
+            "# fleet:begin hooks-fleet-guards (managed by fleet_lanes.install_tools)", out
+        )
         self.assertIn("name: '@deepseek-ai/dsh-hooks-claude-code'", out)
         self.assertIn(f"configPath: {json.dumps(self.paths.clutch_hooks)}", out)
-        self.assertIn("matcher", out)                                       # the hooks.json is shown too
+        self.assertIn("matcher", out)  # the hooks.json is shown too
         self.assertIn("UNVERIFIED", out)
         self.assertTrue(all(ord(c) < 128 for c in out))
 
@@ -3764,14 +5082,27 @@ class ClutchBlockTests(World):
         checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertAllPass([c for c in checks if c.status != "SKIP"])
         names = {c.name for c in checks}
-        self.assertTrue({"block", "hooks.json", "hook command", "dsh --dump-config", "secret/login-PATH", "patch reload"} <= names, names)
+        self.assertTrue(
+            {
+                "block",
+                "hooks.json",
+                "hook command",
+                "dsh --dump-config",
+                "secret/login-PATH",
+                "patch reload",
+            }
+            <= names,
+            names,
+        )
         reload_check = [c for c in checks if c.name == "patch reload"]
         self.assertEqual([c.status for c in reload_check], ["SKIP"])
         self.assertIn("patchReload: web live", reload_check[0].detail)
         self.assertNotIn("read once", reload_check[0].detail)
 
     def test_the_owners_patch_entries_survive_and_a_backup_is_made(self) -> None:
-        mine = "# my layer\n- id: typert-gateway\n  config:\n    websocketHeartbeatIntervalMs: 15000\n"
+        mine = (
+            "# my layer\n- id: typert-gateway\n  config:\n    websocketHeartbeatIntervalMs: 15000\n"
+        )
         self.patch.write_text(mine)
         os.chmod(self.patch, 0o640)
         r = self.apply()
@@ -3794,7 +5125,11 @@ class ClutchBlockTests(World):
         self.assertEqual(r.status, "added", r)
         checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
         failed = [c for c in checks if c.status == "FAIL"]
-        self.assertEqual([c.name for c in failed], ["dsh --dump-config"], "the plugin cannot load, so verify says so")
+        self.assertEqual(
+            [c.name for c in failed],
+            ["dsh --dump-config"],
+            "the plugin cannot load, so verify says so",
+        )
         self.assertIn("no longer exists", failed[0].detail)
 
     def test_a_plugin_that_is_not_linked_at_all_refuses_the_write(self) -> None:
@@ -3859,7 +5194,9 @@ class ClutchBlockTests(World):
     def test_a_patch_that_is_not_a_list_or_has_broken_markers_is_refused(self) -> None:
         self.patch.write_text("plugins:\n  - a\n")
         self.assertIn("not a top-level YAML list", self.apply().detail)
-        self.patch.write_text("- id: a\n# fleet:begin hooks-fleet-guards (managed by x)\n- insert: []\n")
+        self.patch.write_text(
+            "- id: a\n# fleet:begin hooks-fleet-guards (managed by x)\n- insert: []\n"
+        )
         self.assertEqual(self.apply().status, "refused")
 
     def test_a_lane_only_shim_is_refused_because_it_cannot_deny_a_ps(self) -> None:
@@ -3872,12 +5209,24 @@ class ClutchBlockTests(World):
         checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertEqual([c.status for c in checks], ["SKIP"])
         self.assertIn("not wired", checks[0].detail)
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        rc, out, _ = run_main(
+            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path"
+        )
         self.assertRegex(out, r"SKIP\s+clutch\s+block\s+not wired")
         self.assertRegex(out, r"SKIP\s+kimi\s+platform")
-        self.assertNotIn("NOT HEALTHY", out, "an opt-in platform nobody wired must not make a bare verify fail")
+        self.assertNotIn(
+            "NOT HEALTHY", out, "an opt-in platform nobody wired must not make a bare verify fail"
+        )
         self.assertEqual(rc, 0, out)
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "clutch")
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "clutch",
+        )
         self.assertEqual(rc, 1, out)
         self.assertIn("(named explicitly)", out)
         self.patch.write_text("# no block here\n- id: a\n")
@@ -3909,8 +5258,19 @@ class ClutchBlockTests(World):
 
     def test_the_command_line_applies_tools_first_and_wires_clutch(self) -> None:
         shutil.rmtree(self.paths.stable)
-        base = ["--home", str(self.home), "--source", self.source.scripts_dir, "--registry", self.source.registry,
-                "--sha", SHA, "--timeout", str(TIMEOUT), "--no-minimal-path"]
+        base = [
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--registry",
+            self.source.registry,
+            "--sha",
+            SHA,
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+        ]
         rc, out, err = run_main("apply", *base, "clutch")
         self.assertEqual(rc, 0, out + err)
         self.assertRegex(out, r"INSTALLED\s+tools")
@@ -3923,15 +5283,27 @@ class ClutchBlockTests(World):
 
     def test_the_command_line_honours_no_dsh_check(self) -> None:
         os.unlink(self.dsh_dir / "dsh")
-        base = ["--home", str(self.home), "--source", self.source.scripts_dir, "--registry", self.source.registry,
-                "--sha", SHA, "--timeout", str(TIMEOUT), "--no-minimal-path", "--no-verify"]
+        base = [
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--registry",
+            self.source.registry,
+            "--sha",
+            SHA,
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "--no-verify",
+        ]
         rc, out, _ = run_main("apply", *base, "clutch")
         self.assertEqual(rc, 1, out)
         rc, out, _ = run_main("apply", *base, "--no-dsh-check", "clutch")
         self.assertEqual(rc, 0, out)
 
 
-KIMI_CONFIG = '''default_model = "k2"
+KIMI_CONFIG = """default_model = "k2"
 
 [providers.kimi]
 type = "kimi"
@@ -3940,27 +5312,37 @@ base_url = "https://api.example.invalid/v1"
 [[hooks]]
 event = "Notification"
 command = "terminal-notifier -message done"
-'''
+"""
 
 
 class KimiBlockTests(World):
     def setUp(self) -> None:
         super().setUp()
-        keep = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and not os.path.exists(os.path.join(d, "kimi"))]
-        scrub = mock.patch.dict(os.environ, {"PATH": os.pathsep.join(keep)})      # never reach the real kimi
+        keep = [
+            d
+            for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d and not os.path.exists(os.path.join(d, "kimi"))
+        ]
+        scrub = mock.patch.dict(
+            os.environ, {"PATH": os.pathsep.join(keep)}
+        )  # never reach the real kimi
         scrub.start()
         self.addCleanup(scrub.stop)
         (self.home / ".kimi-code").mkdir()
         self.plat = T.PLATFORMS["kimi"]
         self.install(())
-        self.fake_kimi("All checked config files are valid.", 0)      # a machine without kimi is tested on its own below
+        self.fake_kimi(
+            "All checked config files are valid.", 0
+        )  # a machine without kimi is tested on its own below
 
     @property
     def cfg(self) -> Path:
         return Path(self.paths.kimi_config)
 
     def apply(self, **kw):
-        return T.apply_platform(self.plat, self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False, **kw)
+        return T.apply_platform(
+            self.plat, self.paths, now=lambda: STAMP, timeout=TIMEOUT, minimal_path=False, **kw
+        )
 
     def verify(self):
         return T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
@@ -3972,6 +5354,7 @@ class KimiBlockTests(World):
 
     def fleet_entries(self, text: str | None = None) -> list:
         import tomllib
+
         hooks = tomllib.loads(text if text is not None else self.cfg.read_text()).get("hooks", [])
         return [h for h in hooks if T.is_ours(h.get("command"))]
 
@@ -3979,10 +5362,16 @@ class KimiBlockTests(World):
         d = self.tmp / "fake-kimi-bin"
         d.mkdir(exist_ok=True)
         k = d / "kimi"
-        record = f"echo \"$@\" >> {shlex.quote(str(log))}; env | sort >> {shlex.quote(str(log) + '.env')}\n" if log else ""
+        record = (
+            f'echo "$@" >> {shlex.quote(str(log))}; env | sort >> {shlex.quote(str(log) + ".env")}\n'
+            if log
+            else ""
+        )
         k.write_text("#!/bin/sh\n" + record + f"echo {shlex.quote(body)}\nexit {rc}\n")
         os.chmod(k, 0o755)
-        patcher = mock.patch.dict(os.environ, {"PATH": f"{d}:{os.environ.get('PATH', '/usr/bin:/bin')}"})
+        patcher = mock.patch.dict(
+            os.environ, {"PATH": f"{d}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
         return k
@@ -3994,11 +5383,18 @@ class KimiBlockTests(World):
         text = self.cfg.read_text()
         self.assertTrue(text.startswith(KIMI_CONFIG + "\n# fleet:begin hooks-fleet-guards"))
         import tomllib
+
         hooks = tomllib.loads(text)["hooks"]
         self.assertEqual(len(hooks), 2, "the owner's [[hooks]] entry is still there")
         mine = hooks[1]
-        self.assertEqual(sorted(mine), ["command", "event", "matcher", "timeout"], "Kimi allows exactly these four fields")
-        self.assertEqual((mine["event"], mine["matcher"], mine["timeout"]), ("PreToolUse", "Bash", 5))
+        self.assertEqual(
+            sorted(mine),
+            ["command", "event", "matcher", "timeout"],
+            "Kimi allows exactly these four fields",
+        )
+        self.assertEqual(
+            (mine["event"], mine["matcher"], mine["timeout"]), ("PreToolUse", "Bash", 5)
+        )
         self.assertEqual(mine["command"], T.fleet_hook_command(self.paths, "kimi"))
         self.assertTrue(mine["command"].endswith("--format kimi"))
         backups = self.backups(self.cfg.parent)
@@ -4011,7 +5407,9 @@ class KimiBlockTests(World):
         (backup,) = self.backups(self.cfg.parent)
         self.assertEqual(stat.S_IMODE(backup.stat().st_mode), T.BACKUP_MODE)
         self.assertEqual(T.BACKUP_MODE, 0o600)
-        self.assertEqual(stat.S_IMODE(self.cfg.stat().st_mode), 0o644, "the config itself keeps its mode")
+        self.assertEqual(
+            stat.S_IMODE(self.cfg.stat().st_mode), 0o644, "the config itself keeps its mode"
+        )
 
     def test_a_missing_config_is_created(self) -> None:
         r = self.apply()
@@ -4030,7 +5428,10 @@ class KimiBlockTests(World):
     def test_a_changed_command_is_replaced_in_place(self) -> None:
         self.cfg.write_text(KIMI_CONFIG)
         self.apply()
-        self.cfg.write_text(self.cfg.read_text().replace(self.paths.fleet_shim, "/old/fleet-guard-hook") + "tail = 1\n")
+        self.cfg.write_text(
+            self.cfg.read_text().replace(self.paths.fleet_shim, "/old/fleet-guard-hook")
+            + "tail = 1\n"
+        )
         r = self.apply()
         self.assertEqual(r.status, "updated", r)
         text = self.cfg.read_text()
@@ -4038,7 +5439,7 @@ class KimiBlockTests(World):
         self.assertTrue(text.endswith("tail = 1\n"))
 
     def test_a_top_level_hooks_key_is_refused_because_the_file_would_not_load(self) -> None:
-        text = 'hooks = []\n'
+        text = "hooks = []\n"
         self.cfg.write_text(text)
         r = self.apply()
         self.assertEqual(r.status, "refused", r)
@@ -4104,12 +5505,16 @@ class KimiBlockTests(World):
         self.assertEqual([c.status for c in block], ["WARN"])
         self.assertIn("markers are gone", block[0].detail)
         self.assertEqual([c.status for c in checks if c.name == "hook command"], ["PASS"])
-        self.assertTrue({"deny/login-PATH", "secret/login-PATH", "allow/login-PATH"} <= {c.name for c in checks})
+        self.assertTrue(
+            {"deny/login-PATH", "secret/login-PATH", "allow/login-PATH"} <= {c.name for c in checks}
+        )
 
     def test_a_stale_entry_without_markers_is_replaced_in_place_by_one_marked_block(self) -> None:
         self.cfg.write_text(KIMI_CONFIG)
         self.apply()
-        stale = self.without_comments(self.cfg.read_text()).replace('matcher = "Bash"', 'matcher = "Nothing"')
+        stale = self.without_comments(self.cfg.read_text()).replace(
+            'matcher = "Bash"', 'matcher = "Nothing"'
+        )
         self.cfg.write_text(stale)
         self.assertFails(self.verify(), "not what this install_tools writes")
         r = self.apply()
@@ -4118,7 +5523,11 @@ class KimiBlockTests(World):
         self.assertEqual(text.count("# fleet:begin hooks-fleet-guards"), 1)
         self.assertEqual(len(self.fleet_entries(text)), 1)
         self.assertEqual(self.fleet_entries(text)[0]["matcher"], "Bash")
-        self.assertIn('command = "terminal-notifier -message done"', text, "the owner's own entry is untouched")
+        self.assertIn(
+            'command = "terminal-notifier -message done"',
+            text,
+            "the owner's own entry is untouched",
+        )
         self.assertEqual(self.apply().status, "unchanged")
         self.assertAllPass([c for c in self.verify() if c.status != "SKIP"])
 
@@ -4126,8 +5535,14 @@ class KimiBlockTests(World):
         self.cfg.write_text(KIMI_CONFIG)
         self.apply()
         one = self.without_comments(self.cfg.read_text())
-        entry = "[[hooks]]\nevent = \"PreToolUse\"\nmatcher = \"Bash\"\ncommand = " + json.dumps(T.fleet_hook_command(self.paths, "kimi")) + "\ntimeout = 5\n"
-        self.cfg.write_text(one.rstrip("\n") + "\n\n" + entry)          # what a second unmarked apply used to append
+        entry = (
+            '[[hooks]]\nevent = "PreToolUse"\nmatcher = "Bash"\ncommand = '
+            + json.dumps(T.fleet_hook_command(self.paths, "kimi"))
+            + "\ntimeout = 5\n"
+        )
+        self.cfg.write_text(
+            one.rstrip("\n") + "\n\n" + entry
+        )  # what a second unmarked apply used to append
         self.assertEqual(len(self.fleet_entries()), 2)
         r = self.apply()
         self.assertEqual(r.status, "updated", r)
@@ -4137,7 +5552,11 @@ class KimiBlockTests(World):
     def test_a_duplicate_outside_an_intact_block_is_removed_and_verify_warns_first(self) -> None:
         self.cfg.write_text(KIMI_CONFIG)
         self.apply()
-        entry = "[[hooks]]\nevent = \"PreToolUse\"\nmatcher = \"Bash\"\ncommand = " + json.dumps(T.fleet_hook_command(self.paths, "kimi")) + "\ntimeout = 5\n"
+        entry = (
+            '[[hooks]]\nevent = "PreToolUse"\nmatcher = "Bash"\ncommand = '
+            + json.dumps(T.fleet_hook_command(self.paths, "kimi"))
+            + "\ntimeout = 5\n"
+        )
         self.cfg.write_text(self.cfg.read_text() + "\n" + entry)
         self.assertIn("duplicate", {c.name for c in self.verify() if c.status == "WARN"})
         r = self.apply()
@@ -4147,18 +5566,29 @@ class KimiBlockTests(World):
         self.assertNotIn("duplicate", {c.name for c in self.verify() if c.status == "WARN"})
 
     def test_the_fleet_hook_in_a_form_that_is_not_edited_is_refused_never_appended(self) -> None:
-        for text in ('hooks = [{ event = "PreToolUse", matcher = "Bash", command = "%s" }]\n' % T.fleet_hook_command(self.paths, "kimi"),
-                     '[[hooks]]\nevent = "PreToolUse"\ncommand = """\n%s\n"""\n' % T.fleet_hook_command(self.paths, "kimi"),
-                     '[x]\nnote = "%s"\n' % T.fleet_hook_command(self.paths, "kimi")):
+        for text in (
+            'hooks = [{ event = "PreToolUse", matcher = "Bash", command = "%s" }]\n'
+            % T.fleet_hook_command(self.paths, "kimi"),
+            '[[hooks]]\nevent = "PreToolUse"\ncommand = """\n%s\n"""\n'
+            % T.fleet_hook_command(self.paths, "kimi"),
+            '[x]\nnote = "%s"\n' % T.fleet_hook_command(self.paths, "kimi"),
+        ):
             with self.subTest(text=text):
                 self.cfg.write_text(text)
                 r = self.apply()
                 self.assertEqual(r.status, "refused", r)
                 self.assertEqual(self.cfg.read_text(), text)
 
-    def test_literal_strings_and_a_changed_key_order_are_read_the_way_kimi_writes_them(self) -> None:
+    def test_literal_strings_and_a_changed_key_order_are_read_the_way_kimi_writes_them(
+        self,
+    ) -> None:
         cmd = T.fleet_hook_command(self.paths, "kimi")
-        self.cfg.write_text(KIMI_CONFIG + "\n[[hooks]]\ntimeout = 5\ncommand = '" + cmd + "'\nmatcher = \"Bash\"\nevent = \"PreToolUse\"\n")
+        self.cfg.write_text(
+            KIMI_CONFIG
+            + "\n[[hooks]]\ntimeout = 5\ncommand = '"
+            + cmd
+            + '\'\nmatcher = "Bash"\nevent = "PreToolUse"\n'
+        )
         r = self.apply()
         self.assertEqual(r.status, "unchanged", r)
         self.assertAllPass([c for c in self.verify() if c.status != "SKIP"])
@@ -4166,7 +5596,11 @@ class KimiBlockTests(World):
     # ---- finding the kimi binary, and what happens when there is none
 
     def test_kimi_doctor_falls_back_to_the_binary_under_kimi_code_home(self) -> None:
-        keep = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and not os.path.exists(os.path.join(d, "kimi"))]
+        keep = [
+            d
+            for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d and not os.path.exists(os.path.join(d, "kimi"))
+        ]
         with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(keep)}):
             self.assertIsNone(T.find_kimi(str(self.home)))
             binary = self.home / ".kimi-code" / "bin" / "kimi"
@@ -4180,7 +5614,11 @@ class KimiBlockTests(World):
             self.assertIn(f"{binary} doctor accepts", r.detail)
 
     def test_no_kimi_binary_refuses_the_write_unless_the_check_is_switched_off(self) -> None:
-        keep = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and not os.path.exists(os.path.join(d, "kimi"))]
+        keep = [
+            d
+            for d in os.environ.get("PATH", "").split(os.pathsep)
+            if d and not os.path.exists(os.path.join(d, "kimi"))
+        ]
         with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(keep)}):
             self.cfg.write_text(KIMI_CONFIG)
             r = self.apply()
@@ -4190,7 +5628,15 @@ class KimiBlockTests(World):
             r = self.apply(check_kimi=False)
             self.assertEqual(r.status, "added", r)
             self.assertIn("NOT checked", r.detail)
-            rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "kimi")
+            rc, out, _ = run_main(
+                "verify",
+                "--home",
+                str(self.home),
+                "--timeout",
+                str(TIMEOUT),
+                "--no-minimal-path",
+                "kimi",
+            )
             self.assertRegex(out, r"SKIP\s+kimi\s+kimi doctor")
 
     def test_kimi_not_installed_is_skipped(self) -> None:
@@ -4203,13 +5649,28 @@ class KimiBlockTests(World):
         checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertAllPass([c for c in checks if c.status != "SKIP"])
         names = {c.name for c in checks}
-        self.assertTrue({"block", "hook command", "deny/login-PATH", "secret/login-PATH", "allow/login-PATH", "config.toml"} <= names, names)
+        self.assertTrue(
+            {
+                "block",
+                "hook command",
+                "deny/login-PATH",
+                "secret/login-PATH",
+                "allow/login-PATH",
+                "config.toml",
+            }
+            <= names,
+            names,
+        )
         self.assertEqual([c.status for c in checks if c.name == "fires"], ["SKIP"])
 
     def test_verify_fails_when_the_hook_stops_blocking(self) -> None:
         self.apply()
         Path(self.paths.fleet_shim).write_text("#!/bin/sh\nexit 0\n")
-        failed = {c.name for c in T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False) if c.status == "FAIL"}
+        failed = {
+            c.name
+            for c in T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
+            if c.status == "FAIL"
+        }
         self.assertTrue({"deny/login-PATH", "secret/login-PATH"} <= failed, failed)
 
     def test_an_installed_but_unwired_kimi_is_a_skip_unless_named(self) -> None:
@@ -4217,7 +5678,15 @@ class KimiBlockTests(World):
         checks = T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertEqual([c.status for c in checks], ["SKIP"])
         self.assertIn("not wired", checks[0].detail)
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "kimi")
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "kimi",
+        )
         self.assertEqual(rc, 1, out)
         self.assertIn("(named explicitly)", out)
 
@@ -4225,12 +5694,26 @@ class KimiBlockTests(World):
         self.cfg.write_text(KIMI_CONFIG)
         self.apply()
         self.cfg.write_text(self.cfg.read_text().replace('matcher = "Bash"', 'matcher = "Nothing"'))
-        self.assertFails(T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False), "not what this install_tools writes")
+        self.assertFails(
+            T.verify_block(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False),
+            "not what this install_tools writes",
+        )
 
     def test_the_command_line_wires_kimi_after_apply_tools(self) -> None:
         shutil.rmtree(self.paths.stable)
-        base = ["--home", str(self.home), "--source", self.source.scripts_dir, "--registry", self.source.registry,
-                "--sha", SHA, "--timeout", str(TIMEOUT), "--no-minimal-path"]
+        base = [
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--registry",
+            self.source.registry,
+            "--sha",
+            SHA,
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+        ]
         rc, out, err = run_main("apply", *base, "kimi")
         self.assertEqual(rc, 0, out + err)
         self.assertRegex(out, r"ADDED\s+kimi")
@@ -4238,22 +5721,520 @@ class KimiBlockTests(World):
 
     def test_plan_shows_the_block_and_writes_nothing(self) -> None:
         before = snapshot(self.tmp)
-        rc, out, err = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA, "kimi")
+        rc, out, err = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "kimi",
+        )
         self.assertEqual((rc, err), (0, ""), out)
         self.assertEqual(snapshot(self.tmp), before)
         self.assertIn("[[hooks]]", out)
         self.assertIn("--format kimi", out)
         self.assertIn("UNVERIFIED", out)
 
-    def test_default_plan_and_verify_list_both_block_platforms_without_failing_on_absent_tools(self) -> None:
+    def test_default_plan_and_verify_list_both_block_platforms_without_failing_on_absent_tools(
+        self,
+    ) -> None:
         shutil.rmtree(self.home / ".kimi-code")
-        rc, out, _ = run_main("plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA)
+        rc, out, _ = run_main(
+            "plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA
+        )
         self.assertEqual(rc, 0, out)
         self.assertIn("== clutch", out)
         self.assertIn("== kimi", out)
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path")
+        rc, out, _ = run_main(
+            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path"
+        )
         self.assertRegex(out, r"SKIP\s+clutch\s+platform")
         self.assertRegex(out, r"SKIP\s+kimi\s+platform")
+
+
+# --------------------------------------------------------------------------- minimax: a plugin bundle under ~/.minimax/plugins
+
+
+class MinimaxBundleTests(World):
+    """MiniMax Code takes hooks from a local plugin: a real directory with .claude-plugin/plugin.json and hooks/hooks.json."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.home / ".minimax" / "plugins").mkdir(parents=True)
+        self.plat = T.PLATFORMS["minimax"]
+        self.install(())
+
+    @property
+    def bundle(self) -> Path:
+        return self.home / ".minimax" / "plugins" / "fleet-guard"
+
+    def apply(self, **kw):
+        return T.apply_platform(self.plat, self.paths, timeout=TIMEOUT, minimal_path=False, **kw)
+
+    def base(self) -> list:
+        return [
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--registry",
+            self.source.registry,
+            "--sha",
+            SHA,
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+        ]
+
+    def hooks(self) -> dict:
+        return json.loads((self.bundle / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+
+    def verify_mm(self) -> list:
+        return T.verify_minimax(self.paths, timeout=TIMEOUT, minimal_path=False)
+
+    # -- where it sits in the platform table
+
+    def test_it_is_in_all_but_not_a_config_file_platform(self) -> None:
+        self.assertEqual(self.plat.kind, "bundle")
+        self.assertNotIn("minimax", T.SUPPORTED_KEYS)
+        self.assertIn("minimax", T.ALL_KEYS)
+        self.assertEqual(T.ALL_KEYS[: len(T.SUPPORTED_KEYS)], T.SUPPORTED_KEYS)
+        self.assertIn(("claude", "claude"), T.fleet_probe_formats())
+        self.assertEqual(T._expand(["mm"], ())[0], ["minimax"])  # the seat tag is an alias
+        self.assertIn("minimax", T._expand(["all"], ())[0])
+        self.assertEqual(T._expand(["mm"], ())[1], {"minimax"})
+
+    # -- plan
+
+    def test_plan_is_read_only_and_shows_both_files(self) -> None:
+        before = snapshot(self.tmp)
+        rc, out, err = run_main(
+            "plan",
+            "--home",
+            str(self.home),
+            "--source",
+            self.source.scripts_dir,
+            "--sha",
+            SHA,
+            "minimax",
+        )
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertEqual(snapshot(self.tmp), before)
+        self.assertFalse(self.bundle.exists())
+        for needle in (
+            "[new]",
+            ".claude-plugin/plugin.json",
+            "hooks/hooks.json",
+            '"matcher": "Bash"',
+            "--format claude",
+            '"timeout": 10',
+            "UNVERIFIED",
+            "No SessionStart seat hook",
+        ):
+            self.assertIn(needle, out)
+        self.assertTrue(all(ord(c) < 128 for c in out))
+
+    def test_default_plan_and_verify_list_it_without_failing_when_the_tool_is_absent(self) -> None:
+        shutil.rmtree(self.home / ".minimax")
+        rc, out, _ = run_main(
+            "plan", "--home", str(self.home), "--source", self.source.scripts_dir, "--sha", SHA
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertIn("== minimax", out)
+        rc, out, _ = run_main(
+            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path"
+        )
+        self.assertRegex(out, r"SKIP\s+minimax\s+platform")
+
+    # -- apply
+
+    def test_apply_writes_a_real_directory_with_the_hook_and_is_idempotent(self) -> None:
+        r = self.apply()
+        self.assertEqual(r.status, "added", r)
+        self.assertTrue(self.bundle.is_dir() and not self.bundle.is_symlink())
+        manifest = json.loads(
+            (self.bundle / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["name"], "fleet-guard")
+        doc = self.hooks()
+        self.assertEqual(set(doc), {"hooks"})
+        self.assertEqual(set(doc["hooks"]), {"PreToolUse"})
+        (group,) = doc["hooks"]["PreToolUse"]
+        self.assertEqual(group["matcher"], "Bash")
+        (hook,) = group["hooks"]
+        self.assertEqual(hook["type"], "command")
+        self.assertEqual(hook["command"], T.fleet_hook_command(self.paths, "claude"))
+        self.assertTrue(hook["command"].endswith("fleet-guard-hook --format claude"))
+        self.assertTrue(os.path.isabs(hook["command"].split()[0]))
+        self.assertIs(type(hook["timeout"]), int)
+        self.assertTrue(1 <= hook["timeout"] <= 10, hook)
+        # nothing else is written: no stage directory is left behind, and plugins/ holds only our plugin
+        self.assertEqual(sorted(p.name for p in (self.home / ".minimax").iterdir()), ["plugins"])
+        self.assertEqual(
+            sorted(p.name for p in (self.home / ".minimax" / "plugins").iterdir()), ["fleet-guard"]
+        )
+        after = snapshot(self.tmp)
+        r = self.apply()
+        self.assertEqual(r.status, "unchanged", r)
+        self.assertEqual(snapshot(self.tmp), after)
+
+    def test_apply_through_the_cli_with_the_seat_alias_runs_apply_tools_first_and_verifies(
+        self,
+    ) -> None:
+        shutil.rmtree(self.paths.stable)
+        rc, out, err = run_main("apply", *self.base(), "mm")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertRegex(out, r"INSTALLED\s+tools")
+        self.assertRegex(out, r"ADDED\s+minimax")
+        self.assertIn("NEXT       minimax", out)
+        self.assertRegex(out, r"PASS\s+minimax\s+deny/login-PATH")
+        self.assertRegex(out, r"PASS\s+minimax\s+secret/login-PATH")
+        self.assertIn("-> healthy", out)
+
+    def test_apply_all_reaches_it_and_skips_it_when_the_tool_is_absent(self) -> None:
+        self.seed_platforms()
+        rc, out, err = run_main("apply", *self.base(), "--no-verify", "all")
+        self.assertEqual((rc, err), (0, ""), out)
+        self.assertRegex(out, r"ADDED\s+minimax")
+        shutil.rmtree(self.home / ".minimax")
+        rc, out, _ = run_main("apply", *self.base(), "--no-verify", "all")
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r"SKIPPED\s+minimax")
+        self.assertFalse(
+            (self.home / ".minimax").exists()
+        )  # skipping never creates the tool's home
+        rc, out, _ = run_main(
+            "apply", *self.base(), "--no-verify", "minimax"
+        )  # named: not installed is a failure
+        self.assertEqual(rc, 1, out)
+
+    def test_a_stale_bundle_of_ours_is_replaced(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        hooks = self.bundle / "hooks" / "hooks.json"
+        hooks.write_text(
+            hooks.read_text(encoding="utf-8").replace('"timeout": 10', '"timeout": 3'),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.apply().status, "updated")
+        self.assertEqual(self.hooks()["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 10)
+        self.assertEqual(sorted(p.name for p in (self.home / ".minimax").iterdir()), ["plugins"])
+        self.assertEqual(
+            sorted(p.name for p in (self.home / ".minimax" / "plugins").iterdir()), ["fleet-guard"]
+        )
+
+    def test_a_symlinked_bundle_is_refused_and_left_alone(self) -> None:
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        self.bundle.symlink_to(elsewhere)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("symlink", r.detail)
+        self.assertTrue(self.bundle.is_symlink())
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_a_directory_with_foreign_files_is_refused_and_left_alone(self) -> None:
+        for rel in ("README.md", "skills/x/SKILL.md", ".mcp.json"):
+            with self.subTest(rel):
+                shutil.rmtree(self.bundle, ignore_errors=True)
+                f = self.bundle / rel
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text("mine\n")
+                before = snapshot(self.home)
+                r = self.apply()
+                self.assertEqual(r.status, "refused", r)
+                self.assertIn("never writes", r.detail)
+                self.assertEqual(snapshot(self.home), before)
+
+    def test_a_directory_with_another_plugin_name_is_refused(self) -> None:
+        (self.bundle / ".claude-plugin").mkdir(parents=True)
+        (self.bundle / ".claude-plugin" / "plugin.json").write_text('{"name": "someone-elses"}\n')
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("does not name", r.detail)
+
+    def test_an_empty_directory_or_one_without_a_manifest_is_refused(self) -> None:
+        for sub in ((), (".claude-plugin", "hooks")):
+            with self.subTest(sub=sub):
+                shutil.rmtree(self.bundle, ignore_errors=True)
+                self.bundle.mkdir(parents=True)
+                for d in sub:
+                    (self.bundle / d).mkdir()
+                before = snapshot(self.home)
+                r = self.apply()
+                self.assertEqual(r.status, "refused", r)
+                self.assertIn("plugin.json", r.detail)
+                self.assertEqual(snapshot(self.home), before)
+
+    def test_finder_litter_does_not_make_our_own_bundle_foreign(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        (self.bundle / ".DS_Store").write_bytes(b"\0")
+        (self.bundle / "hooks" / ".DS_Store").write_bytes(b"\0")
+        hooks = self.bundle / "hooks" / "hooks.json"
+        hooks.write_text(
+            hooks.read_text(encoding="utf-8").replace('"timeout": 10', '"timeout": 3'),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.apply().status, "updated")
+        self.assertFalse((self.bundle / ".DS_Store").exists())
+        # a symlink named .DS_Store is still foreign
+        (self.bundle / ".DS_Store").symlink_to(self.tmp)
+        hooks.write_text("{}\n")
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+
+    def test_a_plugins_symlink_to_another_directory_stages_beside_the_real_plugins_dir(
+        self,
+    ) -> None:
+        real_home = self.tmp / "other-fs"
+        (real_home / "plugins").mkdir(parents=True)
+        shutil.rmtree(self.home / ".minimax" / "plugins")
+        (self.home / ".minimax" / "plugins").symlink_to(real_home / "plugins")
+        staged: list[str] = []
+        real_rename = os.rename
+
+        def spy(src, dst, *a, **kw):
+            staged.append(os.path.dirname(str(src)))
+            return real_rename(src, dst, *a, **kw)
+
+        with mock.patch.object(T.os, "rename", spy):
+            r = self.apply(follow_symlinks=True)
+        self.assertEqual(r.status, "added", r)
+        self.assertIn(str(real_home.resolve()), [str(Path(d).resolve()) for d in staged])
+        self.assertEqual(sorted(p.name for p in real_home.iterdir()), ["plugins"])
+        self.assertEqual(sorted(p.name for p in (real_home / "plugins").iterdir()), ["fleet-guard"])
+
+    def test_leftovers_of_a_killed_run_are_swept_but_a_fresh_one_is_not(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        plugins = self.home / ".minimax" / "plugins"
+        old_dead = plugins / "fleet-guard.old-99999"
+        stage_dead = self.home / ".minimax" / ".fleet-guard-stage-dead"
+        fresh = self.home / ".minimax" / ".fleet-guard-stage-fresh"
+        for d in (old_dead, stage_dead, fresh):
+            d.mkdir()
+        long_ago = time.time() - 3600
+        for d in (old_dead, stage_dead):
+            os.utime(d, (long_ago, long_ago))
+        hooks = self.bundle / "hooks" / "hooks.json"
+        hooks.write_text("{}\n")
+        self.assertEqual(self.apply().status, "updated")
+        self.assertFalse(old_dead.exists())
+        self.assertFalse(stage_dead.exists())
+        self.assertTrue(fresh.exists())
+
+    def test_a_dangling_plugins_symlink_is_refused(self) -> None:
+        shutil.rmtree(self.home / ".minimax" / "plugins")
+        (self.home / ".minimax" / "plugins").symlink_to(self.tmp / "nowhere")
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("dangling", r.detail)
+
+    def test_it_is_never_wired_in_when_the_fleet_hook_cannot_deny(self) -> None:
+        shim = Path(self.paths.fleet_shim)
+        shim.write_text("#!/bin/sh\nexit 0\n")
+        os.chmod(shim, 0o755)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("fails its probes", r.detail)
+        self.assertFalse(self.bundle.exists())
+
+    def test_it_is_not_wired_in_without_the_stable_copy(self) -> None:
+        shutil.rmtree(self.paths.stable)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("apply tools", r.detail)
+        self.assertFalse(self.bundle.exists())
+
+    # -- verify
+
+    def test_verify_proves_the_deny_through_the_command_in_the_written_file(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        checks = self.verify_mm()
+        self.assertAllPass([c for c in checks if c.status != "SKIP"])
+        by = {c.name: c for c in checks}
+        for n in (
+            "bundle",
+            "plugin.json",
+            "hooks.json",
+            "hook command",
+            "deny/login-PATH",
+            "allow/login-PATH",
+            "secret/login-PATH",
+            "deny/hook-env",
+            "secret/hook-env",
+        ):
+            self.assertIn(n, by)
+            self.assertEqual(by[n].status, "PASS", by[n].line())
+        self.assertIn("permissionDecision", by["deny/login-PATH"].detail)
+        self.assertIn("deny", by["secret/hook-env"].detail)
+        self.assertEqual(by["hook command"].detail, T.fleet_hook_command(self.paths, "claude"))
+        self.assertEqual(by["fires"].status, "SKIP")
+        self.assertAllPass(
+            [
+                c
+                for c in T.verify_platform(
+                    self.plat, self.paths, timeout=TIMEOUT, minimal_path=False
+                )
+                if c.status != "SKIP"
+            ]
+        )
+
+    def test_verify_runs_the_command_that_is_in_the_file_not_the_one_it_expects(self) -> None:
+        self.apply()
+        hooks = self.bundle / "hooks" / "hooks.json"
+        doc = self.hooks()
+        doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"] = "/bin/true " + T.fleet_hook_command(
+            self.paths, "claude"
+        )
+        hooks.write_text(json.dumps(doc, indent=2) + "\n")
+        checks = self.verify_mm()
+        self.assertFails(checks, "differs")  # the file is no longer what is written
+        self.assertFalse(any(c.name == "deny/login-PATH" and c.status == "PASS" for c in checks))
+
+    def test_verify_fails_when_the_fleet_hook_allows_everything(self) -> None:
+        self.apply()
+        shim = Path(self.paths.fleet_shim)
+        shim.write_text("#!/bin/sh\nexit 0\n")
+        os.chmod(shim, 0o755)
+        checks = self.verify_mm()
+        self.assertFails(checks, "no output")
+        for n in ("deny/login-PATH", "secret/login-PATH", "deny/hook-env", "secret/hook-env"):
+            self.assertTrue(any(c.name == n and c.status == "FAIL" for c in checks), n)
+
+    def test_verify_fails_when_the_secret_guard_is_missing(self) -> None:
+        self.apply()
+        os.rename(
+            Path(self.paths.package_dir) / T.SECRET_GUARD_MODULE,
+            Path(self.paths.package_dir) / (T.SECRET_GUARD_MODULE + ".off"),
+        )
+        checks = self.verify_mm()
+        self.assertTrue(any(c.name == "secret/login-PATH" and c.status == "FAIL" for c in checks))
+        self.assertTrue(any(c.name == "secret/hook-env" and c.status == "FAIL" for c in checks))
+
+    def test_verify_fails_when_the_guard_module_is_gone(self) -> None:
+        self.apply()
+        guard = Path(self.paths.package_dir) / "guard.py"
+        os.rename(guard, guard.with_suffix(".off"))
+        checks = self.verify_mm()
+        self.assertTrue(any(c.name == "deny/login-PATH" and c.status == "FAIL" for c in checks))
+
+    def test_verify_fails_on_a_symlinked_or_non_directory_bundle(self) -> None:
+        self.apply()
+        real = self.tmp / "moved"
+        os.rename(self.bundle, real)
+        self.bundle.symlink_to(real)
+        checks = self.verify_mm()
+        self.assertFails(checks, "not a real directory")
+        self.assertEqual([c.name for c in checks], ["bundle"])
+        self.bundle.unlink()
+        self.bundle.write_text("a file")
+        self.assertFails(self.verify_mm(), "not a real directory")
+
+    def test_verify_fails_when_plugin_json_has_no_name(self) -> None:
+        self.apply()
+        manifest = self.bundle / ".claude-plugin" / "plugin.json"
+        manifest.write_text('{"version": "1"}\n')
+        self.assertFails(self.verify_mm(), "no `name`")
+        manifest.write_text("not json\n")
+        self.assertFails(self.verify_mm(), "no `name`")
+        manifest.unlink()
+        self.assertFails(self.verify_mm(), "plugin.json")
+
+    def test_verify_fails_on_a_hooks_file_minimax_would_reject(self) -> None:
+        self.apply()
+        hooks = self.bundle / "hooks" / "hooks.json"
+        good = self.hooks()
+        cases = {
+            "matcher": lambda d: d["hooks"]["PreToolUse"][0].update(matcher="Read"),
+            "timeout 30": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout=30),
+            "timeout 0": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout=0),
+            "timeout float": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout=5.5),
+            "timeout bool": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout=True),
+            "type": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(type="http"),
+            "not ours": lambda d: d["hooks"]["PreToolUse"][0]["hooks"][0].update(
+                command="/bin/true"
+            ),
+            "two groups": lambda d: d["hooks"]["PreToolUse"].append(
+                dict(d["hooks"]["PreToolUse"][0])
+            ),
+            "no event": lambda d: d["hooks"].pop("PreToolUse"),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name):
+                doc = copy.deepcopy(good)
+                mutate(doc)
+                hooks.write_text(json.dumps(doc, indent=2) + "\n")
+                checks = self.verify_mm()
+                self.assertFails(checks)
+                self.assertFalse(
+                    any(c.name == "deny/login-PATH" and c.status == "PASS" for c in checks), name
+                )
+        hooks.unlink()
+        self.assertFails(self.verify_mm(), "hooks.json")
+
+    def test_an_unwired_bundle_is_a_skip_unless_the_platform_is_named(self) -> None:
+        checks = self.verify_mm()
+        self.assertEqual([(c.name, c.status) for c in checks], [("bundle", "SKIP")])
+        rc, out, _ = run_main(
+            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path"
+        )
+        self.assertRegex(out, r"SKIP\s+minimax\s+bundle")
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "minimax",
+        )
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"FAIL\s+minimax\s+bundle.*named explicitly")
+
+    def test_the_kill_switch_in_the_callers_environment_is_a_warning_not_a_pass_through(
+        self,
+    ) -> None:
+        self.apply()
+        with mock.patch.dict(os.environ, {T.guard_switch()[0]: "off"}):
+            checks = self.verify_mm()
+        self.assertTrue(any(c.name == "guard-switch-env" and c.status == "WARN" for c in checks))
+        self.assertAllPass(
+            [c for c in checks if c.status not in ("SKIP", "WARN")]
+        )  # the probes scrub the switch
+
+    def test_the_hook_command_runs_with_the_small_environment_minimax_gives_a_hook(self) -> None:
+        self.apply()
+        cmd = self.hooks()["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        env = {
+            "HOME": str(self.home),
+            "PATH": T.MINIMAL_PATH,
+            "LANG": "C",
+            "TERM": "xterm",
+            "SHELL": "/bin/sh",
+            "USER": "x",
+        }
+        payload = json.dumps(T.probe_payload("claude", T.DENY_COMMAND, str(self.home))).encode()
+        res = T.run_shell(cmd, payload, env, TIMEOUT)
+        self.assertEqual(res.returncode, 0, res)
+        self.assertIsNone(T.check_deny_output("claude", res.stdout))
+        res = T.run_shell(
+            cmd,
+            json.dumps(T.probe_payload("claude", T.ALLOW_COMMAND, str(self.home))).encode(),
+            env,
+            TIMEOUT,
+        )
+        self.assertEqual((res.returncode, res.stdout), (0, b""))
+
+    def test_verify_all_with_the_bundle_installed_has_no_failure(self) -> None:
+        self.seed_platforms()
+        self.install()
+        self.assertEqual(self.apply().status, "added")
+        rc, out, _ = run_main(
+            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path"
+        )
+        self.assertRegex(out, r"PASS\s+minimax\s+hook command")
+        self.assertNotRegex(out, r"FAIL\s+minimax")
 
 
 if __name__ == "__main__":

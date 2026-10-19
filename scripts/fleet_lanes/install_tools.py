@@ -18,8 +18,12 @@ non-zero, times out, or prints nothing is a FAIL.
     python3 -m fleet_lanes.install_tools verify [--home H] [tools | PLATFORM ... | all]
     python3 -m fleet_lanes.install_tools --self-test
 
-PLATFORM is claude, codex, grok, antigravity, cursor, muse, clutch or kimi.  The first five get a hook entry in
-their config file.  muse is different: Muse Code takes hooks from a PLUGIN, so `apply tools` writes a plugin
+PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch or kimi.  The first five get
+a hook entry in their config file.  minimax is a plugin DIRECTORY that this tool owns: MiniMax Code reads no settings
+file for hooks, it loads them from a real directory under ~/.minimax/plugins/<name>/ (a symlink is skipped), so `apply
+minimax` writes ~/.minimax/plugins/fleet-guard/ (.claude-plugin/plugin.json and hooks/hooks.json: PreToolUse, matcher
+Bash, the fleet hook with --format claude), refuses a directory it did not write, and `verify minimax` runs the command
+it reads back out of that hooks.json.  muse is different: Muse Code takes hooks from a PLUGIN, so `apply tools` writes a plugin
 bundle into the stable dir (with everything else, atomically), `plan muse` shows it and the OWNER ACTIONS
 that finish the job, `apply muse` is `apply tools` (the bundle is part of the stable copy, and an unchanged
 copy is left alone) followed by those actions, and `verify muse` runs the hook the way Muse does.  This tool
@@ -28,7 +32,7 @@ never edits Muse's config, and the only muse it runs is `muse plugins validate` 
 found on PATH, with HOME, the XDG dirs, TMPDIR and Muse's credential path inside a throwaway dir, none of the
 caller's XDG_ or MUSE_ variables except the plugin switch, and MUSE_NO_AUTO_UPDATE=1 and MUSE_LOGIN=0 (see
 muse_validate_env).  That is confined, not proven read-only: the launcher still runs from its own install dir.
-`all` is `tools` plus the five config platforms.  `apply` needs a target; `plan` defaults to all plus muse, clutch
+`all` is `tools` plus the five config platforms plus minimax (an own directory, no owner step afterwards).  `apply` needs a target; `plan` defaults to all plus muse, clutch
 and kimi, and `verify` the same.
 
 The fleet hook.  `fleet-guard-hook` (fleet_lanes/fleet_guard_hook.py) is the lane guard AND the secret guard in one
@@ -36,7 +40,7 @@ command:  the lane guard, then the secret guard (scripts/hooks/secret-guard-pret
 as fleet_lanes/secret_guard.py: any `ps`, a dump of a secret-bearing file, an authorization value in arguments, a
 byte-dump of a key variable), and the first deny wins.  Its shell prefilter is the lane guard's trigger words plus the
 words without which no secret-guard rule can fire (SECRET_WORDS, and a `ps` followed by white space), so an ordinary
-shell call is answered in `sh` without starting Python.  The harnesses that were added after the first five use it: Muse Code (its plugin wrapper runs it), and
+shell call is answered in `sh` without starting Python.  The harnesses that were added after the first five use it: MiniMax Code (its plugin's hooks.json runs it), Muse Code (its plugin wrapper runs it), and
 clutch and kimi, which are marked blocks in a file this tool does not own.  Claude Code and Codex already run the
 secret guard as a hook of their own, so they keep `lane-guard-hook` alone.
 
@@ -178,6 +182,7 @@ reported and skipped.
 
 Tests: fleet_lanes/tests/test_install_tools.py.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -198,9 +203,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from typing import Callable, Mapping, Sequence
 
 from . import cordis_patch as CP
 from . import dsh_check as DC
@@ -208,11 +213,37 @@ from . import marked_block as MB
 from . import toml_hooks as TH
 
 __all__ = [
-    "EXIT_OK", "EXIT_FAIL", "EXIT_USAGE", "HOOK_NAME", "PLATFORMS", "SUPPORTED_KEYS",
-    "DENY_COMMAND", "ALLOW_COMMAND", "Paths", "Source", "Platform", "Check", "Refused",
-    "make_paths", "resolve_source", "render_hook_shim", "render_lane_shim", "hook_command",
-    "build_files", "plan_tools", "apply_tools", "verify_tools", "plan_platform", "apply_platform",
-    "verify_platform", "probe_payload", "check_deny_output", "guard_switch", "self_test", "main",
+    "ALLOW_COMMAND",
+    "ALL_KEYS",
+    "DENY_COMMAND",
+    "EXIT_FAIL",
+    "EXIT_OK",
+    "EXIT_USAGE",
+    "HOOK_NAME",
+    "PLATFORMS",
+    "SUPPORTED_KEYS",
+    "Check",
+    "Paths",
+    "Platform",
+    "Refused",
+    "Source",
+    "apply_platform",
+    "apply_tools",
+    "build_files",
+    "check_deny_output",
+    "guard_switch",
+    "hook_command",
+    "main",
+    "make_paths",
+    "plan_platform",
+    "plan_tools",
+    "probe_payload",
+    "render_hook_shim",
+    "render_lane_shim",
+    "resolve_source",
+    "self_test",
+    "verify_platform",
+    "verify_tools",
 ]
 
 EXIT_OK = 0
@@ -221,12 +252,24 @@ EXIT_USAGE = 64
 
 PACKAGE = "fleet_lanes"
 HOOK_NAME = "lane-guard-hook"
-FLEET_HOOK_NAME = "fleet-guard-hook"          # the lane guard and the secret guard in one command
-SECRET_GUARD_MODULE = "secret_guard.py"       # fleet_lanes/secret_guard.py in the stable copy
-SECRET_GUARD_SOURCE = ("hooks", "secret-guard-pretooluse.py")     # under the source's scripts dir
-CLUTCH_HOOKS_FILE = "clutch/hooks.json"       # the fleet-only hooks.json Clutch's bridge plugin reads
+FLEET_HOOK_NAME = "fleet-guard-hook"  # the lane guard and the secret guard in one command
+SECRET_GUARD_MODULE = "secret_guard.py"  # fleet_lanes/secret_guard.py in the stable copy
+SECRET_GUARD_SOURCE = ("hooks", "secret-guard-pretooluse.py")  # under the source's scripts dir
+CLUTCH_HOOKS_FILE = "clutch/hooks.json"  # the fleet-only hooks.json Clutch's bridge plugin reads
 CLUTCH_PATCH_REL = ".clutch/dsh/cordis.patch.yml"
 KIMI_CONFIG_REL = ".kimi-code/config.toml"
+# MiniMax Code reads no settings file for hooks.  It loads them from a local plugin, a REAL directory (a symlink is
+# skipped) under ~/.minimax/plugins/<name>/.  This tool owns that one directory outright.
+MINIMAX_PLUGIN_ID = "fleet-guard"
+MINIMAX_PLUGIN_REL = ".minimax/plugins/" + MINIMAX_PLUGIN_ID
+MINIMAX_MANIFEST_FILE = (
+    ".claude-plugin/plugin.json"  # the Claude-compatible flavour: matchers see Claude tool names
+)
+MINIMAX_HOOKS_FILE = "hooks/hooks.json"  # the default hooks path of that flavour
+MINIMAX_HOOK_TIMEOUT_S = (
+    10  # seconds, 1 to 10 (MiniMax's range).  A timeout fails OPEN, so the top of the range
+)
+PLATFORM_ALIASES = {"mm": "minimax"}  # the seat tag works as a target
 BLOCK_NAME = "hooks-fleet-guards"
 BLOCK_TOOL = "fleet_lanes.install_tools"
 LANE_NAME = "lane"
@@ -234,7 +277,13 @@ STABLE_DIRNAME = "lane-tools"
 REGISTRY_NAME = "fleet-apps.json"
 VERSION_NAME = "VERSION"
 GENERATED_MARK = "Generated by fleet_lanes.install_tools"
-REQUIRED_MODULES = ("__init__.py", "layout.py", "guard.py", "lane_guard_hook.py", "fleet_guard_hook.py")
+REQUIRED_MODULES = (
+    "__init__.py",
+    "layout.py",
+    "guard.py",
+    "lane_guard_hook.py",
+    "fleet_guard_hook.py",
+)
 LANE_MODULE = "lane.py"
 AG_GROUP = "lane-guard"
 GROK_FILE = "lane-guard.json"
@@ -243,19 +292,19 @@ GROK_FILE = "lane-guard.json"
 # written into the stable dir by `apply tools`, with everything else, so they are swapped in atomically.
 MUSE_SEAT_NAME = "muse-seat"
 MUSE_PLUGIN_ID = "fleet-lane-guard"
-MUSE_PLUGIN_DIR = "muse-plugin/" + MUSE_PLUGIN_ID            # relative to the stable dir
+MUSE_PLUGIN_DIR = "muse-plugin/" + MUSE_PLUGIN_ID  # relative to the stable dir
 MUSE_MANIFEST = MUSE_PLUGIN_DIR + "/.muse-plugin/plugin.json"
 MUSE_WRAPPER = MUSE_PLUGIN_DIR + "/hooks/lane-guard.sh"
-MUSE_SEAT_TAG = "MC"                                          # AGENT_SEAT and AGENT_TAG for Muse Code
+MUSE_SEAT_TAG = "MC"  # AGENT_SEAT and AGENT_TAG for Muse Code
 _MUSE_FILES = (MUSE_SEAT_NAME, MUSE_MANIFEST, MUSE_WRAPPER)
 MUSE_EXPERIMENTAL_ENV = "MUSE_EXPERIMENTAL_PLUGINS"
 
-HOOK_TIMEOUT_S = 5            # timeout written into each platform config (seconds)
+HOOK_TIMEOUT_S = 5  # timeout written into each platform config (seconds)
 MUSE_HOOK_TIMEOUT_MS = 15000  # Muse runs the wrapper on EVERY tool call; three times the others, because a timeout's outcome is unknown
-PROBE_TIMEOUT_S = 5.0         # per probe subprocess
-MINIMAL_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"   # what a GUI-launched app typically has
+PROBE_TIMEOUT_S = 5.0  # per probe subprocess
+MINIMAL_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"  # what a GUI-launched app typically has
 BACKUP_TAG = "bak-lane-guard"
-BACKUP_MODE = 0o600           # a backup is owner-only whatever the original's mode
+BACKUP_MODE = 0o600  # a backup is owner-only whatever the original's mode
 
 # The probe commands.  They are the fixture rows `spec-gh-hoghunter` (deny) and `spec-third-party`
 # (allow) of tests/fixtures_guard.py, copied here because the stable dir has no tests.  The test
@@ -273,9 +322,20 @@ EXIT2_FORMATS = ("kimi",)
 
 # Environment variables that would mask a broken install if they leaked into a probe.
 _SCRUB_ENV = (
-    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONSAFEPATH", "PYTHONUSERBASE", "PYTHONUTF8",
-    "PYTHONDONTWRITEBYTECODE", "VIRTUAL_ENV", "FLEET_APPS_JSON", "FLEET_LAYOUT", "FLEET_LANES_ROOT",
-    "FLEET_LANES_EXTERNAL_ROOT", "FLEET_LANE_GUARD", "AGENT_SEAT",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONSTARTUP",
+    "PYTHONSAFEPATH",
+    "PYTHONUSERBASE",
+    "PYTHONUTF8",
+    "PYTHONDONTWRITEBYTECODE",
+    "VIRTUAL_ENV",
+    "FLEET_APPS_JSON",
+    "FLEET_LAYOUT",
+    "FLEET_LANES_ROOT",
+    "FLEET_LANES_EXTERNAL_ROOT",
+    "FLEET_LANE_GUARD",
+    "AGENT_SEAT",
 )
 
 # The guard's own kill switch (guard.py: Owner-only note).  Imported from guard.py when that works, so the
@@ -289,6 +349,7 @@ def guard_switch() -> tuple[str, frozenset]:
     """(name of the guard's kill-switch environment variable, the values that mean off)."""
     try:
         from . import guard
+
         return guard.ENV_GUARD, frozenset(guard._OFF_VALUES)
     except Exception:
         return _FALLBACK_ENV_GUARD, _FALLBACK_OFF_VALUES
@@ -299,8 +360,13 @@ def _is_off(value: object) -> bool:
     return str(value).strip().lower() in guard_switch()[1]
 
 
-_OURS_RE = re.compile(r"(?:^|[\s/'\"=])(?:" + re.escape(HOOK_NAME) + "|" + re.escape(FLEET_HOOK_NAME)
-                      + r")(?=$|[\s'\"])")
+_OURS_RE = re.compile(
+    r"(?:^|[\s/'\"=])(?:"
+    + re.escape(HOOK_NAME)
+    + "|"
+    + re.escape(FLEET_HOOK_NAME)
+    + r")(?=$|[\s'\"])"
+)
 
 
 class Refused(Exception):
@@ -312,6 +378,7 @@ class ShapeError(Refused):
 
 
 # --------------------------------------------------------------------------- paths and source
+
 
 @dataclass(frozen=True)
 class Paths:
@@ -345,6 +412,18 @@ class Paths:
     @property
     def kimi_config(self) -> str:
         return os.path.join(self.home, *KIMI_CONFIG_REL.split("/"))
+
+    @property
+    def minimax_bundle(self) -> str:
+        return os.path.join(self.home, *MINIMAX_PLUGIN_REL.split("/"))
+
+    @property
+    def minimax_manifest(self) -> str:
+        return os.path.join(self.minimax_bundle, *MINIMAX_MANIFEST_FILE.split("/"))
+
+    @property
+    def minimax_hooks(self) -> str:
+        return os.path.join(self.minimax_bundle, *MINIMAX_HOOKS_FILE.split("/"))
 
     @property
     def package_dir(self) -> str:
@@ -387,9 +466,9 @@ def make_paths(home: str, stable_dir: str | None = None) -> Paths:
 
 @dataclass(frozen=True)
 class Source:
-    scripts_dir: str     # the directory that CONTAINS fleet_lanes/
-    registry: str        # fleet-apps.json to copy
-    sha: str             # git sha of the source checkout, or "unknown"
+    scripts_dir: str  # the directory that CONTAINS fleet_lanes/
+    registry: str  # fleet-apps.json to copy
+    sha: str  # git sha of the source checkout, or "unknown"
 
 
 _SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
@@ -400,19 +479,32 @@ def git_head(path: str, timeout: float = 10.0) -> str:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update({"GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"})
     try:
-        p = subprocess.run(["git", "--no-optional-locks", "-C", path, "rev-parse", "HEAD"],
-                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, timeout=timeout)
+        p = subprocess.run(
+            ["git", "--no-optional-locks", "-C", path, "rev-parse", "HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            timeout=timeout,
+        )
         sha = p.stdout.decode("utf-8", "replace").strip()
     except (OSError, subprocess.SubprocessError):
         return "unknown"
     return sha if p.returncode == 0 and _SHA_RE.match(sha) else "unknown"
 
 
-def resolve_source(scripts_dir: str | None = None, registry: str | None = None, sha: str | None = None,
-                   sha_fn: Callable[[str], str] = git_head) -> Source:
+def resolve_source(
+    scripts_dir: str | None = None,
+    registry: str | None = None,
+    sha: str | None = None,
+    sha_fn: Callable[[str], str] = git_head,
+) -> Source:
     """The tree to install from.  The defaults are the checkout this module runs from; `sha` is
     injectable (--sha, tests)."""
-    sd = os.path.abspath(scripts_dir) if scripts_dir else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sd = (
+        os.path.abspath(scripts_dir)
+        if scripts_dir
+        else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
     if registry:
         reg = os.path.abspath(registry)
     else:
@@ -423,16 +515,18 @@ def resolve_source(scripts_dir: str | None = None, registry: str | None = None, 
 
 # --------------------------------------------------------------------------- what the shell scripts mirror of the guard
 
+
 @dataclass(frozen=True)
 class GuardFacts:
     """The few facts about guard.py that the generated shell scripts mirror.  They are read once, when a script
     is generated, never when it runs.  Anything that cannot be mirrored exactly is left out and named in
     `problems`: a script then does LESS filtering (more calls reach the guard), never more."""
-    words: tuple = ()          # guard._TRIGGER's literal words, lower case; () = no prefilter
-    lookalikes: tuple = ()     # non-ASCII characters that re.IGNORECASE folds onto a letter of those words
-    max_chars: int = 0         # guard.MAX_COMMAND_CHARS; 0 = unknown, so no size gate
-    shell_hints: tuple = ()    # guard._SHELL_TOOL_HINTS plus "bash"; () = the Muse wrapper filters nothing
-    problems: tuple = ()       # why something above is missing, for `plan`
+
+    words: tuple = ()  # guard._TRIGGER's literal words, lower case; () = no prefilter
+    lookalikes: tuple = ()  # non-ASCII characters that re.IGNORECASE folds onto a letter of those words
+    max_chars: int = 0  # guard.MAX_COMMAND_CHARS; 0 = unknown, so no size gate
+    shell_hints: tuple = ()  # guard._SHELL_TOOL_HINTS plus "bash"; () = the Muse wrapper filters nothing
+    problems: tuple = ()  # why something above is missing, for `plan`
 
 
 _TRIGGER_WORDS_RE = re.compile(r"[a-z][a-z-]*(?:\|[a-z][a-z-]*)*")
@@ -446,29 +540,49 @@ def _fold_lookalikes(letters: str) -> tuple:
     Only the Basic Multilingual Plane is scanned (about 30 ms); the tests scan every code point and assert
     nothing above it folds onto an ASCII letter."""
     cls = re.compile("[" + letters + "]", re.IGNORECASE)
-    return tuple(ch for ch in map(chr, range(0x80, 0x10000)) if not 0xD800 <= ord(ch) < 0xE000 and cls.fullmatch(ch))
+    return tuple(
+        ch
+        for ch in map(chr, range(0x80, 0x10000))
+        if not 0xD800 <= ord(ch) < 0xE000 and cls.fullmatch(ch)
+    )
 
 
-def _facts_from_values(pattern: object, flags_ok: bool, max_chars: object, hints: object, where: str) -> GuardFacts:
+def _facts_from_values(
+    pattern: object, flags_ok: bool, max_chars: object, hints: object, where: str
+) -> GuardFacts:
     problems: list = []
     words: tuple = ()
     look: tuple = ()
     if not isinstance(pattern, str) or not _TRIGGER_WORDS_RE.fullmatch(pattern):
-        problems.append(f"{where}: guard._TRIGGER is not a plain alternation of lower-case literal words, so the "
-                        "hook shim has NO prefilter and starts Python on every call (still correct, only slower)")
+        problems.append(
+            f"{where}: guard._TRIGGER is not a plain alternation of lower-case literal words, so the "
+            "hook shim has NO prefilter and starts Python on every call (still correct, only slower)"
+        )
     elif not flags_ok:
-        problems.append(f"{where}: guard._TRIGGER is not compiled with exactly re.IGNORECASE, so the hook shim has "
-                        "NO prefilter and starts Python on every call (still correct, only slower)")
+        problems.append(
+            f"{where}: guard._TRIGGER is not compiled with exactly re.IGNORECASE, so the hook shim has "
+            "NO prefilter and starts Python on every call (still correct, only slower)"
+        )
     else:
         words = tuple(pattern.split("|"))
         look = _fold_lookalikes("".join(sorted({c for w in words for c in w if c.isalpha()})))
-    cap = max_chars if isinstance(max_chars, int) and not isinstance(max_chars, bool) and max_chars > 0 else 0
+    cap = (
+        max_chars
+        if isinstance(max_chars, int) and not isinstance(max_chars, bool) and max_chars > 0
+        else 0
+    )
     tools: tuple = ()
-    if isinstance(hints, (tuple, list)) and hints and all(isinstance(h, str) and _HINT_RE.fullmatch(h) for h in hints):
+    if (
+        isinstance(hints, (tuple, list))
+        and hints
+        and all(isinstance(h, str) and _HINT_RE.fullmatch(h) for h in hints)
+    ):
         tools = tuple(dict.fromkeys(("bash",) + tuple(hints)))
     else:
-        problems.append(f"{where}: guard._SHELL_TOOL_HINTS is not a tuple of plain lower-case words, so the Muse "
-                        "wrapper cannot tell shell tools from others and hands every tool call to the guard")
+        problems.append(
+            f"{where}: guard._SHELL_TOOL_HINTS is not a tuple of plain lower-case words, so the Muse "
+            "wrapper cannot tell shell tools from others and hands every tool call to the guard"
+        )
     return GuardFacts(words, look, cap, tools, tuple(problems))
 
 
@@ -476,22 +590,39 @@ def _guard_facts_local() -> GuardFacts:
     """From the guard this module sits beside (the usual case: the checkout being installed)."""
     try:
         from . import guard as g
+
         trigger = g._TRIGGER
-        return _facts_from_values(trigger.pattern, (trigger.flags & ~re.UNICODE) == re.IGNORECASE,
-                                  getattr(g, "MAX_COMMAND_CHARS", None), getattr(g, "_SHELL_TOOL_HINTS", None),
-                                  "guard.py")
-    except Exception as exc:     # an unreadable guard must not stop an install: it gets no filtering
-        return GuardFacts(problems=(f"guard.py cannot be read for the shell scripts ({type(exc).__name__}: {exc}); "
-                                    "they get no prefilter and no tool filter",))
+        return _facts_from_values(
+            trigger.pattern,
+            (trigger.flags & ~re.UNICODE) == re.IGNORECASE,
+            getattr(g, "MAX_COMMAND_CHARS", None),
+            getattr(g, "_SHELL_TOOL_HINTS", None),
+            "guard.py",
+        )
+    except Exception as exc:  # an unreadable guard must not stop an install: it gets no filtering
+        return GuardFacts(
+            problems=(
+                f"guard.py cannot be read for the shell scripts ({type(exc).__name__}: {exc}); "
+                "they get no prefilter and no tool filter",
+            )
+        )
 
 
 def _is_re_name(node: object, attr: str) -> bool:
-    return (isinstance(node, ast.Attribute) and node.attr == attr
-            and isinstance(node.value, ast.Name) and node.value.id == "re")
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == attr
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "re"
+    )
 
 
 def _const_int(node: object) -> object:
-    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, int)
+        and not isinstance(node.value, bool)
+    ):
         return node.value
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult, ast.Add)):
         left, right = _const_int(node.left), _const_int(node.right)
@@ -507,29 +638,47 @@ def _guard_facts_from_file(path: str) -> GuardFacts:
         with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
     except (OSError, SyntaxError, ValueError) as exc:
-        return GuardFacts(problems=(f"{path} cannot be read for the shell scripts ({type(exc).__name__}: {exc}); "
-                                    "they get no prefilter and no tool filter",))
+        return GuardFacts(
+            problems=(
+                f"{path} cannot be read for the shell scripts ({type(exc).__name__}: {exc}); "
+                "they get no prefilter and no tool filter",
+            )
+        )
     pattern: object = None
     flags_ok = False
     cap: object = None
     hints: object = None
     for node in tree.body:
-        if not (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)):
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
             continue
         name, value = node.targets[0].id, node.value
         if name == "_TRIGGER":
-            if (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) and value.func.attr == "compile"
-                    and isinstance(value.func.value, ast.Name) and value.func.value.id == "re"
-                    and len(value.args) == 2 and not value.keywords
-                    and isinstance(value.args[0], ast.Constant) and isinstance(value.args[0].value, str)):
+            if (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Attribute)
+                and value.func.attr == "compile"
+                and isinstance(value.func.value, ast.Name)
+                and value.func.value.id == "re"
+                and len(value.args) == 2
+                and not value.keywords
+                and isinstance(value.args[0], ast.Constant)
+                and isinstance(value.args[0].value, str)
+            ):
                 pattern, flags_ok = value.args[0].value, _is_re_name(value.args[1], "IGNORECASE")
         elif name == "MAX_COMMAND_CHARS":
             cap = _const_int(value)
         elif name == "_SHELL_TOOL_HINTS":
-            if isinstance(value, ast.Tuple) and all(isinstance(e, ast.Constant) and isinstance(e.value, str)
-                                                    for e in value.elts):
+            if isinstance(value, ast.Tuple) and all(
+                isinstance(e, ast.Constant) and isinstance(e.value, str) for e in value.elts
+            ):
                 hints = tuple(e.value for e in value.elts)
-    return _facts_from_values(pattern, flags_ok, cap, hints, os.path.basename(os.path.dirname(path)) + "/guard.py")
+    return _facts_from_values(
+        pattern, flags_ok, cap, hints, os.path.basename(os.path.dirname(path)) + "/guard.py"
+    )
 
 
 def read_guard_facts(scripts_dir: str | None = None) -> GuardFacts:
@@ -546,10 +695,12 @@ def read_guard_facts(scripts_dir: str | None = None) -> GuardFacts:
 
 # --------------------------------------------------------------------------- shims
 
-_PY_BOOT = ('import sys, runpy; sys.path.insert(0, sys.argv.pop(1)); '
-            'runpy.run_module("{module}", run_name="__main__", alter_sys=True)')
+_PY_BOOT = (
+    "import sys, runpy; sys.path.insert(0, sys.argv.pop(1)); "
+    'runpy.run_module("{module}", run_name="__main__", alter_sys=True)'
+)
 
-_JSON_U_ESCAPE = "*'\\u'*"        # shell: any payload holding a backslash and a u (a JSON \uXXXX escape)
+_JSON_U_ESCAPE = "*'\\u'*"  # shell: any payload holding a backslash and a u (a JSON \uXXXX escape)
 
 
 def _ci_glob(word: str) -> str:
@@ -579,13 +730,21 @@ def _lower_lookalikes(letters: str) -> tuple:
     k), so such a character could complete a shell word without its ASCII spelling.  Basic Multilingual Plane only,
     like _fold_lookalikes; the tests scan every code point."""
     want = set(letters)
-    return tuple(ch for ch in map(chr, range(0x80, 0x10000))
-                 if not 0xD800 <= ord(ch) < 0xE000 and want.intersection(ch.lower()))
+    return tuple(
+        ch
+        for ch in map(chr, range(0x80, 0x10000))
+        if not 0xD800 <= ord(ch) < 0xE000 and want.intersection(ch.lower())
+    )
 
 
-def render_hook_shim(facts: GuardFacts | None = None, *, module: str | None = None,
-                     purpose: Sequence[str] | None = None, extra_words: Sequence[str] = (),
-                     extra_globs: Sequence[str] = ()) -> str:
+def render_hook_shim(
+    facts: GuardFacts | None = None,
+    *,
+    module: str | None = None,
+    purpose: Sequence[str] | None = None,
+    extra_words: Sequence[str] = (),
+    extra_globs: Sequence[str] = (),
+) -> str:
     """lane-guard-hook.  Relocatable: it derives its directory from $0, so a staged copy runs itself.
     `module` and `purpose` make the same script for another hook module (fleet-guard-hook); with empty
     GuardFacts there is no prefilter.
@@ -607,11 +766,14 @@ def render_hook_shim(facts: GuardFacts | None = None, *, module: str | None = No
     out = [
         "#!/bin/sh",
         f"# {GENERATED_MARK}.  Do not edit; run `python3 -m fleet_lanes.install_tools apply tools`.",
-    ] + list(purpose or (
-        "# Runs the temp-checkout guard from THIS directory's copy of fleet_lanes, never from the caller's",
-        "# working directory (-I).  The guard allows on any internal error, so `install_tools verify`",
-        "# is the proof that it denies.  Arguments (--format FMT) pass through.",
-    ))
+    ] + list(
+        purpose
+        or (
+            "# Runs the temp-checkout guard from THIS directory's copy of fleet_lanes, never from the caller's",
+            "# working directory (-I).  The guard allows on any internal error, so `install_tools verify`",
+            "# is the proof that it denies.  Arguments (--format FMT) pass through.",
+        )
+    )
     if facts.words:
         out += [
             "# Prefilter: a payload with none of the guard's trigger words (copied from guard.py when this file was",
@@ -632,7 +794,7 @@ def render_hook_shim(facts: GuardFacts | None = None, *, module: str | None = No
         "  PYTHONPATH=$D",
         "  FLEET_APPS_JSON=$D/fleet-apps.json",
         "  export PYTHONPATH FLEET_APPS_JSON",
-        f"  exec /usr/bin/env python3 -I -c '{boot}' \"$D\" \"$@\"",
+        f'  exec /usr/bin/env python3 -I -c \'{boot}\' "$D" "$@"',
         "}",
     ] + _C_LOCALE_LINES
     if not facts.words:
@@ -654,7 +816,7 @@ def render_hook_shim(facts: GuardFacts | None = None, *, module: str | None = No
     out += [f"{indent}  *) exit 0 ;;", f"{indent}esac"]
     if facts.max_chars:
         out.append("  fi")
-    out += ["  printf '%s' \"$_lg_in\" | _lg_py \"$@\"", "else", '  _lg_py "$@"', "fi"]
+    out += ['  printf \'%s\' "$_lg_in" | _lg_py "$@"', "else", '  _lg_py "$@"', "fi"]
     return "\n".join(out) + "\n"
 
 
@@ -673,15 +835,32 @@ FLEET_SHIM_PURPOSE = (
 # .pem, .p12, .key.  Rule B needs Bearer or Authorization.  Rule C2 needs pgrep.  Rule E needs a variable whose name
 # holds KEY, TOKEN, SECRET, PASSWORD, PASSWD, DSN (APIKEY and API_KEY hold KEY).  Rule C is `ps` followed by white space:
 # SECRET_PS_GLOBS.  The tests check these against the guard's own tables and run every rule through the shim.
-SECRET_WORDS = ("bearer", "authorization", "pgrep", ".secrets", "credentials", "client_info", ".env", "id_rsa",
-                ".pem", ".p12", "key", "token", "secret", "passw", "dsn")
+SECRET_WORDS = (
+    "bearer",
+    "authorization",
+    "pgrep",
+    ".secrets",
+    "credentials",
+    "client_info",
+    ".env",
+    "id_rsa",
+    ".pem",
+    ".p12",
+    "key",
+    "token",
+    "secret",
+    "passw",
+    "dsn",
+)
 
 
 def _secret_ps_globs() -> tuple:
     """`ps` followed by white space, as Python's \\s reads it:  an ASCII space, a backslash (a JSON \\t, \\n, \\r, \\f or
     \\v escape; a \\u escape is caught by the general rule), or a non-ASCII white-space character."""
     space = re.compile(r"\s")
-    wide = [chr(c) for c in range(0x80, 0x10000) if not 0xD800 <= c < 0xE000 and space.fullmatch(chr(c))]
+    wide = [
+        chr(c) for c in range(0x80, 0x10000) if not 0xD800 <= c < 0xE000 and space.fullmatch(chr(c))
+    ]
     return ("*[pP][sS]' '*", "*[pP][sS]'\\'*") + tuple(f"*[pP][sS]{ch}*" for ch in wide)
 
 
@@ -694,18 +873,35 @@ def render_fleet_hook_shim(facts: GuardFacts | None = None) -> str:
     an ordinary shell call exits 0 in `sh` without starting Python, and every call either guard could deny reaches it.
     With no lane facts there is no prefilter at all."""
     facts = read_guard_facts() if facts is None else facts
-    return render_hook_shim(GuardFacts(facts.words, facts.lookalikes, facts.max_chars, (), facts.problems),
-                            module=f"{PACKAGE}.fleet_guard_hook", purpose=FLEET_SHIM_PURPOSE,
-                            extra_words=SECRET_WORDS, extra_globs=SECRET_PS_GLOBS)
+    return render_hook_shim(
+        GuardFacts(facts.words, facts.lookalikes, facts.max_chars, (), facts.problems),
+        module=f"{PACKAGE}.fleet_guard_hook",
+        purpose=FLEET_SHIM_PURPOSE,
+        extra_words=SECRET_WORDS,
+        extra_globs=SECRET_PS_GLOBS,
+    )
 
 
 def render_clutch_hooks(stable: str) -> str:
     """The fleet-only hooks.json Clutch's @deepseek-ai/dsh-hooks-claude-code bridge reads.  The matcher is the engine's
     shell tool, `bash`; the command is the fleet hook in the Claude contract (hookSpecificOutput deny), which the
     bridge maps to a model-visible refusal.  Absolute paths only."""
-    doc = {"hooks": {"PreToolUse": [{"matcher": "bash", "hooks": [{
-        "type": "command", "command": f"{shlex.quote(os.path.join(stable, FLEET_HOOK_NAME))} --format claude",
-        "timeout": HOOK_TIMEOUT_S}]}]}}
+    doc = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": f"{shlex.quote(os.path.join(stable, FLEET_HOOK_NAME))} --format claude",
+                            "timeout": HOOK_TIMEOUT_S,
+                        }
+                    ],
+                }
+            ]
+        }
+    }
     return json.dumps(doc, indent=2) + "\n"
 
 
@@ -716,14 +912,15 @@ def render_lane_shim(stable: str) -> str:
         f"# {GENERATED_MARK}.  Do not edit; run `python3 -m fleet_lanes.install_tools apply tools`.\n"
         "# Same as `python3 -m fleet_lanes.lane`, but from the stable copy and not from the working directory.\n"
         f"D={shlex.quote(stable)}\n"
-        'PYTHONPATH=$D\n'
-        'FLEET_APPS_JSON=$D/fleet-apps.json\n'
-        'export PYTHONPATH FLEET_APPS_JSON\n'
-        f"exec /usr/bin/env python3 -I -c '{boot}' \"$D\" \"$@\"\n"
+        "PYTHONPATH=$D\n"
+        "FLEET_APPS_JSON=$D/fleet-apps.json\n"
+        "export PYTHONPATH FLEET_APPS_JSON\n"
+        f'exec /usr/bin/env python3 -I -c \'{boot}\' "$D" "$@"\n'
     )
 
 
 # --------------------------------------------------------------------------- Muse Code: plugin bundle and seat shim
+
 
 def render_muse_manifest(stable: str) -> str:
     """.muse-plugin/plugin.json.  Muse rejects a `matcher` on a plugin hook, so there is none; the command is an
@@ -736,18 +933,20 @@ def render_muse_manifest(stable: str) -> str:
         "displayName": "Fleet Guards",
         "version": "1.1.0",
         "description": "Denies fleet-repo checkouts in temp directories (the Lane Map temp guard) and the commands the "
-                       "secret guard blocks (ps, dumps of secret files).",
+        "secret guard blocks (ps, dumps of secret files).",
         "compat": {"source": "native", "manifestDir": ".muse-plugin"},
         "capabilities": {
             "skills": [],
             "commands": [],
-            "hooks": [{
-                "id": "lane-guard",
-                "event": "PreToolUse",
-                "command": ["/bin/sh", os.path.join(stable, *MUSE_WRAPPER.split("/"))],
-                "timeoutMs": MUSE_HOOK_TIMEOUT_MS,
-                "statusMessage": "Checking fleet guards",
-            }],
+            "hooks": [
+                {
+                    "id": "lane-guard",
+                    "event": "PreToolUse",
+                    "command": ["/bin/sh", os.path.join(stable, *MUSE_WRAPPER.split("/"))],
+                    "timeoutMs": MUSE_HOOK_TIMEOUT_MS,
+                    "statusMessage": "Checking fleet guards",
+                }
+            ],
             "mcpServers": [],
             "reminders": [],
         },
@@ -760,7 +959,9 @@ def muse_hook_argv(stable: str) -> list:
     return ["/bin/sh", os.path.join(stable, *MUSE_WRAPPER.split("/"))]
 
 
-MUSE_KEY_WINDOW = 4096     # the Muse wrapper reads a tool key only when it starts in the payload's first 4096 bytes
+MUSE_KEY_WINDOW = (
+    4096  # the Muse wrapper reads a tool key only when it starts in the payload's first 4096 bytes
+)
 
 
 def _muse_key_function(key: str, facts: GuardFacts, absent: str | None) -> list:
@@ -796,7 +997,9 @@ def _muse_key_function(key: str, facts: GuardFacts, absent: str | None) -> list:
     ]
     for hint in facts.shell_hints:
         out.append(f"    *{k}{_ci_glob(hint)}) return 1 ;;")
-    for ch in _lower_lookalikes("".join(sorted({c for h in facts.shell_hints for c in h if c.isalpha()}))):
+    for ch in _lower_lookalikes(
+        "".join(sorted({c for h in facts.shell_hints for c in h if c.isalpha()}))
+    ):
         out.append(f"    *{k}*{ch}*) return 1 ;;")
     out += [
         "  esac",
@@ -868,7 +1071,9 @@ def render_muse_wrapper(stable: str, facts: GuardFacts | None = None) -> str:
     return "\n".join(out) + "\n"
 
 
-MUSE_SEAT_ACTIVE = "_MUSE_SEAT_ACTIVE"     # exported by muse-seat; set means "muse-seat already ran in this chain"
+MUSE_SEAT_ACTIVE = (
+    "_MUSE_SEAT_ACTIVE"  # exported by muse-seat; set means "muse-seat already ran in this chain"
+)
 
 
 def render_muse_seat() -> str:
@@ -883,7 +1088,7 @@ def render_muse_seat() -> str:
         f"# {GENERATED_MARK}.  Do not edit; run `python3 -m fleet_lanes.install_tools apply tools`.\n"
         f"# Starts Muse Code as the {MUSE_SEAT_TAG} seat: sets AGENT_SEAT and AGENT_TAG, then runs the real `muse`.\n"
         "# Arguments pass through.  The seat is set here, never guessed from a folder or a branch.\n"
-        f"if [ -n \"${{{MUSE_SEAT_ACTIVE}-}}\" ]; then\n"
+        f'if [ -n "${{{MUSE_SEAT_ACTIVE}-}}" ]; then\n'
         "  echo 'muse-seat: muse-seat is already running in this chain of processes.  Either the muse found on PATH "
         "is a script that starts muse-seat again (put the real muse first in PATH), or this is a session muse-seat "
         f"started, where AGENT_SEAT is already {MUSE_SEAT_TAG}: run muse itself.' >&2\n"
@@ -905,7 +1110,7 @@ def render_muse_seat() -> str:
         "fi\n"
         'if [ "$_ms_real" -ef "$_ms_self" ]; then\n'
         "  printf 'muse-seat: the muse found on PATH (%s) is this wrapper itself; put the real muse first "
-        "in PATH, or call it by its full path.\\n' \"$_ms_real\" >&2\n"
+        'in PATH, or call it by its full path.\\n\' "$_ms_real" >&2\n'
         "  exit 127\n"
         "fi\n"
         'exec "$_ms_real" "$@"\n'
@@ -938,6 +1143,7 @@ def is_ours(command: object) -> bool:
 
 # --------------------------------------------------------------------------- the stable dir
 
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -950,7 +1156,7 @@ def tree_digest(files: Mapping[str, bytes]) -> str:
 
 
 def _package_version(init_text: str) -> str:
-    m = re.search(r"""^__version__\s*=\s*['"]([^'"]+)['"]""", init_text, re.M)
+    m = re.search(r"""^__version__\s*=\s*['"]([^'"]+)['"]""", init_text, re.MULTILINE)
     return m.group(1) if m else "unknown"
 
 
@@ -965,8 +1171,9 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
     pkg = os.path.join(src.scripts_dir, PACKAGE)
     if not os.path.isdir(pkg):
         raise Refused(f"source has no {PACKAGE}/ directory: {src.scripts_dir}")
-    names = sorted(n for n in os.listdir(pkg)
-                   if n.endswith(".py") and os.path.isfile(os.path.join(pkg, n)))
+    names = sorted(
+        n for n in os.listdir(pkg) if n.endswith(".py") and os.path.isfile(os.path.join(pkg, n))
+    )
     missing = [m for m in REQUIRED_MODULES if m not in names]
     if missing:
         raise Refused(f"source {PACKAGE}/ lacks required modules: {', '.join(missing)}")
@@ -975,7 +1182,11 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
         reg = json.loads(reg_bytes.decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise Refused(f"registry {src.registry} is unreadable: {exc}")
-    if not isinstance(reg, dict) or not isinstance(reg.get("apps"), list) or not isinstance(reg.get("seats"), list):
+    if (
+        not isinstance(reg, dict)
+        or not isinstance(reg.get("apps"), list)
+        or not isinstance(reg.get("seats"), list)
+    ):
         raise Refused(f"registry {src.registry} needs top-level 'apps' and 'seats' lists")
     files: dict[str, bytes] = {f"{PACKAGE}/{n}": _read_bytes(os.path.join(pkg, n)) for n in names}
     files[REGISTRY_NAME] = reg_bytes
@@ -992,8 +1203,10 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
     files[MUSE_MANIFEST] = render_muse_manifest(paths.stable).encode("utf-8")
     files[MUSE_WRAPPER] = render_muse_wrapper(paths.stable, facts).encode("utf-8")
     init_text = files[f"{PACKAGE}/__init__.py"].decode("utf-8", "replace")
-    version = (f"sha={src.sha}\npackage={_package_version(init_text)}\nfiles={len(files)}\n"
-               f"tree={tree_digest(files)}\n")
+    version = (
+        f"sha={src.sha}\npackage={_package_version(init_text)}\nfiles={len(files)}\n"
+        f"tree={tree_digest(files)}\n"
+    )
     files[VERSION_NAME] = version.encode("utf-8")
     return files
 
@@ -1017,7 +1230,13 @@ def read_tree(root: str) -> dict[str, bytes]:
 
 _TREE_RE = re.compile(r"^[0-9a-f]{64}$")
 _PKG_FILE_RE = re.compile(re.escape(PACKAGE) + r"/[^/]+\.py")
-_TOP_FILES = (VERSION_NAME, REGISTRY_NAME, HOOK_NAME, FLEET_HOOK_NAME, CLUTCH_HOOKS_FILE) + _MUSE_FILES
+_TOP_FILES = (
+    VERSION_NAME,
+    REGISTRY_NAME,
+    HOOK_NAME,
+    FLEET_HOOK_NAME,
+    CLUTCH_HOOKS_FILE,
+) + _MUSE_FILES
 
 
 def _expected_shape(rel: str) -> bool:
@@ -1046,7 +1265,11 @@ def scan_stable(root: str) -> tuple[dict[str, bytes], list[str]]:
             else:
                 walk.append(d)
         dirnames[:] = walk
-        if reld not in ("", PACKAGE) and not walk and not [f for f in filenames if f != ".DS_Store"]:
+        if (
+            reld not in ("", PACKAGE)
+            and not walk
+            and not [f for f in filenames if f != ".DS_Store"]
+        ):
             extras.append(reld + "/")
         for fn in sorted(filenames):
             if fn == ".DS_Store":
@@ -1161,22 +1384,24 @@ def _is_generated(path: str) -> bool:
 @dataclass
 class FileStatus:
     rel: str
-    status: str          # new, changed, same, stale
+    status: str  # new, changed, same, stale
 
 
 @dataclass
 class ToolsPlan:
     stable: str
-    state: str                      # missing, current, stale, foreign
+    state: str  # missing, current, stale, foreign
     files: list[FileStatus]
     version_text: str
     hook_shim_text: str
-    lane_shim_text: str | None      # None when the source has no lane.py
-    lane_shim_state: str            # new, changed, same, skipped, stale, foreign
+    lane_shim_text: str | None  # None when the source has no lane.py
+    lane_shim_state: str  # new, changed, same, skipped, stale, foreign
     sha: str
     problems: list[str] = field(default_factory=list)
-    lane_detail: str = ""           # for a foreign lane shim: what is at the path instead
-    warnings: list[str] = field(default_factory=list)   # a prefilter or tool filter that could not be generated
+    lane_detail: str = ""  # for a foreign lane shim: what is at the path instead
+    warnings: list[str] = field(
+        default_factory=list
+    )  # a prefilter or tool filter that could not be generated
     facts: GuardFacts = field(default_factory=GuardFacts)
     seat_shim_text: str = ""
     muse_manifest_text: str = ""
@@ -1189,7 +1414,9 @@ def _stable_location_problems(src: Source, paths: Paths) -> list[str]:
     out: list[str] = []
     for label, p in (("source", src.scripts_dir), ("registry", src.registry), ("home", paths.home)):
         if _is_within(os.path.realpath(p), stable):
-            out.append(f"{paths.stable} would hold the {label} ({p}); replacing it would delete the {label}")
+            out.append(
+                f"{paths.stable} would hold the {label} ({p}); replacing it would delete the {label}"
+            )
     return out
 
 
@@ -1210,17 +1437,25 @@ def plan_tools(src: Source, paths: Paths, *, replace_extra: bool = False) -> Too
         state = "current"
         problems.extend(_stable_location_problems(src, paths))
         if os.path.lexists(os.path.join(paths.stable, ".git")):
-            problems.append(f"{paths.stable} contains a .git entry: it is a checkout, never a lane-tools dir")
+            problems.append(
+                f"{paths.stable} contains a .git entry: it is a checkout, never a lane-tools dir"
+            )
         existing, extras = scan_stable(paths.stable)
         if existing or extras:
             why = not_ours(existing)
             if why:
-                problems.append(f"{paths.stable} is not empty and is not a lane-tools dir this tool wrote ({why})")
+                problems.append(
+                    f"{paths.stable} is not empty and is not a lane-tools dir this tool wrote ({why})"
+                )
             elif extras and not replace_extra:
-                shown = ", ".join(extras[:3]) + (f" and {len(extras) - 3} more" if len(extras) > 3 else "")
-                problems.append(f"{paths.stable} holds {len(extras)} entr{'y' if len(extras) == 1 else 'ies'} "
-                                f"this tool never writes ({shown}); pass --replace-extra to have them deleted, "
-                                "or choose another --stable-dir")
+                shown = ", ".join(extras[:3]) + (
+                    f" and {len(extras) - 3} more" if len(extras) > 3 else ""
+                )
+                problems.append(
+                    f"{paths.stable} holds {len(extras)} entr{'y' if len(extras) == 1 else 'ies'} "
+                    f"this tool never writes ({shown}); pass --replace-extra to have them deleted, "
+                    "or choose another --stable-dir"
+                )
         if problems:
             state = "foreign"
     elif os.path.lexists(paths.stable):
@@ -1244,7 +1479,11 @@ def plan_tools(src: Source, paths: Paths, *, replace_extra: bool = False) -> Too
         lane_text = render_lane_shim(paths.stable)
         if not os.path.lexists(paths.lane_shim):
             lane_state = "new"
-        elif os.path.isfile(paths.lane_shim) and not os.path.islink(paths.lane_shim) and _is_generated(paths.lane_shim):
+        elif (
+            os.path.isfile(paths.lane_shim)
+            and not os.path.islink(paths.lane_shim)
+            and _is_generated(paths.lane_shim)
+        ):
             same = _read_bytes(paths.lane_shim) == lane_text.encode("utf-8")
             lane_state = "same" if same and os.access(paths.lane_shim, os.X_OK) else "changed"
         else:
@@ -1255,17 +1494,27 @@ def plan_tools(src: Source, paths: Paths, *, replace_extra: bool = False) -> Too
     elif os.path.lexists(paths.lane_shim) and _is_generated(paths.lane_shim):
         lane_state = "stale"
     facts = read_guard_facts(src.scripts_dir)
-    return ToolsPlan(stable=paths.stable, state=state, files=statuses,
-                     version_text=files[VERSION_NAME].decode("utf-8"),
-                     hook_shim_text=files[HOOK_NAME].decode("utf-8"), lane_shim_text=lane_text,
-                     lane_shim_state=lane_state, sha=src.sha, problems=problems, lane_detail=lane_detail,
-                     warnings=list(facts.problems), facts=facts,
-                     seat_shim_text=files[MUSE_SEAT_NAME].decode("utf-8"),
-                     muse_manifest_text=files[MUSE_MANIFEST].decode("utf-8"),
-                     muse_wrapper_text=files[MUSE_WRAPPER].decode("utf-8"))
+    return ToolsPlan(
+        stable=paths.stable,
+        state=state,
+        files=statuses,
+        version_text=files[VERSION_NAME].decode("utf-8"),
+        hook_shim_text=files[HOOK_NAME].decode("utf-8"),
+        lane_shim_text=lane_text,
+        lane_shim_state=lane_state,
+        sha=src.sha,
+        problems=problems,
+        lane_detail=lane_detail,
+        warnings=list(facts.problems),
+        facts=facts,
+        seat_shim_text=files[MUSE_SEAT_NAME].decode("utf-8"),
+        muse_manifest_text=files[MUSE_MANIFEST].decode("utf-8"),
+        muse_wrapper_text=files[MUSE_WRAPPER].decode("utf-8"),
+    )
 
 
 # --------------------------------------------------------------------------- running probes
+
 
 @dataclass
 class RunResult:
@@ -1280,8 +1529,14 @@ def run_shell(command: str, stdin: bytes, env: Mapping[str, str], timeout: float
     """`/bin/sh -c command` with `stdin`, the way a platform runs a hook command.  The process group
     is killed on a timeout.  The working directory is inherited on purpose: the shims must not care."""
     try:
-        proc = subprocess.Popen(["/bin/sh", "-c", command], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, env=dict(env), start_new_session=True)
+        proc = subprocess.Popen(
+            ["/bin/sh", "-c", command],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=dict(env),
+            start_new_session=True,
+        )
     except OSError as exc:
         return RunResult(None, b"", b"", error=f"cannot start /bin/sh: {exc}")
     try:
@@ -1296,12 +1551,25 @@ def run_shell(command: str, stdin: bytes, env: Mapping[str, str], timeout: float
     return RunResult(proc.returncode, out, err)
 
 
-def run_argv(argv: Sequence[str], stdin: bytes, env: Mapping[str, str], timeout: float, cwd: str | None = None) -> RunResult:
+def run_argv(
+    argv: Sequence[str],
+    stdin: bytes,
+    env: Mapping[str, str],
+    timeout: float,
+    cwd: str | None = None,
+) -> RunResult:
     """`argv` run directly (no shell) with exactly `env`, the way a hook runner that clears the environment starts a
     plugin hook.  The process group is killed on a timeout."""
     try:
-        proc = subprocess.Popen(list(argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                env=dict(env), cwd=cwd, start_new_session=True)
+        proc = subprocess.Popen(
+            list(argv),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=dict(env),
+            cwd=cwd,
+            start_new_session=True,
+        )
     except OSError as exc:
         return RunResult(None, b"", b"", error=f"cannot start {argv[0] if argv else '?'}: {exc}")
     try:
@@ -1328,18 +1596,38 @@ def probe_env(home: str, path: str | None, base: Mapping[str, str] | None = None
 
 def probe_payload(shape: str, command: str, cwd: str) -> dict:
     """One hook payload per platform payload shape (the shapes guard._extract reads)."""
-    if shape == "antigravity":      # UNVERIFIED: run_command with tool_input.CommandLine and Cwd
-        return {"hook_event_name": "PreToolUse", "tool_name": "run_command",
-                "tool_input": {"CommandLine": command, "Cwd": cwd}}
-    if shape == "cursor":           # beforeShellExecution: command, cwd and workspace_roots at the top level
-        return {"hook_event_name": "beforeShellExecution", "command": command, "cwd": cwd,
-                "workspace_roots": [cwd]}
-    if shape in ("muse", "dsh"):    # a payload whose shell tool is named "bash", in lower case (Muse Code, the DSH engine)
-        return {"hook_event_name": "PreToolUse", "session_id": "lane-verify", "cwd": cwd,
-                "permission_mode": "default", "tool_name": "bash",
-                "tool_input": {"command": command, "description": "lane-guard verify"}}
-    return {"session_id": "lane-verify", "hook_event_name": "PreToolUse", "tool_name": "Bash",
-            "tool_input": {"command": command, "description": "lane-guard verify"}, "cwd": cwd}
+    if shape == "antigravity":  # UNVERIFIED: run_command with tool_input.CommandLine and Cwd
+        return {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "run_command",
+            "tool_input": {"CommandLine": command, "Cwd": cwd},
+        }
+    if shape == "cursor":  # beforeShellExecution: command, cwd and workspace_roots at the top level
+        return {
+            "hook_event_name": "beforeShellExecution",
+            "command": command,
+            "cwd": cwd,
+            "workspace_roots": [cwd],
+        }
+    if shape in (
+        "muse",
+        "dsh",
+    ):  # a payload whose shell tool is named "bash", in lower case (Muse Code, the DSH engine)
+        return {
+            "hook_event_name": "PreToolUse",
+            "session_id": "lane-verify",
+            "cwd": cwd,
+            "permission_mode": "default",
+            "tool_name": "bash",
+            "tool_input": {"command": command, "description": "lane-guard verify"},
+        }
+    return {
+        "session_id": "lane-verify",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": command, "description": "lane-guard verify"},
+        "cwd": cwd,
+    }
 
 
 def check_deny_output(fmt: str, out: bytes, marker: str = DENY_MARKER) -> str | None:
@@ -1371,12 +1659,15 @@ def check_deny_output(fmt: str, out: bytes, marker: str = DENY_MARKER) -> str | 
     else:
         return f"unknown format {fmt!r}"
     if not isinstance(reason, str) or marker not in reason:
-        return "deny reason does not name the probe destination" if marker == DENY_MARKER \
+        return (
+            "deny reason does not name the probe destination"
+            if marker == DENY_MARKER
             else f"deny reason does not name {marker}"
+        )
     return None
 
 
-def check_exit2_output(res: "RunResult", marker: str = DENY_MARKER) -> str | None:
+def check_exit2_output(res: RunResult, marker: str = DENY_MARKER) -> str | None:
     """None when `res` is the exit-2 contract's deny (exit code 2, reason on stderr, nothing on stdout)."""
     if res.returncode != 2:
         return f"exit {res.returncode}, expected 2 (the exit-2 contract)"
@@ -1396,7 +1687,7 @@ def _brief(data: bytes, limit: int = 300) -> str:
 class Check:
     target: str
     name: str
-    status: str            # PASS, FAIL, WARN, SKIP
+    status: str  # PASS, FAIL, WARN, SKIP
     detail: str = ""
 
     def line(self) -> str:
@@ -1410,8 +1701,17 @@ def _variants(minimal_path: bool) -> list[tuple[str, str | None]]:
     return out
 
 
-def probe_command(command: str, *, target: str, fmt: str, shape: str, home: str, timeout: float,
-                  minimal_path: bool = True, secret: bool = False) -> list[Check]:
+def probe_command(
+    command: str,
+    *,
+    target: str,
+    fmt: str,
+    shape: str,
+    home: str,
+    timeout: float,
+    minimal_path: bool = True,
+    secret: bool = False,
+) -> list[Check]:
     """Run `command` (a hook command string) against the deny and the allow payload, once per PATH.  With `secret`
     (the fleet hook) a third payload, a `ps`, must be denied too, in the same contract."""
     checks: list[Check] = []
@@ -1421,7 +1721,9 @@ def probe_command(command: str, *, target: str, fmt: str, shape: str, home: str,
     for vname, vpath in _variants(minimal_path):
         env = probe_env(home, vpath)
         for kind, cmd, must_deny, marker in cases:
-            res = run_shell(command, json.dumps(probe_payload(shape, cmd, home)).encode("utf-8"), env, timeout)
+            res = run_shell(
+                command, json.dumps(probe_payload(shape, cmd, home)).encode("utf-8"), env, timeout
+            )
             problem: str | None = None
             if res.error:
                 problem = res.error
@@ -1447,155 +1749,306 @@ def probe_command(command: str, *, target: str, fmt: str, shape: str, home: str,
 
 # --------------------------------------------------------------------------- platforms and config shapes
 
+
 @dataclass(frozen=True)
 class Platform:
     key: str
     label: str
-    fmt: str                          # the --format value
-    shape: str                        # payload shape the probes use
-    style: str                        # claude (nested groups), cursor (flat list), antigravity (named groups)
-    event: str                        # the config event that gates a tool call
-    matcher: str | None               # tool name the entry must match
-    platform_dir: str                 # must exist, relative to home
-    config_rel: str                   # config file, relative to home
-    supported: bool = True            # a hook entry in a config file that this tool writes
-    kind: str = "config"              # "plugin": no config file is edited (Muse Code takes hooks from a plugin)
+    fmt: str  # the --format value
+    shape: str  # payload shape the probes use
+    style: str  # claude (nested groups), cursor (flat list), antigravity (named groups)
+    event: str  # the config event that gates a tool call
+    matcher: str | None  # tool name the entry must match
+    platform_dir: str  # must exist, relative to home
+    config_rel: str  # config file, relative to home
+    supported: bool = True  # a hook entry in a config file that this tool writes
+    kind: str = (
+        "config"  # "plugin": no config file is edited (Muse Code takes hooks from a plugin);
+    )
+    # "block": a marked block in a file we do not own; "bundle": a plugin directory
+    # this tool owns outright, outside the stable dir (MiniMax Code)
+    in_all: bool = (
+        False  # reached by `all` although it is not a config-file platform (kind "bundle")
+    )
     new_mode: int = 0o644
-    hook_extra: tuple = ()            # extra keys of the hook object, as (key, value) pairs
+    hook_extra: tuple = ()  # extra keys of the hook object, as (key, value) pairs
     notes: tuple = ()
     unverified: tuple = ()
 
 
-PLATFORMS: dict[str, Platform] = {p.key: p for p in (
-    Platform(
-        "claude", "Claude Code (CLI and desktop app)", "claude", "claude", "claude", "PreToolUse", "Bash",
-        ".claude", ".claude/settings.json", new_mode=0o600,
-        hook_extra=(("timeout", HOOK_TIMEOUT_S), ("statusMessage", "Checking checkout location")),
-        notes=("New last group under hooks.PreToolUse, matcher Bash.  Existing groups, order and formatting stay.",
-               "Keeps the file's mode (settings.json is 0600 and its env block can hold secrets).",
-               "Start a new session after applying: a running session may keep the hooks it started with."),
-        unverified=("Whether a running session reloads an edited settings.json.",),
-    ),
-    Platform(
-        "codex", "Codex (CLI and desktop app)", "codex", "claude", "claude", "PreToolUse", "Bash",
-        ".codex", ".codex/hooks.json",
-        hook_extra=(("timeout", HOOK_TIMEOUT_S), ("statusMessage", "Checking checkout location")),
-        notes=("Same output format as Claude.  The entry is appended as the LAST group, so the trust Codex "
-               "recorded for the existing hooks (config.toml hooks.state, keyed by position) stays valid.",
-               "Codex re-trusts hooks by hash after an edit.  Review and trust the new hook with /hooks in "
-               "Codex.  This tool never edits config.toml; verify reports whether a trust record exists and "
-               "whether [features] hooks is on."),
-        unverified=("That a hook with no trust record is inactive.",
-                    "How Codex computes trusted_hash.  The record is found by its header only, so it is reported as "
-                    "`hash UNCHECKED` (a WARN, never a PASS) and --strict always fails for codex.",
-                    "What Codex does when [features] hooks is absent from config.toml (verify fails only when the key "
-                    "is present and not true)."),
-    ),
-    Platform(
-        "grok", "Grok and Grok Build", "grok", "claude", "claude", "PreToolUse", "Bash",
-        ".grok", ".grok/hooks/" + GROK_FILE,
-        hook_extra=(("timeout", HOOK_TIMEOUT_S),),
-        notes=("Its own file, hooks/lane-guard.json.  imported-from-claude.json looks generated and is left alone.",
-               "Output is {decision, reason}; do not rely on Grok reading the Claude settings file."),
-        unverified=("Grok also loads ~/.claude/settings.json hooks when compat.claude.hooks is on, so it may "
-                    "run both entries (harmless: a deny from either wins).",
-                    "That a hooks/*.json file written by this tool is picked up without a Grok restart."),
-    ),
-    Platform(
-        "antigravity", "Antigravity (agy CLI)", "antigravity", "antigravity", "antigravity", "PreToolUse",
-        "run_command", ".gemini", ".gemini/config/hooks.json",
-        hook_extra=(("timeout", HOOK_TIMEOUT_S), ("type", "command")),
-        notes=("Own named group 'lane-guard' in ~/.gemini/config/hooks.json; the other groups are untouched.",),
-        unverified=("Where the matcher key goes in an Antigravity PreToolUse entry (placed flat in the entry; "
-                    "the hook allows every non-shell tool, so a misplaced matcher is harmless).",
-                    "That the IDE builds fire PreToolUse at all (CLI documented, IDE reported not to).",
-                    "The payload field names run_command sends (the guard reads CommandLine and Cwd)."),
-    ),
-    Platform(
-        "cursor", "Cursor", "cursor", "cursor", "cursor", "beforeShellExecution", None,
-        ".cursor", ".cursor/hooks.json",
-        hook_extra=(("timeout", HOOK_TIMEOUT_S), ("failClosed", False)),
-        notes=("beforeShellExecution with failClosed false: a broken hook must not block ALL shell use.  The "
-               "cost is that a broken install fails open, so only `verify` proves it works.",
-               "Worktrees Cursor creates itself never go through a shell hook."),
-        unverified=("That Cursor re-reads hooks.json without a restart.",),
-    ),
-    Platform(
-        "muse", "Muse Code (plugin)", "muse", "muse", "claude", "PreToolUse", None,
-        ".config/muse", ".config/muse/settings.json", supported=False, kind="plugin",
-        notes=("Muse takes hooks from a PLUGIN, not from settings.json.  `apply tools` writes the plugin bundle "
-               f"({MUSE_PLUGIN_DIR}/) into the stable dir with everything else (`apply muse` runs that install); this "
-               "tool never edits Muse's config, and the only muse it runs is `muse plugins validate` in the muse "
-               "verify, confined to a throwaway HOME with auto-update off.  The owner installs and approves the "
-               "plugin (OWNER ACTIONS).",
-               "A plugin hook cannot carry a matcher, so Muse runs the wrapper on every tool call; the wrapper exits "
-               "0 at once only when it can prove the call is not a shell call, and hands everything else to the "
-               "guard.",
-               "Deny output is the Claude shape (hookSpecificOutput, permissionDecision deny); an allow is empty "
-               "stdout and exit 0.  Hooks start outside Muse's sandbox with a cleared environment, so every path "
-               "in the bundle is absolute."),
-        unverified=(f"Whether {MUSE_EXPERIMENTAL_ENV}=1 must be set for plugins to load.",
-                    "Whether a running Muse session picks up a newly approved plugin (start a new session).",
-                    "Whether `muse plugins install` keeps the absolute hook command (it copies the bundle into its "
-                    "cache), and whether an edited wrapper in the stable dir needs a re-approval.",
-                    "That Muse names its only shell tool bash (lower case); the wrapper also accepts the other shell "
-                    "tool words the guard knows.",
-                    "What Muse does when the hook times out or crashes (`timeoutMs` is 15000 here): fail-closed would "
-                    "block shell calls under load, fail-open would switch the guards off exactly then.  The binary's "
-                    "strings did not settle it.  The wrapper and fleet-guard-hook answer an ordinary call in `sh` "
-                    "without starting Python, so a timeout is rare."),
-    ),
-    Platform(
-        "clutch", "Clutch (DSH engine, cordis patch)", "claude", "dsh", "claude", "PreToolUse", "bash",
-        ".clutch/dsh", CLUTCH_PATCH_REL, supported=False, kind="block",
-        notes=("ONE marked block in the home-level cordis patch, ~/.clutch/dsh/cordis.patch.yml, which applies to every "
-               "profile.  It mounts @deepseek-ai/dsh-hooks-claude-code with a fleet-only hooks.json in the stable dir "
-               "(matcher `bash`, the engine's shell tool).  It never points the bridge at ~/.claude/settings.json: that "
-               "file carries Claude-only hooks, such as the session-start seat hook.",
-               "Before it writes, `apply clutch` refuses unless the plugin package resolves under the real "
-               "~/.clutch/dsh/profiles/node_modules (the engine repairs a dangling link only when it boots, so restart "
-               "clutch-web first), then runs the pinned `dsh --profile P --dump-config` for every profile on a scratch "
-               "copy of the profiles: a merge-and-parse check, not a plugin load.  An empty or comment-only patch makes "
-               "the engine exit, so the file this tool creates always holds a block, and removing the last block removes "
-               "the file.",
-               "A profile with `patchReload: live` (clutch-web's `web`) watches this file, so the write reaches the "
-               "running engine at once;  a `startup` profile reads it at its next start.  `apply` prints each profile's "
-               "mode."),
-        unverified=("That a tool call made through the web UI or the ACP bridge reaches the hook with `command` in "
-                    "tool_input (the README says the payload is Claude's; the live proof is a `ps` in a new Clutch "
-                    "session).",
-                    "That a hook that cannot start is only logged: the bridge README says so.  A hook that exits 0 with "
-                    "no output allows."),
-    ),
-    Platform(
-        "kimi", "Kimi Code (config.toml hooks block)", "kimi", "claude", "claude", "PreToolUse", "Bash",
-        ".kimi-code", KIMI_CONFIG_REL, supported=False, kind="block",
-        notes=("ONE marked [[hooks]] block appended to ~/.kimi-code/config.toml.  Kimi Code documents that exit code 2 "
-               "blocks a PreToolUse call and that stderr is the reason, so the command is the fleet hook with `--format "
-               "kimi` (exit 2, reason on stderr, nothing on stdout).  Any other exit, a crash or a timeout allows "
-               "(fail-open).",
-               "The block is checked before it is written: the new file must parse as TOML when tomllib exists, and "
-               "`kimi doctor` (on PATH, else ~/.kimi-code/bin/kimi) must accept a scratch copy of it (the real config is "
-               "never passed to the real home); with no kimi binary the write is refused unless --no-kimi-check.",
-               "Kimi Code rewrites its own config.toml without comments, which deletes the markers.  The entry is "
-               "therefore found by its content (a [[hooks]] table whose command is the fleet hook), never by the "
-               "markers: a current entry that lost them is left as it is, a stale one is replaced where it stands, "
-               "duplicates collapse into one, and the hook named in any other form (an inline hooks array) is refused."),
-        unverified=("That Kimi names its shell tool Bash (its hooks page uses Bash in the example, and the matcher is a "
-                    "regex on the tool name).",
-                    "That a running session picks up the new block: start a new session."),
-    ),
-)}
+PLATFORMS: dict[str, Platform] = {
+    p.key: p
+    for p in (
+        Platform(
+            "claude",
+            "Claude Code (CLI and desktop app)",
+            "claude",
+            "claude",
+            "claude",
+            "PreToolUse",
+            "Bash",
+            ".claude",
+            ".claude/settings.json",
+            new_mode=0o600,
+            hook_extra=(
+                ("timeout", HOOK_TIMEOUT_S),
+                ("statusMessage", "Checking checkout location"),
+            ),
+            notes=(
+                "New last group under hooks.PreToolUse, matcher Bash.  Existing groups, order and formatting stay.",
+                "Keeps the file's mode (settings.json is 0600 and its env block can hold secrets).",
+                "Start a new session after applying: a running session may keep the hooks it started with.",
+            ),
+            unverified=("Whether a running session reloads an edited settings.json.",),
+        ),
+        Platform(
+            "codex",
+            "Codex (CLI and desktop app)",
+            "codex",
+            "claude",
+            "claude",
+            "PreToolUse",
+            "Bash",
+            ".codex",
+            ".codex/hooks.json",
+            hook_extra=(
+                ("timeout", HOOK_TIMEOUT_S),
+                ("statusMessage", "Checking checkout location"),
+            ),
+            notes=(
+                "Same output format as Claude.  The entry is appended as the LAST group, so the trust Codex "
+                "recorded for the existing hooks (config.toml hooks.state, keyed by position) stays valid.",
+                "Codex re-trusts hooks by hash after an edit.  Review and trust the new hook with /hooks in "
+                "Codex.  This tool never edits config.toml; verify reports whether a trust record exists and "
+                "whether [features] hooks is on.",
+            ),
+            unverified=(
+                "That a hook with no trust record is inactive.",
+                "How Codex computes trusted_hash.  The record is found by its header only, so it is reported as "
+                "`hash UNCHECKED` (a WARN, never a PASS) and --strict always fails for codex.",
+                "What Codex does when [features] hooks is absent from config.toml (verify fails only when the key "
+                "is present and not true).",
+            ),
+        ),
+        Platform(
+            "grok",
+            "Grok and Grok Build",
+            "grok",
+            "claude",
+            "claude",
+            "PreToolUse",
+            "Bash",
+            ".grok",
+            ".grok/hooks/" + GROK_FILE,
+            hook_extra=(("timeout", HOOK_TIMEOUT_S),),
+            notes=(
+                "Its own file, hooks/lane-guard.json.  imported-from-claude.json looks generated and is left alone.",
+                "Output is {decision, reason}; do not rely on Grok reading the Claude settings file.",
+            ),
+            unverified=(
+                "Grok also loads ~/.claude/settings.json hooks when compat.claude.hooks is on, so it may "
+                "run both entries (harmless: a deny from either wins).",
+                "That a hooks/*.json file written by this tool is picked up without a Grok restart.",
+            ),
+        ),
+        Platform(
+            "antigravity",
+            "Antigravity (agy CLI)",
+            "antigravity",
+            "antigravity",
+            "antigravity",
+            "PreToolUse",
+            "run_command",
+            ".gemini",
+            ".gemini/config/hooks.json",
+            hook_extra=(("timeout", HOOK_TIMEOUT_S), ("type", "command")),
+            notes=(
+                "Own named group 'lane-guard' in ~/.gemini/config/hooks.json; the other groups are untouched.",
+            ),
+            unverified=(
+                "Where the matcher key goes in an Antigravity PreToolUse entry (placed flat in the entry; "
+                "the hook allows every non-shell tool, so a misplaced matcher is harmless).",
+                "That the IDE builds fire PreToolUse at all (CLI documented, IDE reported not to).",
+                "The payload field names run_command sends (the guard reads CommandLine and Cwd).",
+            ),
+        ),
+        Platform(
+            "cursor",
+            "Cursor",
+            "cursor",
+            "cursor",
+            "cursor",
+            "beforeShellExecution",
+            None,
+            ".cursor",
+            ".cursor/hooks.json",
+            hook_extra=(("timeout", HOOK_TIMEOUT_S), ("failClosed", False)),
+            notes=(
+                "beforeShellExecution with failClosed false: a broken hook must not block ALL shell use.  The "
+                "cost is that a broken install fails open, so only `verify` proves it works.",
+                "Worktrees Cursor creates itself never go through a shell hook.",
+            ),
+            unverified=("That Cursor re-reads hooks.json without a restart.",),
+        ),
+        Platform(
+            "muse",
+            "Muse Code (plugin)",
+            "muse",
+            "muse",
+            "claude",
+            "PreToolUse",
+            None,
+            ".config/muse",
+            ".config/muse/settings.json",
+            supported=False,
+            kind="plugin",
+            notes=(
+                "Muse takes hooks from a PLUGIN, not from settings.json.  `apply tools` writes the plugin bundle "
+                f"({MUSE_PLUGIN_DIR}/) into the stable dir with everything else (`apply muse` runs that install); this "
+                "tool never edits Muse's config, and the only muse it runs is `muse plugins validate` in the muse "
+                "verify, confined to a throwaway HOME with auto-update off.  The owner installs and approves the "
+                "plugin (OWNER ACTIONS).",
+                "A plugin hook cannot carry a matcher, so Muse runs the wrapper on every tool call; the wrapper exits "
+                "0 at once only when it can prove the call is not a shell call, and hands everything else to the "
+                "guard.",
+                "Deny output is the Claude shape (hookSpecificOutput, permissionDecision deny); an allow is empty "
+                "stdout and exit 0.  Hooks start outside Muse's sandbox with a cleared environment, so every path "
+                "in the bundle is absolute.",
+            ),
+            unverified=(
+                f"Whether {MUSE_EXPERIMENTAL_ENV}=1 must be set for plugins to load.",
+                "Whether a running Muse session picks up a newly approved plugin (start a new session).",
+                "Whether `muse plugins install` keeps the absolute hook command (it copies the bundle into its "
+                "cache), and whether an edited wrapper in the stable dir needs a re-approval.",
+                "That Muse names its only shell tool bash (lower case); the wrapper also accepts the other shell "
+                "tool words the guard knows.",
+                "What Muse does when the hook times out or crashes (`timeoutMs` is 15000 here): fail-closed would "
+                "block shell calls under load, fail-open would switch the guards off exactly then.  The binary's "
+                "strings did not settle it.  The wrapper and fleet-guard-hook answer an ordinary call in `sh` "
+                "without starting Python, so a timeout is rare.",
+            ),
+        ),
+        Platform(
+            "clutch",
+            "Clutch (DSH engine, cordis patch)",
+            "claude",
+            "dsh",
+            "claude",
+            "PreToolUse",
+            "bash",
+            ".clutch/dsh",
+            CLUTCH_PATCH_REL,
+            supported=False,
+            kind="block",
+            notes=(
+                "ONE marked block in the home-level cordis patch, ~/.clutch/dsh/cordis.patch.yml, which applies to every "
+                "profile.  It mounts @deepseek-ai/dsh-hooks-claude-code with a fleet-only hooks.json in the stable dir "
+                "(matcher `bash`, the engine's shell tool).  It never points the bridge at ~/.claude/settings.json: that "
+                "file carries Claude-only hooks, such as the session-start seat hook.",
+                "Before it writes, `apply clutch` refuses unless the plugin package resolves under the real "
+                "~/.clutch/dsh/profiles/node_modules (the engine repairs a dangling link only when it boots, so restart "
+                "clutch-web first), then runs the pinned `dsh --profile P --dump-config` for every profile on a scratch "
+                "copy of the profiles: a merge-and-parse check, not a plugin load.  An empty or comment-only patch makes "
+                "the engine exit, so the file this tool creates always holds a block, and removing the last block removes "
+                "the file.",
+                "A profile with `patchReload: live` (clutch-web's `web`) watches this file, so the write reaches the "
+                "running engine at once;  a `startup` profile reads it at its next start.  `apply` prints each profile's "
+                "mode.",
+            ),
+            unverified=(
+                "That a tool call made through the web UI or the ACP bridge reaches the hook with `command` in "
+                "tool_input (the README says the payload is Claude's; the live proof is a `ps` in a new Clutch "
+                "session).",
+                "That a hook that cannot start is only logged: the bridge README says so.  A hook that exits 0 with "
+                "no output allows.",
+            ),
+        ),
+        Platform(
+            "kimi",
+            "Kimi Code (config.toml hooks block)",
+            "kimi",
+            "claude",
+            "claude",
+            "PreToolUse",
+            "Bash",
+            ".kimi-code",
+            KIMI_CONFIG_REL,
+            supported=False,
+            kind="block",
+            notes=(
+                "ONE marked [[hooks]] block appended to ~/.kimi-code/config.toml.  Kimi Code documents that exit code 2 "
+                "blocks a PreToolUse call and that stderr is the reason, so the command is the fleet hook with `--format "
+                "kimi` (exit 2, reason on stderr, nothing on stdout).  Any other exit, a crash or a timeout allows "
+                "(fail-open).",
+                "The block is checked before it is written: the new file must parse as TOML when tomllib exists, and "
+                "`kimi doctor` (on PATH, else ~/.kimi-code/bin/kimi) must accept a scratch copy of it (the real config is "
+                "never passed to the real home); with no kimi binary the write is refused unless --no-kimi-check.",
+                "Kimi Code rewrites its own config.toml without comments, which deletes the markers.  The entry is "
+                "therefore found by its content (a [[hooks]] table whose command is the fleet hook), never by the "
+                "markers: a current entry that lost them is left as it is, a stale one is replaced where it stands, "
+                "duplicates collapse into one, and the hook named in any other form (an inline hooks array) is refused.",
+            ),
+            unverified=(
+                "That Kimi names its shell tool Bash (its hooks page uses Bash in the example, and the matcher is a "
+                "regex on the tool name).",
+                "That a running session picks up the new block: start a new session.",
+            ),
+        ),
+        Platform(
+            "minimax",
+            "MiniMax Code (local plugin bundle)",
+            "claude",
+            "claude",
+            "claude",
+            "PreToolUse",
+            "Bash",
+            ".minimax",
+            MINIMAX_PLUGIN_REL + "/" + MINIMAX_HOOKS_FILE,
+            supported=False,
+            kind="bundle",
+            in_all=True,
+            notes=(
+                f"MiniMax Code reads no settings.json for hooks.  It loads them from a LOCAL PLUGIN: this tool writes the "
+                f"directory ~/{MINIMAX_PLUGIN_REL}/ (a real directory, copied in, never a symlink: MiniMax skips symlinks) "
+                f"with {MINIMAX_MANIFEST_FILE} and {MINIMAX_HOOKS_FILE}, in the Claude-compatible plugin flavour, so the "
+                "matcher is the Claude tool name `Bash`.  Local plugins are enabled by default: there is no install or "
+                "approve step.  Nothing else under ~/.minimax is touched.",
+                "The hook is the fleet hook (lane guard, then secret guard) with `--format claude`, by absolute path into "
+                "the stable dir.  Deny is the Claude shape; MiniMax honours it, and a timeout, a crash or invalid output "
+                "FAILS OPEN, so only `verify` proves it works.  Hook stdin is Claude-shaped JSON; MiniMax gives a hook only "
+                "a small allowlist of environment variables, so no seat or switch reaches it and none is passed.",
+                "It is part of `all` (the owner runs MiniMax Code), and a missing ~/.minimax makes it a skip.  An existing "
+                "directory that holds anything but our two files, or is a symlink, is refused and left alone.",
+                "No SessionStart seat hook is wired: the only one that exists is ~/.claude/monet-sync/session-hook.sh, a "
+                "home-local file with no source in this repo, and this tool installs nothing it cannot copy from the repo.",
+            ),
+            unverified=(
+                "That MiniMax Code fires the hook for its shell tool (verify runs the exact command, not MiniMax): the "
+                "live proof is a new MiniMax session asked to run `ps`, which must be refused.",
+                "Whether MiniMax runs the command through a shell (the path is written unquoted when it has no special "
+                "characters, as it does for the other platforms).",
+                "Whether an already-running MiniMax session picks up a newly written plugin: start a new session.",
+            ),
+        ),
+    )
+}
 # What the owner still has to do after a platform was written.  Printed by `apply`.
 NEXT_STEPS: dict[str, str] = {
     "codex": "review and trust the new hook with /hooks in Codex; until then it is probably inactive",
     "claude": "start a new Claude Code session (a running one may keep the hooks it started with)",
     "clutch": "no restart for a `patchReload: live` profile (clutch-web's web: it watches the file);  a `startup` "
-              "profile reads it at its next start.  Ask a new Clutch session to run `ps` and expect a refusal",
+    "profile reads it at its next start.  Ask a new Clutch session to run `ps` and expect a refusal",
     "kimi": "start a new Kimi Code session, ask it to run `ps`, and expect a refusal",
+    "minimax": "start a new MiniMax Code session, ask it to run `ps`, and expect a refusal (a local plugin is enabled by "
+    "default: nothing to install or approve)",
 }
 PLATFORM_ORDER: tuple[str, ...] = tuple(PLATFORMS)
 SUPPORTED_KEYS: tuple[str, ...] = tuple(k for k in PLATFORM_ORDER if PLATFORMS[k].supported)
+# What `all` reaches: the config-file platforms, then the ones that are not config files but belong to a tool the owner
+# runs and need no owner step afterwards (muse needs an install and an approval, clutch and kimi edit a file we do not own).
+ALL_KEYS: tuple[str, ...] = SUPPORTED_KEYS + tuple(
+    k for k in PLATFORM_ORDER if PLATFORMS[k].in_all and k not in SUPPORTED_KEYS
+)
 
 
 def config_path(paths: Paths, plat: Platform) -> str:
@@ -1620,8 +2073,8 @@ class Entry:
     command: str
     where: str
     problems: list[str]
-    holder: dict            # the dict that holds "command"
-    group: dict | None      # the dict that holds "matcher" (None for cursor)
+    holder: dict  # the dict that holds "command"
+    group: dict | None  # the dict that holds "matcher" (None for cursor)
     group_index: int | None = None
     hook_index: int | None = None
 
@@ -1655,10 +2108,22 @@ def _locate_claude(doc: dict, plat: Platform) -> list[Entry]:
             if isinstance(hook, dict) and is_ours(hook.get("command")):
                 problems: list[str] = []
                 if not _matcher_gates(group.get("matcher"), plat.matcher):
-                    problems.append(f"matcher {group.get('matcher')!r} never matches {plat.matcher}")
+                    problems.append(
+                        f"matcher {group.get('matcher')!r} never matches {plat.matcher}"
+                    )
                 if hook.get("type", "command") != "command":
                     problems.append(f"hook type is {hook.get('type')!r}, not 'command'")
-                out.append(Entry(hook["command"], f"hooks.{plat.event}[{gi}].hooks[{hi}]", problems, hook, group, gi, hi))
+                out.append(
+                    Entry(
+                        hook["command"],
+                        f"hooks.{plat.event}[{gi}].hooks[{hi}]",
+                        problems,
+                        hook,
+                        group,
+                        gi,
+                        hi,
+                    )
+                )
     return out
 
 
@@ -1673,8 +2138,11 @@ def _locate_cursor(doc: dict, plat: Platform) -> list[Entry]:
         return []
     if not isinstance(lst, list):
         raise ShapeError(f"'hooks.{plat.event}' is not a list")
-    return [Entry(h["command"], f"hooks.{plat.event}[{i}]", [], h, None, None, i)
-            for i, h in enumerate(lst) if isinstance(h, dict) and is_ours(h.get("command"))]
+    return [
+        Entry(h["command"], f"hooks.{plat.event}[{i}]", [], h, None, None, i)
+        for i, h in enumerate(lst)
+        if isinstance(h, dict) and is_ours(h.get("command"))
+    ]
 
 
 def _locate_antigravity(doc: dict, plat: Platform) -> list[Entry]:
@@ -1694,12 +2162,16 @@ def _locate_antigravity(doc: dict, plat: Platform) -> list[Entry]:
                     problems.append(f"group '{name}' is disabled")
                 if not _matcher_gates(h.get("matcher"), plat.matcher):
                     problems.append(f"matcher {h.get('matcher')!r} never matches {plat.matcher}")
-                out.append(Entry(h["command"], f"{name}.{plat.event}[{i}]", problems, h, h, name, i))  # type: ignore[arg-type]
+                out.append(
+                    Entry(h["command"], f"{name}.{plat.event}[{i}]", problems, h, h, name, i)
+                )  # type: ignore[arg-type]
     return out
 
 
 _LOCATE: dict[str, Callable[[dict, Platform], list[Entry]]] = {
-    "claude": _locate_claude, "cursor": _locate_cursor, "antigravity": _locate_antigravity,
+    "claude": _locate_claude,
+    "cursor": _locate_cursor,
+    "antigravity": _locate_antigravity,
 }
 
 
@@ -1742,7 +2214,11 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
             first.holder["command"] = command
             notes.append("hook command updated to the current path and format")
             changed = True
-        if plat.style == "claude" and first.group is not None and not _matcher_gates(first.group.get("matcher"), plat.matcher):
+        if (
+            plat.style == "claude"
+            and first.group is not None
+            and not _matcher_gates(first.group.get("matcher"), plat.matcher)
+        ):
             first.group["matcher"] = plat.matcher
             notes.append(f"group matcher corrected to {plat.matcher}")
             changed = True
@@ -1757,7 +2233,9 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
                 notes.append(f"matcher corrected to {plat.matcher}")
                 changed = True
         if len(entries) > 1:
-            notes.append(f"{len(entries) - 1} duplicate {HOOK_NAME} entr{'y' if len(entries) == 2 else 'ies'} left in place")
+            notes.append(
+                f"{len(entries) - 1} duplicate {HOOK_NAME} entr{'y' if len(entries) == 2 else 'ies'} left in place"
+            )
         return new, ("updated" if changed else "unchanged"), notes
     hook = _hook_object(plat, command)
     if plat.style == "claude":
@@ -1768,7 +2246,7 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
         groups.append({"matcher": plat.matcher, "hooks": [hook]})
     elif plat.style == "cursor":
         if not new:
-            new["version"] = 1               # Cursor's hooks.json schema version; only a fresh file needs it
+            new["version"] = 1  # Cursor's hooks.json schema version; only a fresh file needs it
         hooks = new.setdefault("hooks", {})
         lst = hooks.get(plat.event)
         if lst is None:
@@ -1793,16 +2271,24 @@ def merge_document(doc: dict, plat: Platform, command: str) -> tuple[dict, str, 
 def _is_extension(old: object, new: object) -> bool:
     """True when `new` is `old` plus appended list items and new dict keys (the only change a merge 'add' may make)."""
     if isinstance(old, dict):
-        return isinstance(new, dict) and all(k in new and _is_extension(v, new[k]) for k, v in old.items())
+        return isinstance(new, dict) and all(
+            k in new and _is_extension(v, new[k]) for k, v in old.items()
+        )
     if isinstance(old, list):
-        return isinstance(new, list) and len(new) >= len(old) and all(_is_extension(a, b) for a, b in zip(old, new))
+        return (
+            isinstance(new, list)
+            and len(new) >= len(old)
+            and all(_is_extension(a, b) for a, b in zip(old, new))
+        )
     return old == new
 
 
 def subtree(doc: dict, plat: Platform) -> tuple[str, object]:
     """The part of a config this tool edits, for diffs.  Nothing else of the file is ever printed."""
     if plat.style == "antigravity":
-        picked = {k: v for k, v in doc.items() if k == AG_GROUP or (isinstance(v, dict) and count_ours(v))}
+        picked = {
+            k: v for k, v in doc.items() if k == AG_GROUP or (isinstance(v, dict) and count_ours(v))
+        }
         return AG_GROUP, picked
     hooks = doc.get("hooks")
     return f"hooks.{plat.event}", (hooks.get(plat.event) if isinstance(hooks, dict) else None)
@@ -1814,35 +2300,45 @@ _KEYWORDS = r"(?:api[_-]?key|secret|token|passw(?:or)?d|private[_-]?key|credenti
 _SECRET_PAIR = re.compile(r'(?i)("[^"]*' + _KEYWORDS + r'[^"]*"\s*:\s*)"(?:[^"\\]|\\.)*"')
 _SECRET_KV = re.compile(
     r"(?i)(\b[\w-]*" + _KEYWORDS + r"s?[\w-]*)(['\"]?\s*[:=]\s*)"
-    r"((?:(?:bearer|basic|digest|token)\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;&'\"]+))")
+    r"((?:(?:bearer|basic|digest|token)\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s,;&'\"]+))"
+)
 _SECRET_FLAG = re.compile(
     r"(?i)(?<![\w-])(--?[\w-]*(?:passw(?:or)?d|token|secret|api[_-]?key|credential)[\w-]*)(=|\s+)"
-    r"(?!-)(\"[^\"]*\"|'[^']*'|\S+)")
+    r"(?!-)(\"[^\"]*\"|'[^']*'|\S+)"
+)
 _USER_PASS = re.compile(r"(?<![\w-])(-u|--user)(\s+|=)(?!-)(\S*:\S+)")
-_SECRET_INLINE = re.compile(r"(?i)((?:token|secret|passw\w*|api[_-]?key|authorization|bearer)\W{1,4})[A-Za-z0-9_\-./+=]{8,}")
+_SECRET_INLINE = re.compile(
+    r"(?i)((?:token|secret|passw\w*|api[_-]?key|authorization|bearer)\W{1,4})[A-Za-z0-9_\-./+=]{8,}"
+)
 _TOKEN_SHAPES = re.compile(
     r"\b(?:(?:sk-|pk-|gh[pousr]_|xox[abprs]-)[A-Za-z0-9_\-]{10,}|github_pat_[A-Za-z0-9_]{20,}"
     r"|[sr]k_(?:live|test)_[A-Za-z0-9]{8,}|pk_(?:live|test)_[A-Za-z0-9]{8,}|glpat-[A-Za-z0-9_-]{16,}"
     r"|A[CK][0-9a-f]{32}\b|AIza[0-9A-Za-z_-]{30,}|AKIA[A-Z0-9]{12,}"
-    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,})")
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,})"
+)
 _LONG_SECRET = re.compile(r"(?<![\w/.~+%-])[A-Za-z0-9/+]{40}(?![\w/.~+%-])")
 
 
-def _mask_kv(m: "re.Match[str]") -> str:
+def _mask_kv(m: re.Match[str]) -> str:
     if "<redacted>" in m.group(3):
         return m.group(0)
     return f"{m.group(1)}{m.group(2)}<redacted>"
 
 
-def _mask_flag(m: "re.Match[str]") -> str:
+def _mask_flag(m: re.Match[str]) -> str:
     return m.group(0) if "<redacted>" in m.group(3) else f"{m.group(1)}{m.group(2)}<redacted>"
 
 
-def _mask_long(m: "re.Match[str]") -> str:
+def _mask_long(m: re.Match[str]) -> str:
     """40 characters of base64 alphabet that mix digits and both cases: an AWS secret access key.  Ordinary
     paths and words fail one of the tests."""
     t = m.group(0)
-    secret = re.search(r"\d", t) and re.search(r"[a-z]", t) and re.search(r"[A-Z]", t) and t.count("/") <= 3
+    secret = (
+        re.search(r"\d", t)
+        and re.search(r"[a-z]", t)
+        and re.search(r"[A-Z]", t)
+        and t.count("/") <= 3
+    )
     return "<redacted>" if secret else t
 
 
@@ -1916,7 +2412,7 @@ def plan_view(doc: dict, plat: Platform) -> tuple[str, object, int]:
         kept, hidden = _hook_list_view(node)
         return label, kept, hidden
     groups: dict = {}
-    for name, grp in (node.items() if isinstance(node, dict) else []):
+    for name, grp in node.items() if isinstance(node, dict) else []:
         if not isinstance(grp, dict):
             continue
         gv = {}
@@ -1935,22 +2431,27 @@ def plan_view(doc: dict, plat: Platform) -> tuple[str, object, int]:
 
 # --------------------------------------------------------------------------- reading and writing a config
 
+
 @dataclass
 class Loaded:
-    path: str                 # as named
-    real: str                 # symlinks resolved
+    path: str  # as named
+    real: str  # symlinks resolved
     exists: bool
     raw: bytes
     doc: dict
     indent: object
     ensure_ascii: bool
     trailing_newline: bool
-    exact: bool               # the original text equals our re-serialization of it
+    exact: bool  # the original text equals our re-serialization of it
     mode: int | None
     note: str = ""
-    duplicate_keys: list = field(default_factory=list)       # keys repeated in one object: a rewrite keeps only the last
-    lossy_numbers: list = field(default_factory=list)        # number literals a rewrite would change
-    unparseable_numbers: list = field(default_factory=list)  # NaN, Infinity, 1e999: strict JSON parsers reject the file
+    duplicate_keys: list = field(
+        default_factory=list
+    )  # keys repeated in one object: a rewrite keeps only the last
+    lossy_numbers: list = field(default_factory=list)  # number literals a rewrite would change
+    unparseable_numbers: list = field(
+        default_factory=list
+    )  # NaN, Infinity, 1e999: strict JSON parsers reject the file
 
 
 def _detect_indent(text: str) -> object:
@@ -2014,7 +2515,9 @@ def load_config(path: str) -> Loaded:
     would not preserve (duplicate keys, numbers that change value) is recorded on the result."""
     real = os.path.realpath(path)
     if os.path.islink(path) and not os.path.exists(path):
-        raise Refused(f"{path} is a dangling symlink (-> {os.readlink(path)}); refusing to create files through it")
+        raise Refused(
+            f"{path} is a dangling symlink (-> {os.readlink(path)}); refusing to create files through it"
+        )
     if os.path.isdir(real):
         raise Refused(f"{path} is a directory")
     if not os.path.exists(real):
@@ -2026,15 +2529,36 @@ def load_config(path: str) -> Loaded:
         raise Refused(f"{path} cannot be read as UTF-8 text: {exc}")
     mode = os.stat(real).st_mode & 0o7777
     if not text.strip():
-        return Loaded(path, real, True, raw, {}, 2, True, True, False, mode, note="file is empty; treated as {}")
+        return Loaded(
+            path,
+            real,
+            True,
+            raw,
+            {},
+            2,
+            True,
+            True,
+            False,
+            mode,
+            note="file is empty; treated as {}",
+        )
     scan = _Scan()
     try:
-        doc = json.loads(text, object_pairs_hook=scan.pairs, parse_constant=scan.constant, parse_float=scan.number)
+        doc = json.loads(
+            text,
+            object_pairs_hook=scan.pairs,
+            parse_constant=scan.constant,
+            parse_float=scan.number,
+        )
     except (ValueError, RecursionError) as exc:
         raise Refused(f"{path} is not valid JSON ({exc}); refusing to touch it")
     if not isinstance(doc, dict):
         raise Refused(f"{path} is JSON but not an object at the top level; refusing to touch it")
-    flags = dict(duplicate_keys=scan.duplicates, lossy_numbers=scan.lossy, unparseable_numbers=scan.unparseable)
+    flags = dict(
+        duplicate_keys=scan.duplicates,
+        lossy_numbers=scan.lossy,
+        unparseable_numbers=scan.unparseable,
+    )
     indent = _detect_indent(text)
     trailing = text.endswith("\n")
     if not scan.unparseable:
@@ -2042,33 +2566,45 @@ def load_config(path: str) -> Loaded:
             if json.dumps(doc, indent=indent, ensure_ascii=ea) + ("\n" if trailing else "") == text:
                 return Loaded(path, real, True, raw, doc, indent, ea, trailing, True, mode, **flags)
     ea = False
-    try:                                       # a lone surrogate cannot be written as raw text: escape instead
+    try:  # a lone surrogate cannot be written as raw text: escape instead
         json.dumps(doc, indent=indent, ensure_ascii=False).encode("utf-8")
     except (UnicodeEncodeError, ValueError):
         ea = True
-    return Loaded(path, real, True, raw, doc, indent, ea, trailing, False, mode,
-                  note="original formatting does not round-trip; apply re-indents the whole file (content unchanged)",
-                  **flags)
+    return Loaded(
+        path,
+        real,
+        True,
+        raw,
+        doc,
+        indent,
+        ea,
+        trailing,
+        False,
+        mode,
+        note="original formatting does not round-trip; apply re-indents the whole file (content unchanged)",
+        **flags,
+    )
 
 
 def dump_config(doc: dict, cfg: Loaded) -> str:
-    return json.dumps(doc, indent=cfg.indent, ensure_ascii=cfg.ensure_ascii, allow_nan=False) \
-        + ("\n" if cfg.trailing_newline else "")
+    return json.dumps(doc, indent=cfg.indent, ensure_ascii=cfg.ensure_ascii, allow_nan=False) + (
+        "\n" if cfg.trailing_newline else ""
+    )
 
 
 @dataclass
 class PlatformPlan:
     platform: Platform
     path: str
-    action: str                 # add, update, unchanged, skip, refuse, unsupported
+    action: str  # add, update, unchanged, skip, refuse, unsupported
     command: str
     reason: str = ""
     diff: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     new_text: str | None = None
     cfg: Loaded | None = None
-    link: str | None = None     # "symlink -> <real path>" when the config is reached through a symlink
-    hidden: int = 0             # hooks of other owners under the edited event; counted, never printed
+    link: str | None = None  # "symlink -> <real path>" when the config is reached through a symlink
+    hidden: int = 0  # hooks of other owners under the edited event; counted, never printed
     label: str = ""
 
 
@@ -2078,7 +2614,9 @@ def _json_lines(obj: object) -> list[str]:
     return json.dumps(obj, indent=2, ensure_ascii=False).splitlines()
 
 
-def _link_check(path: str, home: str, rel: str, follow_symlinks: bool) -> tuple[str | None, str | None, str | None]:
+def _link_check(
+    path: str, home: str, rel: str, follow_symlinks: bool
+) -> tuple[str | None, str | None, str | None]:
     """(refusal, write refusal, note) for a config that may be reached through symlinks.  A dangling link
     anywhere between the home and the file is always a refusal: writing would create its target's
     directories.  A path that resolves outside the home is a refusal only for a WRITE, and only without
@@ -2087,7 +2625,11 @@ def _link_check(path: str, home: str, rel: str, follow_symlinks: bool) -> tuple[
     for part in rel.split("/"):
         cur = os.path.join(cur, part)
         if os.path.islink(cur) and not os.path.exists(cur):
-            return f"{cur} is a dangling symlink (-> {os.readlink(cur)}); refusing to create files through it", None, None
+            return (
+                f"{cur} is a dangling symlink (-> {os.readlink(cur)}); refusing to create files through it",
+                None,
+                None,
+            )
     home_real = os.path.realpath(home)
     real = os.path.realpath(path)
     if real == os.path.join(home_real, *rel.split("/")):
@@ -2103,10 +2645,14 @@ def _switch_warnings(doc: dict) -> list[str]:
     name = guard_switch()[0]
     out: list[str] = []
     if doc.get("disableAllHooks") is True:
-        out.append("the file has disableAllHooks: true, so the platform runs NO hooks and the guard is inert")
+        out.append(
+            "the file has disableAllHooks: true, so the platform runs NO hooks and the guard is inert"
+        )
     env = doc.get("env")
     if isinstance(env, dict) and name in env and _is_off(env[name]):
-        out.append(f"the env block sets {name}={env[name]!r}, the guard's kill switch, so the guard is off for every command")
+        out.append(
+            f"the env block sets {name}={env[name]!r}, the guard's kill switch, so the guard is off for every command"
+        )
     return out
 
 
@@ -2116,13 +2662,36 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
     path = config_path(paths, plat)
     cmd = hook_command(paths, plat.fmt)
     if plat.kind == "plugin":
-        return PlatformPlan(plat, paths.muse_bundle, "unsupported", cmd,
-                            "takes hooks from a plugin bundle, not from a config file; `plan muse` shows it and "
-                            "`apply tools` writes it.  No config file is edited")
+        return PlatformPlan(
+            plat,
+            paths.muse_bundle,
+            "unsupported",
+            cmd,
+            "takes hooks from a plugin bundle, not from a config file; `plan muse` shows it and "
+            "`apply tools` writes it.  No config file is edited",
+        )
+    if plat.kind == "bundle":
+        mp = plan_minimax(paths, follow_symlinks=follow_symlinks)
+        act = {
+            "new": "add",
+            "stale": "update",
+            "current": "unchanged",
+            "skip": "skip",
+            "refuse": "refuse",
+        }[mp.state]
+        return PlatformPlan(plat, mp.bundle, act, mp.command, mp.reason, notes=list(mp.notes))
     if not plat.supported:
-        return PlatformPlan(plat, path, "unsupported", cmd, "no verified hook surface; nothing is written")
+        return PlatformPlan(
+            plat, path, "unsupported", cmd, "no verified hook surface; nothing is written"
+        )
     if not os.path.isdir(os.path.join(paths.home, *plat.platform_dir.split("/"))):
-        return PlatformPlan(plat, path, "skip", cmd, f"~/{plat.platform_dir} does not exist (platform not installed)")
+        return PlatformPlan(
+            plat,
+            path,
+            "skip",
+            cmd,
+            f"~/{plat.platform_dir} does not exist (platform not installed)",
+        )
     refusal, outside, link = _link_check(path, paths.home, plat.config_rel, follow_symlinks)
     if refusal:
         return PlatformPlan(plat, path, "refuse", cmd, refusal)
@@ -2136,52 +2705,98 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
         if outside:
             return PlatformPlan(plat, path, "refuse", cmd, outside, link=link)
         if cfg.unparseable_numbers:
-            return PlatformPlan(plat, path, "refuse", cmd,
-                                f"{path} holds numbers JSON cannot represent ({_first(cfg.unparseable_numbers)}); "
-                                "strict parsers reject the file and a rewrite would change them; fix the file first")
+            return PlatformPlan(
+                plat,
+                path,
+                "refuse",
+                cmd,
+                f"{path} holds numbers JSON cannot represent ({_first(cfg.unparseable_numbers)}); "
+                "strict parsers reject the file and a rewrite would change them; fix the file first",
+            )
         if cfg.duplicate_keys:
-            return PlatformPlan(plat, path, "refuse", cmd,
-                                f"{path} has duplicate key(s) {_first(cfg.duplicate_keys)} in one object; a rewrite "
-                                "would silently keep only the last value; fix the file first")
+            return PlatformPlan(
+                plat,
+                path,
+                "refuse",
+                cmd,
+                f"{path} has duplicate key(s) {_first(cfg.duplicate_keys)} in one object; a rewrite "
+                "would silently keep only the last value; fix the file first",
+            )
         if cfg.lossy_numbers:
-            return PlatformPlan(plat, path, "refuse", cmd,
-                                f"{path} holds number(s) a rewrite would change ({_first(cfg.lossy_numbers)}); "
-                                "refusing to touch it")
+            return PlatformPlan(
+                plat,
+                path,
+                "refuse",
+                cmd,
+                f"{path} holds number(s) a rewrite would change ({_first(cfg.lossy_numbers)}); "
+                "refusing to touch it",
+            )
         if cfg.exists and cfg.mode is not None and not cfg.mode & 0o200:
-            return PlatformPlan(plat, path, "refuse", cmd,
-                                f"{path} is read-only (mode {cfg.mode:04o}); not overriding the owner's choice")
+            return PlatformPlan(
+                plat,
+                path,
+                "refuse",
+                cmd,
+                f"{path} is read-only (mode {cfg.mode:04o}); not overriding the owner's choice",
+            )
         parent = os.path.dirname(cfg.real)
         if os.path.isdir(parent) and not os.access(parent, os.W_OK | os.X_OK):
-            return PlatformPlan(plat, path, "refuse", cmd, f"the directory {parent} is not writable")
+            return PlatformPlan(
+                plat, path, "refuse", cmd, f"the directory {parent} is not writable"
+            )
     new_text = dump_config(new_doc, cfg)
     try:
         new_text.encode("utf-8")
     except UnicodeEncodeError:
-        return PlatformPlan(plat, path, "refuse", cmd, f"the merged document for {path} cannot be encoded as UTF-8")
+        return PlatformPlan(
+            plat, path, "refuse", cmd, f"the merged document for {path} cannot be encoded as UTF-8"
+        )
     if cfg.note:
         notes.append(cfg.note)
     notes.extend("WARNING: " + w for w in _switch_warnings(new_doc))
     if plat.key == "codex" and action == "updated":
-        notes.append("the existing Codex trust record for this hook is stale after this change; review and "
-                     "re-trust it with /hooks in Codex")
+        notes.append(
+            "the existing Codex trust record for this hook is stale after this change; review and "
+            "re-trust it with /hooks in Codex"
+        )
     label, before, hidden = plan_view(cfg.doc, plat)
     _label, after, _h = plan_view(new_doc, plat)
     diff: list[str] = []
     if action != "unchanged":
-        diff = [redact(ln) for ln in difflib.unified_diff(
-            _json_lines(before), _json_lines(after), fromfile=f"{path} {label} (current)",
-            tofile=f"{path} {label} (after apply)", n=3, lineterm="")]
+        diff = [
+            redact(ln)
+            for ln in difflib.unified_diff(
+                _json_lines(before),
+                _json_lines(after),
+                fromfile=f"{path} {label} (current)",
+                tofile=f"{path} {label} (after apply)",
+                n=3,
+                lineterm="",
+            )
+        ]
     act = {"added": "add", "updated": "update", "unchanged": "unchanged"}[action]
-    return PlatformPlan(plat, path, act, cmd, diff=diff, notes=notes, new_text=new_text, cfg=cfg, link=link,
-                        hidden=hidden, label=label)
+    return PlatformPlan(
+        plat,
+        path,
+        act,
+        cmd,
+        diff=diff,
+        notes=notes,
+        new_text=new_text,
+        cfg=cfg,
+        link=link,
+        hidden=hidden,
+        label=label,
+    )
 
 
 # --------------------------------------------------------------------------- apply: tools
 
+
 @dataclass
 class Result:
     target: str
-    status: str            # added, updated, unchanged, installed, skipped, refused, failed, unsupported
+    status: str  # added, updated, unchanged, installed, skipped, refused, failed, unsupported
     detail: str = ""
     backup: str | None = None
 
@@ -2218,7 +2833,10 @@ def probe_formats() -> list[tuple[str, str]]:
     them, so a copy whose output is broken for ANY platform is never swapped in."""
     out: list[tuple[str, str]] = []
     for plat in PLATFORMS.values():
-        if (plat.supported or plat.kind in ("plugin", "block")) and (plat.fmt, plat.shape) not in out:
+        if (plat.supported or plat.kind in ("plugin", "block", "bundle")) and (
+            plat.fmt,
+            plat.shape,
+        ) not in out:
             out.append((plat.fmt, plat.shape))
     return out
 
@@ -2227,21 +2845,30 @@ def fleet_probe_formats() -> list[tuple[str, str]]:
     """(--format, payload shape) of every harness that runs fleet-guard-hook."""
     out: list[tuple[str, str]] = []
     for plat in PLATFORMS.values():
-        if plat.kind in ("plugin", "block") and (plat.fmt, plat.shape) not in out:
+        if plat.kind in ("plugin", "block", "bundle") and (plat.fmt, plat.shape) not in out:
             out.append((plat.fmt, plat.shape))
     return out
 
 
-def apply_tools(src: Source, paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True,
-                probes: bool = True, emit: Callable[[str], None] = lambda s: None,
-                replace_extra: bool = False) -> Result:
+def apply_tools(
+    src: Source,
+    paths: Paths,
+    *,
+    timeout: float = PROBE_TIMEOUT_S,
+    minimal_path: bool = True,
+    probes: bool = True,
+    emit: Callable[[str], None] = lambda s: None,
+    replace_extra: bool = False,
+) -> Result:
     """Copy or refresh the stable dir atomically.  The new copy is staged beside the final dir and
     probed first (every supported platform's format); it is swapped in only if the probes pass.
     Between the two renames of the swap the dir is briefly absent, and a hook call that lands there
     fails open.  A non-empty dir that this tool did not write is refused (see `plan_tools`)."""
     try:
         if os.path.realpath(src.scripts_dir) == os.path.realpath(paths.stable):
-            raise Refused("the source is the stable dir itself; run this from a checkout of origin/main")
+            raise Refused(
+                "the source is the stable dir itself; run this from a checkout of origin/main"
+            )
         plan = plan_tools(src, paths, replace_extra=replace_extra)
         if plan.problems:
             raise Refused("; ".join(plan.problems))
@@ -2249,8 +2876,15 @@ def apply_tools(src: Source, paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, 
     except Refused as exc:
         return Result("tools", "refused", str(exc))
     lane_text = plan.lane_shim_text
-    runnable = all(os.access(p, os.X_OK) for p in (paths.hook_shim, paths.fleet_shim, paths.muse_seat, paths.muse_wrapper))
-    if plan.state == "current" and plan.lane_shim_state in ("same", "skipped", "foreign") and runnable:
+    runnable = all(
+        os.access(p, os.X_OK)
+        for p in (paths.hook_shim, paths.fleet_shim, paths.muse_seat, paths.muse_wrapper)
+    )
+    if (
+        plan.state == "current"
+        and plan.lane_shim_state in ("same", "skipped", "foreign")
+        and runnable
+    ):
         return Result("tools", "unchanged", f"{paths.stable} is current (sha {plan.sha[:12]})")
     os.makedirs(paths.apps_dir, exist_ok=True)
     os.makedirs(os.path.dirname(paths.stable), exist_ok=True)
@@ -2261,19 +2895,38 @@ def apply_tools(src: Source, paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, 
             staged_cmd = shlex.quote(os.path.join(stage, HOOK_NAME))
             bad: list[Check] = []
             for fmt, shape in probe_formats():
-                got = probe_command(f"{staged_cmd} --format {fmt}", target="staged", fmt=fmt, shape=shape,
-                                    home=paths.home, timeout=timeout, minimal_path=minimal_path)
+                got = probe_command(
+                    f"{staged_cmd} --format {fmt}",
+                    target="staged",
+                    fmt=fmt,
+                    shape=shape,
+                    home=paths.home,
+                    timeout=timeout,
+                    minimal_path=minimal_path,
+                )
                 bad.extend(c for c in got if c.status == "FAIL")
             staged_fleet = shlex.quote(os.path.join(stage, FLEET_HOOK_NAME))
             for fmt, shape in fleet_probe_formats():
-                got = probe_command(f"{staged_fleet} --format {fmt}", target="staged-fleet", fmt=fmt, shape=shape,
-                                    home=paths.home, timeout=timeout, minimal_path=minimal_path, secret=True)
+                got = probe_command(
+                    f"{staged_fleet} --format {fmt}",
+                    target="staged-fleet",
+                    fmt=fmt,
+                    shape=shape,
+                    home=paths.home,
+                    timeout=timeout,
+                    minimal_path=minimal_path,
+                    secret=True,
+                )
                 bad.extend(c for c in got if c.status == "FAIL")
             if bad:
                 for c in bad:
                     emit(c.line())
-                raise Refused("the staged copy failed its own probes; the installed copy was not touched")
-        shutil.rmtree(os.path.join(stage, PACKAGE, "__pycache__"), ignore_errors=True)  # probes wrote it with the stage path
+                raise Refused(
+                    "the staged copy failed its own probes; the installed copy was not touched"
+                )
+        shutil.rmtree(
+            os.path.join(stage, PACKAGE, "__pycache__"), ignore_errors=True
+        )  # probes wrote it with the stage path
         _swap_dir(stage, paths.stable)
     except Refused as exc:
         shutil.rmtree(stage, ignore_errors=True)
@@ -2299,10 +2952,13 @@ def apply_tools(src: Source, paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, 
         return Result("tools", "failed", f"stable dir installed, but the lane shim failed: {exc}")
     for w in plan.warnings:
         extra += f"; WARNING {w}"
-    return Result("tools", "installed", f"{paths.stable} sha {plan.sha[:12]}, {len(files)} files{extra}")
+    return Result(
+        "tools", "installed", f"{paths.stable} sha {plan.sha[:12]}, {len(files)} files{extra}"
+    )
 
 
 # --------------------------------------------------------------------------- apply: platforms
+
 
 def _reread_matches(real: str, raw: bytes, existed: bool) -> bool:
     try:
@@ -2324,7 +2980,9 @@ def _make_backup(real: str, raw: bytes, mode: int | None, stamp: str) -> str:
                 fh.write(raw)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.chmod(name, BACKUP_MODE)     # owner-only whatever the original's mode (a settings file may hold a token)
+            os.chmod(
+                name, BACKUP_MODE
+            )  # owner-only whatever the original's mode (a settings file may hold a token)
         except BaseException:
             try:
                 os.unlink(name)
@@ -2335,10 +2993,19 @@ def _make_backup(real: str, raw: bytes, mode: int | None, stamp: str) -> str:
     raise OSError("could not find a free backup name")
 
 
-def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = time.time,
-                   timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True, shim_proven: bool = False,
-                   follow_symlinks: bool = False, dsh_bin: str | None = None, check_dsh: bool = True,
-                   check_kimi: bool = True) -> Result:
+def apply_platform(
+    plat: Platform,
+    paths: Paths,
+    *,
+    now: Callable[[], float] = time.time,
+    timeout: float = PROBE_TIMEOUT_S,
+    minimal_path: bool = True,
+    shim_proven: bool = False,
+    follow_symlinks: bool = False,
+    dsh_bin: str | None = None,
+    check_dsh: bool = True,
+    check_kimi: bool = True,
+) -> Result:
     """Merge the hook into the platform's config, but only if the installed shim passes the probes for this
     platform's own format right now.  The `apply` command never sets `shim_proven` (it skips those probes):
     `apply tools` proves a staged copy, and an `unchanged` tools result proves nothing about this run.  Only
@@ -2346,8 +3013,24 @@ def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = t
     if plat.kind == "plugin":
         return apply_muse(paths)
     if plat.kind == "block":
-        return apply_block(plat, paths, now=now, timeout=timeout, minimal_path=minimal_path, dsh_bin=dsh_bin,
-                           check_dsh=check_dsh, check_kimi=check_kimi)
+        return apply_block(
+            plat,
+            paths,
+            now=now,
+            timeout=timeout,
+            minimal_path=minimal_path,
+            dsh_bin=dsh_bin,
+            check_dsh=check_dsh,
+            check_kimi=check_kimi,
+        )
+    if plat.kind == "bundle":
+        return apply_minimax(
+            paths,
+            timeout=timeout,
+            minimal_path=minimal_path,
+            shim_proven=shim_proven,
+            follow_symlinks=follow_symlinks,
+        )
     plan = plan_platform(plat, paths, follow_symlinks=follow_symlinks)
     if plan.action == "unsupported":
         return Result(plat.key, "unsupported", plan.reason)
@@ -2357,13 +3040,28 @@ def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = t
         return Result(plat.key, "refused", plan.reason)
     if not shim_proven:
         if not (os.path.isfile(paths.hook_shim) and os.access(paths.hook_shim, os.X_OK)):
-            return Result(plat.key, "refused", f"the hook shim {paths.hook_shim} is missing or not executable; run `apply tools` first")
-        checks = probe_command(plan.command, target=plat.key, fmt=plat.fmt, shape=plat.shape, home=paths.home,
-                               timeout=timeout, minimal_path=minimal_path)
+            return Result(
+                plat.key,
+                "refused",
+                f"the hook shim {paths.hook_shim} is missing or not executable; run `apply tools` first",
+            )
+        checks = probe_command(
+            plan.command,
+            target=plat.key,
+            fmt=plat.fmt,
+            shape=plat.shape,
+            home=paths.home,
+            timeout=timeout,
+            minimal_path=minimal_path,
+        )
         bad = [c for c in checks if c.status == "FAIL"]
         if bad:
-            return Result(plat.key, "refused",
-                          "the installed hook shim fails its probes, so it will not be wired in: " + bad[0].detail)
+            return Result(
+                plat.key,
+                "refused",
+                "the installed hook shim fails its probes, so it will not be wired in: "
+                + bad[0].detail,
+            )
     if plan.action == "unchanged":
         return Result(plat.key, "unchanged", f"{plan.path} already has the hook")
     cfg = plan.cfg
@@ -2372,12 +3070,20 @@ def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = t
     try:
         reparsed = json.loads(plan.new_text)
     except ValueError as exc:
-        return Result(plat.key, "refused", f"the merged document does not serialize to valid JSON: {exc}")
+        return Result(
+            plat.key, "refused", f"the merged document does not serialize to valid JSON: {exc}"
+        )
     found = locate(reparsed, plat)
     if len(found) < 1 or found[0].command != plan.command or found[0].problems:
-        return Result(plat.key, "refused", "the merged document does not hold the hook where the platform reads it")
+        return Result(
+            plat.key,
+            "refused",
+            "the merged document does not hold the hook where the platform reads it",
+        )
     if plan.action == "add" and not _is_extension(cfg.doc, reparsed):
-        return Result(plat.key, "refused", "internal check failed: the merge would change existing content")
+        return Result(
+            plat.key, "refused", "internal check failed: the merge would change existing content"
+        )
     real = cfg.real
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     backup: str | None = None
@@ -2388,10 +3094,18 @@ def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = t
         if not _reread_matches(real, cfg.raw, cfg.exists):
             if backup:
                 os.unlink(backup)
-            return Result(plat.key, "failed", f"{plan.path} changed while it was being merged; nothing written, retry")
-        atomic_write(real, plan.new_text.encode("utf-8"), cfg.mode if cfg.mode is not None else plat.new_mode)
+            return Result(
+                plat.key,
+                "failed",
+                f"{plan.path} changed while it was being merged; nothing written, retry",
+            )
+        atomic_write(
+            real, plan.new_text.encode("utf-8"), cfg.mode if cfg.mode is not None else plat.new_mode
+        )
     except OSError as exc:
-        return Result(plat.key, "failed", f"{plan.path} not changed: {type(exc).__name__}: {exc}", backup)
+        return Result(
+            plat.key, "failed", f"{plan.path} not changed: {type(exc).__name__}: {exc}", backup
+        )
     # Validate what is on disk now; put the original back if it is not what we meant to write.
     try:
         after = json.loads(_read_bytes(real).decode("utf-8"))
@@ -2406,7 +3120,12 @@ def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = t
                 os.unlink(real)
         except OSError:
             pass
-        return Result(plat.key, "failed", f"{plan.path} failed validation after the write; the original was restored", backup)
+        return Result(
+            plat.key,
+            "failed",
+            f"{plan.path} failed validation after the write; the original was restored",
+            backup,
+        )
     detail = f"{plan.path}" + (f" (backup {backup})" if backup else " (new file)")
     if plan.notes:
         detail += "; " + "; ".join(plan.notes)
@@ -2414,6 +3133,7 @@ def apply_platform(plat: Platform, paths: Paths, *, now: Callable[[], float] = t
 
 
 # --------------------------------------------------------------------------- verify
+
 
 def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Check]:
     """Health of the stable dir and the shims.  The guard quietly falls back to built-in rows when the
@@ -2429,8 +3149,14 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
         ver = {}
         out.append(Check(t, "VERSION", "FAIL", f"{paths.version}: {exc}"))
     else:
-        out.append(Check(t, "VERSION", "PASS" if ver.get("tree") else "FAIL",
-                         f"sha={ver.get('sha', '?')[:12]} package={ver.get('package', '?')} files={ver.get('files', '?')}"))
+        out.append(
+            Check(
+                t,
+                "VERSION",
+                "PASS" if ver.get("tree") else "FAIL",
+                f"sha={ver.get('sha', '?')[:12]} package={ver.get('package', '?')} files={ver.get('files', '?')}",
+            )
+        )
     try:
         have = read_tree(paths.stable)
     except OSError as exc:
@@ -2442,45 +3168,112 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
         if gone:
             out.append(Check(t, "files", "FAIL", "missing required modules: " + ", ".join(gone)))
         elif ver.get("tree") and tree_digest(body) != ver["tree"]:
-            out.append(Check(t, "files", "FAIL", "the files no longer match VERSION's tree digest (modified, added or removed)"))
+            out.append(
+                Check(
+                    t,
+                    "files",
+                    "FAIL",
+                    "the files no longer match VERSION's tree digest (modified, added or removed)",
+                )
+            )
         else:
             out.append(Check(t, "files", "PASS", f"{len(body)} files match the VERSION digest"))
     try:
         reg = json.loads(_read_bytes(paths.registry).decode("utf-8"))
         good = isinstance(reg, dict) and bool(reg.get("apps")) and bool(reg.get("seats"))
-        out.append(Check(t, REGISTRY_NAME, "PASS" if good else "FAIL",
-                         "parses and has apps and seats" if good else "parses but has no apps or seats"))
+        out.append(
+            Check(
+                t,
+                REGISTRY_NAME,
+                "PASS" if good else "FAIL",
+                "parses and has apps and seats" if good else "parses but has no apps or seats",
+            )
+        )
     except (OSError, ValueError) as exc:
         out.append(Check(t, REGISTRY_NAME, "FAIL", f"{paths.registry}: {exc}"))
     facts = read_guard_facts(paths.stable)
     out.append(_check_shim(t, HOOK_NAME, paths.hook_shim, render_hook_shim(facts)))
     if facts.words:
-        out.append(Check(t, "prefilter", "PASS", f"{len(facts.words)} trigger words, {len(facts.lookalikes)} non-ASCII "
-                                                 "lookalikes and the \\u escape, all from the installed guard.py"))
+        out.append(
+            Check(
+                t,
+                "prefilter",
+                "PASS",
+                f"{len(facts.words)} trigger words, {len(facts.lookalikes)} non-ASCII "
+                "lookalikes and the \\u escape, all from the installed guard.py",
+            )
+        )
     else:
-        out.append(Check(t, "prefilter", "WARN", "; ".join(facts.problems) or "the installed guard has no trigger words"))
+        out.append(
+            Check(
+                t,
+                "prefilter",
+                "WARN",
+                "; ".join(facts.problems) or "the installed guard has no trigger words",
+            )
+        )
     out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(facts)))
     if f"{PACKAGE}/{SECRET_GUARD_MODULE}" in have:
-        out.append(Check(t, "secret guard", "PASS", f"{PACKAGE}/{SECRET_GUARD_MODULE} is in the stable copy"))
+        out.append(
+            Check(
+                t, "secret guard", "PASS", f"{PACKAGE}/{SECRET_GUARD_MODULE} is in the stable copy"
+            )
+        )
     else:
-        out.append(Check(t, "secret guard", "FAIL", f"{PACKAGE}/{SECRET_GUARD_MODULE} is missing, so fleet-guard-hook "
-                                                    "would run the lane guard alone; re-run `apply tools`"))
-    if f"{PACKAGE}/{LANE_MODULE}" in have and os.path.lexists(paths.lane_shim) and not (
-            os.path.isfile(paths.lane_shim) and not os.path.islink(paths.lane_shim) and _is_generated(paths.lane_shim)):
-        out.append(Check(t, LANE_NAME, "WARN", f"{paths.lane_shim} is {describe_foreign(paths.lane_shim)}; left alone, "
-                                               "so `lane` there is NOT the stable copy"))
+        out.append(
+            Check(
+                t,
+                "secret guard",
+                "FAIL",
+                f"{PACKAGE}/{SECRET_GUARD_MODULE} is missing, so fleet-guard-hook "
+                "would run the lane guard alone; re-run `apply tools`",
+            )
+        )
+    if (
+        f"{PACKAGE}/{LANE_MODULE}" in have
+        and os.path.lexists(paths.lane_shim)
+        and not (
+            os.path.isfile(paths.lane_shim)
+            and not os.path.islink(paths.lane_shim)
+            and _is_generated(paths.lane_shim)
+        )
+    ):
+        out.append(
+            Check(
+                t,
+                LANE_NAME,
+                "WARN",
+                f"{paths.lane_shim} is {describe_foreign(paths.lane_shim)}; left alone, "
+                "so `lane` there is NOT the stable copy",
+            )
+        )
     elif f"{PACKAGE}/{LANE_MODULE}" in have:
         c = _check_shim(t, LANE_NAME, paths.lane_shim, render_lane_shim(paths.stable))
         out.append(c)
         if c.status == "PASS":
-            res = run_shell(f"{shlex.quote(paths.lane_shim)} --help", b"", probe_env(paths.home, None), timeout)
+            res = run_shell(
+                f"{shlex.quote(paths.lane_shim)} --help", b"", probe_env(paths.home, None), timeout
+            )
             ok = res.returncode == 0 and not res.timed_out
-            out.append(Check(t, "lane --help", "PASS" if ok else "FAIL",
-                             f"exit={res.returncode} stdout={_brief(res.stdout, 120)}"
-                             + (f" stderr={_brief(res.stderr, 200)}" if res.stderr else "")
-                             + ("; timed out" if res.timed_out else "")))
+            out.append(
+                Check(
+                    t,
+                    "lane --help",
+                    "PASS" if ok else "FAIL",
+                    f"exit={res.returncode} stdout={_brief(res.stdout, 120)}"
+                    + (f" stderr={_brief(res.stderr, 200)}" if res.stderr else "")
+                    + ("; timed out" if res.timed_out else ""),
+                )
+            )
     else:
-        out.append(Check(t, LANE_NAME, "WARN", f"no {LANE_MODULE} in the stable copy yet, so there is no lane shim"))
+        out.append(
+            Check(
+                t,
+                LANE_NAME,
+                "WARN",
+                f"no {LANE_MODULE} in the stable copy yet, so there is no lane shim",
+            )
+        )
     return out
 
 
@@ -2489,10 +3282,17 @@ def _check_shim(target: str, name: str, path: str, expected: str) -> Check:
         return Check(target, f"shim {name}", "FAIL", f"{path} is missing")
     mode = os.stat(path).st_mode
     if not (mode & 0o111) or not os.access(path, os.X_OK):
-        return Check(target, f"shim {name}", "FAIL", f"{path} is not executable (mode {mode & 0o777:o})")
+        return Check(
+            target, f"shim {name}", "FAIL", f"{path} is not executable (mode {mode & 0o777:o})"
+        )
     try:
         if _read_bytes(path) != expected.encode("utf-8"):
-            return Check(target, f"shim {name}", "FAIL", f"{path} differs from what this install_tools writes; re-run `apply tools`")
+            return Check(
+                target,
+                f"shim {name}",
+                "FAIL",
+                f"{path} differs from what this install_tools writes; re-run `apply tools`",
+            )
     except OSError as exc:
         return Check(target, f"shim {name}", "FAIL", f"{path}: {exc}")
     return Check(target, f"shim {name}", "PASS", f"{path} executable, content current")
@@ -2546,32 +3346,58 @@ def _codex_checks(paths: Paths, cfg_path: str, entry: Entry) -> list[Check]:
     try:
         text = _read_bytes(toml).decode("utf-8", "replace")
     except OSError:
-        return [Check("codex", "trust", "WARN", f"cannot read {toml}; Codex trust is UNVERIFIED (review the hook with /hooks)")]
+        return [
+            Check(
+                "codex",
+                "trust",
+                "WARN",
+                f"cannot read {toml}; Codex trust is UNVERIFIED (review the hook with /hooks)",
+            )
+        ]
     out: list[Check] = []
     flag = toml_features_hooks(text)
     if flag is not None and flag != "true":
-        out.append(Check("codex", "features", "FAIL",
-                         f"{toml} sets [features] hooks = {flag}, so Codex ignores hooks.json and the hook never runs"))
+        out.append(
+            Check(
+                "codex",
+                "features",
+                "FAIL",
+                f"{toml} sets [features] hooks = {flag}, so Codex ignores hooks.json and the hook never runs",
+            )
+        )
     lines = text.splitlines()
     for i, ln in enumerate(lines):
         if ln.strip() == header:
-            for body in lines[i + 1:]:
+            for body in lines[i + 1 :]:
                 if body.lstrip().startswith("["):
                     break
                 if re.match(r'\s*trusted_hash\s*=\s*"sha256:[0-9a-f]+"', body):
-                    out.append(Check("codex", "trust", "WARN",
-                                     "config.toml has a hooks.state record for this hook, but its hash is UNCHECKED: "
-                                     "an edited or stale hook would show the same record.  Confirm with /hooks in Codex"))
+                    out.append(
+                        Check(
+                            "codex",
+                            "trust",
+                            "WARN",
+                            "config.toml has a hooks.state record for this hook, but its hash is UNCHECKED: "
+                            "an edited or stale hook would show the same record.  Confirm with /hooks in Codex",
+                        )
+                    )
                     return out
             break
-    out.append(Check("codex", "trust", "WARN",
-                     f"NOT TRUSTED YET: no hooks.state record for {key}.  Codex re-trusts by hash after an edit, so review "
-                     "the hook with /hooks in Codex.  Until then it is probably inactive (UNVERIFIED)"))
+    out.append(
+        Check(
+            "codex",
+            "trust",
+            "WARN",
+            f"NOT TRUSTED YET: no hooks.state record for {key}.  Codex re-trusts by hash after an edit, so review "
+            "the hook with /hooks in Codex.  Until then it is probably inactive (UNVERIFIED)",
+        )
+    )
     return out
 
 
-def verify_platform(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIMEOUT_S,
-                    minimal_path: bool = True) -> list[Check]:
+def verify_platform(
+    plat: Platform, paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
     """Take the hook command back out of the platform's config file and run it against the deny and
     allow payloads, then check that the platform will actually run it: no disableAllHooks, no kill switch
     in the config's env block (or, as a warning, in the caller's environment), and for Codex the feature
@@ -2581,11 +3407,27 @@ def verify_platform(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIME
         return verify_muse(paths, timeout=timeout, minimal_path=minimal_path)
     if plat.kind == "block":
         return verify_block(plat, paths, timeout=timeout, minimal_path=minimal_path)
+    if plat.kind == "bundle":
+        return verify_minimax(paths, timeout=timeout, minimal_path=minimal_path)
     if not plat.supported:
-        return [Check(t, "platform", "FAIL", "UNSUPPORTED: no verified hook surface, so there is nothing to verify")]
+        return [
+            Check(
+                t,
+                "platform",
+                "FAIL",
+                "UNSUPPORTED: no verified hook surface, so there is nothing to verify",
+            )
+        ]
     path = config_path(paths, plat)
     if not os.path.isdir(os.path.join(paths.home, *plat.platform_dir.split("/"))):
-        return [Check(t, "platform", "SKIP", f"~/{plat.platform_dir} does not exist (platform not installed)")]
+        return [
+            Check(
+                t,
+                "platform",
+                "SKIP",
+                f"~/{plat.platform_dir} does not exist (platform not installed)",
+            )
+        ]
     if not os.path.exists(os.path.realpath(path)):
         return [Check(t, "config", "FAIL", f"{path} does not exist; no hook installed")]
     try:
@@ -2594,13 +3436,26 @@ def verify_platform(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIME
     except Refused as exc:
         return [Check(t, "config", "FAIL", str(exc))]
     if cfg.unparseable_numbers:
-        return [Check(t, "config", "FAIL", f"{path} holds numbers JSON cannot represent ({_first(cfg.unparseable_numbers)}); "
-                                           "the platform's JSON parser rejects the whole file, so no hook runs")]
+        return [
+            Check(
+                t,
+                "config",
+                "FAIL",
+                f"{path} holds numbers JSON cannot represent ({_first(cfg.unparseable_numbers)}); "
+                "the platform's JSON parser rejects the whole file, so no hook runs",
+            )
+        ]
     elsewhere = count_ours(cfg.doc) - len(entries)
     if not entries:
-        hint = (f"; {elsewhere} {HOOK_NAME} command(s) sit elsewhere in the file, where the platform does not gate "
-                f"tool calls on them" if elsewhere > 0 else "")
-        return [Check(t, "config", "FAIL", f"no {HOOK_NAME} hook under {plat.event} in {path}{hint}")]
+        hint = (
+            f"; {elsewhere} {HOOK_NAME} command(s) sit elsewhere in the file, where the platform does not gate "
+            f"tool calls on them"
+            if elsewhere > 0
+            else ""
+        )
+        return [
+            Check(t, "config", "FAIL", f"no {HOOK_NAME} hook under {plat.event} in {path}{hint}")
+        ]
     out: list[Check] = []
     for idx, e in enumerate(entries):
         label = "entry" if len(entries) == 1 else f"entry#{idx + 1}"
@@ -2608,30 +3463,62 @@ def verify_platform(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIME
             out.append(Check(t, label, "FAIL", f"{e.where}: " + "; ".join(e.problems)))
             continue
         out.append(Check(t, label, "PASS", f"{e.where} command={e.command}"))
-        out.extend(probe_command(e.command, target=t, fmt=plat.fmt, shape=plat.shape, home=paths.home,
-                                 timeout=timeout, minimal_path=minimal_path))
+        out.extend(
+            probe_command(
+                e.command,
+                target=t,
+                fmt=plat.fmt,
+                shape=plat.shape,
+                home=paths.home,
+                timeout=timeout,
+                minimal_path=minimal_path,
+            )
+        )
     if elsewhere > 0:
-        out.append(Check(t, "stray", "WARN", f"{elsewhere} more {HOOK_NAME} command(s) in the file are outside {plat.event} and do nothing"))
+        out.append(
+            Check(
+                t,
+                "stray",
+                "WARN",
+                f"{elsewhere} more {HOOK_NAME} command(s) in the file are outside {plat.event} and do nothing",
+            )
+        )
     for problem in _switch_warnings(cfg.doc):
-        out.append(Check(t, "hook-switch", "FAIL", f"{path}: {problem}; the probes above run the command directly, "
-                                                    "so they cannot see this"))
+        out.append(
+            Check(
+                t,
+                "hook-switch",
+                "FAIL",
+                f"{path}: {problem}; the probes above run the command directly, "
+                "so they cannot see this",
+            )
+        )
     name, _off = guard_switch()
     if _is_off(os.environ.get(name, "")):
-        out.append(Check(t, "guard-switch-env", "WARN",
-                         f"{name}={os.environ.get(name)!r} is set in the environment this command runs in: the probes "
-                         "scrub it, but an agent started from this environment gets a guard that is off"))
+        out.append(
+            Check(
+                t,
+                "guard-switch-env",
+                "WARN",
+                f"{name}={os.environ.get(name)!r} is set in the environment this command runs in: the probes "
+                "scrub it, but an agent started from this environment gets a guard that is off",
+            )
+        )
     if plat.key == "codex" and entries and entries[0].group_index is not None:
-        out.extend(_codex_checks(paths, os.path.join(paths.home, ".codex", "hooks.json"), entries[0]))
+        out.extend(
+            _codex_checks(paths, os.path.join(paths.home, ".codex", "hooks.json"), entries[0])
+        )
     return out
 
 
 # --------------------------------------------------------------------------- Muse Code: plan, apply, verify
 
+
 @dataclass
 class MusePlan:
     stable: str
     bundle: str
-    state: str                       # new (no file yet), current, stale
+    state: str  # new (no file yet), current, stale
     files: list[FileStatus]
     manifest_text: str
     wrapper_text: str
@@ -2641,8 +3528,11 @@ class MusePlan:
 
 
 def _muse_expected(stable: str, facts: GuardFacts) -> dict[str, str]:
-    return {MUSE_SEAT_NAME: render_muse_seat(), MUSE_MANIFEST: render_muse_manifest(stable),
-            MUSE_WRAPPER: render_muse_wrapper(stable, facts)}
+    return {
+        MUSE_SEAT_NAME: render_muse_seat(),
+        MUSE_MANIFEST: render_muse_manifest(stable),
+        MUSE_WRAPPER: render_muse_wrapper(stable, facts),
+    }
 
 
 def _read_regular(path: str) -> bytes | None:
@@ -2663,14 +3553,27 @@ def plan_muse(src: Source, paths: Paths) -> MusePlan:
     statuses: list[FileStatus] = []
     for rel, text in want.items():
         have = _read_regular(os.path.join(paths.stable, *rel.split("/")))
-        statuses.append(FileStatus(rel, "new" if have is None else ("same" if have == text.encode("utf-8") else "changed")))
+        statuses.append(
+            FileStatus(
+                rel,
+                "new" if have is None else ("same" if have == text.encode("utf-8") else "changed"),
+            )
+        )
     if all(s.status == "new" for s in statuses):
         state = "new"
     else:
         state = "current" if all(s.status == "same" for s in statuses) else "stale"
-    return MusePlan(stable=paths.stable, bundle=paths.muse_bundle, state=state, files=statuses,
-                    manifest_text=want[MUSE_MANIFEST], wrapper_text=want[MUSE_WRAPPER], seat_text=want[MUSE_SEAT_NAME],
-                    actions=muse_owner_actions(paths), warnings=list(facts.problems))
+    return MusePlan(
+        stable=paths.stable,
+        bundle=paths.muse_bundle,
+        state=state,
+        files=statuses,
+        manifest_text=want[MUSE_MANIFEST],
+        wrapper_text=want[MUSE_WRAPPER],
+        seat_text=want[MUSE_SEAT_NAME],
+        actions=muse_owner_actions(paths),
+        warnings=list(facts.problems),
+    )
 
 
 def apply_muse(paths: Paths) -> Result:
@@ -2684,14 +3587,26 @@ def apply_muse(paths: Paths) -> Result:
         full = os.path.join(paths.stable, *rel.split("/"))
         have = _read_regular(full)
         if have is None:
-            return Result("muse", "refused", f"{full} is missing; run `apply tools` first (it writes the plugin bundle)")
+            return Result(
+                "muse",
+                "refused",
+                f"{full} is missing; run `apply tools` first (it writes the plugin bundle)",
+            )
         if have != text.encode("utf-8"):
-            return Result("muse", "refused", f"{full} is not what this install_tools writes; run `apply tools` to refresh the stable copy")
+            return Result(
+                "muse",
+                "refused",
+                f"{full} is not what this install_tools writes; run `apply tools` to refresh the stable copy",
+            )
         if rel in (MUSE_SEAT_NAME, MUSE_WRAPPER) and not os.access(full, os.X_OK):
             return Result("muse", "refused", f"{full} is not executable; run `apply tools`")
-    return Result("muse", "unchanged", f"plugin bundle {paths.muse_bundle} is current; the stable copy holds everything "
-                                       "this tool writes for Muse.  OWNER ACTIONS follow (yours to run; this tool "
-                                       "never installs or approves the plugin)")
+    return Result(
+        "muse",
+        "unchanged",
+        f"plugin bundle {paths.muse_bundle} is current; the stable copy holds everything "
+        "this tool writes for Muse.  OWNER ACTIONS follow (yours to run; this tool "
+        "never installs or approves the plugin)",
+    )
 
 
 def _muse_cases() -> list[tuple[str, dict, bool, str]]:
@@ -2702,15 +3617,43 @@ def _muse_cases() -> list[tuple[str, dict, bool, str]]:
     cwd = "/"
     return [
         ("deny/hook-env", probe_payload("muse", DENY_COMMAND, cwd), True, DENY_MARKER),
-        ("deny-Bash/hook-env", dict(probe_payload("muse", DENY_COMMAND, cwd), tool_name="Bash"), True, DENY_MARKER),
-        ("secret/hook-env", probe_payload("muse", SECRET_DENY_COMMAND, cwd), True, SECRET_DENY_MARKER),
+        (
+            "deny-Bash/hook-env",
+            dict(probe_payload("muse", DENY_COMMAND, cwd), tool_name="Bash"),
+            True,
+            DENY_MARKER,
+        ),
+        (
+            "secret/hook-env",
+            probe_payload("muse", SECRET_DENY_COMMAND, cwd),
+            True,
+            SECRET_DENY_MARKER,
+        ),
         ("allow/hook-env", probe_payload("muse", ALLOW_COMMAND, cwd), False, ""),
-        ("other-tool/hook-env", {"hook_event_name": "PreToolUse", "session_id": "lane-verify", "cwd": cwd,
-                                 "tool_name": "write", "tool_input": {"file_path": "/tmp/notes.md", "content": DENY_COMMAND}},
-         False, ""),
-        ("other-tool-ps/hook-env", {"hook_event_name": "PreToolUse", "session_id": "lane-verify", "cwd": cwd,
-                                    "tool_name": "write", "tool_input": {"file_path": "/tmp/notes.md", "content": SECRET_DENY_COMMAND}},
-         False, ""),
+        (
+            "other-tool/hook-env",
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "lane-verify",
+                "cwd": cwd,
+                "tool_name": "write",
+                "tool_input": {"file_path": "/tmp/notes.md", "content": DENY_COMMAND},
+            },
+            False,
+            "",
+        ),
+        (
+            "other-tool-ps/hook-env",
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "lane-verify",
+                "cwd": cwd,
+                "tool_name": "write",
+                "tool_input": {"file_path": "/tmp/notes.md", "content": SECRET_DENY_COMMAND},
+            },
+            False,
+            "",
+        ),
     ]
 
 
@@ -2722,9 +3665,15 @@ def _muse_cases() -> list[tuple[str, dict, bool, str]]:
 # TMPDIR and the credential path inside a throwaway dir, auto-update off and sign-in off.  The one MUSE_ variable
 # kept is the plugin feature switch, which is not a path.  (Read from launcher version 3, October 2026, and seen in a
 # run of a sandboxed copy; what the Muse binary itself writes during validate is UNVERIFIED.)
-_MUSE_VALIDATE_DIRS = (("HOME", ""), ("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"),
-                       ("XDG_CACHE_HOME", "cache"), ("XDG_STATE_HOME", "state"), ("XDG_RUNTIME_DIR", "runtime"),
-                       ("TMPDIR", "tmp"))
+_MUSE_VALIDATE_DIRS = (
+    ("HOME", ""),
+    ("XDG_CONFIG_HOME", "config"),
+    ("XDG_DATA_HOME", "data"),
+    ("XDG_CACHE_HOME", "cache"),
+    ("XDG_STATE_HOME", "state"),
+    ("XDG_RUNTIME_DIR", "runtime"),
+    ("TMPDIR", "tmp"),
+)
 _MUSE_VALIDATE_FILES = (("MUSE_AUTH_PATH", ("config", "muse", "auth.json")),)
 _MUSE_VALIDATE_SET = (("MUSE_NO_AUTO_UPDATE", "1"), ("MUSE_LOGIN", "0"))
 _MUSE_VALIDATE_KEEP = (MUSE_EXPERIMENTAL_ENV,)
@@ -2733,8 +3682,11 @@ _MUSE_VALIDATE_KEEP = (MUSE_EXPERIMENTAL_ENV,)
 def muse_validate_env(scratch: str, base: Mapping[str, str] | None = None) -> dict:
     """The environment `verify` runs `muse plugins validate` with (see _MUSE_VALIDATE_DIRS).  Creates the dirs."""
     base = os.environ if base is None else base
-    env = {k: v for k, v in base.items()
-           if not (k.startswith("XDG_") or k.startswith("MUSE_")) or k in _MUSE_VALIDATE_KEEP}
+    env = {
+        k: v
+        for k, v in base.items()
+        if not (k.startswith("XDG_") or k.startswith("MUSE_")) or k in _MUSE_VALIDATE_KEEP
+    }
     for name, rel in _MUSE_VALIDATE_DIRS:
         path = os.path.join(scratch, rel) if rel else scratch
         os.makedirs(path, mode=0o700, exist_ok=True)
@@ -2748,15 +3700,29 @@ def muse_validate_env(scratch: str, base: Mapping[str, str] | None = None) -> di
 def _check_text(target: str, name: str, path: str, expected: str, executable: bool) -> Check:
     have = _read_regular(path)
     if have is None:
-        return Check(target, name, "FAIL", f"{path} is missing or not a regular file; run `apply tools`")
+        return Check(
+            target, name, "FAIL", f"{path} is missing or not a regular file; run `apply tools`"
+        )
     if executable and not (os.stat(path).st_mode & 0o111 and os.access(path, os.X_OK)):
-        return Check(target, name, "FAIL", f"{path} is not executable (mode {os.stat(path).st_mode & 0o777:o})")
+        return Check(
+            target,
+            name,
+            "FAIL",
+            f"{path} is not executable (mode {os.stat(path).st_mode & 0o777:o})",
+        )
     if have != expected.encode("utf-8"):
-        return Check(target, name, "FAIL", f"{path} differs from what this install_tools writes; re-run `apply tools`")
+        return Check(
+            target,
+            name,
+            "FAIL",
+            f"{path} differs from what this install_tools writes; re-run `apply tools`",
+        )
     return Check(target, name, "PASS", f"{path} current" + (", executable" if executable else ""))
 
 
-def verify_muse(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True) -> list[Check]:
+def verify_muse(
+    paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
     """Prove the Muse plugin bundle works, without Muse.  The hook command is taken back out of the installed
     manifest and run the way Muse runs a hook: directly (no shell), with an EMPTY environment, from `/`, with
     absolute paths only.  (`minimal_path=False`, the CLI's --no-minimal-path, gives it the caller's PATH instead,
@@ -2772,8 +3738,20 @@ def verify_muse(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path:
     t = "muse"
     out: list[Check] = []
     facts = read_guard_facts(paths.stable)
-    out.append(_check_text(t, "plugin.json", paths.muse_manifest, render_muse_manifest(paths.stable), False))
-    out.append(_check_text(t, "hooks/lane-guard.sh", paths.muse_wrapper, render_muse_wrapper(paths.stable, facts), True))
+    out.append(
+        _check_text(
+            t, "plugin.json", paths.muse_manifest, render_muse_manifest(paths.stable), False
+        )
+    )
+    out.append(
+        _check_text(
+            t,
+            "hooks/lane-guard.sh",
+            paths.muse_wrapper,
+            render_muse_wrapper(paths.stable, facts),
+            True,
+        )
+    )
     out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(facts)))
     out.append(_check_text(t, "shim muse-seat", paths.muse_seat, render_muse_seat(), True))
     argv: list | None = None
@@ -2782,23 +3760,53 @@ def verify_muse(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path:
         hooks = doc["capabilities"]["hooks"]
         pre = [h for h in hooks if isinstance(h, dict) and h.get("event") == "PreToolUse"]
         if len(pre) != 1:
-            out.append(Check(t, "hook command", "FAIL", f"the manifest has {len(pre)} PreToolUse hooks, expected exactly 1"))
+            out.append(
+                Check(
+                    t,
+                    "hook command",
+                    "FAIL",
+                    f"the manifest has {len(pre)} PreToolUse hooks, expected exactly 1",
+                )
+            )
         else:
             argv = pre[0].get("command")
             extra = sorted(set(pre[0]) & {"matcher"})
             if extra:
-                out.append(Check(t, "hook command", "FAIL", "the manifest hook has a matcher, which Muse rejects"))
+                out.append(
+                    Check(
+                        t,
+                        "hook command",
+                        "FAIL",
+                        "the manifest hook has a matcher, which Muse rejects",
+                    )
+                )
                 argv = None
             elif argv != muse_hook_argv(paths.stable):
-                out.append(Check(t, "hook command", "FAIL", f"manifest command {argv!r} is not {muse_hook_argv(paths.stable)!r}"))
+                out.append(
+                    Check(
+                        t,
+                        "hook command",
+                        "FAIL",
+                        f"manifest command {argv!r} is not {muse_hook_argv(paths.stable)!r}",
+                    )
+                )
                 argv = None
             else:
                 out.append(Check(t, "hook command", "PASS", " ".join(shlex.quote(a) for a in argv)))
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
-        out.append(Check(t, "hook command", "FAIL", f"cannot read the hook command from {paths.muse_manifest}: {exc}"))
+        out.append(
+            Check(
+                t,
+                "hook command",
+                "FAIL",
+                f"cannot read the hook command from {paths.muse_manifest}: {exc}",
+            )
+        )
     hook_env: dict = {} if minimal_path else {"PATH": os.environ.get("PATH", "")}
     if argv is None:
-        out.append(Check(t, "hook-env probes", "FAIL", "not run: no usable hook command in the manifest"))
+        out.append(
+            Check(t, "hook-env probes", "FAIL", "not run: no usable hook command in the manifest")
+        )
     else:
         for name, payload, must_deny, marker in _muse_cases():
             res = run_argv(argv, json.dumps(payload).encode("utf-8"), hook_env, timeout, cwd="/")
@@ -2816,37 +3824,88 @@ def verify_muse(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path:
             observed = f"exit={res.returncode} stdout={_brief(res.stdout)}"
             if res.stderr:
                 observed += f" stderr={_brief(res.stderr, 200)}"
-            out.append(Check(t, name, "FAIL" if problem else "PASS", (f"{problem}; " if problem else "") + observed))
+            out.append(
+                Check(
+                    t,
+                    name,
+                    "FAIL" if problem else "PASS",
+                    (f"{problem}; " if problem else "") + observed,
+                )
+            )
     muse_bin = shutil.which("muse")
     if not os.path.isdir(paths.muse_bundle):
-        out.append(Check(t, "muse validate", "SKIP", f"there is no bundle at {paths.muse_bundle} to validate"))
+        out.append(
+            Check(
+                t, "muse validate", "SKIP", f"there is no bundle at {paths.muse_bundle} to validate"
+            )
+        )
     elif not muse_bin:
-        out.append(Check(t, "muse validate", "SKIP", "muse is not on PATH, so `muse plugins validate` was not run"))
+        out.append(
+            Check(
+                t,
+                "muse validate",
+                "SKIP",
+                "muse is not on PATH, so `muse plugins validate` was not run",
+            )
+        )
     else:
         with tempfile.TemporaryDirectory(prefix="lane-muse-validate-") as scratch_home:
-            res = run_argv([muse_bin, "plugins", "validate", paths.muse_bundle, "--json"], b"",
-                           muse_validate_env(scratch_home), max(timeout, 30.0))
+            res = run_argv(
+                [muse_bin, "plugins", "validate", paths.muse_bundle, "--json"],
+                b"",
+                muse_validate_env(scratch_home),
+                max(timeout, 30.0),
+            )
         verdict: object = None
         try:
             verdict = json.loads(res.stdout.decode("utf-8")).get("valid")
         except (ValueError, AttributeError):
             pass
         if res.timed_out or res.error:
-            out.append(Check(t, "muse validate", "WARN", res.error or f"timed out after {max(timeout, 30.0):g}s; the bundle was not validated"))
+            out.append(
+                Check(
+                    t,
+                    "muse validate",
+                    "WARN",
+                    res.error
+                    or f"timed out after {max(timeout, 30.0):g}s; the bundle was not validated",
+                )
+            )
         elif verdict is True and res.returncode == 0:
             out.append(Check(t, "muse validate", "PASS", f"{muse_bin} accepts {paths.muse_bundle}"))
         elif verdict is False or res.returncode not in (0, None):
-            out.append(Check(t, "muse validate", "FAIL", f"{muse_bin} rejects the bundle (exit {res.returncode}): "
-                                                         f"{_brief(res.stdout or res.stderr, 300)}"))
+            out.append(
+                Check(
+                    t,
+                    "muse validate",
+                    "FAIL",
+                    f"{muse_bin} rejects the bundle (exit {res.returncode}): "
+                    f"{_brief(res.stdout or res.stderr, 300)}",
+                )
+            )
         else:
-            out.append(Check(t, "muse validate", "WARN", f"could not read a verdict from `muse plugins validate` (exit {res.returncode})"))
-    out.append(Check(t, "owner actions", "SKIP",
-                     "whether the owner has run `muse plugins install ... --scope user` and `muse plugins approve "
-                     f"{MUSE_PLUGIN_ID}` is not visible from here (this tool does not read Muse's config)"))
+            out.append(
+                Check(
+                    t,
+                    "muse validate",
+                    "WARN",
+                    f"could not read a verdict from `muse plugins validate` (exit {res.returncode})",
+                )
+            )
+    out.append(
+        Check(
+            t,
+            "owner actions",
+            "SKIP",
+            "whether the owner has run `muse plugins install ... --scope user` and `muse plugins approve "
+            f"{MUSE_PLUGIN_ID}` is not visible from here (this tool does not read Muse's config)",
+        )
+    )
     return out
 
 
 # --------------------------------------------------------------------------- Clutch and Kimi: a marked block in a file we do not own
+
 
 def block_path(plat: Platform, paths: Paths) -> str:
     return paths.clutch_patch if plat.key == "clutch" else paths.kimi_config
@@ -2860,30 +3919,39 @@ def block_command(plat: Platform, paths: Paths) -> str:
 def block_body(plat: Platform, paths: Paths) -> list[str]:
     """The lines between the markers."""
     if plat.key == "clutch":
-        return ["- insert:",
-                "    - id: fleet-hooks-guards",
-                "      name: '@deepseek-ai/dsh-hooks-claude-code'",
-                "      config:",
-                f"        configPath: {json.dumps(paths.clutch_hooks)}"]
-    return ["[[hooks]]",
-            'event = "PreToolUse"',
-            'matcher = "Bash"',
-            f"command = {json.dumps(block_command(plat, paths))}",
-            f"timeout = {HOOK_TIMEOUT_S}"]
+        return [
+            "- insert:",
+            "    - id: fleet-hooks-guards",
+            "      name: '@deepseek-ai/dsh-hooks-claude-code'",
+            "      config:",
+            f"        configPath: {json.dumps(paths.clutch_hooks)}",
+        ]
+    return [
+        "[[hooks]]",
+        'event = "PreToolUse"',
+        'matcher = "Bash"',
+        f"command = {json.dumps(block_command(plat, paths))}",
+        f"timeout = {HOOK_TIMEOUT_S}",
+    ]
 
 
 def kimi_fields(plat: Platform, paths: Paths) -> dict:
     """The four fields of the Kimi `[[hooks]]` entry this tool writes, as values (what a parse of the file gives)."""
-    return {"event": "PreToolUse", "matcher": "Bash", "command": block_command(plat, paths), "timeout": HOOK_TIMEOUT_S}
+    return {
+        "event": "PreToolUse",
+        "matcher": "Bash",
+        "command": block_command(plat, paths),
+        "timeout": HOOK_TIMEOUT_S,
+    }
 
 
 @dataclass
 class BlockPlan:
     key: str
     path: str
-    state: str                       # ok, skip or refuse
+    state: str  # ok, skip or refuse
     reason: str = ""
-    action: str = "none"             # create, append, replace or none
+    action: str = "none"  # create, append, replace or none
     new_text: str | None = None
     raw: bytes | None = None
     mode: int | None = None
@@ -2900,7 +3968,9 @@ def _toml_problem(text: str) -> str | None:
         import tomllib
     except ImportError:
         if re.search(r"(?m)^\s*hooks\s*=", text):
-            return "config.toml has a top-level `hooks =` key, which a [[hooks]] table would redefine"
+            return (
+                "config.toml has a top-level `hooks =` key, which a [[hooks]] table would redefine"
+            )
         return None
     try:
         tomllib.loads(text)
@@ -2912,9 +3982,14 @@ def _toml_problem(text: str) -> str | None:
 def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
     """Read-only: what `apply` would do to the file that holds this platform's block."""
     path = block_path(plat, paths)
-    bp = BlockPlan(plat.key, path, "ok", command=block_command(plat, paths), body=block_body(plat, paths))
+    bp = BlockPlan(
+        plat.key, path, "ok", command=block_command(plat, paths), body=block_body(plat, paths)
+    )
     if not os.path.isdir(os.path.join(paths.home, *plat.platform_dir.split("/"))):
-        bp.state, bp.reason = "skip", f"~/{plat.platform_dir} does not exist (platform not installed)"
+        bp.state, bp.reason = (
+            "skip",
+            f"~/{plat.platform_dir} does not exist (platform not installed)",
+        )
         return bp
     text: str | None = None
     if os.path.islink(path):
@@ -2933,17 +4008,25 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
             bp.state, bp.reason = "refuse", f"{path} cannot be read as UTF-8 text ({exc})"
             return bp
         if bp.mode is not None and not bp.mode & 0o200:
-            bp.state, bp.reason = "refuse", f"{path} is read-only (mode {bp.mode:04o}); not overriding the owner's choice"
+            bp.state, bp.reason = (
+                "refuse",
+                f"{path} is read-only (mode {bp.mode:04o}); not overriding the owner's choice",
+            )
             return bp
     try:
         if plat.key == "clutch":
             if text is not None and text.strip() and not CP.is_list_patch(text):
-                bp.state, bp.reason = "refuse", f"{path} is not a top-level YAML list, so it is not a cordis patch; left alone"
+                bp.state, bp.reason = (
+                    "refuse",
+                    f"{path} is not a top-level YAML list, so it is not a cordis patch; left alone",
+                )
                 return bp
             new, bp.action = CP.upsert(text, BLOCK_NAME, BLOCK_TOOL, bp.body)
         else:
             # Kimi rewrites its config.toml without comments, so the entry is found by what it says, not by markers
-            new, bp.action, extra = TH.plan(text, BLOCK_NAME, BLOCK_TOOL, bp.body, kimi_fields(plat, paths), is_ours)
+            new, bp.action, extra = TH.plan(
+                text, BLOCK_NAME, BLOCK_TOOL, bp.body, kimi_fields(plat, paths), is_ours
+            )
             bp.notes.extend(extra)
     except MB.BlockError as exc:
         bp.state, bp.reason = "refuse", f"{path}: {exc}"
@@ -2974,7 +4057,10 @@ def _kimi_doctor(text: str, timeout: float, home: str) -> tuple[str, str]:
     auto-install off, so the real config and the real binary are never touched."""
     kimi = find_kimi(home)
     if not kimi:
-        return "SKIP", "kimi was not found (not on PATH, not at ~/.kimi-code/bin/kimi), so `kimi doctor` was not run"
+        return (
+            "SKIP",
+            "kimi was not found (not on PATH, not at ~/.kimi-code/bin/kimi), so `kimi doctor` was not run",
+        )
     with tempfile.TemporaryDirectory(prefix="fleet-kimi-doctor-") as scratch:
         kh = os.path.join(scratch, "kh")
         os.makedirs(kh, mode=0o700)
@@ -2983,30 +4069,58 @@ def _kimi_doctor(text: str, timeout: float, home: str) -> tuple[str, str]:
             fh.write(text)
         with open(os.path.join(kh, "tui.toml"), "w", encoding="utf-8") as fh:
             fh.write("[upgrade]\nauto_install = false\n")
-        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.path.join(scratch, "home"), "KIMI_CODE_HOME": kh,
-               "NO_COLOR": "1"}
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.path.join(scratch, "home"),
+            "KIMI_CODE_HOME": kh,
+            "NO_COLOR": "1",
+        }
         res = run_argv([kimi, "doctor"], b"", env, max(timeout, 60.0))
     if res.error or res.timed_out:
-        return "WARN", res.error or f"`kimi doctor` timed out after {max(timeout, 60.0):g}s; the file was not validated"
+        return (
+            "WARN",
+            res.error
+            or f"`kimi doctor` timed out after {max(timeout, 60.0):g}s; the file was not validated",
+        )
     out = res.stdout.decode("utf-8", "replace")
     if res.returncode == 0 and "All checked config files are valid" in out:
         return "PASS", f"{kimi} doctor accepts the config.toml"
-    return "FAIL", f"{kimi} doctor rejects the config.toml (exit {res.returncode}): {_brief(res.stdout or res.stderr, 300)}"
+    return (
+        "FAIL",
+        f"{kimi} doctor rejects the config.toml (exit {res.returncode}): {_brief(res.stdout or res.stderr, 300)}",
+    )
 
 
-def _clutch_dsh(new_text: str, paths: Paths, dsh_bin: str | None, timeout: float) -> tuple[str, str]:
+def _clutch_dsh(
+    new_text: str, paths: Paths, dsh_bin: str | None, timeout: float
+) -> tuple[str, str]:
     """(PASS | FAIL | SKIP, detail): the pinned engine's --dump-config on a scratch copy of the profiles."""
     binary = dsh_bin or DC.find_dsh(paths.home)
     if not binary:
-        return "SKIP", ("the pinned dsh was not found at ~/apps/clutch-runtime/node_modules/.bin/dsh (pass --dsh PATH)")
-    ok, detail = DC.check_patch(binary, new_text, os.path.join(paths.home, ".clutch", "dsh", "profiles"),
-                                ("@deepseek-ai/dsh-hooks-claude-code",), timeout=max(timeout, DC.DEFAULT_TIMEOUT))
+        return "SKIP", (
+            "the pinned dsh was not found at ~/apps/clutch-runtime/node_modules/.bin/dsh (pass --dsh PATH)"
+        )
+    ok, detail = DC.check_patch(
+        binary,
+        new_text,
+        os.path.join(paths.home, ".clutch", "dsh", "profiles"),
+        ("@deepseek-ai/dsh-hooks-claude-code",),
+        timeout=max(timeout, DC.DEFAULT_TIMEOUT),
+    )
     return ("PASS" if ok else "FAIL"), detail
 
 
-def apply_block(plat: Platform, paths: Paths, *, now: Callable[[], float] = time.time,
-                timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True, dsh_bin: str | None = None,
-                check_dsh: bool = True, check_kimi: bool = True) -> Result:
+def apply_block(
+    plat: Platform,
+    paths: Paths,
+    *,
+    now: Callable[[], float] = time.time,
+    timeout: float = PROBE_TIMEOUT_S,
+    minimal_path: bool = True,
+    dsh_bin: str | None = None,
+    check_dsh: bool = True,
+    check_kimi: bool = True,
+) -> Result:
     """Write this platform's marked block.  The fleet shim is probed right now (deny, allow and a `ps`), the new text
     is validated by the tool's own checker, a backup comes first, and the write is atomic."""
     bp = plan_block(plat, paths)
@@ -3015,30 +4129,61 @@ def apply_block(plat: Platform, paths: Paths, *, now: Callable[[], float] = time
     if bp.state == "refuse":
         return Result(plat.key, "refused", bp.reason)
     if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
-        return Result(plat.key, "refused", f"the fleet hook shim {paths.fleet_shim} is missing or not executable; "
-                                           "run `apply tools` first")
+        return Result(
+            plat.key,
+            "refused",
+            f"the fleet hook shim {paths.fleet_shim} is missing or not executable; "
+            "run `apply tools` first",
+        )
     if plat.key == "clutch":
         want = render_clutch_hooks(paths.stable).encode("utf-8")
         if _read_regular(paths.clutch_hooks) != want:
-            return Result(plat.key, "refused", f"{paths.clutch_hooks} is missing or not current; run `apply tools` first")
-    checks = probe_command(bp.command, target=plat.key, fmt=plat.fmt, shape=plat.shape, home=paths.home,
-                           timeout=timeout, minimal_path=minimal_path, secret=True)
+            return Result(
+                plat.key,
+                "refused",
+                f"{paths.clutch_hooks} is missing or not current; run `apply tools` first",
+            )
+    checks = probe_command(
+        bp.command,
+        target=plat.key,
+        fmt=plat.fmt,
+        shape=plat.shape,
+        home=paths.home,
+        timeout=timeout,
+        minimal_path=minimal_path,
+        secret=True,
+    )
     bad = [c for c in checks if c.status == "FAIL"]
     if bad:
-        return Result(plat.key, "refused", "the installed fleet hook shim fails its probes, so it will not be wired in: "
-                                           + bad[0].detail)
+        return Result(
+            plat.key,
+            "refused",
+            "the installed fleet hook shim fails its probes, so it will not be wired in: "
+            + bad[0].detail,
+        )
     if bp.action == "none":
-        return Result(plat.key, "unchanged", f"{bp.path} already has the " + ("entry" if bp.notes else "block")
-                      + "".join("; " + n for n in bp.notes))
+        return Result(
+            plat.key,
+            "unchanged",
+            f"{bp.path} already has the "
+            + ("entry" if bp.notes else "block")
+            + "".join("; " + n for n in bp.notes),
+        )
     assert bp.new_text is not None
     notes: list[str] = []
     if plat.key == "clutch":
         if check_dsh:
             status, detail = _clutch_dsh(bp.new_text, paths, dsh_bin, timeout)
             if status == "FAIL":
-                return Result(plat.key, "refused", f"the Clutch check does not accept the new patch: {detail}")
+                return Result(
+                    plat.key, "refused", f"the Clutch check does not accept the new patch: {detail}"
+                )
             if status == "SKIP":
-                return Result(plat.key, "refused", f"{detail}; or pass --no-dsh-check to write the patch unproven")
+                return Result(
+                    plat.key,
+                    "refused",
+                    f"{detail}; or pass --no-dsh-check to write the patch unproven",
+                )
             notes.append(detail)
         else:
             notes.append("the patch was NOT checked with the engine (--no-dsh-check)")
@@ -3048,7 +4193,11 @@ def apply_block(plat: Platform, paths: Paths, *, now: Callable[[], float] = time
             if status == "FAIL":
                 return Result(plat.key, "refused", detail)
             if status == "SKIP":
-                return Result(plat.key, "refused", f"{detail}; or pass --no-kimi-check to write the entry unproven")
+                return Result(
+                    plat.key,
+                    "refused",
+                    f"{detail}; or pass --no-kimi-check to write the entry unproven",
+                )
             notes.append(detail)
         else:
             notes.append("config.toml was NOT checked with `kimi doctor` (--no-kimi-check)")
@@ -3062,10 +4211,18 @@ def apply_block(plat: Platform, paths: Paths, *, now: Callable[[], float] = time
         if not _reread_matches(bp.path, bp.raw or b"", bp.exists):
             if backup:
                 os.unlink(backup)
-            return Result(plat.key, "failed", f"{bp.path} changed while it was being edited; nothing written, retry")
-        atomic_write(bp.path, bp.new_text.encode("utf-8"), bp.mode if bp.mode is not None else 0o600)
+            return Result(
+                plat.key,
+                "failed",
+                f"{bp.path} changed while it was being edited; nothing written, retry",
+            )
+        atomic_write(
+            bp.path, bp.new_text.encode("utf-8"), bp.mode if bp.mode is not None else 0o600
+        )
     except OSError as exc:
-        return Result(plat.key, "failed", f"{bp.path} not changed: {type(exc).__name__}: {exc}", backup)
+        return Result(
+            plat.key, "failed", f"{bp.path} not changed: {type(exc).__name__}: {exc}", backup
+        )
     again = plan_block(plat, paths)
     if again.state != "ok" or again.action != "none":
         try:
@@ -3075,12 +4232,19 @@ def apply_block(plat: Platform, paths: Paths, *, now: Callable[[], float] = time
                 os.unlink(bp.path)
         except OSError:
             pass
-        return Result(plat.key, "failed", f"{bp.path} failed validation after the write; the original was restored", backup)
+        return Result(
+            plat.key,
+            "failed",
+            f"{bp.path} failed validation after the write; the original was restored",
+            backup,
+        )
     detail = bp.path + (f" (backup {backup})" if backup else " (new file)")
     notes = bp.notes + notes
     if notes:
         detail += "; " + "; ".join(notes)
-    return Result(plat.key, "added" if bp.action in ("create", "append") else "updated", detail, backup)
+    return Result(
+        plat.key, "added" if bp.action in ("create", "append") else "updated", detail, backup
+    )
 
 
 def _block_command_from_file(plat: Platform, paths: Paths, text: str) -> tuple[str | None, str]:
@@ -3092,7 +4256,11 @@ def _block_command_from_file(plat: Platform, paths: Paths, text: str) -> tuple[s
             cmd = doc["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
             return None, f"cannot read the hook command from {paths.clutch_hooks}: {exc}"
-        return (cmd, "") if isinstance(cmd, str) else (None, f"{paths.clutch_hooks} has no command string")
+        return (
+            (cmd, "")
+            if isinstance(cmd, str)
+            else (None, f"{paths.clutch_hooks} has no command string")
+        )
     try:
         info = TH.inspect(text, BLOCK_NAME, kimi_fields(plat, paths), is_ours)
     except MB.BlockError as exc:
@@ -3103,20 +4271,47 @@ def _block_command_from_file(plat: Platform, paths: Paths, text: str) -> tuple[s
     return (cmd, "") if cmd else (None, "the fleet [[hooks]] entry has no readable command string")
 
 
-def verify_block(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True,
-                 dsh_bin: str | None = None) -> list[Check]:
+def verify_block(
+    plat: Platform,
+    paths: Paths,
+    *,
+    timeout: float = PROBE_TIMEOUT_S,
+    minimal_path: bool = True,
+    dsh_bin: str | None = None,
+) -> list[Check]:
     """Take the command back out of what is on disk and run it, as for every platform; then ask the tool's own checker
     (the pinned dsh for Clutch, `kimi doctor` for Kimi) about the file as it is now."""
     t = plat.key
     if not os.path.isdir(os.path.join(paths.home, *plat.platform_dir.split("/"))):
-        return [Check(t, "platform", "SKIP", f"~/{plat.platform_dir} does not exist (platform not installed)")]
+        return [
+            Check(
+                t,
+                "platform",
+                "SKIP",
+                f"~/{plat.platform_dir} does not exist (platform not installed)",
+            )
+        ]
     path = block_path(plat, paths)
     try:
         text = _read_bytes(path).decode("utf-8")
     except FileNotFoundError:
-        return [Check(t, "block", "SKIP", f"not wired: {path} does not exist, so there is no `{BLOCK_NAME}` block; run `apply {t}`")]
+        return [
+            Check(
+                t,
+                "block",
+                "SKIP",
+                f"not wired: {path} does not exist, so there is no `{BLOCK_NAME}` block; run `apply {t}`",
+            )
+        ]
     except (OSError, UnicodeDecodeError) as exc:
-        return [Check(t, "block", "FAIL", f"{path} cannot be read ({exc}); no `{BLOCK_NAME}` block installed")]
+        return [
+            Check(
+                t,
+                "block",
+                "FAIL",
+                f"{path} cannot be read ({exc}); no `{BLOCK_NAME}` block installed",
+            )
+        ]
     info: TH.Inspection | None = None
     try:
         if plat.key == "kimi":
@@ -3133,55 +4328,591 @@ def verify_block(plat: Platform, paths: Paths, *, timeout: float = PROBE_TIMEOUT
     if not_wired:
         # Opt-in, like muse: the tool is installed but nobody ran `apply {t}`, which is not a broken install.  A bare
         # verify reads it as a skip; naming the platform turns that lone SKIP into a FAIL (see _verify_targets).
-        return [Check(t, "block", "SKIP", f"not wired: no `{BLOCK_NAME}` block in {path}; run `apply {t}`")]
+        return [
+            Check(
+                t, "block", "SKIP", f"not wired: no `{BLOCK_NAME}` block in {path}; run `apply {t}`"
+            )
+        ]
     out: list[Check] = []
     if info is not None and info.state == "stripped":
         if info.current:
-            out.append(Check(t, "block", "WARN", f"{path} holds the current fleet [[hooks]] entry, but its `{BLOCK_NAME}` "
-                                                 "markers are gone (Kimi Code rewrites config.toml without comments); "
-                                                 "the hook is still wired"))
+            out.append(
+                Check(
+                    t,
+                    "block",
+                    "WARN",
+                    f"{path} holds the current fleet [[hooks]] entry, but its `{BLOCK_NAME}` "
+                    "markers are gone (Kimi Code rewrites config.toml without comments); "
+                    "the hook is still wired",
+                )
+            )
         else:
-            out.append(Check(t, "block", "FAIL", f"the fleet [[hooks]] entr{'y' if len(info.ours) == 1 else 'ies'} in {path} "
-                                                 f"({len(info.ours)}) is not what this install_tools writes; re-run `apply {t}`"))
+            out.append(
+                Check(
+                    t,
+                    "block",
+                    "FAIL",
+                    f"the fleet [[hooks]] entr{'y' if len(info.ours) == 1 else 'ies'} in {path} "
+                    f"({len(info.ours)}) is not what this install_tools writes; re-run `apply {t}`",
+                )
+            )
     elif tuple(body or ()) != tuple(block_body(plat, paths)):
-        out.append(Check(t, "block", "FAIL", f"the block in {path} is not what this install_tools writes; re-run `apply {t}`"))
+        out.append(
+            Check(
+                t,
+                "block",
+                "FAIL",
+                f"the block in {path} is not what this install_tools writes; re-run `apply {t}`",
+            )
+        )
     else:
         out.append(Check(t, "block", "PASS", f"{path} holds the current `{BLOCK_NAME}` block"))
     if info is not None and info.state == "block" and info.outside:
-        out.append(Check(t, "duplicate", "WARN", f"{len(info.outside)} more fleet [[hooks]] entr"
-                                                 f"{'y' if len(info.outside) == 1 else 'ies'} outside the block in {path}; "
-                                                 f"re-run `apply {t}` to remove them"))
+        out.append(
+            Check(
+                t,
+                "duplicate",
+                "WARN",
+                f"{len(info.outside)} more fleet [[hooks]] entr"
+                f"{'y' if len(info.outside) == 1 else 'ies'} outside the block in {path}; "
+                f"re-run `apply {t}` to remove them",
+            )
+        )
     if info is not None and info.other_refs:
-        out.append(Check(t, "duplicate", "WARN", f"{path} names the fleet hook again on line "
-                                                 + ", ".join(str(n) for n in info.other_refs) + " outside any [[hooks]] entry"))
+        out.append(
+            Check(
+                t,
+                "duplicate",
+                "WARN",
+                f"{path} names the fleet hook again on line "
+                + ", ".join(str(n) for n in info.other_refs)
+                + " outside any [[hooks]] entry",
+            )
+        )
     if plat.key == "clutch":
         want = render_clutch_hooks(paths.stable).encode("utf-8")
         have = _read_regular(paths.clutch_hooks)
-        out.append(Check(t, "hooks.json", "PASS" if have == want else "FAIL",
-                         f"{paths.clutch_hooks} " + ("is current" if have == want else "is missing or not what this install_tools writes; re-run `apply tools`")))
+        out.append(
+            Check(
+                t,
+                "hooks.json",
+                "PASS" if have == want else "FAIL",
+                f"{paths.clutch_hooks} "
+                + (
+                    "is current"
+                    if have == want
+                    else "is missing or not what this install_tools writes; re-run `apply tools`"
+                ),
+            )
+        )
     cmd, problem = _block_command_from_file(plat, paths, text)
     if cmd is None:
         out.append(Check(t, "hook command", "FAIL", problem))
     else:
         out.append(Check(t, "hook command", "PASS", cmd))
-        out.extend(probe_command(cmd, target=t, fmt=plat.fmt, shape=plat.shape, home=paths.home, timeout=timeout,
-                                 minimal_path=minimal_path, secret=True))
+        out.extend(
+            probe_command(
+                cmd,
+                target=t,
+                fmt=plat.fmt,
+                shape=plat.shape,
+                home=paths.home,
+                timeout=timeout,
+                minimal_path=minimal_path,
+                secret=True,
+            )
+        )
     if plat.key == "clutch":
         status, detail = _clutch_dsh(text, paths, dsh_bin, timeout)
         out.append(Check(t, "dsh --dump-config", status if status != "SKIP" else "SKIP", detail))
-        out.append(Check(t, "patch reload", "SKIP", DC.reload_note(os.path.join(paths.home, ".clutch", "dsh", "profiles"))
-                         + "; whether the running engine has loaded the plugin is not visible from here"))
+        out.append(
+            Check(
+                t,
+                "patch reload",
+                "SKIP",
+                DC.reload_note(os.path.join(paths.home, ".clutch", "dsh", "profiles"))
+                + "; whether the running engine has loaded the plugin is not visible from here",
+            )
+        )
     else:
         problem = _toml_problem(text)
-        out.append(Check(t, "config.toml", "FAIL" if problem else "PASS", problem or "parses (or no tomllib to ask)"))
+        out.append(
+            Check(
+                t,
+                "config.toml",
+                "FAIL" if problem else "PASS",
+                problem or "parses (or no tomllib to ask)",
+            )
+        )
         status, detail = _kimi_doctor(text, timeout, paths.home)
         out.append(Check(t, "kimi doctor", status, detail))
-        out.append(Check(t, "fires", "SKIP", "whether Kimi Code fires the hook is not visible from here; ask a new "
-                                              "session to run `ps` and expect a refusal"))
+        out.append(
+            Check(
+                t,
+                "fires",
+                "SKIP",
+                "whether Kimi Code fires the hook is not visible from here; ask a new "
+                "session to run `ps` and expect a refusal",
+            )
+        )
+    return out
+
+
+# --------------------------------------------------------------------------- MiniMax Code: a plugin bundle in ~/.minimax/plugins
+
+
+def render_minimax_manifest() -> str:
+    """.claude-plugin/plugin.json.  MiniMax needs at least a name; the other two keys are the Claude plugin manifest's."""
+    doc = {
+        "name": MINIMAX_PLUGIN_ID,
+        "version": "1.0.0",
+        "description": "Fleet lane guard and secret guard for shell calls (written by fleet_lanes.install_tools)",
+    }
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def minimax_hook_command(paths: Paths) -> str:
+    """The command the plugin runs: the fleet hook (lane guard, then secret guard), Claude deny shape, absolute path."""
+    return fleet_hook_command(paths, "claude")
+
+
+def render_minimax_hooks(paths: Paths) -> str:
+    """hooks/hooks.json.  Only `type: command` exists; `timeout` is whole seconds, 1 to 10."""
+    doc = {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": minimax_hook_command(paths),
+                            "timeout": MINIMAX_HOOK_TIMEOUT_S,
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def minimax_expected(paths: Paths) -> dict[str, str]:
+    """Relative path (under the bundle) to text."""
+    return {
+        MINIMAX_MANIFEST_FILE: render_minimax_manifest(),
+        MINIMAX_HOOKS_FILE: render_minimax_hooks(paths),
+    }
+
+
+@dataclass
+class MinimaxPlan:
+    bundle: str
+    state: str  # new, stale, current, skip, refuse
+    reason: str
+    command: str
+    files: list[FileStatus]
+    manifest_text: str
+    hooks_text: str
+    notes: list[str]
+
+
+def _minimax_foreign(bundle: str) -> str | None:
+    """None when `bundle` is a directory this tool could have written (only our two files, no symlink, a manifest that
+    names our plugin when there is one), else why it is not."""
+    if os.path.islink(bundle):
+        return f"{bundle} is a symlink; MiniMax Code skips a symlinked plugin and this tool will not write through one"
+    if not os.path.isdir(bundle):
+        return f"{bundle} exists and is not a directory"
+    allowed_files = {MINIMAX_MANIFEST_FILE, MINIMAX_HOOKS_FILE}
+    allowed_dirs = {rel.split("/")[0] for rel in allowed_files}
+    for dirpath, dirnames, filenames in os.walk(bundle):
+        here = os.path.relpath(dirpath, bundle)
+        for d in dirnames:
+            rel = d if here == "." else here + "/" + d
+            if os.path.islink(os.path.join(dirpath, d)):
+                return f"{bundle} holds a symlink ({rel}); it is not a directory this tool wrote"
+            if rel not in allowed_dirs:
+                return f"{bundle} holds {rel}/, which this tool never writes"
+        for f in filenames:
+            rel = f if here == "." else here + "/" + f
+            full = os.path.join(dirpath, f)
+            if f == ".DS_Store" and not os.path.islink(full):
+                continue  # Finder litter, as in the stable-copy scan; the swap removes it with the old directory
+            if rel not in allowed_files or os.path.islink(full):
+                return f"{bundle} holds {rel}, which this tool never writes"
+    # The manifest is the ownership marker: an empty directory, or one without it, is somebody else's.
+    manifest = _read_regular(os.path.join(bundle, *MINIMAX_MANIFEST_FILE.split("/")))
+    if manifest is None:
+        return (
+            f"{bundle}/{MINIMAX_MANIFEST_FILE} is missing or not a regular file, "
+            "so this tool cannot tell the directory is its own"
+        )
+    try:
+        doc = json.loads(manifest.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return f"{bundle}/{MINIMAX_MANIFEST_FILE} is not JSON"
+    if not isinstance(doc, dict) or doc.get("name") != MINIMAX_PLUGIN_ID:
+        return f"{bundle}/{MINIMAX_MANIFEST_FILE} does not name the plugin {MINIMAX_PLUGIN_ID!r}"
+    return None
+
+
+def _sweep_stale_minimax_leftovers(plugins_real: str, stage_parent: str, bundle: str) -> None:
+    """Remove `<bundle>.old-<pid>` and `.fleet-guard-stage-*` directories a killed run left behind.  Only ones older
+    than a minute, so a run that is still going is never touched."""
+    cutoff = time.time() - 60
+    candidates: list[str] = []
+    try:
+        base = os.path.basename(bundle) + ".old-"
+        candidates += [
+            os.path.join(plugins_real, n) for n in os.listdir(plugins_real) if n.startswith(base)
+        ]
+        candidates += [
+            os.path.join(stage_parent, n)
+            for n in os.listdir(stage_parent)
+            if n.startswith(".fleet-guard-stage-")
+        ]
+    except OSError:
+        return
+    for c in candidates:
+        try:
+            if os.path.isdir(c) and not os.path.islink(c) and os.lstat(c).st_mtime < cutoff:
+                shutil.rmtree(c, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def plan_minimax(paths: Paths, *, follow_symlinks: bool = False) -> MinimaxPlan:
+    """Read-only: what `apply minimax` writes into ~/.minimax/plugins/fleet-guard, compared with what is there."""
+    bundle = paths.minimax_bundle
+    want = minimax_expected(paths)
+    cmd = minimax_hook_command(paths)
+    files = [FileStatus(rel, "new") for rel in want]
+
+    def plan(state: str, reason: str = "", notes: Sequence[str] = ()) -> MinimaxPlan:
+        return MinimaxPlan(
+            bundle,
+            state,
+            reason,
+            cmd,
+            files,
+            want[MINIMAX_MANIFEST_FILE],
+            want[MINIMAX_HOOKS_FILE],
+            list(notes),
+        )
+
+    if not os.path.isdir(os.path.join(paths.home, MINIMAX_PLUGIN_REL.split("/")[0])):
+        return plan("skip", "~/.minimax does not exist (platform not installed)")
+    refusal, outside, link = _link_check(bundle, paths.home, MINIMAX_PLUGIN_REL, follow_symlinks)
+    if refusal:
+        return plan("refuse", refusal)
+    notes = [link] if link else []
+    if os.path.lexists(bundle):
+        foreign = _minimax_foreign(bundle)
+        if foreign:
+            return plan("refuse", foreign)
+        files = []
+        for rel, text in want.items():
+            have = _read_regular(os.path.join(bundle, *rel.split("/")))
+            files.append(
+                FileStatus(
+                    rel,
+                    "same"
+                    if have == text.encode("utf-8")
+                    else ("new" if have is None else "changed"),
+                )
+            )
+        state = "current" if all(f.status == "same" for f in files) else "stale"
+    else:
+        state = "new"
+    if state != "current" and outside:
+        return plan("refuse", outside, notes)
+    return plan(state, "", notes)
+
+
+def apply_minimax(
+    paths: Paths,
+    *,
+    timeout: float = PROBE_TIMEOUT_S,
+    minimal_path: bool = True,
+    shim_proven: bool = False,
+    follow_symlinks: bool = False,
+) -> Result:
+    """Write the plugin directory.  It is built in a stage directory beside `plugins/` (so MiniMax never scans a half-written
+    plugin) and renamed into place; an existing directory is replaced only when this tool wrote it.  Like every platform,
+    it is wired in only if the installed fleet hook passes its own probes right now."""
+    mp = plan_minimax(paths, follow_symlinks=follow_symlinks)
+    if mp.state == "skip":
+        return Result("minimax", "skipped", mp.reason)
+    if mp.state == "refuse":
+        return Result("minimax", "refused", mp.reason)
+    if not shim_proven:
+        if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
+            return Result(
+                "minimax",
+                "refused",
+                f"the fleet hook {paths.fleet_shim} is missing or not executable; run `apply tools` first",
+            )
+        bad = [
+            c
+            for c in probe_command(
+                mp.command,
+                target="minimax",
+                fmt="claude",
+                shape="claude",
+                home=paths.home,
+                timeout=timeout,
+                minimal_path=minimal_path,
+                secret=True,
+            )
+            if c.status == "FAIL"
+        ]
+        if bad:
+            return Result(
+                "minimax",
+                "refused",
+                "the installed fleet hook fails its probes, so it will not be wired in: "
+                + bad[0].detail,
+            )
+    if mp.state == "current":
+        return Result("minimax", "unchanged", f"{mp.bundle} already holds the plugin")
+    want = minimax_expected(paths)
+    stage: str | None = None
+    try:
+        os.makedirs(os.path.dirname(mp.bundle), exist_ok=True)
+        # Stage beside the REAL plugins/ directory: when plugins/ is a symlink to another filesystem, a stage under
+        # ~/.minimax would make the final rename fail with EXDEV.
+        plugins_real = os.path.realpath(os.path.dirname(mp.bundle))
+        stage_parent = os.path.dirname(plugins_real)
+        _sweep_stale_minimax_leftovers(plugins_real, stage_parent, mp.bundle)
+        stage = tempfile.mkdtemp(prefix=".fleet-guard-stage-", dir=stage_parent)
+        _write_tree(stage, {rel: text.encode("utf-8") for rel, text in want.items()})
+        _swap_dir(stage, mp.bundle)
+        stage = None
+    except OSError as exc:
+        if stage:
+            shutil.rmtree(stage, ignore_errors=True)
+        return Result("minimax", "failed", f"{mp.bundle} not written: {type(exc).__name__}: {exc}")
+    for rel, text in want.items():
+        if _read_regular(os.path.join(mp.bundle, *rel.split("/"))) != text.encode(
+            "utf-8"
+        ) or os.path.islink(mp.bundle):
+            return Result(
+                "minimax",
+                "failed",
+                f"{mp.bundle}/{rel} is not what was written; check it and re-run `apply minimax`",
+            )
+    return Result(
+        "minimax",
+        "added" if mp.state == "new" else "updated",
+        f"{mp.bundle} (a real directory: {MINIMAX_MANIFEST_FILE}, {MINIMAX_HOOKS_FILE})",
+    )
+
+
+# What MiniMax gives a hook process: a small allowlist, and nothing of the caller's shell (so no AGENT_SEAT and no kill switch).
+_MINIMAX_HOOK_ENV_KEYS = ("HOME", "LANG", "TERM", "SHELL", "USER", "TMPDIR")
+
+
+def _minimax_hook_from_file(path: str, paths: Paths) -> tuple[str | None, list[Check]]:
+    """(the hook command, checks) read back out of the written hooks.json, with every shape rule MiniMax applies."""
+    t = "minimax"
+    raw = _read_regular(path)
+    if raw is None:
+        return None, [
+            Check(
+                t,
+                "hooks.json",
+                "FAIL",
+                f"{path} is missing or not a regular file; run `apply minimax`",
+            )
+        ]
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+        groups = doc["hooks"]["PreToolUse"]
+        if not isinstance(groups, list) or len(groups) != 1:
+            raise ValueError(
+                f"expected exactly 1 PreToolUse group, found {len(groups) if isinstance(groups, list) else type(groups).__name__}"
+            )
+        group = groups[0]
+        if group.get("matcher") != "Bash":
+            raise ValueError(f"matcher is {group.get('matcher')!r}, expected 'Bash'")
+        hooks = group.get("hooks")
+        if not isinstance(hooks, list) or len(hooks) != 1:
+            raise ValueError("expected exactly 1 hook in the group")
+        hook = hooks[0]
+        if hook.get("type") != "command":
+            raise ValueError(f"hook type is {hook.get('type')!r}; MiniMax only runs 'command'")
+        timeout = hook.get("timeout")
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 10:
+            raise ValueError(f"timeout is {timeout!r}; MiniMax wants whole seconds, 1 to 10")
+        cmd = hook.get("command")
+        if not isinstance(cmd, str) or not is_ours(cmd):
+            raise ValueError("the hook command is not the fleet hook")
+    except (ValueError, KeyError, TypeError, AttributeError, UnicodeDecodeError) as exc:
+        return None, [Check(t, "hooks.json", "FAIL", f"{path}: {exc}")]
+    out = [
+        Check(
+            t, "hooks.json", "PASS", f"PreToolUse, matcher Bash, type command, timeout {timeout}s"
+        )
+    ]
+    if raw != render_minimax_hooks(paths).encode("utf-8"):
+        out.append(
+            Check(
+                t,
+                "hooks.json current",
+                "FAIL",
+                f"{path} differs from what this install_tools writes; re-run `apply minimax`",
+            )
+        )
+        return None, out
+    return cmd, out
+
+
+def verify_minimax(
+    paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
+    """Prove the plugin denies, without MiniMax.  The bundle must be a REAL directory (MiniMax skips symlinks) whose plugin.json
+    has a name; the hook command is taken back out of the written hooks.json and run the way a shell runs it, with a lane
+    deny, a secret deny and an allow, and once more in the small environment MiniMax gives a hook.  What this cannot see
+    is whether MiniMax Code fires the hook."""
+    t = "minimax"
+    if not os.path.isdir(os.path.join(paths.home, ".minimax")):
+        return [Check(t, "platform", "SKIP", "~/.minimax does not exist (platform not installed)")]
+    bundle = paths.minimax_bundle
+    if not os.path.lexists(bundle):
+        return [
+            Check(t, "bundle", "SKIP", f"not wired: {bundle} does not exist; run `apply minimax`")
+        ]
+    if os.path.islink(bundle) or not os.path.isdir(bundle):
+        return [
+            Check(
+                t,
+                "bundle",
+                "FAIL",
+                f"{bundle} is not a real directory (MiniMax Code skips a symlinked plugin); "
+                "move it aside and run `apply minimax`",
+            )
+        ]
+    out: list[Check] = [Check(t, "bundle", "PASS", f"{bundle} is a real directory")]
+    raw = _read_regular(paths.minimax_manifest)
+    if raw is None:
+        out.append(
+            Check(
+                t,
+                "plugin.json",
+                "FAIL",
+                f"{paths.minimax_manifest} is missing or not a regular file; run `apply minimax`",
+            )
+        )
+    else:
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+            name = doc.get("name") if isinstance(doc, dict) else None
+        except (ValueError, UnicodeDecodeError):
+            name = None
+        if not isinstance(name, str) or not name:
+            out.append(
+                Check(
+                    t,
+                    "plugin.json",
+                    "FAIL",
+                    f"{paths.minimax_manifest} has no `name`; MiniMax cannot load the plugin",
+                )
+            )
+        elif raw != render_minimax_manifest().encode("utf-8"):
+            out.append(
+                Check(
+                    t,
+                    "plugin.json",
+                    "FAIL",
+                    f"{paths.minimax_manifest} differs from what this install_tools writes; re-run `apply minimax`",
+                )
+            )
+        else:
+            out.append(Check(t, "plugin.json", "PASS", f"name={name!r}"))
+    out.append(
+        _check_shim(
+            t,
+            FLEET_HOOK_NAME,
+            paths.fleet_shim,
+            render_fleet_hook_shim(read_guard_facts(paths.stable)),
+        )
+    )
+    cmd, got = _minimax_hook_from_file(paths.minimax_hooks, paths)
+    out.extend(got)
+    if cmd is None:
+        out.append(
+            Check(t, "hook-env probes", "FAIL", "not run: no usable hook command in hooks.json")
+        )
+        return out
+    out.append(Check(t, "hook command", "PASS", cmd))
+    out.extend(
+        probe_command(
+            cmd,
+            target=t,
+            fmt="claude",
+            shape="claude",
+            home=paths.home,
+            timeout=timeout,
+            minimal_path=minimal_path,
+            secret=True,
+        )
+    )
+    env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
+    env["HOME"] = paths.home
+    env["PATH"] = MINIMAL_PATH if minimal_path else os.environ.get("PATH", "")
+    for name, command, marker in (
+        ("deny/hook-env", DENY_COMMAND, DENY_MARKER),
+        ("secret/hook-env", SECRET_DENY_COMMAND, SECRET_DENY_MARKER),
+    ):
+        res = run_shell(
+            cmd,
+            json.dumps(probe_payload("claude", command, paths.home)).encode("utf-8"),
+            env,
+            timeout,
+        )
+        if res.error:
+            problem: str | None = res.error
+        elif res.timed_out:
+            problem = f"timed out after {timeout:g}s"
+        elif res.returncode != 0:
+            problem = f"exit {res.returncode}, expected 0"
+        else:
+            problem = check_deny_output("claude", res.stdout, marker)
+        out.append(
+            Check(
+                t,
+                name,
+                "FAIL" if problem else "PASS",
+                (f"{problem}; " if problem else "")
+                + f"exit={res.returncode} stdout={_brief(res.stdout)}",
+            )
+        )
+    switch, _off = guard_switch()
+    if _is_off(os.environ.get(switch, "")):
+        out.append(
+            Check(
+                t,
+                "guard-switch-env",
+                "WARN",
+                f"{switch}={os.environ.get(switch)!r} is set in the environment this command runs in: the probes scrub it, "
+                "and MiniMax gives a hook no such variable",
+            )
+        )
+    out.append(
+        Check(
+            t,
+            "fires",
+            "SKIP",
+            "whether MiniMax Code fires the hook is not visible from here; ask a new session to "
+            "run a process listing and expect a refusal",
+        )
+    )
     return out
 
 
 # --------------------------------------------------------------------------- command line
+
 
 class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> None:  # type: ignore[override]
@@ -3192,74 +4923,145 @@ class _Parser(argparse.ArgumentParser):
 
 def _build_parser() -> argparse.ArgumentParser:
     p = _Parser(prog="python3 -m fleet_lanes.install_tools", description=__doc__.split("\n\n")[0])
-    p.add_argument("--self-test", action="store_true",
-                   help="build a temp fake home, apply, verify, corrupt the guard, and assert verify FAILS")
-    p.add_argument("--timeout", type=float, default=PROBE_TIMEOUT_S, help="seconds per probe subprocess (default 5)")
-    p.add_argument("--no-minimal-path", action="store_true",
-                   help="skip the second probe run under PATH=/usr/bin:/bin:/usr/sbin:/sbin")
+    p.add_argument(
+        "--self-test",
+        action="store_true",
+        help="build a temp fake home, apply, verify, corrupt the guard, and assert verify FAILS",
+    )
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=PROBE_TIMEOUT_S,
+        help="seconds per probe subprocess (default 5)",
+    )
+    p.add_argument(
+        "--no-minimal-path",
+        action="store_true",
+        help="skip the second probe run under PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+    )
     sub = p.add_subparsers(dest="cmd", parser_class=_Parser)
 
     def common(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--home", default=None, help="home directory to read and write (default $HOME; must be an existing, non-empty path)")
-        sp.add_argument("--stable-dir", default=None, help="stable dir (default <home>/apps/lane-tools)")
-        sp.add_argument("--timeout", type=float, default=argparse.SUPPRESS, help="seconds per probe subprocess")
-        sp.add_argument("--no-minimal-path", action="store_true", default=argparse.SUPPRESS,
-                        help="skip the second probe run under PATH=/usr/bin:/bin:/usr/sbin:/sbin")
+        sp.add_argument(
+            "--home",
+            default=None,
+            help="home directory to read and write (default $HOME; must be an existing, non-empty path)",
+        )
+        sp.add_argument(
+            "--stable-dir", default=None, help="stable dir (default <home>/apps/lane-tools)"
+        )
+        sp.add_argument(
+            "--timeout", type=float, default=argparse.SUPPRESS, help="seconds per probe subprocess"
+        )
+        sp.add_argument(
+            "--no-minimal-path",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="skip the second probe run under PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+        )
 
     def sourcing(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--source", default=None, help="directory that contains fleet_lanes/ (default: this checkout)")
-        sp.add_argument("--registry", default=None, help="fleet-apps.json to install (default: the source's)")
-        sp.add_argument("--sha", default=None, help="source git sha to record in VERSION (default: git rev-parse HEAD)")
+        sp.add_argument(
+            "--source",
+            default=None,
+            help="directory that contains fleet_lanes/ (default: this checkout)",
+        )
+        sp.add_argument(
+            "--registry", default=None, help="fleet-apps.json to install (default: the source's)"
+        )
+        sp.add_argument(
+            "--sha",
+            default=None,
+            help="source git sha to record in VERSION (default: git rev-parse HEAD)",
+        )
 
     def writing(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--replace-extra", action="store_true",
-                        help="tools: also delete files in an existing lane-tools dir that this tool never writes (the dir must still be one it wrote)")
-        sp.add_argument("--follow-symlinks", action="store_true",
-                        help="platforms: write through a config symlink that resolves outside --home")
-        sp.add_argument("--dsh", default=None, metavar="PATH",
-                        help="clutch: the pinned engine binary for the --dump-config proof (default "
-                             "~/apps/clutch-runtime/node_modules/.bin/dsh)")
-        sp.add_argument("--no-dsh-check", action="store_true",
-                        help="clutch: write the patch without the engine proof (an empty or broken patch stops the "
-                             "engine at its next start)")
-        sp.add_argument("--no-kimi-check", action="store_true",
-                        help="kimi: write the entry without `kimi doctor` (needed only when no kimi binary is found)")
+        sp.add_argument(
+            "--replace-extra",
+            action="store_true",
+            help="tools: also delete files in an existing lane-tools dir that this tool never writes (the dir must still be one it wrote)",
+        )
+        sp.add_argument(
+            "--follow-symlinks",
+            action="store_true",
+            help="platforms: write through a config symlink that resolves outside --home",
+        )
+        sp.add_argument(
+            "--dsh",
+            default=None,
+            metavar="PATH",
+            help="clutch: the pinned engine binary for the --dump-config proof (default "
+            "~/apps/clutch-runtime/node_modules/.bin/dsh)",
+        )
+        sp.add_argument(
+            "--no-dsh-check",
+            action="store_true",
+            help="clutch: write the patch without the engine proof (an empty or broken patch stops the "
+            "engine at its next start)",
+        )
+        sp.add_argument(
+            "--no-kimi-check",
+            action="store_true",
+            help="kimi: write the entry without `kimi doctor` (needed only when no kimi binary is found)",
+        )
 
-    sp = sub.add_parser("plan", help="read-only: show the files, shims, and the JSON merge as a diff")
+    sp = sub.add_parser(
+        "plan", help="read-only: show the files, shims, and the JSON merge as a diff"
+    )
     common(sp)
     sourcing(sp)
     writing(sp)
-    sp.add_argument("targets", nargs="*", help="tools, a platform, or all (default: all, plus muse, clutch and kimi listed)")
-    sp = sub.add_parser("apply", help="install tools and/or wire the hook into platforms, then verify")
+    sp.add_argument(
+        "targets",
+        nargs="*",
+        help="tools, a platform, or all (default: all, plus muse, clutch and kimi listed)",
+    )
+    sp = sub.add_parser(
+        "apply", help="install tools and/or wire the hook into platforms, then verify"
+    )
     common(sp)
     sourcing(sp)
     writing(sp)
     sp.add_argument("--no-verify", action="store_true", help="do not run verify after applying")
-    sp.add_argument("--strict", action="store_true", help="treat a WARN (for example Codex trust pending) as a failure")
+    sp.add_argument(
+        "--strict",
+        action="store_true",
+        help="treat a WARN (for example Codex trust pending) as a failure",
+    )
     sp.add_argument("targets", nargs="*", help="tools, a platform, or all (required)")
     sp = sub.add_parser("verify", help="prove the installed hooks deny and allow correctly")
     common(sp)
-    sp.add_argument("--strict", action="store_true", help="treat a WARN (for example Codex trust pending) as a failure")
+    sp.add_argument(
+        "--strict",
+        action="store_true",
+        help="treat a WARN (for example Codex trust pending) as a failure",
+    )
     sp.add_argument("targets", nargs="*", help="tools, a platform, or all (default: all)")
     return p
 
 
 def _expand(raw: Sequence[str], default: Sequence[str]) -> tuple[list[str], set[str]]:
-    """(ordered targets, explicitly named targets).  `all` is tools plus every supported platform."""
-    valid = {"tools", "all"} | set(PLATFORM_ORDER)
+    """(ordered targets, explicitly named targets).  `all` is tools plus every supported platform plus the ones marked
+    `in_all` (MiniMax Code).  `mm` is `minimax`."""
+    valid = {"tools", "all"} | set(PLATFORM_ORDER) | set(PLATFORM_ALIASES)
     for n in raw:
         if n not in valid:
-            raise SystemExit(_usage_error(f"unknown target {n!r}; choose from tools, all, {', '.join(PLATFORM_ORDER)}"))
-    names = list(raw) or list(default)
+            raise SystemExit(
+                _usage_error(
+                    f"unknown target {n!r}; choose from tools, all, {', '.join(PLATFORM_ORDER)} "
+                    f"(or {', '.join(PLATFORM_ALIASES)})"
+                )
+            )
+    names = [PLATFORM_ALIASES.get(n, n) for n in (list(raw) or list(default))]
     explicit = {n for n in names if n != "all"} if raw else set()
     want: set[str] = set()
     for n in names:
         if n == "all":
-            want.update(("tools",) + SUPPORTED_KEYS)
+            want.update(("tools",) + ALL_KEYS)
         else:
             want.add(n)
     order = [k for k in ("tools",) + PLATFORM_ORDER if k in want]
-    return order, explicit
+    return order, {PLATFORM_ALIASES.get(n, n) for n in explicit}
 
 
 def _usage_error(message: str) -> int:
@@ -3288,7 +5090,9 @@ def _resolve_home(args: argparse.Namespace) -> str:
     if not os.path.isdir(home):
         raise SystemExit(_usage_error(f"{what} {home} is not an existing directory"))
     if os.path.realpath(home) == os.sep:
-        raise SystemExit(_usage_error(f"{what} resolves to /; refusing to use the filesystem root as a home"))
+        raise SystemExit(
+            _usage_error(f"{what} resolves to /; refusing to use the filesystem root as a home")
+        )
     return home
 
 
@@ -3305,12 +5109,23 @@ def _print_checks(checks: Sequence[Check], emit: Callable[[str], None]) -> None:
         emit(c.line())
 
 
-def _verify_targets(targets: Sequence[str], explicit: set[str], paths: Paths, *, timeout: float,
-                    minimal_path: bool, strict: bool, emit: Callable[[str], None]) -> int:
+def _verify_targets(
+    targets: Sequence[str],
+    explicit: set[str],
+    paths: Paths,
+    *,
+    timeout: float,
+    minimal_path: bool,
+    strict: bool,
+    emit: Callable[[str], None],
+) -> int:
     all_checks: list[Check] = []
     for tgt in targets:
-        got = verify_tools(paths, timeout=timeout) if tgt == "tools" else verify_platform(
-            PLATFORMS[tgt], paths, timeout=timeout, minimal_path=minimal_path)
+        got = (
+            verify_tools(paths, timeout=timeout)
+            if tgt == "tools"
+            else verify_platform(PLATFORMS[tgt], paths, timeout=timeout, minimal_path=minimal_path)
+        )
         # A platform that is not installed is a skip when reached through `all`, a FAIL when named.
         if tgt != "tools" and tgt in explicit and len(got) == 1 and got[0].status == "SKIP":
             got = [Check(got[0].target, got[0].name, "FAIL", got[0].detail + " (named explicitly)")]
@@ -3320,8 +5135,14 @@ def _verify_targets(targets: Sequence[str], explicit: set[str], paths: Paths, *,
     warns = sum(1 for c in all_checks if c.status == "WARN")
     passes = sum(1 for c in all_checks if c.status == "PASS")
     skipped = sum(1 for c in all_checks if c.status == "SKIP")
-    emit(f"verify: {passes} PASS, {fails} FAIL, {warns} WARN, {skipped} SKIP"
-         + ("  -> NOT HEALTHY" if fails or (strict and warns) else ("  -> healthy" + (" (see WARN)" if warns else ""))))
+    emit(
+        f"verify: {passes} PASS, {fails} FAIL, {warns} WARN, {skipped} SKIP"
+        + (
+            "  -> NOT HEALTHY"
+            if fails or (strict and warns)
+            else ("  -> healthy" + (" (see WARN)" if warns else ""))
+        )
+    )
     return EXIT_FAIL if fails or (strict and warns) else EXIT_OK
 
 
@@ -3330,23 +5151,31 @@ def _printable(line: str) -> str:
     return re.sub(r"[^\x00-\x7f]", lambda m: f"<U+{ord(m.group()):04X}>", line)
 
 
-def _emit_muse_plan(plat: Platform, mp: MusePlan, paths: Paths, emit: Callable[[str], None]) -> None:
+def _emit_muse_plan(
+    plat: Platform, mp: MusePlan, paths: Paths, emit: Callable[[str], None]
+) -> None:
     emit(f"== {plat.key}  {plat.label}  {mp.bundle}  [plugin bundle {mp.state}]")
-    emit("   Muse Code takes hooks from a plugin, not from settings.json.  The bundle and the seat shim are part of the "
-         "stable copy, written atomically with the rest by `apply tools`; `apply muse` runs that same install (an "
-         "unchanged copy is left alone), then prints the OWNER ACTIONS.  Nothing else is written for muse.")
+    emit(
+        "   Muse Code takes hooks from a plugin, not from settings.json.  The bundle and the seat shim are part of the "
+        "stable copy, written atomically with the rest by `apply tools`; `apply muse` runs that same install (an "
+        "unchanged copy is left alone), then prints the OWNER ACTIONS.  Nothing else is written for muse."
+    )
     for fs in mp.files:
         emit(f"   {fs.status:<8} {fs.rel}")
     for w in mp.warnings:
         emit(f"   WARNING: {w}")
-    emit("   OWNER ACTIONS (yours to run; this tool never edits Muse's config, and the only muse it runs is "
-         "`muse plugins validate` in verify, confined to a throwaway HOME):")
+    emit(
+        "   OWNER ACTIONS (yours to run; this tool never edits Muse's config, and the only muse it runs is "
+        "`muse plugins validate` in verify, confined to a throwaway HOME):"
+    )
     for i, action in enumerate(mp.actions, 1):
         emit(f"     {i}. {action}")
     emit(f"   note: {MUSE_EXPERIMENTAL_ENV}=1 may have to be set for plugins to load (UNVERIFIED).")
-    emit(f"   muse-seat: run {paths.muse_seat} instead of `muse` to start Muse Code as seat {MUSE_SEAT_TAG} "
-         f"(it sets AGENT_SEAT={MUSE_SEAT_TAG} and AGENT_TAG={MUSE_SEAT_TAG}, then runs the real muse found on PATH; "
-         "it refuses when there is none, or when that one is itself).")
+    emit(
+        f"   muse-seat: run {paths.muse_seat} instead of `muse` to start Muse Code as seat {MUSE_SEAT_TAG} "
+        f"(it sets AGENT_SEAT={MUSE_SEAT_TAG} and AGENT_TAG={MUSE_SEAT_TAG}, then runs the real muse found on PATH; "
+        "it refuses when there is none, or when that one is itself)."
+    )
     emit(f"   manifest {paths.muse_manifest}:")
     for ln in mp.manifest_text.splitlines():
         emit(f"     | {ln}")
@@ -3362,7 +5191,40 @@ def _emit_muse_plan(plat: Platform, mp: MusePlan, paths: Paths, emit: Callable[[
         emit(f"   UNVERIFIED: {u}")
 
 
-def _emit_block_plan(plat: Platform, paths: Paths, emit: Callable[[str], None], *, explicit: bool) -> bool:
+def _emit_minimax_plan(
+    plat: Platform, mp: MinimaxPlan, paths: Paths, emit: Callable[[str], None], *, explicit: bool
+) -> bool:
+    """Print the plan of the MiniMax Code plugin.  True when it is a failure (a refusal, or a skip of a named target)."""
+    emit(f"== {plat.key}  {plat.label}  {mp.bundle}  [{mp.state}]")
+    if mp.state in ("skip", "refuse"):
+        emit(f"   {mp.state.upper()}: {mp.reason}")
+        return mp.state == "refuse" or (explicit and mp.state == "skip")
+    emit(
+        "   MiniMax Code takes hooks from a local plugin: a REAL directory under ~/.minimax/plugins (a symlink is skipped), "
+        "enabled by default.  `apply minimax` runs `apply tools` first (the fleet hook lives in the stable dir), then "
+        "builds the directory in a stage beside plugins/ and renames it into place.  Nothing else under ~/.minimax is touched."
+    )
+    emit(f"   command: {mp.command}")
+    for fs in mp.files:
+        emit(f"   {fs.status:<8} {fs.rel}")
+    for n in mp.notes:
+        emit(f"   {n}")
+    emit(f"   {MINIMAX_MANIFEST_FILE}:")
+    for ln in mp.manifest_text.splitlines():
+        emit(f"     | {ln}")
+    emit(f"   {MINIMAX_HOOKS_FILE}:")
+    for ln in mp.hooks_text.splitlines():
+        emit(f"     | {ln}")
+    for n in plat.notes:
+        emit(f"   note: {n}")
+    for u in plat.unverified:
+        emit(f"   UNVERIFIED: {u}")
+    return False
+
+
+def _emit_block_plan(
+    plat: Platform, paths: Paths, emit: Callable[[str], None], *, explicit: bool
+) -> bool:
     """Print the plan of a block platform.  True when it is a failure (a refusal, or a skip of a named target)."""
     bp = plan_block(plat, paths)
     emit(f"== {plat.key}  {plat.label}  {bp.path}  [{bp.action if bp.state == 'ok' else bp.state}]")
@@ -3370,7 +5232,10 @@ def _emit_block_plan(plat: Platform, paths: Paths, emit: Callable[[str], None], 
         emit(f"   {'REFUSE' if bp.state == 'refuse' else 'SKIP'}: {bp.reason}")
     else:
         emit(f"   command: {bp.command}")
-        emit(f"   the block `{BLOCK_NAME}` ({bp.action}); " + ("nothing outside it is touched:" if not bp.notes else "see the notes:"))
+        emit(
+            f"   the block `{BLOCK_NAME}` ({bp.action}); "
+            + ("nothing outside it is touched:" if not bp.notes else "see the notes:")
+        )
         for ln in MB.render_block(BLOCK_NAME, BLOCK_TOOL, bp.body):
             emit(f"     + {ln}")
         for n in bp.notes:
@@ -3392,7 +5257,9 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     targets, explicit = _expand(args.targets, ("all", "muse", "clutch", "kimi"))
     src = resolve_source(args.source, args.registry, args.sha)
     rc = EXIT_OK
-    emit(f"plan (read-only)  home={paths.home}  stable={paths.stable}  source={src.scripts_dir}  sha={src.sha}")
+    emit(
+        f"plan (read-only)  home={paths.home}  stable={paths.stable}  source={src.scripts_dir}  sha={src.sha}"
+    )
     for tgt in targets:
         emit("")
         if tgt == "tools":
@@ -3407,10 +5274,14 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
                 if fs.status not in ("same", "stale"):
                     emit(f"   {fs.status:<8} {fs.rel}")
             same = sum(1 for fs in tp.files if fs.status == "same")
-            emit(f"   {same} file(s) already identical; the whole dir is replaced atomically (stage, probe, swap)")
+            emit(
+                f"   {same} file(s) already identical; the whole dir is replaced atomically (stage, probe, swap)"
+            )
             stale = [fs.rel for fs in tp.files if fs.status == "stale"]
             if stale and not tp.problems:
-                emit(f"   WILL DELETE {len(stale)} file{'' if len(stale) == 1 else 's'} the new copy does not contain:")
+                emit(
+                    f"   WILL DELETE {len(stale)} file{'' if len(stale) == 1 else 's'} the new copy does not contain:"
+                )
                 for rel in stale[:20]:
                     emit(f"     {rel}")
                 if len(stale) > 20:
@@ -3418,29 +5289,45 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
             emit("   VERSION would read:")
             for ln in tp.version_text.splitlines():
                 emit(f"     {ln}")
-            emit("   the shims run `/usr/bin/env python3 -I`; the minimum is Python 3.9 (macOS /usr/bin/python3), "
-                 "and a GUI-launched app may resolve python3 under PATH=/usr/bin:/bin only")
+            emit(
+                "   the shims run `/usr/bin/env python3 -I`; the minimum is Python 3.9 (macOS /usr/bin/python3), "
+                "and a GUI-launched app may resolve python3 under PATH=/usr/bin:/bin only"
+            )
             emit(f"   shim {paths.hook_shim}:")
             for ln in tp.hook_shim_text.splitlines():
                 emit(f"     | {_printable(ln)}")
             if tp.facts.words:
-                emit(f"   prefilter: derived from guard.py _TRIGGER ({len(tp.facts.words)} words: {', '.join(tp.facts.words)}), "
-                     f"the JSON \\u escape and {len(tp.facts.lookalikes)} non-ASCII lookalike letter(s); a payload over "
-                     f"{tp.facts.max_chars or 'any size'} characters skips it.  A benign Bash call exits in the shell, "
-                     "without starting Python")
+                emit(
+                    f"   prefilter: derived from guard.py _TRIGGER ({len(tp.facts.words)} words: {', '.join(tp.facts.words)}), "
+                    f"the JSON \\u escape and {len(tp.facts.lookalikes)} non-ASCII lookalike letter(s); a payload over "
+                    f"{tp.facts.max_chars or 'any size'} characters skips it.  A benign Bash call exits in the shell, "
+                    "without starting Python"
+                )
             if tp.facts.words:
-                emit(f"   fleet-guard-hook prefilter: the same words plus the secret guard's ({len(SECRET_WORDS)} words: "
-                     f"{', '.join(SECRET_WORDS)}; and a `ps` followed by white space), so an ordinary Bash call exits in the "
-                     "shell for both guards")
+                emit(
+                    f"   fleet-guard-hook prefilter: the same words plus the secret guard's ({len(SECRET_WORDS)} words: "
+                    f"{', '.join(SECRET_WORDS)}; and a `ps` followed by white space), so an ordinary Bash call exits in the "
+                    "shell for both guards"
+                )
             for w in tp.warnings:
                 emit(f"   WARNING: {w}")
-            emit(f"   Muse Code files (written with the rest, swapped in atomically): {MUSE_SEAT_NAME}, "
-                 f"{MUSE_PLUGIN_DIR}/ (see `plan muse`)")
+            emit(
+                f"   Muse Code files (written with the rest, swapped in atomically): {MUSE_SEAT_NAME}, "
+                f"{MUSE_PLUGIN_DIR}/ (see `plan muse`)"
+            )
             if tp.lane_shim_state == "foreign":
-                emit(f"   shim {paths.lane_shim}: LEFT ALONE, it is {tp.lane_detail}; the stable dir and hook still install")
+                emit(
+                    f"   shim {paths.lane_shim}: LEFT ALONE, it is {tp.lane_detail}; the stable dir and hook still install"
+                )
             elif tp.lane_shim_text is None:
-                emit(f"   shim {paths.lane_shim}: SKIPPED, the source package has no {LANE_MODULE}"
-                     + ("; a stale generated lane shim would be removed" if tp.lane_shim_state == "stale" else ""))
+                emit(
+                    f"   shim {paths.lane_shim}: SKIPPED, the source package has no {LANE_MODULE}"
+                    + (
+                        "; a stale generated lane shim would be removed"
+                        if tp.lane_shim_state == "stale"
+                        else ""
+                    )
+                )
             else:
                 emit(f"   shim {paths.lane_shim} [{tp.lane_shim_state}]:")
                 for ln in tp.lane_shim_text.splitlines():
@@ -3457,6 +5344,16 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
             if _emit_block_plan(plat, paths, emit, explicit=tgt in explicit):
                 rc = EXIT_FAIL
             continue
+        if plat.kind == "bundle":
+            if _emit_minimax_plan(
+                plat,
+                plan_minimax(paths, follow_symlinks=args.follow_symlinks),
+                paths,
+                emit,
+                explicit=tgt in explicit,
+            ):
+                rc = EXIT_FAIL
+            continue
         pp = plan_platform(plat, paths, follow_symlinks=args.follow_symlinks)
         emit(f"== {plat.key}  {plat.label}  {pp.path}  [{pp.action}]")
         if pp.link:
@@ -3467,8 +5364,10 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
             emit(f"   command: {pp.command}")
         if pp.hidden:
             one = pp.hidden == 1
-            emit(f"   {pp.hidden} other hook{'' if one else 's'} under {pp.label} {'is' if one else 'are'} "
-                 "left untouched and not shown")
+            emit(
+                f"   {pp.hidden} other hook{'' if one else 's'} under {pp.label} {'is' if one else 'are'} "
+                "left untouched and not shown"
+            )
         for ln in pp.diff:
             emit(f"   {ln}")
         for n in pp.notes + list(plat.notes):
@@ -3486,27 +5385,46 @@ def _cmd_apply(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     home = _resolve_home(args)
     paths = make_paths(home, _resolve_stable(args))
     targets, explicit = _expand(args.targets, ())
-    wired = [t for t in targets if PLATFORMS.get(t) is not None and PLATFORMS[t].kind in ("plugin", "block")]
+    wired = [
+        t
+        for t in targets
+        if PLATFORMS.get(t) is not None and PLATFORMS[t].kind in ("plugin", "block", "bundle")
+    ]
     if wired and "tools" not in targets:
         # The Muse bundle, the fleet hook shim and Clutch's hooks.json are part of the stable copy, so `apply muse`,
         # `apply clutch` and `apply kimi` write them the only way they are written: with the rest of the stable
-        # copy, through the same stage, probe and swap.  An unchanged copy stays untouched.
+        # copy, through the same stage, probe and swap.  An unchanged copy stays untouched.  `apply minimax` needs the
+        # stable fleet hook the same way: its plugin directory only points at it.
         targets.insert(targets.index(wired[0]), "tools")
     minimal = not args.no_minimal_path
     results: list[Result] = []
     for tgt in targets:
         if tgt == "tools":
-            res = apply_tools(resolve_source(args.source, args.registry, args.sha), paths, timeout=args.timeout,
-                              minimal_path=minimal, emit=emit, replace_extra=args.replace_extra)
+            res = apply_tools(
+                resolve_source(args.source, args.registry, args.sha),
+                paths,
+                timeout=args.timeout,
+                minimal_path=minimal,
+                emit=emit,
+                replace_extra=args.replace_extra,
+            )
         else:
             # Never `shim_proven`: each platform's own command is probed right now, in every run.
-            res = apply_platform(PLATFORMS[tgt], paths, timeout=args.timeout, minimal_path=minimal,
-                                 follow_symlinks=args.follow_symlinks, dsh_bin=getattr(args, "dsh", None),
-                                 check_dsh=not getattr(args, "no_dsh_check", False),
-                                 check_kimi=not getattr(args, "no_kimi_check", False))
+            res = apply_platform(
+                PLATFORMS[tgt],
+                paths,
+                timeout=args.timeout,
+                minimal_path=minimal,
+                follow_symlinks=args.follow_symlinks,
+                dsh_bin=getattr(args, "dsh", None),
+                check_dsh=not getattr(args, "no_dsh_check", False),
+                check_kimi=not getattr(args, "no_kimi_check", False),
+            )
         results.append(res)
         emit(res.line())
-    failed = [r for r in results if not r.ok and not (r.status == "skipped" and r.target not in explicit)]
+    failed = [
+        r for r in results if not r.ok and not (r.status == "skipped" and r.target not in explicit)
+    ]
     rc = EXIT_FAIL if failed else EXIT_OK
     for r in results:
         if r.status in ("added", "updated") and r.target in NEXT_STEPS:
@@ -3514,14 +5432,23 @@ def _cmd_apply(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
         if r.target == "muse" and r.ok:
             for i, action in enumerate(muse_owner_actions(paths), 1):
                 emit(f"OWNER ACTION {i} {action}")
-            emit(f"NEXT       muse         {MUSE_EXPERIMENTAL_ENV}=1 may be required for plugins to load (UNVERIFIED)")
+            emit(
+                f"NEXT       muse         {MUSE_EXPERIMENTAL_ENV}=1 may be required for plugins to load (UNVERIFIED)"
+            )
     if not args.no_verify:
         todo = [r.target for r in results if r.ok]
         if todo:
             emit("")
             emit("verifying what was just applied ...")
-            vrc = _verify_targets(todo, explicit, paths, timeout=args.timeout, minimal_path=minimal,
-                                  strict=args.strict, emit=emit)
+            vrc = _verify_targets(
+                todo,
+                explicit,
+                paths,
+                timeout=args.timeout,
+                minimal_path=minimal,
+                strict=args.strict,
+                emit=emit,
+            )
             rc = max(rc, vrc)
     return rc
 
@@ -3530,13 +5457,20 @@ def _cmd_verify(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
     home = _resolve_home(args)
     paths = make_paths(home, _resolve_stable(args))
     targets, explicit = _expand(args.targets, ("all", "muse", "clutch", "kimi"))
-    return _verify_targets(targets, explicit, paths, timeout=args.timeout, minimal_path=not args.no_minimal_path,
-                           strict=args.strict, emit=emit)
+    return _verify_targets(
+        targets,
+        explicit,
+        paths,
+        timeout=args.timeout,
+        minimal_path=not args.no_minimal_path,
+        strict=args.strict,
+        emit=emit,
+    )
 
 
 # --------------------------------------------------------------------------- self-test
 
-_PREFILTER_CLAUSE = re.compile(r"^[ \t]*\*[^\n]*\) ;;[ \t]*\n", re.M)
+_PREFILTER_CLAUSE = re.compile(r"^[ \t]*\*[^\n]*\) ;;[ \t]*\n", re.MULTILINE)
 
 
 def empty_prefilter(shim_text: str) -> str:
@@ -3548,23 +5482,54 @@ def empty_prefilter(shim_text: str) -> str:
 
 def _seed_fake_home(home: str) -> None:
     """Platform dirs with the real files' SHAPES and dummy commands."""
+
     def put(rel: str, doc: object) -> None:
         full = os.path.join(home, *rel.split("/"))
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w", encoding="utf-8") as fh:
             json.dump(doc, fh, indent=2)
             fh.write("\n")
+
     other = {"type": "command", "command": "/bin/true", "timeout": 3}
-    put(".claude/settings.json", {"env": {"EXAMPLE": "x"}, "hooks": {"PreToolUse": [
-        {"matcher": "Bash", "hooks": [dict(other, statusMessage="dummy")]}]}})
-    put(".codex/hooks.json", {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}})
-    put(".cursor/hooks.json", {"version": 1, "hooks": {"sessionStart": [{"command": "/bin/true", "timeout": 8, "failClosed": False}]}})
+    put(
+        ".claude/settings.json",
+        {
+            "env": {"EXAMPLE": "x"},
+            "hooks": {
+                "PreToolUse": [{"matcher": "Bash", "hooks": [dict(other, statusMessage="dummy")]}]
+            },
+        },
+    )
+    put(
+        ".codex/hooks.json",
+        {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}},
+    )
+    put(
+        ".cursor/hooks.json",
+        {
+            "version": 1,
+            "hooks": {
+                "sessionStart": [{"command": "/bin/true", "timeout": 8, "failClosed": False}]
+            },
+        },
+    )
     put(".gemini/config/hooks.json", {"other-hook": {"Stop": [dict(other)], "enabled": True}})
-    put(".grok/hooks/imported-from-claude.json", {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}})
+    put(
+        ".grok/hooks/imported-from-claude.json",
+        {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [dict(other)]}]}},
+    )
+    os.makedirs(
+        os.path.join(home, ".minimax", "plugins"), exist_ok=True
+    )  # MiniMax Code: an empty plugins dir
 
 
-def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True,
-              source: Source | None = None) -> int:
+def self_test(
+    emit: Callable[[str], None],
+    *,
+    timeout: float = PROBE_TIMEOUT_S,
+    minimal_path: bool = True,
+    source: Source | None = None,
+) -> int:
     """Apply everything into a temp fake home, verify it, then break the installed guard on purpose and
     require verify to FAIL, then repair it and require verify to pass again.  Prints the non-PASS lines
     of each phase and a count; `verify` prints every line."""
@@ -3581,19 +5546,41 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
         if not res.ok:
             return EXIT_FAIL
         for key in SUPPORTED_KEYS:
-            r = apply_platform(PLATFORMS[key], paths, timeout=timeout, minimal_path=minimal_path, shim_proven=True)
+            r = apply_platform(
+                PLATFORMS[key], paths, timeout=timeout, minimal_path=minimal_path, shim_proven=True
+            )
             emit(r.line())
             if not r.ok:
                 failures.append(f"apply {key}: {r.detail}")
-        targets = ["tools"] + list(SUPPORTED_KEYS) + ["muse"]
+        r = apply_platform(
+            PLATFORMS["minimax"],
+            paths,
+            timeout=timeout,
+            minimal_path=minimal_path,
+            shim_proven=True,
+        )
+        emit(r.line())
+        if not r.ok:
+            failures.append(f"apply minimax: {r.detail}")
+        targets = ["tools"] + list(SUPPORTED_KEYS) + ["minimax", "muse"]
 
         def run_verify(label: str, show: tuple) -> tuple[int, list[Check]]:
             checks: list[Check] = []
             for tgt in targets:
-                checks.extend(verify_tools(paths, timeout=timeout) if tgt == "tools"
-                              else verify_platform(PLATFORMS[tgt], paths, timeout=timeout, minimal_path=minimal_path))
-            counts = {st: sum(1 for c in checks if c.status == st) for st in ("PASS", "FAIL", "WARN", "SKIP")}
-            emit(f"self-test: verify {label}: " + ", ".join(f"{n} {st}" for st, n in counts.items()))
+                checks.extend(
+                    verify_tools(paths, timeout=timeout)
+                    if tgt == "tools"
+                    else verify_platform(
+                        PLATFORMS[tgt], paths, timeout=timeout, minimal_path=minimal_path
+                    )
+                )
+            counts = {
+                st: sum(1 for c in checks if c.status == st)
+                for st in ("PASS", "FAIL", "WARN", "SKIP")
+            }
+            emit(
+                f"self-test: verify {label}: " + ", ".join(f"{n} {st}" for st, n in counts.items())
+            )
             _print_checks([c for c in checks if c.status in show], emit)
             return counts["FAIL"], checks
 
@@ -3604,10 +5591,17 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
         hidden = guard + ".disabled"
         os.rename(guard, hidden)
         try:
-            _fails, checks = run_verify("with guard.py renamed, expect FAIL on every platform", ("FAIL",))
-            for key in SUPPORTED_KEYS + ("muse",):
-                if not any(c.target == key and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
-                    failures.append(f"verify did NOT fail {key} with the guard module renamed: a broken install would read as healthy")
+            _fails, checks = run_verify(
+                "with guard.py renamed, expect FAIL on every platform", ("FAIL",)
+            )
+            for key in SUPPORTED_KEYS + ("minimax", "muse"):
+                if not any(
+                    c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
+                    for c in checks
+                ):
+                    failures.append(
+                        f"verify did NOT fail {key} with the guard module renamed: a broken install would read as healthy"
+                    )
             if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
                 failures.append("verify tools did not notice the missing module")
         finally:
@@ -3625,10 +5619,17 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
             with open(paths.hook_shim, "wb") as fh:
                 fh.write(broken.encode("utf-8"))
             try:
-                _fails, checks = run_verify("with the prefilter patterns emptied, expect FAIL on every platform", ("FAIL",))
+                _fails, checks = run_verify(
+                    "with the prefilter patterns emptied, expect FAIL on every platform", ("FAIL",)
+                )
                 for key in SUPPORTED_KEYS:
-                    if not any(c.target == key and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
-                        failures.append(f"verify did NOT fail {key} with the prefilter emptied: a shim that allows everything would read as healthy")
+                    if not any(
+                        c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
+                        for c in checks
+                    ):
+                        failures.append(
+                            f"verify did NOT fail {key} with the prefilter emptied: a shim that allows everything would read as healthy"
+                        )
                 if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
                     failures.append("verify tools did not notice the edited hook shim")
             finally:
@@ -3643,9 +5644,17 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
         with open(paths.fleet_shim, "wb") as fh:
             fh.write(b"#!/bin/sh\nexit 0\n")
         try:
-            _fails, checks = run_verify("with the fleet hook shim allowing everything, expect FAIL on muse", ("FAIL",))
-            if not any(c.target == "muse" and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
-                failures.append("verify did NOT fail muse with an allow-everything fleet hook: a broken plugin path would read as healthy")
+            _fails, checks = run_verify(
+                "with the fleet hook shim allowing everything, expect FAIL on muse", ("FAIL",)
+            )
+            for key in ("muse", "minimax"):
+                if not any(
+                    c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
+                    for c in checks
+                ):
+                    failures.append(
+                        f"verify did NOT fail {key} with an allow-everything fleet hook: a broken plugin path would read as healthy"
+                    )
             if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
                 failures.append("verify tools did not notice the edited fleet hook shim")
         finally:
@@ -3654,24 +5663,42 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
         # ...and so must a fleet shim whose prefilter patterns were emptied: it would allow every call in `sh`
         emptied = empty_prefilter(fleet_bytes.decode("utf-8"))
         if emptied.encode("utf-8") == fleet_bytes:
-            failures.append("the fleet hook shim has no prefilter to empty, so that phase could not run")
+            failures.append(
+                "the fleet hook shim has no prefilter to empty, so that phase could not run"
+            )
         else:
             with open(paths.fleet_shim, "wb") as fh:
                 fh.write(emptied.encode("utf-8"))
             try:
-                _fails, checks = run_verify("with the fleet hook prefilter emptied, expect FAIL on muse", ("FAIL",))
-                if not any(c.target == "muse" and c.name.startswith("deny/") and c.status == "FAIL" for c in checks):
-                    failures.append("verify did NOT fail muse with the fleet hook prefilter emptied: a shim that allows "
-                                    "everything would read as healthy")
+                _fails, checks = run_verify(
+                    "with the fleet hook prefilter emptied, expect FAIL on muse", ("FAIL",)
+                )
+                for key in ("muse", "minimax"):
+                    if not any(
+                        c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
+                        for c in checks
+                    ):
+                        failures.append(
+                            f"verify did NOT fail {key} with the fleet hook prefilter emptied: a shim that allows "
+                            "everything would read as healthy"
+                        )
             finally:
                 with open(paths.fleet_shim, "wb") as fh:
                     fh.write(fleet_bytes)
         secret = os.path.join(paths.package_dir, SECRET_GUARD_MODULE)
         os.rename(secret, secret + ".disabled")
         try:
-            _fails, checks = run_verify("with the secret guard module renamed, expect FAIL on muse", ("FAIL",))
-            if not any(c.target == "muse" and c.name.startswith("secret/") and c.status == "FAIL" for c in checks):
-                failures.append("verify did NOT fail muse with the secret guard missing: the fleet hook would be the lane guard alone")
+            _fails, checks = run_verify(
+                "with the secret guard module renamed, expect FAIL on muse", ("FAIL",)
+            )
+            for key in ("muse", "minimax"):
+                if not any(
+                    c.target == key and c.name.startswith("secret/") and c.status == "FAIL"
+                    for c in checks
+                ):
+                    failures.append(
+                        f"verify did NOT fail {key} with the secret guard missing: the fleet hook would be the lane guard alone"
+                    )
         finally:
             os.rename(secret + ".disabled", secret)
         fails, _ = run_verify("after the third repair, expect no FAIL", ("FAIL",))
@@ -3681,12 +5708,15 @@ def self_test(emit: Callable[[str], None], *, timeout: float = PROBE_TIMEOUT_S, 
         for f in failures:
             emit(f"self-test FAIL: {f}")
         return EXIT_FAIL
-    emit("self-test PASS: the install verifies, a renamed guard module, an emptied prefilter, an allow-everything fleet hook "
-         "and a missing secret guard each make verify FAIL, and each repair verifies again")
+    emit(
+        "self-test PASS: the install verifies, a renamed guard module, an emptied prefilter, an allow-everything fleet hook "
+        "and a missing secret guard each make verify FAIL, and each repair verifies again"
+    )
     return EXIT_OK
 
 
 # --------------------------------------------------------------------------- entry point
+
 
 def main(argv: Sequence[str] | None = None, stdout=None, stderr=None) -> int:
     out = sys.stdout if stdout is None else stdout
