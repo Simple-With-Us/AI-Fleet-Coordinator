@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:d9bdd3b3cc967b4cbdceb89bdb1808fcbb78c02892350d6b4ed0f7885d43f81f -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:47d2f6b8095f1e57a390a17aade84ff952067611d5d3b6acb29d3fc838c31b64 -->
 # AGENT-SYNC — Fleet Coordination Protocol
 
 This is the protocol every AI agent seat follows when it works on the owner's apps:  who each seat is, how work is claimed, landed, and closed out in Linear, how seats talk in Zulip, and the standing rules for secrets, delegation, owner-facing writing, and the Mac.  It exists so parallel seats never collide on, duplicate, or silently drop the same work.
@@ -611,7 +611,8 @@ git diff origin/main...HEAD    # three-dot: remaining unique work vs merge-base
 - Push workflow changes with the Personal Access Token.  Fetch only `GITHUB_TOKEN` with `fleet-secrets get` and override `GH_TOKEN` inline for that one push.  Never dump the whole key set, and never echo the value (default 2026-10-07, command updated 2026-10-18):
 
 ```bash
-env GH_TOKEN="$(fleet-secrets get GITHUB_TOKEN)" git push
+token="$(fleet-secrets get GITHUB_TOKEN)" || exit $?
+env GH_TOKEN="$token" git push
 ```
 
 - Never use `ci-pending/` staging workarounds for workflow files.
