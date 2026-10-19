@@ -687,13 +687,31 @@ class SetTests(Base):
         self.statuses["PATCH"] = 404
         code, out, _ = self.run_set("CACHE_NEW_APP", "--path", "/linear")
         self.assertEqual((code, out), (0, "created CACHE_NEW_APP at /linear\n"))
-        self.assertEqual([a[0] for a in self.api if "/v3/" in a[1]], ["PATCH", "POST"])
+        self.assertEqual([a[0] for a in self.api if "/v3/secrets/raw/" in a[1]], ["PATCH", "POST"])
 
-    def test_the_folder_is_created_first(self):
+    def test_set_never_creates_a_folder_and_checks_it_exists_first(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         self.run_set("CACHE_K", "--path", "/linear")
-        folders = [(a[3]["name"], a[3]["path"]) for a in self.api if a[1] == "/v1/folders"]
-        self.assertEqual(folders, [("linear", "/")])
+        self.assertEqual([a for a in self.api if a[1] == "/v1/folders"], [])
+        self.assertEqual(self.api[0][0], "GET")
+        self.assertIn("secretPath=/linear", self.api[0][1])
+
+    def test_a_missing_folder_fails_with_folder_missing_and_writes_nothing(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["GET"] = 404
+        code, out, err = self.run_set("CACHE_K", "--path", "/linear", stdin=VAL_A)
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn("folder-missing", err)
+        self.assertEqual([a[0] for a in self.api], ["GET"])
+        self.assertNoSentinel(err)
+
+    def test_a_failed_folder_check_other_than_404_also_writes_nothing(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["GET"] = 500
+        code, _, err = self.run_set("CACHE_K", "--path", "/linear")
+        self.assertEqual(code, 4)
+        self.assertIn("folder-check http-500", err)
+        self.assertEqual([a[0] for a in self.api], ["GET"])
 
     def test_names_and_folders_off_the_allowlist_are_refused_before_any_login_or_call(self):
         w = self.use(World(keychain=KEYCHAIN_FULL))

@@ -507,8 +507,7 @@ def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
     """Create or update one Fleet-OPS prod secret at `path`, and return "created" or "updated".
 
     Only names on WRITE_ALLOWLIST are accepted.  Needs a machine identity (token, keychain or system-keychain):  the CLI's own login session
-    cannot hand its token to a REST call, so mode `session` is refused.  The folder is created when
-    absent.  The value never appears in an argument list, a message or a log."""
+    cannot hand its token to a REST call, so mode `session` is refused.  The value never appears in an argument list, a message or a log."""
     refusal = environment_refusal(env)
     if refusal:
         raise SecretsError(refusal, 2)
@@ -537,18 +536,20 @@ def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
     }
     try:
         quoted = urllib.request.quote(name, safe="")
-        # Make sure every folder on the path exists (400 means it already does).
-        parts = [p for p in path.split("/") if p]
-        walked = "/"
-        for part in parts:
-            _api(
-                "POST",
-                "/v1/folders",
-                token,
-                {"workspaceId": project, "environment": ENVIRONMENT, "name": part, "path": walked},
-                env,
-            )
-            walked = walked.rstrip("/") + "/" + part
+        # `set` never creates folders:  the allowlist names a folder that already exists.  A missing folder
+        # (404 on a listing of it) is an error and nothing is written.
+        probe = _api(
+            "GET",
+            "/v3/secrets/raw?workspaceId=%s&environment=%s&secretPath=%s&recursive=false&include_imports=false"
+            % (project, ENVIRONMENT, urllib.request.quote(path, safe="/")),
+            token,
+            None,
+            env,
+        )
+        if probe == 404:
+            raise SecretsError("folder-missing:  %s does not exist in Fleet-OPS;  nothing was written" % path, 4)
+        if probe != 200:
+            raise SecretsError("write-failed:  folder-check http-%d" % probe, 4)
         status = _api("PATCH", "/v3/secrets/raw/" + quoted, token, body, env)
         if status in (200, 201):
             return "updated"
