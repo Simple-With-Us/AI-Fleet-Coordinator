@@ -241,7 +241,7 @@ Roster drift, checked live Thu, Oct 15, 2026:  the realm's display names are `Ec
 
 ## Bot Setup
 
-1. Jay creates one bot user per seat or role in Settings → Bots, or runs `scripts/zulip_provision_bots.py` himself.  Each bot gets its own name and its own API key — never share keys between bots, so posts are attributable and one key can be revoked without touching the rest.  Agents never create bots.  Enter only the code in the short-name field (`codex`, not `codex-bot`):  Zulip appends `-bot` itself, in the web form and the API alike, and `codex-bot` becomes codex-bot-bot@ (owner-confirmed, Wed, Oct 7).
+1. Jay creates one bot user per seat or role in Settings → Bots, or runs `scripts/zulip_provision_bots.py` himself (it signs in as the realm-admin bot from Infisical Fleet-OPS `/zulipadmin`, writes each new bot's zuliprc into `~/.agent-sync/provisioned/`, and prints the `/zulip` key names to store;  an existing bot's key cannot be read back, only rotated with `--regenerate`).  Each bot gets its own name and its own API key — never share keys between bots, so posts are attributable and one key can be revoked without touching the rest.  Agents never create bots.  Enter only the code in the short-name field (`codex`, not `codex-bot`):  Zulip appends `-bot` itself, in the web form and the API alike, and `codex-bot` becomes codex-bot-bot@ (owner-confirmed, Wed, Oct 7).
 2. Set the display name.  GB and BF role bots carry the platform prefix (`GB-Director`, not just `Director`).  A seat bot may get a display name Jay picks for looks; its email and file code still follow the agreed code (see [Naming](#naming)).
 3. Hand each bot its credential as a file or an env, never as chat text:
    - Mac seats:  `~/.secrets/Zulip/<file code>-zuliprc`, mode 600.
