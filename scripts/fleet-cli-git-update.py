@@ -319,7 +319,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "error", "code": str(exc)}))
         return 2
     print(json.dumps(result, sort_keys=True))
-    return 0
+    # A commit that failed its smoke test is handled (the host stays on the validated one), but it exits 1
+    # so the systemd unit shows as failed and the owner sees it.
+    return 1 if result.get("status") == "smoke_failed" else 0
 
 
 if __name__ == "__main__":

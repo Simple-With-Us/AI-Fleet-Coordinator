@@ -119,6 +119,8 @@ class GitUpdateTests(unittest.TestCase):
         self.assertEqual(U.status(self.home)["commit"], good)
         self.assertEqual(U.status(self.home)["bad"], bad)
         self.assertEqual(U.update(self.home)["status"], "skipped_bad")
+        self.commit(agent_sync=PY_BROKEN)
+        self.assertEqual(U.main(["update", "--home", str(self.home)]), 1)
         fixed = self.commit(agent_sync=PY_OK)
         self.assertEqual(U.update(self.home)["status"], "updated")
         self.assertEqual(U.status(self.home)["commit"], fixed)
