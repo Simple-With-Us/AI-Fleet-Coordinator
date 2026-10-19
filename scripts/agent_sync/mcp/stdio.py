@@ -52,6 +52,7 @@ import os
 import pwd
 import select
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -659,8 +660,19 @@ def run(
     # --rc or ZULIP_RC.
     cred_env = rt.env
     cfg = C.load(str(state_root(env, home)))
-    notes_consumer, consumer_label, _ = NOTES.relay_consumer(cfg.notes_relay_seat)
-    log("notes relay consumer %s (source: %s)" % (notes_consumer, consumer_label))
+    # The Notes relay consumer comes from a fleet knob, and reading it can take seconds (Infisical through the CLI), so
+    # it is read on first use by a Notes tool, never at start:  every MCP process start would otherwise pay for it.
+    consumer_cache: list[tuple[str, str]] = []
+    consumer_lock = threading.Lock()
+
+    def notes_consumer() -> tuple[str, str]:
+        with consumer_lock:
+            if not consumer_cache:
+                seat_, label_, _ = NOTES.relay_consumer(cfg.notes_relay_seat)
+                log("notes relay consumer %s (source: %s)" % (seat_, label_))
+                consumer_cache.append((seat_, label_))
+            return consumer_cache[0]
+
     env_seats = {
         seat_cfg.seat: X.CredentialSource(
             email_env=seat_cfg.email_env, key_env=seat_cfg.key_env, site_env=seat_cfg.site_env
@@ -697,8 +709,7 @@ def run(
             codex_thread_meta=codex_thread_meta and identity == "CODEX",
             owner_user_id=cfg.owner_user_id,
             owner_clients=cfg.owner_clients,
-            notes_consumer=notes_consumer,
-            notes_consumer_label=consumer_label,
+            notes_consumer_resolver=notes_consumer,
             clock=clock,
             sleep=rt.sleep,
             log=lambda text: log(agent.client.scrub(text)),
