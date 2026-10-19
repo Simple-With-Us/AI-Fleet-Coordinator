@@ -12,9 +12,12 @@ import os
 import re
 import subprocess
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "apple-notes-coding.sh"
+#  the script drops the year only when it is the current one, so the expected date follows the clock
+OCT_19 = "Mon, Oct 19" if datetime.now().year == 2026 else "Mon, Oct 19, 2026"
 PLATFORM_VARS = (
     "AGENT_SESSION",
     "CLAUDE_CODE_SESSION_ID",
@@ -268,7 +271,7 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn(
-            "Merged Mon, Oct 19, deployed Mon, Oct 19, 9:03pm, filed Fri, Mar 7, 2025.", p.stdout
+            f"Merged {OCT_19}, deployed {OCT_19}, 9:03pm, filed Fri, Mar 7, 2025.", p.stdout
         )
         self.assertIn("log 2026-10-19", p.stdout)
         self.assertIn("https://x.test/2026-10-19", p.stdout)
@@ -281,9 +284,9 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         #  the space form keeps its range end instead of shifting 10:30 to 4:30pm on the -11:00
-        self.assertIn("Standup Mon, Oct 19 10:30-11:00 Central", p.stdout)
+        self.assertIn(f"Standup {OCT_19} 10:30-11:00 Central", p.stdout)
         #  the ISO T form really is an offset, and still converts
-        self.assertIn("and Mon, Oct 19, 4:30pm", p.stdout)
+        self.assertIn(f"and {OCT_19}, 4:30pm", p.stdout)
 
     def test_the_body_never_reaches_the_refusal(self):
         p = self.run_script(
