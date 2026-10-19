@@ -673,7 +673,9 @@ class SetTests(Base):
         code, out, err = self.run_set("CACHE_MY_APP", "--path", "/linear")
         self.assertEqual((code, out, err), (0, "updated CACHE_MY_APP at /linear\n", ""))
         method, path, token, body = self.api[-1]
-        self.assertEqual((method, path, token), ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", ACCESS_TOKEN))
+        self.assertEqual(
+            (method, path, token), ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", ACCESS_TOKEN)
+        )
         self.assertEqual(body["secretValue"], "VAL_TO_WRITE_1")
         self.assertEqual(
             (body["environment"], body["secretPath"], body["type"]), ("prod", "/linear", "shared")
@@ -713,7 +715,12 @@ class SetTests(Base):
 
     def test_no_environment_variable_widens_the_allowlist(self):
         self.use(World(keychain=KEYCHAIN_FULL))
-        env = dict(self.env, FLEET_SECRETS_WRITE_ALLOW=".*", FLEET_SECRETS_ALLOW_ALL="1", FLEET_SECRETS_WRITE_PATHS="/zulip")
+        env = dict(
+            self.env,
+            FLEET_SECRETS_WRITE_ALLOW=".*",
+            FLEET_SECRETS_ALLOW_ALL="1",
+            FLEET_SECRETS_WRITE_PATHS="/zulip",
+        )
         code, _, _ = self.run_set("ALPHA", "--path", "/zulip", env=env)
         self.assertEqual(code, 2)
         self.assertEqual(self.api, [])
