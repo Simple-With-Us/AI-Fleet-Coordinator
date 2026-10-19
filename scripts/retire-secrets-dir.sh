@@ -36,6 +36,9 @@ LSOF="${RETIRE_LSOF:-lsof}"
 UID_NUM="${RETIRE_UID:-$(id -u)}"
 STAMP="${RETIRE_STAMP:-$(date +%Y%m%d-%H%M%S)}"
 ARCHIVE_DIR="${RETIRE_ARCHIVE_DIR:-$HOME_DIR/Documents}"
+VOLUMES_DIR="${RETIRE_VOLUMES:-/Volumes}"
+TTY_IN="${RETIRE_TTY_IN:-/dev/tty}"
+TTY_OUT="${RETIRE_TTY_OUT:-/dev/tty}"
 PROG_RAW=""
 PLIST_DIR="${RETIRE_PLIST_DIR:-$HOME_DIR/Library/LaunchAgents}"
 PM2_CMD="${RETIRE_PM2:-pm2 jlist}"
@@ -167,14 +170,21 @@ checkout_state() { # $1 = checkout dir
   else CK_REL="diverged"; fi
 }
 
-# True when a LaunchAgent plist or pm2 job runs something inside the checkout (program path, WorkingDirectory or
+# True when a LOADED LaunchAgent plist or a pm2 job runs something inside the checkout (program path, WorkingDirectory or
 # pm_cwd, from $PROG_RAW) or its directory is on PATH.  Such a checkout is a RUNTIME checkout:  reader hits fail the
 # check.  Any other checkout is an idle copy of someone's work.
 is_runtime_checkout() { # $1 = checkout dir
   local d="$1" p r pe
-  while IFS=$'\t' read -r _ p; do
+  local l
+  while IFS=$'\t' read -r l p; do
     [ -n "$p" ] || continue
-    case "$p" in "$d"|"$d/"*) return 0 ;; esac
+    case "$p" in
+      "$d"|"$d/"*)
+        # A pm2 job counts as running.  A LaunchAgent counts only while it is loaded:  one that is disabled and booted
+        # out (BotFleet is deliberately off) runs nothing, so its checkout is an idle copy.
+        case "$l" in pm2/*) return 0 ;; esac
+        "$LAUNCHCTL" print "gui/$UID_NUM/$l" >/dev/null 2>&1 && return 0 ;;
+    esac
   done <<< "$PROG_RAW"
   IFS=: read -r -a pe <<< "${RETIRE_PATH:-$PATH}"
   for r in ${pe[@]+"${pe[@]}"}; do
@@ -426,8 +436,14 @@ cmd_check() {
   return 1
 }
 
+has_writer_files() { [ -f "$WRITER_PLIST" ] || [ -f "$WRITER_SCRIPT" ] || [ -d "$SEEDER_DIR" ]; }
+
 cmd_bootout() {
-  local dest="$RETIRED_DIR/infisical-secrets-sync-$STAMP" note moved=0
+  local dest="$RETIRED_DIR/infisical-secrets-sync-$STAMP" note
+  if ! writer_loaded && ! has_writer_files; then
+    say "$WRITER_LABEL is already retired (not loaded, no plist, script or seeder left to move);  nothing to do."
+    return 0
+  fi
   if writer_loaded; then
     "$LAUNCHCTL" bootout "gui/$UID_NUM/$WRITER_LABEL" || die "bootout failed"
   else
@@ -435,21 +451,25 @@ cmd_bootout() {
   fi
   "$LAUNCHCTL" disable "gui/$UID_NUM/$WRITER_LABEL" || die "disable failed"
   if writer_loaded; then die "$WRITER_LABEL is still loaded"; fi
-  # Retire the writer's files (moved, never deleted) so nothing reinstalls or reruns it.
-  mkdir -p "$dest"
-  note="$dest/ROLLBACK.txt"
-  : > "$note"
-  if [ -f "$WRITER_PLIST" ]; then mv "$WRITER_PLIST" "$dest/" && moved=1 && printf 'mv %s/%s.plist %s\n' "$dest" "$WRITER_LABEL" "$WRITER_PLIST" >> "$note"; fi
-  if [ -f "$WRITER_SCRIPT" ]; then mv "$WRITER_SCRIPT" "$dest/" && moved=1 && printf 'mv %s/infisical-secrets-sync.sh %s\n' "$dest" "$WRITER_SCRIPT" >> "$note"; fi
-  if [ -d "$SEEDER_DIR" ]; then mv "$SEEDER_DIR" "$dest/" && moved=1 && printf 'mv %s/infisical-sync %s\n' "$dest" "$SEEDER_DIR" >> "$note"; fi
-  printf 'launchctl enable gui/%s/%s && launchctl bootstrap gui/%s %s\n' "$UID_NUM" "$WRITER_LABEL" "$UID_NUM" "$WRITER_PLIST" >> "$note"
-  say "$WRITER_LABEL booted out, disabled and retired (plist, script and the one-time seeder moved to $dest)."
-  say "Rollback:  retire-secrets-dir.sh rollback   (or run the lines in $note)"
-  [ "$moved" -eq 1 ] || say "note:  none of the writer's files were found to move"
+  # Retire the writer's files (moved, never deleted) so nothing reinstalls or reruns it.  The directory exists only
+  # when there is something to put in it.
+  if has_writer_files; then
+    mkdir -p "$dest"
+    note="$dest/ROLLBACK.txt"
+    : > "$note"
+    if [ -f "$WRITER_PLIST" ]; then mv "$WRITER_PLIST" "$dest/" && printf 'mv %s/%s.plist %s\n' "$dest" "$WRITER_LABEL" "$WRITER_PLIST" >> "$note"; fi
+    if [ -f "$WRITER_SCRIPT" ]; then mv "$WRITER_SCRIPT" "$dest/" && printf 'mv %s/infisical-secrets-sync.sh %s\n' "$dest" "$WRITER_SCRIPT" >> "$note"; fi
+    if [ -d "$SEEDER_DIR" ]; then mv "$SEEDER_DIR" "$dest/" && printf 'mv %s/infisical-sync %s\n' "$dest" "$SEEDER_DIR" >> "$note"; fi
+    printf 'launchctl enable gui/%s/%s && launchctl bootstrap gui/%s %s\n' "$UID_NUM" "$WRITER_LABEL" "$UID_NUM" "$WRITER_PLIST" >> "$note"
+    say "$WRITER_LABEL booted out, disabled and retired (plist, script and the one-time seeder moved to $dest)."
+    say "Rollback:  retire-secrets-dir.sh rollback   (or run the lines in $note)"
+  else
+    say "$WRITER_LABEL booted out and disabled (its files were already moved)."
+  fi
 }
 
 cmd_archive() {
-  local rename=0 pw pw2 out vol mnt diffs
+  local rename=0 pw pw2 out vol mnt diffs drc n_src n_arc
   [ "${1:-}" = "--rename" ] && rename=1
   [ -d "$SECRETS" ] || die "$SECRETS does not exist"
   if writer_loaded; then die "$WRITER_LABEL is still loaded and writes into the folder:  run bootout first"; fi
@@ -457,25 +477,38 @@ cmd_archive() {
   mkdir -p "$ARCHIVE_DIR"
   out="$ARCHIVE_DIR/secrets-archive-$STAMP.dmg"
   [ -e "$out" ] && die "$out already exists"
-  printf 'Passphrase for the encrypted archive (not shown):  ' > /dev/tty
-  IFS= read -rs pw < /dev/tty; printf '\n' > /dev/tty
-  printf 'Again:  ' > /dev/tty
-  IFS= read -rs pw2 < /dev/tty; printf '\n' > /dev/tty
+  printf 'Passphrase for the encrypted archive (not shown):  ' > "$TTY_OUT"
+  IFS= read -rs pw < "$TTY_IN"; printf '\n' > "$TTY_OUT"
+  printf 'Again:  ' > "$TTY_OUT"
+  IFS= read -rs pw2 < "$TTY_IN"; printf '\n' > "$TTY_OUT"
   [ -n "$pw" ] && [ "$pw" = "$pw2" ] || die "empty or different passphrases"
   vol="secrets-archive-$STAMP"
   printf '%s' "$pw" | "$HDIUTIL" create -encryption AES-256 -stdinpass -srcfolder "$SECRETS" -volname "$vol" \
     -fs APFS -format UDZO -quiet "$out" || die "hdiutil create failed"
   chmod 600 "$out"
-  # Verify:  mount read-only and compare names, sizes and bytes (diff -rq prints names only).
+  # Verify:  mount read-only, prove the mount is there and readable, then compare bytes (diff -rq) and the file count.
+  # Any trouble fails the archive and leaves the folder untouched.  diff's stderr is NOT hidden, and its exit status is
+  # used:  0 identical, 1 differences, 2 trouble (an unreadable file, a missing path).
   printf '%s' "$pw" | "$HDIUTIL" attach "$out" -stdinpass -readonly -nobrowse -quiet || die "could not mount the archive to verify it"
-  mnt="/Volumes/$vol"
-  diffs="$(diff -rq "$SECRETS" "$mnt" 2>/dev/null | grep -v -E '\.fseventsd|\.Spotlight-V100|\.Trashes')"
-  "$HDIUTIL" detach "$mnt" -quiet >/dev/null 2>&1 || true
+  mnt="$VOLUMES_DIR/$vol"
   pw=""; pw2=""
-  if [ -n "$diffs" ]; then
-    printf '%s\n' "$diffs" | awk 'NR <= 20'
-    die "the archive does not match the folder;  nothing was renamed"
+  if [ ! -d "$mnt" ] || [ ! -r "$mnt" ]; then
+    "$HDIUTIL" detach "$mnt" -quiet >/dev/null 2>&1 || true
+    die "the archive mounted but $mnt is not a readable directory;  nothing was renamed"
   fi
+  diffs="$(diff -rq -x .fseventsd -x .Spotlight-V100 -x .Trashes "$SECRETS" "$mnt")"
+  drc=$?
+  n_src="$(find "$SECRETS" -type f | wc -l | tr -d ' ')"
+  n_arc="$(find "$mnt" -type f -not -path '*/.fseventsd/*' -not -path '*/.Spotlight-V100/*' -not -path '*/.Trashes/*' | wc -l | tr -d ' ')"
+  "$HDIUTIL" detach "$mnt" -quiet >/dev/null 2>&1 || true
+  if [ "$drc" -ne 0 ]; then
+    [ -n "$diffs" ] && printf '%s\n' "$diffs" | awk 'NR <= 20'
+    die "comparing the archive with the folder failed (diff exit $drc: 1 = differences, 2 = trouble);  nothing was renamed"
+  fi
+  if [ "$n_src" != "$n_arc" ]; then
+    die "file count differs: folder $n_src, archive $n_arc;  nothing was renamed"
+  fi
+  say "verified:  $n_src files, byte-for-byte identical"
   shasum -a 256 "$out" > "$out.sha256"
   say "archive verified:  $out  (AES-256;  sha256 in $out.sha256)"
   if [ "$rename" -eq 1 ]; then
@@ -489,16 +522,27 @@ cmd_archive() {
 }
 
 cmd_rollback() {
-  local r
+  local r wd d
   r="$(ls -d "$HOME_DIR"/.secrets.retired-* 2>/dev/null | sort -r | sed -n 1p)"
-  if [ -n "$r" ] && [ ! -e "$SECRETS" ]; then
+  if [ -n "$r" ] && [ -e "$SECRETS" ]; then
+    # Both a renamed folder and a live one exist:  do not guess, and do NOT re-enable the writer (it would write into a
+    # folder that may be the wrong one).
+    say "NOT rolled back:  $SECRETS exists AND $r exists."
+    say "Merge by hand (compare them, move what you need into $SECRETS), or move one aside, then run rollback again."
+    say "The writer was left as it is."
+    return 1
+  fi
+  if [ -n "$r" ]; then
     mv "$r" "$SECRETS" || die "could not rename $r back"
     say "restored $r -> $SECRETS"
   else
-    say "nothing to restore (retired folder: ${r:-none};  $SECRETS exists: $([ -e "$SECRETS" ] && echo yes || echo no))"
+    say "no renamed folder to restore"
   fi
-  local wd
-  wd="$(ls -d "$RETIRED_DIR"/infisical-secrets-sync-* 2>/dev/null | sort -r | sed -n 1p)"
+  # The newest retired-writer directory that actually holds one of its files (an empty one is skipped).
+  wd=""
+  for d in $(ls -d "$RETIRED_DIR"/infisical-secrets-sync-* 2>/dev/null | sort -r); do
+    if [ -f "$d/$WRITER_LABEL.plist" ] || [ -f "$d/infisical-secrets-sync.sh" ] || [ -d "$d/infisical-sync" ]; then wd="$d"; break; fi
+  done
   if [ -n "$wd" ]; then
     [ -f "$wd/$WRITER_LABEL.plist" ] && [ ! -e "$WRITER_PLIST" ] && mv "$wd/$WRITER_LABEL.plist" "$WRITER_PLIST"
     [ -f "$wd/infisical-secrets-sync.sh" ] && [ ! -e "$WRITER_SCRIPT" ] && mv "$wd/infisical-secrets-sync.sh" "$WRITER_SCRIPT"
@@ -513,6 +557,6 @@ case "${1:-}" in
   check) shift; cmd_check "$@" ;;
   bootout) cmd_bootout ;;
   archive) shift; cmd_archive "$@" ;;
-  rollback) cmd_rollback ;;
+  rollback) cmd_rollback; exit $? ;;
   *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

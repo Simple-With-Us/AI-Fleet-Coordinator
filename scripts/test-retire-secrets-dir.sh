@@ -21,7 +21,11 @@ cat > "$tmp/launchctl" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LC"
 case "$1" in
-  print) [ -f "$STUB_LOADED" ] ;;
+  print)
+    case "$2" in
+      *infisical-secrets-sync) [ -f "$STUB_LOADED" ] ;;
+      *) ! grep -qx "${2##*/}" "$STUB_UNLOADED" 2>/dev/null ;;
+    esac ;;
   bootout) rm -f "$STUB_LOADED" ;;
   *) : ;;
 esac
@@ -37,7 +41,7 @@ printf '[PM2] Spawning PM2 daemon\n[]\n'
 STUB
 chmod +x "$tmp/launchctl" "$tmp/lsof"
 export RETIRE_PM2="bash $tmp/pm2empty"
-export RETIRE_LAUNCHCTL="$tmp/launchctl" RETIRE_LSOF="$tmp/lsof" STUB_LC="$tmp/lc.log" STUB_LOADED="$tmp/loaded" STUB_OPEN="$tmp/open"
+export RETIRE_LAUNCHCTL="$tmp/launchctl" RETIRE_LSOF="$tmp/lsof" STUB_LC="$tmp/lc.log" STUB_LOADED="$tmp/loaded" STUB_OPEN="$tmp/open" STUB_UNLOADED="$tmp/unloaded"
 touch "$STUB_LOADED"
 
 repo="$RETIRE_CODE_DIR/demo"
@@ -197,6 +201,13 @@ out2="$(RETIRE_ALLOW="$here/retire-secrets-dir.allow" bash "$script" check 2>/de
 check "the real allowlist does NOT hide the writer script (it must be retired, not exempted)" bash -c "printf '%s' \"\$1\" | grep -q 'mac:.*bin/infisical-secrets-sync.sh:1'" _ "$out2"
 check "the real allowlist hides a test dir in a checkout but not a mac path named tests" bash -c "printf '%s' \"\$1\" | grep -q 'mac:.*apps/tests/mac-test.py:1'" _ "$out"
 check "the real allowlist still reports a real reader on the Mac and in a runtime checkout" bash -c "printf '%s' \"\$1\" | grep -q 'mac:.*apps/real-reader.py:1' && printf '%s' \"\$1\" | grep -q 'checkout:dirtyco:real.py:1'" _ "$out"
+# A checkout whose only LaunchAgent is disabled and unloaded (BotFleet is deliberately off) is an idle copy:  it warns, it does not fail.
+printf 'com.test.rtdirty\n' > "$STUB_UNLOADED"
+out3="$(RETIRE_ALLOW="$here/retire-secrets-dir.allow" bash "$script" check --idle 2>/dev/null)"
+check "a checkout whose LaunchAgent is unloaded is reported idle, not runtime" bash -c "printf '%s' \"\$1\" | grep -q 'idle-hit:dirtyco:real.py:1' && ! printf '%s' \"\$1\" | grep -q '^checkout:dirtyco:real.py'" _ "$out3"
+: > "$STUB_UNLOADED"
+out4="$(RETIRE_ALLOW="$here/retire-secrets-dir.allow" bash "$script" check 2>/dev/null)"
+check "the same checkout is runtime again once its LaunchAgent is loaded" bash -c "printf '%s' \"\$1\" | grep -q '^checkout:dirtyco:real.py'" _ "$out4"
 rm -f "$RETIRE_HOME/Library/LaunchAgents/rt-dirty.plist" "$RETIRE_HOME/apps/dirtyco/real.py" "$RETIRE_HOME/apps/real-reader.py"
 rm -rf "$RETIRE_HOME/apps/tests" "$RETIRE_HOME/apps/dirtyco/tests" "$RETIRE_HOME/.cursor" "$RETIRE_HOME/apps/ios-fleet" "$RETIRE_HOME/apps/upstream" "$RETIRE_HOME/apps/handbook-sync" "$RETIRE_HOME/apps/.monitor-mac"
 rm -f "$RETIRE_HOME/apps/AGENT-SYNC.md.orig" "$RETIRE_HOME/apps/AGENT-SYNC.md.pre-sync-1" "$RETIRE_HOME/apps/output.json" "$RETIRE_HOME/bin/infisical-secrets-sync.sh"
@@ -252,6 +263,76 @@ run_check
 check "a missing pm2 is a note and the check carries on" bash -c "test $rc -eq 0 && printf '%s' \"\$1\" | grep -q 'note:pm2 not found'" _ "$out"
 export RETIRE_PM2="bash $tmp/pm2empty"
 
+
+# ---------------------------------------------------------------------------------------------------------------
+# Sentry findings on PR #698:  rollback with both folders, a second bootout, and a strict archive verification.
+# ---------------------------------------------------------------------------------------------------------------
+retired="$RETIRE_HOME/apps/_retired"
+
+# 1. rollback with BOTH a live folder and a renamed one:  refuses, exits non-zero, and does not re-enable the writer.
+mkdir -p "$RETIRE_HOME/.secrets.retired-CONFLICT"
+printf 'x\n' > "$RETIRE_HOME/.secrets.retired-CONFLICT/a"
+: > "$STUB_LC"
+out="$(bash "$script" rollback 2>/dev/null)"; rc=$?
+check "rollback refuses when both ~/.secrets and a renamed folder exist (non-zero, says how to merge)" bash -c "test $rc -ne 0 && printf '%s' '$out' | grep -q 'NOT rolled back' && printf '%s' '$out' | grep -q 'Merge by hand'"
+check "rollback in that case does not re-enable or bootstrap the writer" bash -c "! grep -q -E 'enable|bootstrap' '$STUB_LC'"
+mv "$RETIRE_HOME/.secrets.retired-CONFLICT" "$RETIRE_HOME/.secrets.CONFLICT-aside"
+
+# 2. a second bootout is a no-op with no new directory, and rollback skips an empty directory.
+rm -f "$STUB_LOADED"
+rm -rf "$retired"
+mkdir -p "$RETIRE_HOME/bin" "$RETIRE_HOME/Library/LaunchAgents"
+printf 'x\n' > "$RETIRE_HOME/bin/infisical-secrets-sync.sh"
+printf 'x\n' > "$RETIRE_HOME/Library/LaunchAgents/com.jay.infisical-secrets-sync.plist"
+RETIRE_STAMP=B1 bash "$script" bootout > /dev/null 2>&1
+RETIRE_STAMP=B2 bash "$script" bootout > "$tmp/boot2.txt" 2>&1; rc2=$?
+check "a second bootout does nothing and creates no empty directory" bash -c "test $rc2 -eq 0 && grep -q 'already retired' '$tmp/boot2.txt' && test -d '$retired/infisical-secrets-sync-B1' && test ! -e '$retired/infisical-secrets-sync-B2'"
+mkdir -p "$retired/infisical-secrets-sync-ZZ-empty"
+bash "$script" rollback > /dev/null 2>&1
+check "rollback restores from the newest directory that holds files, skipping an empty newer one" bash -c "test -f '$RETIRE_HOME/bin/infisical-secrets-sync.sh' && test -f '$RETIRE_HOME/Library/LaunchAgents/com.jay.infisical-secrets-sync.plist'"
+rm -f "$RETIRE_HOME/bin/infisical-secrets-sync.sh" "$RETIRE_HOME/Library/LaunchAgents/com.jay.infisical-secrets-sync.plist"
+: > "$STUB_UNLOADED"
+
+# 3. archive verification.  A stub hdiutil copies the folder into a fake volume;  STUB_ATTACH_MODE breaks it on purpose.
+mkdir -p "$tmp/archives" "$tmp/volumes" "$tmp/arch"
+cat > "$tmp/hdiutil" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  create)
+    shift; src=""; vol=""; out=""
+    while [ $# -gt 0 ]; do
+      case "$1" in -srcfolder) src="$2"; shift ;; -volname) vol="$2"; shift ;; esac
+      out="$1"; shift
+    done
+    mkdir -p "$STUB_ARCHIVES/$vol" && cp -R "$src/." "$STUB_ARCHIVES/$vol/" && : > "$out" ;;
+  attach)
+    img="$2"; vol="$(basename "$img" .dmg)"
+    case "${STUB_ATTACH_MODE:-ok}" in
+      nomount) : ;;
+      ok) cp -R "$STUB_ARCHIVES/$vol" "$RETIRE_VOLUMES/$vol" ;;
+      differ) cp -R "$STUB_ARCHIVES/$vol" "$RETIRE_VOLUMES/$vol"; printf 'changed\n' > "$RETIRE_VOLUMES/$vol/dummy.env" ;;
+      extra) cp -R "$STUB_ARCHIVES/$vol" "$RETIRE_VOLUMES/$vol"; printf 'new\n' > "$RETIRE_VOLUMES/$vol/extra-file" ;;
+      unreadable) cp -R "$STUB_ARCHIVES/$vol" "$RETIRE_VOLUMES/$vol"; chmod 000 "$RETIRE_VOLUMES/$vol/dummy.env" ;;
+    esac ;;
+  detach) : ;;
+esac
+STUB
+chmod +x "$tmp/hdiutil"
+printf 'pw-test\npw-test\n' > "$tmp/tty-in"
+export RETIRE_HDIUTIL="$tmp/hdiutil" RETIRE_VOLUMES="$tmp/volumes" RETIRE_ARCHIVE_DIR="$tmp/arch" RETIRE_TTY_IN="$tmp/tty-in" RETIRE_TTY_OUT=/dev/null STUB_ARCHIVES="$tmp/archives"
+arch() { # $1 = stamp, $2 = attach mode, rest = archive args
+  local st="$1" mode="$2"; shift 2
+  RETIRE_STAMP="$st" STUB_ATTACH_MODE="$mode" bash "$script" archive "$@" > "$tmp/arch-$st.txt" 2>&1; echo $? > "$tmp/arch-$st.rc"
+}
+arch OK ok --rename
+check "archive with a good mount verifies, renames the folder and never deletes" bash -c "test \"\$(cat '$tmp/arch-OK.rc')\" -eq 0 && grep -q 'byte-for-byte identical' '$tmp/arch-OK.txt' && test -d '$RETIRE_HOME/.secrets.retired-OK' && test ! -e '$RETIRE_HOME/.secrets'"
+mv "$RETIRE_HOME/.secrets.retired-OK" "$RETIRE_HOME/.secrets"
+for mode in nomount differ extra unreadable; do
+  arch "F$mode" "$mode" --rename
+  check "archive FAILS and leaves the folder in place when verification hits: $mode" bash -c "test \"\$(cat '$tmp/arch-F$mode.rc')\" -ne 0 && test -f '$RETIRE_HOME/.secrets/dummy.env' && test ! -e '$RETIRE_HOME/.secrets.retired-F$mode' && ! grep -q 'byte-for-byte' '$tmp/arch-F$mode.txt'"
+  chmod -R u+rw "$tmp/volumes" 2>/dev/null
+done
+unset RETIRE_HDIUTIL RETIRE_VOLUMES RETIRE_ARCHIVE_DIR RETIRE_TTY_IN RETIRE_TTY_OUT STUB_ARCHIVES
 
 check "the script never deletes (no rm, rmdir, unlink, shred or find -delete)" bash -c "! grep -v '^ *#' '$script' | grep -v 'say \"  rm -rf' | grep -E '(^|[^a-z_])(rm|rmdir|unlink|shred)( |\$)|-delete'"
 check "the script prints no file contents (no cat, head or tail)" bash -c "! grep -v '^ *#' '$script' | grep -E '(^|[^a-z])(cat|head|tail)( |\$)'"
