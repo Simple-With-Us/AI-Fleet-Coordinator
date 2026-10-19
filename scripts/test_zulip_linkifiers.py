@@ -214,7 +214,6 @@ class ApplyTest(unittest.TestCase):
         self.assertIsNone(L.order(zulip.linkifiers()))
 
 
-
 class CredentialTests(unittest.TestCase):
     """Writes use only the realm-admin bot (AFC-359);  no owner-key option exists."""
 
@@ -240,7 +239,10 @@ class CredentialTests(unittest.TestCase):
             "ZULIP_EMAIL": "member@example.test",
             "ZULIP_API_KEY": "m",
         }
-        with mock.patch.dict("os.environ", env), mock.patch.object(L, "_fleet_secret", return_value="") as fs:
+        with (
+            mock.patch.dict("os.environ", env),
+            mock.patch.object(L, "_fleet_secret", return_value="") as fs,
+        ):
             email, key, site = L.credentials(None, admin=True)
         self.assertEqual((email, key), ("admin-bot@example.test", "k"))
         self.assertEqual(site, L.REALM)
@@ -253,15 +255,24 @@ class CredentialTests(unittest.TestCase):
             calls.append(cmd)
             return mock.Mock(returncode=0, stdout="v\n")
 
-        env = {k: "" for k in ("REALM_ADMIN_ZULIP_EMAIL", "REALM_ADMIN_ZULIP_KEY", "REALM_ADMIN_ZULIP_SITE")}
+        env = {
+            k: ""
+            for k in ("REALM_ADMIN_ZULIP_EMAIL", "REALM_ADMIN_ZULIP_KEY", "REALM_ADMIN_ZULIP_SITE")
+        }
         with mock.patch.dict("os.environ", env), mock.patch("subprocess.run", fake_run):
             L.credentials(None, admin=True)
         self.assertTrue(calls)
         self.assertTrue(all(c[3:5] == ["--path", "/zulipadmin"] for c in calls))
 
     def test_admin_without_credentials_exits_naming_the_folder(self):
-        env = {k: "" for k in ("REALM_ADMIN_ZULIP_EMAIL", "REALM_ADMIN_ZULIP_KEY", "REALM_ADMIN_ZULIP_SITE")}
-        with mock.patch.dict("os.environ", env), mock.patch.object(L, "_fleet_secret", return_value=""):
+        env = {
+            k: ""
+            for k in ("REALM_ADMIN_ZULIP_EMAIL", "REALM_ADMIN_ZULIP_KEY", "REALM_ADMIN_ZULIP_SITE")
+        }
+        with (
+            mock.patch.dict("os.environ", env),
+            mock.patch.object(L, "_fleet_secret", return_value=""),
+        ):
             with self.assertRaises(SystemExit) as cm:
                 L.credentials(None, admin=True)
         self.assertIn("/zulipadmin", str(cm.exception.code))

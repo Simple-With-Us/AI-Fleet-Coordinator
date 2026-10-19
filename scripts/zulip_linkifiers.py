@@ -167,7 +167,9 @@ CHECKS: list[tuple[str, str | None]] = [
 def _fleet_secret(name: str) -> str:
     """One Infisical value via `fleet-secrets get` (folder /zulip, else the root), or "" (never logged)."""
     binary = os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
-    folders = ["/zulipadmin", "/zulip", None] if name.startswith("REALM_ADMIN_") else ["/zulip", None]
+    folders = (
+        ["/zulipadmin", "/zulip", None] if name.startswith("REALM_ADMIN_") else ["/zulip", None]
+    )
     for folder in folders:
         extra = ["--path", folder] if folder else []
         try:
@@ -188,11 +190,14 @@ def _fleet_secret(name: str) -> str:
 def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str]:
     if admin:
         email, key, site = (
-            os.environ.get(f"REALM_ADMIN_ZULIP_{part}", "").strip() or _fleet_secret(f"REALM_ADMIN_ZULIP_{part}")
+            os.environ.get(f"REALM_ADMIN_ZULIP_{part}", "").strip()
+            or _fleet_secret(f"REALM_ADMIN_ZULIP_{part}")
             for part in ("EMAIL", "KEY", "SITE")
         )
         if not (email and key):
-            sys.exit("no REALM_ADMIN_ZULIP_EMAIL / REALM_ADMIN_ZULIP_KEY in env or Infisical Fleet-OPS /zulipadmin")
+            sys.exit(
+                "no REALM_ADMIN_ZULIP_EMAIL / REALM_ADMIN_ZULIP_KEY in env or Infisical Fleet-OPS /zulipadmin"
+            )
         return email, key, (site or REALM).rstrip("/")
     path = rc_path
     if not path and os.environ.get("ZULIP_EMAIL") and os.environ.get("ZULIP_API_KEY"):
