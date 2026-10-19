@@ -2387,7 +2387,9 @@ class SeatAppTests(BoardTest):
         self.seat_app("CLAUDE", "Claude")
         p = self.as_seat("CLAUDE", "whoami")
         self.assertIn("identity:    Claude (the CLAUDE seat's own Linear app)", p.stdout)
-        self.assertFalse((self.ops_vault / ".run-called").exists(), "board called `fleet-secrets run`")
+        self.assertFalse(
+            (self.ops_vault / ".run-called").exists(), "board called `fleet-secrets run`"
+        )
 
     def test_two_seats_use_their_own_app_token_and_cache(self):
         claude, _ = self.seat_app("CLAUDE", "Claude")
