@@ -139,3 +139,84 @@ def write(knobs: Dict[str, str], secret_values: Iterable[str] = (),
         except OSError:
             pass
         raise
+
+
+# --------------------------------------------------------------------------- negative cache
+#
+# After a failed fetch, ``fetch-failed.json`` beside the copy records when and why (a reason
+# token, never output and never a secret).  For FAILURE_TTL_SECONDS a sibling process skips
+# its own fetch and goes straight to the copy, so a broken auth path (a locked keychain under
+# launchd) costs one timeout across a burst of processes instead of one each.  Same trust
+# rules as the copy:  a marker that is a symlink, someone else's, readable by group or other
+# or malformed is ignored, and so the fetch runs.
+
+FAILURE_TTL_SECONDS = 60.0
+FAILURE_MAX_BYTES = 1024
+_REASON_OK = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_:")
+
+
+def failure_path() -> str:
+    return os.path.join(state_dir(), "fetch-failed.json")
+
+
+def _clean_reason(reason: str) -> str:
+    text = str(reason or "unknown").lower()[:64]
+    return "".join(c if c in _REASON_OK else "-" for c in text) or "unknown"
+
+
+def recent_failure(now: Optional[float] = None) -> Optional[str]:
+    """The reason token of a failed fetch less than FAILURE_TTL_SECONDS old, else None."""
+    now = time.time() if now is None else now
+    try:
+        fd = os.open(failure_path(), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_size > FAILURE_MAX_BYTES):
+            return None
+        if not _dir_is_private():
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            raw = fh.read(FAILURE_MAX_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("failed_epoch"), (int, float)):
+        return None
+    age = now - float(doc["failed_epoch"])
+    if age < -5 or age >= FAILURE_TTL_SECONDS:
+        return None
+    return _clean_reason(doc.get("reason", "unknown"))
+
+
+def record_failure(reason: str, now: Optional[float] = None) -> None:
+    """Atomically write the marker (0600):  a timestamp and a reason token, nothing else."""
+    now = time.time() if now is None else now
+    blob = json.dumps({"failed_epoch": now, "reason": _clean_reason(reason)}).encode("utf-8")
+    _ensure_dir()
+    fd, tmp = tempfile.mkstemp(prefix=".failed.", suffix=".tmp", dir=state_dir())
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(blob + b"\n")
+        os.replace(tmp, failure_path())
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def clear_failure() -> None:
+    """Forget the marker after a good fetch."""
+    try:
+        os.unlink(failure_path())
+    except FileNotFoundError:
+        pass

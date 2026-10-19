@@ -591,6 +591,25 @@ class NotesToolTests(McpHarness):
                 )
                 self.assertEqual(status()["consumer"], expected, label)
 
+    def test_the_consumer_knob_is_read_on_first_notes_use_not_at_start(self):
+        """Reading the knob can take seconds (Infisical through the CLI), and every MCP process start would pay for
+        it, so it is read only when a Notes tool needs the consumer, and once per process."""
+        calls = []
+
+        def counting(local, refresh):
+            calls.append(local)
+            return "CLAUDE", "test knob", False
+
+        with mock.patch.object(N, "KNOB_RESOLVER", counting):
+            session = self.session()
+            session.call("guide", {})
+            self.assertEqual(calls, [], "starting the server and an unrelated tool read no knob")
+            mid, status = self.sent_request(session, "status-request-lazy")
+            status()
+            status()
+            self.assertEqual(len(calls), 1, "read once, on the first status check")
+        self.assertIn("notes relay consumer CLAUDE (source: test knob)", session.err.getvalue())
+
     def test_the_consumer_seat_comes_from_the_fleet_knob_and_a_differing_local_seat_is_ignored(
         self,
     ):

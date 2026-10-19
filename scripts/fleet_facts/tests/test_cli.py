@@ -51,7 +51,9 @@ class Sandbox(unittest.TestCase):
     def run_cli(self, *args, scenario=None, entry=ENTRY, env_extra=None):
         write_scenario(self.root / "scenario.json", scenario if scenario is not None else self.scenario)
         env = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % self.bin, "FF_SCENARIO": str(self.root / "scenario.json"),
-               "FF_LOG": str(self.log), "FF_STATE": str(self.state), "LANG": "C"}
+               "FF_LOG": str(self.log), "FF_STATE": str(self.state), "LANG": "C",
+               # The fake infisical cannot log in a machine identity:  never let the real System keychain one be tried.
+               "FLEET_KNOBS_AUTH": "session"}
         if getattr(self, "fake_key", None):
             env["FAKE_SIGNING_KEY"] = self.fake_key
         env.update(env_extra or {})

@@ -25,6 +25,9 @@ import json, os, sys, time
 cfg = json.load(open(os.environ["FAKE_INFISICAL_CONFIG"]))
 with open(cfg["calls"], "a") as fh:
     fh.write(json.dumps(sys.argv[1:]) + "\\n")
+if cfg.get("tokens"):
+    with open(cfg["tokens"], "a") as fh:
+        fh.write(json.dumps(os.environ.get("INFISICAL_TOKEN")) + "\\n")
 mode = cfg["mode"]
 if mode == "fail":
     sys.stderr.write("fake infisical: boom " + cfg.get("leak", "") + "\\n")
@@ -53,6 +56,7 @@ class FakeInfisical:
         self.bin_dir.mkdir()
         self.config = root / "fake-config.json"
         self.calls_file = root / "calls.jsonl"
+        self.tokens_file = root / "tokens.jsonl"
         exe = self.bin_dir / "infisical"
         exe.write_text(SCRIPT.format(python=sys.executable))
         exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
@@ -64,9 +68,16 @@ class FakeInfisical:
             "secrets": secrets or {},
             "shape": shape,
             "calls": str(self.calls_file),
+            "tokens": str(self.tokens_file),
         }
         cfg.update(extra)
         self.config.write_text(json.dumps(cfg))
+
+    def tokens(self) -> list:
+        """The INFISICAL_TOKEN each call saw (None when unset).  Fake tokens only."""
+        if not self.tokens_file.exists():
+            return []
+        return [json.loads(line) for line in self.tokens_file.read_text().splitlines() if line]
 
     def calls(self) -> list:
         if not self.calls_file.exists():
@@ -98,6 +109,11 @@ class KnobTestCase(unittest.TestCase):
         fallback = mock.patch.object(source, "FALLBACK_DIRS", ())
         fallback.start()
         self.addCleanup(fallback.stop)
+        # No fleet-secrets helper:  the real one would read this Mac's keychains.  A test that
+        # covers the machine identity patches source.HELPER_LOADER with a fake helper itself.
+        helper = mock.patch.object(source, "HELPER_LOADER", lambda: None)
+        helper.start()
+        self.addCleanup(helper.stop)
         knobs.reset_for_tests()
         self.addCleanup(knobs.reset_for_tests)
         # Keep the library's warnings out of the test output (assertLogs still sees them).
@@ -113,6 +129,11 @@ class KnobTestCase(unittest.TestCase):
     def lkg_file(self) -> pathlib.Path:
         return self.state_dir / "lkg.json"
 
-    def new_process(self) -> None:
-        """Forget the in-process fetch, as a new job process would start."""
+    def new_process(self, *, keep_failure_marker: bool = False) -> None:
+        """Forget the in-process fetch, as a new job process would start.
+
+        The negative-cache marker is cleared too unless asked to keep it, as if the 60 second
+        window had passed, so a test of a later fetch is not skipped by an earlier failure."""
         knobs.reset_for_tests()
+        if not keep_failure_marker:
+            (self.state_dir / "fetch-failed.json").unlink(missing_ok=True)

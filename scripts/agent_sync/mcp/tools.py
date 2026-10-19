@@ -654,6 +654,7 @@ class Tools:
         owner_clients: Iterable[str] = (),
         notes_consumer: str = "CLAUDE",
         notes_consumer_label: str = "",
+        notes_consumer_resolver: Callable[[], tuple[str, str]] | None = None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda text: None,
@@ -673,12 +674,13 @@ class Tools:
         self._call_state_key: str | None = None
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
-        self.notes_consumer = (
-            notes_consumer  # [notes_relay] seat:  the only bot whose reactions and replies count
-        )
-        self.notes_consumer_label = (
-            notes_consumer_label  # where the knob's answer came from (notes.relay_consumer)
-        )
+        # [notes_relay] seat:  the only bot whose reactions and replies count, and where the knob's answer came from
+        # (notes.relay_consumer).  With a resolver both are read on first use, not at start:  the knob fetch can take
+        # seconds (Infisical through the CLI), and most sessions never call a Notes tool.
+        self._notes_consumer = notes_consumer
+        self._notes_consumer_label = notes_consumer_label
+        self._notes_consumer_resolver = notes_consumer_resolver
+        self._notes_consumer_lock = threading.Lock()
         self.clock = clock
         self.sleep = sleep
         self.log = log
@@ -2242,6 +2244,36 @@ class Tools:
 
     def _tool_notes_unpin(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._notes_write("unpin", args)
+
+    def _resolve_notes_consumer(self) -> None:
+        if self._notes_consumer_resolver is None:
+            return
+        with self._notes_consumer_lock:
+            resolver, self._notes_consumer_resolver = self._notes_consumer_resolver, None
+            if resolver is None:
+                return
+            try:
+                self._notes_consumer, self._notes_consumer_label = resolver()
+            except Exception:  # noqa: BLE001 - notes.relay_consumer never raises;  keep the default if it ever does
+                self._notes_consumer_label = "default %s (resolver failed)" % self._notes_consumer
+
+    @property
+    def notes_consumer(self) -> str:
+        self._resolve_notes_consumer()
+        return self._notes_consumer
+
+    @notes_consumer.setter
+    def notes_consumer(self, value: str) -> None:
+        self._notes_consumer, self._notes_consumer_resolver = value, None
+
+    @property
+    def notes_consumer_label(self) -> str:
+        self._resolve_notes_consumer()
+        return self._notes_consumer_label
+
+    @notes_consumer_label.setter
+    def notes_consumer_label(self, value: str) -> None:
+        self._notes_consumer_label, self._notes_consumer_resolver = value, None
 
     def _relay_consumer(self, user_id: Any) -> bool:
         """Is this Zulip user the configured relay consumer's bot?  #notes-relay is public and every fleet bot can

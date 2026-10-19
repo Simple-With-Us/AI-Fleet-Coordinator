@@ -10,6 +10,8 @@ What a job can rely on:
     the same process (``refresh()`` forces it for a long-running one).  An export that holds
     none of the registered names counts as a failed fetch (reason ``empty``) while a usable
     copy still has knobs, so a blank answer cannot erase a pause.
+  * A failed fetch leaves a 60 second marker beside the copy (lkg.py), and other processes
+    skip their own fetch inside that window, so a broken auth path is paid for once.
   * Non-secret knobs fall back, in order, to the on-disk last-known-good copy (marked
     stale) and then to the registry default.  A read never raises for a non-secret knob.
   * A secret has no default and no disk copy:  if it cannot be fetched, ``get()`` raises
@@ -87,6 +89,7 @@ class _State:
         self.lkg: Optional[dict] = None
         self.lkg_note = "not-read"
         self.answers: Dict[str, Knob] = {}
+        self.force = False                    # refresh():  fetch even inside the negative cache
 
 
 _state = _State()
@@ -98,8 +101,11 @@ def reset_for_tests() -> None:
 
 
 def refresh() -> None:
-    """Forget the fetch so the next read fetches again (for a long-running process)."""
+    """Forget the fetch so the next read fetches again (for a long-running process).
+
+    A deliberate retry, so it also ignores a sibling's recent-failure marker."""
     reset_for_tests()
+    _state.force = True
 
 
 def _spec(name: str, kind: Optional[str]) -> Spec:
@@ -123,6 +129,15 @@ def _load() -> None:
             st.loaded = False
             raise KnobError(refusal)
         previous, previous_note = lkg.read()
+        recent = None if st.force else _recent_failure()
+        if recent is not None:
+            # A sibling process failed moments ago:  skip the fetch (fail fast) and use the copy.
+            st.fetch = "failed"
+            st.reason = "recent-" + recent
+            st.lkg, st.lkg_note = previous, previous_note
+            log.info("fleet_knobs: skipping the Infisical fetch, which failed %s seconds ago or "
+                     "less (%s)", int(lkg.FAILURE_TTL_SECONDS), recent)
+            return
         try:
             live = source.fetch([s.name for s in REGISTRY])
             _refuse_empty_export(live, previous)
@@ -136,12 +151,27 @@ def _load() -> None:
             log.warning("fleet_knobs: Infisical fetch failed (%s);  using the last-known-good "
                         "copy where there is one", st.reason)
             st.lkg, st.lkg_note = previous, previous_note
+            try:
+                lkg.record_failure(st.reason)
+            except Exception:                         # noqa: BLE001 - the marker is a convenience
+                pass
             return
+        try:
+            lkg.clear_failure()
+        except Exception:                             # noqa: BLE001 - the marker is a convenience
+            pass
         try:
             _save_lkg(st)
         except Exception as exc:                      # noqa: BLE001 - the copy is a convenience
             log.warning("fleet_knobs: could not update the last-known-good copy (%s)",
                         type(exc).__name__)
+
+
+def _recent_failure() -> Optional[str]:
+    try:
+        return lkg.recent_failure()
+    except Exception:                                 # noqa: BLE001 - an unreadable marker is ignored
+        return None
 
 
 def _refuse_empty_export(live: Dict[str, str], previous: Optional[dict]) -> None:
