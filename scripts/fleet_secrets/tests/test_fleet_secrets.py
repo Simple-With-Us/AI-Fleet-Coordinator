@@ -405,6 +405,55 @@ class AuthSelectionTests(Base):
         self.assertIn("keychain-incomplete", err)
         self.assertEqual(w.logins(), [])
 
+    def _automation_env(self, linux=True):
+        self.env[core.ENV_AUTOMATION_ID] = CLIENT_ID
+        self.env[core.ENV_AUTOMATION_SECRET] = CLIENT_SECRET
+        p = mock.patch.object(core, "is_linux", lambda: linux)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_linux_automation_env_identity_logs_in_and_exports_with_the_token_in_env(self):
+        w = self.use(World())
+        self._automation_env()
+        self.assertEqual(core.auth_mode(self.env), "automation-env")
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (0, VAL_A))
+        ((largv, lenv),) = w.logins()
+        self.assertIn("--method=universal-auth", largv)
+        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
+        self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
+        self.assertNotIn(core.ENV_AUTOMATION_SECRET, lenv)
+        eargv, eenv = w.exports()[0]
+        self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
+        self.assertNotIn(core.ENV_AUTOMATION_SECRET, eenv)
+        self.assertNoSentinel(out.replace(VAL_A, ""), err)
+
+    def test_automation_env_is_ignored_off_linux(self):
+        self.use(World())
+        self._automation_env(linux=False)
+        self.assertEqual(core.auth_mode(self.env), "session")
+
+    def test_a_keychain_identity_beats_the_automation_env(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self._automation_env()
+        self.assertEqual(core.auth_mode(self.env), "keychain")
+
+    def test_half_set_automation_env_refuses_rather_than_downgrade(self):
+        self.use(World())
+        self._automation_env()
+        del self.env[core.ENV_AUTOMATION_SECRET]
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn("automation-env-incomplete", err)
+
+    def test_run_never_hands_the_automation_pair_to_the_command(self):
+        self.use(World())
+        self._automation_env()
+        self.call("run", "--only", "ALPHA", "--", "true")
+        ((_, _, child_env),) = self.exec_calls
+        self.assertNotIn(core.ENV_AUTOMATION_ID, child_env)
+        self.assertNotIn(core.ENV_AUTOMATION_SECRET, child_env)
+
     def test_login_keychain_beats_the_system_keychain(self):
         w = self.use(
             World(

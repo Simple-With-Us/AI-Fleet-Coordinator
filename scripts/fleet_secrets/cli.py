@@ -5,8 +5,8 @@
         name are replaced.  A few names (PATH, HOME, LD_*, DYLD_* ...) are never injected.
   get NAME [--path /]
         print one value, exactly, with no trailing newline.  Exit 3 when NAME is absent.
-  names [--path /]
-        key names only, one per line.
+  names [--path /] [--project fleet-ops|ai-fleet-coordinator]
+        key names only, one per line.  --project picks the Infisical project (read-only;  default fleet-ops).
   set NAME [--path /]
         create or update one secret in Fleet-OPS prod.  The value is read from standard input (one
         trailing newline removed), never from an argument.  Needs a machine identity.  Only names on the
@@ -34,7 +34,7 @@ from .core import SecretsError, UsageError
 USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
     "       fleet-secrets get NAME [--path /]\n"
-    "       fleet-secrets names [--path /]\n"
+    "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets set NAME --path /linear   (value on standard input;  CACHE_* names only)\n"
     "       fleet-secrets doctor [--json]\n"
 )
@@ -107,8 +107,23 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
 
 
 def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
-    opts = _parse(args, False, 0)
-    secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
+    rest = list(args)
+    project = core.DEFAULT_PROJECT
+    for i, a in enumerate(rest):
+        if a == "--project" or a.startswith("--project="):
+            if a == "--project":
+                if i + 1 >= len(rest):
+                    raise UsageError("--project needs a value")
+                project = rest[i + 1]
+                del rest[i : i + 2]
+            else:
+                project = a.partition("=")[2]
+                del rest[i]
+            break
+    if project not in core.PROJECT_SOURCES:
+        raise UsageError("unknown --project:  use %s" % " or ".join(core.PROJECT_SOURCES))
+    opts = _parse(rest, False, 0)
+    secrets = core.fetch_all(core.check_path(str(opts["path"])), env, project)
     core.reject_unresolved(secrets)
     out.write("".join(n + "\n" for n in sorted(secrets)))
     out.flush()
@@ -175,10 +190,14 @@ def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
         rep["system_keychain_client_id_present"],
         rep["system_keychain_client_secret_present"],
     ) = core.keychain_presence(core.SYSTEM_KEYCHAIN)
+    (
+        rep["automation_env_client_id_present"],
+        rep["automation_env_client_secret_present"],
+    ) = core.automation_env_presence(env)
     try:
         rep["auth_mode"] = core.auth_mode(env)
-    except SecretsError:
-        rep["auth_mode"] = "keychain-incomplete"
+    except SecretsError as exc:
+        rep["auth_mode"] = exc.message.split(":")[0][:40]
     rep["session_login_valid"] = core.session_valid(cli, env) if cli else False
     rep["fetch_names_ok"] = False
     rep["names_count"] = 0
