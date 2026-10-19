@@ -33,7 +33,7 @@ SERVICE="fleet-secrets"
 ACCT_ID="infisical-client-id"
 ACCT_SECRET="infisical-client-secret"
 
-die() { echo "seed-system-keychain: $*" >&2; exit "${2:-1}"; }
+die() { echo "seed-system-keychain: $1" >&2; exit "${2:-1}"; }
 
 if [ -z "${FLEET_SECRETS_KEYCHAIN:-}" ] && [ "$(id -u)" -ne 0 ]; then
   die "run it with sudo (it writes $KEYCHAIN)" 2
