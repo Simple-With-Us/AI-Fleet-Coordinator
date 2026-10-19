@@ -237,9 +237,7 @@ class Agent:
         )
         self._verified = False
         self._gate_client()
-        self.state = State(
-            state_root(env, rt.home), self.seat, self.tag, session_id=session_id
-        )
+        self.state = State(state_root(env, rt.home), self.seat, self.tag, session_id=session_id)
         self._me: dict[str, Any] | None = None
         self._users: list[dict[str, Any]] | None = None
         self._users_at = 0.0

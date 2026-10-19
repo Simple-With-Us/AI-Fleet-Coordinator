@@ -158,7 +158,7 @@ class SessionIdTests(unittest.TestCase):
             r"<p>((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m)</p>"
             r".*<p>Session: abc12345-def6 - \1</p></div>\s*$",
             p.stdout,
-            re.S,
+            re.DOTALL,
         )
         self.assertIsNotNone(m, p.stdout)
         # It is not the row under the timestamp any more.

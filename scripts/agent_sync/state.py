@@ -22,6 +22,7 @@ confirmed message IDs across resumes.  Other callers retain the newest 500 IDs.
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -30,15 +31,16 @@ import os
 import stat
 import tempfile
 import threading
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any
 
 try:  # POSIX only; on anything else the in-process lock is all there is
     import fcntl
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
-__all__ = ["State", "state_root", "NO_SESSION", "POSTED_LIMIT", "cursor_key"]
+__all__ = ["NO_SESSION", "POSTED_LIMIT", "State", "cursor_key", "state_root"]
 
 NO_SESSION = "nosession"
 POSTED_LIMIT = 500
@@ -83,7 +85,11 @@ def tighten_private_dir(path: Path) -> None:
     that belongs to someone else, or one that cannot be changed, is left as it is."""
     try:
         st = os.stat(path)
-        if stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and stat.S_IMODE(st.st_mode) & 0o077:
+        if (
+            stat.S_ISDIR(st.st_mode)
+            and st.st_uid == os.getuid()
+            and stat.S_IMODE(st.st_mode) & 0o077
+        ):
             os.chmod(path, 0o700)
     except OSError:
         pass
@@ -174,7 +180,10 @@ class State:
 
     def _update(self, path: Path, mutate: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
         make_private_dir(path.parent)
-        for directory in (self.seat_dir, path.parent):  # the seat and session directories, never the root
+        for directory in (
+            self.seat_dir,
+            path.parent,
+        ):  # the seat and session directories, never the root
             tighten_private_dir(directory)
 
         def with_session(data: dict[str, Any]) -> None:
@@ -216,7 +225,11 @@ class State:
     def record_posted(self, message_id: int) -> None:
         def mutate(data: dict[str, Any]) -> None:
             ledger = data.get("posted")
-            ids = {item for item in ledger if _as_int(item) is not None} if isinstance(ledger, list) else set()
+            ids = (
+                {item for item in ledger if _as_int(item) is not None}
+                if isinstance(ledger, list)
+                else set()
+            )
             ids.add(int(message_id))
             data["posted"] = sorted(ids) if self.retain_posted else sorted(ids)[-POSTED_LIMIT:]
 

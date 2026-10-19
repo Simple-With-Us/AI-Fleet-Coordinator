@@ -790,8 +790,7 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
             rt.out(
                 "pinned %s for %s as the FALLBACK (model %s;  fallback-only:  mcode has no sandbox "
                 "toggle and no --disable-shell/--disable-write/--disable-web-tools, and cannot be "
-                "HOME-isolated)\n"
-                % (binary, seat, pin.get("model") or seat_cfg.mcode_model)
+                "HOME-isolated)\n" % (binary, seat, pin.get("model") or seat_cfg.mcode_model)
             )
         else:
             pin = L.read_json(paths.wake_pin)
