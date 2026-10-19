@@ -706,10 +706,17 @@ if m:
 # AFC-361, owner 2026-10-19:  the writer's session id is the small row under the timestamp, with no second date.
 # An update rewrites the whole body, so a Session row the caller echoed back from the old body is dropped
 # wherever it sat (under the timestamp, or at the end, where a version of 2026-10-19 put it) and the current one is
-# stamped.
-_SESSION_ROW = r'(?:<p>)?\s*(?:<span[^>]*>)?\s*Session:\s*[^<\n]*(?:</span>)?\s*(?:</p>)?'
-inner = re.sub(r'^' + _SESSION_ROW + r'\s*(?:<div><br\s*/?></div>)?\s*', '', inner, flags=re.I)
-inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*(?:<div><br\s*/?></div>)?\s*' + _SESSION_ROW + r'\s*$', '', inner, flags=re.I)
+# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts "Session:" is not a row
+# and stays.  A spacer after the row belongs to it, so a stale row at the end goes with the spacer it left behind.
+_SESSION_ROW = (
+    r'(?:<p>\s*)?(?:<span[^>]*>\s*)?\s*Session:\s*'
+    r'[A-Za-z0-9][A-Za-z0-9._:-]{3,127}'
+    r'(?:\s*-\s*[^<\n]*)?'  # a row from before 2026-10-19 carried a second date after the id
+    r'\s*(?:</span>\s*)?</p>'
+)
+_SPACER = r'(?:<div><br\s*/?></div>)?'
+inner = re.sub(r'^' + _SESSION_ROW + r'\s*' + _SPACER + r'\s*', '', inner, flags=re.I)
+inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*' + _SPACER + r'\s*' + _SESSION_ROW + r'\s*' + _SPACER + r'\s*$', '', inner, flags=re.I)
 session_p = ''
 if note_session:
     session_p = '<p><span style=\"font-size: 11px;\">' + html.escape('Session: ' + note_session) + '</span></p>'
@@ -722,21 +729,28 @@ stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
 from zoneinfo import ZoneInfo
 _CENTRAL = ZoneInfo('America/Chicago')
 _ISO = re.compile(
-    r'(?<![\w/.:-])(\d{4})-(\d{2})-(\d{2})'
+    #  A date is a token of its own:  a name or a query string that merely contains one (backup-2026-10-19.tar,
+    #  ?d=2026-10-19) keeps it.  A dot after the date is the end of a sentence, so only a dot followed by a word
+    #  character keeps the date whole.
+    r'(?<![\w/.:=?&-])(\d{4})-(\d{2})-(\d{2})'
     # A +HH:MM / -HH:MM offset is only an offset on the ISO T form.  On the space form (2026-10-19 10:30) a bare
     # -11:00 after the minutes is the end of a time range, not a UTC offset, and taking it as one moves the hour
-    # and drops the range end.
+    # and drops the range end.  That range end is a second local time, so it is captured and rendered in the
+    # fleet form too:  a note must not keep a 24-hour clock it rewrote everything else away from.
     r'(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?'
-    r'| (\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z))?'
-    r'(?![\w/-])'
+    r'| (\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z)?(?:-(\d{2}):(\d{2}))?)?'
+    r'(?![\w/-]|\.[A-Za-z0-9])'
 )
 
 def _fleet_day(d):
     out = d.strftime('%a, %b ') + str(d.day)
     return out + (', ' + str(d.year) if d.year != now.year else '')
 
+def _fleet_clock(when):
+    return str(when.hour % 12 or 12) + when.strftime(':%M') + when.strftime('%p').lower()
+
 def _fleet_date(m):
-    y, mo, d, t_hh, t_mm, t_zone, hh, mm, zone = m.groups()
+    y, mo, d, t_hh, t_mm, t_zone, hh, mm, zone, r_hh, r_mm = m.groups()
     if t_hh is not None:
         hh, mm, zone = t_hh, t_mm, t_zone
     try:
@@ -746,8 +760,10 @@ def _fleet_date(m):
         if zone:
             offset = '+00:00' if zone == 'Z' else (zone if ':' in zone else zone[:3] + ':' + zone[3:])
             when = datetime.fromisoformat(when.isoformat() + offset).astimezone(_CENTRAL)
-        h12 = when.hour % 12 or 12
-        return _fleet_day(when) + ', ' + str(h12) + when.strftime(':%M') + when.strftime('%p').lower()
+        out = _fleet_day(when) + ', ' + _fleet_clock(when)
+        if r_hh is not None:
+            out += '-' + _fleet_clock(datetime(int(y), int(mo), int(d), int(r_hh), int(r_mm)))
+        return out
     except ValueError:
         return m.group(0)
 

@@ -283,10 +283,61 @@ class SessionIdTests(unittest.TestCase):
             "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        #  the space form keeps its range end instead of shifting 10:30 to 4:30pm on the -11:00
-        self.assertIn(f"Standup {OCT_19} 10:30-11:00 Central", p.stdout)
+        #  the space form keeps its range end instead of shifting 10:30 to 4:30pm on the -11:00, and both
+        #  ends read in the fleet form rather than on a 24-hour clock
+        self.assertIn(f"Standup {OCT_19}, 10:30am-11:00am Central", p.stdout)
         #  the ISO T form really is an offset, and still converts
         self.assertIn(f"and {OCT_19}, 4:30pm", p.stdout)
+
+    def test_prose_that_starts_with_session_is_not_mistaken_for_a_row(self):
+        """`Session:` opening a paragraph of prose is content:  an id-shaped word after it is still prose."""
+        body = (
+            "<p>Mon, Oct 19, 9:40pm</p><p>Body.</p>"
+            "<p>Session: the board claim was AFC-123</p>"
+        )
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=body,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("Session: the board claim was AFC-123", p.stdout)
+        self.assertEqual(p.stdout.count("Session:"), 2, p.stdout)  #  the prose one and the stamped row
+
+    def test_a_stale_row_left_at_the_end_goes_with_its_trailing_spacer(self):
+        old = (
+            "<p>Mon, Oct 19, 9:40pm</p><p>Body.</p>"
+            '<p><span style="font-size: 11px;">Session: old-id-0001</span></p><div><br></div>'
+        )
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=old,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
+        self.assertNotIn("old-id-0001", p.stdout)
+
+    def test_a_date_inside_a_file_name_or_a_query_string_keeps_its_iso_form(self):
+        body = (
+            "<p>Merged 2026-10-19.  Ship 2026-10-19.tar.gz, keep backup-2026-10-19.tar, "
+            "and https://x.test/q?d=2026-10-19&amp;n=2</p>"
+        )
+        p = self.run_script(
+            "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        #  a sentence-final date converts;  a date glued to a name or a query value does not
+        self.assertIn(f"Merged {OCT_19}.", p.stdout)
+        self.assertIn("2026-10-19.tar.gz", p.stdout)
+        self.assertIn("backup-2026-10-19.tar", p.stdout)
+        self.assertIn("?d=2026-10-19&amp;n=2", p.stdout)
 
     def test_the_body_never_reaches_the_refusal(self):
         p = self.run_script(
