@@ -71,7 +71,9 @@ def render(reason: str, fmt: str, destination: str = "") -> str:
     if fmt in ("grok", "antigravity"):
         body: dict = {"decision": "deny", "reason": reason}
     elif fmt == "cursor":
-        short = "Blocked a fleet-repo checkout in a temp directory"
+        short = ("Blocked a fleet-repo checkout in the integration tree"
+                 if "inside the ~/Code integration tree" in reason else
+                 "Blocked a fleet-repo checkout in a temp directory")
         short += f": {destination}." if destination else "."
         body = {"permission": "deny", "user_message": short, "agent_message": reason}
     else:  # claude, codex, muse

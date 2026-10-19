@@ -1,4 +1,4 @@
-"""Temp-checkout guard: the core of a PreToolUse hook that stops fleet-repo checkouts in temp dirs.
+"""Checkout placement guard: stops fleet-repo task checkouts in temp and integration trees.
 
 The rule it enforces is narrow on purpose.  It is not "nothing in /tmp": agents legitimately use
 temp for scratch files, build output, throwaway test repos and the Claude harness scratchpad.  It
@@ -14,7 +14,11 @@ TMPDIR directory.  Third-party clones into temp are allowed, and a destination t
 resolved from the command text is allowed: the guard denies only when the destination is
 provably in temp.
 
-Denied shapes (each only for a fleet source and a temp destination):
+Fleet worktree add/move destinations at or below ~/Code are also denied.  Clones into ~/Code
+are denied except for an exact registered canonical integration destination, which supports
+onboarding.  These checks use the host account home, so the same rule applies on Linux.
+
+Denied temp shapes (each only for a fleet source and a temp destination):
   git clone [opts] SRC [DEST]              DEST omitted means the repo name (even an unknown one,
                                            as in a loop) under the cwd or the last `cd`; --bare
                                            and --mirror included
@@ -70,7 +74,9 @@ from . import layout as L
 
 __all__ = [
     "ALLOW", "DENY", "Decision", "GuardContext", "make_context", "evaluate", "redact_url",
-    "RULE_CLONE", "RULE_GH_CLONE", "RULE_WORKTREE_ADD", "RULE_WORKTREE_MOVE", "RULE_ARCHIVE",
+    "RULE_CLONE", "RULE_GH_CLONE", "RULE_WORKTREE_ADD", "RULE_WORKTREE_MOVE",
+    "RULE_CLONE_CODE", "RULE_GH_CLONE_CODE", "RULE_WORKTREE_ADD_CODE", "RULE_WORKTREE_MOVE_CODE",
+    "RULE_ARCHIVE",
     "RULE_TARBALL", "RULE_INIT_FETCH", "RULE_EXPORT", "DENY_RULES", "FLEET_OWNERS",
     "ENV_GUARD", "MAX_COMMAND_CHARS", "seat_owns_folder", "lane_name_reads_back",
 ]
@@ -82,11 +88,16 @@ RULE_CLONE = "clone-into-temp"                    # git clone (bare and mirror i
 RULE_GH_CLONE = "gh-clone-into-temp"              # gh repo clone
 RULE_WORKTREE_ADD = "worktree-add-into-temp"      # git worktree add
 RULE_WORKTREE_MOVE = "worktree-move-into-temp"    # git worktree move
+RULE_CLONE_CODE = "clone-into-code"                # git clone into the integration tree
+RULE_GH_CLONE_CODE = "gh-clone-into-code"          # gh repo clone into the integration tree
+RULE_WORKTREE_ADD_CODE = "worktree-add-into-code"  # git worktree add into the integration tree
+RULE_WORKTREE_MOVE_CODE = "worktree-move-into-code"  # git worktree move into the integration tree
 RULE_ARCHIVE = "archive-into-temp"                # git archive written or extracted into temp
 RULE_TARBALL = "tarball-into-temp"                # GitHub source tarball downloaded or extracted into temp
 RULE_INIT_FETCH = "init-fetch-into-temp"          # git init + remote add + fetch/pull in temp
 RULE_EXPORT = "checkout-index-into-temp"          # git checkout-index --prefix=TEMP/
-DENY_RULES = (RULE_CLONE, RULE_GH_CLONE, RULE_WORKTREE_ADD, RULE_WORKTREE_MOVE, RULE_ARCHIVE,
+DENY_RULES = (RULE_CLONE, RULE_GH_CLONE, RULE_WORKTREE_ADD, RULE_WORKTREE_MOVE,
+              RULE_CLONE_CODE, RULE_GH_CLONE_CODE, RULE_WORKTREE_ADD_CODE, RULE_WORKTREE_MOVE_CODE, RULE_ARCHIVE,
               RULE_TARBALL, RULE_INIT_FETCH, RULE_EXPORT)
 
 # Allow outcomes, so a caller (and the tests) can tell why a command passed.
@@ -1333,6 +1344,21 @@ class _Evaluator:
             return "temp"
         return "other" if k < 0 else "unknown"
 
+    def _in_code(self, path: str) -> bool:
+        """Whether a resolved destination is at or below ~/Code, including a known prefix
+        followed by an unresolved shell variable."""
+        if not path or not path.startswith("/"):
+            return False
+        k = path.find(_UNK)
+        if k < 0:
+            known = path
+        else:
+            prefix = path[:k]
+            known = prefix if prefix.endswith("/") else os.path.dirname(prefix)
+        known = _norm(known.rstrip("/")) if known else "/"
+        folded = self.ctx.fold(known)
+        return folded == self.ctx.code_root_f or folded.startswith(self.ctx.code_root_f + "/")
+
     def _app_from_name(self, name: str) -> L.App | None:
         if not name or _UNK in name:
             return None
@@ -1415,8 +1441,29 @@ class _Evaluator:
         return None
 
     def _check(self, rule: str, target: str, src: _Src, what: str) -> None:
-        if self._where(target) == "temp":
+        where = self._where(target)
+        if where == "temp":
             self.hits.append(_Hit(rule, target, src, what))
+            return
+        if not self._in_code(target):
+            return
+        code_rule = {
+            RULE_CLONE: RULE_CLONE_CODE,
+            RULE_GH_CLONE: RULE_GH_CLONE_CODE,
+            RULE_WORKTREE_ADD: RULE_WORKTREE_ADD_CODE,
+            RULE_WORKTREE_MOVE: RULE_WORKTREE_MOVE_CODE,
+        }.get(rule)
+        if code_rule is None:
+            return
+        # A clone of a registered app into its exact canonical integration directory is the
+        # onboarding path.  Worktrees, nested destinations, and cross-app clones stay denied.
+        app = src.app
+        canonical = (code_rule in (RULE_CLONE_CODE, RULE_GH_CLONE_CODE) and app is not None
+                     and app.registered and app.integration_dir_name
+                     and self.ctx.fold(_norm(target)) == self.ctx.fold(
+                         _join(str(self.ctx.roots.code_root), app.integration_dir_name)))
+        if not canonical:
+            self.hits.append(_Hit(code_rule, target, src, what))
 
     def _stdout_target(self, redirs: list, st: _State) -> str | None:
         out = None
@@ -2185,7 +2232,10 @@ class _Evaluator:
         slug = self._slug(hit.target, app, prefix, shown_seat)
         repo_dir = self._repo_dir(app, src.owner_repo)
         review = self.display(f"{self.ctx.roots.lanes_root}/{repo_dir or '<Repo>'}/review-pr-<n>")
-        blocked = (f"Blocked: fleet-repo checkouts are not allowed in temp directories, and this command "
+        is_code_rule = hit.rule in (RULE_CLONE_CODE, RULE_GH_CLONE_CODE,
+                                    RULE_WORKTREE_ADD_CODE, RULE_WORKTREE_MOVE_CODE)
+        location = "inside the ~/Code integration tree" if is_code_rule else "in temp directories"
+        blocked = (f"Blocked: fleet-repo checkouts are not allowed {location}, and this command "
                    f"would put {hit.what} of {src.label} at {self.display(hit.target)}.")
 
         def branch_for(token: str | None) -> str:

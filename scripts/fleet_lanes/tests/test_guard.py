@@ -37,6 +37,13 @@ def _ctx(env: dict | None = None, **extra: str) -> G.GuardContext:
     return G.make_context(e, home=F.HOME, registry=REGISTRY, case_insensitive=True)
 
 
+def _ctx_at_home(home: str) -> G.GuardContext:
+    env = dict(F.BASE_ENV)
+    env["HOME"] = home
+    env["TMPDIR"] = f"{home}/.tmp"
+    return G.make_context(env, home=home, registry=REGISTRY, case_insensitive=home != "/root")
+
+
 def _payload(command, cwd: str | None = F.HOME, scratchpad_dir: str | None = None, tool: str = "Bash") -> dict:
     p: dict = {"session_id": "test", "hook_event_name": "PreToolUse", "tool_name": tool,
                "tool_input": {"command": command, "description": "test"}}
@@ -106,6 +113,77 @@ class FixtureTableTests(unittest.TestCase):
         self.assertEqual(G.evaluate(_payload(cmd), _ctx()).action, G.DENY)
         self.assertEqual(G.evaluate(_payload(cmd, scratchpad_dir=cmd.split()[-1].rsplit("/", 1)[0]),
                                     _ctx()).action, G.ALLOW)
+
+
+class CodeDestinationTests(unittest.TestCase):
+    def _evaluate(self, home: str, command: str, cwd: str | None = None) -> G.Decision:
+        return G.evaluate(_payload(command, cwd or home), _ctx_at_home(home))
+
+    def test_fleet_worktree_destinations_under_code_are_denied_on_mac_and_linux(self) -> None:
+        for home in ("/Users/jay", "/root"):
+            code = f"{home}/Code"
+            with self.subTest(home=home, operation="add"):
+                result = self._evaluate(home,
+                    f"git -C {code}/BotFleet worktree add ../bad origin/main", home)
+                self.assertEqual((result.action, result.rule_id), (G.DENY, G.RULE_WORKTREE_ADD_CODE))
+                self.assertIn("~/apps/lanes/", result.reason)
+            with self.subTest(home=home, operation="move"):
+                result = self._evaluate(home,
+                    f"git -C {code}/BotFleet worktree move {home}/apps/lanes/BotFleet/codex-x {code}/bad", home)
+                self.assertEqual((result.action, result.rule_id), (G.DENY, G.RULE_WORKTREE_MOVE_CODE))
+
+    def test_shell_cd_variable_and_relative_destination_are_resolved(self) -> None:
+        result = self._evaluate("/root", 'cd "$HOME/Code"; d=bad; git -C "$HOME/Code/BotFleet" worktree add "$d" origin/main')
+        self.assertEqual((result.action, result.rule_id), (G.DENY, G.RULE_WORKTREE_ADD_CODE))
+        self.assertEqual(result.destination, "~/Code/BotFleet/bad")
+
+    def test_canonical_registered_integration_clone_is_allowed(self) -> None:
+        for home in ("/Users/jay", "/root"):
+            with self.subTest(home=home, tool="git"):
+                result = self._evaluate(home,
+                    f"git clone https://github.com/Simple-With-Us/BotFleet {home}/Code/BotFleet", home)
+                self.assertEqual(result.action, G.ALLOW)
+            with self.subTest(home=home, tool="gh"):
+                result = self._evaluate(home,
+                    f"gh repo clone Simple-With-Us/BotFleet {home}/Code/BotFleet", home)
+                self.assertEqual(result.action, G.ALLOW)
+
+    def test_other_code_destinations_are_denied_but_code_boundary_and_lanes_are_allowed(self) -> None:
+        home = "/root"
+        code = f"{home}/Code"
+        result = self._evaluate(home,
+            f"git clone https://github.com/Simple-With-Us/BotFleet {code}/BotFleet-copy", home)
+        self.assertEqual((result.action, result.rule_id), (G.DENY, G.RULE_CLONE_CODE))
+        self.assertIn("~/apps/lanes/", result.reason)
+
+        self.assertEqual(self._evaluate(home,
+            f"git clone https://github.com/Simple-With-Us/BotFleet {code}-other/BotFleet", home).action, G.ALLOW)
+        self.assertEqual(self._evaluate(home,
+            f"git -C {code}/BotFleet worktree add {home}/apps/lanes/BotFleet/codex-x origin/main", home).action,
+            G.ALLOW)
+
+    def test_nonfleet_clone_source_remains_fail_open(self) -> None:
+        result = self._evaluate("/root", "git clone https://github.com/example/private /root/Code/private", "/root")
+        self.assertEqual(result.action, G.ALLOW)
+
+    def test_unknown_path_component_does_not_turn_code_prefix_into_a_boundary(self) -> None:
+        prefix = 'git -C /root/Code/BotFleet worktree add '
+        self.assertEqual(self._evaluate("/root", prefix + '"/root/Code$UNKNOWN/repo"').action, G.ALLOW)
+        self.assertEqual(self._evaluate("/root", prefix + '"/root/Code/$UNKNOWN/repo"').action, G.DENY)
+
+    def test_nested_and_gh_task_clones_are_denied(self) -> None:
+        for command in (
+            'gh repo clone Simple-With-Us/BotFleet /root/Code/BotFleet-copy',
+            'git clone https://github.com/Simple-With-Us/BotFleet /root/Code/BotFleet/task',
+            'git -C /root/Code/BotFleet worktree add /root/Code origin/main',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self._evaluate("/root", command).action, G.DENY)
+
+    def test_cursor_message_names_the_integration_tree(self) -> None:
+        result = self._evaluate("/root", 'git -C /root/Code/BotFleet worktree add /root/Code/bad origin/main')
+        body = json.loads(H.render(result.reason, "cursor", result.destination))
+        self.assertIn("integration tree", body["user_message"])
 
 
 class ReasonTests(unittest.TestCase):
