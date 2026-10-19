@@ -253,10 +253,9 @@ jobs:
         bash -n scripts/ios-fleet/install-testflight-freshness.sh
     - name: Mac ledger mirror tests
       run: bash scripts/test-mac-ledger-mirror.sh
-    # The LaunchAgent script that copies a Cloudflare token from Infisical prod into the handoff
-    # file.  A stub CLI and a temp dir stand in for the real ones.
-    - name: Infisical secrets sync tests
-      run: bash scripts/test-infisical-secrets-sync.sh
+    # The cutover helper for retiring ~/.secrets (AFC-359):  a temp HOME, stub launchctl and lsof, a throwaway repo.
+    - name: Retire secrets dir tests
+      run: bash scripts/test-retire-secrets-dir.sh
     # The BotFleet launch wrapper and its LaunchAgent template:  the "already healthy" exit, the
     # missing-checkout exits, and the fleet-seat switch (BOTFLEET_FLEET_SEAT_PROMPTS=1) that the
     # open-loops routines depend on.  A stub curl and a stub node stand in for the real ones.

@@ -199,7 +199,7 @@ Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-throug
 
 ## Prod-only lint
 
-`python3 scripts/check-infisical-env.py` (CI step "Infisical environment lint") fails on anything that would select a non-prod environment:  `INFISICAL_ENV` / `INFISICAL_ENVIRONMENT` set to `dev` or `staging` in an env file (`.cursor/infisical.env`, `.env.example`), a `:-dev` / `:=dev` fallback or `--env=dev` in a `cursor-cloud-start.sh`, and a `.infisical.json` whose `defaultEnvironment` is not `prod`.  `--fleet` lints every repo under `~/Code` as it is on `origin/main` (add `--fetch` to refresh first).  A line that truly needs the word carries `infisical-env: allow` with a reason.  This repo's CLI callers (`scripts/fleet_knobs`, `scripts/infisical-secrets-sync.sh`) always pass `--env=prod` and `--projectId` themselves, so it has no `.infisical.json`;  a repo that relies on one gets it with `"defaultEnvironment": "prod"`, because the CLI's own default is `dev`.
+`python3 scripts/check-infisical-env.py` (CI step "Infisical environment lint") fails on anything that would select a non-prod environment:  `INFISICAL_ENV` / `INFISICAL_ENVIRONMENT` set to `dev` or `staging` in an env file (`.cursor/infisical.env`, `.env.example`), a `:-dev` / `:=dev` fallback or `--env=dev` in a `cursor-cloud-start.sh`, and a `.infisical.json` whose `defaultEnvironment` is not `prod`.  `--fleet` lints every repo under `~/Code` as it is on `origin/main` (add `--fetch` to refresh first).  A line that truly needs the word carries `infisical-env: allow` with a reason.  This repo's CLI callers (`scripts/fleet_knobs`, `scripts/fleet_secrets`) always pass `--env=prod` and `--projectId` themselves, so it has no `.infisical.json`;  a repo that relies on one gets it with `"defaultEnvironment": "prod"`, because the CLI's own default is `dev`.
 
 ## Local dev
 
@@ -282,22 +282,42 @@ Measured on this Mac, Oct 18 (OPS-818):  the `run` sandbox denies `~/.infisical`
 
 Not everything can be brokered.  A broker attaches a header to an HTTPS request, so App Store Connect (a JWT signed by the p8), the Google service-account JSON, OAuth refresh tokens, IMAP/SMTP app passwords, certificates and private keys, and every loopback service are out of its reach and stay on `fleet-secrets run`.  `docs/plans/2026-10-18-fleet-ops-brokerable-host-map.md` classifies all 667 keys in Fleet-OPS `prod` by host, scheme and whether a broker can carry them, and names the two identities in `/agent-proxy` the pilot needs.  Adoption plan and phase gates:  `docs/plans/2026-10-18-infisical-agent-proxy-adoption.md`.
 
-## Mac `global-api-keys` sync (`scripts/infisical-secrets-sync.sh`)
+## Mac `global-api-keys` sync (retired, AFC-359)
 
-The LaunchAgent `com.jay.infisical-secrets-sync` copies selected secrets from Infisical
-into `~/.secrets/global-api-keys`.  Nothing may read that file any more (OPS-818);  the readers in this repo now use `fleet-secrets` or the environment;  the Usage-Monitor jobs and the pm2 daemons are still moving (target, not yet shipped), and this sync retires at an owner-gated cutover.
-Infisical remains the source of truth;  the file is derived and write-once rules apply where
-noted in the sync map.
+The LaunchAgent `com.jay.infisical-secrets-sync` used to copy a few Infisical secrets into `~/.secrets/global-api-keys`.  Nothing reads that file (OPS-818), and the sync would refill the folder after it is archived, so `bash scripts/retire-secrets-dir.sh bootout` stops it and moves its plist, script and the one-time seeder `~/apps/infisical-sync` to `~/apps/_retired/` (the script, its plist template and its test are removed from this repo).  The keys it carried (the restic and B2 `fleet-work-backup` keys, the Cloudflare token) are read with `fleet-secrets` from Fleet-OPS root.
 
-| Key | Kind | Status |
-|---|---|---|
-| `RESTIC_FLEET_WORK_PASSWORD` | secret | **to be filled by admin** (write-once in the sync map after the first good copy;  `fleet_work_backup.py new-password` sets it in Infisical without printing) |
-| `B2_FLEET_WORK_BUCKET_NAME` | env config | **to be filled by admin** (dedicated bucket for fleet-work-backup;  not `B2_FLEET_BUCKET_NAME`) |
-| `B2_FLEET_WORK_KEY_ID` | secret | **to be filled by admin** (scoped B2 application key, prefix `fleet-work-backup/`) |
-| `B2_FLEET_WORK_APPLICATION_KEY` | secret | **to be filled by admin** |
+## Retiring `~/.secrets` (AFC-359)
 
-Consumer:  `scripts/fleet-work-backup/` (`fleet_work_backup.py`, `install.py`).  Runbook:
-`scripts/fleet-work-backup/README.md`.  Linear OPS-907.
+Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.secrets`;  every value lives in Fleet-OPS (prod) and is read with `fleet-secrets` (environment first, then `fleet-secrets get NAME --path /folder`, then a loud failure that names the folder and key, never a fallback to a file).  Jay decides when the folder is deleted;  agents never delete it.
+
+| Old file or folder | Infisical folder (Fleet-OPS, prod) |
+|---|---|
+| `Zulip/<Bot>-zuliprc` | `/zulip`, keys `<BOT>_ZULIP_EMAIL`, `_KEY`, `_SITE` |
+| `ZulipAdmin/realm-admin.zuliprc` | `/zulipadmin`, `REALM_ADMIN_ZULIP_*` (the realm-admin bot, role administrator) |
+| `Linear/<SEAT>.env` | `/linear`, `<SEAT>_LINEAR_CLIENT_ID` and `_CLIENT_SECRET` |
+| `appstore-connect.env`, `AuthKey_*.p8` | `/asc` (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`);  per-key `.p8` folders `/authkey-<id>-p8` |
+| `ios-distribution.p12`, `ios-dist-p12-pass`, `apple-certs` | `/mac-certs` (`IOS_DISTRIBUTION_P12_BASE64`, `IOS_DIST_P12_PASSWORD`), root `IOS_DIST_P12_PASS` |
+| `botfleet-developer-id-export-*/` | `/botfleet-developer-id-export` (`DEVELOPER_ID_P12_BASE64`, `P12_PASSWORD`) |
+| `google-sheets-sa.json` | `/google-sheets-sa`, `GOOGLE_SHEETS_SA` |
+| `seat-mcp.env`, `mac-collab.env`, `grok-acp.env`, `senate-relay.env`, `icloud-mail.env`, `provider-knob-sync.env` | `/seat-mcp`, `/mac-collab`, `/grok-acp`, `/senate-relay`, `/icloud-mail`, `/provider-knob-sync` |
+| `agent-sync.env`, `fleetlink-auth.env`, `fleetlink-handbook.env`, `fleet-share-hmac.env` | `/agent-sync`, `/fleetlink-auth`, `/fleetlink-handbook`, `/fleet-share-hmac` |
+| `usage-monitor*.env`, `backblaze-*.env`, `ct-r2-weekly-archive.env` | `/usage-monitor`, `/usage-monitor-bills`, `/backblaze-monitor`, `/backblaze-app-keys`, `/ct-r2-weekly-archive` |
+| `composio-session-id` | `/composio-session-id`, `COMPOSIO_SESSION_ID` (line 1 the session id, line 2 the MCP url) |
+| `global-api-keys` | root `/` and `/global-api-keys` |
+| (BotFleet webhook receivers, AFC-359) | `/botfleet-github-webhooks` (new);  `/botfleet-firefighter-webhooks` and `/botfleet-housekeeper-webhook` rotated after a path leaked into the seat-mcp log |
+
+The names for every other file match its name (lower case, dashes), with one folder per file.
+
+**State is not a secret.**  A file that a program rewrites while it runs (Echo's OAuth bundle, watermarks, health files, token caches) lives outside `~/.secrets`:  `~/.agent-sync/echo`, `~/.agent-sync/echo-linear`, `~/.cache/fleet-linear/` (directories 0700, files 0600).  `ECHO_OAUTH_JSON` in `/agent-sync` is only a bootstrap seed and goes stale on the first token refresh.
+
+**Cutover** (`scripts/retire-secrets-dir.sh`, tested by `scripts/test-retire-secrets-dir.sh`, allowlist `scripts/retire-secrets-dir.allow`).  The script never deletes anything.
+
+1. `bash scripts/retire-secrets-dir.sh check`  lists every reader left in the repos (on `origin/main`) and on the Mac, every symlink that points into the folder, and every process that holds a file open there.  Output is paths and line numbers only.
+2. `bash scripts/retire-secrets-dir.sh bootout`  stops and disables `com.jay.infisical-secrets-sync`, the one writer.
+3. `bash scripts/retire-secrets-dir.sh archive --rename`  copies the folder into an AES-256 encrypted disk image in `~/Documents` (you type the passphrase twice), verifies the image by mounting it read-only and comparing it with the folder, then renames the folder to `~/.secrets.retired-<stamp>`.  `rollback` puts it back and re-enables the writer.
+4. After a quiet day, delete the renamed folder yourself.  The script prints the command and never runs it.
+
+**Backups are not verified (OPS-907).**  `fleet-work-backup` now reads its credentials through `fleet-secrets` (the restic password and the B2 keys) and its restic repository decrypts (`restic cat config` succeeds, Oct 19).  But the repository has zero snapshots and the `com.jay.fleet-work-backup` LaunchAgent is not installed on this Mac, so no backup has run and OPS-907 remains unverified.  Installing the scheduler is Jay's decision.  Do not describe backups as working.
 
 ## Hosted CLAUDE Zulip identity (AFC-296)
 
