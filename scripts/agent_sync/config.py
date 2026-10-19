@@ -770,6 +770,11 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         else:
             errors.append("platform.claude-code.seat must be a seat name such as CLAUDE")
     cfg.rewake_verified_cli, cfg.rewake_verified_desktop = L.rewake_flags(raw)
+    for key in L.REWAKE_SURFACE_KEYS:
+        if key in platform and not isinstance(platform[key], bool):
+            # Fail soft:  the flag is False for that surface (never the legacy value) and the seat keeps
+            # capturing;  the problem shows in status and raises the config banner.
+            errors.append("platform.claude-code.%s must be true or false;  treated as false" % key)
     seats = raw.get("seat") or {}
     if not isinstance(seats, dict):
         errors.append("[seat.X] sections must be tables")

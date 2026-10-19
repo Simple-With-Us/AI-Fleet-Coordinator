@@ -362,14 +362,21 @@ def rewake_flags(config: Mapping[str, Any]) -> tuple[bool, bool]:
     """(cli, desktop) from `[platform.claude-code]`.  `rewake_verified_cli` and
     `rewake_verified_desktop` are the per-surface flags, because exit 2 waking an idle session was
     proven in a terminal and never in the Desktop Code tab.  The old single `rewake_verified` key still
-    works and sets both;  a per-surface key, when given, overrides it for that surface."""
+    works and sets both;  a per-surface key, when given, overrides it for that surface.  A per-surface
+    key that is present but not a boolean (a string "false", say) is False for its surface and never
+    falls back to the legacy key:  config.py reports it as a problem."""
     platform = (config.get("platform") or {}).get("claude-code") or {}
     legacy = platform.get("rewake_verified") is True
     flags = []
-    for key in ("rewake_verified_cli", "rewake_verified_desktop"):
-        given = platform.get(key)
-        flags.append(given if isinstance(given, bool) else legacy)
+    for key in REWAKE_SURFACE_KEYS:
+        if key not in platform:
+            flags.append(legacy)
+        else:
+            flags.append(platform[key] is True)
     return flags[0], flags[1]
+
+
+REWAKE_SURFACE_KEYS = ("rewake_verified_cli", "rewake_verified_desktop")
 
 
 def rewake_verified_for(cli: bool, desktop: bool, surface: str | None) -> bool:
