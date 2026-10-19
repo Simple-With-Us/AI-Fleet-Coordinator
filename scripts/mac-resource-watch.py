@@ -3,12 +3,11 @@
 
 Launchd: com.jay.mac-resource-watch (every 5 min).
 On-demand: python3 ~/apps/mac-resource-watch.py --once
-Never prints webhook secrets.  Load BOTFLEET_HOUSEKEEPER_WEBHOOK_* from the environment, else Infisical
-Fleet-OPS /botfleet-housekeeper-webhook (`fleet-secrets get`), and, if present,
-GROK_BOT_HOUSEKEEPER_WEBHOOK_* from the environment or Infisical Fleet-OPS (root), without echoing
-values (AFC-359).  BotFleet is the primary wake.  Grok Bot is optional.
+Never prints webhook secrets.  Load BOTFLEET_HOUSEKEEPER_WEBHOOK_* from
+~/.secrets/botfleet-housekeeper-webhook.env and, if present,
+GROK_BOT_HOUSEKEEPER_WEBHOOK_* from ~/.secrets/grok-bot-housekeeper-webhook.env
+without echoing values.  BotFleet is the primary wake.  Grok Bot is optional.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -27,11 +26,8 @@ HOME = Path.home()
 STATE_DIR = HOME / ".claude-disk-janitor"
 STATE_FILE = STATE_DIR / "resource-watch-state.json"
 LOG_FILE = HOME / "Library" / "Logs" / "mac-resource-watch.log"
-FLEET_SECRETS = Path(
-    os.environ.get("FLEET_SECRETS_BIN") or HOME / ".local" / "bin" / "fleet-secrets"
-)
-BF_FOLDER = "/botfleet-housekeeper-webhook"
-GB_FOLDER = "/"
+SECRET_FILE = HOME / ".secrets" / "botfleet-housekeeper-webhook.env"
+GB_SECRET_FILE = HOME / ".secrets" / "grok-bot-housekeeper-webhook.env"
 CLEANUP = HOME / "apps" / "mac-auto-cleanup.sh"
 JANITOR = HOME / ".claude-disk-janitor" / "janitor.sh"
 
@@ -125,62 +121,28 @@ def evaluate(s: dict, prev_free: float | None) -> list[dict]:
     hits: list[dict] = []
     free = s["disk_free_gb"]
     if free <= DISK_FREE_CRIT_GB:
-        hits.append(
-            {
-                "metric": "disk_free_gb",
-                "severity": "critical",
-                "threshold": DISK_FREE_CRIT_GB,
-                "cmp": "below",
-                "value": free,
-            }
-        )
+        hits.append({"metric": "disk_free_gb", "severity": "critical", "threshold": DISK_FREE_CRIT_GB, "cmp": "below", "value": free})
     elif free <= DISK_FREE_WARN_GB:
-        hits.append(
-            {
-                "metric": "disk_free_gb",
-                "severity": "warn",
-                "threshold": DISK_FREE_WARN_GB,
-                "cmp": "below",
-                "value": free,
-            }
-        )
+        hits.append({"metric": "disk_free_gb", "severity": "warn", "threshold": DISK_FREE_WARN_GB, "cmp": "below", "value": free})
     if prev_free is not None:
         drop = prev_free - free
         if drop >= DISK_DROP_ALERT_GB:
-            hits.append(
-                {
-                    "metric": "disk_drop_gb",
-                    "severity": "warn",
-                    "threshold": DISK_DROP_ALERT_GB,
-                    "cmp": "above",
-                    "value": round(drop, 2),
-                }
-            )
+            hits.append({"metric": "disk_drop_gb", "severity": "warn", "threshold": DISK_DROP_ALERT_GB, "cmp": "above", "value": round(drop, 2)})
     # NOT `or swap_total_gb >= SWAP_TOTAL_GB`.  macOS grows the swap store on demand,
     # so once it passed 8G that disjunct was true forever and every tick reported a hit.
     # Absolute used-swap is the real signal; the store's size is not.
     if s["swap_used_pct"] >= SWAP_USED_PCT and s["swap_used_gb"] >= SWAP_USED_GB:
-        hits.append(
-            {
-                "metric": "swap",
-                "severity": "critical" if s["swap_used_pct"] >= 90 else "warn",
-                "threshold": SWAP_USED_PCT,
-                "cmp": "above",
-                "value": s["swap_used_pct"],
-                "swap_used_gb": s["swap_used_gb"],
-                "swap_total_gb": s["swap_total_gb"],
-            }
-        )
+        hits.append({
+            "metric": "swap",
+            "severity": "critical" if s["swap_used_pct"] >= 90 else "warn",
+            "threshold": SWAP_USED_PCT,
+            "cmp": "above",
+            "value": s["swap_used_pct"],
+            "swap_used_gb": s["swap_used_gb"],
+            "swap_total_gb": s["swap_total_gb"],
+        })
     if CPU_ENABLED and s["load1"] >= LOAD1_THRESHOLD:
-        hits.append(
-            {
-                "metric": "load_1m",
-                "severity": "warn",
-                "threshold": LOAD1_THRESHOLD,
-                "cmp": "above",
-                "value": s["load1"],
-            }
-        )
+        hits.append({"metric": "load_1m", "severity": "warn", "threshold": LOAD1_THRESHOLD, "cmp": "above", "value": s["load1"]})
     return hits
 
 
@@ -198,43 +160,28 @@ def save_state(state: dict) -> None:
     tmp.replace(STATE_FILE)
 
 
-def _fleet_secret(name: str, folder: str) -> str:
-    """One Fleet-OPS secret through `fleet-secrets get`, or "" when it is absent or the call fails."""
-    if not FLEET_SECRETS.is_file():
-        return ""
-    try:
-        proc = subprocess.run(
-            [str(FLEET_SECRETS), "get", name, "--path", folder],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
-
-
-def _read_webhook(folder: str, url_key: str, secret_key: str) -> tuple[str, str]:
-    """Environment first, then Infisical Fleet-OPS."""
-    url = os.environ.get(url_key, "").strip() or _fleet_secret(url_key, folder)
-    secret = os.environ.get(secret_key, "").strip() or (
-        _fleet_secret(secret_key, folder) if url else ""
-    )
+def _read_env_file(path: Path, url_key: str, secret_key: str) -> tuple[str, str]:
+    url = os.environ.get(url_key, "").strip()
+    secret = os.environ.get(secret_key, "").strip()
+    if path.is_file() and not (url and secret):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith(url_key + "=") and not url:
+                url = line.split("=", 1)[1].strip().strip('"')
+            elif line.startswith(secret_key + "=") and not secret:
+                secret = line.split("=", 1)[1].strip().strip('"')
     return url, secret
 
 
 def load_webhooks() -> list[tuple[str, str, str]]:
     """Return list of (name, url, secret).  Never print url/secret."""
     hooks: list[tuple[str, str, str]] = []
-    bf_url, bf_secret = _read_webhook(
-        BF_FOLDER, "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"
+    bf_url, bf_secret = _read_env_file(
+        SECRET_FILE, "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if bf_url and bf_secret:
         hooks.append(("BotFleet", bf_url, bf_secret))
-    gb_url, gb_secret = _read_webhook(
-        GB_FOLDER, "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL", "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET"
+    gb_url, gb_secret = _read_env_file(
+        GB_SECRET_FILE, "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL", "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if gb_url and gb_secret:
         hooks.append(("GrokBot", gb_url, gb_secret))
@@ -243,9 +190,7 @@ def load_webhooks() -> list[tuple[str, str, str]]:
 
 def run_cleanup(pressure: bool) -> int:
     env = os.environ.copy()
-    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get(
-        "PATH", ""
-    )
+    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
     # We already hold the housekeeper lock (acquire_lock above); mark ourselves the owner
     # so the child scripts do not deadlock against it and skip themselves.
     env["HOUSEKEEPER_LOCK_OWNER"] = "1"
@@ -355,9 +300,7 @@ def fire_webhook(hits: list[dict], sample_data: dict, cleaned: bool) -> bool:
             },
         )
         try:
-            with urllib.request.urlopen(
-                req, timeout=8, context=ssl.create_default_context()
-            ) as resp:
+            with urllib.request.urlopen(req, timeout=8, context=ssl.create_default_context()) as resp:
                 raw = resp.read(4096).decode("utf-8", "replace")
                 status = resp.status
             started, detail = _webhook_started(raw, status)
@@ -404,9 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--once", action="store_true")
     p.add_argument("--clean", action="store_true", help="run cleanup even without a hit")
-    p.add_argument(
-        "--force", action="store_true", help="bypass the cleanup cooldown (manual use only)"
-    )
+    p.add_argument("--force", action="store_true", help="bypass the cleanup cooldown (manual use only)")
     p.add_argument("--no-webhook", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
@@ -446,9 +387,7 @@ def _main_body(args) -> int:
     # BF-Housekeeper prompt surfaces invoke `--once --clean`, so letting it bypass the
     # rate limit reopened the every-5-minutes loop through the bot.  Only --force does.
     if should_clean and not args.force and (now - last_clean) < clean_cd:
-        log(
-            f"cleanup cooldown {clean_cd - (now - last_clean)}s remaining (last_free_delta={state.get('last_clean_delta_gb')})"
-        )
+        log(f"cleanup cooldown {clean_cd - (now - last_clean)}s remaining (last_free_delta={state.get('last_clean_delta_gb')})")
         should_clean = False
     if bool(hits) and not disk_hit:
         log("pressure is swap/load only -- not a disk problem; skipping cache cleanup")
@@ -471,9 +410,7 @@ def _main_body(args) -> int:
         # Counterproductive run: back off hard so we stop digging.
         if delta <= 0:
             state["last_cleanup_at"] = now + max(0, 3 * CLEAN_COOLDOWN_SEC - clean_cd)
-            log(
-                f"cleanup FREED NOTHING ({delta:+}G, swap {swap_delta:+}G) -- extending cooldown 3x"
-            )
+            log(f"cleanup FREED NOTHING ({delta:+}G, swap {swap_delta:+}G) -- extending cooldown 3x")
         s = s_after
 
     now = int(time.time())
