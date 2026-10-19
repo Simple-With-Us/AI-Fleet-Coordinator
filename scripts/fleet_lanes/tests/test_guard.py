@@ -7,6 +7,7 @@ registry in fixtures_guard, with case-insensitive comparison passed explicitly, 
 real home nor the process environment leaks in.  No test touches the network, and the only files
 written are a registry copy for the hook CLI tests, inside a TemporaryDirectory.
 """
+
 from __future__ import annotations
 
 import io
@@ -44,9 +45,15 @@ def _ctx_at_home(home: str) -> G.GuardContext:
     return G.make_context(env, home=home, registry=REGISTRY, case_insensitive=home != "/root")
 
 
-def _payload(command, cwd: str | None = F.HOME, scratchpad_dir: str | None = None, tool: str = "Bash") -> dict:
-    p: dict = {"session_id": "test", "hook_event_name": "PreToolUse", "tool_name": tool,
-               "tool_input": {"command": command, "description": "test"}}
+def _payload(
+    command, cwd: str | None = F.HOME, scratchpad_dir: str | None = None, tool: str = "Bash"
+) -> dict:
+    p: dict = {
+        "session_id": "test",
+        "hook_event_name": "PreToolUse",
+        "tool_name": tool,
+        "tool_input": {"command": command, "description": "test"},
+    }
     if cwd is not None:
         p["cwd"] = cwd
     if scratchpad_dir:
@@ -78,9 +85,27 @@ class FixtureTableTests(unittest.TestCase):
 
     def test_rule_constants_match(self) -> None:
         self.assertEqual(
-            (F.CLONE, F.GH_CLONE, F.WT_ADD, F.WT_MOVE, F.ARCHIVE, F.TARBALL, F.INIT_FETCH, F.EXPORT),
-            (G.RULE_CLONE, G.RULE_GH_CLONE, G.RULE_WORKTREE_ADD, G.RULE_WORKTREE_MOVE, G.RULE_ARCHIVE,
-             G.RULE_TARBALL, G.RULE_INIT_FETCH, G.RULE_EXPORT))
+            (
+                F.CLONE,
+                F.GH_CLONE,
+                F.WT_ADD,
+                F.WT_MOVE,
+                F.ARCHIVE,
+                F.TARBALL,
+                F.INIT_FETCH,
+                F.EXPORT,
+            ),
+            (
+                G.RULE_CLONE,
+                G.RULE_GH_CLONE,
+                G.RULE_WORKTREE_ADD,
+                G.RULE_WORKTREE_MOVE,
+                G.RULE_ARCHIVE,
+                G.RULE_TARBALL,
+                G.RULE_INIT_FETCH,
+                G.RULE_EXPORT,
+            ),
+        )
 
     def test_every_fixture(self) -> None:
         for fx in F.FIXTURES:
@@ -111,8 +136,12 @@ class FixtureTableTests(unittest.TestCase):
         fx = _fixture("spec-scratch-clone")
         cmd = fx.command.replace("/private/tmp/claude-501", "/private/tmp/not-claude")
         self.assertEqual(G.evaluate(_payload(cmd), _ctx()).action, G.DENY)
-        self.assertEqual(G.evaluate(_payload(cmd, scratchpad_dir=cmd.split()[-1].rsplit("/", 1)[0]),
-                                    _ctx()).action, G.ALLOW)
+        self.assertEqual(
+            G.evaluate(
+                _payload(cmd, scratchpad_dir=cmd.split()[-1].rsplit("/", 1)[0]), _ctx()
+            ).action,
+            G.ALLOW,
+        )
 
 
 class CodeDestinationTests(unittest.TestCase):
@@ -123,65 +152,102 @@ class CodeDestinationTests(unittest.TestCase):
         for home in ("/Users/jay", "/root"):
             code = f"{home}/Code"
             with self.subTest(home=home, operation="add"):
-                result = self._evaluate(home,
-                    f"git -C {code}/BotFleet worktree add ../bad origin/main", home)
-                self.assertEqual((result.action, result.rule_id), (G.DENY, G.RULE_WORKTREE_ADD_CODE))
+                result = self._evaluate(
+                    home, f"git -C {code}/BotFleet worktree add ../bad origin/main", home
+                )
+                self.assertEqual(
+                    (result.action, result.rule_id), (G.DENY, G.RULE_WORKTREE_ADD_CODE)
+                )
                 self.assertIn("~/apps/lanes/", result.reason)
             with self.subTest(home=home, operation="move"):
-                result = self._evaluate(home,
-                    f"git -C {code}/BotFleet worktree move {home}/apps/lanes/BotFleet/codex-x {code}/bad", home)
-                self.assertEqual((result.action, result.rule_id), (G.DENY, G.RULE_WORKTREE_MOVE_CODE))
+                result = self._evaluate(
+                    home,
+                    f"git -C {code}/BotFleet worktree move {home}/apps/lanes/BotFleet/codex-x {code}/bad",
+                    home,
+                )
+                self.assertEqual(
+                    (result.action, result.rule_id), (G.DENY, G.RULE_WORKTREE_MOVE_CODE)
+                )
 
     def test_shell_cd_variable_and_relative_destination_are_resolved(self) -> None:
-        result = self._evaluate("/root", 'cd "$HOME/Code"; d=bad; git -C "$HOME/Code/BotFleet" worktree add "$d" origin/main')
+        result = self._evaluate(
+            "/root",
+            'cd "$HOME/Code"; d=bad; git -C "$HOME/Code/BotFleet" worktree add "$d" origin/main',
+        )
         self.assertEqual((result.action, result.rule_id), (G.DENY, G.RULE_WORKTREE_ADD_CODE))
         self.assertEqual(result.destination, "~/Code/BotFleet/bad")
 
     def test_canonical_registered_integration_clone_is_allowed(self) -> None:
         for home in ("/Users/jay", "/root"):
             with self.subTest(home=home, tool="git"):
-                result = self._evaluate(home,
-                    f"git clone https://github.com/Simple-With-Us/BotFleet {home}/Code/BotFleet", home)
+                result = self._evaluate(
+                    home,
+                    f"git clone https://github.com/Simple-With-Us/BotFleet {home}/Code/BotFleet",
+                    home,
+                )
                 self.assertEqual(result.action, G.ALLOW)
             with self.subTest(home=home, tool="gh"):
-                result = self._evaluate(home,
-                    f"gh repo clone Simple-With-Us/BotFleet {home}/Code/BotFleet", home)
+                result = self._evaluate(
+                    home, f"gh repo clone Simple-With-Us/BotFleet {home}/Code/BotFleet", home
+                )
                 self.assertEqual(result.action, G.ALLOW)
 
-    def test_other_code_destinations_are_denied_but_code_boundary_and_lanes_are_allowed(self) -> None:
+    def test_other_code_destinations_are_denied_but_code_boundary_and_lanes_are_allowed(
+        self,
+    ) -> None:
         home = "/root"
         code = f"{home}/Code"
-        result = self._evaluate(home,
-            f"git clone https://github.com/Simple-With-Us/BotFleet {code}/BotFleet-copy", home)
+        result = self._evaluate(
+            home, f"git clone https://github.com/Simple-With-Us/BotFleet {code}/BotFleet-copy", home
+        )
         self.assertEqual((result.action, result.rule_id), (G.DENY, G.RULE_CLONE_CODE))
         self.assertIn("~/apps/lanes/", result.reason)
 
-        self.assertEqual(self._evaluate(home,
-            f"git clone https://github.com/Simple-With-Us/BotFleet {code}-other/BotFleet", home).action, G.ALLOW)
-        self.assertEqual(self._evaluate(home,
-            f"git -C {code}/BotFleet worktree add {home}/apps/lanes/BotFleet/codex-x origin/main", home).action,
-            G.ALLOW)
+        self.assertEqual(
+            self._evaluate(
+                home,
+                f"git clone https://github.com/Simple-With-Us/BotFleet {code}-other/BotFleet",
+                home,
+            ).action,
+            G.ALLOW,
+        )
+        self.assertEqual(
+            self._evaluate(
+                home,
+                f"git -C {code}/BotFleet worktree add {home}/apps/lanes/BotFleet/codex-x origin/main",
+                home,
+            ).action,
+            G.ALLOW,
+        )
 
     def test_nonfleet_clone_source_remains_fail_open(self) -> None:
-        result = self._evaluate("/root", "git clone https://github.com/example/private /root/Code/private", "/root")
+        result = self._evaluate(
+            "/root", "git clone https://github.com/example/private /root/Code/private", "/root"
+        )
         self.assertEqual(result.action, G.ALLOW)
 
     def test_unknown_path_component_does_not_turn_code_prefix_into_a_boundary(self) -> None:
-        prefix = 'git -C /root/Code/BotFleet worktree add '
-        self.assertEqual(self._evaluate("/root", prefix + '"/root/Code$UNKNOWN/repo"').action, G.ALLOW)
-        self.assertEqual(self._evaluate("/root", prefix + '"/root/Code/$UNKNOWN/repo"').action, G.DENY)
+        prefix = "git -C /root/Code/BotFleet worktree add "
+        self.assertEqual(
+            self._evaluate("/root", prefix + '"/root/Code$UNKNOWN/repo"').action, G.ALLOW
+        )
+        self.assertEqual(
+            self._evaluate("/root", prefix + '"/root/Code/$UNKNOWN/repo"').action, G.DENY
+        )
 
     def test_nested_and_gh_task_clones_are_denied(self) -> None:
         for command in (
-            'gh repo clone Simple-With-Us/BotFleet /root/Code/BotFleet-copy',
-            'git clone https://github.com/Simple-With-Us/BotFleet /root/Code/BotFleet/task',
-            'git -C /root/Code/BotFleet worktree add /root/Code origin/main',
+            "gh repo clone Simple-With-Us/BotFleet /root/Code/BotFleet-copy",
+            "git clone https://github.com/Simple-With-Us/BotFleet /root/Code/BotFleet/task",
+            "git -C /root/Code/BotFleet worktree add /root/Code origin/main",
         ):
             with self.subTest(command=command):
                 self.assertEqual(self._evaluate("/root", command).action, G.DENY)
 
     def test_cursor_message_names_the_integration_tree(self) -> None:
-        result = self._evaluate("/root", 'git -C /root/Code/BotFleet worktree add /root/Code/bad origin/main')
+        result = self._evaluate(
+            "/root", "git -C /root/Code/BotFleet worktree add /root/Code/bad origin/main"
+        )
         body = json.loads(H.render(result.reason, "cursor", result.destination))
         self.assertIn("integration tree", body["user_message"])
 
@@ -209,7 +275,9 @@ class ReasonTests(unittest.TestCase):
                 # `lane new` is the way for an app with an integration tree; the others keep the path.
                 self.assertTrue("/lane new " in r or "lanes root" in r, r)
                 self.assertIn("~/apps/lanes/", r)
-                self.assertRegex(r, r"detached checkout at ~/apps/lanes/[A-Za-z0-9._<>-]+/review-pr-<n>")
+                self.assertRegex(
+                    r, r"detached checkout at ~/apps/lanes/[A-Za-z0-9._<>-]+/review-pr-<n>"
+                )
                 self.assertNotIn("_review", r)
                 self.assertNotIn("review root", r)
                 self.assertIn("main integration tree", r)
@@ -222,13 +290,21 @@ class ReasonTests(unittest.TestCase):
 
     def test_lane_new_is_the_primary_instruction_then_the_concrete_lane(self) -> None:
         r = self._deny().reason
-        self.assertIn("Run `~/apps/lane new DealDex work` instead; it creates branch claude/work off origin/main "
-                      "and the lane at ~/apps/lanes/DealDex/claude-work.", r)
-        self.assertIn("For a read-only PR check, run `~/apps/lane new DealDex --review --pr <n>` instead; it makes "
-                      "a detached checkout at ~/apps/lanes/DealDex/review-pr-<n>.", r)
+        self.assertIn(
+            "Run `~/apps/lane new DealDex work` instead; it creates branch claude/work off origin/main "
+            "and the lane at ~/apps/lanes/DealDex/claude-work.",
+            r,
+        )
+        self.assertIn(
+            "For a read-only PR check, run `~/apps/lane new DealDex --review --pr <n>` instead; it makes "
+            "a detached checkout at ~/apps/lanes/DealDex/review-pr-<n>.",
+            r,
+        )
         self.assertIn("integration tree ~/Code/DealDex", r)
         self.assertIn("a clone of Simple-With-Us/DealDex at /tmp/dealdex-work", r)
-        self.assertLess(r.index("`~/apps/lane new DealDex work`"), r.index("~/apps/lanes/DealDex/claude-work"))
+        self.assertLess(
+            r.index("`~/apps/lane new DealDex work`"), r.index("~/apps/lanes/DealDex/claude-work")
+        )
         self.assertNotIn("git -C", r, "the raw git command is not offered next to lane new")
         self.assertEqual(len(re.findall(r"\.  ", r)), 3, "four sentences, two spaces between them")
         self.assertNotIn("AGENT_SEAT", r, "no seat hint once the seat is usable")
@@ -237,7 +313,9 @@ class ReasonTests(unittest.TestCase):
         r = self._deny(AGENT_SEAT=None).reason
         self.assertIn("~/apps/lanes/DealDex/<seat>-work", r)
         self.assertIn("branch <seat>/work", r)
-        self.assertIn("Set AGENT_SEAT to your seat tag, then run `~/apps/lane new DealDex work` instead;", r)
+        self.assertIn(
+            "Set AGENT_SEAT to your seat tag, then run `~/apps/lane new DealDex work` instead;", r
+        )
 
     def test_a_seat_that_lane_new_would_refuse_gets_the_same_hint_as_an_unset_seat(self) -> None:
         # DSH and KIMI are retired in the fixture registry; antigravity is a whole name, not a tag.
@@ -245,7 +323,10 @@ class ReasonTests(unittest.TestCase):
         for value in ("NOPE", "antigravity", "DSH", "KIMI", "  ", "GROK-BOT"):
             with self.subTest(value=value):
                 r = self._deny(AGENT_SEAT=value).reason
-                self.assertIn("Set AGENT_SEAT to your seat tag, then run `~/apps/lane new DealDex work` instead;", r)
+                self.assertIn(
+                    "Set AGENT_SEAT to your seat tag, then run `~/apps/lane new DealDex work` instead;",
+                    r,
+                )
                 self.assertIn("branch <seat>/work", r)
                 self.assertIn("~/apps/lanes/DealDex/<seat>-work", r)
                 self.assertNotRegex(r, r"nope|deepseek|kimi|cursor")
@@ -257,8 +338,11 @@ class ReasonTests(unittest.TestCase):
             with self.subTest(target=target):
                 d = G.evaluate(_payload(f"git clone {F._DD} {target}"), _ctx(AGENT_SEAT="GROK"))
                 self.assertEqual(d.action, G.DENY)
-                self.assertIn("Run `~/apps/lane new DealDex work` instead; it creates branch grok/work off "
-                              "origin/main and the lane at ~/apps/lanes/DealDex/grok-work.", d.reason)
+                self.assertIn(
+                    "Run `~/apps/lane new DealDex work` instead; it creates branch grok/work off "
+                    "origin/main and the lane at ~/apps/lanes/DealDex/grok-work.",
+                    d.reason,
+                )
                 self.assertNotRegex(d.reason, r"grok-build|grok-bot")
         d = G.evaluate(_payload(f"git clone {F._DD} /tmp/build"), _ctx(AGENT_SEAT="CLAUDE"))
         self.assertIn("`~/apps/lane new DealDex build`", d.reason, "a slug that reads back is kept")
@@ -292,7 +376,7 @@ class ReasonTests(unittest.TestCase):
             "spec-tmpdir-codecaps": "~/apps/lanes/CodeCaps/claude-work",
             "spec-mm-afc-baseline-cwd": "~/apps/lanes/AI-Fleet-Coordinator/claude-baseline",
             "sweep-bf-st4013-workspace-clone": "~/apps/lanes/Socratic-Trade/claude-st4013",
-            "var-mktemp-inline": "~/apps/lanes/ContactLogo/claude-work",     # cl is the app's acronym
+            "var-mktemp-inline": "~/apps/lanes/ContactLogo/claude-work",  # cl is the app's acronym
             "spec-mktemp-template-botfleet": "~/apps/lanes/BotFleet/claude-work",  # so is bf
         }
         for fid, lane in cases.items():
@@ -303,7 +387,10 @@ class ReasonTests(unittest.TestCase):
         d = G.evaluate(_payload("gh repo clone Simple-With-Us/Kodus-Config /tmp/kc"), _ctx())
         self.assertEqual(d.rule_id, G.RULE_GH_CLONE)
         self.assertIn("integration tree ~/Code/<App>", d.reason)
-        self.assertIn("gh repo clone Simple-With-Us/Kodus-Config ~/apps/lanes/Kodus-Config/claude-kc", d.reason)
+        self.assertIn(
+            "gh repo clone Simple-With-Us/Kodus-Config ~/apps/lanes/Kodus-Config/claude-kc",
+            d.reason,
+        )
         self.assertNotIn("lane new", d.reason, "lane new refuses an app with no integration tree")
         self.assertIn("lanes root", d.reason)
 
@@ -312,7 +399,10 @@ class ReasonTests(unittest.TestCase):
         r = _run(_fixture("spec-tmpdir-codecaps")).reason
         self.assertNotIn("lane new", r)
         self.assertIn("at ~/apps/lanes/CodeCaps/claude-work", r)
-        self.assertIn("git -C ~/Code/CodeCaps worktree add -b claude/work ~/apps/lanes/CodeCaps/claude-work origin/main", r)
+        self.assertIn(
+            "git -C ~/Code/CodeCaps worktree add -b claude/work ~/apps/lanes/CodeCaps/claude-work origin/main",
+            r,
+        )
 
     def test_a_folder_sharing_seat_gets_a_placeholder_in_the_manual_command_too(self) -> None:
         # GROK-BOT's folder name and branch prefix are CURSOR's, so the raw git command must not
@@ -323,11 +413,19 @@ class ReasonTests(unittest.TestCase):
         self.assertNotIn("cursor", r)
 
     def test_unregistered_repo_of_a_fleet_owner(self) -> None:
-        d = G.evaluate(_payload("git clone https://github.com/Simple-With-Us/NewThing.git /tmp/nt"), _ctx())
+        d = G.evaluate(
+            _payload("git clone https://github.com/Simple-With-Us/NewThing.git /tmp/nt"), _ctx()
+        )
         self.assertEqual(d.action, G.DENY)
-        self.assertIn("~/apps/lanes/NewThing/claude-nt", d.reason, "the repo name as written, not a lowercase prefix")
+        self.assertIn(
+            "~/apps/lanes/NewThing/claude-nt",
+            d.reason,
+            "the repo name as written, not a lowercase prefix",
+        )
         self.assertIn("~/apps/lanes/NewThing/review-pr-<n>", d.reason)
-        self.assertNotIn("lane new", d.reason, "lane new does not know a repo that is not in the registry")
+        self.assertNotIn(
+            "lane new", d.reason, "lane new does not know a repo that is not in the registry"
+        )
 
     def test_unknown_app_uses_placeholders(self) -> None:
         r = _run(_fixture("var-for-loop-unknown-name")).reason
@@ -351,7 +449,9 @@ class ReasonTests(unittest.TestCase):
                 d = G.evaluate(_payload(f"git clone {url} /tmp/work"), _ctx())
                 self.assertEqual(d.action, G.DENY)
                 self.assertIn(f"the lane at ~/apps/lanes/{folder}/claude-work.", d.reason)
-                self.assertIn(f"a detached checkout at ~/apps/lanes/{folder}/review-pr-<n>.", d.reason)
+                self.assertIn(
+                    f"a detached checkout at ~/apps/lanes/{folder}/review-pr-<n>.", d.reason
+                )
                 self.assertNotIn("<Repo>", d.reason)
                 self.assertNotIn("<prefix>", d.reason)
 
@@ -366,9 +466,13 @@ class ReasonTests(unittest.TestCase):
         for prefix in ("trading", "fleet", "congress", "botfleet", "dealdex"):
             self.assertTrue(G.lane_name_reads_back(prefix, "claude", "x", reg), prefix)
         self.assertFalse(G.lane_name_reads_back("nonesuch", "claude", "x", reg))
-        self.assertFalse(G.lane_name_reads_back("Socratic-Trade", "claude", "x", reg), "the argument is a prefix")
+        self.assertFalse(
+            G.lane_name_reads_back("Socratic-Trade", "claude", "x", reg), "the argument is a prefix"
+        )
         self.assertTrue(G.lane_name_reads_back("trading", "claude", "x", reg, flat=True))
-        self.assertFalse(G.lane_name_reads_back("trading", "grok", "build", reg), "grok-build is another seat's")
+        self.assertFalse(
+            G.lane_name_reads_back("trading", "grok", "build", reg), "grok-build is another seat's"
+        )
 
     def test_credentials_never_reach_the_decision(self) -> None:
         d = _run(_fixture("var-credential-url"))
@@ -378,9 +482,17 @@ class ReasonTests(unittest.TestCase):
         self.assertEqual(d.source, "Simple-With-Us/DealDex")
 
     def test_redact_url(self) -> None:
-        self.assertEqual(G.redact_url("https://user:tok@github.com/o/r.git"), "https://REDACTED@github.com/o/r.git")
-        self.assertEqual(G.redact_url("clone https://tok@github.com/o/r x"), "clone https://REDACTED@github.com/o/r x")
-        self.assertEqual(G.redact_url("ssh://git@github.com/o/r.git"), "ssh://git@github.com/o/r.git")
+        self.assertEqual(
+            G.redact_url("https://user:tok@github.com/o/r.git"),
+            "https://REDACTED@github.com/o/r.git",
+        )
+        self.assertEqual(
+            G.redact_url("clone https://tok@github.com/o/r x"),
+            "clone https://REDACTED@github.com/o/r x",
+        )
+        self.assertEqual(
+            G.redact_url("ssh://git@github.com/o/r.git"), "ssh://git@github.com/o/r.git"
+        )
         self.assertEqual(G.redact_url("ssh://me:pw@host/r"), "ssh://REDACTED@host/r")
         self.assertEqual(G.redact_url("git@github.com:o/r.git"), "git@github.com:o/r.git")
 
@@ -400,11 +512,23 @@ class ExternalLanesTests(unittest.TestCase):
         self.assertIn("DealDex", real.reason)
 
     def test_only_the_external_lanes_root_counts_and_the_setting_can_turn_it_off(self) -> None:
-        self.assertEqual(self._decide("git clone /Volumes/External/Other/claude-x /tmp/y").action, "allow")
-        self.assertEqual(self._decide("git clone /Volumes/External/Lanes/DealDex/claude-x /tmp/y",
-                                      FLEET_LANES_EXTERNAL_ROOT="").action, "allow")
-        self.assertEqual(self._decide("git clone /mnt/lanes/DealDex/claude-x /tmp/y",
-                                      FLEET_LANES_EXTERNAL_ROOT="/mnt/lanes").rule_id, G.RULE_CLONE)
+        self.assertEqual(
+            self._decide("git clone /Volumes/External/Other/claude-x /tmp/y").action, "allow"
+        )
+        self.assertEqual(
+            self._decide(
+                "git clone /Volumes/External/Lanes/DealDex/claude-x /tmp/y",
+                FLEET_LANES_EXTERNAL_ROOT="",
+            ).action,
+            "allow",
+        )
+        self.assertEqual(
+            self._decide(
+                "git clone /mnt/lanes/DealDex/claude-x /tmp/y",
+                FLEET_LANES_EXTERNAL_ROOT="/mnt/lanes",
+            ).rule_id,
+            G.RULE_CLONE,
+        )
 
     def test_the_hook_context_carries_the_external_root(self) -> None:
         ctx = _ctx(dict(F.BASE_ENV, FLEET_LANES_EXTERNAL_ROOT="/mnt/lanes"))
@@ -418,9 +542,21 @@ class LaneNewAgreementTests(unittest.TestCase):
     prints the same lane path; and when the reason shows a placeholder, the CLI refuses that seat
     and the slug works for every seat it accepts.  The CLI runs against a throwaway home."""
 
-    TARGETS = ("/tmp/build", "/tmp/build-cache", "/tmp/bot", "/tmp/bot-x", "/tmp/dealdex-work", "/tmp/code-x",
-               "/tmp/assist-me", "/tmp/fix-login", "/tmp/muse-x", "/tmp/grok-build-x", "/tmp/claude-x",
-               "/tmp/tmp", "/tmp/DealDex")
+    TARGETS = (
+        "/tmp/build",
+        "/tmp/build-cache",
+        "/tmp/bot",
+        "/tmp/bot-x",
+        "/tmp/dealdex-work",
+        "/tmp/code-x",
+        "/tmp/assist-me",
+        "/tmp/fix-login",
+        "/tmp/muse-x",
+        "/tmp/grok-build-x",
+        "/tmp/claude-x",
+        "/tmp/tmp",
+        "/tmp/DealDex",
+    )
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -437,10 +573,15 @@ class LaneNewAgreementTests(unittest.TestCase):
 
     def _cli(self, tag: str, slug: str, flat: bool) -> tuple:
         from fleet_lanes import lane as K
+
         key = (tag, slug, flat)
         if key not in self.cache:
-            env = {"HOME": self.home, "AGENT_SEAT": tag, "FLEET_APPS_JSON": self.registry_path,
-                   "PATH": os.environ.get("PATH", "")}
+            env = {
+                "HOME": self.home,
+                "AGENT_SEAT": tag,
+                "FLEET_APPS_JSON": self.registry_path,
+                "PATH": os.environ.get("PATH", ""),
+            }
             if flat:
                 env["FLEET_LAYOUT"] = "flat"
             out, err = io.StringIO(), io.StringIO()
@@ -452,12 +593,15 @@ class LaneNewAgreementTests(unittest.TestCase):
 
     def test_every_seat_and_target_in_both_layouts(self) -> None:
         from fleet_lanes import lane as K
+
         tags = [s.name for s in REGISTRY.seats] + ["NOPE"]
         accepted = [t for t in tags if self._cli(t, "work", False)[0] == 0]
         self.assertIn("GROK", accepted)
         self.assertNotIn("GROK-BOT", accepted)
-        pattern = re.compile(r"[Rr]un `~/apps/lane new DealDex (\S+)` instead; it creates branch (\S+) off origin/main "
-                             r"and the lane at (\S+)\.  ")
+        pattern = re.compile(
+            r"[Rr]un `~/apps/lane new DealDex (\S+)` instead; it creates branch (\S+) off origin/main "
+            r"and the lane at (\S+)\.  "
+        )
         for flat in (False, True):
             for tag in tags:
                 for target in self.TARGETS:
@@ -478,7 +622,9 @@ class LaneNewAgreementTests(unittest.TestCase):
                             self.assertIn("Set AGENT_SEAT", d.reason)
                             self.assertEqual(self._cli(tag, slug, flat)[0], 64)
                             for other in accepted:
-                                self.assertEqual(self._cli(other, slug, flat)[0], 0, f"{other} with slug {slug}")
+                                self.assertEqual(
+                                    self._cli(other, slug, flat)[0], 0, f"{other} with slug {slug}"
+                                )
 
 
 def _alias_registry_data() -> dict:
@@ -498,10 +644,28 @@ class GrokBuildAliasTests(unittest.TestCase):
     """Owner ruling 2026-10-10: any spelling of GROK followed by BUILD is the seat GROK, so the guard's
     suggested `lane new` names the grok folder and the grok/ branch, and agrees with the CLI."""
 
-    MUST = ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)",
-            "grok/build/", "GrokBuild", "GROK--BUILD!!")
-    MUST_NOT = ("GROKBUILDER", "grok-build-bot", "grok2build", "GROK-WEB", "GROK-BOT", "GB-COMPILER", "BF-BUILDER",
-                "Grok (Web/iOS)")
+    MUST = (
+        "GROK-BUILD",
+        "Grok-Build",
+        "grok-build",
+        "grok_build",
+        "Grok Build",
+        "GROK.BUILD",
+        "Grok (Build)",
+        "grok/build/",
+        "GrokBuild",
+        "GROK--BUILD!!",
+    )
+    MUST_NOT = (
+        "GROKBUILDER",
+        "grok-build-bot",
+        "grok2build",
+        "GROK-WEB",
+        "GROK-BOT",
+        "GB-COMPILER",
+        "BF-BUILDER",
+        "Grok (Web/iOS)",
+    )
     HINT = "Set AGENT_SEAT to your seat tag, then run `~/apps/lane new DealDex work` instead;"
 
     @classmethod
@@ -538,14 +702,20 @@ class GrokBuildAliasTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 ev = G._Evaluator(self.ctx(raw), None)
                 self.assertFalse(ev._seat_usable_for_lane_new())
-        self.assertIsNone(G._Evaluator(self.ctx("GROK-BOT"), None)._seat_token(), "GROK-BOT's folder name is CURSOR's")
+        self.assertIsNone(
+            G._Evaluator(self.ctx("GROK-BOT"), None)._seat_token(),
+            "GROK-BOT's folder name is CURSOR's",
+        )
 
     def test_the_deny_reason_offers_the_grok_lane_and_never_the_grok_build_one(self) -> None:
         for raw in self.MUST:
             with self.subTest(raw=raw):
                 r = self.deny(raw).reason
-                self.assertIn("Run `~/apps/lane new DealDex work` instead; it creates branch grok/work off "
-                              "origin/main and the lane at ~/apps/lanes/DealDex/grok-work.", r)
+                self.assertIn(
+                    "Run `~/apps/lane new DealDex work` instead; it creates branch grok/work off "
+                    "origin/main and the lane at ~/apps/lanes/DealDex/grok-work.",
+                    r,
+                )
                 self.assertNotIn("grok-build", r.lower())
                 self.assertNotIn("Set AGENT_SEAT", r)
 
@@ -557,7 +727,9 @@ class GrokBuildAliasTests(unittest.TestCase):
                 self.assertIn("branch <seat>/work", r)
                 self.assertNotIn("grok", r.lower().replace("grok-bot", ""))
 
-    def test_a_target_that_reads_as_the_retired_seat_falls_back_to_work_for_every_spelling(self) -> None:
+    def test_a_target_that_reads_as_the_retired_seat_falls_back_to_work_for_every_spelling(
+        self,
+    ) -> None:
         # GROK plus slug build is the folder grok-build, which still reads as the retired GROK-BUILD's.
         for raw in ("GROK", "Grok (Build)", "grok_build"):
             for target in ("/tmp/build", "/tmp/build-cache"):
@@ -568,83 +740,150 @@ class GrokBuildAliasTests(unittest.TestCase):
 
     def test_the_command_in_the_reason_is_the_one_the_cli_accepts_for_every_spelling(self) -> None:
         from fleet_lanes import lane as K
-        pattern = re.compile(r"[Rr]un `~/apps/lane new DealDex (\S+)` instead; it creates branch (\S+) off origin/main "
-                             r"and the lane at (\S+)\.  ")
+
+        pattern = re.compile(
+            r"[Rr]un `~/apps/lane new DealDex (\S+)` instead; it creates branch (\S+) off origin/main "
+            r"and the lane at (\S+)\.  "
+        )
         for raw in self.MUST:
-            for target in ("/tmp/build", "/tmp/dealdex-work", "/tmp/grok-build-x", "/tmp/fix-login"):
+            for target in (
+                "/tmp/build",
+                "/tmp/dealdex-work",
+                "/tmp/grok-build-x",
+                "/tmp/fix-login",
+            ):
                 with self.subTest(raw=raw, target=target):
                     m = pattern.search(self.deny(raw, target).reason)
                     self.assertIsNotNone(m)
                     slug, branch, lane = m.groups()
-                    env = {"HOME": self.home, "AGENT_SEAT": raw, "FLEET_APPS_JSON": self.registry_path,
-                           "PATH": os.environ.get("PATH", "")}
+                    env = {
+                        "HOME": self.home,
+                        "AGENT_SEAT": raw,
+                        "FLEET_APPS_JSON": self.registry_path,
+                        "PATH": os.environ.get("PATH", ""),
+                    }
                     out, err = io.StringIO(), io.StringIO()
-                    self.assertEqual(K.main(["path", "DealDex", slug], env=env, stdout=out, stderr=err), 0, err.getvalue())
-                    self.assertEqual("~/" + os.path.relpath(out.getvalue().strip(), self.home), lane)
+                    self.assertEqual(
+                        K.main(["path", "DealDex", slug], env=env, stdout=out, stderr=err),
+                        0,
+                        err.getvalue(),
+                    )
+                    self.assertEqual(
+                        "~/" + os.path.relpath(out.getvalue().strip(), self.home), lane
+                    )
                     self.assertEqual(K.branch_for(K.resolve_seat(env, self.registry), slug), branch)
-                    self.assertEqual((branch, lane), (f"grok/{slug}", f"~/apps/lanes/DealDex/grok-{slug}"))
+                    self.assertEqual(
+                        (branch, lane), (f"grok/{slug}", f"~/apps/lanes/DealDex/grok-{slug}")
+                    )
 
 
 class PayloadShapeTests(unittest.TestCase):
     CMD = "git worktree add /tmp/bf-x origin/main"
 
     def test_cursor_before_shell_execution(self) -> None:
-        p = {"hook_event_name": "beforeShellExecution", "command": self.CMD, "cwd": "",
-             "workspace_roots": ["/Users/jay/Code/BotFleet"]}
+        p = {
+            "hook_event_name": "beforeShellExecution",
+            "command": self.CMD,
+            "cwd": "",
+            "workspace_roots": ["/Users/jay/Code/BotFleet"],
+        }
         self.assertEqual(G.evaluate(p, _ctx()).rule_id, G.RULE_WORKTREE_ADD)
         p["cwd"] = "/Users/jay/Code/BotFleet"
         p["workspace_roots"] = []
         self.assertEqual(G.evaluate(p, _ctx()).action, G.DENY)
 
     def test_antigravity_run_command(self) -> None:
-        p = {"tool_name": "run_command", "tool_input": {"CommandLine": self.CMD, "Cwd": "/Users/jay/Code/BotFleet"}}
+        p = {
+            "tool_name": "run_command",
+            "tool_input": {"CommandLine": self.CMD, "Cwd": "/Users/jay/Code/BotFleet"},
+        }
         self.assertEqual(G.evaluate(p, _ctx()).action, G.DENY)
 
     def test_codex_argv_command(self) -> None:
-        p = {"tool_name": "shell", "tool_input": {"command": ["bash", "-lc", self.CMD],
-                                                   "workdir": "/Users/jay/Code/BotFleet"}}
+        p = {
+            "tool_name": "shell",
+            "tool_input": {
+                "command": ["bash", "-lc", self.CMD],
+                "workdir": "/Users/jay/Code/BotFleet",
+            },
+        }
         self.assertEqual(G.evaluate(p, _ctx()).action, G.DENY)
-        p["tool_input"]["command"] = ["git", "clone", "https://github.com/Simple-With-Us/DealDex.git", "/tmp/dd x"]
+        p["tool_input"]["command"] = [
+            "git",
+            "clone",
+            "https://github.com/Simple-With-Us/DealDex.git",
+            "/tmp/dd x",
+        ]
         d = G.evaluate(p, _ctx())
         self.assertEqual((d.action, d.destination), (G.DENY, "/tmp/dd x"))
 
     def test_per_call_directory_beats_session_cwd(self) -> None:
-        p = {"tool_name": "shell", "cwd": F.HOME,
-             "tool_input": {"command": self.CMD, "workdir": "/Users/jay/Code/BotFleet"}}
+        p = {
+            "tool_name": "shell",
+            "cwd": F.HOME,
+            "tool_input": {"command": self.CMD, "workdir": "/Users/jay/Code/BotFleet"},
+        }
         self.assertEqual(G.evaluate(p, _ctx()).action, G.DENY)
-        p = {"tool_name": "run_command", "cwd": "/Users/jay/apps/lanes/DealDex/claude-x",
-             "tool_input": {"CommandLine": "git clone https://github.com/Simple-With-Us/DealDex.git", "Cwd": "/tmp/x"}}
+        p = {
+            "tool_name": "run_command",
+            "cwd": "/Users/jay/apps/lanes/DealDex/claude-x",
+            "tool_input": {
+                "CommandLine": "git clone https://github.com/Simple-With-Us/DealDex.git",
+                "Cwd": "/tmp/x",
+            },
+        }
         d = G.evaluate(p, _ctx())
         self.assertEqual((d.action, d.destination), (G.DENY, "/tmp/x/DealDex"))
 
     def test_non_shell_tools_are_ignored(self) -> None:
         for tool in ("Write", "Edit", "Read", "WebFetch", "Task"):
             with self.subTest(tool):
-                p = _payload("git clone https://github.com/Simple-With-Us/DealDex.git /tmp/dd", tool=tool)
+                p = _payload(
+                    "git clone https://github.com/Simple-With-Us/DealDex.git /tmp/dd", tool=tool
+                )
                 self.assertEqual(G.evaluate(p, _ctx()), G.Decision(G.ALLOW, "", "not-applicable"))
 
     def test_missing_cwd(self) -> None:
         # A relative destination is unknowable without a cwd; an absolute temp one is still denied.
-        self.assertEqual(G.evaluate(_payload("git clone https://github.com/Simple-With-Us/DealDex.git dd", cwd=None),
-                                    _ctx()).action, G.ALLOW)
-        self.assertEqual(G.evaluate(_payload("gh repo clone Simple-With-Us/DealDex /tmp/dd", cwd=None),
-                                    _ctx()).action, G.DENY)
+        self.assertEqual(
+            G.evaluate(
+                _payload("git clone https://github.com/Simple-With-Us/DealDex.git dd", cwd=None),
+                _ctx(),
+            ).action,
+            G.ALLOW,
+        )
+        self.assertEqual(
+            G.evaluate(
+                _payload("gh repo clone Simple-With-Us/DealDex /tmp/dd", cwd=None), _ctx()
+            ).action,
+            G.DENY,
+        )
         self.assertEqual(G.evaluate(_payload(self.CMD, cwd="relative/dir"), _ctx()).action, G.ALLOW)
 
 
 class FailOpenTests(unittest.TestCase):
     def test_garbage_payloads(self) -> None:
         cmd = "git clone https://github.com/Simple-With-Us/DealDex.git /tmp/dd"
-        garbage = [None, [], "text", 42, 3.5, b"bytes", {}, {"tool_name": "Bash"},
-                   {"tool_name": "Bash", "tool_input": None}, {"tool_name": "Bash", "tool_input": "x"},
-                   {"tool_name": "Bash", "tool_input": {"command": 123}},
-                   {"tool_name": "Bash", "tool_input": {"command": None}},
-                   {"tool_name": "Bash", "tool_input": {"command": ""}},
-                   {"tool_name": "Bash", "tool_input": {"command": [1, 2]}},
-                   {"tool_name": 7, "tool_input": {"command": cmd}},
-                   {"tool_name": None, "tool_input": {"command": "git clone"}, "cwd": 5},
-                   {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": ["/tmp"]},
-                   {"command": {"nested": cmd}}]
+        garbage = [
+            None,
+            [],
+            "text",
+            42,
+            3.5,
+            b"bytes",
+            {},
+            {"tool_name": "Bash"},
+            {"tool_name": "Bash", "tool_input": None},
+            {"tool_name": "Bash", "tool_input": "x"},
+            {"tool_name": "Bash", "tool_input": {"command": 123}},
+            {"tool_name": "Bash", "tool_input": {"command": None}},
+            {"tool_name": "Bash", "tool_input": {"command": ""}},
+            {"tool_name": "Bash", "tool_input": {"command": [1, 2]}},
+            {"tool_name": 7, "tool_input": {"command": cmd}},
+            {"tool_name": None, "tool_input": {"command": "git clone"}, "cwd": 5},
+            {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": ["/tmp"]},
+            {"command": {"nested": cmd}},
+        ]
         for p in garbage:
             with self.subTest(repr(p)[:60]):
                 d = G.evaluate(p, _ctx())
@@ -683,7 +922,10 @@ class FailOpenTests(unittest.TestCase):
 
     def test_one_bad_segment_does_not_stop_the_rest(self) -> None:
         with mock.patch.object(G._Evaluator, "_tar", side_effect=RuntimeError("boom")):
-            d = G.evaluate(_payload("tar -xf a.tgz -C /tmp/a; gh repo clone Simple-With-Us/HogHunter /tmp/hh"), _ctx())
+            d = G.evaluate(
+                _payload("tar -xf a.tgz -C /tmp/a; gh repo clone Simple-With-Us/HogHunter /tmp/hh"),
+                _ctx(),
+            )
         self.assertEqual(d.rule_id, G.RULE_GH_CLONE)
 
     def test_too_large_allows(self) -> None:
@@ -703,8 +945,13 @@ class FailOpenTests(unittest.TestCase):
         ctx = G.make_context(env, home=F.HOME, case_insensitive=True)
         self.assertEqual(ctx.registry.source, "fallback")
         # Owner and path rules still work without the registry.
-        self.assertEqual(G.evaluate(_payload("gh repo clone Simple-With-Us/HogHunter /tmp/hh"), ctx).action, G.DENY)
-        self.assertEqual(G.evaluate(_payload("git -C ~/Code/BotFleet worktree add /tmp/bf"), ctx).action, G.DENY)
+        self.assertEqual(
+            G.evaluate(_payload("gh repo clone Simple-With-Us/HogHunter /tmp/hh"), ctx).action,
+            G.DENY,
+        )
+        self.assertEqual(
+            G.evaluate(_payload("git -C ~/Code/BotFleet worktree add /tmp/bf"), ctx).action, G.DENY
+        )
 
     def test_default_context_from_the_environment(self) -> None:
         env = {k: v for k, v in os.environ.items() if k not in (G.ENV_GUARD, "FLEET_APPS_JSON")}
@@ -726,25 +973,30 @@ class PurityTests(unittest.TestCase):
             def fn(*a, **k):
                 calls.append(name)
                 raise AssertionError(f"{name} called")
+
             return fn
 
-        patches = [mock.patch("os.path.realpath", record("realpath")),
-                   mock.patch("os.path.exists", record("exists")),
-                   mock.patch("os.path.lexists", record("lexists")),
-                   mock.patch("os.path.isdir", record("isdir")),
-                   mock.patch("os.stat", record("stat")),
-                   mock.patch("os.lstat", record("lstat")),
-                   mock.patch("os.listdir", record("listdir")),
-                   mock.patch("os.scandir", record("scandir")),
-                   mock.patch("builtins.open", record("open")),
-                   mock.patch("subprocess.Popen", record("Popen"))]
+        patches = [
+            mock.patch("os.path.realpath", record("realpath")),
+            mock.patch("os.path.exists", record("exists")),
+            mock.patch("os.path.lexists", record("lexists")),
+            mock.patch("os.path.isdir", record("isdir")),
+            mock.patch("os.stat", record("stat")),
+            mock.patch("os.lstat", record("lstat")),
+            mock.patch("os.listdir", record("listdir")),
+            mock.patch("os.scandir", record("scandir")),
+            mock.patch("builtins.open", record("open")),
+            mock.patch("subprocess.Popen", record("Popen")),
+        ]
         results = []
         for p in patches:
             p.start()
         try:
             for fx in F.FIXTURES:
                 ctx = ctxs[tuple(sorted((fx.env or F.BASE_ENV).items()))]
-                results.append((fx, G.evaluate(_payload(fx.command, fx.cwd, fx.scratchpad_dir), ctx)))
+                results.append(
+                    (fx, G.evaluate(_payload(fx.command, fx.cwd, fx.scratchpad_dir), ctx))
+                )
         finally:
             for p in patches:
                 p.stop()
@@ -798,7 +1050,11 @@ class PerfTests(unittest.TestCase):
         cmd = _big_command()
         self.assertGreaterEqual(len(cmd), 20_000)
         took, d = self._best_of(cmd)
-        self.assertEqual(d.rule_id, G.RULE_GH_CLONE, "the deny at the very end proves the whole command was parsed")
+        self.assertEqual(
+            d.rule_id,
+            G.RULE_GH_CLONE,
+            "the deny at the very end proves the whole command was parsed",
+        )
         self.assertLess(took, self.LIMIT_S, f"{took * 1000:.1f} ms")
 
     def test_20kb_allowed_command_under_50ms(self) -> None:
@@ -823,8 +1079,10 @@ class LexerTests(unittest.TestCase):
         return out
 
     def test_quotes_and_escapes(self) -> None:
-        self.assertEqual(self._words("""a 'b c' "d $HOME" e\\ f '$HOME'"""),
-                         ["a", "b c", "d /Users/jay", "e f", "$HOME"])
+        self.assertEqual(
+            self._words("""a 'b c' "d $HOME" e\\ f '$HOME'"""),
+            ["a", "b c", "d /Users/jay", "e f", "$HOME"],
+        )
 
     def test_redirections_are_not_words(self) -> None:
         w = self._words("git clone x y > /tmp/log 2>&1")
@@ -836,8 +1094,14 @@ class LexerTests(unittest.TestCase):
         toks = G._lex("cat <<'EOF' > f\ngit clone x /tmp/y\nEOF\necho done")
         bodies = [t[3] for t in toks if t[0] == "r" and t[1] == "<<"]
         self.assertEqual(bodies, ["git clone x /tmp/y"])
-        words = [w for w in self._words("cat <<'EOF' > f\ngit clone x /tmp/y\nEOF\necho done") if isinstance(w, str)]
-        self.assertEqual(words, ["cat", "echo", "done"])      # f is a redirect target, the body is not lexed
+        words = [
+            w
+            for w in self._words("cat <<'EOF' > f\ngit clone x /tmp/y\nEOF\necho done")
+            if isinstance(w, str)
+        ]
+        self.assertEqual(
+            words, ["cat", "echo", "done"]
+        )  # f is a redirect target, the body is not lexed
 
     def test_scan_balanced_skips_heredoc_prose(self) -> None:
         s = "$(cat <<'EOF'\nit's (1) don't\nEOF\n) tail"
@@ -883,17 +1147,49 @@ class ReviewFindingTests(unittest.TestCase):
 
     def test_whole_tree_pathspecs(self) -> None:
         base = "/Users/jay/Code/BotFleet/scripts"
-        for spec in ("", ".", "./", "..", "../", "./*", "*", "*.ts", "**/x", "s*/x", "../*", ":/", ":(top)",
-                     ":(glob)src", "/", "/Users/jay/Code/BotFleet", "/Users/jay/Code/BotFleet/scripts/"):
+        for spec in (
+            "",
+            ".",
+            "./",
+            "..",
+            "../",
+            "./*",
+            "*",
+            "*.ts",
+            "**/x",
+            "s*/x",
+            "../*",
+            ":/",
+            ":(top)",
+            ":(glob)src",
+            "/",
+            "/Users/jay/Code/BotFleet",
+            "/Users/jay/Code/BotFleet/scripts/",
+        ):
             with self.subTest(spec=spec):
                 self.assertTrue(G._whole_tree_pathspec(spec, base))
-        for spec in ("package.json", "src", "src/*", "src/**/x", "./x.mjs", "../package.json",
-                     "/Users/jay/Code/BotFleet/scripts/x.mjs", G._UNK, "src/" + G._UNK):
+        for spec in (
+            "package.json",
+            "src",
+            "src/*",
+            "src/**/x",
+            "./x.mjs",
+            "../package.json",
+            "/Users/jay/Code/BotFleet/scripts/x.mjs",
+            G._UNK,
+            "src/" + G._UNK,
+        ):
             with self.subTest(spec=spec):
                 self.assertFalse(G._whole_tree_pathspec(spec, base))
         # An unknown base: only the forms that are whole-tree from any directory count.
-        for spec, whole in ((".", True), ("..", True), ("../x", True), ("*", True), ("src", False),
-                            ("/abs/x", False)):
+        for spec, whole in (
+            (".", True),
+            ("..", True),
+            ("../x", True),
+            ("*", True),
+            ("src", False),
+            ("/abs/x", False),
+        ):
             with self.subTest(spec=spec, base="unknown"):
                 self.assertEqual(G._whole_tree_pathspec(spec, G._UNK), whole)
 
@@ -907,14 +1203,18 @@ class ReviewFindingTests(unittest.TestCase):
 
     def test_archive_excludes_beside_a_named_path(self) -> None:
         # Excludes narrow a named directory; on their own they mean everything else.
-        allow = "git -C ~/Code/BotFleet archive HEAD -- scripts ':!scripts/test' | tar -x -C /tmp/bf-s"
+        allow = (
+            "git -C ~/Code/BotFleet archive HEAD -- scripts ':!scripts/test' | tar -x -C /tmp/bf-s"
+        )
         self.assertEqual(G.evaluate(_payload(allow), _ctx()).action, G.ALLOW)
         deny = "git -C ~/Code/BotFleet archive HEAD -- ':!docs' ':^README.md' | tar -x -C /tmp/bf-s"
         self.assertEqual(G.evaluate(_payload(deny), _ctx()).rule_id, G.RULE_ARCHIVE)
 
     def test_checkout_index_without_paths(self) -> None:
         # No paths and no -a writes nothing, but the rule stays on the safe side of it.
-        d = G.evaluate(_payload("git -C ~/Code/DealDex checkout-index -f --prefix=/tmp/dd-none/"), _ctx())
+        d = G.evaluate(
+            _payload("git -C ~/Code/DealDex checkout-index -f --prefix=/tmp/dd-none/"), _ctx()
+        )
         self.assertEqual((d.rule_id, d.destination), (G.RULE_EXPORT, "/tmp/dd-none"))
 
 
@@ -926,9 +1226,19 @@ class HookCliTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         reg = Path(tmp.name) / "fleet-apps.json"
         reg.write_text(json.dumps(F.REGISTRY_DATA), encoding="utf-8")
-        self.env = {k: v for k, v in os.environ.items()
-                    if k not in (G.ENV_GUARD, "FLEET_LAYOUT", "FLEET_LANES_ROOT", "AGENT_SEAT")}
-        self.env.update({"HOME": F.HOME, "TMPDIR": F.TMPDIR, "AGENT_SEAT": "CLAUDE", "FLEET_APPS_JSON": str(reg)})
+        self.env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in (G.ENV_GUARD, "FLEET_LAYOUT", "FLEET_LANES_ROOT", "AGENT_SEAT")
+        }
+        self.env.update(
+            {
+                "HOME": F.HOME,
+                "TMPDIR": F.TMPDIR,
+                "AGENT_SEAT": "CLAUDE",
+                "FLEET_APPS_JSON": str(reg),
+            }
+        )
         patcher = mock.patch.dict(os.environ, self.env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -942,7 +1252,13 @@ class HookCliTests(unittest.TestCase):
         return json.dumps(_payload(self.DENY_CMD))
 
     def test_claude_format(self) -> None:
-        for argv in ([], ["--format", "claude"], ["--format=codex"], ["--format", "muse"], ["--format", "nonsense"]):
+        for argv in (
+            [],
+            ["--format", "claude"],
+            ["--format=codex"],
+            ["--format", "muse"],
+            ["--format", "nonsense"],
+        ):
             with self.subTest(argv):
                 rc, out, err = self._main(argv, self._deny_payload())
                 self.assertEqual((rc, err), (0, ""))
@@ -964,14 +1280,23 @@ class HookCliTests(unittest.TestCase):
                 self.assertEqual(body["decision"], "deny")
 
     def test_cursor_format(self) -> None:
-        payload = json.dumps({"hook_event_name": "beforeShellExecution", "command": self.DENY_CMD,
-                              "cwd": F.HOME, "workspace_roots": [F.HOME]})
+        payload = json.dumps(
+            {
+                "hook_event_name": "beforeShellExecution",
+                "command": self.DENY_CMD,
+                "cwd": F.HOME,
+                "workspace_roots": [F.HOME],
+            }
+        )
         rc, out, _ = self._main(["--format", "cursor"], payload)
         body = json.loads(out)
         self.assertEqual(rc, 0)
         self.assertEqual(set(body), {"permission", "user_message", "agent_message"})
         self.assertEqual(body["permission"], "deny")
-        self.assertEqual(body["user_message"], "Blocked a fleet-repo checkout in a temp directory: /tmp/hh-verify.")
+        self.assertEqual(
+            body["user_message"],
+            "Blocked a fleet-repo checkout in a temp directory: /tmp/hh-verify.",
+        )
         self.assertIn("`~/apps/lane new HogHunter verify`", body["agent_message"])
 
     def test_exit2_contract(self) -> None:
@@ -991,23 +1316,36 @@ class HookCliTests(unittest.TestCase):
 
     def test_render_exact_bytes(self) -> None:
         self.assertEqual(H.render("R.  S.", "grok"), '{"decision": "deny", "reason": "R.  S."}')
-        self.assertEqual(H.render("R.", "claude"),
-                         '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", '
-                         '"permissionDecisionReason": "R."}}')
-        self.assertEqual(H.render("R.", "cursor", "/tmp/x"),
-                         '{"permission": "deny", "user_message": "Blocked a fleet-repo checkout in a temp '
-                         'directory: /tmp/x.", "agent_message": "R."}')
+        self.assertEqual(
+            H.render("R.", "claude"),
+            '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", '
+            '"permissionDecisionReason": "R."}}',
+        )
+        self.assertEqual(
+            H.render("R.", "cursor", "/tmp/x"),
+            '{"permission": "deny", "user_message": "Blocked a fleet-repo checkout in a temp '
+            'directory: /tmp/x.", "agent_message": "R."}',
+        )
 
     def test_subprocess_by_path_and_module(self) -> None:
         deny = self._deny_payload().encode()
         allow = json.dumps(_payload("git status")).encode()
-        for argv, cwd in (([sys.executable, str(HOOK_PATH), "--format", "grok"], None),
-                          ([sys.executable, "-m", "fleet_lanes.lane_guard_hook", "--format", "grok"], str(SCRIPTS_DIR))):
+        for argv, cwd in (
+            ([sys.executable, str(HOOK_PATH), "--format", "grok"], None),
+            (
+                [sys.executable, "-m", "fleet_lanes.lane_guard_hook", "--format", "grok"],
+                str(SCRIPTS_DIR),
+            ),
+        ):
             with self.subTest(argv[1]):
-                p = subprocess.run(argv, input=deny, capture_output=True, cwd=cwd, env=self.env, timeout=30)
+                p = subprocess.run(
+                    argv, input=deny, capture_output=True, cwd=cwd, env=self.env, timeout=30
+                )
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertEqual(json.loads(p.stdout)["decision"], "deny")
-                p = subprocess.run(argv, input=allow, capture_output=True, cwd=cwd, env=self.env, timeout=30)
+                p = subprocess.run(
+                    argv, input=allow, capture_output=True, cwd=cwd, env=self.env, timeout=30
+                )
                 self.assertEqual((p.returncode, p.stdout), (0, b""))
 
 

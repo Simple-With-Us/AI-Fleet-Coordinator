@@ -59,6 +59,7 @@ mentions it.
 
 Tests: fleet_lanes/tests/test_guard.py with the fixture table in fleet_lanes/tests/fixtures_guard.py.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -66,39 +67,70 @@ import fnmatch
 import os
 import re
 import shlex
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlsplit
 
 from . import layout as L
 
 __all__ = [
-    "ALLOW", "DENY", "Decision", "GuardContext", "make_context", "evaluate", "redact_url",
-    "RULE_CLONE", "RULE_GH_CLONE", "RULE_WORKTREE_ADD", "RULE_WORKTREE_MOVE",
-    "RULE_CLONE_CODE", "RULE_GH_CLONE_CODE", "RULE_WORKTREE_ADD_CODE", "RULE_WORKTREE_MOVE_CODE",
+    "ALLOW",
+    "DENY",
+    "DENY_RULES",
+    "ENV_GUARD",
+    "FLEET_OWNERS",
+    "MAX_COMMAND_CHARS",
     "RULE_ARCHIVE",
-    "RULE_TARBALL", "RULE_INIT_FETCH", "RULE_EXPORT", "DENY_RULES", "FLEET_OWNERS",
-    "ENV_GUARD", "MAX_COMMAND_CHARS", "seat_owns_folder", "lane_name_reads_back",
+    "RULE_CLONE",
+    "RULE_CLONE_CODE",
+    "RULE_EXPORT",
+    "RULE_GH_CLONE",
+    "RULE_GH_CLONE_CODE",
+    "RULE_INIT_FETCH",
+    "RULE_TARBALL",
+    "RULE_WORKTREE_ADD",
+    "RULE_WORKTREE_ADD_CODE",
+    "RULE_WORKTREE_MOVE",
+    "RULE_WORKTREE_MOVE_CODE",
+    "Decision",
+    "GuardContext",
+    "evaluate",
+    "lane_name_reads_back",
+    "make_context",
+    "redact_url",
+    "seat_owns_folder",
 ]
 
 ALLOW = "allow"
 DENY = "deny"
 
-RULE_CLONE = "clone-into-temp"                    # git clone (bare and mirror included)
-RULE_GH_CLONE = "gh-clone-into-temp"              # gh repo clone
-RULE_WORKTREE_ADD = "worktree-add-into-temp"      # git worktree add
-RULE_WORKTREE_MOVE = "worktree-move-into-temp"    # git worktree move
-RULE_CLONE_CODE = "clone-into-code"                # git clone into the integration tree
-RULE_GH_CLONE_CODE = "gh-clone-into-code"          # gh repo clone into the integration tree
+RULE_CLONE = "clone-into-temp"  # git clone (bare and mirror included)
+RULE_GH_CLONE = "gh-clone-into-temp"  # gh repo clone
+RULE_WORKTREE_ADD = "worktree-add-into-temp"  # git worktree add
+RULE_WORKTREE_MOVE = "worktree-move-into-temp"  # git worktree move
+RULE_CLONE_CODE = "clone-into-code"  # git clone into the integration tree
+RULE_GH_CLONE_CODE = "gh-clone-into-code"  # gh repo clone into the integration tree
 RULE_WORKTREE_ADD_CODE = "worktree-add-into-code"  # git worktree add into the integration tree
 RULE_WORKTREE_MOVE_CODE = "worktree-move-into-code"  # git worktree move into the integration tree
-RULE_ARCHIVE = "archive-into-temp"                # git archive written or extracted into temp
-RULE_TARBALL = "tarball-into-temp"                # GitHub source tarball downloaded or extracted into temp
-RULE_INIT_FETCH = "init-fetch-into-temp"          # git init + remote add + fetch/pull in temp
-RULE_EXPORT = "checkout-index-into-temp"          # git checkout-index --prefix=TEMP/
-DENY_RULES = (RULE_CLONE, RULE_GH_CLONE, RULE_WORKTREE_ADD, RULE_WORKTREE_MOVE,
-              RULE_CLONE_CODE, RULE_GH_CLONE_CODE, RULE_WORKTREE_ADD_CODE, RULE_WORKTREE_MOVE_CODE, RULE_ARCHIVE,
-              RULE_TARBALL, RULE_INIT_FETCH, RULE_EXPORT)
+RULE_ARCHIVE = "archive-into-temp"  # git archive written or extracted into temp
+RULE_TARBALL = "tarball-into-temp"  # GitHub source tarball downloaded or extracted into temp
+RULE_INIT_FETCH = "init-fetch-into-temp"  # git init + remote add + fetch/pull in temp
+RULE_EXPORT = "checkout-index-into-temp"  # git checkout-index --prefix=TEMP/
+DENY_RULES = (
+    RULE_CLONE,
+    RULE_GH_CLONE,
+    RULE_WORKTREE_ADD,
+    RULE_WORKTREE_MOVE,
+    RULE_CLONE_CODE,
+    RULE_GH_CLONE_CODE,
+    RULE_WORKTREE_ADD_CODE,
+    RULE_WORKTREE_MOVE_CODE,
+    RULE_ARCHIVE,
+    RULE_TARBALL,
+    RULE_INIT_FETCH,
+    RULE_EXPORT,
+)
 
 # Allow outcomes, so a caller (and the tests) can tell why a command passed.
 _OK_NO_MATCH = "no-match"
@@ -113,14 +145,16 @@ _OFF_VALUES = frozenset({"off", "0", "false", "no", "disabled"})
 
 # A command this long is not parsed (fail open).  20 KB parses in a few milliseconds.
 MAX_COMMAND_CHARS = 256 * 1024
-_MAX_DEPTH = 6     # nesting of $(...), bash -c, eval and heredoc-to-shell evaluation
+_MAX_DEPTH = 6  # nesting of $(...), bash -c, eval and heredoc-to-shell evaluation
 
 # Words that must appear before any deny rule can fire.  A command without one is allowed
 # without being parsed.
-_TRIGGER = re.compile(r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index",
-                      re.IGNORECASE)
+_TRIGGER = re.compile(
+    r"clone|worktree|archive|codeload|tarball|zipball|fetch|pull|remote|checkout-index",
+    re.IGNORECASE,
+)
 
-_UNK = "\x00"      # text the guard cannot know (an unset variable, command output)
+_UNK = "\x00"  # text the guard cannot know (an unset variable, command output)
 _META = frozenset(" \t\r\n;&|()<>")
 _PLAIN_RE = re.compile(r"[^\s;&|()<>'\"\\$`]+")
 _DQ_PLAIN_RE = re.compile(r"[^\"\\$`]+")
@@ -132,60 +166,225 @@ _BAL_RE = re.compile(r"[\\'\"`()<#\n]")
 _DELIM_START_RE = re.compile(r"['\"\\]?[A-Za-z_]")
 _CLAUDE_SCRATCH_RE = re.compile(r"claude-\d+")
 _SCP_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(?!//)/?([^/\s]+)/([^/\s]+?)/*$")
-_ARCHIVE_EXT_RE = re.compile(r"(\.tar\.gz|\.tgz|\.tar|\.zip|\.tar\.bz2|\.tar\.xz|\.git)$", re.IGNORECASE)
+_ARCHIVE_EXT_RE = re.compile(
+    r"(\.tar\.gz|\.tgz|\.tar|\.zip|\.tar\.bz2|\.tar\.xz|\.git)$", re.IGNORECASE
+)
 
 _TARBALL_RES = (
-    re.compile(r"^(?:https?://)?(?:[^/@\s]*@)?codeload\.github\.com/([^/\s]+)/([^/\s]+)/"
-               r"(?:legacy\.)?(?:tar\.gz|tar|zip)(?:[/?#]|$)", re.IGNORECASE),
-    re.compile(r"^(?:https?://)?(?:[^/@\s]*@)?(?:www\.)?github\.com/([^/\s]+)/([^/\s]+)/"
-               r"(?:archive|tarball|zipball)(?:[/?#]|$)", re.IGNORECASE),
-    re.compile(r"^(?:https?://)?(?:[^/@\s]*@)?api\.github\.com/repos/([^/\s]+)/([^/\s]+)/"
-               r"(?:tarball|zipball)(?:[/?#]|$)", re.IGNORECASE),
+    re.compile(
+        r"^(?:https?://)?(?:[^/@\s]*@)?codeload\.github\.com/([^/\s]+)/([^/\s]+)/"
+        r"(?:legacy\.)?(?:tar\.gz|tar|zip)(?:[/?#]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:https?://)?(?:[^/@\s]*@)?(?:www\.)?github\.com/([^/\s]+)/([^/\s]+)/"
+        r"(?:archive|tarball|zipball)(?:[/?#]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:https?://)?(?:[^/@\s]*@)?api\.github\.com/repos/([^/\s]+)/([^/\s]+)/"
+        r"(?:tarball|zipball)(?:[/?#]|$)",
+        re.IGNORECASE,
+    ),
 )
-_GH_API_TARBALL_RE = re.compile(r"^/?repos/([^/\s]+)/([^/\s]+)/(?:tarball|zipball)(?:[/?#]|$)",
-                                re.IGNORECASE)
+_GH_API_TARBALL_RE = re.compile(
+    r"^/?repos/([^/\s]+)/([^/\s]+)/(?:tarball|zipball)(?:[/?#]|$)", re.IGNORECASE
+)
 
 _SHELL_TOOL_HINTS = ("bash", "shell", "terminal", "run_command", "exec_command", "execute_command")
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
-_RESERVED = frozenset({"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!",
-                       "{", "}", "time", "esac", "coproc"})
+_RESERVED = frozenset(
+    {
+        "if",
+        "then",
+        "else",
+        "elif",
+        "fi",
+        "do",
+        "done",
+        "while",
+        "until",
+        "!",
+        "{",
+        "}",
+        "time",
+        "esac",
+        "coproc",
+    }
+)
 _HEADERS = frozenset({"for", "case", "select", "function"})
-_PASSTHRU = frozenset({"gunzip", "gzip", "zcat", "xz", "unxz", "xzcat", "bzip2", "bunzip2",
-                       "bzcat", "zstd", "unzstd", "zstdcat", "cat", "pv"})
-_SPECIAL_ZERO = frozenset({"$", "!", "?", "#", "-", "RANDOM", "BASHPID", "SECONDS",
-                           "EPOCHSECONDS", "EPOCHREALTIME", "PPID", "UID", "EUID", "LINENO"})
+_PASSTHRU = frozenset(
+    {
+        "gunzip",
+        "gzip",
+        "zcat",
+        "xz",
+        "unxz",
+        "xzcat",
+        "bzip2",
+        "bunzip2",
+        "bzcat",
+        "zstd",
+        "unzstd",
+        "zstdcat",
+        "cat",
+        "pv",
+    }
+)
+_SPECIAL_ZERO = frozenset(
+    {
+        "$",
+        "!",
+        "?",
+        "#",
+        "-",
+        "RANDOM",
+        "BASHPID",
+        "SECONDS",
+        "EPOCHSECONDS",
+        "EPOCHREALTIME",
+        "PPID",
+        "UID",
+        "EUID",
+        "LINENO",
+    }
+)
 
-_GIT_GLOBAL_VALUE = frozenset({"-c", "--namespace", "--super-prefix", "--config-env",
-                               "--attr-source", "--list-cmds"})
-_CLONE_VALUE = frozenset({"-b", "--branch", "-o", "--origin", "-u", "--upload-pack", "--reference",
-                          "--reference-if-able", "--separate-git-dir", "--depth", "--shallow-since",
-                          "--shallow-exclude", "-c", "--config", "--filter", "--server-option",
-                          "-j", "--jobs", "--template", "--bundle-uri", "--ref-format", "--revision"})
+_GIT_GLOBAL_VALUE = frozenset(
+    {"-c", "--namespace", "--super-prefix", "--config-env", "--attr-source", "--list-cmds"}
+)
+_CLONE_VALUE = frozenset(
+    {
+        "-b",
+        "--branch",
+        "-o",
+        "--origin",
+        "-u",
+        "--upload-pack",
+        "--reference",
+        "--reference-if-able",
+        "--separate-git-dir",
+        "--depth",
+        "--shallow-since",
+        "--shallow-exclude",
+        "-c",
+        "--config",
+        "--filter",
+        "--server-option",
+        "-j",
+        "--jobs",
+        "--template",
+        "--bundle-uri",
+        "--ref-format",
+        "--revision",
+    }
+)
 _WT_ADD_VALUE = frozenset({"-b", "-B", "--reason"})
-_ARCHIVE_VALUE = frozenset({"--format", "--prefix", "--exec", "--add-file", "--add-virtual-file", "--mtime"})
+_ARCHIVE_VALUE = frozenset(
+    {"--format", "--prefix", "--exec", "--add-file", "--add-virtual-file", "--mtime"}
+)
 _TAR_SHORT_VALUE = frozenset("bCfFgHIKLNTVX")
 _CURL_SHORT_VALUE = frozenset("AbcCdDeEFHKmoPQrtTuUwxXyYz")
-_CURL_LONG_VALUE = frozenset({
-    "--output", "--output-dir", "--header", "--data", "--data-raw", "--data-binary",
-    "--data-urlencode", "--data-ascii", "--user", "--request", "--user-agent", "--referer",
-    "--cookie", "--cookie-jar", "--config", "--max-time", "--connect-timeout", "--retry",
-    "--retry-delay", "--retry-max-time", "--proxy", "--proxy-user", "--cacert", "--capath",
-    "--cert", "--key", "--form", "--form-string", "--upload-file", "--range", "--write-out",
-    "--limit-rate", "--resolve", "--connect-to", "--interface", "--url", "--dump-header",
-    "--oauth2-bearer", "--proto", "--proto-redir", "--continue-at", "--time-cond",
-    "--max-filesize", "--netrc-file", "--trace", "--trace-ascii", "--stderr", "--variable",
-    "--json", "--aws-sigv4", "--max-redirs", "--speed-limit", "--speed-time", "--unix-socket",
-})
+_CURL_LONG_VALUE = frozenset(
+    {
+        "--output",
+        "--output-dir",
+        "--header",
+        "--data",
+        "--data-raw",
+        "--data-binary",
+        "--data-urlencode",
+        "--data-ascii",
+        "--user",
+        "--request",
+        "--user-agent",
+        "--referer",
+        "--cookie",
+        "--cookie-jar",
+        "--config",
+        "--max-time",
+        "--connect-timeout",
+        "--retry",
+        "--retry-delay",
+        "--retry-max-time",
+        "--proxy",
+        "--proxy-user",
+        "--cacert",
+        "--capath",
+        "--cert",
+        "--key",
+        "--form",
+        "--form-string",
+        "--upload-file",
+        "--range",
+        "--write-out",
+        "--limit-rate",
+        "--resolve",
+        "--connect-to",
+        "--interface",
+        "--url",
+        "--dump-header",
+        "--oauth2-bearer",
+        "--proto",
+        "--proto-redir",
+        "--continue-at",
+        "--time-cond",
+        "--max-filesize",
+        "--netrc-file",
+        "--trace",
+        "--trace-ascii",
+        "--stderr",
+        "--variable",
+        "--json",
+        "--aws-sigv4",
+        "--max-redirs",
+        "--speed-limit",
+        "--speed-time",
+        "--unix-socket",
+    }
+)
 _WGET_SHORT_VALUE = frozenset("aABDeiIlLoOPQRtTUwX")
-_WGET_LONG_VALUE = frozenset({"--output-document", "--directory-prefix", "--output-file",
-                              "--append-output", "--user-agent", "--header", "--tries",
-                              "--timeout", "--input-file", "--execute", "--user", "--password"})
-_GH_API_VALUE = frozenset({"-X", "--method", "-H", "--header", "-f", "--raw-field", "-F",
-                           "--field", "-q", "--jq", "-t", "--template", "--hostname", "--input",
-                           "--cache", "-p", "--preview"})
+_WGET_LONG_VALUE = frozenset(
+    {
+        "--output-document",
+        "--directory-prefix",
+        "--output-file",
+        "--append-output",
+        "--user-agent",
+        "--header",
+        "--tries",
+        "--timeout",
+        "--input-file",
+        "--execute",
+        "--user",
+        "--password",
+    }
+)
+_GH_API_VALUE = frozenset(
+    {
+        "-X",
+        "--method",
+        "-H",
+        "--header",
+        "-f",
+        "--raw-field",
+        "-F",
+        "--field",
+        "-q",
+        "--jq",
+        "-t",
+        "--template",
+        "--hostname",
+        "--input",
+        "--cache",
+        "-p",
+        "--preview",
+    }
+)
 
 
 # --------------------------------------------------------------------------- public types
+
 
 @dataclass(frozen=True)
 class Decision:
@@ -210,11 +409,13 @@ def redact_url(text: str) -> str:
     Any user info on an http(s) URL is redacted (a bare token is a credential too); on other
     schemes only user info that carries a password is, so ssh://git@github.com stays readable.
     """
+
     def fix(m: re.Match[str]) -> str:
         scheme, info = m.group(1), m.group(2)
         if scheme.lower().startswith("http") or ":" in info:
             return f"{scheme}REDACTED@"
         return m.group(0)
+
     return re.sub(r"(?i)\b([a-z][a-z0-9+.-]*://)([^/@\s]+)@", fix, text)
 
 
@@ -226,8 +427,15 @@ class GuardContext:
     against them.  `tmpdir` is what $TMPDIR and a bare `mktemp` resolve to.
     """
 
-    def __init__(self, *, home: str, env: Mapping[str, str], registry: L.Registry, roots: L.Roots,
-                 tmpdir: str) -> None:
+    def __init__(
+        self,
+        *,
+        home: str,
+        env: Mapping[str, str],
+        registry: L.Registry,
+        roots: L.Roots,
+        tmpdir: str,
+    ) -> None:
         self.home = home
         self.env = env
         self.registry = registry
@@ -255,15 +463,27 @@ class GuardContext:
         self.home_in_temp = self._raw_remainder(home_f) is not None
         # Lanes stored on the external disk (lanes/<Repo> is a symlink there) are lanes: a clone of one into
         # temp is as much a fleet clone as a clone of the same lane at its ~/apps/lanes spelling.
-        self.fleet_roots_f = tuple(dict.fromkeys(
-            fold(str(p)) for p in (roots.lanes_root, roots.code_root, roots.apps_root, *roots.external_lanes_roots)))
+        self.fleet_roots_f = tuple(
+            dict.fromkeys(
+                fold(str(p))
+                for p in (
+                    roots.lanes_root,
+                    roots.code_root,
+                    roots.apps_root,
+                    *roots.external_lanes_roots,
+                )
+            )
+        )
         self.code_root_f = fold(str(roots.code_root))
         self.lanes_root_f = fold(str(roots.lanes_root))
-        self.lanes_roots_f = tuple(dict.fromkeys(
-            fold(str(p)) for p in (roots.lanes_root, *roots.external_lanes_roots)))
+        self.lanes_roots_f = tuple(
+            dict.fromkeys(fold(str(p)) for p in (roots.lanes_root, *roots.external_lanes_roots))
+        )
         self.harness_f = tuple(
             tuple(fold(loc.glob_or_prefix).split("/"))
-            for loc in roots.harness_locations if loc.name != "documents")
+            for loc in roots.harness_locations
+            if loc.name != "documents"
+        )
         names: list[tuple[str, L.App]] = []
         for app in registry.apps:
             for text in (app.prefix.lower(), *app.prefix_aliases()):
@@ -277,7 +497,7 @@ class GuardContext:
             if fk == root:
                 return ""
             if fk.startswith(root + "/"):
-                return fk[len(root) + 1:]
+                return fk[len(root) + 1 :]
         comps = fk.split("/")
         for pat in self.tmp_globs_f:
             k = len(pat)
@@ -292,7 +512,11 @@ class GuardContext:
         root itself); None when the path is not in temp.  When the home itself sits in temp (a
         test home), paths inside the home are not temp."""
         rem = self._raw_remainder(fk)
-        if rem is not None and self.home_in_temp and (fk == self.home_f or fk.startswith(self.home_f + "/")):
+        if (
+            rem is not None
+            and self.home_in_temp
+            and (fk == self.home_f or fk.startswith(self.home_f + "/"))
+        ):
             return None
         return rem
 
@@ -302,6 +526,7 @@ class GuardContext:
 # `lane` (lane.py) calls these two as well, so the deny reason can never name a lane that `lane new`
 # refuses.  They would sit best in layout.py; they live here because the hook import path must stay
 # layout, guard, hook (no doctor, no lane), and lane can import guard cheaply.
+
 
 def seat_owns_folder(seat: L.Seat, registry: L.Registry) -> bool:
     """True when the folder name `seat.suffix` belongs to `seat`.
@@ -316,7 +541,9 @@ def seat_owns_folder(seat: L.Seat, registry: L.Registry) -> bool:
     return owner is not None and owner.name.lower() == seat.name.lower()
 
 
-def lane_name_reads_back(prefix: str, seat: str, slug: str, registry: L.Registry, *, flat: bool = False) -> bool:
+def lane_name_reads_back(
+    prefix: str, seat: str, slug: str, registry: L.Registry, *, flat: bool = False
+) -> bool:
     """True when the folder `lane new` makes for (prefix, seat, slug) reads back as that very app
     prefix, seat and slug.
 
@@ -339,12 +566,23 @@ def lane_name_reads_back(prefix: str, seat: str, slug: str, registry: L.Registry
             return False
         parent = owner.lane_dir
     verdict, _reasons, app, hit, got = L._eval_name(name, registry, nested_prefix_dir=parent)
-    return (verdict == L.NameVerdict.CONFORMING and app is not None and app.prefix == prefix
-            and hit is not None and hit.seat == seat and got == slug)
+    return (
+        verdict == L.NameVerdict.CONFORMING
+        and app is not None
+        and app.prefix == prefix
+        and hit is not None
+        and hit.seat == seat
+        and got == slug
+    )
 
 
-def make_context(env: Mapping[str, str] | None = None, *, home: str | os.PathLike[str] | None = None,
-                 registry: L.Registry | None = None, case_insensitive: bool | None = None) -> GuardContext:
+def make_context(
+    env: Mapping[str, str] | None = None,
+    *,
+    home: str | os.PathLike[str] | None = None,
+    registry: L.Registry | None = None,
+    case_insensitive: bool | None = None,
+) -> GuardContext:
     """Resolve the roots and load the registry once.  This is the only filesystem work.
 
     `env` defaults to the process environment and is read for HOME, TMPDIR, FLEET_LAYOUT,
@@ -364,7 +602,9 @@ def make_context(env: Mapping[str, str] | None = None, *, home: str | os.PathLik
             registry = L.parse_registry({}, include_extras=True, source="fallback")
     raw_tmp = (env.get("TMPDIR") or "").strip()
     tmpdir = _norm(raw_tmp) if raw_tmp.startswith("/") else "/tmp"
-    return GuardContext(home=str(roots.home), env=env, registry=registry, roots=roots, tmpdir=tmpdir)
+    return GuardContext(
+        home=str(roots.home), env=env, registry=registry, roots=roots, tmpdir=tmpdir
+    )
 
 
 def evaluate(payload: Any, ctx: GuardContext | None = None) -> Decision:
@@ -381,6 +621,7 @@ def evaluate(payload: Any, ctx: GuardContext | None = None) -> Decision:
 
 
 # --------------------------------------------------------------------------- payload
+
 
 def _extract(payload: Any) -> tuple[str, str, str | None] | None:
     """(command, cwd, scratchpad_dir) from a hook payload, or None when it is not a shell call."""
@@ -404,7 +645,12 @@ def _extract(payload: Any) -> tuple[str, str, str | None] | None:
     if cmd is None:
         cmd = payload.get("command")
     if isinstance(cmd, list) and cmd and all(isinstance(c, str) for c in cmd):
-        if len(cmd) >= 3 and os.path.basename(cmd[0]) in _SHELLS and cmd[1].startswith("-") and "c" in cmd[1]:
+        if (
+            len(cmd) >= 3
+            and os.path.basename(cmd[0]) in _SHELLS
+            and cmd[1].startswith("-")
+            and "c" in cmd[1]
+        ):
             cmd = cmd[2]
         else:
             cmd = " ".join(shlex.quote(c) for c in cmd)
@@ -412,8 +658,13 @@ def _extract(payload: Any) -> tuple[str, str, str | None] | None:
         return None
     # The per-call directory (where this command runs) beats the session's top-level cwd.
     cwd = ""
-    for value in (ti.get("workdir"), ti.get("cwd"), ti.get("Cwd"), ti.get("working_directory"),
-                  payload.get("cwd")):
+    for value in (
+        ti.get("workdir"),
+        ti.get("cwd"),
+        ti.get("Cwd"),
+        ti.get("working_directory"),
+        payload.get("cwd"),
+    ):
         if isinstance(value, str) and value.strip():
             cwd = value.strip()
             break
@@ -449,6 +700,7 @@ def _evaluate(payload: Any, ctx: GuardContext | None) -> Decision:
 
 
 # --------------------------------------------------------------------------- path strings
+
 
 def _norm(path: str) -> str:
     out = os.path.normpath(path)
@@ -498,7 +750,7 @@ def _whole_tree_pathspec(spec: str, base: str) -> bool:
     if not spec or spec.startswith(":"):
         return True
     m = re.search(r"[*?\[]", spec)
-    fixed = spec[:spec.rfind("/", 0, m.start()) + 1] if m else spec
+    fixed = spec[: spec.rfind("/", 0, m.start()) + 1] if m else spec
     if base.startswith("/") and _UNK not in base:
         full = _join(base, fixed or ".")
         return full == base or base.startswith(full.rstrip("/") + "/")
@@ -509,11 +761,9 @@ def _whole_tree_pathspec(spec: str, base: str) -> bool:
 def _humanish(repo: str, bare: bool) -> str:
     """The directory git (or gh) picks when the destination is omitted."""
     t = repo.rstrip("/")
-    if t.endswith("/.git"):
-        t = t[:-5]
+    t = t.removesuffix("/.git")
     name = re.split(r"[/:]", t)[-1] if t else ""
-    if name.endswith(".git"):
-        name = name[:-4]
+    name = name.removesuffix(".git")
     name = name or "repo"
     return name + ".git" if bare else name
 
@@ -542,16 +792,17 @@ def _github_owner_repo(text: str) -> tuple[str, str] | None:
 
 
 def _strip_git(name: str) -> str:
-    return name[:-4] if name.endswith(".git") else name
+    return name.removesuffix(".git")
 
 
 # --------------------------------------------------------------------------- lexer
+
 
 class _Word:
     """One shell word as segments: ("lit", text), ("var", name, op, arg), ("cmd", inner), ("unk",).
     `tilde` is set when the word starts with an unquoted ~."""
 
-    __slots__ = ("segs", "buf", "tilde")
+    __slots__ = ("buf", "segs", "tilde")
 
     def __init__(self) -> None:
         self.segs: list[tuple] = []
@@ -567,7 +818,7 @@ class _Word:
             self.buf = []
         self.segs.append(seg)
 
-    def done(self) -> "_Word":
+    def done(self) -> _Word:
         if self.buf:
             self.segs.append(("lit", "".join(self.buf)))
             self.buf = []
@@ -590,7 +841,7 @@ def _read_delim(s: str, i: int) -> tuple[str, int]:
         if c in "'\"":
             j = s.find(c, i + 1)
             j = n if j < 0 else j
-            out.append(s[i + 1:j])
+            out.append(s[i + 1 : j])
             i = j + 1
             continue
         if c == "\\" and i + 1 < n:
@@ -746,22 +997,22 @@ def _scan_brace(s: str, i: int) -> int:
 def _param_seg(inner: str) -> tuple:
     """Segment for the body of ${...}."""
     if not inner or (inner[0] in "#!" and len(inner) > 1):
-        return ("unk",)            # ${#x} length, ${!x} indirection
+        return ("unk",)  # ${#x} length, ${!x} indirection
     m = _PARAM_RE.match(inner)
     if m is None:
         return ("unk",)
-    name, rest = m.group(1), inner[m.end():]
+    name, rest = m.group(1), inner[m.end() :]
     if not rest:
         return ("var", name, None, None)
     for op in (":-", ":=", "-", "="):
         if rest.startswith(op):
-            return ("var", name, "default", rest[len(op):])
+            return ("var", name, "default", rest[len(op) :])
     for op in (":?", "?"):
         if rest.startswith(op):
             return ("var", name, None, None)
     for op in ("%%", "%", "##", "#"):
         if rest.startswith(op):
-            return ("var", name, op, rest[len(op):])
+            return ("var", name, op, rest[len(op) :])
     return ("unk",)
 
 
@@ -786,7 +1037,7 @@ def _read_dollar(s: str, i: int, w: _Word, in_dq: bool) -> int:
         return k
     if nx == "{":
         k = _scan_brace(s, j + 1)
-        inner = s[j + 1:k - 1] if k - 1 > j and s[k - 1] == "}" else s[j + 1:k]
+        inner = s[j + 1 : k - 1] if k - 1 > j and s[k - 1] == "}" else s[j + 1 : k]
         w.seg(_param_seg(inner))
         return k
     if nx == "'" and not in_dq:
@@ -853,9 +1104,9 @@ def _read_unit(s: str, i: int, w: _Word) -> int:
     if c == "'":
         j = s.find("'", i + 1)
         if j < 0:
-            w.lit(s[i + 1:])
+            w.lit(s[i + 1 :])
             return n
-        w.lit(s[i + 1:j])
+        w.lit(s[i + 1 : j])
         return j + 1
     if c == '"':
         return _read_dq(s, i + 1, w)
@@ -888,7 +1139,7 @@ def _lex_redirect(s: str, i: int, fd: str, toks: list, pending: list) -> int:
     elif s.startswith("&>", i):
         op, i = "&>", i + 2
     elif i + 1 < n and s[i + 1] == "(":
-        inner, j = _scan_balanced(s, i + 2)       # process substitution <(...) or >(...)
+        inner, j = _scan_balanced(s, i + 2)  # process substitution <(...) or >(...)
         w = _Word()
         w.seg(("cmd", inner))
         toks.append(("w", w.done()))
@@ -968,7 +1219,7 @@ def _lex(s: str) -> list:
             if c == "(" and word is not None:
                 text = word.plain()
                 if text is not None and _ASSIGN_PREFIX_RE.match(text):
-                    inner, i = _scan_balanced(s, i + 1)     # array literal a=( ... )
+                    inner, i = _scan_balanced(s, i + 1)  # array literal a=( ... )
                     word.lit("(" + inner + ")")
                     continue
             if word is not None:
@@ -995,7 +1246,7 @@ def _lex(s: str) -> list:
                 while j < n and s[j] in " \t":
                     j += 1
                 if j < n and s[j] == ")":
-                    i = j + 1          # the () of a function definition
+                    i = j + 1  # the () of a function definition
                     continue
                 op, i = "(", i + 1
             else:
@@ -1025,12 +1276,13 @@ def _word_from_text(text: str) -> _Word:
 
 # --------------------------------------------------------------------------- evaluation
 
+
 class _State:
     """What one shell knows while the command runs.  `fleet_files` (downloaded fleet tarballs and
     archives) and `remotes` (temp dirs given a fleet remote) are filesystem effects, so a
     subshell shares them; cwd, the dir stack and variables are scoped."""
 
-    __slots__ = ("cwd", "oldpwd", "dirstack", "vars", "fleet_files", "remotes")
+    __slots__ = ("cwd", "dirstack", "fleet_files", "oldpwd", "remotes", "vars")
 
     def __init__(self, cwd: str) -> None:
         self.cwd = cwd
@@ -1040,14 +1292,14 @@ class _State:
         self.fleet_files: dict[str, _Src] = {}
         self.remotes: dict[str, _Src] = {}
 
-    def scoped_copy(self) -> "_State":
+    def scoped_copy(self) -> _State:
         c = _State.__new__(_State)
         c.cwd, c.oldpwd = self.cwd, self.oldpwd
         c.dirstack, c.vars = list(self.dirstack), dict(self.vars)
         c.fleet_files, c.remotes = self.fleet_files, self.remotes
         return c
 
-    def restore(self, saved: "_State") -> None:
+    def restore(self, saved: _State) -> None:
         self.cwd, self.oldpwd = saved.cwd, saved.oldpwd
         self.dirstack, self.vars = saved.dirstack, saved.vars
 
@@ -1087,10 +1339,14 @@ class _Evaluator:
         if scratch:
             sd = _norm(scratch)
             dirs.append(sd)
-            for a, b in (("/private/tmp/", "/tmp/"), ("/tmp/", "/private/tmp/"),
-                         ("/private/var/", "/var/"), ("/var/", "/private/var/")):
+            for a, b in (
+                ("/private/tmp/", "/tmp/"),
+                ("/tmp/", "/private/tmp/"),
+                ("/private/var/", "/var/"),
+                ("/var/", "/private/var/"),
+            ):
                 if sd.startswith(a):
-                    dirs.append(b + sd[len(a):])
+                    dirs.append(b + sd[len(a) :])
         self.scratch_f = tuple(fold(d) for d in dirs)
 
     # ---- driving
@@ -1124,7 +1380,9 @@ class _Evaluator:
                 continue
             op = tok[1]
             if words or redirs:
-                last_out = self._safe_command(words, redirs, st, last_out if after_pipe else group_in)
+                last_out = self._safe_command(
+                    words, redirs, st, last_out if after_pipe else group_in
+                )
                 words, redirs = [], []
                 after_pipe = False
                 if self.hits:
@@ -1141,7 +1399,7 @@ class _Evaluator:
                 if stack:
                     saved, group_in = stack.pop()
                     st.restore(saved)
-                after_pipe = False        # last_out stays: it is the group's output
+                after_pipe = False  # last_out stays: it is the group's output
             else:
                 after_pipe = False
                 last_out = None
@@ -1152,7 +1410,7 @@ class _Evaluator:
         try:
             return self._command(words, redirs, st, stdin)
         except Exception:
-            return None            # one odd segment never stops checks on the others
+            return None  # one odd segment never stops checks on the others
 
     # ---- expansion
 
@@ -1186,15 +1444,15 @@ class _Evaluator:
             if not pat or _UNK in pat or any(ch in pat for ch in "*?["):
                 return None if pat else value
             if op[0] == "%":
-                return value[:-len(pat)] if value.endswith(pat) else value
-            return value[len(pat):] if value.startswith(pat) else value
+                return value.removesuffix(pat)
+            return value.removeprefix(pat)
         return value
 
     def _tilde(self, s: str, st: _State) -> str:
         m = re.match(r"~([^/]*)", s)
         if m is None:
             return s
-        user, rest = m.group(1), s[m.end():]
+        user, rest = m.group(1), s[m.end() :]
         if user == "":
             base = self.ctx.home
         elif user == "+":
@@ -1286,7 +1544,7 @@ class _Evaluator:
                     if ch == "t":
                         use_tmp = True
                     elif ch == "p":
-                        tail = a[k + 1:]
+                        tail = a[k + 1 :]
                         dir_ = tail or (args[i] if i < len(args) else "")
                         if not tail:
                             i += 1
@@ -1295,7 +1553,9 @@ class _Evaluator:
             template = a
         base_tmp = self._var("TMPDIR", st) or "/tmp"
         if dir_:
-            return _child(self._path(dir_, st), os.path.basename(template) if template else "tmp.XXXXXXXXXX")
+            return _child(
+                self._path(dir_, st), os.path.basename(template) if template else "tmp.XXXXXXXXXX"
+            )
         if template is None:
             return _child(base_tmp, "tmp.XXXXXXXXXX")
         if use_tmp:
@@ -1312,8 +1572,8 @@ class _Evaluator:
         m = _ASSIGN_RE.match(first)
         if m is None:
             return None
-        value = expanded[m.end():]
-        if first[m.end():].startswith("~"):
+        value = expanded[m.end() :]
+        if first[m.end() :].startswith("~"):
             value = self._tilde(value, st)
         if m.group(2):
             value = (st.vars.get(m.group(1)) or "") + value
@@ -1382,7 +1642,7 @@ class _Evaluator:
         known = fp if k < 0 else fp[:k]
         for root in self.ctx.fleet_roots_f:
             if known.startswith(root + "/") or (k >= 0 and known == root + "/"):
-                rel = known[len(root) + 1:]
+                rel = known[len(root) + 1 :]
                 first = rel.split("/", 1)[0] if rel else ""
                 if not first and k < 0:
                     continue
@@ -1390,30 +1650,44 @@ class _Evaluator:
                 if first and (k < 0 or len(rel) > len(first)):
                     if root in self.ctx.lanes_roots_f:
                         reg = self.ctx.registry
-                        app = (reg.app_by_lane_dir(first, case_insensitive=self.ctx.case_insensitive)
-                               or reg.app_by_prefix(first) or self._app_from_name(first))
+                        app = (
+                            reg.app_by_lane_dir(first, case_insensitive=self.ctx.case_insensitive)
+                            or reg.app_by_prefix(first)
+                            or self._app_from_name(first)
+                        )
                     else:
                         app = self._app_from_name(first)
-                return _Src(self.display(path), app, app.prefix if app else None,
-                             app.owner_repo if app else "")
+                return _Src(
+                    self.display(path),
+                    app,
+                    app.prefix if app else None,
+                    app.owner_repo if app else "",
+                )
         comps = known.split("/")
         for pat in self.ctx.harness_f:
             n = len(pat)
             if len(comps) > n and all(fnmatch.fnmatchcase(c, p) for c, p in zip(comps, pat)):
                 app = None
-                for comp in comps[n:]:            # below the harness root only (.botfleet is not BotFleet)
+                for comp in comps[n:]:  # below the harness root only (.botfleet is not BotFleet)
                     app = self._app_from_name(comp)
                     if app is not None:
                         break
-                return _Src(self.display(path), app, app.prefix if app else None,
-                            app.owner_repo if app else "")
+                return _Src(
+                    self.display(path),
+                    app,
+                    app.prefix if app else None,
+                    app.owner_repo if app else "",
+                )
         return None
 
     def _repo_src(self, owner: str, repo: str, kind: str = "repo") -> _Src | None:
         if _UNK in owner:
             return None
         owner_repo = f"{owner}/{repo}"
-        if owner.casefold() not in self.ctx.fleet_owners and owner_repo.casefold() not in self.ctx.owner_repos:
+        if (
+            owner.casefold() not in self.ctx.fleet_owners
+            and owner_repo.casefold() not in self.ctx.owner_repos
+        ):
             return None
         app = self._app_from_name(repo)
         label = owner_repo.replace(_UNK, "*")
@@ -1458,10 +1732,14 @@ class _Evaluator:
         # A clone of a registered app into its exact canonical integration directory is the
         # onboarding path.  Worktrees, nested destinations, and cross-app clones stay denied.
         app = src.app
-        canonical = (code_rule in (RULE_CLONE_CODE, RULE_GH_CLONE_CODE) and app is not None
-                     and app.registered and app.integration_dir_name
-                     and self.ctx.fold(_norm(target)) == self.ctx.fold(
-                         _join(str(self.ctx.roots.code_root), app.integration_dir_name)))
+        canonical = (
+            code_rule in (RULE_CLONE_CODE, RULE_GH_CLONE_CODE)
+            and app is not None
+            and app.registered
+            and app.integration_dir_name
+            and self.ctx.fold(_norm(target))
+            == self.ctx.fold(_join(str(self.ctx.roots.code_root), app.integration_dir_name))
+        )
         if not canonical:
             self.hits.append(_Hit(code_rule, target, src, what))
 
@@ -1500,7 +1778,7 @@ class _Evaluator:
         if i >= n:
             return None
         name = os.path.basename(args[i])
-        rest = args[i + 1:]
+        rest = args[i + 1 :]
         if name in ("cd", "chdir"):
             self._cd(rest, st)
         elif name == "pushd":
@@ -1512,7 +1790,7 @@ class _Evaluator:
             for a in rest:
                 m = _ASSIGN_RE.match(a)
                 if m and not m.group(2):
-                    st.vars[m.group(1)] = a[m.end():]
+                    st.vars[m.group(1)] = a[m.end() :]
         elif name == "git":
             return self._git(rest, redirs, st)
         elif name == "gh":
@@ -1561,11 +1839,15 @@ class _Evaluator:
                 i += 1
                 while i < n and args[i].startswith("-"):
                     i += 2 if args[i] in ("-s", "-k") else 1
-                i += 1             # the duration
+                i += 1  # the duration
             elif name == "sudo":
                 i += 1
                 while i < n and args[i].startswith("-"):
-                    i += 2 if args[i] in ("-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T") else 1
+                    i += (
+                        2
+                        if args[i] in ("-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T")
+                        else 1
+                    )
             elif name == "caffeinate":
                 i += 1
                 while i < n and args[i].startswith("-"):
@@ -1617,7 +1899,7 @@ class _Evaluator:
                 continue
             break
         if j < len(rest) and rest[j] != "-":
-            return                 # a script file: not read
+            return  # a script file: not read
         for r in redirs:
             if r[1] in ("<<", "<<-") and r[3]:
                 self._recurse(r[3], st.scoped_copy())
@@ -1652,7 +1934,7 @@ class _Evaluator:
                 break
         if i >= n:
             return None
-        sub, rest = args[i], args[i + 1:]
+        sub, rest = args[i], args[i + 1 :]
         repo_dir = _join(eff, gitdir) if gitdir else eff
         if sub == "clone":
             self._clone(rest, eff)
@@ -1774,7 +2056,7 @@ class _Evaluator:
         src = dataclasses.replace(src, kind="archive")
         target = _join(eff, out) if out else self._stdout_target(redirs, st)
         if target is None or out == "-":
-            return src                     # streamed: a later `| tar -x` decides
+            return src  # streamed: a later `| tar -x` decides
         if self._where(target) == "temp":
             self.hits.append(_Hit(RULE_ARCHIVE, target, src, "an archive"))
         else:
@@ -1846,7 +2128,7 @@ class _Evaluator:
                         prefix = val
                 continue
             if a.startswith("-") and len(a) > 1:
-                every = every or "a" in a[1:]          # -a, also inside -fa or -uaf
+                every = every or "a" in a[1:]  # -a, also inside -fa or -uaf
                 continue
             paths.append(a)
         if not prefix or (paths and not every):
@@ -1900,7 +2182,9 @@ class _Evaluator:
         src = self._gh_source(pos[0])
         if src is None:
             return
-        target = self._path(pos[1], st) if len(pos) > 1 else _child(st.cwd, _humanish(pos[0], False))
+        target = (
+            self._path(pos[1], st) if len(pos) > 1 else _child(st.cwd, _humanish(pos[0], False))
+        )
         self._check(RULE_GH_CLONE, target, src, "a clone")
 
     def _download(self, src: _Src, target: str | None, st: _State) -> Any:
@@ -1960,7 +2244,7 @@ class _Evaluator:
                     if ch == "O":
                         remote_name = True
                     if ch in _CURL_SHORT_VALUE:
-                        tail = a[k + 1:]
+                        tail = a[k + 1 :]
                         val = tail or (args[i] if i < len(args) else "")
                         if not tail:
                             i += 1
@@ -1981,7 +2265,10 @@ class _Evaluator:
             elif out:
                 target = _join(base, out)
             elif remote_name:
-                tail = urlsplit(url.replace(_UNK, "_")).path.rstrip("/").rsplit("/", 1)[-1] or "download"
+                tail = (
+                    urlsplit(url.replace(_UNK, "_")).path.rstrip("/").rsplit("/", 1)[-1]
+                    or "download"
+                )
                 target = _join(base, tail)
             else:
                 target = self._stdout_target(redirs, st)
@@ -2013,7 +2300,7 @@ class _Evaluator:
             if a.startswith("-") and len(a) > 1:
                 for k, ch in enumerate(a[1:], 1):
                     if ch in _WGET_SHORT_VALUE:
-                        tail = a[k + 1:]
+                        tail = a[k + 1 :]
                         val = tail or (args[i] if i < len(args) else "")
                         if not tail:
                             i += 1
@@ -2034,7 +2321,10 @@ class _Evaluator:
             elif doc:
                 target = self._path(doc, st)
             else:
-                tail = urlsplit(url.replace(_UNK, "_")).path.rstrip("/").rsplit("/", 1)[-1] or "index.html"
+                tail = (
+                    urlsplit(url.replace(_UNK, "_")).path.rstrip("/").rsplit("/", 1)[-1]
+                    or "index.html"
+                )
                 target = _join(self._path(prefix, st) if prefix else st.cwd, tail)
             got = self._download(src, target, st)
             if self.hits:
@@ -2056,7 +2346,7 @@ class _Evaluator:
         infile: str | None = None
         i = 0
         if args and re.fullmatch(r"[A-Za-z]+", args[0]) and any(op in args[0] for op in "xtcru"):
-            letters = args[0]                         # old style: tar xzf FILE
+            letters = args[0]  # old style: tar xzf FILE
             i = 1
             for ch in letters:
                 if ch == "x":
@@ -2091,7 +2381,7 @@ class _Evaluator:
                     if ch == "x":
                         extract = True
                     if ch in _TAR_SHORT_VALUE:
-                        tail = a[k + 1:]
+                        tail = a[k + 1 :]
                         val = tail or (args[i] if i < len(args) else "")
                         if not tail:
                             i += 1
@@ -2138,7 +2428,7 @@ class _Evaluator:
         if fold(s) == fold(home):
             return "~"
         if fold(s).startswith(fold(home) + "/"):
-            return "~/" + s[len(home) + 1:]
+            return "~/" + s[len(home) + 1 :]
         return s
 
     def _seat_token(self) -> str | None:
@@ -2147,7 +2437,7 @@ class _Evaluator:
             return None
         seat = self.ctx.registry.seat_by_name(raw)
         if seat is not None and not seat_owns_folder(seat, self.ctx.registry):
-            return None        # GROK-BOT: the folder name is CURSOR's
+            return None  # GROK-BOT: the folder name is CURSOR's
         token = seat.suffix if seat is not None else L.normalize_seat(raw, self.ctx.registry)
         return token if L.is_valid_slug(token) else None
 
@@ -2169,14 +2459,14 @@ class _Evaluator:
                 slug = ""
                 break
             if slug.startswith(name + "-"):
-                slug = slug[len(name) + 1:]
+                slug = slug[len(name) + 1 :]
                 break
-        slug = slug[:L.SLUG_MAX].strip("-")
+        slug = slug[: L.SLUG_MAX].strip("-")
         if not slug or slug in ("tmp", "temp") or not L.is_valid_slug(slug):
             return "work"
         registry = self.ctx.registry
         if not prefix or registry.app_by_prefix(prefix) is None:
-            return slug        # an unknown app: no folder rule to check against
+            return slug  # an unknown app: no folder rule to check against
         flat = self.ctx.roots.layout_mode == L.LAYOUT_FLAT
         seats = [seat] if seat else [s.suffix for s in registry.seats if self._lane_new_accepts(s)]
         if all(lane_name_reads_back(prefix, s, slug, registry, flat=flat) for s in seats):
@@ -2191,13 +2481,33 @@ class _Evaluator:
         tail = owner_repo.rsplit("/", 1)[-1] if owner_repo else ""
         return tail if L.is_valid_repo_dir(tail) else None
 
-    def _lane(self, app: L.App | None, repo_dir: str | None, prefix: str | None, seat: str | None, slug: str) -> str:
+    def _lane(
+        self,
+        app: L.App | None,
+        repo_dir: str | None,
+        prefix: str | None,
+        seat: str | None,
+        slug: str,
+    ) -> str:
         roots = self.ctx.roots
         flat = roots.layout_mode == L.LAYOUT_FLAT
-        if seat and L.is_valid_slug(seat) and (repo_dir if not flat else (prefix if prefix and L.is_valid_slug(prefix) else None)):
+        if (
+            seat
+            and L.is_valid_slug(seat)
+            and (repo_dir if not flat else (prefix if prefix and L.is_valid_slug(prefix) else None))
+        ):
             try:
-                return self.display(str(L.expected_lane_path(app or (prefix if flat else repo_dir), seat, slug,
-                                                             roots, self.ctx.registry)))
+                return self.display(
+                    str(
+                        L.expected_lane_path(
+                            app or (prefix if flat else repo_dir),
+                            seat,
+                            slug,
+                            roots,
+                            self.ctx.registry,
+                        )
+                    )
+                )
             except L.LayoutError:
                 pass
         s = seat or "<seat>"
@@ -2209,8 +2519,12 @@ class _Evaluator:
     def _lane_new_accepts(self, seat: L.Seat) -> bool:
         """The same seat checks `lane.resolve_seat` makes: live, a usable folder name it owns, and
         a branch prefix."""
-        return bool(not seat.retired and seat.primary_branch_prefix() and L.is_valid_slug(seat.suffix)
-                    and seat_owns_folder(seat, self.ctx.registry))
+        return bool(
+            not seat.retired
+            and seat.primary_branch_prefix()
+            and L.is_valid_slug(seat.suffix)
+            and seat_owns_folder(seat, self.ctx.registry)
+        )
 
     def _seat_usable_for_lane_new(self) -> bool:
         """True when AGENT_SEAT names a live seat that `lane new` would accept: a registry tag that is
@@ -2232,11 +2546,17 @@ class _Evaluator:
         slug = self._slug(hit.target, app, prefix, shown_seat)
         repo_dir = self._repo_dir(app, src.owner_repo)
         review = self.display(f"{self.ctx.roots.lanes_root}/{repo_dir or '<Repo>'}/review-pr-<n>")
-        is_code_rule = hit.rule in (RULE_CLONE_CODE, RULE_GH_CLONE_CODE,
-                                    RULE_WORKTREE_ADD_CODE, RULE_WORKTREE_MOVE_CODE)
+        is_code_rule = hit.rule in (
+            RULE_CLONE_CODE,
+            RULE_GH_CLONE_CODE,
+            RULE_WORKTREE_ADD_CODE,
+            RULE_WORKTREE_MOVE_CODE,
+        )
         location = "inside the ~/Code integration tree" if is_code_rule else "in temp directories"
-        blocked = (f"Blocked: fleet-repo checkouts are not allowed {location}, and this command "
-                   f"would put {hit.what} of {src.label} at {self.display(hit.target)}.")
+        blocked = (
+            f"Blocked: fleet-repo checkouts are not allowed {location}, and this command "
+            f"would put {hit.what} of {src.label} at {self.display(hit.target)}."
+        )
 
         def branch_for(token: str | None) -> str:
             if token:
@@ -2255,15 +2575,21 @@ class _Evaluator:
             tree = self.display(f"{self.ctx.roots.code_root}/{app.integration_dir_name}")
             shim = self.display(f"{self.ctx.roots.apps_root}/lane")
             run = f"run `{shim} new {app.name} {slug}` instead"
-            run = (run[0].upper() + run[1:]) if usable else f"Set AGENT_SEAT to your seat tag, then {run}"
-            return "  ".join((
-                blocked,
-                f"{run}; it creates branch {branch_for(token)} off origin/main and the lane at "
-                f"{self._lane(app, repo_dir, prefix, token, slug)}.",
-                f"For a read-only PR check, run `{shim} new {app.name} --review --pr <n>` instead; it makes "
-                f"a detached checkout at {review}.",
-                f"Do not do this work in the main integration tree {tree}; that tree is for the human.",
-            ))
+            run = (
+                (run[0].upper() + run[1:])
+                if usable
+                else f"Set AGENT_SEAT to your seat tag, then {run}"
+            )
+            return "  ".join(
+                (
+                    blocked,
+                    f"{run}; it creates branch {branch_for(token)} off origin/main and the lane at "
+                    f"{self._lane(app, repo_dir, prefix, token, slug)}.",
+                    f"For a read-only PR check, run `{shim} new {app.name} --review --pr <n>` instead; it makes "
+                    f"a detached checkout at {review}.",
+                    f"Do not do this work in the main integration tree {tree}; that tree is for the human.",
+                )
+            )
         # No registered integration tree to hang a worktree on (or an unknown repo): `lane new` would
         # refuse, so keep pointing at the lane path itself.
         lane = self._lane(app, repo_dir, prefix, seat, slug)
@@ -2276,9 +2602,11 @@ class _Evaluator:
         where = f"Create it under the lanes root instead, at {lane}"
         if example:
             where += f" (for example `{example}`)"
-        return "  ".join((
-            blocked,
-            where + ".",
-            f"For a read-only PR check, use a detached checkout at {review} instead.",
-            f"Do not do this work in the main integration tree {tree}; that tree is for the human.",
-        ))
+        return "  ".join(
+            (
+                blocked,
+                where + ".",
+                f"For a read-only PR check, use a detached checkout at {review} instead.",
+                f"Do not do this work in the main integration tree {tree}; that tree is for the human.",
+            )
+        )
