@@ -4536,19 +4536,50 @@ def _minimax_foreign(bundle: str) -> str | None:
                 return f"{bundle} holds {rel}/, which this tool never writes"
         for f in filenames:
             rel = f if here == "." else here + "/" + f
-            if rel not in allowed_files or os.path.islink(os.path.join(dirpath, f)):
+            full = os.path.join(dirpath, f)
+            if f == ".DS_Store" and not os.path.islink(full):
+                continue  # Finder litter, as in the stable-copy scan; the swap removes it with the old directory
+            if rel not in allowed_files or os.path.islink(full):
                 return f"{bundle} holds {rel}, which this tool never writes"
+    # The manifest is the ownership marker: an empty directory, or one without it, is somebody else's.
     manifest = _read_regular(os.path.join(bundle, *MINIMAX_MANIFEST_FILE.split("/")))
-    if manifest is not None:
-        try:
-            doc = json.loads(manifest.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            return f"{bundle}/{MINIMAX_MANIFEST_FILE} is not JSON"
-        if not isinstance(doc, dict) or doc.get("name") != MINIMAX_PLUGIN_ID:
-            return (
-                f"{bundle}/{MINIMAX_MANIFEST_FILE} does not name the plugin {MINIMAX_PLUGIN_ID!r}"
-            )
+    if manifest is None:
+        return (
+            f"{bundle}/{MINIMAX_MANIFEST_FILE} is missing or not a regular file, "
+            "so this tool cannot tell the directory is its own"
+        )
+    try:
+        doc = json.loads(manifest.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return f"{bundle}/{MINIMAX_MANIFEST_FILE} is not JSON"
+    if not isinstance(doc, dict) or doc.get("name") != MINIMAX_PLUGIN_ID:
+        return f"{bundle}/{MINIMAX_MANIFEST_FILE} does not name the plugin {MINIMAX_PLUGIN_ID!r}"
     return None
+
+
+def _sweep_stale_minimax_leftovers(plugins_real: str, stage_parent: str, bundle: str) -> None:
+    """Remove `<bundle>.old-<pid>` and `.fleet-guard-stage-*` directories a killed run left behind.  Only ones older
+    than a minute, so a run that is still going is never touched."""
+    cutoff = time.time() - 60
+    candidates: list[str] = []
+    try:
+        base = os.path.basename(bundle) + ".old-"
+        candidates += [
+            os.path.join(plugins_real, n) for n in os.listdir(plugins_real) if n.startswith(base)
+        ]
+        candidates += [
+            os.path.join(stage_parent, n)
+            for n in os.listdir(stage_parent)
+            if n.startswith(".fleet-guard-stage-")
+        ]
+    except OSError:
+        return
+    for c in candidates:
+        try:
+            if os.path.isdir(c) and not os.path.islink(c) and os.lstat(c).st_mtime < cutoff:
+                shutil.rmtree(c, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def plan_minimax(paths: Paths, *, follow_symlinks: bool = False) -> MinimaxPlan:
@@ -4646,11 +4677,15 @@ def apply_minimax(
     if mp.state == "current":
         return Result("minimax", "unchanged", f"{mp.bundle} already holds the plugin")
     want = minimax_expected(paths)
-    minimax_home = os.path.dirname(os.path.dirname(mp.bundle))
     stage: str | None = None
     try:
         os.makedirs(os.path.dirname(mp.bundle), exist_ok=True)
-        stage = tempfile.mkdtemp(prefix=".fleet-guard-stage-", dir=minimax_home)
+        # Stage beside the REAL plugins/ directory: when plugins/ is a symlink to another filesystem, a stage under
+        # ~/.minimax would make the final rename fail with EXDEV.
+        plugins_real = os.path.realpath(os.path.dirname(mp.bundle))
+        stage_parent = os.path.dirname(plugins_real)
+        _sweep_stale_minimax_leftovers(plugins_real, stage_parent, mp.bundle)
+        stage = tempfile.mkdtemp(prefix=".fleet-guard-stage-", dir=stage_parent)
         _write_tree(stage, {rel: text.encode("utf-8") for rel, text in want.items()})
         _swap_dir(stage, mp.bundle)
         stage = None

@@ -5954,6 +5954,75 @@ class MinimaxBundleTests(World):
         self.assertEqual(r.status, "refused", r)
         self.assertIn("does not name", r.detail)
 
+    def test_an_empty_directory_or_one_without_a_manifest_is_refused(self) -> None:
+        for sub in ((), (".claude-plugin", "hooks")):
+            with self.subTest(sub=sub):
+                shutil.rmtree(self.bundle, ignore_errors=True)
+                self.bundle.mkdir(parents=True)
+                for d in sub:
+                    (self.bundle / d).mkdir()
+                before = snapshot(self.home)
+                r = self.apply()
+                self.assertEqual(r.status, "refused", r)
+                self.assertIn("plugin.json", r.detail)
+                self.assertEqual(snapshot(self.home), before)
+
+    def test_finder_litter_does_not_make_our_own_bundle_foreign(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        (self.bundle / ".DS_Store").write_bytes(b"\0")
+        (self.bundle / "hooks" / ".DS_Store").write_bytes(b"\0")
+        hooks = self.bundle / "hooks" / "hooks.json"
+        hooks.write_text(
+            hooks.read_text(encoding="utf-8").replace('"timeout": 10', '"timeout": 3'),
+            encoding="utf-8",
+        )
+        self.assertEqual(self.apply().status, "updated")
+        self.assertFalse((self.bundle / ".DS_Store").exists())
+        # a symlink named .DS_Store is still foreign
+        (self.bundle / ".DS_Store").symlink_to(self.tmp)
+        hooks.write_text("{}\n")
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+
+    def test_a_plugins_symlink_to_another_directory_stages_beside_the_real_plugins_dir(
+        self,
+    ) -> None:
+        real_home = self.tmp / "other-fs"
+        (real_home / "plugins").mkdir(parents=True)
+        shutil.rmtree(self.home / ".minimax" / "plugins")
+        (self.home / ".minimax" / "plugins").symlink_to(real_home / "plugins")
+        staged: list[str] = []
+        real_rename = os.rename
+
+        def spy(src, dst, *a, **kw):
+            staged.append(os.path.dirname(str(src)))
+            return real_rename(src, dst, *a, **kw)
+
+        with mock.patch.object(T.os, "rename", spy):
+            r = self.apply(follow_symlinks=True)
+        self.assertEqual(r.status, "added", r)
+        self.assertIn(str(real_home.resolve()), [str(Path(d).resolve()) for d in staged])
+        self.assertEqual(sorted(p.name for p in real_home.iterdir()), ["plugins"])
+        self.assertEqual(sorted(p.name for p in (real_home / "plugins").iterdir()), ["fleet-guard"])
+
+    def test_leftovers_of_a_killed_run_are_swept_but_a_fresh_one_is_not(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        plugins = self.home / ".minimax" / "plugins"
+        old_dead = plugins / "fleet-guard.old-99999"
+        stage_dead = self.home / ".minimax" / ".fleet-guard-stage-dead"
+        fresh = self.home / ".minimax" / ".fleet-guard-stage-fresh"
+        for d in (old_dead, stage_dead, fresh):
+            d.mkdir()
+        long_ago = time.time() - 3600
+        for d in (old_dead, stage_dead):
+            os.utime(d, (long_ago, long_ago))
+        hooks = self.bundle / "hooks" / "hooks.json"
+        hooks.write_text("{}\n")
+        self.assertEqual(self.apply().status, "updated")
+        self.assertFalse(old_dead.exists())
+        self.assertFalse(stage_dead.exists())
+        self.assertTrue(fresh.exists())
+
     def test_a_dangling_plugins_symlink_is_refused(self) -> None:
         shutil.rmtree(self.home / ".minimax" / "plugins")
         (self.home / ".minimax" / "plugins").symlink_to(self.tmp / "nowhere")
