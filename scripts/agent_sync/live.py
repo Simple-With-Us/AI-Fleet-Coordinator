@@ -568,6 +568,42 @@ def headline(items: list[Mapping[str, Any]]) -> str:
 
 
 # --------------------------------------------------------------------------------------------
+# Seat-inbox mentions for an open session (AFC-358)
+# --------------------------------------------------------------------------------------------
+
+# What counts as "aimed at this seat" in the seat inbox:  a direct mention, a DM, or the fleet wake.
+SEAT_MENTION_CLASSES = ("direct", "dm", "fleet")
+# At most this many Stop-hook continuations per lease per hour, whatever arrives:  a chatty bot must
+# not be able to keep a session working.
+STOP_CONTINUE_PER_HOUR = 3
+
+
+def seat_inbox_head(paths: SeatPaths) -> int:
+    """The highest sequence number ever written to the seat inbox (0 when none)."""
+    meta = read_json(paths.seat_inbox_meta)
+    nxt = meta.get("next_seq")
+    if isinstance(nxt, int) and not isinstance(nxt, bool) and nxt > 0:
+        return nxt - 1
+    return max((i["seq"] for i in read_jsonl(paths.seat_inbox) if isinstance(i.get("seq"), int)), default=0)
+
+
+def new_seat_mentions(paths: SeatPaths, after: int) -> list[dict[str, Any]]:
+    """Seat-inbox rows newer than `after` that are mentions or DMs from someone other than the seat
+    itself, still undelivered to any session, and not stale backfill.  Rows only:  callers show
+    headlines, never bodies."""
+    found = []
+    for item in read_jsonl(paths.seat_inbox):
+        seq = item.get("seq")
+        if not isinstance(seq, int) or seq <= after or item.get("delivered_to") or item.get("stale"):
+            continue
+        classes = item.get("classes") or []
+        if "own" in classes or not any(c in classes for c in SEAT_MENTION_CLASSES):
+            continue
+        found.append(item)
+    return found
+
+
+# --------------------------------------------------------------------------------------------
 # Leases
 # --------------------------------------------------------------------------------------------
 
