@@ -18,15 +18,17 @@
  * catch-up ship is still running or processing);  2 the check itself failed.
  *
  * HOW "SHIPPED" IS DECIDED.  App Store Connect never records a git sha.  The
- * build number is the UTC cut time (YYYYMMDDHHmm), so the ship workflow run
- * whose start-to-end window contains that cut time is the run that uploaded
- * it, and that run's head_sha is the shipped source.  A green ship run is not
- * an upload (the gate skips most runs), and the run that really uploaded can
- * end red (BotFleet 1.0.113 came from a run that failed after the upload), so
- * the conclusion is ignored.  Fallbacks, labelled in the output:  the local
- * ship state file ~/.cache/ios-fleet/last-ship-<app>.txt, then upload time
- * against commit time.  Containment uses the compare API:  ahead or identical
- * means the shipped sha contains the newest native commit.
+ * build number is the repo commit count, so a current build carries no cut
+ * time and the ship workflow run whose start-to-end window contains the
+ * UPLOAD is the run that uploaded it;  that run's head_sha is the shipped
+ * source.  A green ship run is not an upload (the gate skips most runs), and
+ * the run that really uploaded can end red (BotFleet 1.0.113 came from a run
+ * that failed after the upload), so the conclusion is ignored.  Builds
+ * uploaded under the retired scheme still carry a 12-digit UTC stamp, and
+ * those are correlated by their cut time instead.  Fallbacks, labelled in the
+ * output:  the local ship state file ~/.cache/ios-fleet/last-ship-<app>.txt,
+ * then upload time against commit time.  Containment uses the compare API:
+ * ahead or identical means the shipped sha contains the newest native commit.
  *
  * THE REMEDY (--ship-behind) dispatches the app's OWN ship workflow with
  * `gh workflow run`, never a local xcodebuild, and only when every guard holds:
@@ -103,7 +105,14 @@ export function splitInflight(runs, nowMs, maxHours = DEFAULT_INFLIGHT_MAX_HOURS
 // Small pure helpers (exported for tests)
 // ---------------------------------------------------------------------------
 
-/** "202610171703" -> Date (UTC).  null when it is not a plausible cut time. */
+/**
+ * "202610171703" -> Date (UTC).  null when it is not a plausible cut time.
+ *
+ * The build number is the repo commit count (owner 2026-10-18), so a current
+ * build carries no cut time and this returns null for it.  It still resolves
+ * the 12-digit UTC stamp of a build uploaded under the retired scheme, which
+ * is what lets those older builds be correlated by their cut time.
+ */
 export function buildCutTime(buildNumber, uploadedAt) {
   const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(String(buildNumber || ""));
   if (!m) return null;
