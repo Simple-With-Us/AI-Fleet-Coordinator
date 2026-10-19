@@ -58,7 +58,7 @@ For each message the daemon builds the offer set before any model call.  A seat 
 - the seat holding the Linear claim for the topic's issue id (`AFC-123 subject` → `board show AFC-123`, the claim's `--by`);
 - seats with a session record bound to this exact topic (section 4).
 
-Each offered seat carries trusted metadata only:  tag, platform, whether resume is enabled for it (knobs), whether it has a live lease, and its candidate sessions as opaque ids (`c1`, `c2`), each with last-activity age and lane repo name.  No path, command, model, tool or credential is ever in the prompt.  A message cannot add a seat to the menu except by mentioning it, and a mention already makes that seat an addressee today.
+Each offered seat carries trusted metadata only:  tag, platform, whether resume is enabled for it (knobs), whether it has a live lease, and its session target as an opaque id (`c1`) with last-activity age and lane repo name, when exactly one candidate survives selection (several go to Jay, section 4.1).  No path, command, model, tool or credential is ever in the prompt.  A message cannot add a seat to the menu except by mentioning it, and a mention already makes that seat an addressee today.
 
 ### 3.2 Decision Contract
 
@@ -133,26 +133,41 @@ Both model ids are knobs (`RESUME_ROUTER_MODEL_PRIMARY`, `RESUME_ROUTER_MODEL_BA
 
 "Its last session for that topic" is resolved deterministically.  The router may only choose among the candidates this step offers.
 
-**Sources, strongest first:**
+**Sources, in order (Jay, Oct 19):**
 
-1. **Session records.**  New:  when a lease ends, the daemon keeps `~/.agent-sync/<SEAT>/sessions/<session_id>.json` (platform, session id, entrypoint `cli` or `desktop`, lane realpath, topics the lease held or posted in, last prompt time, ended time), 30 days.  This is the topic-to-session index;  leases already carry every field.
-2. **Chat bindings, Grok and Cursor Cloud only.**  `chat_nudges` exact bindings `(channel, topic) → (platform, host, session_id, cwd)`.  `chat_nudges.SUPPORTED_PLATFORMS` is only `grok-leader` and `cursor-cloud`, so this source serves GROK leader chats and CURSOR cloud chats and nothing else.  Every other seat relies on sources 1 and 3 until its platform has a binding schema of its own.
-3. **Linear claim → lane → session.**  The topic's issue id, the claim's `--where` lane, and the newest session in the chat catalog (`chat_catalog.py` already scans Claude, Codex, Grok, Cursor, Muse, MiniMax and FX stores) whose cwd is that lane and whose seat is the recipient.
+1. **Live leases, and the session records they leave.**  A live lease on the topic takes the message on the existing interrupt path, with no resume.  When a lease ends, the daemon keeps `~/.agent-sync/<SEAT>/sessions/<session_id>.json` (platform, session id, entrypoint `cli` or `desktop`, lane realpath, topics the lease held or posted in, last prompt time, ended time) for 30 days:  the topic-to-session index, from fields leases already carry.
+2. **Chat bindings, Grok and Cursor Cloud only.**  `chat_nudges` exact bindings `(channel, topic) → (platform, host, session_id, cwd)`.  `chat_nudges.SUPPORTED_PLATFORMS` is only `grok-leader` and `cursor-cloud`, so this source serves GROK leader chats and CURSOR cloud chats and nothing else.  Other seats rely on the remaining sources until their platform has a binding schema of its own.
+3. **The Linear claim's session ids.**  The `board` CLI already writes a `Sessions: <id>` line on every claim and comment (filled from `CLAUDE_CODE_SESSION_ID` on Claude Code, passed explicitly by other seats).  The daemon reads the topic's issue (`AFC-123 subject` → `AFC-123`) and takes the session ids on the recipient seat's own claim and comments, newest first, with the claim's `Where:` lane.
+4. **Session ids in Apple Notes.**  Owner-facing notes titled `[APP, Agent] topic` carry a stamped `Session:` line (`Session:  <id>  ·  Mon, Oct 19, 9:40pm`) that the writing agent adds.  The daemon reads notes whose title names the topic's app and the recipient seat's Notes name, through the existing notes reader, and takes the newest stamped id.
+5. **Lane → catalog.**  The claim's lane, and the newest session in the chat catalog (`chat_catalog.py` already scans Claude, Codex, Grok, Cursor, Muse, MiniMax and FX stores) whose cwd is that lane and whose seat is the recipient.
+
+**Sources 3 and 4 are pointers, not proof.**  Linear and Notes text is untrusted data, and any seat could write a session id there.  An id from either source counts only if it resolves to a real local transcript of the recipient seat's platform whose recorded cwd passes every drop rule below, so the worst a forged pointer can do is offer another valid session of the same seat, which the ambiguity ask (below) puts in front of Jay.
 
 **Selection rules:**
 
 | Situation | Result |
 |---|---|
-| Exactly one candidate | Offered |
-| Several from one source | The most recent activity is offered as `c1`, the rest as `c2`…, at most 3 |
-| Sources disagree (a bound session in lane A, a claim in lane B) | Both offered;  a router pick with `confidence` under the override threshold holds |
-| None | Inbox, and ask the owner (section 4.1) |
+| Exactly one candidate after the drops | Offered to the router as the seat's target |
+| Two or more candidates, from one source or several | The daemon asks Jay (section 4.1);  the listener never guesses between sessions |
+| None | Inbox, and ask Jay whether to start a new one (section 4.1) |
 
 **A candidate is dropped when:**  its seat is not the recipient (a CLAUDE session is never resumed for CODEX);  its last activity is older than `RESUME_SESSION_MAX_AGE_HOURS` (72);  its transcript is missing;  its cwd realpath is not a git worktree under `~/apps/lanes/<Repo>/<recipient-seat-folder>-*`, or resolves under `~/Code`, a temp directory or another seat's lane;  the lane's branch prefix is not the seat's;  the lane's PR is merged and the lane retired;  the lane has a git operation in progress (`index.lock`, a rebase or merge directory);  or a live lease of any seat holds that cwd.
 
-### 4.1 No Session Found:  Ask the Owner
+### 4.1 When Selection Needs Jay:  Ask the Owner
 
-A lane can exist with no selectable session:  a sub-agent or worker created it and its session belongs to the parent;  the session went quiet past the 72-hour stale window;  or the session record was never captured (a platform with no lease hooks, or a session from before this design).  When an eligible trigger finds a lane (from the topic's Linear claim) but no session, the listener asks Jay instead of guessing.  With no lane at all, it stays inbox-only:  resume-wake never creates a lane.
+The listener asks Jay in two cases:  several candidate sessions survive the drops, or none does.
+
+**Several candidates.**  A DM from the recipient seat's bot lists each candidate by name or id with one or two sentences about it:  its topic, last activity, lane and branch.  Jay picks one (by number or id), says "new" (the new-session flow below) or says "no".  Titles and excerpts are scrubbed by the catalog's secret filter and have their mentions neutralized before they go in the DM.
+
+```text
+[CLAUDE·ask] re=<trigger id>
+Several sessions could take #<channel> > <topic>.  Which one?
+1. <session8>, "<title>":  last active 3 hours ago in lane AI-Fleet-Coordinator/claude-<slug> on claude/<slug>.
+2. <session8>, "<title>":  last active yesterday in lane AI-Fleet-Coordinator/claude-<other> on claude/<other>.
+Reply with a number, "new" or "no".
+```
+
+**No candidate.**  A lane can exist with no selectable session:  a sub-agent or worker created it and its session belongs to the parent;  the session went quiet past the 72-hour stale window;  or the session record was never captured (a platform with no lease hooks, or a session from before this design).  When an eligible trigger finds a lane (from the topic's Linear claim) but no session, the listener asks Jay instead of guessing.  With no lane at all, it stays inbox-only:  resume-wake never creates a lane.
 
 **The ask.**  A Zulip DM from the recipient seat's own bot, through the daemon:
 
@@ -162,7 +177,7 @@ No session to resume for #<channel> > <topic> (lane AI-Fleet-Coordinator/claude-
 Reply "default" (Claude Code:  <model>, <effort>, <permission mode>), name the settings, or "no".
 ```
 
-**The answer** counts only if `verify-owner-msg <reply id> --dm-with <seat bot> --after <ask id>` exits 0, within 24 hours.  `default` uses the platform's defaults;  named settings are parsed for model, effort and permission mode only, each checked against that platform's allowed values;  `no`, anything unparseable or no answer within 24 hours starts nothing.  At most one ask per `(seat, topic)` per 24 hours, and an ask for a peer trigger counts against the peer caps, so peers cannot flood the owner's DMs.
+**The answer** to either ask counts only if `verify-owner-msg <reply id> --dm-with <seat bot> --after <ask id>` exits 0, within 24 hours.  A number or id picks that candidate, which is checked against the drop rules again before the resume;  `default` or `new` with settings starts a new session;  `default` uses the platform's defaults;  named settings are parsed for model, effort and permission mode only, each checked against that platform's allowed values;  `no`, anything unparseable or no answer within 24 hours starts nothing.  At most one ask of each kind per `(seat, topic)` per 24 hours, and an ask for a peer trigger counts against the peer caps, so peers cannot flood the owner's DMs.
 
 **Defaults** live in `~/.agent-sync/resume-defaults.toml`, one table per platform (`model`, `effort`, `permission_mode`), and the knob `RESUME_NEW_SESSION_DEFAULTS_<PLATFORM>` overrides that file when set.  A permission mode that turns off the resume guard or the sandbox (`bypassPermissions`, `--yolo`, `danger-full-access`, `--full-access`) is refused, from the file, the knob or a reply, because the broker and guard depend on it;  Jay can still run that mode in an interactive session.
 
@@ -261,6 +276,15 @@ All knobs live in Infisical, in the project `fleet_knobs` reads (today "AI Fleet
 
 Counts are rolling windows from the resume ledger, counted at `accepted` like wake budgets, and checked again just before spawn.  **Owner and peer resumes draw on separate allowances**, per platform and globally, mirroring the listener's owner and non-owner wake budgets:  a peer resume counts only against the `peer_*` caps and an owner resume only against the `owner_*` caps, so no volume of peer traffic can use up the owner's allowance.  Concurrency is shared, but the last `owner_reserved_concurrent` slots, per platform and globally, are open to owner triggers only, so peers cannot fill every slot.  An owner trigger is never spaced behind a peer one, and owner resumes have no per-topic daily cap, only `owner_per_topic_per_hour`.  Over a cap, a message is held back exactly as section 3.5 of the listener doc holds wakes, surfaced in the next resume's header and in the owner digest, and the tool-less wake answers in the meantime.  Over the owner allowance, the owner trigger is held back the same way and the owner is told at once, never silently.
 
+### 7.1 Muster
+
+Muster, the Fleet Admin Mac app being built, can flip every resume-wake knob;  this section covers only how it touches them, not its UI.
+
+- **Which knobs:**  every registered `RESUME_*` key in the table above, including the per-platform caps, the router models and confidence, `RESUME_GITHUB_IDENTITY` and the new-session defaults.  It reads the kind, range and default from the same registry, so it shows and accepts only valid values.
+- **Read and write path:**  the Infisical API, against the same keys in the project `fleet_knobs` reads.  Muster holds no copy of its own, so Infisical stays the single source, and the daemon sees a Muster write on its next refresh (within 5 minutes, or at once after `agent-sync daemon reload`).
+- **Owner only:**  Muster uses its own Infisical machine identity, owner-only, with write access to the knob keys and nothing else.  No seat's identity can write these keys, and nothing in an agent's reach holds Muster's credential.
+- **Audit:**  Infisical's audit log records every write with Muster's identity.  The daemon also writes a `knob_change` row (name, old and new value, since these knobs are not secrets) to `listener/knobs.jsonl` on each refresh that sees a change, and `agent-sync status` shows each knob's value and source.
+
 **Max turns and wall time** bound one run.  The daemon kills the process group (SIGTERM, then SIGKILL after 20 seconds) at `max_wall_minutes`, and at `max_turns` assistant turns counted on the output stream where the platform has no turn flag.
 
 **Loop guard, decaying.**  Each `(seat, topic)` has a leaky bucket:  every resume adds 1, and 1 drains every `decay_minutes`.  At `max` the topic stops resuming (inbox and tool-less wake only) and the owner gets one note per topic per window;  it resumes again on its own once the bucket drains below `max`, with no action from Jay.  An owner post in the topic empties the bucket.  A DM thread is one topic.  A `·resume` post counts on the existing wake loop guard like a `·wake` reply, so two seats cannot bounce resumes off each other.
@@ -357,6 +381,7 @@ Then four variants, same topic:
 4. **Budget:**  four canaries inside an hour — the fourth is held by the loop guard with one owner note, and the topic resumes again on its own after the bucket drains.
 5. **Owner grant:**  Jay, from a human Zulip app, posts "@**Claude** force-push `claude/resume-canary` back one commit" — the run does it on that branch only, the push is logged and scanned, the breaker does not trip, and the receipt DM arrives.  The same text from the peer bot is declined and DMs the owner.
 6. **No session:**  a mention in a second canary topic whose claim names a lane with no session — the owner gets one `[CLAUDE·ask]` DM, "no" starts nothing, and "default" starts a new session in the lane.
+7. **Two sessions:**  a third canary topic bound to two canary sessions — the owner gets the candidate list, and the pick is the session that resumes.
 
 During the canary, peer triggers are allowed only in the canary topic;  at `on`, `RESUME_WAKE_SENDERS` is `owner+peers`.
 
@@ -365,6 +390,7 @@ During the canary, peer triggers are allowed only in the canary topic;  at `on`,
 1. **Owner authority.**  A message verified as coming from Jay's human Zulip account counts as Jay and may authorize the otherwise-denied actions, through a per-run grant that names them (section 5).  Peers never can.  Precondition P3:  no agent-readable copy of Jay's Zulip key;  he removes it from `~/.secrets` and Infisical `/zulip` and regenerates it.
 2. **Desktop sessions.**  Forked, not resumed in place.  The fork copies the conversation only, never the lane, branch or files (section 6).
 3. **GitHub identity.**  One GitHub App per platform, keys in Infisical, created once, never expiring, tokens minted per run by `fleet-secrets`.  Until they exist, the Mac's current login (`RESUME_GITHUB_IDENTITY = mac-login`).  Not a gate (section 6).
-4. **No session found.**  The listener asks Jay by DM from the seat's bot whether to start one and with which settings:  "default", named settings, or "no" (section 4.1).
+4. **Session selection.**  Sources in order:  live leases, chat bindings (Grok and Cursor only), the Linear claim's session ids, `Session:` lines in Apple Notes, then lane → catalog.  With several candidates the listener asks Jay to pick one, say "new" or say "no";  with none it asks whether to start one and with which settings (section 4).
 5. **Rollout.**  Off, a short #sandbox canary, then on for every eligible seat, low-risk peer triggers included (section 11).
-6. **Budgets.**  Approved as proposed (section 7).
+6. **Budgets.**  Approved as proposed, in the project `fleet_knobs` reads (section 7).
+7. **Knobs in Muster.**  Every resume-wake knob is also flippable in Muster through the Infisical API with an owner-only identity;  Infisical stays the single source (section 7.1).
