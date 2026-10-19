@@ -1659,7 +1659,8 @@ class WriteTests(BoardTest):
         iss = self.mock.issues[hy(B_A)]
         self.assertEqual(iss["state"], "Done")
         self.assertEqual(
-            self.comments_of(iss)[-1], f"[CLAUDE·5e55105a] Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}"
+            self.comments_of(iss)[-1],
+            f"[CLAUDE·5e55105a] Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}",
         )
         d = json.loads(self.board("show", "OPS-10", "--json").stdout)
         self.assertEqual(d["resolution"], "Landed in #2894.")
@@ -1673,7 +1674,10 @@ class WriteTests(BoardTest):
         ):
             self.board("status", B_C[:8], value)
             self.assertEqual(self.mock.issues[hy(B_C)]["state"], state)
-        self.assertEqual(self.comments_of(self.mock.issues[hy(B_C)])[-1], f"[CLAUDE·5e55105a] Status: parked\n\nSessions: {BASE_SESSION}")
+        self.assertEqual(
+            self.comments_of(self.mock.issues[hy(B_C)])[-1],
+            f"[CLAUDE·5e55105a] Status: parked\n\nSessions: {BASE_SESSION}",
+        )
         self.board("status", B_C[:8], "bogus", code=2)
         self.board("status", B_C[:8], "completed", "--of", "OPS-10", code=2)
 
@@ -3006,7 +3010,8 @@ class FileInputTests(BoardTest):
         self.assertEqual(p.stdout.strip(), f"commented on {B_A[:8]} as CLAUDE{TAIL}  OPS-10")
         iss = self.mock.issues[hy(B_A)]
         self.assertEqual(
-            self.comments_of(iss)[-1], f"[CLAUDE·5e55105a] Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}"
+            self.comments_of(iss)[-1],
+            f"[CLAUDE·5e55105a] Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}",
         )
         n = len(self.mock.comments)
         p = self.board(

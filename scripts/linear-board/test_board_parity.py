@@ -864,7 +864,8 @@ class McpCliTests(ParityCliTest):
         self.assertIn("Review submitted.", p.stdout)
         sent = self.mock.mcp_requests[2][1]["params"]["arguments"]
         self.assertEqual(
-            sent, {"urlOrId": "AFC-1", "decision": "commented", "body": "[CLAUDE·5e55105a] Looks good."}
+            sent,
+            {"urlOrId": "AFC-1", "decision": "commented", "body": "[CLAUDE·5e55105a] Looks good."},
         )
         p = self.board(*args)
         self.assertIn("Review submitted.", p.stdout)
@@ -901,7 +902,9 @@ class ConvenienceTests(BoardTest):
     def test_claim_with_a_comment(self):
         self.board("claim", "OPS-10", "--by", "CLAUDE", "--comment", "Taking the digest fix.")
         body = self.comments_of(self.issue_by_ident("OPS-10"))[-1]
-        self.assertTrue(body.startswith("[CLAUDE·5e55105a] CLAIMED\n\nTaking the digest fix."), body)
+        self.assertTrue(
+            body.startswith("[CLAUDE·5e55105a] CLAIMED\n\nTaking the digest fix."), body
+        )
 
 
 if __name__ == "__main__":

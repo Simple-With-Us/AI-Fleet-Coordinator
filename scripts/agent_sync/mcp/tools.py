@@ -2088,7 +2088,9 @@ class Tools:
         identities holds one session in its environment (the seat it was started for), so a call acting as another
         identity must not borrow it:  that call passes its own `session` or, if exempt, none (AFC-361)."""
         env = self.agent.rt.env
-        named = (env.get("AGENT_LAUNCH_SEAT") if env.get("AGENT_LAUNCHER") else None) or env.get("AGENT_SEAT")
+        named = (env.get("AGENT_LAUNCH_SEAT") if env.get("AGENT_LAUNCHER") else None) or env.get(
+            "AGENT_SEAT"
+        )
         if named and IDENT.canonical_seat(named) == self.seat:
             return env
         return {}
@@ -2100,7 +2102,9 @@ class Tools:
         if action not in ("create", "update"):
             return None
         try:
-            return SESSION_IDS.require(self.seat, args.get("session"), self._own_session_env(), "tool")
+            return SESSION_IDS.require(
+                self.seat, args.get("session"), self._own_session_env(), "tool"
+            )
         except ValueError as exc:  # SessionRequired is a ValueError
             code = (
                 "session_required"
@@ -2559,15 +2563,22 @@ class Tools:
             # here, with this tool's wording, before board runs.  The id is the `session` argument, else this
             # identity's own environment;  an exempt single-thread identity needs none.
             try:
-                found = SESSION_IDS.require(self.seat, args.get("session"), session_env, "tool", board=True)
+                found = SESSION_IDS.require(
+                    self.seat, args.get("session"), session_env, "tool", board=True
+                )
             except ValueError as exc:  # SessionRequired is a ValueError
-                code = "session_required" if isinstance(exc, SESSION_IDS.SessionRequired) else "invalid_argument"
+                code = (
+                    "session_required"
+                    if isinstance(exc, SESSION_IDS.SessionRequired)
+                    else "invalid_argument"
+                )
                 raise ToolError(code, str(exc)) from None
             if found:
                 args = dict(args, session=found)
         try:
-            result = LINEAR.run_board(spec, args, self.seat, env=self.agent.rt.env, uid=uid,
-                                      session_env=session_env)
+            result = LINEAR.run_board(
+                spec, args, self.seat, env=self.agent.rt.env, uid=uid, session_env=session_env
+            )
         except LINEAR.LinearInvalid as exc:
             raise ToolError("invalid_argument", str(exc)) from None
         except LINEAR.LinearOutcomeUnknown as exc:

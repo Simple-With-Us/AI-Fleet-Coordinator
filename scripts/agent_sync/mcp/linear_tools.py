@@ -331,8 +331,12 @@ def find_board(env: Mapping[str, str]) -> Path | None:
     return None
 
 
-def child_env(env: Mapping[str, str], identity: str, extra: Mapping[str, str],
-              session_env: Mapping[str, str] | None = None) -> dict[str, str]:
+def child_env(
+    env: Mapping[str, str],
+    identity: str,
+    extra: Mapping[str, str],
+    session_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     """The environment board runs in:  a short allowlist, the identity's AGENT_SEAT and the write switch
     board's own wrapper sets.  Nothing that holds the Zulip key.  A launcher pin passes through (it equals
     `identity` whenever it is set, because the router refuses any other)."""
@@ -343,7 +347,9 @@ def child_env(env: Mapping[str, str], identity: str, extra: Mapping[str, str],
     # The session id a write records (AFC-361):  board refuses a write from a seat with none.  `session_env` is the
     # server's environment only when it belongs to `identity` (tools.py _own_session_env), so a call acting as
     # another identity never carries this process's session.  An explicit `session` (plan.env / --session) wins.
-    out.update({key: session_env[key] for key in SESSION_ENV if session_env and session_env.get(key)})
+    out.update(
+        {key: session_env[key] for key in SESSION_ENV if session_env and session_env.get(key)}
+    )
     out["AGENT_SEAT"] = identity
     out["LINEAR_BOARD_WRITES"] = "1"
     out.update(extra)
