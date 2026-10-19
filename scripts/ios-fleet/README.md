@@ -29,7 +29,7 @@ hand-maintained sheet is exactly why it never converged.
 `https://docs.google.com/spreadsheets/d/1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY/edit`
 
 Strictly private.  Service account `fleet-sheets-sync@jay-wedgeworth.iam.gserviceaccount.com`,
-key at `~/.secrets/google-sheets-sa.json`.  Never make it public and never query it anonymously.
+key in Infisical Fleet-OPS `/google-sheets-sa` (`GOOGLE_SHEETS_SA`, read with `fleet-secrets get`).  Never make it public and never query it anonymously.
 
 Runs from an AI-Fleet-Coordinator lane at origin/main (never from a stale copy; an old copy
 rolled the sheet back before):
