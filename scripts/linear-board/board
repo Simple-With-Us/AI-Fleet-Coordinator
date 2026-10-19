@@ -110,6 +110,11 @@ WORKSPACE_URL_KEY = "simple-with-us"
 USER_AGENT = "swu-board-cli/1"
 LOOPBACK_RE = re.compile(r"http://127\.0\.0\.1:\d{1,5}(/[A-Za-z0-9._/-]*)?")
 
+# The fleet-secrets child prints only the requested names, never the whole environment.
+_PRINT_NAMED_ENV = (
+    "import json,os,sys;json.dump({n:os.environ.get(n,'') for n in sys.argv[1:]},sys.stdout)"
+)
+
 EXIT_ERROR = 1
 EXIT_USAGE = 2          # bad flags, no AGENT_SEAT, --by mismatch, refused URL
 EXIT_CLAIM_HELD = 3     # another seat holds the claim
@@ -758,18 +763,18 @@ def fleet_ops_bundle(names: list) -> dict | None:
     child_env = {k: v for k, v in os.environ.items() if k not in names}
     try:
         proc = subprocess.run([binary, "run", "--path", FLEET_OPS_LINEAR_PATH, "--only", ",".join(names), "--",
-                               "/usr/bin/env"], capture_output=True, text=True, timeout=60, check=False,
+                               sys.executable, "-I", "-c", _PRINT_NAMED_ENV, *names],
+                              capture_output=True, text=True, timeout=60, check=False,
                               stdin=subprocess.DEVNULL, env=child_env)
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
         return None
-    wanted, got = set(names), {}
-    for line in proc.stdout.splitlines():
-        k, sep, v = line.partition("=")
-        if sep and k in wanted:
-            got[k] = v.strip()
-    return got
+    try:
+        payload = json.loads(proc.stdout)
+    except ValueError:
+        return None
+    return {n: payload[n] for n in names if isinstance(payload.get(n), str)} if isinstance(payload, dict) else None
 
 
 def fleet_ops_set(name: str, value: str) -> bool:
