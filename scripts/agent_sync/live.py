@@ -584,7 +584,9 @@ def seat_inbox_head(paths: SeatPaths) -> int:
     nxt = meta.get("next_seq")
     if isinstance(nxt, int) and not isinstance(nxt, bool) and nxt > 0:
         return nxt - 1
-    return max((i["seq"] for i in read_jsonl(paths.seat_inbox) if isinstance(i.get("seq"), int)), default=0)
+    return max(
+        (i["seq"] for i in read_jsonl(paths.seat_inbox) if isinstance(i.get("seq"), int)), default=0
+    )
 
 
 def new_seat_mentions(paths: SeatPaths, after: int) -> list[dict[str, Any]]:
@@ -594,7 +596,12 @@ def new_seat_mentions(paths: SeatPaths, after: int) -> list[dict[str, Any]]:
     found = []
     for item in read_jsonl(paths.seat_inbox):
         seq = item.get("seq")
-        if not isinstance(seq, int) or seq <= after or item.get("delivered_to") or item.get("stale"):
+        if (
+            not isinstance(seq, int)
+            or seq <= after
+            or item.get("delivered_to")
+            or item.get("stale")
+        ):
             continue
         classes = item.get("classes") or []
         if "own" in classes or not any(c in classes for c in SEAT_MENTION_CLASSES):
