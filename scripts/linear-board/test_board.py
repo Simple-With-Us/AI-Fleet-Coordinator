@@ -26,7 +26,6 @@ import io
 import json
 import os
 import re
-import stat
 import subprocess
 import sys
 import tempfile
@@ -788,6 +787,51 @@ def make_handler(mock: MockLinear):
     return H
 
 
+FAKE_FLEET_SECRETS = r"""#!@PY@
+import os, sys
+V = "@VAULT@"
+a = sys.argv[1:]
+with open("@CALLS@", "a") as log:
+    log.write(" ".join(a[:2]) + "\n")
+if len(a) < 2:
+    sys.exit(2)
+verb = a[0]
+if verb == "get":
+    if a[2:] != ["--path", "/linear"]:
+        sys.exit(3)
+    f = os.path.join(V, a[1])
+    if not os.path.isfile(f):
+        sys.exit(3)
+    sys.stdout.write(open(f).read())
+elif verb == "set":
+    if a[2:] != ["--path", "/linear"]:
+        sys.exit(2)            # a value in an argument, or any other shape, is refused
+    if os.environ.get("FS_FAIL_SET") == "1":
+        sys.exit(1)
+    value = sys.stdin.read()
+    if not value:
+        sys.exit(2)
+    tmp = os.path.join(V, "." + a[1] + ".tmp%d" % os.getpid())
+    with open(tmp, "w") as fh:
+        fh.write(value)
+    os.replace(tmp, os.path.join(V, a[1]))
+    print("updated", a[1], "at /linear")
+elif verb == "run":
+    if a[1] != "--path" or a[2] != "/linear" or a[3] != "--only" or a[5] != "--":
+        sys.exit(2)
+    env = dict(os.environ)
+    for n in a[4].split(","):
+        f = os.path.join(V, n)
+        if not os.path.isfile(f):
+            sys.stderr.write("key %s is not in Infisical at /linear\n" % n)
+            sys.exit(3)
+        env[n] = open(f).read()
+    os.execvpe(a[6], a[6:], env)
+else:
+    sys.exit(2)
+"""
+
+
 class BoardTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="board-test-"))
@@ -805,17 +849,19 @@ class BoardTest(unittest.TestCase):
         )  # unlink() it for "no Fleet credentials"
         self.creds.write_text(CLIENT_ID)
         (self.ops_vault / "FLEET_LINEAR_CLIENT_SECRET").write_text(CLIENT_SECRET)
+        # A fake fleet-secrets:  get / set / run over one file per key in ops_vault.  `set` takes its value on
+        # standard input only (anything else is exit 2), FS_FAIL_SET=1 makes it fail, and every call's verb is
+        # appended to fs_calls (verbs and key names only, never a value).
+        self.fs_calls = self.tmp / "fs-calls.log"
         self.fleet_secrets_stub = self.tmp / "fleet-secrets"
         self.fleet_secrets_stub.write_text(
-            "#!/bin/sh\n"
-            '[ "$1" = get ] || exit 2\n'
-            '[ "$3" = --path ] && [ "$4" = /linear ] || exit 3\n'
-            f'f="{self.ops_vault}/$2"\n'
-            '[ -f "$f" ] || exit 3\n'
-            'cat "$f"\n'
+            FAKE_FLEET_SECRETS.replace("@VAULT@", str(self.ops_vault))
+            .replace("@CALLS@", str(self.fs_calls))
+            .replace("@PY@", PY)
         )
         self.fleet_secrets_stub.chmod(0o700)
-        self.token_cache = self.tmp / "tokens" / "Fleet.token"
+        # The stored token blobs are keys of the same fake vault:  CACHE_FLEET, CACHE_<SEAT>.
+        self.token_cache = self.ops_vault / "CACHE_FLEET"
         ids = self.tmp / "board-ids.txt"
         ids.write_text(
             "# test ids\n" + "\n".join([B_A, B_B, B_C, f"{B_D}\t{D_LINEAR}", B_F, B_G, B_H]) + "\n"
@@ -826,7 +872,6 @@ class BoardTest(unittest.TestCase):
             "LANG": "en_US.UTF-8",
             "AGENT_SEAT": "CLAUDE",
             "LINEAR_BOARD_FLEET_SECRETS": str(self.fleet_secrets_stub),
-            "LINEAR_FLEET_TOKEN_CACHE": str(self.token_cache),
             "LINEAR_BOARD_API_URL": f"http://127.0.0.1:{port}/graphql",
             "LINEAR_BOARD_TOKEN_URL": f"http://127.0.0.1:{port}/oauth/token",
             "LINEAR_BOARD_CACHE_DIR": str(self.tmp / "cache"),
@@ -844,6 +889,10 @@ class BoardTest(unittest.TestCase):
     def ops_put(self, name, value):
         """Put one key in the fake Fleet-OPS /linear folder."""
         (self.ops_vault / name).write_text(value)
+
+    def fs_verbs(self):
+        """The fake fleet-secrets calls so far, as 'verb NAME' lines (never a value)."""
+        return self.fs_calls.read_text().splitlines() if self.fs_calls.exists() else []
 
     def ops_drop_seat(self, seat):
         k = seat.replace("-", "_")
@@ -1144,13 +1193,13 @@ class AuthTests(BoardTest):
         p = self.board("whoami")
         self.assertIn("viewer:      Fleet (app user)", p.stdout)
         self.assertIn("seat:        CLAUDE", p.stdout)
-        self.assertIn("mints on this host: 1", p.stdout)
         self.assertIn("writes:      enabled", p.stdout)
         self.board("whoami")
         self.assertEqual(self.mock.mints, 1)
         self.assertEqual(self.mock.scopes, [EXPECTED_SCOPE])
-        mode = stat.S_IMODE(self.token_cache.stat().st_mode)
-        self.assertEqual(mode, 0o600)
+        self.assertIn(
+            "token store: Infisical Fleet-OPS prod /linear CACHE_FLEET (no token on disk)", p.stdout
+        )
 
     def test_whoami_refuses_a_human_viewer(self):
         self.mock.viewer = {
@@ -1177,7 +1226,6 @@ class AuthTests(BoardTest):
         self.token_cache.write_text(json.dumps(cache))
         self.mock.tokens.clear()
         p = self.board("whoami")
-        self.assertIn("mints on this host: 2", p.stdout)
         self.assertEqual(self.mock.mints, 2)
 
     def test_token_is_reminted_early_on_day_28(self):
@@ -1190,7 +1238,6 @@ class AuthTests(BoardTest):
         cache["minted_at"] -= 2 * 86400  # day 29:  the next token is minted while this one works
         self.token_cache.write_text(json.dumps(cache))
         p = self.board("whoami")
-        self.assertIn("mints on this host: 2", p.stdout)
         self.assertEqual(self.mock.mints, 2)
 
     def test_a_failed_early_remint_keeps_the_cached_token(self):
@@ -1201,7 +1248,7 @@ class AuthTests(BoardTest):
         self.mock.mint_down = True
         p = self.board("whoami")
         self.assertIn("re-minting the", p.stderr)
-        self.assertIn("using the cached one", p.stderr)
+        self.assertIn("using the stored one", p.stderr)
         self.assertIn("viewer:", p.stdout)
         self.assertEqual(self.mock.mints, 1)
 
@@ -2088,7 +2135,7 @@ class SeatAppTests(BoardTest):
         return cid, secret
 
     def cache(self, seat):
-        return self.token_cache.parent / f"{seat}.token"
+        return self.ops_vault / ("CACHE_" + seat.replace("-", "_"))
 
     def as_seat(self, seat, *args, extra=None, **kw):
         return self.board(*args, extra=dict(extra or {}, AGENT_SEAT=seat), **kw)
@@ -2106,7 +2153,7 @@ class SeatAppTests(BoardTest):
             "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID, CLAUDE_LINEAR_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn(f"token cache: {self.cache('CLAUDE')}", p.stdout)
+        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_CLAUDE", p.stdout)
         self.assertNotIn("notice:", p.stdout)
         self.assertNotIn(claude, p.stdout + p.stderr)  # the path is printed, never a value
         p = self.as_seat("CODEX", "whoami")
@@ -2128,8 +2175,6 @@ class SeatAppTests(BoardTest):
         a, b = (json.loads(self.cache(s).read_text()) for s in ("CLAUDE", "CODEX"))
         self.assertNotEqual(a["access_token"], b["access_token"])
         self.assertNotEqual(a["cred_fp"], b["cred_fp"])
-        for s in ("CLAUDE", "CODEX"):
-            self.assertEqual(stat.S_IMODE(self.cache(s).stat().st_mode), 0o600)
 
     def test_seat_app_writes_keep_the_seat_label_and_comment(self):
         claude, _ = self.seat_app("CLAUDE", "Claude")
@@ -2156,7 +2201,7 @@ class SeatAppTests(BoardTest):
             "credentials: Infisical Fleet-OPS prod /linear (FLEET_LINEAR_CLIENT_ID, FLEET_LINEAR_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn(f"token cache: {self.token_cache}", p.stdout)
+        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_FLEET", p.stdout)
         notices = [ln for ln in p.stdout.splitlines() if ln.startswith("notice:")]
         self.assertEqual(len(notices), 1, p.stdout)
         self.assertIn(
@@ -2219,7 +2264,7 @@ class SeatAppTests(BoardTest):
             "credentials: Infisical Fleet-OPS prod /linear (GROK_WEB_LINEAR_CLIENT_ID, GROK_WEB_LINEAR_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn(f"token cache: {self.cache('GROK-WEB')}", p.stdout)
+        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_GROK_WEB", p.stdout)
         # the environment form spells the hyphen as an underscore
         self.ops_drop_seat("GROK-WEB")
         self.cache("GROK-WEB").unlink()
@@ -2233,7 +2278,7 @@ class SeatAppTests(BoardTest):
             p.stdout,
         )
         self.assertIn("viewer:      Grok Web (app user)", p.stdout)
-        self.assertIn(f"token cache: {self.cache('GROK-WEB')}", p.stdout)
+        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_GROK_WEB", p.stdout)
         # every GROK-BUILD spelling is GROK, and reads GROK_LINEAR_CLIENT_ID
         self.seat_app("GROK", "Grok")
         p = self.as_seat("Grok-Build", "whoami")
@@ -2252,7 +2297,7 @@ class SeatAppTests(BoardTest):
             "credentials: environment (LINEAR_CODEX_CLIENT_ID, LINEAR_CODEX_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn(f"token cache: {self.cache('CODEX')}", p.stdout)
+        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_CODEX", p.stdout)
         self.as_seat(
             "CODEX",
             "comment",
@@ -2437,13 +2482,13 @@ class SeatAppTests(BoardTest):
         self.as_seat("CODEX", "whoami")
         self.mock.tokens.clear()  # Linear refuses both tokens
         p = self.as_seat("CLAUDE", "list", code=6)
-        self.assertIn("Linear refused the cached Claude seat app token", p.stderr)
+        self.assertIn("Linear refused the stored Claude seat app token", p.stderr)
         self.assertIn("under 24 hours ago", p.stderr)
         # CLAUDE's mint is two days old, so it mints again; CODEX's is not, so CODEX still refuses
         c = json.loads(self.cache("CLAUDE").read_text())
         c["minted_at"] -= 2 * 86400
         self.cache("CLAUDE").write_text(json.dumps(c))
-        self.assertIn("mints on this host: 2", self.as_seat("CLAUDE", "whoami").stdout)
+        self.as_seat("CLAUDE", "whoami")
         self.assertIn("under 24 hours ago", self.as_seat("CODEX", "list", code=6).stderr)
         self.assertEqual(self.mock.mints_by, {claude: 2, codex: 1})
         # rotating CODEX's credentials mints for CODEX alone, and CLAUDE's token stays put
@@ -2458,37 +2503,33 @@ class SeatAppTests(BoardTest):
         self.assertEqual(json.loads(self.cache("CLAUDE").read_text())["access_token"], claude_tok)
         self.assertFalse(self.token_cache.exists())
 
-    def test_each_cache_file_has_its_own_lock(self):
-        import fcntl
-
+    def test_concurrent_runs_with_an_expired_blob_both_succeed(self):
+        """No lock any more:  two runs that both see an expired blob each mint and write;  last writer wins and
+        both work, and a third run uses whichever blob is stored."""
         self.seat_app("CLAUDE", "Claude")
-        self.seat_app("CODEX", "Codex")
-
-        def hold(path):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            return fd
-
-        def run(seat, timeout):
-            e = dict(self.env, AGENT_SEAT=seat)
-            return subprocess.run(
-                [PY, str(CLI), "whoami"], env=e, capture_output=True, text=True, timeout=timeout
+        self.board("whoami", extra={"AGENT_SEAT": "CLAUDE"})
+        blob = json.loads(self.cache("CLAUDE").read_text())
+        blob["expires_at"] = 1.0
+        blob["minted_at"] -= 3 * 86400
+        self.cache("CLAUDE").write_text(json.dumps(blob))
+        procs = [
+            subprocess.Popen(
+                [PY, str(CLI), "list"],
+                env=dict(self.env, AGENT_SEAT="CLAUDE"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
-
-        fd = hold(self.token_cache)  # the Fleet lock is held:  a seat app is not held up
-        try:
-            self.assertEqual(run("CLAUDE", 20).returncode, 0)
-        finally:
-            os.close(fd)
-        fd = hold(self.cache("CLAUDE"))  # CLAUDE's lock is held:  CODEX runs, CLAUDE waits
-        try:
-            self.assertEqual(run("CODEX", 20).returncode, 0)
-            with self.assertRaises(subprocess.TimeoutExpired):
-                run("CLAUDE", 3)
-        finally:
-            os.close(fd)
-        self.assertEqual(run("CLAUDE", 20).returncode, 0)
+            for _ in range(2)
+        ]
+        outs = [pr.communicate(timeout=60) for pr in procs]
+        self.assertEqual([pr.returncode for pr in procs], [0, 0], outs)
+        self.assertGreaterEqual(self.mock.mints, 2)
+        stored = json.loads(self.cache("CLAUDE").read_text())
+        self.assertIn(stored["access_token"], self.mock.tokens)
+        n = self.mock.mints
+        self.as_seat("CLAUDE", "list")
+        self.assertEqual(self.mock.mints, n, "the stored blob was used")
 
     def test_incomplete_seat_pair_uses_fleet_and_no_credentials_names_both(self):
         self.ops_put("CLAUDE_LINEAR_CLIENT_ID", "only-the-id")
@@ -2511,14 +2552,21 @@ class SeatAppTests(BoardTest):
             (decoy / name).write_text("LINEAR_CLIENT_ID=decoy\nLINEAR_CLIENT_SECRET=decoy\n")
         before = sorted(str(q.relative_to(home)) for q in (home / ("." + "secrets")).rglob("*"))
         self.seat_app("CLAUDE", "Claude")
-        p = self.as_seat("CLAUDE", "whoami", drop=("LINEAR_FLEET_TOKEN_CACHE",))
+        p = self.as_seat("CLAUDE", "whoami", drop=())
         self.assertIn(
             "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID", p.stdout
         )
-        self.assertIn(f"token cache: {home / '.cache' / 'fleet-linear' / 'CLAUDE.token'}", p.stdout)
+        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_CLAUDE", p.stdout)
         after = sorted(str(q.relative_to(home)) for q in (home / ("." + "secrets")).rglob("*"))
         self.assertEqual(after, before)
-        self.assertEqual(stat.S_IMODE((home / ".cache" / "fleet-linear").stat().st_mode), 0o700)
+        self.assertEqual(
+            sorted(
+                str(q.relative_to(home))
+                for q in home.rglob("*")
+                if q.is_file() and ".secrets" not in str(q)
+            ),
+            [],
+        )  # no token file, no cache, nothing
 
     def test_relabel_stays_on_the_fleet_app(self):
         self.seat_app("CLAUDE", "Claude")
@@ -3162,6 +3210,93 @@ class ClutchRoutingCompatibilityTests(unittest.TestCase):
         for app in ("C", "c", "CLUTCH", "clutch", "CK", "ck", "harness", "dsh-runtime"):
             with self.subTest(app=app):
                 self.assertEqual(cli.route_app(app), ("C", None))
+
+
+class TokenBlobTests(BoardTest):
+    """The minted token lives in Infisical Fleet-OPS /linear (CACHE_<SEAT>), never on disk (AFC-359)."""
+
+    seat_app = SeatAppTests.seat_app
+    cache = SeatAppTests.cache
+    as_seat = SeatAppTests.as_seat
+
+    def seat(self):
+        self.seat_app("CLAUDE", "Claude")
+        return self.cache_path()
+
+    def cache_path(self):
+        return self.ops_vault / "CACHE_CLAUDE"
+
+    def sets(self):
+        return [v for v in self.fs_verbs() if v.startswith("set ")]
+
+    def test_a_fresh_blob_means_zero_mints_zero_writes_and_one_fleet_secrets_call(self):
+        blob = self.seat()
+        self.as_seat("CLAUDE", "list")
+        self.assertEqual(self.mock.mints, 1)
+        self.assertTrue(blob.exists())
+        before = len(self.fs_verbs())
+        self.as_seat("CLAUDE", "list")
+        self.assertEqual(self.mock.mints, 1)
+        self.assertEqual(self.sets(), ["set CACHE_CLAUDE"], "only the first run wrote")
+        # the client pair and the blob come back together, in one fleet-secrets call
+        self.assertEqual(self.fs_verbs()[before:], ["run --path"])
+
+    def test_an_expired_blob_means_one_mint_and_one_write_with_the_value_on_stdin(self):
+        blob = self.seat()
+        self.as_seat("CLAUDE", "list")
+        data = json.loads(blob.read_text())
+        data["expires_at"] = 1.0
+        data["minted_at"] -= 3 * 86400
+        blob.write_text(json.dumps(data))
+        n_sets = len(self.sets())
+        self.as_seat("CLAUDE", "list")
+        self.assertEqual(self.mock.mints, 2)
+        self.assertEqual(len(self.sets()), n_sets + 1)
+        # the fake refuses any `set` that carries the value in an argument, so reaching here proves stdin
+        stored = json.loads(blob.read_text())
+        self.assertIn(stored["access_token"], self.mock.tokens)
+        self.assertEqual(
+            sorted(stored),
+            ["access_token", "cred_fp", "expires_at", "minted_at", "scope", "token_type"],
+        )
+
+    def test_a_failed_write_still_works_and_leaves_nothing_on_disk(self):
+        blob = self.seat()
+        p = self.as_seat("CLAUDE", "list", extra={"FS_FAIL_SET": "1"})
+        self.assertIn("could not save the new Claude seat app token in Infisical", p.stderr)
+        self.assertIn("CACHE_CLAUDE", p.stderr)
+        self.assertIn("using it for this run only", p.stderr)
+        self.assertFalse(blob.exists())
+        self.assertEqual(sorted(str(q) for q in (self.tmp / "home").rglob("*")), [])
+        tokens = list(self.mock.tokens)
+        for q in self.tmp.rglob("*"):
+            if q.is_file() and q != self.fs_calls:
+                data = q.read_text(errors="ignore")
+                for t in tokens:
+                    self.assertNotIn(t, data, f"a token was written to {q}")
+
+    def test_the_viewer_is_kept_in_the_blob(self):
+        blob = self.seat()
+        self.as_seat("CLAUDE", "whoami")
+        self.assertEqual(json.loads(blob.read_text())["viewer"]["name"], "Claude")
+        before = len(self.sets())
+        self.as_seat("CLAUDE", "whoami")
+        self.assertEqual(len(self.sets()), before, "an unchanged viewer is not written again")
+
+    def test_no_file_appears_under_home(self):
+        self.seat()
+        for args in (["whoami"], ["list"], ["comment", B_A[:8], "--by", "CLAUDE", "--text", "x"]):
+            self.as_seat("CLAUDE", *args)
+        self.assertEqual(sorted(str(q) for q in (self.tmp / "home").rglob("*")), [])
+        self.assertFalse(list(self.tmp.rglob("*.token")))
+
+    def test_the_cloud_pair_has_no_store_and_mints_each_run(self):
+        pair = {"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET}
+        p = self.board("whoami", extra=pair)
+        self.assertIn("token store: none on this host", p.stdout)
+        self.board("list", extra=pair)
+        self.assertEqual(self.mock.mints, 2)
+        self.assertEqual(self.sets(), [])
 
 
 if __name__ == "__main__":

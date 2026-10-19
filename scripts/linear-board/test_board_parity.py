@@ -585,7 +585,7 @@ class RunCliTests(ParityCliTest):
         )
         self.assertIn("belongs to a different request", p.stderr)
         self.assertEqual(len(self.mock.api_requests), 1)
-        record = self.token_cache.with_name("Fleet.linear-api.json")
+        record = self.tmp / "cache" / "Fleet.linear-api.json"
         self.assertEqual(oct(record.stat().st_mode & 0o777), "0o600")
 
     def test_an_unknown_outcome_is_never_replayed(self):
