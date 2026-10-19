@@ -2946,7 +2946,9 @@ def apply_tools(
             staged_mm = shlex.quote(os.path.join(stage, MINIMAX_HOOK_NAME))
             bad.extend(
                 c
-                for c in probe_minimax_files(staged_mm, paths.home, timeout, minimal_path)
+                for c in probe_minimax_files(
+                    staged_mm, paths.home, os.path.join(stage, REGISTRY_NAME), timeout, minimal_path
+                )
                 if c.status == "FAIL"
             )
             # MM has its own adapter, so the shared shell probes above prove nothing for it.  Probe
@@ -4561,19 +4563,35 @@ def minimax_expected(paths: Paths) -> dict[str, str]:
     }
 
 
-def probe_minimax_files(command: str, home: str, timeout: float, minimal_path: bool) -> list[Check]:
+def registry_tree(registry: str) -> str:
+    """The first registered ~/Code folder name.  Probes follow the registry, not a literal."""
+    try:
+        apps = json.loads(_read_bytes(registry).decode("utf-8")).get("apps")
+        for app in apps or []:
+            name = (app.get("codeDir") or app.get("repo") or "").strip()
+            if name:
+                return name
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return ""
+
+
+def probe_minimax_files(
+    command: str, home: str, registry: str, timeout: float, minimal_path: bool
+) -> list[Check]:
     """Run MM's compatible file payloads in its restricted subprocess environment."""
     env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
     env.update(HOME=home, PATH=MINIMAL_PATH if minimal_path else os.environ.get("PATH", ""))
+    tree = os.path.join("Code", registry_tree(registry), "probe-placeholder")
     out = []
     for tool, path, deny in (
         ("Read", ".secrets/probe-placeholder", True),
-        ("Write", "Code/BotFleet/probe-placeholder", True),
+        ("Write", tree, True),
         ("Edit", ".secrets/probe-placeholder", True),
         ("Read", "public-placeholder", False),
         ("Write", "public-placeholder", False),
         ("read", ".secrets/probe-placeholder", True),
-        ("write", "Code/BotFleet/probe-placeholder", True),
+        ("write", tree, True),
         ("edit", ".secrets/probe-placeholder", True),
     ):
         field = "path" if tool in ("read", "write") else "file_path"
@@ -4766,7 +4784,9 @@ def apply_minimax(
         ]
         bad.extend(
             c
-            for c in probe_minimax_files(mp.command, paths.home, timeout, minimal_path)
+            for c in probe_minimax_files(
+                mp.command, paths.home, paths.registry, timeout, minimal_path
+            )
             if c.status == "FAIL"
         )
         if bad:
@@ -4995,7 +5015,7 @@ def verify_minimax(
                 + f"exit={res.returncode} stdout={_brief(res.stdout)}",
             )
         )
-    out.extend(probe_minimax_files(cmd, paths.home, timeout, minimal_path))
+    out.extend(probe_minimax_files(cmd, paths.home, paths.registry, timeout, minimal_path))
     switch, _off = guard_switch()
     if _is_off(os.environ.get(switch, "")):
         out.append(

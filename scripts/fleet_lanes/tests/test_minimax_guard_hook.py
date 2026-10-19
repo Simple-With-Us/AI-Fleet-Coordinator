@@ -25,6 +25,11 @@ class MinimaxHookTests(unittest.TestCase):
         ctx = guard.make_context(self.env if env is None else env, home=self.home)
         return mm.decide(self.payload(tool, path), ctx)[0]
 
+    def fleet_clone_into_temp(self):
+        """A temp clone of a registered fleet repo: the repo comes from the registry, not a literal."""
+        owner_repo = sorted(guard.make_context(self.env, home=self.home).owner_repos)[0]
+        return f"git clone https://github.com/{owner_repo} /tmp/example-repo"
+
     def test_secret_paths_all_file_tools_and_relative_paths(self):
         for tool in ("Read", "Write", "Edit"):
             for path in (
@@ -95,7 +100,7 @@ class MinimaxHookTests(unittest.TestCase):
             "ps",
             "ps aux",
             "cat ~/.secrets/dummy",
-            "git clone https://github.com/Simple-With-Us/BotFleet /tmp/BotFleet",
+            self.fleet_clone_into_temp(),
         ):
             payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": self.home}
             self.assertIsNotNone(mm.decide(payload)[0], command)
