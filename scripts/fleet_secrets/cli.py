@@ -146,7 +146,7 @@ def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
     (
         rep["keychain_client_id_present"],
         rep["keychain_client_secret_present"],
-    ) = core.keychain_presence(None)
+    ) = core.keychain_presence(core.login_keychain())
     (
         rep["system_keychain_client_id_present"],
         rep["system_keychain_client_secret_present"],

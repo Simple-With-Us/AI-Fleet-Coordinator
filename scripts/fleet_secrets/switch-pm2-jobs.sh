@@ -103,7 +103,12 @@ switch_job() {
   local name="$1" live="$2" src="$3" restart_only="${4:-}" backup="$2.bak-ops818-pm2" installed=false
   if ! [ -f "$live" ]; then results+=("$name: SKIPPED (live file missing)"); return; fi
   if [ -n "$src" ]; then
-    cp -p "$live" "$backup" || { results+=("$name: SKIPPED (could not back up)"); return; }
+    if [ -e "$backup" ]; then
+      say "$name: keeping the existing backup $backup (a rerun must not overwrite the original)"
+    else
+      cp -p "$live" "$backup" || { results+=("$name: SKIPPED (could not back up)"); return; }
+      say "$name: backed up the live file to $backup"
+    fi
     if ! { cp "$src" "$live.new-switch" && chmod "$(stat -f '%Lp' "$live")" "$live.new-switch" \
         && mv "$live.new-switch" "$live"; }; then
       rm -f "$live.new-switch"; results+=("$name: FAILED (install)"); return

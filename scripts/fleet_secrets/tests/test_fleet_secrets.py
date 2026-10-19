@@ -22,6 +22,7 @@ CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"
 CLIENT_SECRET = "SENTINEL_CLIENT_SECRET_5ec7"
 ACCESS_TOKEN = "SENTINEL_ACCESS_TOKEN_a11"
 ALL_SENTINELS = (VAL_A, VAL_B, CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN)
+FAKE_LOGIN_KEYCHAIN = "/fake/home/Library/Keychains/login.keychain-db"
 KEYCHAIN_FULL = {core.KEYCHAIN_CLIENT_ID: CLIENT_ID, core.KEYCHAIN_CLIENT_SECRET: CLIENT_SECRET}
 
 
@@ -51,7 +52,12 @@ class World:
         self.calls.append((argv, env))
         if argv[0] == core.SECURITY_BIN:
             acct = argv[argv.index("-a") + 1]
-            store = self.system_keychain if argv[-1] == core.SYSTEM_KEYCHAIN else self.keychain
+            if argv[-1] == core.SYSTEM_KEYCHAIN:
+                store = self.system_keychain
+            elif argv[-1] == FAKE_LOGIN_KEYCHAIN:
+                store = self.keychain
+            else:
+                raise AssertionError("keychain lookup without an explicit keychain path: %r" % argv)
             if acct in store:
                 return subprocess.CompletedProcess(argv, 0, (store[acct] + "\n").encode(), b"")
             return subprocess.CompletedProcess(argv, 44, b"", b"not found")
@@ -102,6 +108,7 @@ class Base(unittest.TestCase):
         patches = [
             mock.patch.object(core, "find_cli", lambda env: FAKE_CLI),
             mock.patch.object(core, "SECURITY_BIN", sys.executable),  # exists on every platform
+            mock.patch.object(core, "login_keychain", lambda: FAKE_LOGIN_KEYCHAIN),
             mock.patch.object(
                 cli.os, "execvpe", lambda f, a, e: self.exec_calls.append((f, list(a), dict(e)))
             ),
@@ -370,6 +377,33 @@ class AuthSelectionTests(Base):
             ],
             lookups,
         )
+
+    def test_only_system_has_the_items_so_the_mode_is_system_keychain_not_keychain(self):
+        # Every lookup names its keychain, so System items are never found through the login lookup.
+        w = self.use(World(system_keychain=KEYCHAIN_FULL))
+        self.assertEqual(core.auth_mode(self.env), "system-keychain")
+        lookups = [a for a, _ in w.calls if a[0] == core.SECURITY_BIN]
+        self.assertTrue(lookups)
+        self.assertTrue(all(a[-1] in (FAKE_LOGIN_KEYCHAIN, core.SYSTEM_KEYCHAIN) for a in lookups))
+
+    def test_no_usable_login_keychain_falls_cleanly_to_system(self):
+        self.use(World(system_keychain=KEYCHAIN_FULL))
+        with mock.patch.object(core, "login_keychain", lambda: None):
+            self.assertEqual(core.auth_mode(self.env), "system-keychain")
+            code, out, _ = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (0, VAL_A))
+
+    def test_one_item_in_each_keychain_is_not_mixed(self):
+        w = self.use(
+            World(
+                keychain={core.KEYCHAIN_CLIENT_ID: CLIENT_ID},
+                system_keychain={core.KEYCHAIN_CLIENT_SECRET: CLIENT_SECRET},
+            )
+        )
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn("keychain-incomplete", err)
+        self.assertEqual(w.logins(), [])
 
     def test_login_keychain_beats_the_system_keychain(self):
         w = self.use(

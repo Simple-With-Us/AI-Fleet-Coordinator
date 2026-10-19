@@ -181,16 +181,27 @@ def _base_env(env: Mapping[str, str]) -> dict[str, str]:
 # --------------------------------------------------------------------------- authentication
 
 
-def keychain_item(account: str, keychain: str | None = None) -> str | None:
-    """The generic-password value for service fleet-secrets, or None when absent.  Captured, never echoed.
+def login_keychain() -> str | None:
+    """Path of the user's login keychain file, or None when there is none.
 
-    `keychain` names a keychain file to search (the System keychain), or None for the default search list
-    (the login Keychain)."""
-    if not os.path.exists(SECURITY_BIN):
+    Always searched by explicit path:  the default search list also holds the System keychain, so a
+    path-less lookup would find System items and report `keychain` instead of `system-keychain`, or mix
+    one item from each.  In the launchd System session the file exists but is locked, so the lookup simply
+    fails and the System keychain is used."""
+    base = os.path.expanduser("~/Library/Keychains")
+    for name in ("login.keychain-db", "login.keychain"):
+        candidate = os.path.join(base, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def keychain_item(account: str, keychain: str | None) -> str | None:
+    """The generic-password value for service fleet-secrets in ONE keychain file, or None when absent
+    (`keychain` None means there is no such keychain).  Captured, never echoed."""
+    if not keychain or not os.path.exists(SECURITY_BIN):
         return None
-    argv = [SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w"]
-    if keychain:
-        argv.append(keychain)
+    argv = [SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w", keychain]
     try:
         proc = subprocess.run(
             argv,
@@ -210,7 +221,7 @@ def keychain_item(account: str, keychain: str | None = None) -> str | None:
     return value or None
 
 
-def keychain_presence(keychain: str | None = None) -> tuple[bool, bool]:
+def keychain_presence(keychain: str | None) -> tuple[bool, bool]:
     """(client id present, client secret present) in one keychain.  Booleans only."""
     return (
         keychain_item(KEYCHAIN_CLIENT_ID, keychain) is not None,
@@ -235,7 +246,7 @@ def auth_mode(env: Mapping[str, str]) -> str:
     than downgrade."""
     if (env.get(ENV_TOKEN) or "").strip():
         return "token"
-    if _complete_or_none("the login Keychain", None):
+    if _complete_or_none("the login Keychain", login_keychain()):
         return "keychain"
     if _complete_or_none("the System keychain", SYSTEM_KEYCHAIN):
         return "system-keychain"
@@ -244,7 +255,7 @@ def auth_mode(env: Mapping[str, str]) -> str:
 
 def machine_token(cli: str, env: Mapping[str, str], mode: str = "keychain") -> str:
     """Log in with the mode's machine identity and return the access token (in memory only)."""
-    keychain = SYSTEM_KEYCHAIN if mode == "system-keychain" else None
+    keychain = SYSTEM_KEYCHAIN if mode == "system-keychain" else login_keychain()
     client_id = keychain_item(KEYCHAIN_CLIENT_ID, keychain)
     client_secret = keychain_item(KEYCHAIN_CLIENT_SECRET, keychain)
     if not client_id or not client_secret:
