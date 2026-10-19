@@ -81,6 +81,8 @@ EXACT = frozenset(
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
+        # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `agent-sync mcp` reads it at startup.
+        "scripts/agent_sync/mcp/fleetlink-tools.json",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
@@ -112,6 +114,9 @@ TOOL_REQUIRED = frozenset(
         "scripts/agent_sync/mcp/listener-tools.json",
         # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
+        # The fleetlink_* MCP tools:  `agent-sync mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
+        # release built before it stays a valid rollback target.
+        "scripts/agent_sync/mcp/fleetlink-tools.json",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED

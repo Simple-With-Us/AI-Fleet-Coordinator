@@ -25,6 +25,7 @@ Checks:
 
 Exit 1 on any FAIL, 0 otherwise.  Standard library only.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,8 +35,8 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 RUNTIME = HOME / ".local/share/fleet-cli"
@@ -51,36 +52,75 @@ MAC_RUNTIME = HOME / "apps/lanes/_managed/fleet/agent-sync-runtime"
 MAC_FLEET_MODE_DOC = HOME / "apps/FLEET-MODE.md"
 AFC_REMOTE_URL = "https://github.com/Simple-With-Us/AI-Fleet-Coordinator"
 # Coarse git pathspecs that bound the diff;  is_shipped() then applies the exact rules.
-SHIPPED = ("scripts/agent-sync", "scripts/agent_sync/", "scripts/linear-board/", "fleet-apps.json",
-           "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
-           "scripts/recall", "scripts/fleet_rag/", "scripts/fleet_lanes/", "scripts/fleet_knobs/", "scripts/fleet-mode",
-           "docs/FLEET-MODE.md", "docs/protocols/agent-sync-tools-guide.md")
+SHIPPED = (
+    "scripts/agent-sync",
+    "scripts/agent_sync/",
+    "scripts/linear-board/",
+    "fleet-apps.json",
+    "docs/protocols/agent-sync-partition.toml",
+    "scripts/fleet-cli-release.py",
+    "scripts/recall",
+    "scripts/fleet_rag/",
+    "scripts/fleet_lanes/",
+    "scripts/fleet_knobs/",
+    "scripts/fleet-mode",
+    "docs/FLEET-MODE.md",
+    "docs/protocols/agent-sync-tools-guide.md",
+)
 # What a fleet-cli release ships:  mirrors EXACT and allowed_path in scripts/fleet-cli-release.py, so a
 # commit that changes only tests or docs under those folders needs no push and is not drift.
 # The fallback copy of what a release ships, for a host with no checkout.  With a checkout,
 # is_shipped asks scripts/fleet-cli-release.py itself, so the two cannot drift;  a test pins this
 # copy to the release's EXACT.
-SHIPPED_EXACT = frozenset({
-    "scripts/agent-sync", "scripts/linear-board/board", "scripts/linear-board/board-ids.txt",
-    "fleet-apps.json", "docs/protocols/agent-sync-partition.toml", "scripts/fleet-cli-release.py",
-    "scripts/agent_sync/mcp/tools.json", "scripts/agent_sync/mcp/fixtures.jsonl",
-    "scripts/agent_sync/mcp/listener-tools.json", "scripts/agent_sync/mcp/renamed-tools.json",
-    "scripts/agent_sync/mcp/gb-identities.json", "scripts/agent_sync/mcp/notes-tools.json",
-    "scripts/agent_sync/mcp/recall-tools.json", "scripts/linear-board/catalog/core-tools.json",
-    "docs/protocols/agent-sync-tools-guide.md",
-    "scripts/agent_sync/wake/wake-schema.json",
-    "scripts/linear-board/catalog/named-commands.json", "scripts/linear-board/catalog/official-mcp-tools.json",
-    "scripts/linear-board/catalog/public-inputs.json",
-    "scripts/recall", "scripts/fleet_rag/__init__.py", "scripts/fleet_rag/contribute_guard.py",
-    "scripts/fleet_rag/core.py", "scripts/fleet_rag/doctor.py", "scripts/fleet_rag/health.py",
-    "scripts/fleet_rag/public_fallback.py", "scripts/fleet_rag/recall_api.py", "scripts/fleet_rag/scrub.py",
-    "scripts/fleet_rag/search_log.py", "scripts/fleet_rag/telemetry.py",
-    "scripts/fleet_lanes/bin/lane", "scripts/fleet_lanes/__init__.py", "scripts/fleet_lanes/doctor.py",
-    "scripts/fleet_lanes/guard.py", "scripts/fleet_lanes/lane.py", "scripts/fleet_lanes/layout.py",
-    "scripts/fleet_knobs/__init__.py", "scripts/fleet_knobs/knobs.py", "scripts/fleet_knobs/lkg.py",
-    "scripts/fleet_knobs/registry.py", "scripts/fleet_knobs/source.py", "scripts/fleet_knobs/values.py",
-    "scripts/fleet-mode", "docs/FLEET-MODE.md",
-})
+SHIPPED_EXACT = frozenset(
+    {
+        "scripts/agent-sync",
+        "scripts/linear-board/board",
+        "scripts/linear-board/board-ids.txt",
+        "fleet-apps.json",
+        "docs/protocols/agent-sync-partition.toml",
+        "scripts/fleet-cli-release.py",
+        "scripts/agent_sync/mcp/tools.json",
+        "scripts/agent_sync/mcp/fixtures.jsonl",
+        "scripts/agent_sync/mcp/listener-tools.json",
+        "scripts/agent_sync/mcp/renamed-tools.json",
+        "scripts/agent_sync/mcp/gb-identities.json",
+        "scripts/agent_sync/mcp/notes-tools.json",
+        "scripts/agent_sync/mcp/recall-tools.json",
+        "scripts/linear-board/catalog/core-tools.json",
+        "scripts/agent_sync/mcp/fleetlink-tools.json",
+        "docs/protocols/agent-sync-tools-guide.md",
+        "scripts/agent_sync/wake/wake-schema.json",
+        "scripts/linear-board/catalog/named-commands.json",
+        "scripts/linear-board/catalog/official-mcp-tools.json",
+        "scripts/linear-board/catalog/public-inputs.json",
+        "scripts/recall",
+        "scripts/fleet_rag/__init__.py",
+        "scripts/fleet_rag/contribute_guard.py",
+        "scripts/fleet_rag/core.py",
+        "scripts/fleet_rag/doctor.py",
+        "scripts/fleet_rag/health.py",
+        "scripts/fleet_rag/public_fallback.py",
+        "scripts/fleet_rag/recall_api.py",
+        "scripts/fleet_rag/scrub.py",
+        "scripts/fleet_rag/search_log.py",
+        "scripts/fleet_rag/telemetry.py",
+        "scripts/fleet_lanes/bin/lane",
+        "scripts/fleet_lanes/__init__.py",
+        "scripts/fleet_lanes/doctor.py",
+        "scripts/fleet_lanes/guard.py",
+        "scripts/fleet_lanes/lane.py",
+        "scripts/fleet_lanes/layout.py",
+        "scripts/fleet_knobs/__init__.py",
+        "scripts/fleet_knobs/knobs.py",
+        "scripts/fleet_knobs/lkg.py",
+        "scripts/fleet_knobs/registry.py",
+        "scripts/fleet_knobs/source.py",
+        "scripts/fleet_knobs/values.py",
+        "scripts/fleet-mode",
+        "docs/FLEET-MODE.md",
+    }
+)
 STATE = HOME / ".local/state/fleet-tools-doctor.json"
 CATALOGS = (
     ("scripts/agent_sync/mcp/tools.json", True),
@@ -99,6 +139,7 @@ def release_policy():
         if path and path.exists():
             try:
                 import importlib.util
+
                 spec = importlib.util.spec_from_file_location("fleet_cli_release_policy", path)
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
@@ -114,14 +155,20 @@ def is_shipped(path: str) -> bool:
         return bool(policy.allowed_path(path))
     return path in SHIPPED_EXACT or bool(
         re.fullmatch(r"scripts/agent_sync/(?:mcp/)?[a-z][a-z0-9_]*\.py", path)
-        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py"))
+        or path in ("scripts/agent_sync/__init__.py", "scripts/agent_sync/mcp/__init__.py")
+    )
 
 
 # The entry file of each tool the release added with AFC-331, and the modules it cannot run without.
 TOOL_FILES = (
-    "scripts/recall", "scripts/fleet_rag/core.py", "scripts/fleet_rag/recall_api.py",
-    "scripts/fleet_lanes/bin/lane", "scripts/fleet_lanes/lane.py", "scripts/fleet_lanes/layout.py",
-    "scripts/fleet-mode", "docs/FLEET-MODE.md",
+    "scripts/recall",
+    "scripts/fleet_rag/core.py",
+    "scripts/fleet_rag/recall_api.py",
+    "scripts/fleet_lanes/bin/lane",
+    "scripts/fleet_lanes/lane.py",
+    "scripts/fleet_lanes/layout.py",
+    "scripts/fleet-mode",
+    "docs/FLEET-MODE.md",
 )
 
 
@@ -148,7 +195,9 @@ class Report:
 def git_try(repo: Path, *args: str, runner: Callable = subprocess.run) -> str | None:
     """Stdout of a git command, or None when it fails (so a failure is never read as an empty answer)."""
     try:
-        out = runner(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60, check=False)
+        out = runner(
+            ["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60, check=False
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     return out.stdout.strip() if out.returncode == 0 else None
@@ -160,7 +209,13 @@ def git(repo: Path, *args: str, runner: Callable = subprocess.run) -> str:
 
 def remote_ls_remote(url: str, runner: Callable = subprocess.run) -> str:
     try:
-        out = runner(["git", "ls-remote", url, "refs/heads/main"], capture_output=True, text=True, timeout=60, check=False)
+        out = runner(
+            ["git", "ls-remote", url, "refs/heads/main"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         return ""
     return out.stdout.split()[0] if out.returncode == 0 and out.stdout.split() else ""
@@ -188,30 +243,58 @@ def check_runtime(report: Report, network: bool, runner: Callable = subprocess.r
     status_file = live if live.exists() else RUNTIME / "status.json"
     afc = find_repo("AI-Fleet-Coordinator")
     if not status_file.exists():
-        report.add("runtime", "WARN", f"no {status_file} (a Mac reads the published runtime instead)")
+        report.add(
+            "runtime", "WARN", f"no {status_file} (a Mac reads the published runtime instead)"
+        )
         return
     status = json.loads(status_file.read_text())
     status.setdefault("status", "paused" if (RUNTIME / "paused").exists() else "ready")
     commit = str(status.get("source_commit", ""))
     if (RUNTIME / "paused").exists():
-        report.add("runtime:updates", "WARN", "paused (fleet-cli-release resume turns the Mac's pushes back on)")
+        report.add(
+            "runtime:updates",
+            "WARN",
+            "paused (fleet-cli-release resume turns the Mac's pushes back on)",
+        )
     # A host with no checkout (the Hetzner server may have none) asks GitHub directly.
-    main = remote_main(afc, network, runner) if afc else (remote_ls_remote(AFC_REMOTE_URL, runner) if network else "")
+    main = (
+        remote_main(afc, network, runner)
+        if afc
+        else (remote_ls_remote(AFC_REMOTE_URL, runner) if network else "")
+    )
     if not main:
-        report.add("runtime", "WARN", f"release {commit[:7]} ({status.get('status')}); origin/main unknown")
+        report.add(
+            "runtime", "WARN", f"release {commit[:7]} ({status.get('status')}); origin/main unknown"
+        )
     elif commit == main:
         report.add("runtime", "OK", f"release built from origin/main {main[:7]}")
     else:
-        raw = git_try(afc, "diff", "--name-only", commit, main, "--", *SHIPPED, runner=runner) if afc else None
+        raw = (
+            git_try(afc, "diff", "--name-only", commit, main, "--", *SHIPPED, runner=runner)
+            if afc
+            else None
+        )
         if raw is None:
             # No checkout, or a commit not fetched here:  the doctor cannot tell, so it says so.
-            report.add("runtime", "WARN", f"release built from {commit[:7]}, origin/main {main[:7]}:  cannot compare (no checkout, or a commit not fetched here)")
+            report.add(
+                "runtime",
+                "WARN",
+                f"release built from {commit[:7]}, origin/main {main[:7]}:  cannot compare (no checkout, or a commit not fetched here)",
+            )
             return
         changed = [line for line in raw.splitlines() if is_shipped(line)]
         if not changed:
-            report.add("runtime", "OK", f"release built from {commit[:7]};  no shipped file changed up to origin/main {main[:7]}")
+            report.add(
+                "runtime",
+                "OK",
+                f"release built from {commit[:7]};  no shipped file changed up to origin/main {main[:7]}",
+            )
         else:
-            report.add("runtime", "FAIL", f"release built from {commit[:7]};  {len(changed)} shipped files changed up to origin/main {main[:7]}:  the Mac's fleet-cli-sync has not pushed them")
+            report.add(
+                "runtime",
+                "FAIL",
+                f"release built from {commit[:7]};  {len(changed)} shipped files changed up to origin/main {main[:7]}:  the Mac's fleet-cli-sync has not pushed them",
+            )
 
 
 def check_checkouts(report: Report, network: bool, runner: Callable = subprocess.run) -> None:
@@ -226,7 +309,11 @@ def check_checkouts(report: Report, network: bool, runner: Callable = subprocess
         if branch != "main":
             report.add(f"checkout:{name}", "WARN", f"on {branch}, not main")
         elif main and head != main:
-            report.add(f"checkout:{name}", "FAIL", f"main at {head[:7]}, origin/main {main[:7]}:  run code-main-sync")
+            report.add(
+                f"checkout:{name}",
+                "FAIL",
+                f"main at {head[:7]}, origin/main {main[:7]}:  run code-main-sync",
+            )
         else:
             report.add(f"checkout:{name}", "OK", f"main {head[:7]}")
 
@@ -256,7 +343,9 @@ def check_catalogs(report: Report) -> None:
     for rel, required in CATALOGS:
         present = (base / rel).exists()
         status = "OK" if present else ("FAIL" if required else "WARN")
-        report.add(f"catalog:{Path(rel).name}", status, f"{'present' if present else 'missing'} in {base}")
+        report.add(
+            f"catalog:{Path(rel).name}", status, f"{'present' if present else 'missing'} in {base}"
+        )
 
 
 def runtime_base() -> Path | None:
@@ -272,7 +361,11 @@ def check_tool_files(report: Report) -> None:
     base = runtime_base()
     for rel in TOOL_FILES:
         present = bool(base and (base / rel).is_file())
-        report.add(f"tool-file:{rel}", "OK" if present else "FAIL", f"{'present' if present else 'missing'} in {base}")
+        report.add(
+            f"tool-file:{rel}",
+            "OK" if present else "FAIL",
+            f"{'present' if present else 'missing'} in {base}",
+        )
 
 
 def check_fleet_mode_doc(report: Report) -> None:
@@ -282,28 +375,62 @@ def check_fleet_mode_doc(report: Report) -> None:
     base = runtime_base()
     repo_doc = base / "docs/FLEET-MODE.md" if base else None
     if not repo_doc or not repo_doc.is_file():
-        report.add("fleet-mode-doc", "WARN", f"no docs/FLEET-MODE.md in {base} to compare with {MAC_FLEET_MODE_DOC}")
+        report.add(
+            "fleet-mode-doc",
+            "WARN",
+            f"no docs/FLEET-MODE.md in {base} to compare with {MAC_FLEET_MODE_DOC}",
+        )
     elif repo_doc.read_bytes() == MAC_FLEET_MODE_DOC.read_bytes():
         report.add("fleet-mode-doc", "OK", f"{MAC_FLEET_MODE_DOC} equals the repo copy")
     else:
-        report.add("fleet-mode-doc", "WARN", f"{MAC_FLEET_MODE_DOC} differs from {repo_doc}:  edit docs/FLEET-MODE.md in the repo and copy it to ~/apps")
+        report.add(
+            "fleet-mode-doc",
+            "WARN",
+            f"{MAC_FLEET_MODE_DOC} differs from {repo_doc}:  edit docs/FLEET-MODE.md in the repo and copy it to ~/apps",
+        )
 
 
 def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
     zulip = HOME / ".secrets/Zulip" / f"{title_case(seat)}-zuliprc"
     linear_file = HOME / ".secrets/Linear" / f"{seat}.env"
-    linear_env = bool(env.get(f"LINEAR_{seat_file(seat)}_CLIENT_ID") and env.get(f"LINEAR_{seat_file(seat)}_CLIENT_SECRET"))
+    linear_env = bool(
+        env.get(f"LINEAR_{seat_file(seat)}_CLIENT_ID")
+        and env.get(f"LINEAR_{seat_file(seat)}_CLIENT_SECRET")
+    )
     fleetlink = HOME / ".secrets/FleetLink" / f"{seat_file(seat)}.env"
-    missing = [label for label, ok in (("zulip rc", zulip.exists()), ("linear app", linear_file.exists() or linear_env), ("fleetlink token", fleetlink.exists())) if not ok]
-    report.add(f"seat:{seat}", "OK" if not missing else "FAIL", "all credentials present" if not missing else "missing " + ", ".join(missing))
+    missing = [
+        label
+        for label, ok in (
+            ("zulip rc", zulip.exists()),
+            ("linear app", linear_file.exists() or linear_env),
+            ("fleetlink token", fleetlink.exists()),
+        )
+        if not ok
+    ]
+    report.add(
+        f"seat:{seat}",
+        "OK" if not missing else "FAIL",
+        "all credentials present" if not missing else "missing " + ", ".join(missing),
+    )
 
 
-MCP_PROBE = b"".join(json.dumps(m).encode() + b"\n" for m in (
-    {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                                                                   "clientInfo": {"name": "fleet-tools-doctor", "version": "1"}}},
-    {"jsonrpc": "2.0", "method": "notifications/initialized"},
-    {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-))
+MCP_PROBE = b"".join(
+    json.dumps(m).encode() + b"\n"
+    for m in (
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "fleet-tools-doctor", "version": "1"},
+            },
+        },
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+)
 
 
 def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.run) -> None:
@@ -313,7 +440,13 @@ def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.r
         report.add(f"mcp-start:{seat}", "FAIL", "agent-sync is not on PATH")
         return
     try:
-        result = runner(["agent-sync", "mcp", "--default-seat", seat], input=MCP_PROBE, capture_output=True, timeout=60, check=False)
+        result = runner(
+            ["agent-sync", "mcp", "--default-seat", seat],
+            input=MCP_PROBE,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
     except subprocess.TimeoutExpired:
         report.add(f"mcp-start:{seat}", "FAIL", "agent-sync mcp did not answer within 60 seconds")
         return
@@ -355,12 +488,24 @@ def check_mcp(report: Report) -> None:
     if codex.exists():
         names = codex_mcp_names(codex.read_text())
         lacking = [n for n in ("agent-sync", "fleetlink") if n not in names]
-        report.add("mcp:codex", "OK" if not lacking else "WARN", "registered: " + ", ".join(names) + (f";  missing {', '.join(lacking)}" if lacking else ""))
+        report.add(
+            "mcp:codex",
+            "OK" if not lacking else "WARN",
+            "registered: "
+            + ", ".join(names)
+            + (f";  missing {', '.join(lacking)}" if lacking else ""),
+        )
     claude = HOME / ".claude.json"
     if claude.exists():
         servers = sorted((json.loads(claude.read_text()).get("mcpServers") or {}).keys())
         lacking = [n for n in ("agent-sync", "fleetlink") if n not in servers]
-        report.add("mcp:claude", "OK" if not lacking else "WARN", "registered: " + (", ".join(servers) or "none") + (f";  missing {', '.join(lacking)}" if lacking else ""))
+        report.add(
+            "mcp:claude",
+            "OK" if not lacking else "WARN",
+            "registered: "
+            + (", ".join(servers) or "none")
+            + (f";  missing {', '.join(lacking)}" if lacking else ""),
+        )
 
 
 def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
@@ -374,12 +519,32 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
         return False
     host = os.uname().nodename
     if failing:
-        body = f"fleet-tools-doctor on {host}:  {len(failing)} failing check{'s' if len(failing) != 1 else ''}.\n" + "\n".join(f"- {line}" for line in failing)
+        body = (
+            f"fleet-tools-doctor on {host}:  {len(failing)} failing check{'s' if len(failing) != 1 else ''}.\n"
+            + "\n".join(f"- {line}" for line in failing)
+        )
     else:
         body = f"fleet-tools-doctor on {host}:  every check passes again."
     try:
-        result = runner(["agent-sync", "post", "--channel", "agent-sync", "--topic", "fleet tools doctor", body], capture_output=True, text=True, timeout=60, check=False)
-    except (OSError, subprocess.SubprocessError):  # agent-sync missing from PATH (check_commands reports it) or hung
+        result = runner(
+            [
+                "agent-sync",
+                "post",
+                "--channel",
+                "agent-sync",
+                "--topic",
+                "fleet tools doctor",
+                body,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (
+        OSError,
+        subprocess.SubprocessError,
+    ):  # agent-sync missing from PATH (check_commands reports it) or hung
         return False
     if result.returncode == 0:
         STATE.parent.mkdir(parents=True, exist_ok=True)
@@ -389,11 +554,21 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
 
 
 def run(argv: list[str] | None = None, env: dict[str, str] | None = None) -> tuple[Report, int]:
-    parser = argparse.ArgumentParser(prog="fleet-tools-doctor", description=__doc__.split("\n\n")[0])
-    parser.add_argument("--seats", default="", help="comma-separated seats whose credentials this host must hold")
+    parser = argparse.ArgumentParser(
+        prog="fleet-tools-doctor", description=__doc__.split("\n\n")[0]
+    )
+    parser.add_argument(
+        "--seats", default="", help="comma-separated seats whose credentials this host must hold"
+    )
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--no-network", action="store_true", help="compare with the local origin/main refs only")
-    parser.add_argument("--post", action="store_true", help="when the set of failing checks changes, post it with agent-sync to #agent-sync, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as agent-sync resolves it)")
+    parser.add_argument(
+        "--no-network", action="store_true", help="compare with the local origin/main refs only"
+    )
+    parser.add_argument(
+        "--post",
+        action="store_true",
+        help="when the set of failing checks changes, post it with agent-sync to #agent-sync, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as agent-sync resolves it)",
+    )
     args = parser.parse_args(argv)
     env = dict(os.environ if env is None else env)
     report = Report()

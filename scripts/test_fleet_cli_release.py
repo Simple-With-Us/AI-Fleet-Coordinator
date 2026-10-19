@@ -558,6 +558,15 @@ class ShippedDataFilesTests(unittest.TestCase):
         self.assertIn("scripts/agent_sync/mcp/listener-tools.json", release.TOOL_REQUIRED)
         self.assertNotIn("scripts/agent_sync/mcp/listener-tools.json", release.BASE_REQUIRED)
 
+    def test_fleetlink_tools_is_shipped_and_required_of_new_bundles_only(self):
+        # The fleetlink_* contract:  agent-sync mcp reads it at startup, so a new bundle must carry it,
+        # and an older retained release (built before the stdio FleetLink tools) stays a valid rollback target.
+        path = "scripts/agent_sync/mcp/fleetlink-tools.json"
+        self.assertIn(path, release.EXACT)
+        self.assertTrue(release.allowed_path(path))
+        self.assertIn(path, release.TOOL_REQUIRED)
+        self.assertNotIn(path, release.BASE_REQUIRED)
+
 
 if __name__ == "__main__":
     unittest.main()
