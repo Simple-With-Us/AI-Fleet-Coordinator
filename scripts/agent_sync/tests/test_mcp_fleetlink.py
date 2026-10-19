@@ -285,14 +285,16 @@ class CredentialTests(FleetLinkHarness):
         # environment named S (AFC-331 identity, fleetlink_tools.py generic_token_allowed).
         self.answer(stdout=json.dumps(SHARE))
         session = self.session(
-            self.env(FLEETLINK_TOKEN=TOKEN_GENERIC, AGENT_SEAT=None), argv=("--default-seat", "CLAUDE")
+            self.env(FLEETLINK_TOKEN=TOKEN_GENERIC, AGENT_SEAT=None),
+            argv=("--default-seat", "CLAUDE"),
         )
         result = session.call("fleetlink_get_share", {"slug": "plan"})
         self.assertEqual(result["structuredContent"]["share"]["slug"], "plan")
         [call] = self.calls()
         self.assertEqual(call["env"]["FLEETLINK_TOKEN"], TOKEN_GENERIC)
         error = self.assert_tool_error(
-            session.call("fleetlink_get_share", {"slug": "plan", "identity": "CURSOR"}), "not_configured"
+            session.call("fleetlink_get_share", {"slug": "plan", "identity": "CURSOR"}),
+            "not_configured",
         )
         self.assertIn("FLEETLINK_TOKEN_CURSOR", error["message"])
         self.assertEqual(len(self.calls()), 1, "CURSOR's call ran no child")
