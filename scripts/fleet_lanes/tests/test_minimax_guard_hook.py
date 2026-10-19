@@ -132,6 +132,45 @@ class MinimaxHookTests(unittest.TestCase):
         payload = {"tool_name": "bash", "tool_input": {"command": "ps", "description": "probe"}}
         self.assertIsNotNone(mm.decide(payload)[0])
 
+    def test_a_missing_cwd_does_not_skip_the_file_policy(self):
+        for tool, field in (("Read", "file_path"), ("Write", "file_path"), ("read", "path")):
+            payload = {"tool_name": tool, "tool_input": {field: ".secrets/dummy"}}
+            ctx = guard.make_context(self.env, home=self.home)
+            with self.subTest(tool=tool):
+                self.assertIn("secret-bearing", mm.decide(payload, ctx)[0])
+        payload = {"tool_name": "Write", "tool_input": {"file_path": "Code/BotFleet/file.py"}}
+        ctx = guard.make_context(self.env, home=self.home)
+        self.assertIn("integration tree", mm.decide(payload, ctx)[0])
+        self.assertIsNone(
+            mm.decide({"tool_name": "Read", "tool_input": {"file_path": "public/file.py"}}, ctx)[0]
+        )
+
+    def test_either_path_field_name_is_checked(self):
+        ctx = guard.make_context(self.env, home=self.home)
+        for tool in ("Read", "Write", "Edit", "read", "write", "edit"):
+            for field in ("path", "file_path"):
+                payload = {
+                    "tool_name": tool,
+                    "tool_input": {field: ".secrets/dummy"},
+                    "cwd": self.home,
+                }
+                with self.subTest(tool=tool, field=field):
+                    self.assertIn("secret-bearing", mm.decide(payload, ctx)[0])
+            payload = {
+                "tool_name": tool,
+                "tool_input": {
+                    "path": "public/other.py",
+                    "file_path": "apps/lanes/BotFleet/review-pr-1/f.py",
+                },
+                "cwd": self.home,
+            }
+            with self.subTest(tool=tool, field="both"):
+                reason = mm.decide(payload, ctx)[0]
+                if tool in ("Read", "read"):
+                    self.assertIsNone(reason)
+                else:
+                    self.assertIn("review lane", reason)
+
     def test_deny_contract_and_policy_failure(self):
         out = io.StringIO()
         payload = {"tool_name": "Bash", "tool_input": {"command": "ps"}}
