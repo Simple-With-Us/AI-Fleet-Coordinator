@@ -94,7 +94,7 @@ on:
       allowed_bots:
         required: false
         type: string
-        default: "chatgpt-codex-connector,chatgpt-codex-connector[bot],kody-ai,kody-ai[bot],cursor,cursor[bot]"
+        default: "chatgpt-codex-connector,chatgpt-codex-connector[bot],kody-ai,kody-ai[bot],cursor,cursor[bot],sentry,sentry[bot]"
         description: "Allowed bot actors (normalised by the action: lowercased, [bot] stripped)"
       model:
         required: false
