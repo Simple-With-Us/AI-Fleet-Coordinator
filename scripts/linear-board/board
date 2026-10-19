@@ -12,7 +12,7 @@ Usage:
   board show <id> [--json]
   board file --title T [--app A] [--severity P0..P4] [--desc D | --desc-file PATH|-]
              [--fix F | --fix-file PATH|-] [--label NAME ...]
-             [--by SEAT] [--where LOC] [--env Mac|cloud] [--kind K] [--uid U] [--url URL]
+             [--by SEAT] [--where LOC] [--env Mac|cloud] [--kind K] [--uid U] [--url URL] [--session ID ...]
   board claim <id> --by SEAT [--where LOC] [--env Mac|cloud] [--session ID ...]
              [--steal --reason TEXT] [--comment TEXT]
   board status <id> <open|in_progress|addressed|completed|deployed|wontfix|duplicate|parked>
@@ -52,6 +52,14 @@ refuses them).
 Ids: a full board id (32 hex, with or without hyphens), a prefix of 8 or more
 hex characters, or a Linear identifier such as AFC-123.
 
+Session ids (AFC-361):  file, claim, status and comment record the session they come from
+("sessions: <id>" in the output, a Sessions line in the comment), so a headless resume can find a
+seat's session for a topic.  The id is --session, else AGENT_SESSION, else the seat's platform
+variable (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, CURSOR_CONVERSATION_ID, GROK_SESSION_ID,
+OPENCODE_SESSION_ID, __MAVIS_RUNTIME_SESSION_ID).  With none, these four verbs exit 2 before they
+write.  Grok bots (GROK-BOT, GB-*), MA, JET, WISE and ECHO have one thread with the owner and are
+exempt, decided from AGENT_SEAT and never from a flag.
+
 Identity: a Linear app that mints its own token by OAuth client credentials
 (design section 2).  Each seat has its own app, named for the seat bot (CLAUDE
 signs as "Claude"), when its <SEAT>_LINEAR_CLIENT_ID and _SECRET are in Infisical Fleet-OPS /linear;
@@ -76,6 +84,7 @@ import argparse
 import datetime as dt
 import errno
 import fcntl
+import fnmatch
 import hashlib
 import http.client
 import json
@@ -125,6 +134,25 @@ EXIT_WRITES_OFF = 7     # a write verb without LINEAR_BOARD_WRITES=1
 REMINT_AFTER = 28 * 86400
 WRITE_VERBS = ("file", "claim", "status", "comment", "label")
 SESSION_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
+# AFC-361:  a write records the session it came from, so resume-wake can find a seat's session for a topic.
+# The block below is a copy of `sessionIds` in fleet-apps.json (this script imports no package);
+# scripts/test_session_ids_parity.py keeps the copies equal.  A seat with one thread with the owner is exempt.
+SESSION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$"
+SESSION_ID_RE = re.compile(SESSION_ID_PATTERN)
+SESSION_GENERIC_ENV = "AGENT_SESSION"
+SESSION_EXEMPT_SEATS = frozenset(("ECHO", "GROK-BOT", "JET", "MA", "WISE"))
+SESSION_EXEMPT_PATTERNS = ("GB-*",)
+SESSION_ENV_BY_SEAT = {
+    "CLAUDE": ("CLAUDE_CODE_SESSION_ID",),
+    "CODEX": ("CODEX_THREAD_ID",),
+    "CURSOR": ("CURSOR_CONVERSATION_ID", "CURSOR_AGENT_CHAT_ID"),
+    "GROK": ("GROK_SESSION_ID",),
+    "MM": ("__MAVIS_RUNTIME_SESSION_ID",),
+    "OPENCODE": ("OPENCODE_SESSION_ID",),
+}
+SESSION_FALLBACK_ENV = ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CURSOR_CONVERSATION_ID",
+                        "CURSOR_AGENT_CHAT_ID", "GROK_SESSION_ID", "OPENCODE_SESSION_ID",
+                        "__MAVIS_RUNTIME_SESSION_ID")
 
 # A claim is a `claimed:<SEAT>` label; `seat:<SEAT>` is attribution only.  The
 # import put seat labels on reporters as well as claimants (build_plan.seats),
@@ -388,11 +416,42 @@ def central(when, with_day: bool = True) -> str:
     return f"{day}{d.strftime('%b')} {d.day}, {hour}:{d.minute:02d}{ampm}"
 
 
-def auto_sessions(explicit: list[str] | None) -> list[str] | None:
-    if explicit:
-        return explicit
-    v = env(SESSION_ENV_VAR)
-    return [v] if v else None
+def session_exempt(seat: str) -> bool:
+    """True for a seat with one thread with the owner (a Grok bot, MA, JET, WISE, ECHO), which has no session
+    id to pass.  Decided from the resolved seat (AGENT_SEAT), never from a flag."""
+    seat = norm_seat(seat)
+    return seat in SESSION_EXEMPT_SEATS or any(fnmatch.fnmatchcase(seat, pat) for pat in SESSION_EXEMPT_PATTERNS)
+
+
+def session_refusal(seat: str) -> str:
+    own = SESSION_ENV_BY_SEAT.get(seat)
+    where = (f"a {seat} session sets {' or '.join(own)};  it is empty here" if own else
+             f"{seat} has no session variable of its own;  use the id your app shows for this chat")
+    return (f"no session id.  Board writes record the session they come from, so a headless resume can find "
+            f"this seat's session for the topic.  Pass --session <id>, or export {SESSION_GENERIC_ENV}=<id> "
+            f"({where}).  Grok bots, MA, JET, WISE and ECHO have one thread with the owner and need none.")
+
+
+def auto_sessions(explicit: list[str] | None, seat: str | None = None, required: bool = False) -> list[str] | None:
+    """The session ids to record:  --session values, else AGENT_SESSION, else the seat's own platform variable
+    (a seat with none listed tries every platform variable).  With `required`, a seat that is not exempt and has
+    no id exits 2 before anything is written.  An id that is not a plain token exits 2 as well."""
+    seat = norm_seat(seat) if seat else ""
+    found = [x.strip() for x in (explicit or []) if x and x.strip()]
+    if not found:
+        names = [SESSION_GENERIC_ENV] + list(SESSION_ENV_BY_SEAT.get(seat) or SESSION_FALLBACK_ENV)
+        for name in names:
+            v = (env(name) or "").strip()
+            if v:
+                found = [v]
+                break
+    for sid in found:
+        if not SESSION_ID_RE.fullmatch(sid):
+            die(f"session id {sid[:40]!r} is not valid:  use 4 to 128 letters, digits, . _ : - starting with "
+                "a letter or digit", EXIT_USAGE)
+    if not found and required and not session_exempt(seat):
+        die(session_refusal(seat), EXIT_USAGE)
+    return found or None
 
 
 def session_tail(sessions: list[str] | None) -> str:
@@ -748,30 +807,6 @@ def fleet_ops_secret(name: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-def fleet_ops_bundle(names: list) -> dict | None:
-    """Several Fleet-OPS /linear secrets in ONE `fleet-secrets run` call (one Infisical round trip instead of
-    one per name), or None when the call failed, for example because one name is absent.  Only the requested
-    names are read back from the child's environment, which is scrubbed of them first."""
-    binary = fleet_secrets_bin()
-    if not binary:
-        return None
-    child_env = {k: v for k, v in os.environ.items() if k not in names}
-    try:
-        proc = subprocess.run([binary, "run", "--path", FLEET_OPS_LINEAR_PATH, "--only", ",".join(names), "--",
-                               "/usr/bin/env"], capture_output=True, text=True, timeout=60, check=False,
-                              stdin=subprocess.DEVNULL, env=child_env)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    wanted, got = set(names), {}
-    for line in proc.stdout.splitlines():
-        k, sep, v = line.partition("=")
-        if sep and k in wanted:
-            got[k] = v.strip()
-    return got
-
-
 def fleet_ops_set(name: str, value: str) -> bool:
     """Write one Fleet-OPS /linear secret with `fleet-secrets set`.  The value goes on standard input, never
     in an argument.  False when the tool is absent or the write failed."""
@@ -849,12 +884,10 @@ def resolve_identity(seat: str = "") -> Identity:
                         tuple(n for n in (*app_names, fleet) if n), "LINEAR_CLIENT_ID app")
 
     def read_app(prefix: str, blob: str) -> tuple:
-        """(client id, client secret, token blob or None) for one app, in one fleet-secrets call when every
-        name exists, else one call per name."""
+        """(client id, client secret, token blob or None), each through its own `fleet-secrets get NAME`.  Nothing
+        dumps the secret store's environment or parses KEY=value lines, so no other value is ever held."""
         names = [f"{prefix}_LINEAR_CLIENT_ID", f"{prefix}_LINEAR_CLIENT_SECRET", blob]
-        got = fleet_ops_bundle(names)
-        if got is None:
-            got = {n: v for n in names if (v := fleet_ops_secret(n))}
+        got = {n: v for n in names if (v := fleet_ops_secret(n))}
         return got.get(names[0], ""), got.get(names[1], ""), got.get(blob)
 
     k = seat_env_key(seat)
@@ -2037,6 +2070,7 @@ def find_existing(L: Linear, iid: str, team: str, uid: str, url: str) -> dict | 
 
 def cmd_file(L: Linear, a, seat: str) -> int:
     by = check_by(a.reported_by, seat)
+    sessions = auto_sessions(a.session_ids, seat, required=True)
     team, fslug = route_app(a.app)
     app_display = fslug or team
     sev = (a.severity or "").upper() or None
@@ -2062,7 +2096,6 @@ def cmd_file(L: Linear, a, seat: str) -> int:
             print(f"filed {found['id']}  ({r['severity'] or '--'} {r['app']})  {found.get('identifier') or ''}"
                   f"  (already filed; unchanged)")
             return 0
-    sessions = auto_sessions(None)
     lines = [f"{seat_tag(by, sessions)} Filed with the board CLI.", ""]
     full_title = title
     if len(title) > 250:
@@ -2073,6 +2106,8 @@ def cmd_file(L: Linear, a, seat: str) -> int:
         lines += ["", "## Recommended fix", "", a.fix.strip()]
     foot = ["", "---", "", "**Filed with the board CLI**", "", f"- Reported by {by}",
             f"- App: `{(a.app or DEFAULT_APP).strip()}` (team {team})", f"- Kind: {kind}"]
+    if sessions:
+        foot.append(f"- Sessions: {', '.join(sessions)}")
     if env_label or a.location:
         foot.append("- " + ", ".join(x for x in (f"Env {env_label}" if env_label else "",
                                                   f"location {a.location}" if a.location else "") if x))
@@ -2113,7 +2148,8 @@ def cmd_file(L: Linear, a, seat: str) -> int:
     remember([issue])
     # Say what was filed before the attachments, so a rate limit that stops the
     # attach step cannot leave the caller without the id (and refiling it).
-    print(f"filed {issue['id']}  ({sev or '--'} {app_display})  {issue.get('identifier') or ''}", flush=True)
+    print(f"filed {issue['id']}  ({sev or '--'} {app_display}){session_tail(sessions)}  {issue.get('identifier') or ''}",
+          flush=True)
     L.landed.append(f"filed {issue.get('identifier') or issue['id']} ({issue['id']})")
     L.rerun = "The issue exists; do not file it again.  Only its attachments are missing."
     for url, label in ((url_for_uid, f"board uid {a.external_uid}"), (a.source_url, "Source")):
@@ -2167,6 +2203,7 @@ def comment_body(seat: str, sessions: list[str] | None, text: str, where: str | 
 
 def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     by = check_by(a.addressed_by, seat)
+    sessions = auto_sessions(a.session_ids, seat, required=True)
     if a.steal and not (a.reason or "").strip():
         die("--steal needs --reason \"why you are taking it\"", EXIT_USAGE)
     env_label = norm_env(a.env)
@@ -2202,7 +2239,6 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     except GqlError as e:
         L.fail(f"Linear refused the claim: {e}")
     L.landed.append(f"{n['identifier']} is In Progress with {by}'s claim label")
-    sessions = auto_sessions(a.session_ids)
     text = "CLAIMED"
     if stolen:
         text += f" from {', '.join(stolen)}: {a.reason.strip()}"
@@ -2249,6 +2285,7 @@ def closing_label_ids(n: dict) -> list[str]:
 
 def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
     by = check_by(a.addressed_by, seat)
+    sessions = auto_sessions(a.session_ids, seat, required=True)
     value = a.value.strip().lower()
     if value not in STATUS_WORDS:
         die(f"unknown status {a.value!r}; use {', '.join(STATUS_WORDS)}", EXIT_USAGE)
@@ -2264,7 +2301,6 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
                 "`status wontfix --resolution \"duplicate, original unknown\"`.", EXIT_USAGE)
         warn(f"taking --of {of} from the --resolution text")
     n = fetch_issue(L, ids.resolve(a.id), a.id)
-    sessions = auto_sessions(a.session_ids)
     if value == "duplicate":
         canon = fetch_issue(L, ids.resolve(of), of)
         if canon["id"] == n["id"]:
@@ -2334,11 +2370,11 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
 
 def cmd_comment(L: Linear, ids: IdIndex, a, seat: str) -> int:
     by = check_by(a.author, seat)
+    sessions = auto_sessions(a.session_ids, seat, required=True)
     if not a.text.strip():
         die("--text is empty", EXIT_USAGE)
     env_label = norm_env(a.env)
     n = fetch_issue(L, ids.resolve(a.id), a.id)
-    sessions = auto_sessions(a.session_ids)
     post_comment(L, n, comment_body(by, sessions, a.text, a.location, env_label), by, "comment", sessions)
     print(f"commented on {short_id(n['id'])} as {by}{session_tail(sessions)}  {n['identifier']}")
     return 0
@@ -3869,7 +3905,7 @@ def parity_is_write(a) -> bool:
 
 
 def parity_tagger(seat: str, a):
-    sessions = auto_sessions(getattr(a, "session_ids", None))
+    sessions = auto_sessions(getattr(a, "session_ids", None), seat)
     return lambda text: f"{seat_tag(seat, sessions)} {text}"
 
 
@@ -4116,10 +4152,15 @@ def build_parser() -> argparse.ArgumentParser:
     fp.add_argument("--where", dest="location")
     fp.add_argument("--env")
     fp.add_argument("--kind", dest="source_kind", default="agent-report")
+    fp.add_argument("--session", dest="session_ids", action="append", metavar="ID",
+                    help="session id to record (repeatable);  AGENT_SESSION or the seat's platform variable "
+                         "when omitted;  required unless the seat has one thread with the owner")
     fp.add_argument("--uid", dest="external_uid")
     fp.add_argument("--url", dest="source_url")
 
-    session_help = f"session id to record (repeatable); ${SESSION_ENV_VAR} when omitted"
+    session_help = (f"session id to record (repeatable);  {SESSION_GENERIC_ENV} or the seat's platform variable "
+                    f"(${SESSION_ENV_VAR} on Claude Code) when omitted;  required unless the seat has one thread "
+                    "with the owner")
     cp = sub.add_parser("claim", help="mark in_progress and put your seat on it")
     cp.add_argument("id")
     cp.add_argument("--by", dest="addressed_by", required=True)

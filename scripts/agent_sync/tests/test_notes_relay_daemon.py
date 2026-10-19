@@ -28,6 +28,12 @@ CODEX_ID = 11
 MENTION = "@**Claude** can you check the AFC cutover?"
 RELAY_SECTION = '[notes_relay]\nenabled = true\nseat = "CLAUDE"\n'
 
+SESSION = "relay-test-session-0001"  # AFC-361:  a create or update from a non-exempt sender carries a session id
+
+
+def make_envelope(action, title, markdown, flags, rid, identity, session=SESSION):
+    return N.make_envelope(action, title, markdown, flags, rid, identity, session)
+
 
 class AdminSeatTests(unittest.TestCase):
     """Only the inbox-only [notes_relay] seat may hold an administrator key (AFC-331, owner 2026-10-18)."""
@@ -121,7 +127,7 @@ class DaemonRelayTests(DaemonHarness):
     def envelope_message(
         self, body="relay body", title="[AFC, Codex] relay", rid="daemon-request-1", mention=False
     ):
-        env = N.make_envelope(
+        env = make_envelope(
             "create",
             title,
             body + (" @**Claude** please look" if mention else ""),
@@ -829,7 +835,7 @@ class DaemonRelayTests(DaemonHarness):
             "the old worker is still inside a request:  the swap is pending",
         )
         # CODEX's runner sees a relay request now:  the old consumer does not take it, but the cursor moves on.
-        env = N.make_envelope(
+        env = make_envelope(
             "create", "[AFC, Cursor] gap", "gap body", {}, "handover-gap-001", "CURSOR"
         )
         gap = self.fake.add_message(

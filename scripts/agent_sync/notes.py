@@ -17,6 +17,10 @@ An envelope is one fenced JSON block in a message:
      "request_id":"nr0123456789abcdef0123","identity":"CLAUDE"}
     ```
 
+A create or update also carries `"session":"<id>"` (AFC-361, session_ids.py):  the writer's session id, which the script
+stamps in the note as a `Session:` line so a headless resume can find the session.  It is left out for the single-thread
+identities that need none.
+
 A body too large for one message goes up as an attached `.md` file and the envelope names it
 (`markdown_url`, `markdown_bytes`, `markdown_sha256`, `markdown` empty).
 
@@ -49,6 +53,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import identity as I
+from . import session_ids as SID
 
 RELAY_CHANNEL = "notes-relay"
 ENVELOPE_VERSION = 1
@@ -372,14 +377,30 @@ def title_problem(
 # --------------------------------------------------------------------------------------------
 
 
+def check_session(raw: Any) -> str:
+    """The envelope's session id (AFC-361), or NotesError.  The id is not secret:  it goes on the script's command line."""
+    try:
+        return SID.check(raw, "the envelope's session")
+    except ValueError as exc:
+        raise NotesError("invalid_argument", str(exc)) from None
+
+
 def make_envelope(
-    action: str, title: str, markdown: str, flags: Mapping[str, Any], request_id: str, identity: str
+    action: str,
+    title: str,
+    markdown: str,
+    flags: Mapping[str, Any],
+    request_id: str,
+    identity: str,
+    session: str | None = None,
 ) -> dict[str, Any]:
+    """The envelope for one request.  `session` (AFC-361) is the writer's session id, stamped in the note so a
+    headless resume can find the session;  it is left out when None (an exempt single-thread identity, or a pin)."""
     if action not in ACTIONS:
         raise NotesError("invalid_argument", "action must be one of %s" % ", ".join(ACTIONS))
     if isinstance(markdown, str) and len(markdown) > MARKDOWN_MAX:
         raise NotesError("invalid_argument", BODY_TOO_LONG % MARKDOWN_MAX)
-    return {
+    envelope = {
         "v": ENVELOPE_VERSION,
         "action": action,
         "title": check_title(title),
@@ -388,6 +409,9 @@ def make_envelope(
         "request_id": check_request_id(request_id),
         "identity": identity,
     }
+    if session is not None:
+        envelope["session"] = check_session(session)
+    return envelope
 
 
 def envelope_json(envelope: Mapping[str, Any]) -> str:
@@ -447,6 +471,7 @@ def parse_message(content: Any) -> dict[str, Any]:
         "markdown_url",
         "markdown_bytes",
         "markdown_sha256",
+        "session",
     }
     extra = [key for key in raw if key not in allowed]
     if extra:
@@ -470,6 +495,7 @@ def parse_message(content: Any) -> dict[str, Any]:
             raw.get("flags") or {},
             raw.get("request_id"),
             identity,
+            raw.get("session"),
         )
         if "markdown_url" not in raw and ("markdown_bytes" in raw or "markdown_sha256" in raw):
             raise NotesError(
@@ -590,6 +616,15 @@ def build_argv(
             argv += ["--html", html_path]
         if flags.get("pin") is False:
             extra["APPLE_NOTES_PIN"] = "0"
+    if envelope.get("session") and action in ("create", "update"):
+        argv += [
+            "--session",
+            str(envelope["session"]),
+        ]  # AFC-361:  not secret, so argv;  the script stamps the Session line
+    if envelope.get("identity"):
+        # The identity the request was verified for (the tool's seat, or the relay sender's bot):  the script decides
+        # its single-thread exemption from this and from nothing the caller typed.  CHILD_ENV_KEYS strips AGENT_SEAT.
+        extra["AGENT_SEAT"] = str(envelope["identity"])
     argv += ["--title", envelope["title"]]
     return argv, extra
 

@@ -112,6 +112,8 @@ Before starting substantial work, reserve your lane on two durable surfaces:
    ```
    Via the CLI:  `agent-sync post --topic "AFC-123 claim title" $'repo:  <Project>  |  CLAIMED\nwork: <one line>'`.  A directed ask adds `--to Codex`, which @-mentions that bot — the bracket label alone wakes nobody.
 
+**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a stamped `Session: <id> - <time>` line after the timestamp.
+
 *(Reserve `@**all**` in #agent-sync topic `fleet` strictly for urgent wakes that every seat must spend time on.  The coordinator posts as CLAUDE and nothing signs `[AFC]` or `[FLEET]`.)*
 
 ---
@@ -171,6 +173,7 @@ All plans, design docs, rollouts, audits, and completion notes for owner review 
    # To update in place:
    /Users/jay/apps/apple-notes-coding.sh --update "Title" "Updated body"
    ```
+5. **Session id:** `apple-notes-coding.sh` and the `notes_create` / `notes_update` tools refuse without one.  Pass your session id (section 3) with `--session <id>`, or let the helper read `AGENT_SESSION` or your platform's variable.
 
 ---
 
