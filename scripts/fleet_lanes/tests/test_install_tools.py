@@ -4894,6 +4894,32 @@ class FleetHookStableCopyTests(World):
         self.assertEqual(r.status, "refused", r)
         self.assertFalse(os.path.exists(self.paths.stable))
 
+    def test_a_staged_minimax_adapter_that_cannot_deny_a_shell_call_is_never_swapped_in(
+        self,
+    ) -> None:
+        # MM owns its adapter, so a copy whose Bash branch no longer matches tool names would allow
+        # every shell call.  The shared shell probes say nothing about it; the staged MM copy is
+        # probed through its own hook, native (Bash) and compatible (bash).
+        adapter = Path(self.source.scripts_dir) / "fleet_lanes" / "minimax_guard_hook.py"
+        text = adapter.read_text()
+        damaged = text.replace(
+            'if payload.get("tool_name") in ("Bash", "bash"):',
+            'if payload.get("tool_name") in ():',
+        )
+        self.assertNotEqual(damaged, text, "the Bash branch is not where it was expected")
+        adapter.write_text(damaged)
+        lines: list[str] = []
+        r = T.apply_tools(
+            self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+        )
+        self.assertEqual(r.status, "refused", r)
+        self.assertFalse(os.path.exists(self.paths.stable))
+        self.assertTrue(any(line.startswith("FAIL  staged-mm") for line in lines), "\n".join(lines))
+        self.assertFalse(
+            any(line.startswith("FAIL  staged-mm") and "/hook-env" in line for line in lines),
+            "the file probes should still pass, so this is shell coverage",
+        )
+
     def test_probe_command_secret_case_fails_a_lane_only_command(self) -> None:
         self.install(())
         lane_only = T.hook_command(self.paths, "claude")

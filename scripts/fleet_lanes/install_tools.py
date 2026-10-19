@@ -2949,6 +2949,23 @@ def apply_tools(
                 for c in probe_minimax_files(staged_mm, paths.home, timeout, minimal_path)
                 if c.status == "FAIL"
             )
+            # MM has its own adapter, so the shared shell probes above prove nothing for it.  Probe
+            # the staged copy with the shell payloads MiniMax sends, native (Bash) and compatible
+            # (bash), or a broken decide() shell branch would be swapped in and fail open.
+            for shape in ("claude", "muse"):
+                bad.extend(
+                    c
+                    for c in probe_command(
+                        staged_mm,
+                        target="staged-mm",
+                        fmt="claude",
+                        shape=shape,
+                        home=paths.home,
+                        timeout=timeout,
+                        minimal_path=minimal_path,
+                    )
+                    if c.status == "FAIL"
+                )
             if bad:
                 for c in bad:
                     emit(c.line())
