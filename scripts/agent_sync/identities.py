@@ -1,22 +1,24 @@
 """Which bots a stdio MCP connection or a CLI run on this host may act as (AFC-331,
 docs/protocols/per-call-identity.md section 3).
 
-The allowed set is every agent bot whose Zulip credential file is on this host:
+The allowed set is every agent bot whose Zulip credentials this host can read:
 
     seats        every live row of fleet-apps.json `seats` and every `seatApps.extraSeats` key
-    BF-*         every <secrets dir>/BF-<Role>-zuliprc whose name matches the BF-* pattern
+    BF-*         every BF_<ROLE>_ZULIP_KEY name in Infisical Fleet-OPS /zulip (or BF-<Role>-zuliprc in
+                 the explicit AGENT_SYNC_SECRETS_DIR override) whose seat matches the BF-* pattern
     GB-*         every persona enabled in mcp/gb-identities.json, the one list the hosted Worker
                  imports as GB_IDENTITIES (GB-ENGINEER stays out until it is enabled there)
 
-each kept only when its credentials are on this host:  its credential file (<secrets dir>/<FileCode>-zuliprc),
-or, on the server instance, its own environment variables (the listener's `creds = "env"` seats in
-listener.toml, else the default ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY with ZULIP_SITE, which
-Infisical syncs into the container;  docs/protocols/agent-sync-server.md).  A file wins over the
-environment.  BF-* bots join from either source.  Only variable names are read here, never logged
-values;  a value is read when the identity is first opened.  The owner's own
-account and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry) are never seats,
-so they never enter the set, whatever files are on disk;  check_bot() still refuses a key that is
-not the claimed identity's own bot when the credential is first used.
+each kept only when its credentials are reachable:  its three Infisical /zulip names (<BOT>_ZULIP_EMAIL,
+_KEY and _SITE, read through fleet-secrets;  AFC-359:  nothing under ~/.secrets is read), its file in the
+explicit AGENT_SYNC_SECRETS_DIR override, or, on the server instance, its own environment variables (the
+listener's `creds = "env"` seats in listener.toml, else the default ZULIP_<CODE>_EMAIL and
+ZULIP_<CODE>_API_KEY with ZULIP_SITE;  docs/protocols/agent-sync-server.md).  An override file wins, then
+Infisical, then the environment.  Only key NAMES are read here, never values;  a value is read when the
+identity is first opened.  The owner's own account and the integration bots (BetterStack, Datadog,
+Linear, PagerDuty, Sentry) are never seats, so they never enter the set, whatever names Infisical or a
+directory holds (zulip.NOT_SEAT_PREFIXES drops JAY_ZULIP_* and the rest before the registry check);
+check_bot() still refuses a key that is not the claimed identity's own bot when the credential is first used.
 
 A launcher pin (AGENT_LAUNCH_SEAT) narrows the set to the pinned seat alone.
 
@@ -73,30 +75,45 @@ def env_code(name: str) -> str:
 
 
 class CredentialSource(NamedTuple):
-    """Where one identity's key is:  a zuliprc file (`path`), or its own environment variables (names only)."""
+    """Where one identity's key is:  a zuliprc file (`path`), Infisical /zulip (`infisical`, the seat
+    whose three names to read), or its own environment variables (names only)."""
     path: Path | None = None
     email_env: str | None = None
     key_env: str | None = None
     site_env: str = DEFAULT_SITE_ENV
+    infisical: str | None = None
 
     @property
     def is_env(self) -> bool:
-        return self.path is None
+        return self.path is None and self.infisical is None
+
+    @property
+    def is_infisical(self) -> bool:
+        return self.infisical is not None
 
     def describe(self) -> str:
-        """For messages:  the file, or the key variable's name.  Never a value."""
-        return str(self.path) if self.path is not None else "env %s" % self.key_env
+        """For messages:  the file, the Infisical key name, or the key variable's name.  Never a value."""
+        if self.path is not None:
+            return str(self.path)
+        if self.infisical is not None:
+            return "Infisical Fleet-OPS %s %s" % (Z.INFISICAL_PATH, Z.infisical_key_names(self.infisical)[1])
+        return "env %s" % self.key_env
 
-    def present(self, env: Mapping[str, str]) -> bool:
+    def present(self, env: Mapping[str, str], home: Path | None = None) -> bool:
         if self.path is not None:
             return self.path.is_file()
+        if self.infisical is not None:
+            return Z.infisical_has(self.infisical, env, home)
         return all(str(env.get(name) or "").strip().strip('"').strip() for name in (self.email_env, self.key_env,
                                                                                         self.site_env))
 
-    def credentials(self, env: Mapping[str, str], label: str) -> Z.Credentials:
-        """Read the key (file or env).  Errors name the file or the variables, never a value."""
+    def credentials(self, env: Mapping[str, str], label: str, home: Path | None = None) -> Z.Credentials:
+        """Read the key (file, Infisical or env).  Errors name the file, the key names or the variables,
+        never a value."""
         if self.path is not None:
             return Z.read_zuliprc(self.path)
+        if self.infisical is not None:
+            return Z.infisical_credentials(self.infisical, env=env, home=home)
         return Z.env_credentials(env, email_env=str(self.email_env), key_env=str(self.key_env),
                                  site_env=self.site_env, label=label)
 
@@ -106,9 +123,10 @@ def default_env_source(name: str) -> CredentialSource:
     return CredentialSource(email_env="ZULIP_%s_EMAIL" % code, key_env="ZULIP_%s_API_KEY" % code)
 
 
-def secrets_dir(env: Mapping[str, str], home: Path) -> Path:
-    """Where the credential files are:  the directory default_rc_path() looks in."""
-    return Z.default_rc_path("X", env, home).parent
+def secrets_dir(env: Mapping[str, str], home: Path | None = None) -> Path | None:
+    """The explicit credential-file directory (AGENT_SYNC_SECRETS_DIR), or None:  there is no default."""
+    directory = Z.override_secrets_dir(env)
+    return Path(directory) if directory else None
 
 
 def candidates(env: Mapping[str, str], home: Path, *, registry: I.SeatRegistry | None = None,
@@ -120,11 +138,11 @@ def candidates(env: Mapping[str, str], home: Path, *, registry: I.SeatRegistry |
     names = set(reg.live) | set(reg.extra) | set(gb_identities())
     directory = secrets_dir(env, home)
     try:
-        entries = list(directory.iterdir())
+        entries = list(directory.iterdir()) if directory is not None else []
     except OSError:
         entries = []
-    for entry in entries:
-        seat = Z.seat_from_rc_path(entry)
+    found = [Z.seat_from_rc_path(entry) for entry in entries] + sorted(Z.infisical_seats(env, home))
+    for seat in found:
         if seat and seat.startswith("BF-"):
             names.add(seat)  # agent_identity_problem() below keeps it only when it matches the BF-* pattern
     for variable in (cred_env or {}):
@@ -158,10 +176,14 @@ def allowed_identities(env: Mapping[str, str], home: Path, *, registry: I.SeatRe
 
 def source_for(name: str, env: Mapping[str, str], home: Path, *, cred_env: Mapping[str, str],
                env_seats: Mapping[str, CredentialSource] | None = None) -> CredentialSource | None:
-    """Where `name`'s key is on this host (file first, then its environment variables), or None."""
-    path_source = CredentialSource(path=Z.default_rc_path(name, env, home))
-    if path_source.present(env):
-        return path_source
+    """Where `name`'s key is (the override file first, then Infisical /zulip, then its environment
+    variables), or None."""
+    path = Z.default_rc_path(name, env, home)
+    if path is not None and path.is_file():
+        return CredentialSource(path=path)
+    infisical = CredentialSource(infisical=name.upper())
+    if infisical.present(env, home):
+        return infisical
     for candidate in ((env_seats or {}).get(name), default_env_source(name)):
         if candidate is not None and candidate.present(cred_env):
             return candidate

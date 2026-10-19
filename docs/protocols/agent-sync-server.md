@@ -152,7 +152,7 @@ Every GB persona's routine is a Grok Bot routine webhook at `https://api2.cursor
 Infisical (project "AI Fleet Coordinator", environment `prod`, folder `/zulip`) holds every seat variable below except `ZULIP_SITE`, `JET_ROUTINE_URL` and `JET_ROUTINE_KEY`.  With the machine identity set, the entrypoint loads them at every start; without it, Coolify holds runtime-only copies.  Coolify always sets these itself:
 
 - `ZULIP_SITE`, a plain value:  `https://simplewithus.zulipchat.com`
-- `JET_ROUTINE_URL` (`https://agent-sync.jays.services/internal/wake/JET`) and `JET_ROUTINE_KEY` (the shared HMAC key, kept in `~/.secrets/jet-wake-hmac.env` on Jay's Mac and installed as the Worker secret `WAKE_HMAC_KEY_JET`).  Until both are set, each JET wake is logged as `routine-unready` and dropped, and capture is unchanged
+- `JET_ROUTINE_URL` (`https://agent-sync.jays.services/internal/wake/JET`) and `JET_ROUTINE_KEY` (the shared HMAC key, in Infisical Fleet-OPS as `JET_ROUTINE_KEY` and installed as the Worker secret `WAKE_HMAC_KEY_JET`).  Until both are set, each JET wake is logged as `routine-unready` and dropped, and capture is unchanged
 - `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID` (`9bf7417a-fbbb-42ca-870c-2b45207233f5`).  Since Sat, Oct 10 the id and secret are the fleet automation identity's (`INFISICAL_AUTOMATION_CLIENT_ID` and `_SECRET` from Infisical Fleet-OPS;  read them on the Mac with `fleet-secrets get`), by owner choice
 
 The seat variables (from Infisical, or Coolify copies without the identity):
@@ -280,7 +280,7 @@ To revoke:  delete the client secret (or the identity) in Infisical.  The next r
 One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting and redeploying are pre-approved for the CLAUDE seat and its sub-agents only (the maintenance grant above);  any other seat needs Jay's approval in its own session.
 
 1. **Machine identity:**  the fleet automation identity, by owner choice (see [Infisical at Start](#infisical-at-start)), set as `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID`, runtime only.  Without it, copy into Coolify, runtime only, from Infisical `prod` `/zulip`:  for each enabled persona `ZULIP_GB_<ROLE>_EMAIL`, `ZULIP_GB_<ROLE>_API_KEY`, `ZULIP_ALERT_GB_<ROLE>_ENDPOINT` and `ZULIP_ALERT_GB_<ROLE>_KEY` (never `_HEADER`).
-2. **Coolify variables**, runtime only:  `JET_ROUTINE_URL` = `https://agent-sync.jays.services/internal/wake/JET`, `JET_ROUTINE_KEY` = the value in `~/.secrets/jet-wake-hmac.env`.  `ZULIP_SITE` stays.
+2. **Coolify variables**, runtime only:  `JET_ROUTINE_URL` = `https://agent-sync.jays.services/internal/wake/JET`, `JET_ROUTINE_KEY` = the value of `fleet-secrets get JET_ROUTINE_KEY` (Infisical Fleet-OPS).  `ZULIP_SITE` stays.
 3. **Deploy** the app from `main` in Coolify (a rebuild:  the entrypoint changed).
 4. **Update the live config** in the new container (it holds no secrets, so the diff is safe to read):
    ```

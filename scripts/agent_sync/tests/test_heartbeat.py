@@ -7,6 +7,7 @@ import json
 import secrets
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -84,14 +85,45 @@ class PureTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            (home / ".secrets").mkdir()
-            path = home / ".secrets" / "agent-sync.env"
+            path = home / "agent-sync.env"
             path.write_text('SLACK_BOT_TOKEN=xoxb-never-read\nexport SENTRY_FLEET_DSN="https://k@h/1"\n# c\n')
-            self.assertEqual(HB.resolve_dsn({}, str(home)), "https://k@h/1")
-            self.assertEqual(HB.resolve_dsn({"AGENT_SYNC_SENTRY_DSN": "https://e@h/2"}, str(home)), "https://e@h/2")
+            explicit = {"AGENT_SYNC_SENTRY_ENV_FILE": str(path)}
+            self.assertEqual(HB.resolve_dsn(explicit, str(home)), "https://k@h/1")
+            self.assertEqual(HB.resolve_dsn({**explicit, "AGENT_SYNC_SENTRY_DSN": "https://e@h/2"}, str(home)),
+                             "https://e@h/2")
             self.assertEqual(HB.resolve_dsn({"SENTRY_FLEET_DSN": "https://f@h/3"}, str(home)), "https://f@h/3")
             self.assertEqual(HB.read_env_file(str(path)), {"SENTRY_FLEET_DSN": "https://k@h/1"})
-            self.assertEqual(HB.resolve_dsn({}, str(home / "nowhere")), "")
+            self.assertEqual(HB.resolve_dsn({"AGENT_SYNC_SENTRY_ENV_FILE": str(home / "nowhere")}, str(home)), "")
+
+    def test_resolve_dsn_reads_infisical_agent_sync_and_never_a_default_file(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            old_default = home / ".secrets"
+            old_default.mkdir()
+            (old_default / "agent-sync.env").write_text("SENTRY_FLEET_DSN=https://old@h/9\n")
+            asked: list = []
+            with mock.patch.object(HB, "_default_dsn_fetch", lambda env, h: asked.append(h) or "https://i@h/4"):
+                self.assertEqual(HB.resolve_dsn({}, str(home)), "https://i@h/4")
+                self.assertEqual(HB.resolve_dsn({"AGENT_SYNC_INFISICAL": "0"}, str(home)), "")
+            self.assertEqual(asked, [str(home)])
+            with mock.patch.object(HB, "_default_dsn_fetch", lambda env, h: ""):
+                self.assertEqual(HB.resolve_dsn({}, str(home)), "")  # the old file is never read
+
+    def test_the_default_dsn_fetch_asks_fleet_secrets_for_one_name_in_agent_sync(self) -> None:
+        import json
+        import os
+        import tempfile
+
+        fake = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "f.json"
+            data.write_text(json.dumps({"/agent-sync": {"SENTRY_FLEET_DSN": "https://a@h/5", "OTHER": "x"}}))
+            env = {"FLEET_SECRETS_BIN": str(fake), "FAKE_FLEET_SECRETS_FILE": str(data), "PATH": os.environ["PATH"]}
+            self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "https://a@h/5")
+            data.write_text(json.dumps({"/agent-sync": {}}))
+            self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "")
 
     def test_monitor_slug_per_instance(self) -> None:
         self.assertEqual(HB.monitor_slug("mac"), "agent-sync-listener-mac")
@@ -359,21 +391,17 @@ class DaemonTests(ListenerHarness):
         daemon.heartbeat.wait()
         self.assertIn("owner not pinned", self.sentry.events()[0]["message"])
 
-    def test_dsn_from_the_secrets_file_and_no_dsn_means_silence(self) -> None:
+    def test_dsn_from_infisical_and_no_dsn_means_silence(self) -> None:
         daemon = self.daemon()
         daemon.tick()
         daemon.heartbeat.wait()
         self.assertEqual(self.sentry.requests, [])
         self.assertIn("sentry-heartbeat-off", self.everything_written(daemon))
-        secrets = self.home / ".secrets"
-        secrets.mkdir()
-        (secrets / "agent-sync.env").write_text("SENTRY_FLEET_DSN=%s\n" % self.sentry.dsn)
-        (secrets / "agent-sync.env").chmod(0o600)
-        daemon = self.daemon()
-        daemon.tick()
-        daemon.heartbeat.wait()
+        with mock.patch.object(HB, "_default_dsn_fetch", lambda env, home: self.sentry.dsn):
+            daemon = self.daemon()
+            daemon.tick()
+            daemon.heartbeat.wait()
         self.assertEqual(len(self.sentry.requests), 1)
-
 
 if __name__ == "__main__":
     unittest.main()

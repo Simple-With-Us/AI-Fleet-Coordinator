@@ -242,7 +242,7 @@ class McpSeatTests(McpHarness):
         env = self.mcp_env(AGENT_SEAT=None, **LAUNCHED)
         code, lines, stderr = self.spawn(env, [self.PING], argv=("--default-seat", "CLAUDE"))
         self.assertEqual((code, lines), (3, []))
-        self.assertIn("BF-Plumber-zuliprc", stderr)
+        self.assertIn("BF_PLUMBER_ZULIP_KEY", stderr)  # its own Infisical /zulip names (AFC-359)
         self.assertNotIn("serving seat CLAUDE", stderr)
 
     def test_an_agent_seat_that_differs_from_the_launcher_seat_exits_3(self) -> None:

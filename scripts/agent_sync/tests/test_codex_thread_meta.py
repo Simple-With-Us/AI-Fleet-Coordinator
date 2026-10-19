@@ -21,7 +21,7 @@ class CodexThreadMetaTests(McpHarness):
         key = zulip_shaped()
         self.extra_secrets.append(key)
         self.fake.add_bot("codex-bot@zulip.test", "Codex", key)
-        write_rc(self.home / ".secrets/Zulip/Codex-zuliprc", email="codex-bot@zulip.test", key=key, site=self.fake.url)
+        self.add_infisical_bot("CODEX", email="codex-bot@zulip.test", key=key)
         self.env = self.mcp_env(AGENT_SEAT="CODEX", CLAUDE_CODE_SESSION_ID=None)
 
     def direct(self, session=None, source="none"):

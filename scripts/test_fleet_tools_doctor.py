@@ -33,15 +33,31 @@ class SeatAndMcpTests(unittest.TestCase):
         path.write_text(text)
 
     def test_seat_needs_zulip_linear_and_fleetlink(self):
-        report = doctor.Report()
-        doctor.check_seat(report, "GROK-WEB", {})
-        self.assertEqual(report.rows[0]["status"], "FAIL")
-        self.assertIn("zulip rc, linear app, fleetlink token", report.rows[0]["detail"])
-        self.touch(".secrets/Zulip/Grok-Web-zuliprc")
-        self.touch(".secrets/FleetLink/GROK_WEB.env")
-        report = doctor.Report()
-        doctor.check_seat(report, "GROK-WEB", {"LINEAR_GROK_WEB_CLIENT_ID": "id", "LINEAR_GROK_WEB_CLIENT_SECRET": "s"})
-        self.assertEqual(report.rows[0]["status"], "OK")
+        names: dict[str, frozenset[str] | None] = {"/zulip": frozenset({"JAY_ZULIP_KEY"}), "/linear": frozenset(),
+                                                  "/fleetlink": None}
+        with mock.patch.object(doctor, "infisical_names", lambda folder, env: names[folder]):
+            report = doctor.Report()
+            doctor.check_seat(report, "GROK-WEB", {})
+            self.assertEqual(report.rows[0]["status"], "FAIL")
+            self.assertIn("zulip bot, linear app, fleetlink token", report.rows[0]["detail"])
+            # AFC-359:  files under ~/.secrets no longer count.
+            self.touch(".secrets/Zulip/Grok-Web-zuliprc")
+            report = doctor.Report()
+            doctor.check_seat(report, "GROK-WEB", {})
+            self.assertIn("zulip bot", report.rows[0]["detail"])
+            names["/zulip"] = frozenset({"GROK_WEB_ZULIP_EMAIL", "GROK_WEB_ZULIP_KEY", "GROK_WEB_ZULIP_SITE"})
+            names["/linear"] = frozenset({"GROK_WEB_LINEAR_CLIENT_ID", "GROK_WEB_LINEAR_CLIENT_SECRET"})
+            report = doctor.Report()
+            doctor.check_seat(report, "GROK-WEB", {"FLEETLINK_TOKEN_GROK_WEB": "t"})
+            self.assertEqual(report.rows[0]["status"], "OK")
+            names["/zulip"] = frozenset({"GROK_BUILD_ZULIP_EMAIL", "GROK_BUILD_ZULIP_KEY", "GROK_BUILD_ZULIP_SITE"})
+            report = doctor.Report()
+            doctor.check_seat(report, "GROK", {})
+            self.assertNotIn("zulip bot", report.rows[0]["detail"])
+            names["/zulip"] = None
+            report = doctor.Report()
+            doctor.check_seat(report, "GROK", {})
+            self.assertEqual(report.rows[0]["status"], "WARN")
 
     def test_mcp_registrations(self):
         self.touch(".codex/config.toml", "[mcp_servers.agent-sync]\ncommand = 'x'\n[mcp_servers.fleetlink]\nurl = 'y'\n")

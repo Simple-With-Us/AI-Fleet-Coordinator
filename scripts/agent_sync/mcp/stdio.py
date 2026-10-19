@@ -29,11 +29,12 @@ connection says who may act and each call names who is acting in its `identity` 
 must name it, reads without it act as the default.  The default follows the CLI's precedence
 (identity.resolve_seat:  a launcher's AGENT_LAUNCH_SEAT wins and a differing --as or AGENT_SEAT exits 3,
 AGENT_LAUNCHER with no seat exits 3, then --as, AGENT_SEAT, and last --default-seat) and is optional:
-with none, every call names its identity.  The allowed set is every agent bot whose credential file is
-on this host (identities.py:  the seats, BF-* and the enabled GB-* personas), or the launcher's seat
-alone.  Keys come only from zuliprc files (mode 600, realm-locked):  the default identity's through
-the CLI's resolver (--rc, then env ZULIP_RC, then $HOME/.secrets/Zulip/<Seat>-zuliprc), every other
-identity's from its own file.  The ZULIP_EMAIL/ZULIP_API_KEY/ZULIP_SITE triple (a raw key in a client's
+with none, every call names its identity.  The allowed set is every agent bot whose credentials this
+host can read (identities.py:  the seats, BF-* and the enabled GB-* personas), or the launcher's seat
+alone.  Keys come from Infisical Fleet-OPS /zulip (each identity's own three <BOT>_ZULIP_* names, read
+through fleet-secrets into memory only;  AFC-359:  nothing under ~/.secrets is read), from an explicit
+--rc or env ZULIP_RC for the default identity (mode 600, realm-locked), or on the server from each
+identity's own variables.  The ZULIP_EMAIL/ZULIP_API_KEY/ZULIP_SITE triple (a raw key in a client's
 config) and AGENT_SYNC_SECRETS_DIR are ignored.  The default identity is checked before a single
 request is read:  users/me must be a bot that signs as that identity (seat_tag_for) with the moderator
 (300) or member (400) role, otherwise it exits 3.  Every other identity gets the same check on its first
@@ -523,13 +524,17 @@ def _open_identity(
         events_timeout=rt.events_timeout,
     )
     try:
-        if source.is_env:
+        if source.is_env or source.is_infisical:
             namespace = argparse.Namespace(
                 as_seat=identity,
                 rc=None,
                 session=session_id,
                 json=True,
-                credentials=source.credentials(cred_env, identity),
+                credentials=(
+                    source.credentials(env, identity, home)
+                    if source.is_infisical
+                    else source.credentials(cred_env, identity)
+                ),
             )
         else:
             namespace = argparse.Namespace(
@@ -620,9 +625,10 @@ def run(
     home = _home(env, rt.home)
     if ignored:
         log(
-            "ignoring %s:  mcp reads keys only from zuliprc files (--rc, ZULIP_RC, then %s) or from an identity's own "
-            "ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY (with ZULIP_SITE) on the server"
-            % (", ".join(ignored), Z.default_rc_path(seat or "SEAT", env, home))
+            "ignoring %s:  mcp reads keys only from Infisical Fleet-OPS %s (each identity's own %s names), "
+            "an explicit --rc or ZULIP_RC, or an identity's own ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY "
+            "(with ZULIP_SITE) on the server"
+            % (", ".join(ignored), Z.INFISICAL_PATH, Z.infisical_key_names(seat or "SEAT")[0].replace("_ZULIP_EMAIL", "_ZULIP_*"))
         )
     session_id, source = getattr(args, "session", None), "flag"
     if not session_id:
@@ -642,7 +648,7 @@ def run(
             "(%s);  fix FLEET_APPS_JSON or fleet-apps.json and start again" % exc
         )
         return 3
-    # Where each identity's key is (identities.py):  its zuliprc file, else on the server its own per-seat
+    # Where each identity's key is (identities.py):  Infisical /zulip, else on the server its own per-seat
     # variables (the listener's `creds = "env"` names, else ZULIP_<CODE>_EMAIL, ZULIP_<CODE>_API_KEY and
     # ZULIP_SITE).  Those are read from the process environment, which keeps ZULIP_SITE;  the generic
     # ZULIP_EMAIL and ZULIP_API_KEY never name a seat, so they never match.  Only the default identity reads
@@ -668,10 +674,10 @@ def run(
         if rc_arg:
             allowed[seat] = X.CredentialSource(path=Path(rc_arg).expanduser())
         else:
-            # A missing source keeps the file path, so the refusal reads "credential file not found: PATH".
+            # A missing source falls back to Infisical, so the refusal names the folder and the key names.
             allowed[seat] = X.source_for(
                 seat, env, home, cred_env=cred_env, env_seats=env_seats
-            ) or X.CredentialSource(path=Z.default_rc_path(seat, env, home))
+            ) or X.CredentialSource(infisical=seat)
     if not launcher_pinned:
         for name, found in X.allowed_identities(
             env, home, registry=registry, cred_env=cred_env, env_seats=env_seats

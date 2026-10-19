@@ -610,7 +610,7 @@ def _common_parent() -> argparse.ArgumentParser:
                             "passes it):  used only when --as, AGENT_SEAT and AGENT_TAG are unset, and never under a "
                             "launcher (AGENT_LAUNCHER)")
     group.add_argument("--rc", metavar="PATH", default=argparse.SUPPRESS,
-                       help="zuliprc file to use (default: env ZULIP_RC, then ~/.secrets/Zulip/<Seat>-zuliprc)")
+                       help="zuliprc file to use (default: env ZULIP_RC, then the seat's own keys in Infisical Fleet-OPS /zulip)")
     group.add_argument("--session", metavar="ID", default=argparse.SUPPRESS,
                        help="session id (default: env CLAUDE_CODE_SESSION_ID, then AGENT_SESSION)")
     group.add_argument("--json", action="store_true", default=argparse.SUPPRESS,

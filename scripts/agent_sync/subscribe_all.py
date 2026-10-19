@@ -13,10 +13,11 @@ only:  never an email, a key or a message.
 
     cd scripts && python3 -m agent_sync.subscribe_all                 # what would change
     cd scripts && python3 -m agent_sync.subscribe_all --apply         # do it
-    cd scripts && python3 -m agent_sync.subscribe_all --source mac    # Mac zuliprc files only
+    cd scripts && python3 -m agent_sync.subscribe_all --source mac    # Fleet-OPS /zulip bots only
 
 Credentials, deduplicated by bot email:
-  mac        every ~/.secrets/Zulip/*-zuliprc (mode 600)
+  mac        every bot with <BOT>_ZULIP_EMAIL, _KEY and _SITE in Infisical Fleet-OPS /zulip (the Mac's
+             source since AFC-359, read through fleet-secrets in one call;  nothing under ~/.secrets)
   infisical  every ZULIP_<CODE>_EMAIL / ZULIP_<CODE>_API_KEY pair in Infisical prod /zulip,
              through the automation identity from `fleet-secrets get`
 Only bots are touched:  a key whose users/me is a human, or an admin or owner, is skipped.
@@ -44,7 +45,6 @@ INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
 INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
-ZULIP_DIR = Path.home() / ".secrets" / "Zulip"
 BOT_ROLES = (300, 400)  # moderator, member:  the roles the listener accepts
 # Bots never need a notification;  set every new subscription quiet so nothing reaches a phone.
 QUIET = {
@@ -108,12 +108,17 @@ def quiet(client: Z.ZulipClient, stream_ids: Iterable[int]) -> None:
 
 # ---- credentials --------------------------------------------------------------------------------
 def mac_credentials() -> list[Z.Credentials]:
+    """Every seat bot in Infisical Fleet-OPS /zulip (never the owner or an integration bot:
+    zulip.NOT_SEAT_PREFIXES), fetched in one call and held in memory only."""
+    env, home = os.environ, Path.home()
+    seats = sorted(Z.infisical_seats(env, home))
+    Z.prefetch_infisical(seats, env, home)
     out = []
-    for path in sorted(ZULIP_DIR.glob("*-zuliprc")):
+    for seat in seats:
         try:
-            out.append(Z.read_zuliprc(path))
+            out.append(Z.infisical_credentials(seat, env=env, home=home))
         except Z.CredentialError as exc:
-            print("skip %s:  %s" % (path.name, exc), file=sys.stderr)
+            print("skip %s:  %s" % (seat, exc), file=sys.stderr)
     return out
 
 
@@ -199,7 +204,7 @@ def gather(source: str, realm: str) -> list[Z.Credentials]:
     if source in ("infisical", "both"):
         creds += infisical_credentials(realm)
     seen: dict[str, Z.Credentials] = {}
-    for c in creds:  # the Mac file wins over Infisical for the same bot:  it is listed first
+    for c in creds:  # the Fleet-OPS copy wins over the server project's for the same bot:  it is listed first
         seen.setdefault(c.email.casefold(), c)
     return list(seen.values())
 

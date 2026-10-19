@@ -14,7 +14,11 @@ not, that the partition does not give to its own instance (a seat of the other i
 `none` seat, or a seat the partition does not list), or a section that reads another listed
 seat's credential, refuses to start, so a seat is never held twice.
 
-Credentials:  `creds = "file"` (the default) reads <secrets dir>/<bot>-zuliprc.  `creds = "env"`
+Credentials:  `creds = "file"` (the default) is the seat's own bot, named by `bot` (its credential
+file stem, e.g. Grok-Build):  read from Infisical Fleet-OPS /zulip as <BOT>_ZULIP_EMAIL, _KEY and _SITE
+(BOT is the stem in upper case with hyphens as underscores), or from <dir>/<bot>-zuliprc only when the
+explicit override AGENT_SYNC_SECRETS_DIR is set.  Nothing under ~/.secrets is read (AFC-359).
+`creds = "infisical"` is the same without the file override.  `creds = "env"`
 (server instance only) reads the seat's email and key from environment variables named in the
 config, ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY by default (CODE is the seat with hyphens
 as underscores), and the site from ZULIP_SITE.  The realm host is still enforced.
@@ -27,6 +31,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from . import live as L
@@ -242,7 +247,7 @@ class SeatConfig:
         self.provider = provider  # the CodeCaps provider name this seat's quota is read under
         self.instance = instance
         self.enabled = enabled
-        self.creds = creds  # "file" or "env"
+        self.creds = creds  # "file", "infisical" or "env"
         self.email_env = email_env
         self.key_env = key_env
         self.site_env = site_env
@@ -813,19 +818,19 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             wake_problems.append("seat.%s.muse_bridge must be true or false" % seat_name)
             muse_bridge = False
         creds = section.get("creds", "file")
-        if creds not in ("file", "env"):
+        if creds not in ("file", "infisical", "env"):
             problems.append(
-                'seat.%s.creds must be "file" (a zuliprc) or "env" (environment variables)'
-                % seat_name
+                'seat.%s.creds must be "file" (the bot\'s own credential:  Infisical /zulip, or a zuliprc '
+                'in AGENT_SYNC_SECRETS_DIR), "infisical" or "env" (environment variables)' % seat_name
             )
             creds = "file"
         if creds == "env" and cfg.instance != "server":
             problems.append(
-                'seat.%s.creds = "env" is for the server instance only; the Mac instance reads one '
-                "credential file per seat" % seat_name
+                'seat.%s.creds = "env" is for the server instance only; the Mac instance reads each '
+                "seat's own bot from Infisical /zulip" % seat_name
             )
         bot = section.get("bot")
-        if creds == "file" or bot is not None:
+        if creds in ("file", "infisical") or bot is not None:
             if not isinstance(bot, str) or not _BOT_RE.match(bot):
                 problems.append(
                     "seat.%s.bot must be the credential file code (e.g. Claude for Claude-zuliprc)"
@@ -1071,10 +1076,12 @@ def load(root: str, path: str | None = None) -> Config:
 
 
 def seat_credentials(
-    seat_cfg: SeatConfig, env: Mapping[str, str], secrets_dir: str
+    seat_cfg: SeatConfig, env: Mapping[str, str], secrets_dir: str | None
 ) -> Z.Credentials:
-    """The one place a listener seat's credentials are read:  its own zuliprc file, or (creds =
-    "env") the environment variables its config names.  Never ZULIP_RC or the CLI's triple."""
+    """The one place a listener seat's credentials are read:  its own bot's keys in Infisical /zulip
+    (named by `bot`), its zuliprc in `secrets_dir` (only the explicit AGENT_SYNC_SECRETS_DIR override,
+    never a default), or (creds = "env") the environment variables its config names.  Never ZULIP_RC
+    or the CLI's triple."""
     if seat_cfg.creds == "env":
         assert seat_cfg.email_env and seat_cfg.key_env
         return Z.env_credentials(
@@ -1084,7 +1091,22 @@ def seat_credentials(
             site_env=seat_cfg.site_env,
             label=seat_cfg.seat,
         )
-    return Z.read_zuliprc(os.path.join(secrets_dir, seat_cfg.bot + "-zuliprc"))
+    if seat_cfg.creds == "file" and secrets_dir:
+        return Z.read_zuliprc(os.path.join(secrets_dir, seat_cfg.bot + "-zuliprc"))
+    return Z.infisical_credentials(
+        seat_cfg.seat, env=env, home=Path(env.get("HOME") or os.path.expanduser("~")), stem=seat_cfg.bot
+    )
+
+
+def seat_credential_present(seat_cfg: SeatConfig, env: Mapping[str, str], secrets_dir: str | None) -> bool:
+    """Whether the seat's credential exists (names only, never a value):  the override file, or its
+    three /zulip names in Infisical, or (creds = "env") its variables."""
+    if seat_cfg.creds == "env":
+        return all((env.get(n) or "").strip() for n in (seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env) if n)
+    if seat_cfg.creds == "file" and secrets_dir:
+        return os.path.isfile(os.path.join(secrets_dir, seat_cfg.bot + "-zuliprc"))
+    names = Z.infisical_names(env)
+    return all(n in names for n in Z.infisical_key_names_for_stem(seat_cfg.bot))
 
 
 # --------------------------------------------------------------------------------------------
@@ -1143,7 +1165,7 @@ def credential_aliases(seat_cfg: SeatConfig, known: set[str]) -> list[tuple[str,
     `key_env` in another seat's default pattern (ZULIP_GB_COMPILER_API_KEY).  Custom names that
     match no known seat pass here; the connect-time users/me check still refuses them."""
     found: list[tuple[str, str]] = []
-    if seat_cfg.creds == "file":
+    if seat_cfg.creds in ("file", "infisical"):
         owner = Z.seat_from_rc_path(seat_cfg.bot + "-zuliprc")
         if owner and owner != seat_cfg.seat and owner in known:
             found.append(("bot = %r (%s-zuliprc)" % (seat_cfg.bot, seat_cfg.bot), owner))

@@ -26,25 +26,27 @@ PERSONA_EMAIL = "%s-grok-bot@zulip.test" % PERSONA[len("GB-"):].lower()
 class IdentityHarness(McpHarness):
     def setUp(self) -> None:
         super().setUp()
-        secrets = self.home / ".secrets" / "Zulip"
+        # Every bot's keys sit in the fake Infisical /zulip (AFC-359:  nothing under ~/.secrets is read).
         self.keys: dict[str, str] = {}
         bots = {
-            "CURSOR": ("cursor-bot@zulip.test", "Cursor", "Cursor-zuliprc"),
-            "BF-PLUMBER": ("bf-plumber-bot@zulip.test", "BF Plumber", "BF-Plumber-zuliprc"),
-            PERSONA: (PERSONA_EMAIL, PERSONA.title(), "GB-%s-zuliprc" % PERSONA[3:].title()),
-            "GB-ENGINEER": ("engineer-grok-bot@zulip.test", "Engineer", "GB-Engineer-zuliprc"),
-            "SENTRY": ("sentry-bot@zulip.test", "Sentry", "Sentry-zuliprc"),
+            "CURSOR": ("cursor-bot@zulip.test", "Cursor"),
+            "BF-PLUMBER": ("bf-plumber-bot@zulip.test", "BF Plumber"),
+            PERSONA: (PERSONA_EMAIL, PERSONA.title()),
+            "GB-ENGINEER": ("engineer-grok-bot@zulip.test", "Engineer"),
+            "SENTRY": ("sentry-bot@zulip.test", "Sentry"),
         }
-        for name, (email, full_name, file_name) in bots.items():
+        for name, (email, full_name) in bots.items():
             key = zulip_shaped()
             self.keys[name] = key
             self.extra_secrets.append(key)
             self.fake.add_bot(email, full_name, key)
-            write_rc(secrets / file_name, email=email, key=key, site=self.fake.url)
-        # The owner's own account:  a person, never in any set.
-        owner_key = zulip_shaped()
-        self.extra_secrets.append(owner_key)
-        write_rc(secrets / "Jay-zuliprc", email="jay@zulip.test", key=owner_key, site=self.fake.url)
+            self.add_infisical_bot(name, email=email, key=key)
+        # The owner's own account and the realm-admin bot:  in /zulip-shaped names, never in any set.
+        for prefix, email in (("JAY", "jay@zulip.test"), ("REALM_ADMIN", "realm-admin-bot@zulip.test")):
+            key = zulip_shaped()
+            self.extra_secrets.append(key)
+            self.infisical_values.update({"%s_ZULIP_EMAIL" % prefix: email, "%s_ZULIP_KEY" % prefix: key,
+                                          "%s_ZULIP_SITE" % prefix: self.fake.url})
         self.expected = sorted({"CLAUDE", "CURSOR", "BF-PLUMBER"} | ({PERSONA, "GB-ENGINEER"} & set(ENABLED)))
 
     def error(self, result: dict) -> dict:
@@ -53,7 +55,7 @@ class IdentityHarness(McpHarness):
 
 
 class AllowedSetTests(IdentityHarness):
-    def test_identities_lists_every_agent_bot_with_a_credential_file_here(self):
+    def test_identities_lists_every_agent_bot_with_credentials_in_infisical(self):
         session = self.session()
         info = self.assert_structured("identities", session.call("identities"))
         names = [row["identity"] for row in info["identities"]]
@@ -125,7 +127,7 @@ class CallRuleTests(IdentityHarness):
 
     def test_an_identity_outside_the_set_is_refused(self):
         session = self.session()
-        for name in ("SENTRY", "JAY", "GB-ENGINEER", "MONET", "not a seat", 7):
+        for name in ("SENTRY", "JAY", "REALM-ADMIN", "GB-ENGINEER", "MONET", "not a seat", 7):
             with self.subTest(name=name):
                 error = self.error(session.call("zulip_topics", {"identity": name}))
                 self.assertEqual(error["code"], "identity_not_allowed")
@@ -133,9 +135,8 @@ class CallRuleTests(IdentityHarness):
         self.assertEqual(self.fake.messages, [])
 
     def test_a_credential_that_is_not_the_claimed_bot_is_refused_on_first_use(self):
-        # Cursor's file holds BF-PLUMBER's key:  check_bot refuses it, and nothing is posted.
-        write_rc(self.home / ".secrets" / "Zulip" / "Cursor-zuliprc", email="bf-plumber-bot@zulip.test",
-                 key=self.keys["BF-PLUMBER"], site=self.fake.url)
+        # Cursor's Infisical names hold BF-PLUMBER's key:  check_bot refuses it, and nothing is posted.
+        self.add_infisical_bot("CURSOR", email="bf-plumber-bot@zulip.test", key=self.keys["BF-PLUMBER"])
         session = self.session()
         error = self.error(session.call("zulip_post", {"topic": "t", "text": "x"}, identity="CURSOR"))
         self.assertEqual(error["code"], "not_authorized")
@@ -229,7 +230,7 @@ class CliTests(IdentityHarness):
         self.assertEqual(info["default_identity"], "CODEX")
         self.assertEqual([row["identity"] for row in info["identities"]], sorted([*self.expected, "CODEX"]))
         # The same exclusions as at stdio startup:  an integration bot or the owner's account never enters.
-        for never in ("SENTRY", "JAY"):
+        for never in ("SENTRY", "JAY", "REALM-ADMIN"):
             refused = self.run_cli("identities", "--json", env=self.cli_env(AGENT_SEAT=never, ZULIP_RC=str(elsewhere)))
             self.assertNotIn(never, [row["identity"] for row in json.loads(refused.out)["identities"]], never)
         plain = self.run_cli("identities", "--json", env=self.cli_env(AGENT_SEAT="CODEX"))
@@ -413,7 +414,7 @@ class EnvBackedTests(McpHarness):
         return json.loads(result["content"][0]["text"])
 
     def test_a_host_with_only_env_backed_seats(self):
-        self.home_rc.unlink()  # no credential file at all
+        self.drop_infisical_bot("CLAUDE")  # no Infisical credential at all
         session = self.session(self.server_env(AGENT_SEAT=None))
         info = self.assert_structured("identities", session.call("identities"))
         self.assertEqual([row["identity"] for row in info["identities"]], self.env_only)
@@ -434,7 +435,7 @@ class EnvBackedTests(McpHarness):
                          "BF-PLUMBER")
 
     def test_as_names_an_env_backed_seat(self):
-        self.home_rc.unlink()
+        self.drop_infisical_bot("CLAUDE")
         call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "whoami", "arguments": {}}}
         code, lines, stderr = self.spawn(self.server_env(AGENT_SEAT=None), [call], argv=("--as", "GROK-WEB"))
         self.assertEqual(code, 0, stderr)

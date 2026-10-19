@@ -96,12 +96,21 @@ def plist_dict(home: str, python: str, program: str, root: str) -> dict:
     }
 
 
-def sample_config(secrets_dir: str) -> str:
-    """The sample listener.toml.  Only CLAUDE is enabled; every other seat whose credential file
-    is present is listed commented out."""
+def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None) -> str:
+    """The sample listener.toml.  Only CLAUDE is enabled; every other seat whose credential is present
+    (its three Infisical /zulip names, or its file in the explicit AGENT_SYNC_SECRETS_DIR override)
+    is listed commented out."""
+    seats_in_infisical = frozenset() if secrets_dir else Z.infisical_seats(env)
 
     def present(seat: str) -> bool:
-        return os.path.isfile(os.path.join(secrets_dir, Z.credential_file_name(seat)))
+        if secrets_dir:
+            return os.path.isfile(os.path.join(secrets_dir, Z.credential_file_name(seat)))
+        return seat in seats_in_infisical
+
+    def where(seat: str) -> str:
+        if secrets_dir:
+            return os.path.join(secrets_dir, Z.credential_file_name(seat))
+        return "Infisical Fleet-OPS %s %s" % (Z.INFISICAL_PATH, Z.infisical_key_names(seat)[1])
 
     lines = [
         "# agent-sync listener config.  Local to this Mac; it holds no secrets.",
@@ -137,7 +146,7 @@ def sample_config(secrets_dir: str) -> str:
         "[seat.CLAUDE]",
         'bot = "Claude"                    # reads %s (moderator or member role only)%s'
         % (
-            os.path.join(secrets_dir, Z.credential_file_name("CLAUDE")),
+            where("CLAUDE"),
             "" if present("CLAUDE") else "; NOT FOUND",
         ),
         'wake = "claude"                   # runs only after `agent-sync daemon test-wake --seat CLAUDE --run`, then --pin',
@@ -198,9 +207,7 @@ def install(
     root = os.path.join(
         home, ".agent-sync"
     )  # what the LaunchAgent's daemon uses (the plist sets no state dir)
-    secrets_dir = os.path.expanduser(
-        env.get(Z.ENV_SECRETS_DIR) or os.path.join(home, ".secrets", "Zulip")
-    )
+    secrets_dir = Z.override_secrets_dir(env)  # no default:  seats read Infisical /zulip (AFC-359)
     python = choose_python(python)
     program = program or program_path(home)
     target = plist_path(home)
@@ -232,7 +239,7 @@ def install(
     else:
         say("write the sample config %s (mode 600; only CLAUDE enabled)" % config_path)
         if not dry_run:
-            write_private(config_path, sample_config(secrets_dir))
+            write_private(config_path, sample_config(secrets_dir, env))
     current = None
     if os.path.exists(target):
         with open(target, "rb") as fh:

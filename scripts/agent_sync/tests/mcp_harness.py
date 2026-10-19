@@ -1,9 +1,10 @@
 """Harness for the `agent-sync mcp` tests:  the server driven over real pipes, in-process (with a fake
 clock) or as a subprocess of scripts/agent-sync, against the fake Zulip server.
 
-Every environment is an explicit dict:  HOME is a temp dir whose .secrets/Zulip holds the test
-bot's rc file, so the server never opens the real ~/.secrets, and subprocesses never inherit
-os.environ.  Every line the server prints goes into the transcript that Harness.tearDown checks
+Every environment is an explicit dict:  HOME is a temp dir, the test bot's keys sit in the fake Infisical
+/zulip (in-process:  the patched zulip fetch;  a subprocess:  FLEET_SECRETS_BIN points at
+fixtures/fake-fleet-secrets, which reads a temp JSON file), so the server never reaches the real
+fleet-secrets or ~/.secrets, and subprocesses never inherit os.environ.  Every line the server prints goes into the transcript that Harness.tearDown checks
 for the key and its base64 form, and every stdout line must be one JSON-RPC 2.0 message.
 """
 from __future__ import annotations
@@ -29,6 +30,7 @@ from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH
 from agent_sync.tests.harness import SESSION, Harness, write_rc
 
 SCRIPT = Path(__file__).resolve().parents[2] / "agent-sync"
+FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
 MODERN = "2026-07-28"
 AUTO = object()  # McpSession.call:  a write names the session's default identity
 CLIENT_META = {S.META_VERSION: MODERN, "io.modelcontextprotocol/clientCapabilities": {},
@@ -192,11 +194,14 @@ class McpHarness(Harness):
 
     def setUp(self) -> None:
         super().setUp()
-        self.home_rc = write_rc(self.home / ".secrets" / "Zulip" / "Claude-zuliprc", email=BOT_EMAIL, key=self.key,
+        # An explicit rc file for the tests that pass --rc or ZULIP_RC;  nothing reads it by default (AFC-359).
+        self.home_rc = write_rc(self.tmp / "rc" / "Claude-zuliprc", email=BOT_EMAIL, key=self.key,
                                 site=self.fake.url)
+        self.add_infisical_bot("CLAUDE", email=BOT_EMAIL, key=self.key)
+        self.fake_secrets_file = self.tmp / "fake-fleet-secrets.json"
         self.clock = FakeClock()
         self.spec = T.load_served_tools()  # tools.json, then listener-tools.json (AFC-330)
-        # What tools/list serves a CLAUDE session whose HOME holds only Claude-zuliprc:  every tool with an
+        # What tools/list serves a CLAUDE session whose Infisical holds only Claude's keys:  every tool with an
         # identity property whose enum is that one bot (AFC-331).
         self.served = R.decorate(self.spec, ["CLAUDE"], "CLAUDE")
         self.extra_secrets: list[str] = []
@@ -214,12 +219,19 @@ class McpHarness(Harness):
 
     def mcp_env(self, **overrides: str | None) -> dict[str, str]:
         base = {"HOME": str(self.home), "AGENT_SYNC_REALM": self.fake.url, "AGENT_SYNC_STATE_DIR": str(self.state_dir),
-                "AGENT_SEAT": "CLAUDE", "CLAUDE_CODE_SESSION_ID": SESSION}
+                "AGENT_SEAT": "CLAUDE", "CLAUDE_CODE_SESSION_ID": SESSION,
+                "FLEET_SECRETS_BIN": str(FAKE_FLEET_SECRETS), "FAKE_FLEET_SECRETS_FILE": str(self.fake_secrets_file)}
         base.update({k: v for k, v in overrides.items() if v is not None})
         for name, value in overrides.items():
             if value is None:
                 base.pop(name, None)
+        self.write_fake_secrets()
         return base
+
+    def write_fake_secrets(self) -> None:
+        """The fake Infisical a subprocess reads (fixtures/fake-fleet-secrets):  the current infisical_values."""
+        self.fake_secrets_file.write_text(json.dumps({"/zulip": self.infisical_values}), encoding="utf-8")
+        self.fake_secrets_file.chmod(0o600)
 
     def session(self, env: dict[str, str] | None = None, *, clock: FakeClock | None = None,
                 argv: tuple[str, ...] = (), timeout: float = 5.0, initialize: bool = True) -> McpSession:
@@ -237,6 +249,7 @@ class McpHarness(Harness):
               timeout: float = 60.0) -> tuple[int, list[dict[str, Any]], str]:
         """Run scripts/agent-sync mcp as a real process, write every request, close stdin, and
         return (exit code, the parsed stdout lines, stderr)."""
+        self.write_fake_secrets()
         data = b"".join((json.dumps(r) + "\n").encode("utf-8") if not isinstance(r, bytes) else r for r in requests)
         proc = subprocess.run([sys.executable, str(SCRIPT), "mcp", *argv], input=data, capture_output=True, env=env,
                               timeout=timeout)

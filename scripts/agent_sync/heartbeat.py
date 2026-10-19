@@ -16,7 +16,9 @@ single blip (a queue that failed one poll) sends an `error` check-in and no even
 
 Secrets:  the DSN comes from `AGENT_SYNC_SENTRY_DSN` or `SENTRY_FLEET_DSN` in the environment (the server:
 Infisical `prod` `/zulip`, loaded at start by `server/infisical_env.py`), else from the same two names in
-the chmod-600 file `~/.secrets/agent-sync.env` (the Mac;  only those two names are read from it).  The DSN
+the KEY=value file that `AGENT_SYNC_SENTRY_ENV_FILE` names (an explicit override;  there is no default
+file), else (the Mac) `fleet-secrets get SENTRY_FLEET_DSN --path /agent-sync` from Infisical Fleet-OPS.
+Nothing under ~/.secrets is read (AFC-359).  The DSN
 is never logged, never put in an error and never written to status.json.  With no DSN the heartbeat is off
 and says so once.  A send never blocks the daemon:  it runs on its own short-lived thread, and a failure
 backs off (30 seconds, doubling up to the five-minute interval) and logs at most once every 30 minutes.
@@ -38,6 +40,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 
 from . import __version__
+from . import zulip as Z
 
 INTERVAL_SECONDS = 300.0
 BACKOFF_FIRST_SECONDS = 30.0
@@ -48,7 +51,7 @@ ENV_FILE = "AGENT_SYNC_SENTRY_ENV_FILE"
 ENV_OFF = "AGENT_SYNC_SENTRY_HEARTBEAT"       # 0, off, false or no turns it off
 ENV_ENVIRONMENT = "AGENT_SYNC_SENTRY_ENVIRONMENT"
 DEFAULT_ENVIRONMENT = "production"            # the fleet's one Sentry environment tag (sentry-fleet-integration plan)
-DEFAULT_ENV_FILE = os.path.join(".secrets", "agent-sync.env")
+INFISICAL_DSN_PATH = "/agent-sync"  # Fleet-OPS folder that holds SENTRY_FLEET_DSN (AFC-359)
 MONITOR_PREFIX = "agent-sync-listener-"
 REASON_LIMIT = 120
 REASONS_SHOWN = 4
@@ -114,17 +117,51 @@ def read_env_file(path: str, names: tuple[str, ...] = ENV_DSN_NAMES) -> dict[str
     return found
 
 
+def _fleet_secrets_dsn(env: Mapping[str, str], home: str) -> str:
+    """SENTRY_FLEET_DSN from Infisical Fleet-OPS /agent-sync through fleet-secrets, or '' (absent, not
+    installed, or a failure:  the heartbeat is then off and says so;  no output is ever read out)."""
+    import subprocess
+    from pathlib import Path
+
+    binary = Z.fleet_secrets_bin(env, Path(home))
+    if not binary:
+        return ""
+    child = dict(env)
+    child.setdefault("PATH", os.environ.get("PATH") or os.defpath)
+    try:
+        proc = subprocess.run(
+            [binary, "get", "SENTRY_FLEET_DSN", "--path", INFISICAL_DSN_PATH],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=60, cwd="/", env=child, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    try:
+        return proc.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return ""
+
+
+# The name tests replace (agent_sync/tests/__init__.py), so none can reach the real fleet-secrets.
+_default_dsn_fetch = _fleet_secrets_dsn
+
+
 def resolve_dsn(env: Mapping[str, str], home: str) -> str:
-    """The DSN text, or ''.  Environment first, then the secrets file."""
+    """The DSN text, or ''.  Environment first, then the explicit AGENT_SYNC_SENTRY_ENV_FILE, then
+    Infisical Fleet-OPS /agent-sync SENTRY_FLEET_DSN (unless AGENT_SYNC_INFISICAL turns Infisical off)."""
     for name in ENV_DSN_NAMES:
         if (env.get(name) or "").strip():
             return env[name].strip()
-    path = os.path.expanduser(env.get(ENV_FILE) or os.path.join(home, DEFAULT_ENV_FILE))
-    file_values = read_env_file(path)
-    for name in ENV_DSN_NAMES:
-        if file_values.get(name):
-            return file_values[name]
-    return ""
+    if (env.get(ENV_FILE) or "").strip():
+        file_values = read_env_file(os.path.expanduser(env[ENV_FILE].strip()))
+        for name in ENV_DSN_NAMES:
+            if file_values.get(name):
+                return file_values[name]
+        return ""
+    if not Z.infisical_enabled(env):
+        return ""
+    return _default_dsn_fetch(env, home) or ""
 
 
 def monitor_slug(instance: str) -> str:
