@@ -133,5 +133,5 @@ No Fleet-OPS writes, no folder or service created, no identity changed, no key r
 ## Next
 
 1. Check the two `/agent-proxy` identity memberships against the guardrail above.  Dashboard read, no writes.
-2. Jay decides the plan:  Agent Vault on Pro, or Agent Proxy free with the sandbox drawback that breaks local MCP and hooks.
+2. Jay decides the plan:  Agent Vault on Pro ($2 per 1,000 brokered requests past 5,000 a month), or Agent Proxy on any plan with `connect` and without time-bound sessions, per-service method and path rules, or per-run CA pinning.
 3. Then the three services above, one at a time.
