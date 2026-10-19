@@ -315,7 +315,7 @@ def _env_tokens() -> dict:
 _VAULT_LOCK = threading.Lock()
 _VAULT = {
     "tokens": None,  # {token: identity} from the last good read, or None before the first one
-    "refreshed_at": None,  # when that read happened;  not moved by a failed read
+    "last_ok_at": None,  # when that read happened;  not moved by a failed read
     "next_try": 0.0,  # earliest time of the next fetch (TTL after a success, a short back-off after a failure)
     "attempted": False,  # a first fetch has been started
     "thread": None,  # the background refresh in flight, if any
@@ -364,7 +364,7 @@ def _refresh_vault() -> None:
             )  # back off;  keep the old tokens and refreshed_at
         else:
             _VAULT["tokens"] = fresh
-            _VAULT["refreshed_at"] = now
+            _VAULT["last_ok_at"] = now
             _VAULT["next_try"] = now + TOKEN_TTL_S
         _VAULT["thread"] = None
 
@@ -401,7 +401,7 @@ def _vault_tokens() -> dict:
 def _reset_vault() -> None:
     """Forget everything (tests)."""
     with _VAULT_LOCK:
-        _VAULT.update(tokens=None, refreshed_at=None, next_try=0.0, attempted=False, thread=None)
+        _VAULT.update(tokens=None, last_ok_at=None, next_try=0.0, attempted=False, thread=None)
 
 
 def _vault_wait() -> None:
@@ -464,7 +464,7 @@ def token_auth_meta() -> dict:
         source = "missing"
         count = 0
     with _VAULT_LOCK:
-        refreshed = int(_VAULT["refreshed_at"]) if _VAULT["refreshed_at"] else None
+        refreshed = int(_VAULT["last_ok_at"]) if _VAULT["last_ok_at"] else None
     return {
         "token_source": source,
         "token_count": count,

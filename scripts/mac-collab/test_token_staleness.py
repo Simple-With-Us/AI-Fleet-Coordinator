@@ -121,7 +121,7 @@ class TestTokenStaleness(unittest.TestCase):
             server._vault_wait()
         self.assertIn("file-token-new", server.load_tokens())  # the finished refresh is swapped in
 
-    def test_a_failed_refresh_backs_off_and_keeps_refreshed_at(self):
+    def test_a_failed_refresh_backs_off_and_keeps_last_ok_at(self):
         server.load_tokens()
         before = server.token_auth_meta()["vault_refreshed_at"]
         calls = []
