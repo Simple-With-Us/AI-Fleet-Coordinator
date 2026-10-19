@@ -312,6 +312,7 @@ def _env_tokens() -> dict:
 # good copy, so an Infisical or network outage never locks the board out;  a rotation shows up within
 # TOKEN_TTL_S seconds with no restart.
 _VAULT_CACHE: tuple = (0.0, None)
+_VAULT_LAST_GOOD = 0.0  # when the cache last held a *successful* read;  a failed attempt leaves it alone
 _VAULT_LOCK = threading.Lock()
 
 
@@ -320,6 +321,9 @@ def _fetch_vault_tokens():
     read failed.  One `fleet-secrets run` call;  the values stay in this process and are never logged."""
     if not FLEET_SECRETS_BIN.is_file():
         return None
+    # Strip inherited MAC_COLLAB_TOKEN* from the child env:  /usr/bin/env prints those alongside whatever
+    # fleet-secrets injects, so a token already rotated out of Infisical would keep authenticating here.
+    child_env = {k: v for k, v in os.environ.items() if not k.startswith("MAC_COLLAB_TOKEN")}
     try:
         proc = subprocess.run(
             [str(FLEET_SECRETS_BIN), "run", "--path", TOKEN_FOLDER, "--", "/usr/bin/env"],
@@ -328,6 +332,7 @@ def _fetch_vault_tokens():
             timeout=60,
             check=False,
             stdin=subprocess.DEVNULL,
+            env=child_env,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -339,7 +344,7 @@ def _fetch_vault_tokens():
 
 
 def _vault_tokens() -> dict:
-    global _VAULT_CACHE
+    global _VAULT_CACHE, _VAULT_LAST_GOOD
     with (
         _VAULT_LOCK
     ):  # one fetch at a time;  the other request threads wait for it and reuse the result
@@ -354,6 +359,7 @@ def _vault_tokens() -> dict:
             _VAULT_CACHE = (time.time() - TOKEN_TTL_S + 10.0, cached)
             return cached
         _VAULT_CACHE = (time.time(), fresh)
+        _VAULT_LAST_GOOD = _VAULT_CACHE[0]
         return fresh
 
 
@@ -408,7 +414,7 @@ def token_auth_meta() -> dict:
     else:
         source = "missing"
         count = 0
-    refreshed = int(_VAULT_CACHE[0]) if _VAULT_CACHE[1] is not None else None
+    refreshed = int(_VAULT_LAST_GOOD) if _VAULT_LAST_GOOD else None
     return {
         "token_source": source,
         "token_count": count,
