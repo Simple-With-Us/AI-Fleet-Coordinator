@@ -72,6 +72,7 @@ class GitUpdateTests(unittest.TestCase):
             "scripts/fleet_lanes/bin/lane": BASH_OK,
             "scripts/fleet-mode": BASH_OK,
             "scripts/fleet-cli-release.py": RELEASE,
+            "scripts/fleet-cli-git-update.py": (HERE / "fleet-cli-git-update.py").read_text(),
         }
         for rel, text in files.items():
             path = self.work / rel
@@ -134,6 +135,31 @@ class GitUpdateTests(unittest.TestCase):
         self.assertEqual(U.update(self.home)["status"], "skipped_bad")
         with self.assertRaises(U.Failed):
             U.rollback(self.home)
+
+    def test_a_run_killed_mid_smoke_never_leaves_an_unvalidated_commit_counted_as_good(self) -> None:
+        U.setup(self.home)
+        good = run(self.work, "rev-parse", "HEAD")
+        new = self.commit(agent_sync=PY_OK)
+        repo = self.base() / "repo"
+        run(repo, "fetch", "-q", "origin", "main")
+        run(repo, "checkout", "-q", "--detach", new)  # as if a run died during its smoke test
+        result = U.update(self.home)
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["previous"], good)
+        self.assertEqual(U.status(self.home)["commit"], new)
+
+    def test_a_missing_wrapper_is_written_on_the_next_run_even_when_nothing_changed(self) -> None:
+        U.setup(self.home)
+        (self.home / ".local/bin/recall").unlink()
+        result = U.update(self.home)
+        self.assertEqual(result["status"], "unchanged")
+        self.assertEqual(result["wrappers_written"], ["recall"])
+
+    def test_setup_with_a_broken_main_leaves_current_alone(self) -> None:
+        self.commit(agent_sync=PY_BROKEN)
+        with self.assertRaises(U.Failed):
+            U.setup(self.home)
+        self.assertFalse((self.base() / "current").exists())
 
     def test_update_before_setup_is_refused(self) -> None:
         with self.assertRaises(U.Failed):

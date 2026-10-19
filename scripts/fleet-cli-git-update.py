@@ -48,6 +48,9 @@ SMOKE_CASES = (
     ("recall_help", "scripts/recall", ["--help"], 0),
     ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
     ("fleet_mode_block", "scripts/fleet-mode", [], 0),
+    # The updater runs from this checkout next time, and imports the release module for wrappers.
+    ("updater_help", "scripts/fleet-cli-git-update.py", ["--help"], 0),
+    ("release_help", "scripts/fleet-cli-release.py", ["--help"], 0),
 )
 BASH_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane", "scripts/fleet-mode"})
 PAUSE_NOTE = b"retired 2026-10-19:  this host runs the tools from git (fleet-cli-git-update.py)\n"
@@ -157,9 +160,12 @@ def point_current(base: Path) -> None:
 
 
 def move_to(repo: Path, target: str, state: dict, state_path: Path) -> dict:
-    """Check out `target`, smoke-test it, and keep it, or return to the old commit and remember `target` as bad."""
-    old = git(repo, "rev-parse", "HEAD")
-    if old == target:
+    """Check out `target`, smoke-test it, and keep it, or return to the last validated commit and remember
+    `target` as bad.  Only a commit in state["commit"] counts as validated:  a checkout that HEAD reached
+    without a finished smoke test (a killed run) is never treated as good."""
+    head = git(repo, "rev-parse", "HEAD")
+    good = state.get("commit")
+    if good == target and head == target:
         return {"status": "unchanged", "commit": target}
     if git(repo, "status", "--porcelain", "--untracked-files=no"):
         raise Failed("checkout_has_tracked_changes")
@@ -167,22 +173,34 @@ def move_to(repo: Path, target: str, state: dict, state_path: Path) -> dict:
     try:
         smoke(repo)
     except Failed as exc:
-        git(repo, "checkout", "-q", "--detach", old)
+        if good:
+            git(repo, "checkout", "-q", "--detach", good)
         state.update(bad=target, bad_reason=str(exc), checked_at=int(time.time()))
         save_state(state_path, state)
-        log(f"SMOKE-FAILED  {target[:7]} ({exc});  stayed on {old[:7]}")
-        return {"status": "smoke_failed", "commit": old, "bad": target, "reason": str(exc)}
-    state.update(
-        commit=target,
-        previous=old,
-        bad=None,
-        bad_reason=None,
-        updated_at=int(time.time()),
-        checked_at=int(time.time()),
-    )
+        log(f"SMOKE-FAILED  {target[:7]} ({exc});  {'stayed on ' + good[:7] if good else 'no validated commit yet'}")
+        return {"status": "smoke_failed", "commit": good, "bad": target, "reason": str(exc)}
+    now = int(time.time())
+    state.update(commit=target, previous=good, bad=None, bad_reason=None, updated_at=now, checked_at=now)
     save_state(state_path, state)
-    log(f"UPDATED  {old[:7]} -> {target[:7]}")
-    return {"status": "updated", "commit": target, "previous": old}
+    log(f"UPDATED  {(good or 'none')[:7]} -> {target[:7]}")
+    return {"status": "updated", "commit": target, "previous": good}
+
+
+def restore_validated(repo: Path, state: dict) -> None:
+    """A run killed mid-smoke can leave HEAD on an unvalidated commit:  go back to the validated one first."""
+    good = state.get("commit")
+    if good and git(repo, "rev-parse", "HEAD") != good:
+        git(repo, "checkout", "-q", "--detach", good)
+        log(f"RESTORED  HEAD to the validated {good[:7]}")
+
+
+def wrappers(home: Path, repo: Path, result: dict) -> dict:
+    """Every run writes any wrapper the host still lacks, so a failed write is retried next time."""
+    written = write_new_wrappers(home, repo)
+    if written:
+        result["wrappers_written"] = written
+        log("WRAPPERS  " + ", ".join(written))
+    return result
 
 
 def locked(base: Path):
@@ -212,18 +230,14 @@ def setup(home: Path) -> dict:
             git(p["repo"], "checkout", "-q", "--detach", "origin/main")
         git(p["repo"], "fetch", "-q", "origin", "main")
         state = load_state(p["state"])
+        restore_validated(p["repo"], state)
         result = move_to(p["repo"], git(p["repo"], "rev-parse", "origin/main"), state, p["state"])
-        if result["status"] == "smoke_failed":
-            raise Failed("setup_smoke_failed")
-        smoke(p["repo"])
-        state = load_state(p["state"])
-        state.setdefault("commit", git(p["repo"], "rev-parse", "HEAD"))
-        save_state(p["state"], state)
+        if not load_state(p["state"]).get("commit"):
+            raise Failed("setup_smoke_failed")  # nothing validated yet:  `current` is left as it was
         # The old receiver returns "paused" before touching `current`, so a Mac push cannot repoint it.
         (p["base"] / "paused").write_bytes(PAUSE_NOTE)
         point_current(p["base"])
-        result["wrappers_written"] = write_new_wrappers(home, p["repo"])
-        return result
+        return wrappers(home, p["repo"], result)
 
 
 def update(home: Path) -> dict:
@@ -234,6 +248,7 @@ def update(home: Path) -> dict:
         git(p["repo"], "fetch", "-q", "origin", "main")
         target = git(p["repo"], "rev-parse", "origin/main")
         state = load_state(p["state"])
+        restore_validated(p["repo"], state)
         if target == state.get("bad"):
             state["checked_at"] = int(time.time())
             save_state(p["state"], state)
@@ -242,13 +257,7 @@ def update(home: Path) -> dict:
                 "commit": git(p["repo"], "rev-parse", "HEAD"),
                 "bad": target,
             }
-        result = move_to(p["repo"], target, state, p["state"])
-        if result["status"] == "updated":
-            written = write_new_wrappers(home, p["repo"])
-            if written:
-                result["wrappers_written"] = written
-                log("WRAPPERS  " + ", ".join(written))
-        return result
+        return wrappers(home, p["repo"], move_to(p["repo"], target, state, p["state"]))
 
 
 def rollback(home: Path) -> dict:
