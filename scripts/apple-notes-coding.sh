@@ -750,7 +750,15 @@ def _fleet_day(d):
 def _fleet_clock(when):
     return str(when.hour % 12 or 12) + when.strftime(':%M') + when.strftime('%p').lower()
 
+_changes = {'dates': [], 'gaps': 0}
+
 def _fleet_date(m):
+    new = _fleet_date_text(m)
+    if new != m.group(0):
+        _changes['dates'].append((m.group(0), new))
+    return new
+
+def _fleet_date_text(m):
     y, mo, d, t_hh, t_mm, t_zone, hh, mm, zone, r_hh, r_mm = m.groups()
     if t_hh is not None:
         hh, mm, zone = t_hh, t_mm, t_zone
@@ -778,12 +786,39 @@ def fleet_dates(markup):
                 depth += -1 if part.startswith('</') else 1
                 depth = max(depth, 0)
         elif depth == 0:
-            parts[i] = _ISO.sub(_fleet_date, part)
+            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part))
     return ''.join(parts)
+
+# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as agent-sync's textfmt.single_gaps), so
+# a note reads the same whoever wrote it.  Known abbreviations, dotted words, initials and list markers are skipped.
+_ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq'.split())
+_GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#])')
+_WORD = re.compile(r'([A-Za-z][A-Za-z.]*)\Z')
+
+def _one_space_gaps(segment):
+    def repl(m):
+        if m.group(1).startswith('.'):
+            before = _WORD.search(segment[max(0, m.start() - 40):m.start()])
+            word = before.group(1).casefold().rstrip('.') if before else ''
+            if before and (word in _ABBREV or len(word) == 1 or '.' in word):
+                return m.group(0)
+            if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
+                return m.group(0)
+        _changes['gaps'] += 1
+        return m.group(1) + '  '
+    return _GAP1.sub(repl, segment)
 
 inner = fleet_dates(inner)
 if summary_text:
     summary_text = fleet_dates(summary_text)
+
+# Tell the writer what was reformatted, on stderr, so the agent learns the fleet format (owner 2026-10-19).
+if _changes['dates']:
+    shown = ', '.join(a + ' to ' + b for a, b in _changes['dates'][:5]) + (' and more' if len(_changes['dates']) > 5 else '')
+    sys.stderr.write('notes: reformatted:  dates rewritten in the fleet format (' + shown + ');  write dates that way' + chr(10))
+if _changes['gaps']:
+    n = _changes['gaps']
+    sys.stderr.write('notes: reformatted:  ' + str(n) + ' sentence gap' + ('' if n == 1 else 's') + ' had one space and ' + ('was' if n == 1 else 'were') + ' widened;  put two spaces after a sentence' + chr(10))
 
 extra_blocks = ''
 if needs_owner:

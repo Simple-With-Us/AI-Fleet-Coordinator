@@ -276,6 +276,31 @@ class SessionIdTests(unittest.TestCase):
         self.assertIn("log 2026-10-19", p.stdout)
         self.assertIn("https://x.test/2026-10-19", p.stdout)
         self.assertIn("backup-2026-10-19.tar", p.stdout)
+        self.assertIn(
+            "notes: reformatted:  dates rewritten in the fleet format (2026-10-19 to", p.stderr
+        )
+
+    def test_one_space_sentence_gaps_are_widened_and_reported(self):
+        body = "<p>Merged it. Next is CI. Ask Dr. Smith. The U.S. Army. 4 tests failed. Done.</p><pre><code>a. B</code></pre>"
+        p = self.run_script(
+            "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        g = "  "
+        self.assertIn(
+            f"Merged it.{g}Next is CI.{g}Ask Dr. Smith.{g}The U.S. Army.{g}4 tests failed.{g}Done.",
+            p.stdout,
+        )
+        self.assertIn("a. B", p.stdout)
+        self.assertIn("notes: reformatted:  5 sentence gaps had one space", p.stderr)
+        clean = self.run_script(
+            "--session",
+            "abc12345",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body="<p>One.  Two.</p>",
+        )
+        self.assertNotIn("reformatted", clean.stderr)
 
     def test_a_time_range_end_is_not_read_as_a_utc_offset(self):
         body = "<p>Standup 2026-10-19 10:30-11:00 Central, and 2026-10-19T10:30-11:00.</p>"
