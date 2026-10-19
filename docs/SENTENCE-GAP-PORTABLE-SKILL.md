@@ -58,12 +58,20 @@ matches one *or more* spaces, so it is correct in both states:
 perl -CSDA -pe 's/([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Matching one *or more* is the whole fix.  The old two-space pattern `([.!?])  (?=\S)` matched
-nothing on collapsed text; the single-space pattern `([.!?]) (?=...)` is no better, because it
-matches nothing on text that kept its two spaces.  Both exit `0` and post with no gap.  `[ \t]+`
-is the same idea and additionally tolerates a tab.  The lookahead class keeps the gap out of
-`e.g.`, `i.e.`, and lower-case domains, and requiring whitespace after the punctuation leaves a
-dotted version like `v1.2.3` alone.
+Matching one *or more* is the whole fix.  The old pattern requiring exactly two spaces — written
+here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
+single-space pattern `([.!?]) (?=...)` is no better, because it matches nothing on text that kept
+its two spaces.  Both exit `0` and post with no gap.  `[ \t]+` is the same idea and additionally
+tolerates a tab.  The lookahead class keeps the gap out of `e.g.`, `i.e.`, and lower-case
+domains, and requiring whitespace after the punctuation leaves a dotted version like `v1.2.3`
+alone.
+
+**Known limitation — the lookahead is a heuristic.**  It skips a lowercase follower, so
+`e.g. this` and `U.S. rules` are left alone, but it gaps a *capitalised* abbreviation:  `Dr. Smith`
+and `e.g. Acme` both come out with a U+00A0, against the rule above about non-terminal
+abbreviations.  That is the deliberate cost of a pattern that needs no dictionary.  If a body
+carries such an abbreviation, fix that one gap by hand after the run, or accept it;  do not
+silently ship it.
 
 **Assert before you post — both checks, every time.**  A conversion that matches nothing still
 exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
