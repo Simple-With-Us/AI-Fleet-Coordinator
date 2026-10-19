@@ -1,0 +1,9 @@
+[Unit]
+Description=Move the fleet CLI tools to AI-Fleet-Coordinator origin/main (fleet-cli-git-update.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /root/.local/share/fleet-cli/repo/scripts/fleet-cli-git-update.py update
+TimeoutStartSec=600
