@@ -8,21 +8,48 @@ and only CLAUDE is enabled.
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import os
 import plistlib
 import sys
-from typing import Mapping, TextIO
+from collections.abc import Mapping
+from typing import TextIO
 
 from . import live as L
 from . import zulip as Z
 
 LABEL = "com.jay.agent-sync-listener"
 # Fleet seats with a reader on this Mac (they can be enabled), then bots that have none.
-READER_SEATS = ["CLAUDE", "CODEX", "AG", "CURSOR", "GROK", "CLUTCH", "FX", "MM", "MC"]  # the Mac seats (partition "mac")
-NO_READER = ["BF-BUILDER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-FIXER", "BF-HOUSEKEEPER",
-             "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER", "MA", "JET", "ECHO", "WISE", "GROK-WEB"]
+READER_SEATS = [
+    "CLAUDE",
+    "CODEX",
+    "AG",
+    "CURSOR",
+    "GROK",
+    "CLUTCH",
+    "FX",
+    "MM",
+    "MC",
+]  # the Mac seats (partition "mac")
+NO_READER = [
+    "BF-BUILDER",
+    "BF-COMPILER",
+    "BF-DEPLOYER",
+    "BF-DESIGNER",
+    "BF-FIXER",
+    "BF-HOUSEKEEPER",
+    "BF-MONITOR",
+    "BF-ORACLE",
+    "BF-PLUMBER",
+    "BF-PUBLISHER",
+    "MA",
+    "JET",
+    "ECHO",
+    "WISE",
+    "GROK-WEB",
+]
 DEFAULT_PYTHON = "/opt/homebrew/bin/python3"
 
 
@@ -58,8 +85,12 @@ def plist_dict(home: str, python: str, program: str, root: str) -> dict:
         "WorkingDirectory": home,
         # AGENT_SYNC_INSTANCE pins this listener to the mac side of the seat partition:  a config
         # that says daemon.instance = "server" is refused here.
-        "EnvironmentVariables": {"HOME": home, "LANG": "en_US.UTF-8", "AGENT_SYNC_INSTANCE": "mac",
-                                 "PATH": "%s/.local/bin:/opt/homebrew/bin:/usr/bin:/bin" % home},
+        "EnvironmentVariables": {
+            "HOME": home,
+            "LANG": "en_US.UTF-8",
+            "AGENT_SYNC_INSTANCE": "mac",
+            "PATH": "%s/.local/bin:/opt/homebrew/bin:/usr/bin:/bin" % home,
+        },
         "StandardOutPath": os.path.join(logs, "launchd.out"),
         "StandardErrorPath": os.path.join(logs, "launchd.err"),
     }
@@ -68,6 +99,7 @@ def plist_dict(home: str, python: str, program: str, root: str) -> dict:
 def sample_config(secrets_dir: str) -> str:
     """The sample listener.toml.  Only CLAUDE is enabled; every other seat whose credential file
     is present is listed commented out."""
+
     def present(seat: str) -> bool:
         return os.path.isfile(os.path.join(secrets_dir, Z.credential_file_name(seat)))
 
@@ -98,13 +130,16 @@ def sample_config(secrets_dir: str) -> str:
         "",
         "[platform.claude-code]",
         'seat = "CLAUDE"                   # the Claude Code platform default:  hooks and local views when AGENT_SEAT is',
-        '                                  # unset, never under a launcher (AGENT_LAUNCHER), never for posting',
+        "                                  # unset, never under a launcher (AGENT_LAUNCHER), never for posting",
         "rewake_verified_cli = false       # true only after manual test 1 in a terminal;  until then live delivery is headlines only",
         "rewake_verified_desktop = false   # the same for the Desktop Code tab, which has its own flag (the old rewake_verified sets both)",
         "",
         "[seat.CLAUDE]",
         'bot = "Claude"                    # reads %s (moderator or member role only)%s'
-        % (os.path.join(secrets_dir, Z.credential_file_name("CLAUDE")), "" if present("CLAUDE") else "; NOT FOUND"),
+        % (
+            os.path.join(secrets_dir, Z.credential_file_name("CLAUDE")),
+            "" if present("CLAUDE") else "; NOT FOUND",
+        ),
         'wake = "claude"                   # runs only after `agent-sync daemon test-wake --seat CLAUDE --run`, then --pin',
         'model = "sonnet"',
         "budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, "
@@ -122,18 +157,24 @@ def sample_config(secrets_dir: str) -> str:
         '# muse = "/absolute/path/to/muse"         # optional; else muse on the wake PATH',
         '# provider = "MiniMax"                    # the CodeCaps provider the quota gate reads',
         '# fallback = "mcode"                      # optional; the mcode fallback (3.3b).  Fallback-only by design.',
-        '# fallback_uncontained_ok = false       # mcode writes files while it answers; only true if that is accepted',
+        "# fallback_uncontained_ok = false       # mcode writes files while it answers; only true if that is accepted",
     ]
     listed = [seat for seat in READER_SEATS[1:] if present(seat)]
     if listed:
-        lines += ["", "# The other Mac seats (the partition gives them to \"mac\").  Uncomment to capture their",
-                  "# @-mentions and DMs into their inboxes (owner, Thu, Oct 8:  get the listeners all active)."]
+        lines += [
+            "",
+            '# The other Mac seats (the partition gives them to "mac").  Uncomment to capture their',
+            "# @-mentions and DMs into their inboxes (owner, Thu, Oct 8:  get the listeners all active).",
+        ]
     for seat in listed:
         stem = Z.credential_file_name(seat)[: -len("-zuliprc")]
         lines += ["", "# [seat.%s]" % seat, '# bot = "%s"' % stem, '# wake = "inbox"']
     others = [s for s in NO_READER if present(s)]
     if others:
-        lines += ["", "# Bots with no reader on this Mac (left out on purpose): %s" % ", ".join(others)]
+        lines += [
+            "",
+            "# Bots with no reader on this Mac (left out on purpose): %s" % ", ".join(others),
+        ]
     return "\n".join(lines) + "\n"
 
 
@@ -145,18 +186,35 @@ def write_private(path: str, text: str, mode: int = 0o600) -> None:
     os.chmod(path, mode)
 
 
-def install(env: Mapping[str, str], home: str, out: TextIO, *, dry_run: bool = False, python: str | None = None,
-            program: str | None = None) -> int:
-    root = os.path.join(home, ".agent-sync")  # what the LaunchAgent's daemon uses (the plist sets no state dir)
-    secrets_dir = os.path.expanduser(env.get(Z.ENV_SECRETS_DIR) or os.path.join(home, ".secrets", "Zulip"))
+def install(
+    env: Mapping[str, str],
+    home: str,
+    out: TextIO,
+    *,
+    dry_run: bool = False,
+    python: str | None = None,
+    program: str | None = None,
+) -> int:
+    root = os.path.join(
+        home, ".agent-sync"
+    )  # what the LaunchAgent's daemon uses (the plist sets no state dir)
+    secrets_dir = os.path.expanduser(
+        env.get(Z.ENV_SECRETS_DIR) or os.path.join(home, ".secrets", "Zulip")
+    )
     python = choose_python(python)
     program = program or program_path(home)
     target = plist_path(home)
     data = plistlib.dumps(plist_dict(home, python, program, root), sort_keys=False)
     config_path = os.path.join(root, L.CONFIG_NAME)
-    say = (lambda text: out.write("would: " + text + "\n")) if dry_run else (lambda text: out.write(text + "\n"))
+    say = (
+        (lambda text: out.write("would: " + text + "\n"))
+        if dry_run
+        else (lambda text: out.write(text + "\n"))
+    )
     if not os.path.exists(program):
-        out.write("note: %s does not exist yet; run scripts/agent_sync/install.sh first\n" % program)
+        out.write(
+            "note: %s does not exist yet; run scripts/agent_sync/install.sh first\n" % program
+        )
     if not os.access(python, os.X_OK):
         out.write("note: %s is not executable; pass --python PATH (3.11 or newer)\n" % python)
     logs = L.logs_dir(root)
@@ -194,8 +252,10 @@ def install(env: Mapping[str, str], home: str, out: TextIO, *, dry_run: bool = F
     out.write("\nThis command does not run launchctl.  To load the listener:\n")
     out.write("  launchctl bootstrap gui/%d %s\n" % (uid, target))
     out.write("After an update to the checkout:  launchctl kickstart -k gui/%d/%s\n" % (uid, LABEL))
-    out.write("Before wakes can run:  agent-sync daemon init, then agent-sync daemon test-wake --seat CLAUDE --run, "
-              "read the result, then agent-sync daemon test-wake --seat CLAUDE --pin\n")
+    out.write(
+        "Before wakes can run:  agent-sync daemon init, then agent-sync daemon test-wake --seat CLAUDE --run, "
+        "read the result, then agent-sync daemon test-wake --seat CLAUDE --pin\n"
+    )
     if dry_run:
         out.write("dry run: nothing was changed\n")
     return 0

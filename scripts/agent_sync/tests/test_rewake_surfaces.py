@@ -1,5 +1,6 @@
 """AFC-358:  rewake_verified is split per surface (terminal and Desktop Code tab), the old key still
 sets both, and the watcher, the prompt hook and the daemon's wake-capable test use the session's own."""
+
 from __future__ import annotations
 
 import os
@@ -8,9 +9,9 @@ import unittest
 
 from agent_sync import config as C
 from agent_sync import live as L
+from agent_sync.tests.listener_harness import fake_watcher
 from agent_sync.tests.test_attach import LEASE, AttachHarness, message_item
 from agent_sync.tests.test_daemon import MENTION, DaemonHarness
-from agent_sync.tests.listener_harness import fake_watcher
 
 BARE = "[platform.claude-code]\n%s\n"
 
@@ -24,13 +25,19 @@ class FlagTests(unittest.TestCase):
         self.assertEqual(flags(""), (False, False))
         self.assertEqual(flags("rewake_verified = true"), (True, True))
         self.assertEqual(flags("rewake_verified = false"), (False, False))
-        self.assertEqual(flags('rewake_verified = "yes"'), (False, False), "only a real true counts")
+        self.assertEqual(
+            flags('rewake_verified = "yes"'), (False, False), "only a real true counts"
+        )
 
     def test_a_per_surface_key_wins_over_the_old_one_for_its_surface(self) -> None:
         self.assertEqual(flags("rewake_verified_cli = true"), (True, False))
         self.assertEqual(flags("rewake_verified_desktop = true"), (False, True))
-        self.assertEqual(flags("rewake_verified = true\nrewake_verified_desktop = false"), (True, False))
-        self.assertEqual(flags("rewake_verified = false\nrewake_verified_cli = true"), (True, False))
+        self.assertEqual(
+            flags("rewake_verified = true\nrewake_verified_desktop = false"), (True, False)
+        )
+        self.assertEqual(
+            flags("rewake_verified = false\nrewake_verified_cli = true"), (True, False)
+        )
 
     def test_surface_names_come_from_the_entrypoint(self) -> None:
         self.assertEqual(L.surface_of("cli"), "cli")
@@ -47,7 +54,10 @@ class FlagTests(unittest.TestCase):
 
     def test_config_exposes_both_flags(self) -> None:
         cfg = C.from_dict(tomllib.loads(BARE % "rewake_verified_cli = true"))
-        self.assertEqual((cfg.rewake_verified_cli, cfg.rewake_verified_desktop, cfg.rewake_verified), (True, False, False))
+        self.assertEqual(
+            (cfg.rewake_verified_cli, cfg.rewake_verified_desktop, cfg.rewake_verified),
+            (True, False, False),
+        )
 
 
 class WatcherTests(AttachHarness):
@@ -61,7 +71,9 @@ class WatcherTests(AttachHarness):
 
     def test_the_watcher_arms_only_for_a_verified_surface(self) -> None:
         self.set_flags("rewake_verified_cli = true")
-        self.attach_run("--hook", "session-start", stdin='{"source": "startup"}', env=self.session("cli"))
+        self.attach_run(
+            "--hook", "session-start", stdin='{"source": "startup"}', env=self.session("cli")
+        )
         L.append_live(self.seat_paths(), LEASE, [message_item(1)])
         code, out, err = self.attach_run("--rewake", env=self.session("cli"))
         self.assertEqual(code, 2, "a terminal session is verified and wakes")
@@ -69,7 +81,12 @@ class WatcherTests(AttachHarness):
 
     def test_an_unverified_desktop_session_never_arms_a_watcher(self) -> None:
         self.set_flags("rewake_verified_cli = true")
-        self.attach_run("--hook", "session-start", stdin='{"source": "startup"}', env=self.session("claude-desktop"))
+        self.attach_run(
+            "--hook",
+            "session-start",
+            stdin='{"source": "startup"}',
+            env=self.session("claude-desktop"),
+        )
         L.append_live(self.seat_paths(), LEASE, [message_item(1)])
         code, out, err = self.attach_run("--rewake", env=self.session("claude-desktop"))
         self.assertEqual((code, err), (0, ""), "exits at once")
@@ -81,14 +98,26 @@ class WatcherTests(AttachHarness):
         for entry, claims in (("claude-desktop", True), ("cli", False)):
             with self.subTest(entrypoint=entry):
                 self.attach_run("--hook", "session-end", stdin="{}", env=self.session(entry))
-                self.attach_run("--hook", "session-start", stdin='{"source": "startup"}', env=self.session(entry))
+                self.attach_run(
+                    "--hook",
+                    "session-start",
+                    stdin='{"source": "startup"}',
+                    env=self.session(entry),
+                )
                 L.append_live(self.seat_paths(), LEASE, [message_item(7, "INTERRUPT BODY")])
-                code, out, err = self.attach_run("--hook", "prompt", stdin='{"prompt": "hi"}', env=self.session(entry))
+                code, out, err = self.attach_run(
+                    "--hook", "prompt", stdin='{"prompt": "hi"}', env=self.session(entry)
+                )
                 self.assertEqual("INTERRUPT BODY" in out, claims, out)
 
     def test_the_lease_records_its_entrypoint(self) -> None:
         self.set_flags("rewake_verified_cli = true")
-        self.attach_run("--hook", "session-start", stdin='{"source": "startup"}', env=self.session("claude-desktop"))
+        self.attach_run(
+            "--hook",
+            "session-start",
+            stdin='{"source": "startup"}',
+            env=self.session("claude-desktop"),
+        )
         self.assertEqual(L.load_lease(self.seat_paths(), LEASE)["entrypoint"], "claude-desktop")
 
 
@@ -109,7 +138,9 @@ class DaemonCapableTests(DaemonHarness):
             self.addCleanup(os.close, fake_watcher(self.seat_paths(), lease_id))
         self.assertEqual(self.views(daemon), {"term": True, "desk": False, "old": False})
 
-    def test_a_mention_skips_the_unverified_desktop_session_for_the_verified_terminal_one(self) -> None:
+    def test_a_mention_skips_the_unverified_desktop_session_for_the_verified_terminal_one(
+        self,
+    ) -> None:
         self.set_flags("rewake_verified_cli = true")
         daemon = self.started()
         self.write_lease("term", entrypoint="cli", last_prompt=10.0)
@@ -119,13 +150,21 @@ class DaemonCapableTests(DaemonHarness):
         mid = self.fake.add_message("Codex", "other", "elsewhere", MENTION)
         self.pump_until(daemon, lambda: len(self.inbox()) >= 1)
         self.assertEqual(self.inbox()[0]["delivered_to"], "term")
-        self.assertEqual([i["id"] for i in self.live_items("term") if i["kind"] == "message"], [mid])
+        self.assertEqual(
+            [i["id"] for i in self.live_items("term") if i["kind"] == "message"], [mid]
+        )
 
     def test_status_reports_each_surface(self) -> None:
         self.set_flags("rewake_verified_cli = true")
         status = self.started().status()
-        self.assertEqual((status["rewake_verified_cli"], status["rewake_verified_desktop"], status["rewake_verified"]),
-                         (True, False, False))
+        self.assertEqual(
+            (
+                status["rewake_verified_cli"],
+                status["rewake_verified_desktop"],
+                status["rewake_verified"],
+            ),
+            (True, False, False),
+        )
 
 
 if __name__ == "__main__":

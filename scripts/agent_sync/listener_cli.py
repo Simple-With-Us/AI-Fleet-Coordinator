@@ -350,7 +350,9 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                 status.get("instance") or "mac",
                 "yes" if status.get("owner_user_id") else "NO",
                 "yes" if status.get("rewake_verified_cli", status.get("rewake_verified")) else "no",
-                "yes" if status.get("rewake_verified_desktop", status.get("rewake_verified")) else "no",
+                "yes"
+                if status.get("rewake_verified_desktop", status.get("rewake_verified"))
+                else "no",
             )
         )
         bridge = status.get("muse_bridge") or {}
