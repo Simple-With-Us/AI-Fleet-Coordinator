@@ -81,7 +81,9 @@ import http.client
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 import sys
 import time
 import urllib.error
@@ -439,6 +441,142 @@ def opener():
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
 
 
+# ----------------------------------------------------------------- Infisical (AFC-348)
+# Infisical is where every seat's Linear client pair lives (AI Fleet Coordinator, prod, /linear), and where
+# one shared copy of each seat's minted token is kept (LINEAR_<SEAT>_CACHE_TOKEN), so the Mac, this
+# server and any other host stop minting a token each.  The local cache stays as the fast copy.
+
+INFISICAL_PROJECT_SLUG = "ai-fleet-coordinator"  # looked up by slug:  no project id in public source
+INFISICAL_LINEAR_PATH = "/linear"
+
+
+class Infisical:
+    """AI Fleet Coordinator prod /linear through the INFISICAL_AUTOMATION machine identity.
+
+    The identity comes from the environment (INFISICAL_AUTOMATION_CLIENT_ID / _SECRET), else an
+    INFISICAL_TOKEN already in the environment, else `fleet-secrets get` (OPS-818), which on the Mac
+    reads Fleet-OPS through its Keychain login.  Off (every read answers "", every write False) without
+    any of them, with LINEAR_BOARD_INFISICAL=0, or after the first failed call, so a host with no
+    identity, or an Infisical outage, falls back to the local files instead of failing.  Values are
+    never printed;  messages name keys only."""
+
+    _instance: "Infisical | None" = None
+
+    def __init__(self) -> None:
+        self.api = (env("LINEAR_BOARD_INFISICAL_API") or "https://app.infisical.com").rstrip("/")
+        self.cid = env("INFISICAL_AUTOMATION_CLIENT_ID") or ""
+        self.sec = env("INFISICAL_AUTOMATION_CLIENT_SECRET") or ""
+        self._token = env("INFISICAL_TOKEN") or ""
+        self.enabled = env("LINEAR_BOARD_INFISICAL", "1") != "0"
+        self._looked = bool(self._token or (self.cid and self.sec))
+        self._project = ""
+        self._secrets: dict[str, str] | None = None
+
+    @classmethod
+    def get(cls) -> "Infisical":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def _call(self, method: str, path: str, body: dict | None = None, auth: bool = True) -> dict | None:
+        """One request, or None when it failed (and Infisical is then off for this run)."""
+        headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
+        if auth:
+            headers["Authorization"] = f"Bearer {self._token}"
+        req = urllib.request.Request(self.api + path, method=method, headers=headers,
+                                     data=json.dumps(body).encode() if body is not None else None)
+        try:
+            with opener().open(req, timeout=env_float("LINEAR_BOARD_TIMEOUT", 60)) as r:
+                raw = r.read()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            if e.code == 404 and method != "GET":
+                return {"_status": 404}
+            self._off(f"HTTP {e.code} on {path.split('?')[0]}")
+        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
+            self._off(type(e).__name__)
+        return None
+
+    def _off(self, why: str) -> None:
+        if self.enabled:
+            warn(f"Infisical is unavailable ({why});  using local Linear files for this run")
+        self.enabled = False
+
+    def _fleet_secrets(self, name: str) -> str:
+        """One Fleet-OPS secret through `fleet-secrets get` (OPS-818), or "" when it is not installed or fails."""
+        binary = env("LINEAR_BOARD_FLEET_SECRETS") or shutil.which("fleet-secrets") or str(
+            Path.home() / ".local" / "bin" / "fleet-secrets")
+        if not os.access(binary, os.X_OK):
+            return ""
+        try:
+            proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
+    def _identity(self) -> bool:
+        """Whether an identity (or a token) is available, looking it up through fleet-secrets once."""
+        if not self._looked:
+            self._looked = True
+            self.cid = self._fleet_secrets("INFISICAL_AUTOMATION_CLIENT_ID")
+            self.sec = self._fleet_secrets("INFISICAL_AUTOMATION_CLIENT_SECRET") if self.cid else ""
+        return bool(self._token or (self.cid and self.sec))
+
+    def _ready(self, need_project: bool = False) -> bool:
+        """Logged in, and (for a write) the project id resolved.  Reads name the project by slug."""
+        if not self.enabled:
+            return False
+        if not self._identity():
+            self.enabled = False
+            return False
+        if not self._token:
+            js = self._call("POST", "/api/v1/auth/universal-auth/login",
+                            {"clientId": self.cid, "clientSecret": self.sec}, auth=False)
+            self._token = (js or {}).get("accessToken") or ""
+            if not self._token:
+                self._off("login returned no token")
+                return False
+        if need_project and not self._project:
+            js = self._call("GET", f"/api/v1/projects/slug/{INFISICAL_PROJECT_SLUG}")
+            self._project = ((js or {}).get("project") or js or {}).get("id") or ""
+            if not self._project:
+                self._off(f"no project with slug {INFISICAL_PROJECT_SLUG}")
+                return False
+        return True
+
+    def _where(self) -> dict:
+        return {"workspaceId": self._project, "environment": "prod", "secretPath": INFISICAL_LINEAR_PATH}
+
+    def value(self, name: str) -> str:
+        """One /linear secret, read with the whole folder once per run;  "" when absent or off."""
+        if self._secrets is None:
+            self._secrets = {}
+            if self._ready():
+                query = {"workspaceSlug": INFISICAL_PROJECT_SLUG, "environment": "prod", "secretPath": INFISICAL_LINEAR_PATH}
+                js = self._call("GET", "/api/v3/secrets/raw?" + urllib.parse.urlencode(query))
+                for item in (js or {}).get("secrets") or []:
+                    if item.get("secretKey"):
+                        self._secrets[item["secretKey"]] = str(item.get("secretValue") or "").strip()
+        return self._secrets.get(name, "")
+
+    def put(self, name: str, value: str) -> bool:
+        """Create or update one /linear secret.  False (with a warning) when it could not be written."""
+        if not self._ready(need_project=True):
+            return False
+        body = dict(self._where(), secretValue=value, type="shared")
+        js = self._call("PATCH", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body)
+        if js is not None and js.get("_status") == 404:
+            js = self._call("POST", f"/api/v3/secrets/raw/{urllib.parse.quote(name)}", body)
+        if js is None or js.get("_status"):
+            return False
+        if self._secrets is not None:
+            self._secrets[name] = value
+        return True
+
+
+INFISICAL_WHERE = "Infisical AI Fleet Coordinator prod /linear"
+
+
 # ----------------------------------------------------------------- seat
 
 def current_seat(required: bool = True) -> str:
@@ -619,9 +757,12 @@ class Identity:
                    pair, which may hold the seat's app or Fleet."""
 
     def __init__(self, kind: str, seat: str, cid: str, sec: str, where: str, cache: Path,
-                 accept: tuple, label: str):
+                 accept: tuple, label: str, shared: str = ""):
         self.kind, self.seat, self.cid, self.sec = kind, seat, cid, sec
         self.where, self.cache, self.accept, self.label = where, cache, accept, label
+        # The Infisical name of this app's shared token (LINEAR_<SEAT>_CACHE_TOKEN), or "" for the
+        # environment's generic pair, which may be either app.
+        self.shared = shared
 
 
 def read_cred_file(p: Path, id_keys: tuple, secret_keys: tuple) -> tuple[str, str]:
@@ -651,11 +792,16 @@ def resolve_identity(seat: str = "") -> Identity:
     1. LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET in the environment (a cloud
        runtime's pair).  They may hold the seat's app or Fleet; the cache is
        the Fleet one, as before.
-    2. With AGENT_SEAT naming a seat in SEAT_APP_NAMES:  <SEAT>.env beside
-       Fleet.env, then LINEAR_<SEAT>_CLIENT_ID and LINEAR_<SEAT>_CLIENT_SECRET
-       in the environment.  The cache is <SEAT>.token beside Fleet.token.
-    3. Fleet.env, the shared Fleet app (every read without AGENT_SEAT, and a
-       seat with no app yet)."""
+    2. With AGENT_SEAT naming a seat in SEAT_APP_NAMES:  LINEAR_<SEAT>_CLIENT_ID
+       and LINEAR_<SEAT>_CLIENT_SECRET from Infisical (AI Fleet Coordinator, prod,
+       /linear;  AFC-348), then <SEAT>.env beside Fleet.env, then the same pair in
+       the environment.  The cache is <SEAT>.token beside Fleet.token.
+    3. The shared Fleet app (every read without AGENT_SEAT, and a seat with no
+       app yet):  LINEAR_FLEET_CLIENT_ID and LINEAR_FLEET_CLIENT_SECRET from
+       Infisical, then Fleet.env.
+
+    Infisical is skipped on a host without the INFISICAL_AUTOMATION identity, so
+    the local files remain a fallback, never the first source."""
     fleet = fleet_app_name()
     fleet_file = cred_path()
     if fleet_file.suffix != ".env":
@@ -670,8 +816,15 @@ def resolve_identity(seat: str = "") -> Identity:
                         tuple(n for n in (*app_names, fleet) if n), "LINEAR_CLIENT_ID app")
     seat_file = fleet_file.parent / f"{seat}.env" if app else None
     k = seat_env_key(seat)
+    vault = Infisical.get()
     if app:
         seat_cache = token_cache_path().parent / f"{seat}.token"
+        shared = f"LINEAR_{k}_CACHE_TOKEN"
+        cid_i, sec_i = vault.value(f"LINEAR_{k}_CLIENT_ID"), vault.value(f"LINEAR_{k}_CLIENT_SECRET")
+        if cid_i and sec_i:
+            return Identity("seat", seat, cid_i, sec_i,
+                            f"{INFISICAL_WHERE} (LINEAR_{k}_CLIENT_ID, LINEAR_{k}_CLIENT_SECRET)",
+                            seat_cache, app_names, f"{app} seat app", shared)
         if seat_file.is_file():
             cid, sec = read_cred_file(seat_file, ("LINEAR_CLIENT_ID", f"LINEAR_{k}_CLIENT_ID"),
                                       ("LINEAR_CLIENT_SECRET", f"LINEAR_{k}_CLIENT_SECRET"))
@@ -679,18 +832,22 @@ def resolve_identity(seat: str = "") -> Identity:
                 die(f"{seat_file} has no LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET.  Put the {app} app's "
                     f"client credentials in it, or move it aside so {seat} uses the shared {fleet} app.",
                     EXIT_NO_CREDS)
-            return Identity("seat", seat, cid, sec, str(seat_file), seat_cache, app_names, f"{app} seat app")
+            return Identity("seat", seat, cid, sec, str(seat_file), seat_cache, app_names, f"{app} seat app", shared)
         cid_s = os.environ.get(f"LINEAR_{k}_CLIENT_ID", "").strip()
         sec_s = os.environ.get(f"LINEAR_{k}_CLIENT_SECRET", "").strip()
         if cid_s and sec_s:
             return Identity("seat", seat, cid_s, sec_s,
                             f"environment (LINEAR_{k}_CLIENT_ID, LINEAR_{k}_CLIENT_SECRET)",
-                            seat_cache, app_names, f"{app} seat app")
+                            seat_cache, app_names, f"{app} seat app", shared)
+    cid_i, sec_i = vault.value("LINEAR_FLEET_CLIENT_ID"), vault.value("LINEAR_FLEET_CLIENT_SECRET")
+    if cid_i and sec_i:
+        return Identity("fleet", seat, cid_i, sec_i, f"{INFISICAL_WHERE} (LINEAR_FLEET_CLIENT_ID, LINEAR_FLEET_CLIENT_SECRET)",
+                        token_cache_path(), (fleet,), f"shared {fleet} app", "LINEAR_FLEET_CACHE_TOKEN")
     if fleet_file.is_file():
         cid, sec = read_cred_file(fleet_file, ID_KEYS, SECRET_KEYS)
         if cid and sec:
             return Identity("fleet", seat, cid, sec, str(fleet_file), token_cache_path(), (fleet,),
-                            f"shared {fleet} app")
+                            f"shared {fleet} app", "LINEAR_FLEET_CACHE_TOKEN")
     state = "has no LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET" if fleet_file.is_file() else "is missing"
     seat_part = (f", and {seat} has no app credentials of its own ({seat_file}, or LINEAR_{k}_CLIENT_ID and "
                  f"LINEAR_{k}_CLIENT_SECRET)") if app else ""
@@ -735,6 +892,7 @@ class Auth:
         self.token: str | None = None
         self.info: dict = {}
         self.where = ""
+        self._pending: tuple | None = None  # a fresh mint to share once the cache lock is released
 
     def identity(self) -> Identity:
         if self.ident is None:
@@ -774,6 +932,7 @@ class Auth:
         try:
             cache = _read_cache(fd)
             now = time.time()
+            cache = self._adopt_shared(fd, cache, ident, fp, failed, now)
             tok = cache.get("access_token")
             same = cache.get("cred_fp") == fp
             minted = float(cache.get("minted_at") or 0)
@@ -801,9 +960,56 @@ class Auth:
             return self._store(fd, cache, ident, fp, now)
         finally:
             self._close(fd)
+            pending, self._pending = self._pending, None
+            if pending:
+                self._publish(*pending)
+
+    @staticmethod
+    def _fresh(cache: dict, fp: str, failed: str | None, now: float) -> bool:
+        tok = cache.get("access_token")
+        return bool(tok and cache.get("cred_fp") == fp and tok != failed
+                    and float(cache.get("expires_at") or 0) - now > 3600
+                    and now - float(cache.get("minted_at") or 0) < REMINT_AFTER)
+
+    def _adopt_shared(self, fd: int, cache: dict, ident: Identity, fp: str, failed: str | None, now: float) -> dict:
+        """The local cache, or the shared copy in Infisical when that is newer for the same app.
+
+        Asked only when the local token is missing, refused, near expiry or due for its day-28
+        re-mint, so a normal run costs no Infisical call.  Another host's newer mint is adopted and
+        written locally;  its mint time also counts for the one-mint-a-day rule (AFC-348)."""
+        if not ident.shared or self._fresh(cache, fp, failed, now):
+            return cache
+        raw = Infisical.get().value(ident.shared)
+        if not raw:
+            return cache
+        try:
+            shared = json.loads(raw)
+        except ValueError:
+            return cache
+        if not (isinstance(shared, dict) and shared.get("cred_fp") == fp and shared.get("access_token")):
+            return cache
+        mine = float(cache.get("minted_at") or 0) if cache.get("cred_fp") == fp else -1.0
+        if shared["access_token"] == failed or float(shared.get("minted_at") or 0) <= mine:
+            return cache
+        adopted = {k: shared[k] for k in ("access_token", "token_type", "scope", "minted_at", "expires_at", "cred_fp")
+                   if k in shared}
+        adopted["mint_count"] = int(cache.get("mint_count") or 0)
+        adopted["shared_from"] = ident.shared
+        _write_cache(fd, adopted)
+        return adopted
+
+    def _publish(self, ident: Identity, cache: dict) -> None:
+        """Share a fresh mint through Infisical, so other hosts use it instead of minting their own."""
+        if not ident.shared:
+            return
+        row = {k: cache[k] for k in ("access_token", "token_type", "scope", "minted_at", "expires_at", "cred_fp")}
+        row["minted_by"] = os.uname().nodename
+        vault = Infisical.get()
+        if not vault.put(ident.shared, json.dumps(row)) and vault.enabled:
+            warn(f"could not share the new {ident.label} token in Infisical ({ident.shared});  it is cached locally only")
 
     def _store(self, fd: int, cache: dict, ident: Identity, fp: str, now: float) -> str:
-        """Mint, write the cache under the held lock, and use the new token."""
+        """Mint, write the cache under the held lock, share it, and use the new token."""
         new = self._mint(ident)
         cache = {
             "access_token": new["access_token"],
@@ -815,6 +1021,7 @@ class Auth:
             "cred_fp": fp,
         }
         _write_cache(fd, cache)
+        self._pending = (ident, cache)  # shared after the lock is released (get's finally)
         self.token, self.info = cache["access_token"], cache
         return self.token
 
@@ -2224,6 +2431,10 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
         print(f"token:       minted {central(info['minted_at'])}, expires {central(info.get('expires_at') or 0)}, "
               f"mints on this host: {info.get('mint_count')}")
     print(f"token cache: {ident.cache}")
+    vault = Infisical.get()
+    if ident.shared:
+        print(f"shared token: {INFISICAL_WHERE} {ident.shared}" + ("" if vault.enabled else
+              " (off:  no INFISICAL_AUTOMATION identity, or Infisical unreachable)"))
     if seat and name == fleet and ident.kind == "env":
         print(f"notice:      the environment's LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are the shared {fleet} "
               f"app's, not an app of {seat}'s own; writes still work and carry the {seat} tag.")

@@ -439,6 +439,17 @@ test("an admin bot key is refused with no post, and the refusal is cached and au
   assert.equal((await S.tail(gate.store, 5)).find((r) => r.event === "role_refused")?.role, 200);
 });
 
+test("a key Zulip refuses (401) is recorded as a refused role, not left unchecked (AFC-347)", async () => {
+  const { fake, tools, gate } = harness();
+  fake.failNext("GET", "users/me", () => fake.error(401, null));
+  const error = toolError(await tools.call("whoami", {}), "not_authorized");
+  assert.match(error.message, /Zulip refused the installed key \(HTTP 401\)/);
+  const role = await S.roleStatus(gate.store);
+  assert.equal(role.ok, false);
+  assert.match(role.reason, /install_seat_key\.py GROK-WEB --apply/);
+  assert.equal((await S.tail(gate.store, 5)).find((r) => r.event === "role_refused")?.reason, role.reason);
+});
+
 test("the role is re-checked every 10 minutes", async () => {
   const { fake, tools, clock } = harness();
   structured(await tools.call("whoami", {}), "whoami");

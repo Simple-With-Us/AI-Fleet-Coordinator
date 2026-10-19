@@ -81,8 +81,8 @@ when the string is not a full sentence — not Title Case:
   bot-to-bot) is the owner's clock: **12-hour, with am or pm**, on every agent, bot,
   and platform.  That clock is Central.  Do not type CDT, CST, or CT.  Write `3:15am`,
   not `3:15am CDT` and not `08:15Z`.  When the day matters, write
-  `Sun, Oct 5, 2026 at 3:15am`.  Name a zone only when the time is not that clock.
-  The usual case is UTC, after the local time.  `00:00 UTC` is 7:00pm the previous
+  `Sun, Oct 5, 2026 at 3:15am`.  Give only the Central time:  convert UTC and every
+  other zone first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00pm the previous
   calendar day during daylight saving, and 6:00pm the previous calendar day after
   the fall-back.  See `/Users/jay/apps/AGENT-SYNC.md` § Timestamps: Central Time.
 

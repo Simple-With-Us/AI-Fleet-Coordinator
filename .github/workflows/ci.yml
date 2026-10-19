@@ -85,6 +85,8 @@ jobs:
       run: |
         cd scripts && python3 -m unittest discover -s fleet_secrets/tests -t . -v
         bash -n install-fleet-secrets.sh
+        bash -n fleet_secrets/seed-system-keychain.sh
+        bash -n fleet_secrets/switch-pm2-jobs.sh
     # needs-owner (open-loops C6-1 and C6-2):  a fake `board` and `agent-sync` on PATH, built on the real parsers, a fixed
     # clock and fake K1 knobs for the fallback notifier;  the stable copy installed into a temp HOME must run under
     # `python3 -I`, and the LaunchAgent plist must parse.
@@ -176,6 +178,10 @@ jobs:
     # needs-owner notifier checks the owner's Linear reply by.
     - name: Board CLI input files and flat labels
       run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests
+    # Infisical for the board CLI (AFC-348):  client pairs from /linear before local files, the shared
+    # LINEAR_<SEAT>_CACHE_TOKEN adopted and published, and the fallback when Infisical is down.  Mock servers only.
+    - name: Board CLI Infisical tests
+      run: python3 scripts/linear-board/test_board_infisical.py
     # Agent-Sync parity (AFC-329):  `board commands|run|api|mcp` serve the hosted server's Linear catalogs from
     # scripts/linear-board/catalog/ (pinned to the server's export by the agent-sync-mcp node test
     # linear-catalog-parity).  This replays the server's documents and guard verdicts against board's Python

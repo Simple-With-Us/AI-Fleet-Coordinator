@@ -5,5 +5,5 @@
 model: MiniMax-M3.1-Flash-Preview
 max_turns: 60
 verify_command: |
-  cd scripts && python3 -m unittest discover fleet_rag/tests/ -v
+  (cd scripts && python3 -m unittest discover fleet_rag/tests/ -v)
   python3 scripts/check-fleet-registry.py

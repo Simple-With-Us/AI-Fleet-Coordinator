@@ -485,8 +485,8 @@ and `docs/fleet-skills/sentence-gap/SKILL.md`.
 Say every time on the owner's clock, 12-hour, with am or pm.  That clock is
 **America/Chicago**.  Do not type **CDT**, **CST**, or **CT** (`3:15am`, or
 `Sun, Oct 5, 2026 at 3:15am` when the day matters).  Never lead with Zulu
-in chat, Notes, Zulip, Linear, or PRs.  Name a zone only when citing UTC,
-after the local time.  `00:00 UTC` is 7:00pm the previous calendar day during
+in chat, Notes, Zulip, Linear, or PRs.  Give only the Central time:  convert UTC
+first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00pm the previous calendar day during
 daylight saving (6:00pm after the fall-back).  Binding for every agent, bot,
 and platform.  Product UI stays the viewer's timezone.  Canonical:
 `~/apps/AGENT-SYNC.md` § Timestamps: Central Time.

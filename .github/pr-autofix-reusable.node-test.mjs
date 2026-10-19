@@ -30,7 +30,7 @@ test('model run fails closed and validation precedes push', () => {
 test('sanitized diagnostics are retained without raw transcripts', () => {
   assert(diagnostics && upload);
   assert.match(diagnostics, /if: \$\{\{ always\(\)/);
-  assert.match(diagnostics, /uses: Simple-With-Us\/congress-trading-shared\/\.github\/actions\/autofix-diagnostics@[a-f0-9]{40}/);
+  assert.match(diagnostics, /uses: Simple-With-Us\/AI-Fleet-Coordinator\/\.github\/actions\/autofix-diagnostics@[a-f0-9]{40}/);
   assert(steps.indexOf(runFix) < steps.indexOf(diagnostics));
   assert(steps.indexOf(diagnostics) < steps.indexOf(upload));
   assert.match(upload, /steps\.diagnostics\.outputs\.summary-path != ''/);
@@ -112,4 +112,16 @@ test('usage metering runs in a separate job that holds the ingest credential, ne
   assert.match(workflow, /USAGE_INGEST_TOKEN:\n        required: false/);
   assert.equal((workflow.match(/secrets\.USAGE_INGEST_TOKEN/g) ?? []).length, 1);
   assert.equal(workflow.indexOf('secrets.USAGE_INGEST_TOKEN') > workflow.indexOf('\n  meter:'), true);
+});
+
+test('all autofix families pin diagnostics to the published AFC migration commit', () => {
+  // AFC-350: a 40-hex shape alone accepted a commit absent from this repository.
+  // This immutable revision contains both action.yml and reduce.mjs; verify both
+  // at the replacement revision before deliberately updating this allowlist.
+  const diagnosticsRef = 'Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-diagnostics@070fdbfacadbd9e90cbb54098123df7d3fef737f';
+  for (const family of ['pr', 'claude-code', 'codex']) {
+    const source = readFileSync(new URL(`./workflows/${family}-autofix-reusable.yml`, import.meta.url), 'utf8');
+    const refs = [...source.matchAll(/^\s*uses:\s*(\S*autofix-diagnostics\S*)\s*$/gm)].map((match) => match[1]);
+    assert.deepEqual(refs, [diagnosticsRef], `${family} must use the verified published diagnostics action`);
+  }
 });

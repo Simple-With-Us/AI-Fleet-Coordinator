@@ -353,7 +353,7 @@ jobs:
       - name: Summarize Autofix Diagnostics
         if: ${{ always() && steps.guard.outputs.should_fix == 'true' }}
         id: diagnostics
-        uses: Simple-With-Us/congress-trading-shared/.github/actions/autofix-diagnostics@2644321a5107372bf7bda55909552f8abee4ad61
+        uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-diagnostics@070fdbfacadbd9e90cbb54098123df7d3fef737f
 
       - name: Retain Sanitized Autofix Diagnostics
         if: ${{ always() && steps.guard.outputs.should_fix == 'true' && steps.diagnostics.outputs.summary-path != '' }}
@@ -418,7 +418,7 @@ jobs:
             exit 1
           fi
           if [ "$HAS_VERIFY" = "true" ]; then
-            bash "$RUNNER_TEMP/verify.sh"
+            bash -euo pipefail "$RUNNER_TEMP/verify.sh"
           fi
 
       - name: Commit And Push

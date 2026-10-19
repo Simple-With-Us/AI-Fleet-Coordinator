@@ -80,9 +80,12 @@ function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailab
   const error = [...ordered.filter(failure), ...seatDiagnostics].sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))[0];
   const unavailableFields = new Set(seat.unavailableFields ?? []);
   const fieldUnavailable = (name) => unavailableFields.has(name);
+  // A role the Worker has never checked is not a setup gap:  it is checked on the seat's first call (and
+  // every 10 minutes after), so only a check that ran and refused counts as missing (AFC-347).
+  const roleUnchecked = !fieldUnavailable("role") && !seat.role;
   const dependencies = [
     ["Zulip key", seat.keyInstalled, false],
-    ["role", seat.role?.ok, fieldUnavailable("role")],
+    ["role", seat.role?.ok, fieldUnavailable("role") || roleUnchecked],
     ["grant", (seat.grants ?? []).length > 0, fieldUnavailable("grants")],
   ];
   const missing = dependencies.filter(([, ok, unavailable]) => !unavailable && !ok).map(([name]) => name);
@@ -92,12 +95,12 @@ function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailab
   const diagnosticAfterSuccess = seatDiagnostics.some((row) => !success || row.ts >= success.ts);
   const currentError = hasRecent && (failure(last) || diagnosticAfterSuccess);
   const recentSuccess = hasRecent && !currentError && !diagnosticsUnavailable;
-  const readiness = readsUnknown ? "Diagnostics unavailable" : seat.paused ? "Paused" : !configured ? `Needs setup: ${missing.join(", ")}` : currentError ? "Recent failure" : recentSuccess ? "Recent success" : "Configured; no recent traffic";
+  const readiness = readsUnknown ? "Diagnostics unavailable" : seat.paused ? "Paused" : !configured ? `Needs setup: ${missing.join(", ")}` : currentError ? "Recent failure" : recentSuccess ? "Recent success" : roleUnchecked ? "Configured; role not checked yet" : "Configured; no recent traffic";
   const tone = recentSuccess ? "state-ready" : "state-attention";
   return `<article class="status-card"><h3>${e.escape(e.seatLabel ? e.seatLabel(seat.seat) : seat.seat)}</h3><p class="status-state ${tone}">${e.escape(readiness)}</p>
 <dl><dt>Seat</dt><dd>${fieldUnavailable("state") ? "Unknown" : seat.paused ? "Paused" : "Unpaused"}</dd>
 <dt>Zulip Key</dt><dd>${seat.keyInstalled ? "Installed" : "Missing"}</dd>
-<dt>Member Role</dt><dd>${fieldUnavailable("role") ? "Unknown" : seat.role?.ok ? `Verified (${e.escape(seat.role.role ?? "member")})` : `Not verified${seat.role?.reason ? `: ${e.escape(seat.role.reason)}` : ""}`}</dd>
+<dt>Member Role</dt><dd>${fieldUnavailable("role") ? "Unknown" : roleUnchecked ? "Not checked yet (checked on the seat's next call)" : seat.role.ok ? `Verified (${e.escape(seat.role.role ?? "member")})` : `Refused${seat.role.reason ? `: ${e.escape(seat.role.reason)}` : ""}`}</dd>
 <dt>Grant</dt><dd>${fieldUnavailable("grants") ? "Unknown" : (seat.grants ?? []).length ? `${(seat.grants ?? []).length} present` : "Missing"}</dd>
 <dt>Last Call</dt><dd>${last ? `${e.escape(e.time(last.ts))} · ${e.escape(last.tool ?? "unknown tool")}` : "No recent traffic"}</dd>
 <dt>Last Success</dt><dd>${success ? e.escape(e.time(success.ts)) : "None in retained sample"}</dd>
@@ -163,8 +166,10 @@ export function renderStatusOverview(data, e) {
       : `${statusCalls.length} retained tool calls; ${recentFailures ? "failure or refusal records are present" : "no failure records are present"}.${e.gap} A successful past call does not guarantee current readiness.`;
   const seatCards = seats.map((s) => seatSummary(s, statusCalls, collectedErrors, generatedAt, globalDiagnosticsUnavailable || Boolean(s.diagnosticsUnavailable), e)).join("") || "<p>No seats are configured.</p>";
   const errors = recentErrors(collectedErrors, e);
-  return `<section id="status-overview" class="status-overview"><header class="overview-heading"><div><h2>Status Overview</h2><p class="status-state ${recentFailures || noTraffic || diagnosticsUnavailable ? "state-attention" : "state-neutral"}">${e.escape(heading)}</p></div><form method="get" action="/admin"><button type="submit">Refresh Status</button></form></header>
+  // Folded by default (AFC-347):  the summary line carries the verdict, so the owner sees it without scrolling.
+  const tone = recentFailures || noTraffic || diagnosticsUnavailable ? "state-attention" : "state-neutral";
+  return `<details id="status-overview" class="status-overview fold"><summary><h2>Status Overview</h2> <span class="status-state ${tone}">${e.escape(heading)}</span></summary><header class="overview-heading"><div><p class="status-state ${tone}">${e.escape(heading)}</p></div><form method="get" action="/admin"><button type="submit">Refresh Status</button></form></header>
 <p>${e.escape(status)}${generatedAt ? `${e.gap}Generated ${e.escape(e.time(generatedAt))}.` : ""}</p>
 <p class="coverage">History Coverage: latest per-seat calls (up to 100), separately retained errors, refusal counters, and retained audit events.${e.gap} Cloudflare Access denials and client-local errors that never reach the Worker are not included.${e.gap} Detailed error messages are available only for calls recorded after diagnostic logging was added.${e.gap} Older events may not appear.</p>
-<div class="status-grid">${seatCards}</div><h3>Recent Errors And Refusals</h3><div class="error-list">${errors}</div></section>`;
+<div class="status-grid">${seatCards}</div><h3>Recent Errors And Refusals</h3><div class="error-list">${errors}</div></details>`;
 }
