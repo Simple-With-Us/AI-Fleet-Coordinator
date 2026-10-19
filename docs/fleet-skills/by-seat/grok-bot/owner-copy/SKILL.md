@@ -69,7 +69,18 @@ baseline; a real tooltip component is better where the app already has one.
 
 ## Timestamps (owner-facing agent writing)
 
-Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central.  Do not type CDT, CST, or CT.  The owner assumes am/pm is their time.  Write `3:15am`, not `3:15am CDT` and not `08:15Z`.  When the day matters, write `Sun, Oct 5, 2026 at 3:15am`.  Give only the Central time (`America/Chicago`), with no zone label and no UTC stamp beside it (owner 2026-10-18):  convert every other zone first, including times read from logs, APIs, CI and dashboards, so a log line at `11:42Z` is `6:42am` and the market opens at `8:30am`.  Quote a raw stamp only when the owner asks for one, or inside a code block that is machine output.  Never lead with Zulu or a 24-hour UTC stamp in chat, Notes, Zulip, boards, or PRs.  `00:00 UTC` is 7:00pm the previous calendar day during daylight saving, and 6:00pm the previous calendar day after the fall-back.  Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Printing a zone abbreviation on a local time is the failure mode.  Binding for every agent, bot, and platform.
+**The fleet format (owner 2026-10-19), one form everywhere a person reads:**
+
+| What | Write | Never |
+|---|---|---|
+| A time | `3:42pm` | `15:42`, `3:42 PM`, `3:42pm CDT`, `20:42Z` |
+| A date | `Mon, Oct 19` | `2026-10-19`, `10/19`, `19 Oct`, `October 19th` |
+| Both | `Mon, Oct 19, 3:42pm` | `2026-10-19T20:42:00Z`, `Oct 19 at 15:42` |
+| Another year | `Fri, Mar 7, 2025` and `Fri, Mar 7, 2025, 9:05am` | `2025-03-07` |
+
+The year appears only when it is not the current year.  An ISO date is for machines:  file names, branch names, code, logs inside a code block, and source-file comments.  The Apple Notes script rewrites any ISO date it finds in a note's prose into this form, so a note always reads the same whichever agent wrote it.
+
+Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central.  Do not type CDT, CST, or CT.  The owner assumes am/pm is their time.  Write `3:15am`, not `3:15am CDT` and not `08:15Z`.  Give only the Central time (`America/Chicago`), with no zone label and no UTC stamp beside it (owner 2026-10-18):  convert every other zone first, including times read from logs, APIs, CI and dashboards, so a log line at `11:42Z` is `6:42am` and the market opens at `8:30am`.  Quote a raw stamp only when the owner asks for one, or inside a code block that is machine output.  Never lead with Zulu or a 24-hour UTC stamp in chat, Notes, Zulip, boards, or PRs.  `00:00 UTC` is 7:00pm the previous calendar day during daylight saving, and 6:00pm the previous calendar day after the fall-back.  Convert with `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Printing a zone abbreviation on a local time is the failure mode.  Binding for every agent, bot, and platform.
 
 Product UI times are the **viewer's** timezone except market-day accounting (Chicago) and session bells (`9:30 AM ET`).
 
