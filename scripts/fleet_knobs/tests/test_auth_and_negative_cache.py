@@ -4,6 +4,7 @@ pm2 runs as a system LaunchDaemon, where the login Keychain and the CLI's own se
 unreachable, so a fetch uses fleet-secrets' machine identity when there is one.  A failed
 fetch leaves a short marker so sibling processes skip the fetch for a minute.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,8 +25,7 @@ FAKE_TOKEN = "fakeMachineIdentityToken0123456789sentinel"
 class FakeHelper:
     """Stands in for fleet-secrets' core module.  Records how it was used."""
 
-    def __init__(self, mode="system-keychain", token=FAKE_TOKEN, login_error=None,
-                 mode_error=None):
+    def __init__(self, mode="system-keychain", token=FAKE_TOKEN, login_error=None, mode_error=None):
         self.mode = mode
         self.token = token
         self.login_error = login_error
@@ -80,8 +80,9 @@ class AuthTests(KnobTestCase):
         self.assertNotIn(FAKE_TOKEN, text)
         for path in self.home.rglob("*"):
             if path.is_file():
-                self.assertNotIn(FAKE_TOKEN, path.read_text(errors="replace"),
-                                 f"the token reached {path}")
+                self.assertNotIn(
+                    FAKE_TOKEN, path.read_text(errors="replace"), f"the token reached {path}"
+                )
 
     def test_the_login_keychain_mode_is_passed_through(self):
         helper = self.use_helper(FakeHelper(mode="keychain"))
@@ -98,7 +99,7 @@ class AuthTests(KnobTestCase):
         self.assertEqual(self.fake.tokens(), [None])
 
     def test_no_helper_falls_back_to_the_cli_session(self):
-        self.fake.set(secrets=GOOD)                    # KnobTestCase's loader answers None
+        self.fake.set(secrets=GOOD)  # KnobTestCase's loader answers None
         self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "snapshot")
         self.assertEqual(self.fake.tokens(), [None])
 
@@ -132,7 +133,8 @@ class AuthTests(KnobTestCase):
             "def auth_mode(env):\n    return 'session'\n"
             "def machine_token(cli, env, mode):\n    return ''\n"
             "def find_cli(env):\n    return None\n"
-            "MARKER = 'from-fleet-secrets-home'\n")
+            "MARKER = 'from-fleet-secrets-home'\n"
+        )
         os.environ[source.ENV_HELPER_HOME] = str(self.root / "fs-home")
         with mock.patch.dict(source._HELPER_CACHE, clear=True):
             helper = source._load_helper()
@@ -144,10 +146,11 @@ class AuthTests(KnobTestCase):
         pkg.mkdir(parents=True)
         (pkg / "core.py").write_text("raise ImportError('nope')\n")
         os.environ[source.ENV_HELPER_HOME] = str(self.root / "fs-home")
-        with mock.patch.object(source, "HELPER_HOME", str(self.root / "absent")), \
-                mock.patch.object(source, "_helper_candidates",
-                                  lambda: [str(pkg / "core.py")]), \
-                mock.patch.dict(source._HELPER_CACHE, clear=True):
+        with (
+            mock.patch.object(source, "HELPER_HOME", str(self.root / "absent")),
+            mock.patch.object(source, "_helper_candidates", lambda: [str(pkg / "core.py")]),
+            mock.patch.dict(source._HELPER_CACHE, clear=True),
+        ):
             self.assertIsNone(source._load_helper())
 
     def test_fleet_knobs_auth_session_skips_the_machine_identity(self):
@@ -179,10 +182,10 @@ class NegativeCacheTests(KnobTestCase):
 
     def test_a_sibling_skips_the_fetch_inside_the_window_and_uses_the_copy(self):
         self.fake.set(secrets=GOOD)
-        knobs.get("FLEET_AUTOPUSH_MODE")              # warm the copy
+        knobs.get("FLEET_AUTOPUSH_MODE")  # warm the copy
         self.new_process()
         self.fake.set(mode="fail")
-        knobs.get("FLEET_AUTOPUSH_MODE")              # fails, writes the marker
+        knobs.get("FLEET_AUTOPUSH_MODE")  # fails, writes the marker
         self.assertEqual(len(self.fake.calls()), 2)
         self.new_process(keep_failure_marker=True)
         self.fake.set(secrets=GOOD)
@@ -225,7 +228,8 @@ class NegativeCacheTests(KnobTestCase):
         self.marker.unlink(missing_ok=True)
         self.marker.symlink_to(self.root / "elsewhere.json")
         (self.root / "elsewhere.json").write_text(
-            json.dumps({"failed_epoch": time.time(), "reason": "exit-1"}))
+            json.dumps({"failed_epoch": time.time(), "reason": "exit-1"})
+        )
         self.new_process(keep_failure_marker=True)
         self.assertIsNone(lkg.recent_failure())
 

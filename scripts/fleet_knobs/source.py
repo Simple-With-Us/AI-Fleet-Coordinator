@@ -180,7 +180,7 @@ def _load_helper() -> ModuleType | None:
                 continue
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-        except Exception:                             # noqa: BLE001 - optional helper
+        except Exception:  # noqa: BLE001 - optional helper
             continue
         if all(hasattr(module, n) for n in ("auth_mode", "machine_token", "find_cli")):
             _HELPER_CACHE["core"] = module
@@ -210,13 +210,13 @@ def child_env() -> dict[str, str]:
         return env
     try:
         helper = HELPER_LOADER()
-    except Exception:                                 # noqa: BLE001 - optional helper
+    except Exception:  # noqa: BLE001 - optional helper
         helper = None
     if helper is None:
         return env
     try:
         mode = helper.auth_mode(env)
-    except Exception:                                 # noqa: BLE001 - half-filled keychain
+    except Exception:  # noqa: BLE001 - half-filled keychain
         raise FetchFailed("keychain-incomplete") from None
     if mode not in ("keychain", "system-keychain"):
         return env
@@ -225,7 +225,7 @@ def child_env() -> dict[str, str]:
         raise FetchFailed("cli-missing")
     try:
         token = helper.machine_token(cli, env, mode)
-    except Exception:                                 # noqa: BLE001 - never carry its text
+    except Exception:  # noqa: BLE001 - never carry its text
         raise FetchFailed("login-failed") from None
     if not isinstance(token, str) or not token.strip():
         raise FetchFailed("login-failed")

@@ -12,6 +12,7 @@ stale.  Rules, all enforced here:
     cannot be hidden for long by an unreachable Infisical
   * writes are atomic (a temp file in the same directory, then rename)
 """
+
 from __future__ import annotations
 
 import json
@@ -19,13 +20,13 @@ import os
 import stat
 import tempfile
 import time
-from typing import Dict, Iterable, Optional, Tuple
+from collections.abc import Iterable
 
 from .source import ENVIRONMENT, PROJECT_ID
 
 SCHEMA = 1
 MAX_AGE_SECONDS = 48 * 3600
-REFRESH_SECONDS = 3600          # rewrite an unchanged copy this often to keep its age honest
+REFRESH_SECONDS = 3600  # rewrite an unchanged copy this often to keep its age honest
 MAX_BYTES = 256 * 1024
 
 
@@ -37,7 +38,7 @@ def path() -> str:
     return os.path.join(state_dir(), "lkg.json")
 
 
-def read(now: Optional[float] = None) -> Tuple[Optional[dict], str]:
+def read(now: float | None = None) -> tuple[dict | None, str]:
     """(document, note).  The document is None when there is no usable copy;  the note says
     why in one token (``absent``, ``unsafe``, ``unreadable``, ``wrong-project``, ``expired``)
     or is ``ok``."""
@@ -51,8 +52,12 @@ def read(now: Optional[float] = None) -> Tuple[Optional[dict], str]:
         return None, "unsafe"
     try:
         info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077 or info.st_size > MAX_BYTES):
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+            or info.st_size > MAX_BYTES
+        ):
             return None, "unsafe"
         if not _dir_is_private():
             return None, "unsafe"
@@ -66,9 +71,12 @@ def read(now: Optional[float] = None) -> Tuple[Optional[dict], str]:
         doc = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return None, "unreadable"
-    if (not isinstance(doc, dict) or doc.get("schema") != SCHEMA
-            or not isinstance(doc.get("knobs"), dict)
-            or not isinstance(doc.get("saved_epoch"), (int, float))):
+    if (
+        not isinstance(doc, dict)
+        or doc.get("schema") != SCHEMA
+        or not isinstance(doc.get("knobs"), dict)
+        or not isinstance(doc.get("saved_epoch"), (int, float))
+    ):
         return None, "unreadable"
     if doc.get("project") != PROJECT_ID or doc.get("environment") != ENVIRONMENT:
         return None, "wrong-project"
@@ -78,7 +86,7 @@ def read(now: Optional[float] = None) -> Tuple[Optional[dict], str]:
     return doc, "ok"
 
 
-def age_seconds(doc: dict, now: Optional[float] = None) -> int:
+def age_seconds(doc: dict, now: float | None = None) -> int:
     now = time.time() if now is None else now
     return max(0, int(now - float(doc["saved_epoch"])))
 
@@ -88,8 +96,7 @@ def _dir_is_private() -> bool:
         info = os.lstat(state_dir())
     except OSError:
         return False
-    return (stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
-            and not info.st_mode & 0o077)
+    return stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
 
 
 def _ensure_dir() -> None:
@@ -107,16 +114,21 @@ def _ensure_dir() -> None:
         os.chmod(target, 0o700)
 
 
-def write(knobs: Dict[str, str], secret_values: Iterable[str] = (),
-          now: Optional[float] = None) -> None:
+def write(
+    knobs: dict[str, str], secret_values: Iterable[str] = (), now: float | None = None
+) -> None:
     """Atomically replace the copy with `knobs` (name -> raw string).
 
     Raises ValueError, naming no value, if any of `secret_values` appears in the bytes."""
     now = time.time() if now is None else now
-    doc = {"schema": SCHEMA, "project": PROJECT_ID, "environment": ENVIRONMENT,
-           "saved_epoch": now,
-           "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-           "knobs": dict(sorted(knobs.items()))}
+    doc = {
+        "schema": SCHEMA,
+        "project": PROJECT_ID,
+        "environment": ENVIRONMENT,
+        "saved_epoch": now,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+        "knobs": dict(sorted(knobs.items())),
+    }
     blob = json.dumps(doc, indent=1, sort_keys=True).encode("utf-8") + b"\n"
     for secret in secret_values:
         if secret and len(secret) >= 8 and secret.encode("utf-8") in blob:
@@ -164,7 +176,7 @@ def _clean_reason(reason: str) -> str:
     return "".join(c if c in _REASON_OK else "-" for c in text) or "unknown"
 
 
-def recent_failure(now: Optional[float] = None) -> Optional[str]:
+def recent_failure(now: float | None = None) -> str | None:
     """The reason token of a failed fetch less than FAILURE_TTL_SECONDS old, else None."""
     now = time.time() if now is None else now
     try:
@@ -173,8 +185,12 @@ def recent_failure(now: Optional[float] = None) -> Optional[str]:
         return None
     try:
         info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077 or info.st_size > FAILURE_MAX_BYTES):
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+            or info.st_size > FAILURE_MAX_BYTES
+        ):
             return None
         if not _dir_is_private():
             return None
@@ -196,7 +212,7 @@ def recent_failure(now: Optional[float] = None) -> Optional[str]:
     return _clean_reason(doc.get("reason", "unknown"))
 
 
-def record_failure(reason: str, now: Optional[float] = None) -> None:
+def record_failure(reason: str, now: float | None = None) -> None:
     """Atomically write the marker (0600):  a timestamp and a reason token, nothing else."""
     now = time.time() if now is None else now
     blob = json.dumps({"failed_epoch": now, "reason": _clean_reason(reason)}).encode("utf-8")
