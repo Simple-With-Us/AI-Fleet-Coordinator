@@ -15,6 +15,8 @@ A request runs only when ALL of these hold, checked here and nowhere else:
   2. the message holds one well-formed envelope (notes.parse_message);
   3. envelope.identity is the sender's own identity (not merely an allowed one);
   4. the title's Agent is the sender's own name (notes.title_problem);
+  4b. a create or update carries a session id (envelope `session`, AFC-361) unless the sender is a single-thread
+     identity (session_ids.is_exempt:  Grok bots, Rob, Jet, Wise, Echo);
   5. the request_id was never run before for that sender (a duplicate gets the earlier outcome's reaction
      and never runs twice).
 
@@ -53,6 +55,7 @@ from . import identities as X
 from . import identity as I
 from . import notes as N
 from . import secretscan
+from . import session_ids as SID
 from . import wakes as W
 from . import zulip as Z
 
@@ -167,6 +170,14 @@ def validate(
     problem = N.title_problem(parsed["title"], identity, registry_path=registry_path)
     if problem:
         raise Refusal(problem, request_id, "title")
+    if parsed["action"] in ("create", "update"):
+        # AFC-361:  a write carries the session id of the agent that sent it.  The exemption is judged from the
+        # sender's own bot (identity, checked above), never from a field of the envelope, and the listener's own
+        # environment is not the sender's, so only the envelope's value counts (env={}).
+        try:
+            SID.require(identity, parsed.get("session"), {}, "relay")
+        except ValueError as exc:  # SessionRequired is a ValueError
+            raise Refusal(str(exc), request_id, "session") from None
     return identity, parsed
 
 

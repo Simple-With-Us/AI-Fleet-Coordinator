@@ -723,11 +723,11 @@ class ApiCliTests(ParityCliTest):
         self.board(*args)
         self.board(*args)
         self.assertEqual(self.parity_ops(), ["M"])
-        self.assertEqual(self.mock.api_requests[0][2]["input"]["body"], "[CLAUDE] hey")
+        self.assertEqual(self.mock.api_requests[0][2]["input"]["body"], "[CLAUDE·5e55105a] hey")
         literal = 'mutation { commentCreate(input: { issueId: "i", body: "inline \\"quoted\\"" }) { success } }'
         self.board("api", "mutation", literal, "--idempotency-key", "m2")
         sent = self.mock.api_requests[-1][1]
-        self.assertIn('body: "[CLAUDE] inline \\"quoted\\""', sent)
+        self.assertIn('body: "[CLAUDE\\u00b75e55105a] inline \\"quoted\\""', sent)
 
     def test_api_schema(self):
         p = self.board("api", "schema", "Issue", drop=("AGENT_SEAT",))
@@ -864,7 +864,8 @@ class McpCliTests(ParityCliTest):
         self.assertIn("Review submitted.", p.stdout)
         sent = self.mock.mcp_requests[2][1]["params"]["arguments"]
         self.assertEqual(
-            sent, {"urlOrId": "AFC-1", "decision": "commented", "body": "[CLAUDE] Looks good."}
+            sent,
+            {"urlOrId": "AFC-1", "decision": "commented", "body": "[CLAUDE·5e55105a] Looks good."},
         )
         p = self.board(*args)
         self.assertIn("Review submitted.", p.stdout)
@@ -901,7 +902,9 @@ class ConvenienceTests(BoardTest):
     def test_claim_with_a_comment(self):
         self.board("claim", "OPS-10", "--by", "CLAUDE", "--comment", "Taking the digest fix.")
         body = self.comments_of(self.issue_by_ident("OPS-10"))[-1]
-        self.assertTrue(body.startswith("[CLAUDE] CLAIMED\n\nTaking the digest fix."), body)
+        self.assertTrue(
+            body.startswith("[CLAUDE·5e55105a] CLAIMED\n\nTaking the digest fix."), body
+        )
 
 
 if __name__ == "__main__":

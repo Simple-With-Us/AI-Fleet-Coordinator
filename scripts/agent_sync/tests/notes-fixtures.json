@@ -77,6 +77,36 @@
    "message": "```json\n{\"v\":1,\"action\":\"create\",\"title\":\"[BF, BF-Deployer] html note\",\"markdown\":\"<div><p>hi</p></div>\",\"flags\":{\"needs_owner\":true,\"html\":true},\"request_id\":\"htmlrequest-3\",\"identity\":\"BF-DEPLOYER\"}\n```"
   },
   {
+   "name": "create CLAUDE with a session",
+   "envelope": {
+    "v": 1,
+    "action": "create",
+    "title": "[AFC, Claude] session stamp",
+    "markdown": "# Plan\n\nOne.  Two.",
+    "flags": {
+     "pin": true
+    },
+    "request_id": "nr0123456789abcdef0124",
+    "identity": "CLAUDE",
+    "session": "6c3f1f7a-2d4e-4b8a-9c1e-0a1b2c3d4e5f"
+   },
+   "message": "```json\n{\"v\":1,\"action\":\"create\",\"title\":\"[AFC, Claude] session stamp\",\"markdown\":\"# Plan\\n\\nOne.  Two.\",\"flags\":{\"pin\":true},\"request_id\":\"nr0123456789abcdef0124\",\"identity\":\"CLAUDE\",\"session\":\"6c3f1f7a-2d4e-4b8a-9c1e-0a1b2c3d4e5f\"}\n```"
+  },
+  {
+   "name": "update GROK-WEB with a session",
+   "envelope": {
+    "v": 1,
+    "action": "update",
+    "title": "[AFC, Grok Web] session stamp",
+    "markdown": "body",
+    "flags": {},
+    "request_id": "nr0123456789abcdef0125",
+    "identity": "GROK-WEB",
+    "session": "thread:grokweb.0001"
+   },
+   "message": "```json\n{\"v\":1,\"action\":\"update\",\"title\":\"[AFC, Grok Web] session stamp\",\"markdown\":\"body\",\"flags\":{},\"request_id\":\"nr0123456789abcdef0125\",\"identity\":\"GROK-WEB\",\"session\":\"thread:grokweb.0001\"}\n```"
+  },
+  {
    "name": "upload reference",
    "envelope": {
     "v": 1,

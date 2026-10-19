@@ -14,6 +14,7 @@ import NOTES_JSON from "../../agent_sync/mcp/notes-tools.json" with { type: "jso
 import { z } from "zod";
 import { ToolError, okResult, clean, seatTagFor } from "./contract.js";
 import { parseArgs } from "./args.js";
+import * as SESSION_IDS from "./session-ids.js";
 
 export const RELAY_CHANNEL = "notes-relay";
 export const ENVELOPE_VERSION = 1;
@@ -68,6 +69,7 @@ export const NotesWriteArgs = z.strictObject({
   needs_owner: optionalFlag,
   summary: z.string().max(SUMMARY_MAX).optional(),
   pr: z.string().max(40).optional(),
+  session: z.string().optional(),
 });
 export const NotesPinArgs = z.strictObject(WRITE_SHAPE);
 export const NotesStatusArgs = z.strictObject({ request_id: z.string(), message_id: z.number().int().positive().optional() });
@@ -82,6 +84,7 @@ export const RelayEnvelope = z.strictObject({
   markdown_url: z.string().optional(),
   markdown_bytes: z.number().int().optional(),
   markdown_sha256: z.string().optional(),
+  session: z.string().nullish(),
 });
 export const ReactionObject = z.looseObject({
   user_id: z.number().int().optional(),
@@ -185,9 +188,21 @@ export function topicFor(title) {
 
 // ---------------------------------------------------------------- envelopes
 
-export function makeEnvelope(action, title, markdown, flags, requestId, identity) {
+export function checkSession(raw) {
+  try {
+    return SESSION_IDS.check(raw, "the envelope's session");
+  } catch (error) {
+    if (error instanceof RangeError) throw invalid(error.message);
+    throw error;
+  }
+}
+
+/** The envelope for one request.  `session` (AFC-361) is the writer's session id, left out when null or undefined. */
+export function makeEnvelope(action, title, markdown, flags, requestId, identity, session = undefined) {
   if (!ACTIONS.includes(action)) throw invalid(`action must be one of ${ACTIONS.join(", ")}`);
-  return { v: ENVELOPE_VERSION, action, title: checkTitle(title), markdown, flags: checkFlags(flags), request_id: checkRequestId(requestId), identity };
+  const envelope = { v: ENVELOPE_VERSION, action, title: checkTitle(title), markdown, flags: checkFlags(flags), request_id: checkRequestId(requestId), identity };
+  if (session !== undefined && session !== null) envelope.session = checkSession(session);
+  return envelope;
 }
 
 /** One line of ASCII JSON (every non-ASCII character as \\uXXXX), as the Python side writes it. */
@@ -214,7 +229,7 @@ export function parseMessage(content) {
     const parsed = RelayEnvelope.safeParse(JSON.parse(content.slice(start + FENCE_OPEN.length, end)));
     if (!parsed.success) return null;
     const raw = parsed.data;
-    const envelope = makeEnvelope(raw.action, raw.title, raw.markdown ?? "", raw.flags ?? {}, raw.request_id, raw.identity);
+    const envelope = makeEnvelope(raw.action, raw.title, raw.markdown ?? "", raw.flags ?? {}, raw.request_id, raw.identity, raw.session);
     if (raw.markdown_url === undefined && (raw.markdown_bytes !== undefined || raw.markdown_sha256 !== undefined)) return null;
     if (raw.markdown_url !== undefined) {
       const { markdown_url: url, markdown_bytes: size, markdown_sha256: digest } = raw;
@@ -244,7 +259,19 @@ export const NOTES_METHODS = {
         else if (name === "pin" && args.pin === false) flags.pin = false;
       }
     }
-    let envelope = makeEnvelope(action, args.title, isBody ? (args.markdown ?? "") : "", flags, requestId, this.seat);
+    // AFC-361:  a create or update carries the writer's session id.  The exemption is read from this.seat (the identity
+    // the grant resolved), never from an argument, and a Worker has no environment, so only `session` counts.
+    let session = null;
+    if (isBody) {
+      try {
+        session = SESSION_IDS.require(this.seat, args.session, undefined, "hosted");
+      } catch (error) {
+        if (error instanceof SESSION_IDS.SessionRequired) throw new ToolError("session_required", error.message);
+        if (error instanceof RangeError) throw invalid(error.message);
+        throw error;
+      }
+    }
+    let envelope = makeEnvelope(action, args.title, isBody ? (args.markdown ?? "") : "", flags, requestId, this.seat, session);
     audit.request_id = requestId;
     // Every caller-written text, flags included:  the summary reaches the owner's notification and the script's command line.
     this.scan({ title: envelope.title, markdown: envelope.markdown, ...(envelope.flags.summary ? { summary: envelope.flags.summary } : {}), ...(envelope.flags.pr ? { pr: envelope.flags.pr } : {}) });

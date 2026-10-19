@@ -25,6 +25,12 @@ OWNER_ID = 1000
 READER_ID = 10
 TITLE = "[AFC, Claude] relay check"
 
+SESSION = "relay-test-session-0001"  # AFC-361:  a create or update from a non-exempt sender carries a session id
+
+
+def make_envelope(action, title, markdown, flags, rid, identity, session=SESSION):
+    return N.make_envelope(action, title, markdown, flags, rid, identity, session)
+
 
 class FakeClient:
     realm = "https://realm.test"
@@ -161,7 +167,7 @@ class RelayHarness(unittest.TestCase):
         flags=None,
         claimed=None,
     ):
-        env = N.make_envelope(action, title, markdown, flags or {}, rid, claimed or identity)
+        env = make_envelope(action, title, markdown, flags or {}, rid, claimed or identity)
         return self.message(
             SENDERS[identity], "[%s·ab12cd34] %s" % (identity, N.render_message(env))
         )
@@ -247,14 +253,14 @@ class SenderTests(RelayHarness):
                 )
 
     def test_the_owner_account_is_refused(self):
-        env = N.make_envelope("create", TITLE, "x", {}, "owner-request-1", "CLAUDE")
+        env = make_envelope("create", TITLE, "x", {}, "owner-request-1", "CLAUDE")
         self.assert_refused(self.message(OWNER_ID, N.render_message(env)), "owner")
 
     def test_an_integration_bot_a_retired_seat_and_an_unknown_user_are_refused(self):
         def env(
             rid,
         ):  # a refusal is labelled with its request id, and a reply with that label is posted once
-            return N.render_message(N.make_envelope("create", TITLE, "x", {}, rid, "CLAUDE"))
+            return N.render_message(make_envelope("create", TITLE, "x", {}, rid, "CLAUDE"))
 
         self.assert_refused(self.message(15, env("other-request-1")), "not a fleet agent identity")
         self.assert_refused(self.message(16, env("other-request-2")), "not a fleet agent identity")
@@ -283,7 +289,7 @@ class SenderTests(RelayHarness):
 
     def test_a_reply_cannot_mention_anyone_through_the_sender_chosen_text(self):
         env = N.render_message(
-            N.make_envelope("create", TITLE, "x", {}, "mention-request1", "@**all**")
+            make_envelope("create", TITLE, "x", {}, "mention-request1", "@**all**")
         )
         message = self.message(SENDERS["CURSOR"], env)
         self.assertEqual(self.process(message), "refused")
@@ -362,7 +368,7 @@ class AttachmentTests(RelayHarness):
     def test_an_attached_body_is_fetched_checked_and_run(self):
         body = "a long sentence.  " * 700
         data = body.encode()
-        base = N.make_envelope("create", "[AFC, Cursor] big", "", {}, "attach-request-1", "CURSOR")
+        base = make_envelope("create", "[AFC, Cursor] big", "", {}, "attach-request-1", "CURSOR")
         ref = N.with_upload(base, url="/user_uploads/2/ab/9/note.md", data=data)
         message = self.message(SENDERS["CURSOR"], N.render_message(ref))
         fetched = []
@@ -384,7 +390,7 @@ class AttachmentTests(RelayHarness):
         )
         data = body.encode()
         ref = N.with_upload(
-            N.make_envelope("create", "[AFC, Cursor] big", "", {}, "secret-upload-01", "CURSOR"),
+            make_envelope("create", "[AFC, Cursor] big", "", {}, "secret-upload-01", "CURSOR"),
             url="/user_uploads/2/ab/9/note.md",
             data=data,
         )
@@ -421,7 +427,7 @@ class AttachmentTests(RelayHarness):
     def test_a_tampered_attachment_is_refused(self):
         data = b"original body"
         ref = N.with_upload(
-            N.make_envelope("create", "[AFC, Cursor] big", "", {}, "tamper-request-1", "CURSOR"),
+            make_envelope("create", "[AFC, Cursor] big", "", {}, "tamper-request-1", "CURSOR"),
             url="/user_uploads/2/ab/9/note.md",
             data=data,
         )
@@ -514,7 +520,7 @@ class PublishFailureTests(RelayHarness):
     def test_a_download_that_fails_on_the_network_retries_from_a_clean_start(self):
         data = b"attached body"
         ref = N.with_upload(
-            N.make_envelope("create", "[AFC, Cursor] big", "", {}, "download-retry-1", "CURSOR"),
+            make_envelope("create", "[AFC, Cursor] big", "", {}, "download-retry-1", "CURSOR"),
             url="/user_uploads/2/ab/9/note.md",
             data=data,
         )
@@ -770,7 +776,7 @@ class SelfSentTests(RelayHarness):
     """A session of the reading seat that runs elsewhere (the server) relays as that same bot."""
 
     def own_request(self, rid="self-request-0001", title=TITLE):
-        env = N.make_envelope("create", title, "from the server", {}, rid, "CLAUDE")
+        env = make_envelope("create", title, "from the server", {}, rid, "CLAUDE")
         return self.message(READER_ID, "[CLAUDE\u00b7ab12cd34] " + N.render_message(env))
 
     def test_the_reader_takes_its_own_envelopes_and_runs_them(self):
@@ -1010,14 +1016,12 @@ class RefusalReplayTests(RelayHarness):
             ),
         }
         env = N.render_message(
-            N.make_envelope("create", TITLE, "x", {}, "label-request-03", "CLAUDE")
+            make_envelope("create", TITLE, "x", {}, "label-request-03", "CLAUDE")
         )
         cases["owner"] = self.message(OWNER_ID, env)
         cases["integration-bot"] = self.message(
             15,
-            N.render_message(
-                N.make_envelope("create", TITLE, "x", {}, "label-request-04", "CLAUDE")
-            ),
+            N.render_message(make_envelope("create", TITLE, "x", {}, "label-request-04", "CLAUDE")),
         )
         wanted = {
             "wrong-agent-title": "label-request-01",
@@ -1053,7 +1057,7 @@ class RefusalReplayTests(RelayHarness):
         self,
     ):
         token = "ghp_" + "EXAMPLE0" * 5
-        env = N.render_message(N.make_envelope("create", TITLE, "x", {}, "token-request-01", token))
+        env = N.render_message(make_envelope("create", TITLE, "x", {}, "token-request-01", token))
         message = self.message(SENDERS["CURSOR"], env)
         self.assertEqual(self.process(message), "refused")
         seen = json.dumps(self.logs, default=str) + "\n".join(self.client.replies)
@@ -1069,7 +1073,7 @@ class RefusalReplayTests(RelayHarness):
 
     def test_every_validation_refusal_logs_a_fixed_code_and_nothing_the_sender_typed(self):
         env = N.render_message(
-            N.make_envelope("create", TITLE, "x", {}, "code-request-001", "CLAUDE")
+            make_envelope("create", TITLE, "x", {}, "code-request-001", "CLAUDE")
         )
         cases = {
             "sender_owner": self.message(OWNER_ID, env),

@@ -4,7 +4,7 @@
     {
       "name": "notes_create",
       "title": "Notes Create",
-      "description": "Create an Apple Note in the owner's Coding folder, pinned by default.  On a Mac it is written directly (status done);  anywhere else a request is posted to #notes-relay and the Mac listener writes it (status queued, then notes_status).  The title must read \"[APP, Agent] topic\" and Agent must be the identity you act as, or the relay refuses it.",
+      "description": "Create an Apple Note in the owner's Coding folder, pinned by default.  On a Mac it is written directly (status done);  anywhere else a request is posted to #notes-relay and the Mac listener writes it (status queued, then notes_status).  The title must read \"[APP, Agent] topic\" and Agent must be the identity you act as, or the relay refuses it.  A session id is required (see the session argument) unless the identity is a single-thread one.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -59,6 +59,11 @@
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$",
             "description": "A unique id for this request, 8 to 64 letters, digits, - or _.  A retry with the same id never writes the note twice.  Omit it and the server makes one."
+          },
+          "session": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$",
+            "description": "The session id of the agent session writing this note, stamped in the note as its Session line so a headless resume can find the session.  Required for every identity except the single-thread ones (Grok bots, Rob, Jet, Wise, Echo), which may omit it.  Omit it when the server's environment already has it (AGENT_SESSION, or the platform variable such as CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID);  a hosted server has no environment, so pass it.  4 to 128 letters, digits, . _ : or -."
           },
           "transport": {
             "type": "string",
@@ -123,7 +128,7 @@
     {
       "name": "notes_update",
       "title": "Notes Update",
-      "description": "Replace the body of the Apple Note with this exact title in the Coding folder, creating it when it is missing.  Direct on a Mac, a #notes-relay request elsewhere (status queued, then notes_status).",
+      "description": "Replace the body of the Apple Note with this exact title in the Coding folder, creating it when it is missing.  Direct on a Mac, a #notes-relay request elsewhere (status queued, then notes_status).  A session id is required (see the session argument) unless the identity is a single-thread one.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -178,6 +183,11 @@
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$",
             "description": "A unique id for this request, 8 to 64 letters, digits, - or _.  A retry with the same id never writes the note twice.  Omit it and the server makes one."
+          },
+          "session": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$",
+            "description": "The session id of the agent session writing this note, stamped in the note as its Session line so a headless resume can find the session.  Required for every identity except the single-thread ones (Grok bots, Rob, Jet, Wise, Echo), which may omit it.  Omit it when the server's environment already has it (AGENT_SESSION, or the platform variable such as CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID);  a hosted server has no environment, so pass it.  4 to 128 letters, digits, . _ : or -."
           },
           "transport": {
             "type": "string",

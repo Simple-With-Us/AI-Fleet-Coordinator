@@ -50,6 +50,7 @@ Sun, Aug 9, 3:52pm · PR #18
 
 - Format: `Day, Mon D, h:mmam|pm · PR #<num>` — **no leading zero** on day or hour; **lowercase** `am`/`pm`; local Mac timezone. Append related PR numbers on the same line separated by a divider (` · PR #18` or ` · PR #18, PR #19`).
 - This is the **created or last-updated** time. On every `--update`, **refresh this line** to now (do not leave a stale create-only stamp when the note changed). Pass `--pr "18"` to `apple-notes-coding.sh` to auto-inject the PR numbers on the timestamp line.
+- **Third row, the session (AFC-361):** `Session: <id> - Mon, Oct 19, 9:40pm`, directly under the timestamp.  `apple-notes-coding.sh` writes it from `--session`, `AGENT_SESSION` or the seat's platform variable, refuses to create or update without one, and refreshes it on every `--update`.  A headless resume reads it to find the seat's session for the note's topic.  Grok bots, MA, JET, WISE and ECHO have one thread with the owner and write no Session row.
 - After the timestamp line: blank line, then optional type line (`Completion` / `Plan` / `Review` / `Design` / `Handoff` / `Rollout` / `Incident` / `Fleet change` / `Work log`), then content.
 - Helper auto-injects/refreshes the timestamp line and preserves PR numbers.
 

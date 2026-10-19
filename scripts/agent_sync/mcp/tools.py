@@ -51,6 +51,7 @@ from .. import listener_records as LR
 from .. import live as LIVE
 from .. import notes as NOTES
 from .. import secretscan
+from .. import session_ids as SESSION_IDS
 from .. import wakes as W
 from .. import zulip as Z
 from .. import zulip_cli as ZCLI
@@ -2082,8 +2083,39 @@ class Tools:
     def _notes_error(self, exc: NOTES.NotesError) -> ToolError:
         return ToolError(exc.code, exc.message)
 
+    def _own_session_env(self) -> Mapping[str, str]:
+        """The server's environment, but only when it is this identity's own.  A process that serves several
+        identities holds one session in its environment (the seat it was started for), so a call acting as another
+        identity must not borrow it:  that call passes its own `session` or, if exempt, none (AFC-361)."""
+        env = self.agent.rt.env
+        named = (env.get("AGENT_LAUNCH_SEAT") if env.get("AGENT_LAUNCHER") else None) or env.get(
+            "AGENT_SEAT"
+        )
+        if named and IDENT.canonical_seat(named) == self.seat:
+            return env
+        return {}
+
+    def _notes_session(self, action: str, args: Mapping[str, Any]) -> str | None:
+        """The session id a create or update carries (AFC-361):  the `session` argument, else this server's own
+        environment, judged for the identity the call acts as.  An exempt single-thread identity needs none.
+        Nothing the caller sends can make a seat exempt:  the exemption is read from self.seat."""
+        if action not in ("create", "update"):
+            return None
+        try:
+            return SESSION_IDS.require(
+                self.seat, args.get("session"), self._own_session_env(), "tool"
+            )
+        except ValueError as exc:  # SessionRequired is a ValueError
+            code = (
+                "session_required"
+                if isinstance(exc, SESSION_IDS.SessionRequired)
+                else "invalid_argument"
+            )
+            raise ToolError(code, str(exc)) from None
+
     def _notes_envelope(self, action: str, args: Mapping[str, Any]) -> dict[str, Any]:
         flags = notes_flags(args, action)
+        session = self._notes_session(action, args)
         try:
             request_id = (
                 NOTES.check_request_id(args["request_id"])
@@ -2097,6 +2129,7 @@ class Tools:
                 flags,
                 request_id,
                 self.seat,
+                session,
             )
         except NOTES.NotesError as exc:
             raise self._notes_error(exc) from None
@@ -2524,8 +2557,28 @@ class Tools:
     def _linear_run(self, spec: Any, args: Mapping[str, Any], uid: str | None = None) -> Any:
         """Run board and map its failures to tool errors.  LinearOutcomeUnknown (a timeout on a write) is its own
         exception here so a caller can keep an idempotency row for it."""
+        session_env = self._own_session_env()
+        if spec.tool["name"] in LINEAR.SESSION_TOOLS:
+            # board file, claim, status and comment record a session id and refuse without one (AFC-361):  refuse
+            # here, with this tool's wording, before board runs.  The id is the `session` argument, else this
+            # identity's own environment;  an exempt single-thread identity needs none.
+            try:
+                found = SESSION_IDS.require(
+                    self.seat, args.get("session"), session_env, "tool", board=True
+                )
+            except ValueError as exc:  # SessionRequired is a ValueError
+                code = (
+                    "session_required"
+                    if isinstance(exc, SESSION_IDS.SessionRequired)
+                    else "invalid_argument"
+                )
+                raise ToolError(code, str(exc)) from None
+            if found:
+                args = dict(args, session=found)
         try:
-            result = LINEAR.run_board(spec, args, self.seat, env=self.agent.rt.env, uid=uid)
+            result = LINEAR.run_board(
+                spec, args, self.seat, env=self.agent.rt.env, uid=uid, session_env=session_env
+            )
         except LINEAR.LinearInvalid as exc:
             raise ToolError("invalid_argument", str(exc)) from None
         except LINEAR.LinearOutcomeUnknown as exc:
