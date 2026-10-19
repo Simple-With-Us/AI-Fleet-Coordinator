@@ -515,20 +515,21 @@ def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
     retired the default zuliprc folder and fleet-secrets is Mac-only).  Values are passed, never printed."""
     try:
         if seat == "CLAUDE":
-            servers = json.loads((home / ".claude.json").read_text()).get("mcpServers") or {}
+            data = json.loads((home / ".claude.json").read_text())
+            servers = data.get("mcpServers") if isinstance(data, dict) else None
         elif seat == "CODEX":
             try:
                 import tomllib  # 3.11+;  a Mac's /usr/bin/python3 has none (codex_mcp_names falls back)
             except ImportError:
                 return {}
-            servers = (
-                tomllib.loads((home / ".codex/config.toml").read_text()).get("mcp_servers") or {}
-            )
+            servers = tomllib.loads((home / ".codex/config.toml").read_text()).get("mcp_servers")
         else:
             return {}
     except (OSError, ValueError):
         return {}
-    env = (servers.get("agent-sync") or {}).get("env") or {}
+    # Any malformed level (a list, a string) means no registered env, never an exception.
+    server = servers.get("agent-sync") if isinstance(servers, dict) else None
+    env = server.get("env") if isinstance(server, dict) else None
     return {str(key): str(value) for key, value in env.items()} if isinstance(env, dict) else {}
 
 
