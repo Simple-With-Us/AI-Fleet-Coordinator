@@ -329,7 +329,7 @@ def hook(ctx: Ctx, event: str) -> int:
 
     L.update_lease(paths, lease_id, on_prompt)
     parts: list[str] = []
-    if L.rewake_verified(ctx.config) and not L.paused(ctx.root, seat):
+    if L.rewake_verified(ctx.config, L.surface_of(ctx.env.get("CLAUDE_CODE_ENTRYPOINT"))) and not L.paused(ctx.root, seat):
         text, chosen = L.claim(paths, lease_id, max_chars=L.REWAKE_MAX_CHARS, per_message=L.REWAKE_PER_MESSAGE,
                                now=now, stale_seconds=L.stale_after(ctx.config),
                                select=lambda i: i.get("class") == "interrupt")
@@ -350,13 +350,14 @@ def rewake(ctx: Ctx) -> int:
     """One per lease.  Blocks on the lease inbox; when interrupt items are pending and the live
     budget has room, claims them and exits 2 with the batch on stderr, which wakes the session.
     Exits 0 at once when another watcher holds the lease, when the session is not in scope, or
-    when rewake has not been verified (manual test 1) on this machine."""
+    when rewake has not been verified (manual test 1) for this session's surface (terminal or Desktop)."""
     import fcntl
 
     if not in_claude_scope(ctx.env):
         return 0
     seat = L.claude_seat(ctx.env, ctx.config)
-    if seat is None or not L.rewake_verified(ctx.config) or not I.served_here(seat, ctx.env)[0]:
+    surface = L.surface_of(ctx.env.get("CLAUDE_CODE_ENTRYPOINT"))
+    if seat is None or not L.rewake_verified(ctx.config, surface) or not I.served_here(seat, ctx.env)[0]:
         return 0
     paths = L.SeatPaths(ctx.root, seat)
     pid = claude_pid(ctx.env)

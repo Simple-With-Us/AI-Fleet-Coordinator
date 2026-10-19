@@ -326,9 +326,44 @@ def claude_seat(env: Mapping[str, str], config: Mapping[str, Any]) -> str | None
     return I.valid_seat(resolved.seat)
 
 
-def rewake_verified(config: Mapping[str, Any]) -> bool:
+# The surfaces a Claude Code session can run in, by the CLAUDE_CODE_ENTRYPOINT its process reports
+# (confirmed in the Desktop Code tab and in a terminal, AFC-358).  Anything else (-p and SDK runs,
+# an editor extension) is no surface this code has verified.
+SURFACE_BY_ENTRYPOINT = {"cli": "cli", "claude-desktop": "desktop"}
+
+
+def surface_of(entrypoint: Any) -> str | None:
+    """"cli", "desktop", or None for an entrypoint nobody verified rewake on."""
+    return SURFACE_BY_ENTRYPOINT.get(entrypoint) if isinstance(entrypoint, str) else None
+
+
+def rewake_flags(config: Mapping[str, Any]) -> tuple[bool, bool]:
+    """(cli, desktop) from `[platform.claude-code]`.  `rewake_verified_cli` and
+    `rewake_verified_desktop` are the per-surface flags, because exit 2 waking an idle session was
+    proven in a terminal and never in the Desktop Code tab.  The old single `rewake_verified` key still
+    works and sets both;  a per-surface key, when given, overrides it for that surface."""
     platform = (config.get("platform") or {}).get("claude-code") or {}
-    return platform.get("rewake_verified") is True
+    legacy = platform.get("rewake_verified") is True
+    flags = []
+    for key in ("rewake_verified_cli", "rewake_verified_desktop"):
+        given = platform.get(key)
+        flags.append(given if isinstance(given, bool) else legacy)
+    return flags[0], flags[1]
+
+
+def rewake_verified_for(cli: bool, desktop: bool, surface: str | None) -> bool:
+    """Whether interrupts may be delivered to a session on `surface`.  A surface this code cannot
+    name needs both flags:  nothing was verified for it, so only a blanket yes counts."""
+    if surface == "cli":
+        return cli
+    if surface == "desktop":
+        return desktop
+    return cli and desktop
+
+
+def rewake_verified(config: Mapping[str, Any], surface: str | None = None) -> bool:
+    cli, desktop = rewake_flags(config)
+    return rewake_verified_for(cli, desktop, surface)
 
 
 def live_limits(config: Mapping[str, Any], seat: str) -> dict[str, int]:

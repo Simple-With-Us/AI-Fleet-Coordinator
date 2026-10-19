@@ -99,7 +99,8 @@ def sample_config(secrets_dir: str) -> str:
         "[platform.claude-code]",
         'seat = "CLAUDE"                   # the Claude Code platform default:  hooks and local views when AGENT_SEAT is',
         '                                  # unset, never under a launcher (AGENT_LAUNCHER), never for posting',
-        "rewake_verified = false           # true only after manual test 1; until then live delivery is headlines only",
+        "rewake_verified_cli = false       # true only after manual test 1 in a terminal;  until then live delivery is headlines only",
+        "rewake_verified_desktop = false   # the same for the Desktop Code tab, which has its own flag (the old rewake_verified sets both)",
         "",
         "[seat.CLAUDE]",
         'bot = "Claude"                    # reads %s (moderator or member role only)%s'
