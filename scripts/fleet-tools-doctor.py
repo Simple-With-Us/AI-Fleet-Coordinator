@@ -36,7 +36,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -518,6 +517,10 @@ def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
         if seat == "CLAUDE":
             servers = json.loads((home / ".claude.json").read_text()).get("mcpServers") or {}
         elif seat == "CODEX":
+            try:
+                import tomllib  # 3.11+;  a Mac's /usr/bin/python3 has none (codex_mcp_names falls back)
+            except ImportError:
+                return {}
             servers = (
                 tomllib.loads((home / ".codex/config.toml").read_text()).get("mcp_servers") or {}
             )
