@@ -4899,7 +4899,7 @@ class FleetHookStableCopyTests(World):
     ) -> None:
         # MM owns its adapter, so a copy whose Bash branch no longer matches tool names would allow
         # every shell call.  The shared shell probes say nothing about it; the staged MM copy is
-        # probed through its own hook, native (Bash) and compatible (bash).
+        # probed through its own hook, compatible (Bash) and native (bash).
         adapter = Path(self.source.scripts_dir) / "fleet_lanes" / "minimax_guard_hook.py"
         text = adapter.read_text()
         damaged = text.replace(
@@ -4919,6 +4919,47 @@ class FleetHookStableCopyTests(World):
             any(line.startswith("FAIL  staged-mm") and "/hook-env" in line for line in lines),
             "the file probes should still pass, so this is shell coverage",
         )
+
+    def test_staged_minimax_secret_shell_denials_cover_both_tool_spellings(self) -> None:
+        adapter = Path(self.source.scripts_dir) / "fleet_lanes" / "minimax_guard_hook.py"
+        original = adapter.read_text()
+        forwarding = "return fleet.decide(normalized, secret_guard)"
+        self.assertIn(forwarding, original)
+        for tool in ("Bash", "bash"):
+            with self.subTest(tool=tool):
+                adapter.write_text(
+                    original.replace(
+                        forwarding,
+                        f'return (None, "") if payload.get("tool_name") == {tool!r} '
+                        'and args["command"].strip() == "ps aux" else fleet.decide(normalized, secret_guard)',
+                    )
+                )
+                lines: list[str] = []
+                r = T.apply_tools(
+                    self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+                )
+                self.assertEqual(r.status, "refused", r)
+                self.assertFalse(os.path.exists(self.paths.stable))
+                failed = [line for line in lines if line.startswith("FAIL  staged-mm")]
+                self.assertTrue(failed, "\n".join(lines))
+                self.assertTrue(all("secret/" in line for line in failed), "\n".join(failed))
+
+    def test_staged_minimax_requires_the_module_backed_file_secret_policy(self) -> None:
+        secret = Path(self.source.scripts_dir) / "hooks" / "secret-guard-pretooluse.py"
+        original = secret.read_text()
+        for damage in ("SECRET_FILE_PATTERNS = ()", "del SECRET_FILE_PATTERNS"):
+            with self.subTest(damage=damage):
+                secret.write_text(original + "\n" + damage + "\n")
+                lines: list[str] = []
+                r = T.apply_tools(
+                    self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+                )
+                self.assertEqual(r.status, "refused", r)
+                self.assertFalse(os.path.exists(self.paths.stable))
+                self.assertTrue(
+                    any("FAIL  minimax" in line and "Read/deny/hook-env" in line for line in lines),
+                    "\n".join(lines),
+                )
 
     def test_probe_command_secret_case_fails_a_lane_only_command(self) -> None:
         self.install(())
@@ -5826,6 +5867,29 @@ class MinimaxBundleTests(World):
 
     def verify_mm(self) -> list:
         return T.verify_minimax(self.paths, timeout=TIMEOUT, minimal_path=False)
+
+    def test_required_registry_refusal_is_structured_by_the_verify_cli(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        registry = Path(self.paths.registry)
+        for raw in (None, "[]", '{"apps": []}'):
+            with self.subTest(registry=raw):
+                if raw is None:
+                    registry.unlink()
+                else:
+                    registry.write_text(raw)
+                rc, out, err = run_main(
+                    "verify",
+                    "--home",
+                    str(self.home),
+                    "--timeout",
+                    str(TIMEOUT),
+                    "--no-minimal-path",
+                    "minimax",
+                )
+                self.assertEqual(rc, 1, out)
+                self.assertIn("REFUSED required integration registry", out)
+                self.assertIn(str(registry), out)
+                self.assertEqual(err, "")
 
     # -- where it sits in the platform table
 

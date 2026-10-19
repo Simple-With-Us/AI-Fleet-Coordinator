@@ -2952,8 +2952,8 @@ def apply_tools(
                 if c.status == "FAIL"
             )
             # MM has its own adapter, so the shared shell probes above prove nothing for it.  Probe
-            # the staged copy with the shell payloads MiniMax sends, native (Bash) and compatible
-            # (bash), or a broken decide() shell branch would be swapped in and fail open.
+            # the staged copy with compatible (Bash) and native (bash) shell payloads, including
+            # secret denials, or a broken decide() shell branch could be swapped in and fail open.
             for shape in ("claude", "muse"):
                 bad.extend(
                     c
@@ -2965,6 +2965,7 @@ def apply_tools(
                         home=paths.home,
                         timeout=timeout,
                         minimal_path=minimal_path,
+                        secret=True,
                     )
                     if c.status == "FAIL"
                 )
@@ -4573,7 +4574,9 @@ def registry_tree(registry: str) -> str:
     try:
         payload = json.loads(_read_bytes(registry).decode("utf-8"))
     except (OSError, ValueError) as exc:
-        raise Refused(f"required integration registry is unavailable or invalid: {registry}") from exc
+        raise Refused(
+            f"required integration registry is unavailable or invalid: {registry}"
+        ) from exc
     if not isinstance(payload, dict):
         raise Refused(f"required integration registry {registry}: top level must be an object")
     apps = payload.get("apps")
@@ -4586,7 +4589,9 @@ def registry_tree(registry: str) -> str:
             if candidate is None:
                 continue
             if not isinstance(candidate, str):
-                raise Refused(f"required integration registry {registry}: app paths must be strings")
+                raise Refused(
+                    f"required integration registry {registry}: app paths must be strings"
+                )
             name = candidate.strip()
             if name:
                 return name
@@ -4604,6 +4609,7 @@ def probe_minimax_files(
     out = []
     for tool, path, deny in (
         ("Read", ".secrets/probe-placeholder", True),
+        ("Read", ".env", True),
         ("Write", integration, True),
         ("Edit", ".secrets/probe-placeholder", True),
         ("Read", "public-placeholder", False),

@@ -29,6 +29,16 @@ def file_reason(payload: dict, ctx=None, secret_guard=None) -> str | None:
     if tool not in ("Read", "Write", "Edit") or not isinstance(args, dict):
         return None
     ctx = guard.make_context() if ctx is None else ctx
+    roots = layout.make_roots(ctx.home, ctx.env, registry=ctx.registry)
+    try:
+        sg = secret_guard if secret_guard is not None else fleet._load_secret_guard()
+        patterns = sg.SECRET_FILE_PATTERNS if sg is not None else ()
+        if not isinstance(patterns, (tuple, list)) or not all(isinstance(p, str) for p in patterns):
+            raise ValueError("invalid secret file pattern table")
+        secret_patterns = tuple(re.compile(p, re.IGNORECASE) for p in patterns)
+    except Exception:  # noqa: BLE001 -- optional policy failure must not disable the other guards
+        # Only the unavailable secret table degrades; independent path checks still run.
+        secret_patterns = ()
     cwd = payload.get("cwd")
     # Check every field name this tool might carry: a name this adapter does not read
     # must never be the reason a file operation is allowed.
@@ -36,28 +46,21 @@ def file_reason(payload: dict, ctx=None, secret_guard=None) -> str | None:
         value = args.get(field)
         if not isinstance(value, str) or not value.strip():
             continue
-        reason = _path_reason(tool, value, cwd, ctx, secret_guard)
+        reason = _path_reason(tool, value, cwd, ctx, roots, secret_patterns)
         if reason:
             return reason
     return None
 
 
-def _path_reason(tool: str, path: str, cwd, ctx, secret_guard) -> str | None:
+def _path_reason(tool: str, path: str, cwd, ctx, roots, secret_patterns) -> str | None:
     if not os.path.isabs(path) and not path.startswith("~"):
         # No usable cwd: resolve against home rather than skip the whole file policy.
         path = os.path.join(cwd if isinstance(cwd, str) and os.path.isabs(cwd) else ctx.home, path)
-    roots = layout.make_roots(ctx.home, ctx.env, registry=ctx.registry)
     lexical = os.path.normpath(os.path.join(ctx.home, path[2:]) if path.startswith("~/") else path)
     path = layout.resolve_path(path, roots)
-    sg = secret_guard if secret_guard is not None else fleet._load_secret_guard()
     candidates = (lexical, path)
     if any(".secrets" in p.lower().split(os.sep) for p in candidates) or (
-        sg is not None
-        and any(
-            re.search(pattern, p, re.IGNORECASE)
-            for p in candidates
-            for pattern in sg.SECRET_FILE_PATTERNS
-        )
+        any(pattern.search(p) for p in candidates for pattern in secret_patterns)
     ):
         return (
             "MiniMax file tool blocked a secret-bearing path.  Use the approved secrets interface."
@@ -97,9 +100,13 @@ def decide(payload: dict, ctx=None, secret_guard=None):
     """Return a known-policy denial.
 
     Shell policy is `fleet.decide`, which isolates its lane and secret checks from each other.
-    The file policies are one sequence, so an error raised by any of them (a secret-guard module
-    without SECRET_FILE_PATTERNS, a resolve error, a registry read error) drops the whole set and
-    allows the operation; they are not independent, and they fail open together.
+    A file root or path-resolution error can allow the whole file operation.  Secret-module or
+    pattern-table failures instead skip only the table-backed secret checks; integration-tree,
+    review-lane, other-seat and literal .secrets checks still run.
+
+    Registry read errors instead produce guard.make_context's fallback registry: extra app rows
+    and no seats.  Secret and review-lane checks still run, but integration-tree coverage narrows
+    to those extra rows and the other-seat check cannot identify a seat.
     """
     if payload.get("tool_name") in ("Bash", "bash"):
         args = payload.get("tool_input")

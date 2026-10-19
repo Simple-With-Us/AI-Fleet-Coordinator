@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from fleet_lanes import guard
@@ -144,6 +145,39 @@ class MinimaxHookTests(unittest.TestCase):
         self.assertIsNone(
             mm.decide({"tool_name": "Read", "tool_input": {"file_path": "public/file.py"}}, ctx)[0]
         )
+
+    def test_unavailable_secret_table_preserves_other_path_policies(self):
+        ctx = guard.make_context(self.env, home=self.home)
+        for sg in (
+            SimpleNamespace(),
+            SimpleNamespace(SECRET_FILE_PATTERNS="invalid"),
+            SimpleNamespace(SECRET_FILE_PATTERNS=["["]),
+        ):
+            for path, expected in (
+                ("Code/BotFleet/file.py", "integration tree"),
+                ("apps/lanes/BotFleet/review-pr-1/file.py", "review lane"),
+                (".secrets/dummy", "secret-bearing"),
+            ):
+                with self.subTest(policy=expected, table=sg):
+                    self.assertIn(expected, mm.decide(self.payload("Write", path), ctx, sg)[0])
+            self.assertIsNone(mm.decide(self.payload("Read", ".env"), ctx, sg)[0])
+        with mock.patch.object(mm.fleet, "_load_secret_guard", return_value=None):
+            self.assertIsNone(mm.decide(self.payload("Read", ".env"), ctx)[0])
+            self.assertIn(
+                "integration tree",
+                mm.decide(self.payload("Write", "Code/BotFleet/file.py"), ctx)[0],
+            )
+
+    def test_fallback_registry_keeps_secret_and_review_checks(self):
+        env = dict(self.env, FLEET_APPS_JSON=os.path.join(self.home, "missing-registry.json"))
+        ctx = guard.make_context(env, home=self.home)
+        self.assertEqual(ctx.registry.source, "fallback")
+        self.assertIn("secret-bearing", mm.decide(self.payload("Read", ".env"), ctx)[0])
+        self.assertIn(
+            "review lane",
+            mm.decide(self.payload("Write", "apps/lanes/BotFleet/review-pr-1/file.py"), ctx)[0],
+        )
+        self.assertIsNone(mm.decide(self.payload("Write", "Code/BotFleet/file.py"), ctx)[0])
 
     def test_either_path_field_name_is_checked(self):
         ctx = guard.make_context(self.env, home=self.home)
