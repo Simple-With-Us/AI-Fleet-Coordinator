@@ -6042,10 +6042,12 @@ class MinimaxBundleTests(World):
 
     def test_file_policy_must_pass_before_the_plugin_is_wired(self) -> None:
         adapter = Path(self.paths.package_dir) / "minimax_guard_hook.py"
-        adapter.write_text(adapter.read_text().replace(
-            'if __name__ == "__main__":',
-            'def file_reason(*args, **kwargs):\n    return None\n\nif __name__ == "__main__":',
-        ))
+        adapter.write_text(
+            adapter.read_text().replace(
+                'if __name__ == "__main__":',
+                'def file_reason(*args, **kwargs):\n    return None\n\nif __name__ == "__main__":',
+            )
+        )
         r = self.apply()
         self.assertEqual(r.status, "refused", r)
         self.assertIn("fails its probes", r.detail)

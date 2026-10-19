@@ -1139,7 +1139,8 @@ def hook_command(paths: Paths, fmt: str) -> str:
 def render_minimax_hook_shim() -> str:
     """MM owns its adapter.  No shell prefilter: native file paths need Python too."""
     return render_hook_shim(
-        GuardFacts(), module=f"{PACKAGE}.minimax_guard_hook",
+        GuardFacts(),
+        module=f"{PACKAGE}.minimax_guard_hook",
         purpose=("# MiniMax shell and file guards.  No seat is assigned or overwritten here.",),
     )
 
@@ -1225,7 +1226,11 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
 
 
 def file_mode(rel: str) -> int:
-    return 0o755 if rel in (HOOK_NAME, FLEET_HOOK_NAME, MINIMAX_HOOK_NAME, MUSE_SEAT_NAME, MUSE_WRAPPER) else 0o644
+    return (
+        0o755
+        if rel in (HOOK_NAME, FLEET_HOOK_NAME, MINIMAX_HOOK_NAME, MUSE_SEAT_NAME, MUSE_WRAPPER)
+        else 0o644
+    )
 
 
 def read_tree(root: str) -> dict[str, bytes]:
@@ -2892,7 +2897,13 @@ def apply_tools(
     lane_text = plan.lane_shim_text
     runnable = all(
         os.access(p, os.X_OK)
-        for p in (paths.hook_shim, paths.fleet_shim, os.path.join(paths.stable, MINIMAX_HOOK_NAME), paths.muse_seat, paths.muse_wrapper)
+        for p in (
+            paths.hook_shim,
+            paths.fleet_shim,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            paths.muse_seat,
+            paths.muse_wrapper,
+        )
     )
     if (
         plan.state == "current"
@@ -2933,8 +2944,11 @@ def apply_tools(
                 )
                 bad.extend(c for c in got if c.status == "FAIL")
             staged_mm = shlex.quote(os.path.join(stage, MINIMAX_HOOK_NAME))
-            bad.extend(c for c in probe_minimax_files(staged_mm, paths.home, timeout, minimal_path)
-                       if c.status == "FAIL")
+            bad.extend(
+                c
+                for c in probe_minimax_files(staged_mm, paths.home, timeout, minimal_path)
+                if c.status == "FAIL"
+            )
             if bad:
                 for c in bad:
                     emit(c.line())
@@ -3230,8 +3244,14 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
             )
         )
     out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(facts)))
-    out.append(_check_shim(t, MINIMAX_HOOK_NAME, os.path.join(paths.stable, MINIMAX_HOOK_NAME),
-                           render_minimax_hook_shim()))
+    out.append(
+        _check_shim(
+            t,
+            MINIMAX_HOOK_NAME,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            render_minimax_hook_shim(),
+        )
+    )
     if f"{PACKAGE}/{SECRET_GUARD_MODULE}" in have:
         out.append(
             Check(
@@ -4546,11 +4566,19 @@ def probe_minimax_files(command: str, home: str, timeout: float, minimal_path: b
         if not problem and res.returncode != 0:
             problem = f"exit {res.returncode}, expected 0"
         if not problem:
-            problem = check_deny_output("claude", res.stdout, "MiniMax") if deny else (
-                "unexpected output" if res.stdout.strip() or res.stderr.strip() else None
+            problem = (
+                check_deny_output("claude", res.stdout, "MiniMax")
+                if deny
+                else ("unexpected output" if res.stdout.strip() or res.stderr.strip() else None)
             )
-        out.append(Check("minimax", f"{tool}/{'deny' if deny else 'allow'}/hook-env",
-                         "FAIL" if problem else "PASS", problem or "compatible file payload checked"))
+        out.append(
+            Check(
+                "minimax",
+                f"{tool}/{'deny' if deny else 'allow'}/hook-env",
+                "FAIL" if problem else "PASS",
+                problem or "compatible file payload checked",
+            )
+        )
     return out
 
 
@@ -4696,7 +4724,10 @@ def apply_minimax(
     if mp.state == "refuse":
         return Result("minimax", "refused", mp.reason)
     if not shim_proven:
-        if not (os.path.isfile(os.path.join(paths.stable, MINIMAX_HOOK_NAME)) and os.access(os.path.join(paths.stable, MINIMAX_HOOK_NAME), os.X_OK)):
+        if not (
+            os.path.isfile(os.path.join(paths.stable, MINIMAX_HOOK_NAME))
+            and os.access(os.path.join(paths.stable, MINIMAX_HOOK_NAME), os.X_OK)
+        ):
             return Result(
                 "minimax",
                 "refused",
@@ -4716,8 +4747,11 @@ def apply_minimax(
             )
             if c.status == "FAIL"
         ]
-        bad.extend(c for c in probe_minimax_files(mp.command, paths.home, timeout, minimal_path)
-                   if c.status == "FAIL")
+        bad.extend(
+            c
+            for c in probe_minimax_files(mp.command, paths.home, timeout, minimal_path)
+            if c.status == "FAIL"
+        )
         if bad:
             return Result(
                 "minimax",
@@ -4786,7 +4820,9 @@ def _minimax_hook_from_file(path: str, paths: Paths) -> tuple[str | None, list[C
             )
         group = groups[0]
         if group.get("matcher") != "Bash|Read|Write|Edit|bash|read|write|edit":
-            raise ValueError(f"matcher is {group.get('matcher')!r}, expected 'Bash|Read|Write|Edit|bash|read|write|edit'")
+            raise ValueError(
+                f"matcher is {group.get('matcher')!r}, expected 'Bash|Read|Write|Edit|bash|read|write|edit'"
+            )
         hooks = group.get("hooks")
         if not isinstance(hooks, list) or len(hooks) != 1:
             raise ValueError("expected exactly 1 hook in the group")
@@ -4803,7 +4839,10 @@ def _minimax_hook_from_file(path: str, paths: Paths) -> tuple[str | None, list[C
         return None, [Check(t, "hooks.json", "FAIL", f"{path}: {exc}")]
     out = [
         Check(
-            t, "hooks.json", "PASS", f"PreToolUse, matcher Bash|Read|Write|Edit|bash|read|write|edit, type command, timeout {timeout}s"
+            t,
+            "hooks.json",
+            "PASS",
+            f"PreToolUse, matcher Bash|Read|Write|Edit|bash|read|write|edit, type command, timeout {timeout}s",
         )
     ]
     if raw != render_minimax_hooks(paths).encode("utf-8"):
