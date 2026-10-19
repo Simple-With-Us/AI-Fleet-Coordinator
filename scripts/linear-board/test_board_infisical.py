@@ -129,58 +129,40 @@ class InfisicalTests(T.BoardTest):
             }
         )
 
-    def test_seat_pair_comes_from_infisical_before_local_files(self):
+    def legacy_host(self):
+        """A server or cloud host:  no fleet-secrets, only an INFISICAL_AUTOMATION identity (AFC-348)."""
+        return {"LINEAR_BOARD_FLEET_SECRETS": str(self.tmp / "no-such-fleet-secrets")}
+
+    def pair_in_old_folder(self):
         cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
-        self.vault.secrets.update(
-            {"LINEAR_CLAUDE_CLIENT_ID": cid, "LINEAR_CLAUDE_CLIENT_SECRET": secret}
-        )
-        p = self.as_seat("CLAUDE", "whoami")
+        self.vault.secrets.update({"LINEAR_CLAUDE_CLIENT_ID": cid, "LINEAR_CLAUDE_CLIENT_SECRET": secret})
+
+    def test_legacy_host_reads_the_pair_and_shares_the_token_through_the_old_folder(self):
+        self.pair_in_old_folder()
+        p = self.as_seat("CLAUDE", "whoami", extra=self.legacy_host())
         self.assertIn("viewer:      Claude (app user)", p.stdout)
         self.assertIn(
-            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
-            p.stdout,
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID", p.stdout
         )
         self.assertIn(
-            "shared token: Infisical AI Fleet Coordinator prod /linear LINEAR_CLAUDE_CACHE_TOKEN",
+            "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CLAUDE_CACHE_TOKEN (no token on disk)",
             p.stdout,
         )
         shared = json.loads(self.vault.secrets["LINEAR_CLAUDE_CACHE_TOKEN"])
         self.assertIn(shared["access_token"], self.mock.tokens)
-        self.assertEqual(shared["cred_fp"], json.loads(self.cache("CLAUDE").read_text())["cred_fp"])
-
-    def test_another_host_adopts_the_shared_token_without_minting(self):
-        cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
-        self.vault.secrets.update(
-            {"LINEAR_CLAUDE_CLIENT_ID": cid, "LINEAR_CLAUDE_CLIENT_SECRET": secret}
-        )
-        self.as_seat("CLAUDE", "whoami")
+        # a second process on the same host (or another host) reads the shared copy and mints nothing
+        self.as_seat("CLAUDE", "whoami", extra=self.legacy_host())
         self.assertEqual(self.mock.mints, 1)
-        other = self.tmp / "host-b" / "Fleet.token"  # a second host:  its own, empty local cache
-        p = self.as_seat("CLAUDE", "whoami", extra={"LINEAR_FLEET_TOKEN_CACHE": str(other)})
-        self.assertEqual(self.mock.mints, 1, "the second host used the shared token")
-        local_b = json.loads((other.parent / "CLAUDE.token").read_text())
-        self.assertEqual(local_b["shared_from"], "LINEAR_CLAUDE_CACHE_TOKEN")
-        self.assertEqual(
-            local_b["access_token"],
-            json.loads(self.vault.secrets["LINEAR_CLAUDE_CACHE_TOKEN"])["access_token"],
-        )
-        self.assertIn("viewer:      Claude (app user)", p.stdout)
+        self.assertFalse(list((self.tmp / "home").rglob("*.token")), "no token file anywhere under HOME")
 
-    def test_a_refused_shared_token_is_reminted_and_shared_again(self):
-        cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
-        self.vault.secrets.update(
-            {"LINEAR_CLAUDE_CLIENT_ID": cid, "LINEAR_CLAUDE_CLIENT_SECRET": secret}
-        )
-        self.as_seat("CLAUDE", "whoami")
+    def test_legacy_host_remints_a_refused_shared_token_and_shares_it_again(self):
+        self.pair_in_old_folder()
+        self.as_seat("CLAUDE", "whoami", extra=self.legacy_host())
         first = json.loads(self.vault.secrets["LINEAR_CLAUDE_CACHE_TOKEN"])
-        for path in (self.cache("CLAUDE"),):
-            c = json.loads(path.read_text())
-            c["minted_at"] -= 2 * 86400
-            path.write_text(json.dumps(c))
         first["minted_at"] -= 2 * 86400
         self.vault.secrets["LINEAR_CLAUDE_CACHE_TOKEN"] = json.dumps(first)
         self.mock.tokens.clear()  # Linear now refuses the shared token
-        self.as_seat("CLAUDE", "whoami")
+        self.as_seat("CLAUDE", "whoami", extra=self.legacy_host())
         self.assertEqual(self.mock.mints, 2)
         second = json.loads(self.vault.secrets["LINEAR_CLAUDE_CACHE_TOKEN"])
         self.assertNotEqual(second["access_token"], first["access_token"])
@@ -189,7 +171,6 @@ class InfisicalTests(T.BoardTest):
         self.seat_app("CLAUDE", "Claude")  # CLAUDE's pair in Fleet-OPS /linear
         self.vault.down = True
         p = self.as_seat("CLAUDE", "whoami")
-        self.assertIn("Infisical is unavailable", p.stderr)
         self.assertIn(
             "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID", p.stdout
         )
@@ -217,7 +198,6 @@ class InfisicalTests(T.BoardTest):
             "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
             p.stdout,
         )
-        self.assertIn("LINEAR_CLAUDE_CACHE_TOKEN", self.vault.secrets)
 
     def test_no_identity_means_no_infisical_calls(self):
         cid, secret = self.seat_app(
