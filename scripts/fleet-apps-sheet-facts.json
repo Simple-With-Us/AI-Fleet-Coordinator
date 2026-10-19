@@ -8,6 +8,10 @@
     "6820881005": {
       "status": "Successor, in progress",
       "action": "Successor Usage Monitor Client app, in progress under the Simple With Us (SWU) domain with a slightly changed name.  It replaces usage (Usage Client Monitor, 6799230435).  Owner Oct 11.  Its bundle id and App Store data stay as they are."
+    },
+    "6814951477": {
+      "status": "Retired by owner",
+      "action": "CodeCaps for Mac.  Retired from TestFlight and the Mac App Store (CC-169, owner 2026-10-19);  the Mac app ships through GitHub release DMGs (mac-release.yml), not TestFlight.  Its apps.json entry was removed on that ruling, so the ASC record is listed here instead of the registry.  The record still exists, and no build may be uploaded to it."
     }
   },
   "appNotes": {
