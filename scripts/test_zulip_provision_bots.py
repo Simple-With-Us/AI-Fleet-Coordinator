@@ -290,7 +290,7 @@ class ProvisionTests(unittest.TestCase):
         self.assertIn(ADMIN_EMAIL, out)
 
     def test_no_credential_override_option_exists(self):
-        for flag in ("--personal-key", "--rc", "--email"):
+        for flag in ("--owner-rc", "--personal-key", "--rc", "--email"):
             with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
                 prov.main([flag, "x", "--dry-run"])
             self.assertEqual(cm.exception.code, 2)
