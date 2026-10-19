@@ -170,8 +170,10 @@ run deferred every catch-up because the Usage Monitor ship was in flight:  one s
 - `ios-ship.yml` is `disabled_manually` in Congress.Trade and DealDex.  Re-enabling is the
   owner's call;  until then those apps alert once per new native commit.
 - DealDex has no iOS compile check on main (its `ci.yml` builds the web app only), so `autoRemedy` is off for it:  a catch-up needs a green compile check.  Add an iOS compile job, name it in the registry, and turn `autoRemedy` on.
-- CodeCaps for Mac ships only by hand (`macos-ship.yml` has no push trigger).  Set
-  `autoRemedy: true` in the registry if it should catch up automatically.
+- CodeCaps for Mac is retired from TestFlight and the Mac App Store (CC-169, owner
+  2026-10-19), so the registry carries a `skip` reason rather than a ship workflow:
+  the Mac app ships through GitHub release DMGs.  It reports as `skipped`, not
+  `BEHIND`, so there is nothing to catch up.
 - The live `ship-testflight.sh` sets `DEFAULT_MIN_INTERVAL_SEC=3600` (1 hour, owner
   2026-08-14) while the ios-fleet README documents 2.5 hours.  The check uses 2.5 hours, the
   stricter of the two.  Which one is the standing limit is the owner's call.
