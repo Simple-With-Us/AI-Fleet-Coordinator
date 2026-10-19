@@ -102,6 +102,9 @@ ENV_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
 FLEET_SECRETS_TIMEOUT = (
     15.0  # interactive commands wait at most this long for one fleet-secrets call
 )
+# The listener is not interactive, and it starts right after a runtime update, often while the Mac's load
+# average is above 100:  a 15 second cap left two seats refused for five minutes on Mon, Oct 19 (AFC-359).
+DAEMON_FLEET_SECRETS_TIMEOUT = 90.0
 INFISICAL_CACHE_TTL = 600.0
 # After a failed fetch with nothing held, the same request fails at once for this long instead of paying the
 # timeout again (an Infisical outage must not cost every seat or every identity candidate its own timeout).
