@@ -4582,18 +4582,23 @@ def probe_minimax_files(
     """Run MM's compatible file payloads in its restricted subprocess environment."""
     env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
     env.update(HOME=home, PATH=MINIMAL_PATH if minimal_path else os.environ.get("PATH", ""))
-    tree = os.path.join("Code", registry_tree(registry), "probe-placeholder")
+    # Without a registered ~/Code folder name there is no integration tree to probe, and a made-up
+    # one is not something the hook can deny.
+    tree = registry_tree(registry)
+    integration = os.path.join("Code", tree, "probe-placeholder") if tree else None
     out = []
     for tool, path, deny in (
         ("Read", ".secrets/probe-placeholder", True),
-        ("Write", tree, True),
+        ("Write", integration, True),
         ("Edit", ".secrets/probe-placeholder", True),
         ("Read", "public-placeholder", False),
         ("Write", "public-placeholder", False),
         ("read", ".secrets/probe-placeholder", True),
-        ("write", tree, True),
+        ("write", integration, True),
         ("edit", ".secrets/probe-placeholder", True),
     ):
+        if path is None:
+            continue
         field = "path" if tool in ("read", "write") else "file_path"
         payload = {"tool_name": tool, "tool_input": {field: os.path.join(home, path)}, "cwd": home}
         res = run_shell(command, json.dumps(payload).encode("utf-8"), env, timeout)
