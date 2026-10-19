@@ -41,7 +41,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime
