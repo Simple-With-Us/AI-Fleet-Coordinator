@@ -36,6 +36,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -509,6 +510,25 @@ MCP_PROBE = b"".join(
 )
 
 
+def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
+    """The `env` the seat's client registers for its agent-sync MCP server:  Claude Code's ~/.claude.json
+    for CLAUDE, Codex's ~/.codex/config.toml for CODEX.  On the server that carries ZULIP_RC (AFC-359
+    retired the default zuliprc folder and fleet-secrets is Mac-only).  Values are passed, never printed."""
+    try:
+        if seat == "CLAUDE":
+            servers = json.loads((home / ".claude.json").read_text()).get("mcpServers") or {}
+        elif seat == "CODEX":
+            servers = (
+                tomllib.loads((home / ".codex/config.toml").read_text()).get("mcp_servers") or {}
+            )
+        else:
+            return {}
+    except (OSError, ValueError):
+        return {}
+    env = (servers.get("agent-sync") or {}).get("env") or {}
+    return {str(key): str(value) for key, value in env.items()} if isinstance(env, dict) else {}
+
+
 def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.run) -> None:
     """Start the seat's stdio MCP the way a client does and ask for its tools.  A release that is
     missing a file the server reads fails here, before any agent notices (2026-10-16)."""
@@ -519,6 +539,7 @@ def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.r
         result = runner(
             ["agent-sync", "mcp", "--default-seat", seat],
             input=MCP_PROBE,
+            env={**os.environ, **registered_env(seat)},
             capture_output=True,
             timeout=60,
             check=False,
