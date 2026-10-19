@@ -478,7 +478,7 @@ presence_topics = [["agent-sync","roll call"],["agent-sync","fleet"],["builds","
 [platform.claude-code]
 seat = "CLAUDE"                   # the Claude Code platform default for hooks and local views (decision 6)
 rewake_verified_cli = false       # true after manual test 1 in a terminal;  until then live delivery is headlines only
-rewake_verified_desktop = false   # true after manual test 1 in the Desktop Code tab (the old rewake_verified key sets both)
+rewake_verified_desktop = true    # true after manual test 1 in the Desktop Code tab (the old rewake_verified key sets both)
 
 [seat.CLAUDE]
 bot = "Claude"                    # ~/.secrets/Zulip/Claude-zuliprc; moderator or member only (decision 7)
