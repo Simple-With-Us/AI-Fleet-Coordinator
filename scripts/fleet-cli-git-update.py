@@ -177,10 +177,14 @@ def move_to(repo: Path, target: str, state: dict, state_path: Path) -> dict:
             git(repo, "checkout", "-q", "--detach", good)
         state.update(bad=target, bad_reason=str(exc), checked_at=int(time.time()))
         save_state(state_path, state)
-        log(f"SMOKE-FAILED  {target[:7]} ({exc});  {'stayed on ' + good[:7] if good else 'no validated commit yet'}")
+        log(
+            f"SMOKE-FAILED  {target[:7]} ({exc});  {'stayed on ' + good[:7] if good else 'no validated commit yet'}"
+        )
         return {"status": "smoke_failed", "commit": good, "bad": target, "reason": str(exc)}
     now = int(time.time())
-    state.update(commit=target, previous=good, bad=None, bad_reason=None, updated_at=now, checked_at=now)
+    state.update(
+        commit=target, previous=good, bad=None, bad_reason=None, updated_at=now, checked_at=now
+    )
     save_state(state_path, state)
     log(f"UPDATED  {(good or 'none')[:7]} -> {target[:7]}")
     return {"status": "updated", "commit": target, "previous": good}
@@ -233,7 +237,9 @@ def setup(home: Path) -> dict:
         restore_validated(p["repo"], state)
         result = move_to(p["repo"], git(p["repo"], "rev-parse", "origin/main"), state, p["state"])
         if not load_state(p["state"]).get("commit"):
-            raise Failed("setup_smoke_failed")  # nothing validated yet:  `current` is left as it was
+            raise Failed(
+                "setup_smoke_failed"
+            )  # nothing validated yet:  `current` is left as it was
         # The old receiver returns "paused" before touching `current`, so a Mac push cannot repoint it.
         (p["base"] / "paused").write_bytes(PAUSE_NOTE)
         point_current(p["base"])

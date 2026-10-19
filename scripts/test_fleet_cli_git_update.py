@@ -136,7 +136,9 @@ class GitUpdateTests(unittest.TestCase):
         with self.assertRaises(U.Failed):
             U.rollback(self.home)
 
-    def test_a_run_killed_mid_smoke_never_leaves_an_unvalidated_commit_counted_as_good(self) -> None:
+    def test_a_run_killed_mid_smoke_never_leaves_an_unvalidated_commit_counted_as_good(
+        self,
+    ) -> None:
         U.setup(self.home)
         good = run(self.work, "rev-parse", "HEAD")
         new = self.commit(agent_sync=PY_OK)
