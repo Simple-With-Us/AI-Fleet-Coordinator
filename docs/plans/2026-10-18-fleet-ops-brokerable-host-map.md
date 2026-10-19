@@ -9,7 +9,7 @@ Names only.  No secret value was read, printed or written by this work.
 
 Antigravity's catalog answers *which files touch `~/.secrets`*.  A credential broker is configured the other way round: per host, per scheme.  Nobody had produced that other half, so Phase 2 had no input to start from.  This does that mapping, plus two corrections that change what the pilot should be built on.
 
-## Correction 1:  Agent Vault is the recommended vehicle, and it is not sandboxed
+## Correction 1:  Agent Vault is the recommended vehicle, on credential shape and scoping
 
 Infisical's Agent Proxy page now opens with "For new setups, we recommend using Agent Vault.  Use Agent Proxy only if you need a sandboxed local proxy that runs on your own computer, or if you want the proxy to apply a dynamic secret."  Their blog says Agent Proxy "has evolved into Agent Vault".
 
@@ -29,9 +29,7 @@ Be precise about which mode carries which drawback, because it is easy to overcl
 
 What Agent Vault actually adds over `connect` is the credential shape and the control surface:  the agent holds a **time-bound session token over a named access bundle** instead of a standing universal-auth client secret, the session is revoked when the agent exits unless it is deliberately kept, a bundle can narrow each service to **specific HTTP methods and paths** rather than a whole host, traffic policy arrives from Infisical instead of being set by a flag at launch, and the **CA is fetched per run with optional fingerprint pinning** rather than sitting in `~/.infisical/agent-proxy` for a week.  Those are real and they are what a fleet of forty-odd seats running concurrently wants.
 
-So:  commit to Agent Vault **on those grounds**, and drop the sandbox argument, which does not distinguish the two.
-
-The plan's item 9 already asked for exactly this look before Phase 2 commits to either.  Answer:  commit to Agent Vault, for the credential and scoping reasons above, and pay for it knowingly.
+So, and this is the answer to item 9 of the adoption plan, which asked for exactly this look before Phase 2 commits to either:  **commit to Agent Vault, on those grounds, and pay for it knowingly.**  Do not rest the case on the sandbox, because it does not distinguish the two.
 
 **Cost.**  Agent Proxy "is part of any plan".  Agent Vault is a Pro add-on:  5,000 brokered requests a month included, then $2 per 1,000.  A counted request is one where the proxy attaches a real credential.  That is the owner-level decision this slice cannot make.
 
