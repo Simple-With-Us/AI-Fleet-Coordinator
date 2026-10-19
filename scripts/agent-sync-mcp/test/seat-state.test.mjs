@@ -220,17 +220,18 @@ test("token refusals are counted apart and cannot push an authorize row out of t
 test("Cursor Linear allowance has independent counters and spacing from Zulip", async () => {
   const store = S.memoryStore();
   const policy = { hour: 2000, day: 20000, spacingMs: 100 };
-  for (let i = 0; i < 20; i++) {
+  const hourly = S.BUDGETS.write[0].limit;
+  for (let i = 0; i < hourly; i++) {
     assert.equal((await S.reserve(store, { kind: "write" }, T0 + i * 3000)).ok, true);
   }
-  const now = T0 + 60000;
+  const now = T0 + hourly * 3000;
   assert.equal((await S.reserve(store, { kind: "write" }, now)).code, "budget_exhausted");
   for (let i = 0; i < 40; i++) {
     const result = await S.reserve(store, { kind: "linear_write", policy }, now);
     assert.equal(result.ok, true);
     assert.equal(result.waitMs, i * 100);
   }
-  assert.equal((await S.reserve(store, { kind: "write", policy: { hour: 100, day: 600 } }, now)).ok, true);
+  assert.equal((await S.reserve(store, { kind: "write", policy: { hour: 200, day: 1200 } }, now)).ok, true);
   const limited = S.memoryStore();
   await limited.put("budget:linear_write", Array(2000).fill(now));
   const exhausted = await S.reserve(limited, { kind: "linear_write", policy }, now);

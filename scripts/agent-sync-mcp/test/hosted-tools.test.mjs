@@ -638,24 +638,36 @@ test("spacing:  writes 3 seconds apart, reads half a second, past 6 seconds rate
   assert.deepEqual(await S.reserve(store, { kind: "read" }, t), { ok: true, waitMs: 500 });
 });
 
-test("budgets (D5):  20 writes an hour, 120 a day, 60 reactions and 300 reads an hour", async () => {
+test("a seat policy below the default never lowers it:  Cursor's 100 an hour becomes 120", async () => {
   const store = S.memoryStore();
   let t = Date.parse("2026-10-09T10:00:00Z");
-  for (let i = 0; i < 20; i++) {
+  const policy = { hour: 100, day: 600 };
+  for (let i = 0; i < 120; i++) {
+    assert.equal((await S.reserve(store, { kind: "write", policy }, t)).ok, true);
+    t += 3000;
+  }
+  assert.equal((await S.reserve(store, { kind: "write", policy }, t)).code, "budget_exhausted");
+});
+
+test("budgets (D5):  120 writes an hour, 720 a day, 60 reactions and 300 reads an hour", async () => {
+  const store = S.memoryStore();
+  let t = Date.parse("2026-10-09T10:00:00Z");
+  for (let i = 0; i < 120; i++) {
     assert.equal((await S.reserve(store, { kind: "write" }, t)).ok, true);
     t += 3000;
   }
   const out = await S.reserve(store, { kind: "write" }, t);
   assert.equal(out.code, "budget_exhausted");
   assert.equal(out.resetAt, "2026-10-09T11:00:00Z");
-  assert.deepEqual(S.BUDGETS.write.map((w) => w.limit), [20, 120]);
+  assert.deepEqual(S.BUDGETS.write.map((w) => w.limit), [120, 720]);
+  assert.deepEqual(S.BUDGETS.linear_write.map((w) => w.limit), [120, 720]);
   assert.equal(S.BUDGETS.react[0].limit, 60);
   assert.equal(S.BUDGETS.read[0].limit, 300);
-  // Across a day:  six hours of 20 is 120, and the seventh hour is refused by the day window.
+  // Across a day:  six hours of 120 is 720, and the seventh hour is refused by the day window.
   const day = S.memoryStore();
   let d = Date.parse("2026-10-09T00:00:00Z");
   for (let h = 0; h < 6; h++) {
-    for (let i = 0; i < 20; i++) assert.equal((await S.reserve(day, { kind: "write" }, d + i * 3000)).ok, true);
+    for (let i = 0; i < 120; i++) assert.equal((await S.reserve(day, { kind: "write" }, d + i * 3000)).ok, true);
     d += S.HOUR_MS;
   }
   const dayOut = await S.reserve(day, { kind: "write" }, d);
@@ -669,7 +681,7 @@ test("a budget refusal surfaces as budget_exhausted with reset_at, and a duplica
   assert.equal(posted.duplicate, false);
   for (let i = 0; i < 25; i++) assert.equal(structured(await tools.call("zulip_post", { channel: "sandbox", topic: "b", text: "first" }), "zulip_post").duplicate, true);
   assert.equal((await gate.store.get("budget:write")).length, 1, "duplicates spend no write budget");
-  for (let i = 0; i < 19; i++) structured(await tools.call("zulip_post", { channel: "sandbox", topic: "b", text: `n${i}` }), "zulip_post");
+  for (let i = 0; i < S.BUDGETS.write[0].limit - 1; i++) structured(await tools.call("zulip_post", { channel: "sandbox", topic: "b", text: `n${i}` }), "zulip_post");
   const error = toolError(await tools.call("zulip_post", { channel: "sandbox", topic: "b", text: "one too many" }), "budget_exhausted");
   assert.match(error.reset_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
 });
