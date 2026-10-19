@@ -332,7 +332,12 @@ class RegisteredEnvTests(unittest.TestCase):
             self.assertEqual(doctor.registered_env("CODEX", home), {"ZULIP_RC": "/x"})
             self.assertEqual(doctor.registered_env("CURSOR", home), {})
             self.assertEqual(doctor.registered_env("CLAUDE", home / "missing"), {})
-            for bad in ([], {"mcpServers": []}, {"mcpServers": {"agent-sync": "x"}}, {"mcpServers": {"agent-sync": {"env": "x"}}}):
+            for bad in (
+                [],
+                {"mcpServers": []},
+                {"mcpServers": {"agent-sync": "x"}},
+                {"mcpServers": {"agent-sync": {"env": "x"}}},
+            ):
                 (home / ".claude.json").write_text(json.dumps(bad))
                 self.assertEqual(doctor.registered_env("CLAUDE", home), {})
 
