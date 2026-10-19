@@ -223,7 +223,7 @@ set_rc 8791 28
 run_watch; run_expect_log "streak=1/3"; reject_restart xcode-health
 
 # 6. (Removed 2026-10-19, AFC-363.)  This case checked that streaks are per
-#    service, with xcode-health :8791 beside xcode-health :8791.  xcode-health is
+#    service, with mac-collab :8792 beside xcode-health :8791.  mac-collab is
 #    retired, so only one local HTTP probe is left to count strikes for.
 
 # 7. MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES overrides K.
