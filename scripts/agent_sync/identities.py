@@ -17,7 +17,7 @@ ZULIP_<CODE>_API_KEY with ZULIP_SITE;  docs/protocols/agent-sync-server.md).  An
 Infisical, then the environment.  Only key NAMES are read here, never values;  a value is read when the
 identity is first opened.  The owner's own account and the integration bots (BetterStack, Datadog,
 Linear, PagerDuty, Sentry) are never seats, so they never enter the set, whatever names Infisical or a
-directory holds (zulip.NOT_SEAT_PREFIXES drops JAY_ZULIP_* and the rest before the registry check);
+directory holds (zulip.NOT_SEAT_PREFIXES drops the owner, realm-admin and integration prefixes before the registry check);
 check_bot() still refuses a key that is not the claimed identity's own bot when the credential is first used.
 
 A launcher pin (AGENT_LAUNCH_SEAT) narrows the set to the pinned seat alone.

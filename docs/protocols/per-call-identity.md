@@ -34,7 +34,7 @@ So the connection says who may act, and each call says who is acting.  Bots are 
 | Stdio MCP or CLI on the Mac | Every agent bot whose credential file is on the Mac:  the seat bots, BF-* and GB-* |
 | Stdio MCP or CLI on the server | Every agent bot whose credential the server holds |
 
-Never in any set:  the owner's own account, the realm-admin bot (`REALM_ADMIN_ZULIP_*` in `/zulipadmin`, used only by the owner-run provisioning script) and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry), whatever `/zulip` key names exist (`zulip.NOT_SEAT_PREFIXES` drops `JAY_*`, `REALM_ADMIN_*` and the rest).  The listener daemon keeps its partition (`agent-sync-partition.toml`) unchanged:  this page is about who an agent may act as, not which instance listens for whom.
+Never in any set:  the owner's own account, the realm-admin bot (`REALM_ADMIN_ZULIP_*` in `/zulipadmin`, used only by the owner-run provisioning script) and the integration bots (BetterStack, Datadog, Linear, PagerDuty, Sentry), whatever `/zulip` key names exist (`zulip.NOT_SEAT_PREFIXES` drops the owner's, `REALM_ADMIN_*` and the rest).  The listener daemon keeps its partition (`agent-sync-partition.toml`) unchanged:  this page is about who an agent may act as, not which instance listens for whom.
 
 GB-ENGINEER stays out until its credentials are inventoried in Infisical and verified (`DEPLOY.md`, `agent-sync-partition.toml` and `agent-sync-server.md` keep it disabled).  A persona joins a set only by being enabled in the table with a verified credential, never by being named in a call.  The allowed-set builder reads `GB_IDENTITIES` from that table and never keeps a list of its own, so the page and the runtime cannot drift apart.
 

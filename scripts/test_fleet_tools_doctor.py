@@ -36,7 +36,7 @@ class SeatAndMcpTests(unittest.TestCase):
 
     def test_seat_needs_zulip_linear_and_fleetlink(self):
         names: dict[str, frozenset[str] | None] = {
-            "/zulip": frozenset({"JAY_ZULIP_KEY"}),
+            "/zulip": frozenset({"OWNER_ACCOUNT_ZULIP_KEY"}),
             "/linear": frozenset(),
             "/fleetlink": None,
         }
