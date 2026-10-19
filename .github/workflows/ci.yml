@@ -185,10 +185,11 @@ jobs:
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
-    # slower and stays a local run.  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
+    # slower and stays a local run.  TokenBlobTests (about 8 seconds) pins the per-key fleet-secrets reads and the
+    # zero-mint, zero-write fresh-blob path (AFC-361).  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
     # needs-owner notifier checks the owner's Linear reply by.
     - name: Board CLI input files and flat labels
-      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests
+      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests TokenBlobTests
     # Infisical for the board CLI (AFC-348):  client pairs from /linear before local files, the shared
     # LINEAR_<SEAT>_CACHE_TOKEN adopted and published, and the fallback when Infisical is down.  Mock servers only.
     - name: Board CLI Infisical tests
@@ -253,10 +254,9 @@ jobs:
         bash -n scripts/ios-fleet/install-testflight-freshness.sh
     - name: Mac ledger mirror tests
       run: bash scripts/test-mac-ledger-mirror.sh
-    # The LaunchAgent script that copies a Cloudflare token from Infisical prod into the handoff
-    # file.  A stub CLI and a temp dir stand in for the real ones.
-    - name: Infisical secrets sync tests
-      run: bash scripts/test-infisical-secrets-sync.sh
+    # The cutover helper for retiring ~/.secrets (AFC-359):  a temp HOME, stub launchctl and lsof, a throwaway repo.
+    - name: Retire secrets dir tests
+      run: bash scripts/test-retire-secrets-dir.sh
     # The BotFleet launch wrapper and its LaunchAgent template:  the "already healthy" exit, the
     # missing-checkout exits, and the fleet-seat switch (BOTFLEET_FLEET_SEAT_PROMPTS=1) that the
     # open-loops routines depend on.  A stub curl and a stub node stand in for the real ones.
