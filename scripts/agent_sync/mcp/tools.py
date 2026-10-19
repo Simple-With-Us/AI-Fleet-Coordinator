@@ -2391,11 +2391,14 @@ class Tools:
             kind = secretscan.scan(value, [*self.known, *extra])
             if kind:
                 raise ToolError(
-                    "refused_secret", "refusing to publish:  the %s looks like it contains %s" % (field, kind)
+                    "refused_secret",
+                    "refusing to publish:  the %s looks like it contains %s" % (field, kind),
                 )
 
         try:
-            text, structured = FLEETLINK.run(name, args, self.seat, env=rt.env, home=home, scan=scan)
+            text, structured = FLEETLINK.run(
+                name, args, self.seat, env=rt.env, home=home, scan=scan
+            )
         except FLEETLINK.FleetLinkFailure as exc:
             raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
         return self.ok(text, structured)

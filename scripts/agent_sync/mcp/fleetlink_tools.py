@@ -54,7 +54,9 @@ ENV_TOKEN = "FLEETLINK_TOKEN"
 TOKEN_PREFIX = "FLEETLINK_TOKEN_"
 SECRETS_SUBDIR = (".secrets", "FleetLink")
 TIMEOUT_S = 120.0
-OUTPUT_LIMIT = 8_000_000  # bytes of CLI output;  read_file returns up to 1 MB of text, pretty-printed
+OUTPUT_LIMIT = (
+    8_000_000  # bytes of CLI output;  read_file returns up to 1 MB of text, pretty-printed
+)
 MESSAGE_LIMIT = 300
 FILE_MODES = (0o600, 0o400)
 MARKER_BEGIN = "BEGIN_UNTRUSTED_FLEETLINK"
@@ -65,7 +67,13 @@ UNTRUSTED_NOTE = (
 )
 # The hosted FLEETLINK_READ_TOOLS;  every other fleetlink_* tool is a write.
 READ_NAMES = frozenset(
-    {"fleetlink_list_shares", "fleetlink_get_share", "fleetlink_list_teams", "fleetlink_read_file", "fleetlink_whoami"}
+    {
+        "fleetlink_list_shares",
+        "fleetlink_get_share",
+        "fleetlink_list_teams",
+        "fleetlink_read_file",
+        "fleetlink_whoami",
+    }
 )
 # The hosted FLEETLINK_SCANNED_FIELDS:  text that lands on a public link.
 SCANNED_FIELDS = ("text", "markdown", "title", "description", "url")
@@ -183,17 +191,25 @@ def resolve_credential(seat: str, env: Mapping[str, str], home: Path) -> tuple[s
     except OSError:
         raise FleetLinkFailure("not_configured", "%s could not be checked." % shown) from None
     if not stat.S_ISREG(info.st_mode):
-        raise FleetLinkFailure("not_configured", "%s is not a regular file (a link or a folder):  refusing it." % shown)
+        raise FleetLinkFailure(
+            "not_configured", "%s is not a regular file (a link or a folder):  refusing it." % shown
+        )
     if info.st_uid != os.getuid():
-        raise FleetLinkFailure("not_configured", "%s is not owned by this user:  refusing it." % shown)
+        raise FleetLinkFailure(
+            "not_configured", "%s is not owned by this user:  refusing it." % shown
+        )
     if stat.S_IMODE(info.st_mode) not in FILE_MODES:
         raise FleetLinkFailure(
-            "not_configured", "%s is mode %03o:  run chmod 600 on it (0600 or 0400 only)." % (shown, stat.S_IMODE(info.st_mode))
+            "not_configured",
+            "%s is mode %03o:  run chmod 600 on it (0600 or 0400 only)."
+            % (shown, stat.S_IMODE(info.st_mode)),
         )
     return "file", shown, str(path)
 
 
-def child_env(env: Mapping[str, str], seat: str, credential: tuple[str, str, str], private: str) -> dict[str, str]:
+def child_env(
+    env: Mapping[str, str], seat: str, credential: tuple[str, str, str], private: str
+) -> dict[str, str]:
     out = {key: env[key] for key in CHILD_ENV_KEYS if env.get(key)}
     out["FLEETLINK_SEAT"] = seat
     # A saved `fleet-share login` of whoever runs this server is never a fallback for the seat's own bot.
@@ -223,7 +239,11 @@ def _write_args(private: str, args: Mapping[str, Any]) -> str:
 def one_line(message: str) -> str:
     """A CLI message as one cleaned line:  NFKC, no format characters, marker text replaced, capped."""
     text = unicodedata.normalize("NFKC", message)
-    text = "".join(ch for ch in text if unicodedata.category(ch) not in ("Cf", "Cc", "Zl", "Zp") or ch in " \t\n")
+    text = "".join(
+        ch
+        for ch in text
+        if unicodedata.category(ch) not in ("Cf", "Cc", "Zl", "Zp") or ch in " \t\n"
+    )
     text = _MARKER_RE.sub("[marker removed]", re.sub(r"\s*[\r\n\t]+\s*", " ", text).strip())
     return text[:MESSAGE_LIMIT]
 
@@ -232,11 +252,16 @@ def _reject_constant(value: str) -> Any:
     raise ValueError("non-JSON number %s" % value)
 
 
-def failure_from(code: int, stderr: bytes, *, write: bool, scan: Callable[[str], str | None]) -> FleetLinkFailure:
+def failure_from(
+    code: int, stderr: bytes, *, write: bool, scan: Callable[[str], str | None]
+) -> FleetLinkFailure:
     """The CLI's own `Error: <message>` (exit 1) as a tool error.  Anything else is upstream_error with the exit
     code alone, since a traceback is not a message for the caller."""
     lines = (stderr or b"").decode("utf-8", "replace").splitlines()
-    said = next((line[len("Error:"):].strip() for line in reversed(lines) if line.startswith("Error:")), None)
+    said = next(
+        (line[len("Error:") :].strip() for line in reversed(lines) if line.startswith("Error:")),
+        None,
+    )
     if code == 1 and said is not None:
         message = one_line(said)
         if scan(message):
@@ -244,7 +269,9 @@ def failure_from(code: int, stderr: bytes, *, write: bool, scan: Callable[[str],
         if said.startswith("Could not reach"):
             return FleetLinkFailure("unavailable", "could not reach FleetLink", retryable=not write)
         if said.startswith(("Not signed in", "FLEETLINK_AUTH_FILE")):
-            return FleetLinkFailure("not_configured", "FleetLink's CLI found no credential for this seat:  %s" % message)
+            return FleetLinkFailure(
+                "not_configured", "FleetLink's CLI found no credential for this seat:  %s" % message
+            )
         status_match = _HTTP_RE.search(said)
         status = int(status_match.group(1)) if status_match else None
         if status in (401, 403):
@@ -254,9 +281,15 @@ def failure_from(code: int, stderr: bytes, *, write: bool, scan: Callable[[str],
                 "(Infisical /fleetlink FLEETLINK_TOKEN_<SEAT>)." % message,
             )
         if status == 429:
-            return FleetLinkFailure("rate_limited", "FleetLink is rate limiting this seat:  %s" % message, retryable=True)
+            return FleetLinkFailure(
+                "rate_limited",
+                "FleetLink is rate limiting this seat:  %s" % message,
+                retryable=True,
+            )
         if status is not None and status >= 500:
-            return FleetLinkFailure("unavailable", "FleetLink failed:  %s" % message, retryable=not write)
+            return FleetLinkFailure(
+                "unavailable", "FleetLink failed:  %s" % message, retryable=not write
+            )
         return FleetLinkFailure("fleetlink_refused", "FleetLink:  %s" % message)
     return FleetLinkFailure("upstream_error", "fleet-share failed (exit %d)" % code)
 
@@ -301,16 +334,23 @@ def run(
             raise FleetLinkFailure(
                 "unavailable",
                 "FleetLink's CLI did not finish within %d seconds%s"
-                % (int(timeout), "" if not write else ";  the change may or may not have landed, so check before retrying"),
+                % (
+                    int(timeout),
+                    ""
+                    if not write
+                    else ";  the change may or may not have landed, so check before retrying",
+                ),
                 retryable=not write,
             ) from None
         except OSError as exc:
             raise FleetLinkFailure(
-                "unavailable", "could not start FleetLink's CLI (%s)" % (exc.strerror or type(exc).__name__)
+                "unavailable",
+                "could not start FleetLink's CLI (%s)" % (exc.strerror or type(exc).__name__),
             ) from None
     finally:
         shutil.rmtree(private, ignore_errors=True)
     if proc.returncode != 0:
+
         def scan_message(text: str) -> str | None:
             try:
                 scan("message", text, extra_known)
@@ -327,7 +367,9 @@ def run(
     except (UnicodeDecodeError, ValueError):
         data = None
     if not isinstance(data, dict):
-        raise FleetLinkFailure("upstream_error", "FleetLink answered something this server could not read")
+        raise FleetLinkFailure(
+            "upstream_error", "FleetLink answered something this server could not read"
+        )
     header = "agent-sync %s:  as %s's FleetLink account" % (name, seat)
     return envelope(header, data, uuid.uuid4().hex[:16]), summary(data)
 
@@ -344,8 +386,18 @@ def envelope(header: str, data: Mapping[str, Any], nonce: str) -> str:
     surrogates) are escaped and marker text is replaced, so the data can never end the fence early."""
     text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     text = _MARKER_RE.sub("[marker removed]", _LINE_BREAKS_RE.sub(_escape, text))
-    header = _MARKER_RE.sub("[marker removed]", _LINE_BREAKS_RE.sub(_escape, re.sub(r"[\r\n]", " ", header)))
-    return "\n".join([header, UNTRUSTED_NOTE, "%s nonce=%s" % (MARKER_BEGIN, nonce), text, "%s nonce=%s" % (MARKER_END, nonce)])
+    header = _MARKER_RE.sub(
+        "[marker removed]", _LINE_BREAKS_RE.sub(_escape, re.sub(r"[\r\n]", " ", header))
+    )
+    return "\n".join(
+        [
+            header,
+            UNTRUSTED_NOTE,
+            "%s nonce=%s" % (MARKER_BEGIN, nonce),
+            text,
+            "%s nonce=%s" % (MARKER_END, nonce),
+        ]
+    )
 
 
 def _is_str(value: Any) -> bool:
@@ -357,7 +409,9 @@ def _is_number(value: Any) -> bool:
 
 
 def _is_int(value: Any) -> bool:
-    return (isinstance(value, int) and not isinstance(value, bool)) or (isinstance(value, float) and value.is_integer())
+    return (isinstance(value, int) and not isinstance(value, bool)) or (
+        isinstance(value, float) and value.is_integer()
+    )
 
 
 def _lenient(value: Any, ok: Callable[[Any], bool]) -> Any:
@@ -408,10 +462,18 @@ def summary(data: Mapping[str, Any]) -> dict[str, Any]:
             "file_count": int(file_count) if file_count is not None else 0,
         }
     shares = data.get("shares")
-    if isinstance(shares, list) and len(shares) <= 200 and all(isinstance(s, dict) and _is_str(s.get("slug")) for s in shares):
+    if (
+        isinstance(shares, list)
+        and len(shares) <= 200
+        and all(isinstance(s, dict) and _is_str(s.get("slug")) for s in shares)
+    ):
         out["slugs"] = [s["slug"] for s in shares]
     teams = data.get("teams")
-    if isinstance(teams, list) and len(teams) <= 100 and all(isinstance(t, dict) and _is_str(t.get("id")) for t in teams):
+    if (
+        isinstance(teams, list)
+        and len(teams) <= 100
+        and all(isinstance(t, dict) and _is_str(t.get("id")) for t in teams)
+    ):
         out["team_ids"] = [t["id"] for t in teams]
     upload = data.get("upload")
     if (
@@ -439,12 +501,18 @@ def summary(data: Mapping[str, Any]) -> dict[str, Any]:
         and _optional(data, "auth", lambda v: isinstance(v, dict) and _is_str(v.get("kind")))
         and _optional(data, "limits", lambda v: isinstance(v, dict))
     ):
-        out["user"] = {"id": user["id"], "display_name": user.get("display_name", ""), "kind": user.get("kind", "")}
+        out["user"] = {
+            "id": user["id"],
+            "display_name": user.get("display_name", ""),
+            "kind": user.get("kind", ""),
+        }
         if isinstance(auth, dict):
             out["auth"] = {"kind": auth["kind"]}
         if isinstance(limits, dict):
             out["limits"] = {
-                key: value for key, value in limits.items() if value is None or isinstance(value, bool) or _is_number(value)
+                key: value
+                for key, value in limits.items()
+                if value is None or isinstance(value, bool) or _is_number(value)
             }
     if _is_str(data.get("file_url")):
         out["file_url"] = data["file_url"]
