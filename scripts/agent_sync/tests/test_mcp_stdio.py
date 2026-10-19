@@ -1744,12 +1744,9 @@ class StartupTests(McpHarness):
                 self.assertIn("role %d" % role, stderr)
 
     def test_subprocess_refuses_a_credential_of_another_bot(self):
-        write_rc(
-            self.home / ".secrets" / "Zulip" / "Codex-zuliprc",
-            email=BOT_EMAIL,
-            key=self.key,
-            site=self.fake.url,
-        )
+        self.add_infisical_bot(
+            "CODEX", email=BOT_EMAIL, key=self.key
+        )  # CODEX's names hold Claude's key
         code, lines, stderr = self.spawn(
             self.mcp_env(AGENT_SEAT="CODEX"), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
         )
@@ -1776,7 +1773,7 @@ class StartupTests(McpHarness):
         )
 
     def test_subprocess_ignores_the_key_triple_and_secrets_dir(self):
-        # Only the file pointers (--rc, ZULIP_RC) and the home file are credential sources.  A raw key in
+        # Only the file pointers (--rc, ZULIP_RC) and Infisical /zulip are credential sources (AFC-359).  A raw key in
         # the environment, or a moved secrets dir, is ignored with a note and never a fall-through.
         other_key, _ = self.other_bot_rc()
         override_dir = self.tmp / "override"
@@ -1798,11 +1795,13 @@ class StartupTests(McpHarness):
         self.assertIn(
             "ignoring ZULIP_EMAIL, ZULIP_API_KEY, ZULIP_SITE, AGENT_SYNC_SECRETS_DIR", stderr
         )
-        self.home_rc.unlink()  # no seat file:  refused, never a fall-through to the triple
+        self.drop_infisical_bot(
+            "CLAUDE"
+        )  # no seat key:  refused, never a fall-through to the triple
         code, lines, stderr = self.spawn(env, [self.WHOAMI])
         self.assertEqual((code, lines), (3, []))
-        self.assertIn("credential file not found", stderr)
-        self.assertIn(str(self.home_rc), stderr)  # the default path, not the moved secrets dir
+        self.assertIn("CLAUDE_ZULIP_KEY", stderr)  # the Infisical names, not the moved secrets dir
+        self.assertNotIn(str(override_dir), stderr)
 
     def test_subprocess_zulip_rc_wins_over_the_home_file(self):
         # Review follow-up:  mcp used to build the home path itself and strip ZULIP_RC.  It now goes through
@@ -1818,11 +1817,9 @@ class StartupTests(McpHarness):
         )
         stale_key = zulip_shaped()
         self.extra_secrets.append(stale_key)
-        write_rc(
-            self.home_rc, email=BOT_EMAIL, key=stale_key, site=self.fake.url
-        )  # a key Zulip rejects
+        self.add_infisical_bot("CLAUDE", email=BOT_EMAIL, key=stale_key)  # a key Zulip rejects
         code, lines, stderr = self.spawn(self.mcp_env(), [self.WHOAMI])
-        self.assertEqual(code, 3, stderr)  # sanity:  the home file alone does not work
+        self.assertEqual(code, 3, stderr)  # sanity:  the Infisical key alone does not work
         self.assertIn("HTTP 401", stderr)
         code, lines, stderr = self.spawn(self.mcp_env(ZULIP_RC=str(launcher_rc)), [self.WHOAMI])
         self.assertEqual(code, 0, stderr)
@@ -1889,7 +1886,7 @@ class StartupTests(McpHarness):
             "claude.smith@zulip.test", "Claude Smith", human_key
         )  # reuses the human's record
         self.assertEqual(cli.seat_tag_for(self.fake.user_named("Claude Smith")), "CLAUDE")
-        write_rc(self.home_rc, email="claude.smith@zulip.test", key=human_key, site=self.fake.url)
+        self.add_infisical_bot("CLAUDE", email="claude.smith@zulip.test", key=human_key)
         code, lines, stderr = self.spawn(
             self.mcp_env(), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
         )
@@ -1903,12 +1900,9 @@ class StartupTests(McpHarness):
         grok_key = zulip_shaped()
         self.extra_secrets.append(grok_key)
         self.fake.add_bot("grok-build-bot@zulip.test", "Grok", grok_key)
-        write_rc(
-            self.home / ".secrets" / "Zulip" / "Grok-Build-zuliprc",
-            email="grok-build-bot@zulip.test",
-            key=grok_key,
-            site=self.fake.url,
-        )
+        self.add_infisical_bot(
+            "GROK", email="grok-build-bot@zulip.test", key=grok_key
+        )  # GROK_BUILD_ZULIP_*
         call = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -1976,8 +1970,8 @@ class StartupTests(McpHarness):
         self.assertEqual(self.assert_structured("zulip_read_topic", result)["count"], 50)
 
     def test_realm_lock_refuses_before_any_request(self):
-        write_rc(
-            self.home_rc, email=BOT_EMAIL, key=self.key, site="http://127.0.0.1:1"
+        self.add_infisical_bot(
+            "CLAUDE", email=BOT_EMAIL, key=self.key, site="http://127.0.0.1:1"
         )  # not the realm's port
         code, lines, stderr = self.spawn(
             self.mcp_env(), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
@@ -1987,9 +1981,11 @@ class StartupTests(McpHarness):
         self.assertEqual(self.fake.requests, [])
 
     def test_group_readable_rc_is_refused(self):
-        os.chmod(self.home_rc, 0o640)
+        os.chmod(self.home_rc, 0o640)  # an explicit --rc file is still mode-checked
         code, lines, stderr = self.spawn(
-            self.mcp_env(), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
+            self.mcp_env(),
+            [{"jsonrpc": "2.0", "id": 1, "method": "ping"}],
+            argv=("--rc", str(self.home_rc)),
         )
         self.assertEqual((code, lines), (3, []))
         self.assertIn("chmod 600", stderr)

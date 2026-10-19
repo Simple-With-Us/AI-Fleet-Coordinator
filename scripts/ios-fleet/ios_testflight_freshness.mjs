@@ -47,7 +47,7 @@
  * post per app per six hours, and never twice for the same commit and reason.
  *
  * Credentials:  this file never reads one.  App Store Connect calls go through
- * the fleet's asc-api.mjs (which reads the ASC_* env or Infisical /appstore-connect through fleet-secrets), and
+ * the fleet's asc-api.mjs (which reads the ASC_* env or Infisical /asc through fleet-secrets), and
  * its stderr is never echoed, because a crash there can name the key path.
  * GitHub calls go through the gh CLI;  Zulip through agent-sync.
  */

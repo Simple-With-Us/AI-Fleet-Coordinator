@@ -112,6 +112,9 @@ jobs:
     # Fleet tool parity doctor (docs/protocols/fleet-tool-parity.md).
     - name: Fleet tools doctor tests
       run: python3 scripts/test_fleet_tools_doctor.py
+    # Zulip bot provisioning script (AFC-359):  runs against a fake Zulip on 127.0.0.1 and a fake fleet-secrets.
+    - name: Zulip provision bots tests
+      run: python3 scripts/test_zulip_provision_bots.py
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
     # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
     - name: Fleet skill identity tests

@@ -2,7 +2,7 @@
 
 Every environment is an explicit dict handed to cli.main(env=...), so the real shell's
 CLAUDE_CODE_SESSION_ID, AGENT_SEAT and HOME never leak in, and no test can touch
-~/.secrets, ~/.agent-sync or the live realm.  The fake API key is generated per test run, so
+~/.secrets, ~/.agent-sync, the real fleet-secrets or the live realm.  The fake API key is generated per test run, so
 the source holds no key-looking literal (the gitleaks job runs on this repo).  Every byte any
 command prints is collected, and tearDown fails the test if the key or its base64 form appears.
 """
@@ -89,6 +89,12 @@ class Harness(unittest.TestCase):
         infisical = mock.patch.object(Z, "_default_infisical_fetch", fake_infisical)
         infisical.start()
         self.addCleanup(infisical.stop)
+        # The /zulip key NAMES (identities, listener init) come from the same dict:  never a value.
+        names = mock.patch.object(
+            Z, "_default_infisical_names", lambda *_a: frozenset(self.infisical_values)
+        )
+        names.start()
+        self.addCleanup(names.stop)
         self.fake = FakeZulip(self.key, heartbeat=self.heartbeat)
         self.fake.start()
         self.addCleanup(self.fake.stop)
@@ -110,6 +116,19 @@ class Harness(unittest.TestCase):
         everything = "\n".join(self.transcript)
         self.assertNotIn(self.key, everything, "the API key reached the output")
         self.assertNotIn(token, everything, "the base64 auth token reached the output")
+
+    def add_infisical_bot(
+        self, seat: str, *, email: str, key: str, site: str | None = None
+    ) -> None:
+        """Put a bot's three /zulip names (<BOT>_ZULIP_EMAIL, _KEY and _SITE) in the fake Infisical."""
+        email_name, key_name, site_name = Z.infisical_key_names(seat)
+        self.infisical_values.update(
+            {email_name: email, key_name: key, site_name: site or self.fake.url}
+        )
+
+    def drop_infisical_bot(self, seat: str) -> None:
+        for name in Z.infisical_key_names(seat):
+            self.infisical_values.pop(name, None)
 
     # ---- environment ----------------------------------------------------------------------
     def env(self, **overrides: str | None) -> dict[str, str]:

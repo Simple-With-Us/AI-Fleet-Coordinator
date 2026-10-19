@@ -19,7 +19,8 @@ Checks:
               once AFC-329 lands, the board Linear catalog
   tool-file   the files the recall, lane and fleet-mode tools run from ship with the runtime
   fleet-mode-doc  the Mac's ~/apps/FLEET-MODE.md equals the repo's docs/FLEET-MODE.md (WARN if not)
-  seat:<S>    per seat:  Zulip rc, Linear app, FleetLink token file
+  seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical Fleet-OPS
+              (/zulip, /linear, /fleetlink;  AFC-359:  nothing under ~/.secrets is read)
   mcp:codex   Codex registers agent-sync (and FleetLink when a token exists)
   mcp:claude  Claude Code registers agent-sync (and FleetLink likewise)
 
@@ -390,20 +391,63 @@ def check_fleet_mode_doc(report: Report) -> None:
         )
 
 
-def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
-    zulip = HOME / ".secrets/Zulip" / f"{title_case(seat)}-zuliprc"
-    linear_file = HOME / ".secrets/Linear" / f"{seat}.env"
-    linear_env = bool(
-        env.get(f"LINEAR_{seat_file(seat)}_CLIENT_ID")
-        and env.get(f"LINEAR_{seat_file(seat)}_CLIENT_SECRET")
+# The Zulip key prefix where it differs from the seat (agent_sync/zulip.py SEAT_FILE_OVERRIDES).
+ZULIP_PREFIX_OVERRIDES = {"GROK": "GROK_BUILD"}
+_names_cache: dict[str, frozenset[str] | None] = {}
+
+
+def infisical_names(folder: str, env: dict[str, str]) -> frozenset[str] | None:
+    """Key NAMES in one Fleet-OPS folder (`fleet-secrets names`:  no value reaches this process), or None when
+    fleet-secrets is missing or fails.  Once per folder per run."""
+    if folder in _names_cache:
+        return _names_cache[folder]
+    binary = (
+        env.get("FLEET_SECRETS_BIN")
+        or shutil.which("fleet-secrets")
+        or str(HOME / ".local/bin/fleet-secrets")
     )
-    fleetlink = HOME / ".secrets/FleetLink" / f"{seat_file(seat)}.env"
+    names: frozenset[str] | None = None
+    try:
+        proc = subprocess.run(
+            [binary, "names", "--path", folder],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if proc.returncode == 0:
+            names = frozenset(line.strip() for line in proc.stdout.splitlines() if line.strip())
+    except (OSError, subprocess.SubprocessError):
+        names = None
+    _names_cache[folder] = names
+    return names
+
+
+def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
+    code = seat_file(seat)
+    zulip_names = infisical_names("/zulip", env)
+    if zulip_names is None:
+        report.add(f"seat:{seat}", "WARN", "fleet-secrets could not list Infisical Fleet-OPS names")
+        return
+    prefix = ZULIP_PREFIX_OVERRIDES.get(code, code)
+    zulip = all(f"{prefix}_ZULIP_{part}" in zulip_names for part in ("EMAIL", "KEY", "SITE"))
+    linear_names = infisical_names("/linear", env) or frozenset()
+    linear_env = bool(
+        env.get(f"LINEAR_{code}_CLIENT_ID") and env.get(f"LINEAR_{code}_CLIENT_SECRET")
+    )
+    linear = (
+        linear_env or {f"{code}_LINEAR_CLIENT_ID", f"{code}_LINEAR_CLIENT_SECRET"} <= linear_names
+    )
+    fleetlink = bool(env.get(f"FLEETLINK_TOKEN_{code}")) or f"FLEETLINK_TOKEN_{code}" in (
+        infisical_names("/fleetlink", env) or frozenset()
+    )
     missing = [
         label
         for label, ok in (
-            ("zulip rc", zulip.exists()),
-            ("linear app", linear_file.exists() or linear_env),
-            ("fleetlink token", fleetlink.exists()),
+            ("zulip bot", zulip),
+            ("linear app", linear),
+            ("fleetlink token", fleetlink),
         )
         if not ok
     ]

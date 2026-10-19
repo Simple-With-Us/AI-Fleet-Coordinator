@@ -11,7 +11,7 @@
 # and a stuck merge there stops it updating.  With --dry-run it only prints what it would do.
 #
 # It touches nothing else: no pm2, no LaunchAgents, no Slack files, nothing under ~/.secrets.
-# Credentials are the owner's job; see README.md for the zuliprc location and the file mode.
+# Credentials come from Infisical Fleet-OPS /zulip through fleet-secrets; see README.md (AFC-359).
 set -euo pipefail
 
 DEFAULT_CHECKOUT="/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"

@@ -87,7 +87,13 @@ class FleetLinkHarness(IdentityHarness):
             )
         )
         fake.chmod(0o755)
-        self.secrets = self.home / ".secrets" / "FleetLink"
+        # The per-seat tokens in the fake Infisical /fleetlink (AFC-359:  no token file is ever read).
+        self.fleetlink_infisical: dict[str, str] = {}
+        fetch = mock.patch.object(
+            FL, "_default_token_fetch", lambda name, env, home: self.fleetlink_infisical.get(name)
+        )
+        fetch.start()
+        self.addCleanup(fetch.stop)
 
     def env(self, **extra):
         return self.mcp_env(PATH="%s:/usr/bin:/bin" % self.bin, **extra)
@@ -102,14 +108,11 @@ class FleetLinkHarness(IdentityHarness):
             else []
         )
 
-    def token_file(
-        self, seat="CLAUDE", mode=0o600, text="FLEETLINK_TOKEN=%s\n" % TOKEN_CLAUDE
-    ) -> Path:
-        self.secrets.mkdir(parents=True, exist_ok=True)
-        path = self.secrets / ("%s.env" % FL.env_code(seat))
-        path.write_text(text)
-        path.chmod(mode)
-        return path
+    def token_file(self, seat="CLAUDE", token=TOKEN_CLAUDE) -> str:
+        """Store the seat's FLEETLINK_TOKEN_<SEAT> in the fake Infisical /fleetlink;  returns the key name."""
+        name = "FLEETLINK_TOKEN_%s" % FL.env_code(seat)
+        self.fleetlink_infisical[name] = token
+        return name
 
     def assert_fleetlink_fence(self, text: str) -> dict:
         lines = text.split("\n")
@@ -165,8 +168,8 @@ class ContractTests(FleetLinkHarness):
 
 
 class CredentialTests(FleetLinkHarness):
-    def test_the_seat_file_goes_to_the_child_by_path_with_the_seat_and_a_private_args_file(self):
-        path = self.token_file()
+    def test_the_infisical_token_goes_to_the_child_with_the_seat_and_a_private_args_file(self):
+        self.token_file()
         self.answer(stdout=json.dumps(WHOAMI))
         result = self.session(self.env(FLEETLINK_TOKEN_CURSOR=TOKEN_CURSOR)).call(
             "fleetlink_whoami"
@@ -197,8 +200,8 @@ class CredentialTests(FleetLinkHarness):
         self.assertEqual(call["cwd"], os.path.realpath(os.path.dirname(args_path)))
         env = call["env"]
         self.assertEqual(env["FLEETLINK_SEAT"], "CLAUDE")
-        self.assertEqual(env["FLEETLINK_AUTH_FILE"], str(path))
-        self.assertNotIn("FLEETLINK_TOKEN", env)
+        self.assertEqual(env["FLEETLINK_TOKEN"], TOKEN_CLAUDE)
+        self.assertNotIn("FLEETLINK_AUTH_FILE", env)
         self.assertFalse(
             os.path.exists(env["FLEETLINK_CREDENTIALS"]), "no saved login is ever a fallback"
         )
@@ -221,7 +224,7 @@ class CredentialTests(FleetLinkHarness):
             TOKEN_CURSOR, json.dumps(env), "another seat's token never reaches the child"
         )
 
-    def test_the_seats_own_variable_wins_then_the_generic_token_then_the_file(self):
+    def test_the_seats_own_variable_wins_then_the_generic_token_then_infisical(self):
         self.token_file()
         home = self.home
         both = {
@@ -242,7 +245,11 @@ class CredentialTests(FleetLinkHarness):
             FL.resolve_credential("CLAUDE", {"FLEETLINK_TOKEN": TOKEN_GENERIC}, home)[1],
             "FLEETLINK_TOKEN",
         )
-        file_cred = ("file", "~/.secrets/FleetLink/CLAUDE.env", str(self.secrets / "CLAUDE.env"))
+        file_cred = (
+            "infisical",
+            "Infisical Fleet-OPS /fleetlink FLEETLINK_TOKEN_CLAUDE",
+            TOKEN_CLAUDE,
+        )
         # The generic token names no seat:  never used when the environment names another seat or a launcher.
         for env in (
             {"FLEETLINK_TOKEN": TOKEN_GENERIC, "AGENT_SEAT": "CURSOR"},
@@ -261,10 +268,8 @@ class CredentialTests(FleetLinkHarness):
             FL.resolve_credential("GROK-WEB", {"FLEETLINK_TOKEN_GROK_WEB": TOKEN_CURSOR}, home)[1],
             "FLEETLINK_TOKEN_GROK_WEB",
         )
-        self.token_file("GROK-WEB")
-        self.assertEqual(
-            FL.resolve_credential("GROK-WEB", {}, home)[2], str(self.secrets / "GROK_WEB.env")
-        )
+        self.token_file("GROK-WEB", TOKEN_CURSOR)
+        self.assertEqual(FL.resolve_credential("GROK-WEB", {}, home)[2], TOKEN_CURSOR)
 
     def test_an_environment_token_reaches_the_child_and_never_the_output(self):
         self.answer(stdout=json.dumps(SHARE))
@@ -319,36 +324,24 @@ class CredentialTests(FleetLinkHarness):
             {"text": "draft", "personal": True},
         )
         self.assertEqual(second["env"]["FLEETLINK_SEAT"], "CLAUDE")
-        self.assertNotIn("FLEETLINK_TOKEN", second["env"])
+        self.assertEqual(
+            second["env"]["FLEETLINK_TOKEN"], TOKEN_CLAUDE
+        )  # CLAUDE's own, from Infisical
 
-    def test_a_missing_or_unsafe_file_is_not_configured_and_nothing_runs(self):
+    def test_a_missing_token_is_not_configured_and_nothing_runs(self):
         session = self.session(self.env())
         error = self.assert_tool_error(session.call("fleetlink_whoami"), "not_configured")
-        for name in ("FLEETLINK_TOKEN_CLAUDE", "~/.secrets/FleetLink/CLAUDE.env"):
+        for name in ("FLEETLINK_TOKEN_CLAUDE", "Infisical Fleet-OPS /fleetlink"):
             self.assertIn(name, error["message"])
-        path = self.token_file(mode=0o644)
-        error = self.assert_tool_error(session.call("fleetlink_whoami"), "not_configured")
-        self.assertIn("chmod 600", error["message"])
-        path.unlink()
-        target = self.tmp / "elsewhere.env"
-        target.write_text("FLEETLINK_TOKEN=%s\n" % TOKEN_CLAUDE)
-        target.chmod(0o600)
-        path.symlink_to(target)
-        self.assertIn(
-            "not a regular file",
-            self.assert_tool_error(session.call("fleetlink_whoami"), "not_configured")["message"],
+        self.assertNotIn(".secrets", error["message"])
+        self.assertEqual(self.calls(), [])
+        self.token_file(token="bad\ntoken")  # a control character is refused, never handed on
+        self.assertEqual(
+            self.assert_tool_error(session.call("fleetlink_whoami"), "not_configured")["code"],
+            "not_configured",
         )
-        path.unlink()
-        self.token_file(mode=0o400)
+        self.token_file()
         self.assertNotIn("isError", session.call("fleetlink_whoami"))
-        self.assertEqual(len(self.calls()), 1)
-        with mock.patch.object(FL.os, "getuid", return_value=os.getuid() + 1):
-            self.assertIn(
-                "not owned",
-                self.assert_tool_error(session.call("fleetlink_whoami"), "not_configured")[
-                    "message"
-                ],
-            )
         self.assertEqual(len(self.calls()), 1)
 
     def test_no_cli_is_not_configured_and_every_other_tool_still_works(self):

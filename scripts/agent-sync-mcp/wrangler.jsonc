@@ -6,8 +6,8 @@
   //
   // Secrets (never in this file):  ZULIP_KEY_GROK_WEB, ZULIP_KEY_JET,
   // ZULIP_KEY_ECHO, ZULIP_KEY_WISE, ZULIP_KEY_CURSOR and
-  // ZULIP_CLAUDE_API_KEY (Worker provisioning unconfirmed), from Infisical or the
-  // seat's zuliprc, and the three recall secrets
+  // ZULIP_CLAUDE_API_KEY (Worker provisioning unconfirmed), from Infisical
+  // Fleet-OPS /zulip, and the three recall secrets
   // RECALL_API_TOKEN, RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET
   // (DEPLOY.md, "Fleet recall").
   "$schema": "node_modules/wrangler/config-schema.json",

@@ -646,5 +646,135 @@ class UsageTests(Base):
         self.assertEqual(self.call("help")[0], 0)
 
 
+class SetTests(Base):
+    """`set` writes one secret over REST with the machine identity's token.  _api is faked, so no network."""
+
+    def setUp(self):
+        super().setUp()
+        self.api = []
+        self.statuses = {}
+
+    def fake_api(self, method, path, token, body, env):
+        self.api.append((method, path, token, dict(body or {})))
+        return self.statuses.get(
+            (method, path.split("/v3/secrets/raw/")[0] if "/v3/" in path else path),
+            self.statuses.get(method, 200),
+        )
+
+    def run_set(self, *argv, stdin="VAL_TO_WRITE_1\n", env=None):
+        with (
+            mock.patch.object(core, "_api", self.fake_api),
+            mock.patch.object(cli.sys, "stdin", io.StringIO(stdin)),
+        ):
+            return self.call("set", *argv, env=env)
+
+    def test_update_path_sends_the_value_in_the_body_only_and_strips_one_newline(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        code, out, err = self.run_set("CACHE_MY_APP", "--path", "/linear")
+        self.assertEqual((code, out, err), (0, "updated CACHE_MY_APP at /linear\n", ""))
+        method, path, token, body = self.api[-1]
+        self.assertEqual(
+            (method, path, token), ("PATCH", "/v3/secrets/raw/CACHE_MY_APP", ACCESS_TOKEN)
+        )
+        self.assertEqual(body["secretValue"], "VAL_TO_WRITE_1")
+        self.assertEqual(
+            (body["environment"], body["secretPath"], body["type"]), ("prod", "/linear", "shared")
+        )
+        self.assertEqual(body["workspaceId"], PROJECT)
+
+    def test_a_missing_secret_is_created_after_the_patch_404s(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["PATCH"] = 404
+        code, out, _ = self.run_set("CACHE_NEW_APP", "--path", "/linear")
+        self.assertEqual((code, out), (0, "created CACHE_NEW_APP at /linear\n"))
+        self.assertEqual([a[0] for a in self.api if "/v3/secrets/raw/" in a[1]], ["PATCH", "POST"])
+
+    def test_set_never_creates_a_folder_and_checks_it_exists_first(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.run_set("CACHE_K", "--path", "/linear")
+        self.assertEqual([a for a in self.api if a[1] == "/v1/folders"], [])
+        self.assertEqual(self.api[0][0], "GET")
+        self.assertIn("secretPath=/linear", self.api[0][1])
+
+    def test_a_missing_folder_fails_with_folder_missing_and_writes_nothing(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["GET"] = 404
+        code, out, err = self.run_set("CACHE_K", "--path", "/linear", stdin=VAL_A)
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn("folder-missing", err)
+        self.assertEqual([a[0] for a in self.api], ["GET"])
+        self.assertNoSentinel(err)
+
+    def test_a_failed_folder_check_other_than_404_also_writes_nothing(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["GET"] = 500
+        code, _, err = self.run_set("CACHE_K", "--path", "/linear")
+        self.assertEqual(code, 4)
+        self.assertIn("folder-check http-500", err)
+        self.assertEqual([a[0] for a in self.api], ["GET"])
+
+    def test_names_and_folders_off_the_allowlist_are_refused_before_any_login_or_call(self):
+        w = self.use(World(keychain=KEYCHAIN_FULL))
+        for name, path in (
+            ("ALPHA", "/linear"),  # right folder, wrong name
+            ("CACHE_X", "/"),  # right name shape, root folder
+            ("CACHE_X", "/zulip"),  # right name shape, wrong folder
+            ("CACHE_x", "/linear"),  # lower case
+            ("CACHE_", "/linear"),  # nothing after the prefix
+            ("REALM_ADMIN_ZULIP_KEY", "/zulipadmin"),
+            ("CACHE_X", "/linear/sub"),
+        ):
+            code, out, err = self.run_set(name, "--path", path, stdin=VAL_A)
+            self.assertEqual((code, out), (2, ""), (name, path))
+            self.assertIn("allowlist", err)
+            self.assertNoSentinel(err)
+        self.assertEqual(self.api, [])
+        self.assertEqual(w.logins(), [])
+
+    def test_no_environment_variable_widens_the_allowlist(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        env = dict(
+            self.env,
+            FLEET_SECRETS_WRITE_ALLOW=".*",
+            FLEET_SECRETS_ALLOW_ALL="1",
+            FLEET_SECRETS_WRITE_PATHS="/zulip",
+        )
+        code, _, _ = self.run_set("ALPHA", "--path", "/zulip", env=env)
+        self.assertEqual(code, 2)
+        self.assertEqual(self.api, [])
+
+    def test_the_allowlist_is_exactly_the_reviewed_one(self):
+        self.assertEqual(core.WRITE_ALLOWLIST, (("/linear", r"^CACHE_[A-Z0-9_]+$"),))
+
+    def test_a_failed_write_exits_4_and_never_echoes_the_value_or_token(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["PATCH"] = 403
+        code, out, err = self.run_set("CACHE_K", "--path", "/linear", stdin=VAL_A + "\n")
+        self.assertEqual(code, 4)
+        self.assertIn("http-403", err)
+        self.assertNoSentinel(out, err)
+
+    def test_the_cli_login_session_is_refused_because_it_cannot_hand_over_a_token(self):
+        self.use(World())  # no keychain items:  session mode
+        code, out, err = self.run_set("CACHE_K", "--path", "/linear")
+        self.assertEqual(code, 4)
+        self.assertIn("machine identity", err)
+        self.assertEqual(self.api, [])
+
+    def test_an_empty_value_and_a_bad_name_are_usage_errors_before_any_call(self):
+        w = self.use(World(keychain=KEYCHAIN_FULL))
+        self.assertEqual(self.run_set("CACHE_K", "--path", "/linear", stdin="")[0], 2)
+        self.assertEqual(self.run_set("A-B", "--path", "/linear")[0], 2)
+        self.assertEqual(self.api, [])
+        self.assertEqual(w.logins(), [])
+
+    def test_the_value_is_never_an_argument_and_never_reaches_a_subprocess(self):
+        w = self.use(World(keychain=KEYCHAIN_FULL))
+        self.run_set("CACHE_K", "--path", "/linear", stdin=VAL_B)
+        for argv, env in w.calls:
+            self.assertNotIn(VAL_B, " ".join(argv))
+            self.assertNotIn(VAL_B, " ".join(env.values()))
+
+
 if __name__ == "__main__":
     unittest.main()
