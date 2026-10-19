@@ -316,10 +316,7 @@ class SessionIdTests(unittest.TestCase):
 
     def test_prose_that_starts_with_session_is_not_mistaken_for_a_row(self):
         """`Session:` opening a paragraph of prose is content:  an id-shaped word after it is still prose."""
-        body = (
-            "<p>Mon, Oct 19, 9:40pm</p><p>Body.</p>"
-            "<p>Session: the board claim was AFC-123</p>"
-        )
+        body = "<p>Mon, Oct 19, 9:40pm</p><p>Body.</p><p>Session: the board claim was AFC-123</p>"
         p = self.run_script(
             "--update",
             "--session",
@@ -330,7 +327,9 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("Session: the board claim was AFC-123", p.stdout)
-        self.assertEqual(p.stdout.count("Session:"), 2, p.stdout)  #  the prose one and the stamped row
+        self.assertEqual(
+            p.stdout.count("Session:"), 2, p.stdout
+        )  #  the prose one and the stamped row
 
     def test_a_stale_row_left_at_the_end_goes_with_its_trailing_spacer(self):
         old = (
