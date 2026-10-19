@@ -275,7 +275,7 @@ class CredentialTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit) as cm:
                 L.credentials(None, admin=True)
-        self.assertIn("/zulipadmin", str(cm.exception.code))
+        self.assertIn("/zulipadmin, /zulip, or the root", str(cm.exception.code))
 
 
 if __name__ == "__main__":
