@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from unittest import mock
 
 from agent_sync import live as L
 from agent_sync.tests.test_attach import LEASE, AttachHarness
@@ -184,3 +185,50 @@ class StopContinuationTests(SeatInboxHarness):
         )
         self.add_row(3)
         self.assertTrue(self.stop())
+
+
+class AppendRaceTests(SeatInboxHarness):
+    """The daemon appends under a lock the hooks do not take.  A row that lands between the hook's read
+    and its cursor write must show up next time, not be skipped by a cursor taken from the inbox head."""
+
+    def racing(self, mid: int):
+        real = L.scan_seat_mentions
+
+        def scan(paths, after):
+            out = real(paths, after)
+            self.add_row(mid)  # appended after the read, before the cursor is written
+            return out
+
+        return mock.patch.object(L, "scan_seat_mentions", scan)
+
+    def test_a_row_appended_during_the_prompt_hook_shows_on_the_next_prompt(self) -> None:
+        self.start()
+        self.add_row(1)
+        with self.racing(2):
+            first = self.context_of(self.prompt())
+        self.assertIn("latest id 1", first)
+        self.assertNotIn("latest id 2", first)
+        self.assertIn("latest id 2", self.context_of(self.prompt()))
+
+    def test_a_row_appended_during_the_stop_hook_is_not_lost(self) -> None:
+        self.start()
+        self.prompt()
+        self.add_row(1)
+        with self.racing(2):
+            out = self.stop()
+        self.assertIn("latest id 1", json.loads(out)["reason"])
+        self.assertIn("latest id 2", json.loads(self.stop())["reason"])
+
+    def test_the_cursor_is_what_the_read_saw_not_the_inbox_head(self) -> None:
+        self.start()
+        self.add_row(1)
+        with self.racing(2):
+            self.prompt()
+        self.assertEqual(L.load_lease(self.seat_paths(), LEASE)["inbox_seen"], 1)
+        self.assertEqual(L.seat_inbox_head(self.seat_paths()), 2)
+
+    def test_non_mention_rows_still_move_the_cursor(self) -> None:
+        self.start()
+        self.add_row(1, classes=("wildcard",))
+        self.assertEqual(self.prompt(), "")
+        self.assertEqual(L.load_lease(self.seat_paths(), LEASE)["inbox_seen"], 1)

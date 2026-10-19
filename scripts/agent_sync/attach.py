@@ -472,10 +472,12 @@ def _take_seat_inbox_headlines(paths: L.SeatPaths, lease_id: str) -> str:
 
     def mutate(data: dict[str, Any]) -> None:
         seen = data.get("inbox_seen")
-        head = L.seat_inbox_head(paths)
         if isinstance(seen, int) and not isinstance(seen, bool):
-            shown.extend(L.new_seat_mentions(paths, seen))
-        data["inbox_seen"] = max(head, seen if isinstance(seen, int) else 0)
+            found, upto = L.scan_seat_mentions(paths, seen)
+            shown.extend(found)
+            data["inbox_seen"] = upto  # what this read saw, so an append mid-hook is shown next time
+        else:
+            data["inbox_seen"] = L.seat_inbox_head(paths)
 
     L.update_lease(paths, lease_id, mutate)
     return L.headline(shown) if shown else ""
@@ -527,7 +529,7 @@ def _continue_for_mentions(
         if not isinstance(seen, int) or isinstance(seen, bool):
             data["inbox_seen"] = L.seat_inbox_head(paths)
             return
-        fresh = L.new_seat_mentions(paths, seen)
+        fresh, upto = L.scan_seat_mentions(paths, seen)
         recent = [
             t
             for t in (data.get("stop_continues") or [])
@@ -540,7 +542,7 @@ def _continue_for_mentions(
             # hourly cap) still gets its headline at the next prompt.
             chosen.extend(fresh)
             recent.append(now)
-            data["inbox_seen"] = max(L.seat_inbox_head(paths), seen)
+            data["inbox_seen"] = upto
 
     L.update_lease(paths, lease_id, mutate)
     if chosen:
