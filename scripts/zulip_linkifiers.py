@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Bring the realm's linkifiers to the set in TARGET, then prove it by rendering.  Applying is OWNER-RUN.
+"""Bring the realm's linkifiers to the set in TARGET, then prove it by rendering.  Applying uses the realm-admin bot (--admin).
 
-Only a realm administrator can add, edit or delete a linkifier, and Jay is the only one
-(docs/protocols/zulip-fleet-guide.md, How Linkifiers Work).  Planning and checking need
-only a member key, so any seat can run them:
+Only a realm administrator can add, edit or delete a linkifier, and the one credential that does
+it is the realm-admin bot (docs/protocols/zulip-fleet-guide.md, How Linkifiers Work).  Planning and
+checking need only a member key, so any seat can run them:
 
     python3 scripts/zulip_linkifiers.py                 # plan:  diff live rules against TARGET
     python3 scripts/zulip_linkifiers.py --check         # render CHECKS, and diff Linear's teams with rule 5119
-    python3 scripts/zulip_linkifiers.py --apply --owner-rc PATH   # owner:  apply the plan, then check
-    python3 scripts/zulip_linkifiers.py --apply --admin           # realm-admin bot key from Infisical
+    python3 scripts/zulip_linkifiers.py --apply --admin # realm-admin bot:  apply the plan, then check
 
-Credentials, first hit wins:  --owner-rc PATH (or --rc PATH for a read-only run), then env
-ZULIP_EMAIL + ZULIP_API_KEY, then Infisical Fleet-OPS /zulip through `fleet-secrets get`
-(REALM_ADMIN_ZULIP_* with --admin, otherwise CLAUDE_ZULIP_*;  /zulip, then the root).  Keys are never printed.
+Credentials:  with --admin, only the realm-admin bot:  env REALM_ADMIN_ZULIP_EMAIL / _KEY / _SITE
+first, then Infisical Fleet-OPS /zulipadmin through `fleet-secrets get` (then /zulip, then the root).
+Without --admin (plan and check), first hit wins:  --rc PATH, then env ZULIP_EMAIL + ZULIP_API_KEY, then
+Infisical CLAUDE_ZULIP_* (/zulip, then the root).  --apply needs --admin.  Keys are never printed.
 Nothing under ~/.secrets is read (AFC-359).
 
 Rules are matched to live ones by id, then by identical pattern, because Zulip numbers a rule it
@@ -167,7 +167,11 @@ CHECKS: list[tuple[str, str | None]] = [
 def _fleet_secret(name: str) -> str:
     """One Infisical value via `fleet-secrets get` (folder /zulip, else the root), or "" (never logged)."""
     binary = os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
-    for extra in (["--path", "/zulip"], []):
+    folders = (
+        ["/zulipadmin", "/zulip", None] if name.startswith("REALM_ADMIN_") else ["/zulip", None]
+    )
+    for folder in folders:
+        extra = ["--path", folder] if folder else []
         try:
             proc = subprocess.run(
                 [binary, "get", name, *extra],
@@ -184,6 +188,17 @@ def _fleet_secret(name: str) -> str:
 
 
 def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str]:
+    if admin:
+        email, key, site = (
+            os.environ.get(f"REALM_ADMIN_ZULIP_{part}", "").strip()
+            or _fleet_secret(f"REALM_ADMIN_ZULIP_{part}")
+            for part in ("EMAIL", "KEY", "SITE")
+        )
+        if not (email and key):
+            sys.exit(
+                "no REALM_ADMIN_ZULIP_EMAIL / REALM_ADMIN_ZULIP_KEY in env or Infisical Fleet-OPS /zulipadmin"
+            )
+        return email, key, (site or REALM).rstrip("/")
     path = rc_path
     if not path and os.environ.get("ZULIP_EMAIL") and os.environ.get("ZULIP_API_KEY"):
         return (
@@ -375,9 +390,8 @@ def apply_plan(zulip: Zulip, steps: list[tuple], doomed: list[dict]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--rc", help="zuliprc for a read-only plan or check")
-    parser.add_argument("--owner-rc", help="the owner's zuliprc (--apply needs this or --admin)")
     parser.add_argument(
-        "--admin", action="store_true", help="use the realm-admin bot key from Infisical /zulip"
+        "--admin", action="store_true", help="sign in as the realm-admin bot (required for --apply)"
     )
     parser.add_argument(
         "--apply", action="store_true", help="apply the plan (realm administrator only)"
@@ -390,7 +404,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    zulip = Zulip(*credentials(args.owner_rc or args.rc, admin=args.admin))
+    if args.apply and not args.admin:
+        parser.error("--apply needs --admin (the realm-admin bot is the only write credential)")
+    if args.admin and args.rc:
+        parser.error("--admin and --rc are mutually exclusive")
+    zulip = Zulip(*credentials(args.rc, admin=args.admin))
     if args.check and not args.apply:
         return 1 if check(zulip) + check_linear() else 0
 
