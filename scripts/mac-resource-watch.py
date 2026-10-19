@@ -6,7 +6,7 @@ On-demand: python3 ~/apps/mac-resource-watch.py --once
 Never prints webhook secrets.  Load BOTFLEET_HOUSEKEEPER_WEBHOOK_* from the environment, else
 from Infisical Fleet-OPS /botfleet-housekeeper-webhook (`fleet-secrets get`), and, if present,
 GROK_BOT_HOUSEKEEPER_WEBHOOK_* from /grok-bot-housekeeper-webhook, without echoing values.
-Nothing under ~/.secrets is read (AFC-359).  BotFleet is the primary wake.  Grok Bot is optional.
+No credential file is read (AFC-359).  BotFleet is the primary wake.  Grok Bot is optional.
 """
 
 from __future__ import annotations

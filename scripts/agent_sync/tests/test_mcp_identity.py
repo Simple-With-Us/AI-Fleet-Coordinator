@@ -27,7 +27,7 @@ PERSONA_EMAIL = "%s-grok-bot@zulip.test" % PERSONA[len("GB-") :].lower()
 class IdentityHarness(McpHarness):
     def setUp(self) -> None:
         super().setUp()
-        # Every bot's keys sit in the fake Infisical /zulip (AFC-359:  nothing under ~/.secrets is read).
+        # Every bot's keys sit in the fake Infisical /zulip (AFC-359:  no credential file is read).
         self.keys: dict[str, str] = {}
         bots = {
             "CURSOR": ("cursor-bot@zulip.test", "Cursor"),

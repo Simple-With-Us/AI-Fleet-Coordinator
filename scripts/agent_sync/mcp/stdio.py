@@ -32,7 +32,7 @@ AGENT_LAUNCHER with no seat exits 3, then --as, AGENT_SEAT, and last --default-s
 with none, every call names its identity.  The allowed set is every agent bot whose credentials this
 host can read (identities.py:  the seats, BF-* and the enabled GB-* personas), or the launcher's seat
 alone.  Keys come from Infisical Fleet-OPS /zulip (each identity's own three <BOT>_ZULIP_* names, read
-through fleet-secrets into memory only;  AFC-359:  nothing under ~/.secrets is read), from an explicit
+through fleet-secrets into memory only;  AFC-359:  no credential file is read), from an explicit
 --rc or env ZULIP_RC for the default identity (mode 600, realm-locked), or on the server from each
 identity's own variables.  The ZULIP_EMAIL/ZULIP_API_KEY/ZULIP_SITE triple (a raw key in a client's
 config) and AGENT_SYNC_SECRETS_DIR are ignored.  The default identity is checked before a single

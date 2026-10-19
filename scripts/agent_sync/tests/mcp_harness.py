@@ -4,7 +4,7 @@ clock) or as a subprocess of scripts/agent-sync, against the fake Zulip server.
 Every environment is an explicit dict:  HOME is a temp dir, the test bot's keys sit in the fake Infisical
 /zulip (in-process:  the patched zulip fetch;  a subprocess:  FLEET_SECRETS_BIN points at
 fixtures/fake-fleet-secrets, which reads a temp JSON file), so the server never reaches the real
-fleet-secrets or ~/.secrets, and subprocesses never inherit os.environ.  Every line the server prints goes into the transcript that Harness.tearDown checks
+fleet-secrets or any credential folder, and subprocesses never inherit os.environ.  Every line the server prints goes into the transcript that Harness.tearDown checks
 for the key and its base64 form, and every stdout line must be one JSON-RPC 2.0 message.
 """
 

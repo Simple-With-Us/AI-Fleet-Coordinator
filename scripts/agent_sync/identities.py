@@ -10,7 +10,7 @@ The allowed set is every agent bot whose Zulip credentials this host can read:
                  imports as GB_IDENTITIES (GB-ENGINEER stays out until it is enabled there)
 
 each kept only when its credentials are reachable:  its three Infisical /zulip names (<BOT>_ZULIP_EMAIL,
-_KEY and _SITE, read through fleet-secrets;  AFC-359:  nothing under ~/.secrets is read), its file in the
+_KEY and _SITE, read through fleet-secrets;  AFC-359:  no credential folder is read by default), its file in the
 explicit AGENT_SYNC_SECRETS_DIR override, or, on the server instance, its own environment variables (the
 listener's `creds = "env"` seats in listener.toml, else the default ZULIP_<CODE>_EMAIL and
 ZULIP_<CODE>_API_KEY with ZULIP_SITE;  docs/protocols/agent-sync-server.md).  An override file wins, then

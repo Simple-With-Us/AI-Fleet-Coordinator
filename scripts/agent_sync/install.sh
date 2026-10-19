@@ -10,7 +10,7 @@
 # Never point it at the human integration tree ~/Code/AI-Fleet-Coordinator:  a daemon resets that tree,
 # and a stuck merge there stops it updating.  With --dry-run it only prints what it would do.
 #
-# It touches nothing else: no pm2, no LaunchAgents, no Slack files, nothing under ~/.secrets.
+# It touches nothing else: no pm2, no LaunchAgents, no Slack files, no credential files.
 # Credentials come from Infisical Fleet-OPS /zulip through fleet-secrets; see README.md (AFC-359).
 set -euo pipefail
 

@@ -17,7 +17,7 @@ only:  never an email, a key or a message.
 
 Credentials, deduplicated by bot email:
   mac        every bot with <BOT>_ZULIP_EMAIL, _KEY and _SITE in Infisical Fleet-OPS /zulip (the Mac's
-             source since AFC-359, read through fleet-secrets in one call;  nothing under ~/.secrets)
+             source since AFC-359, read through fleet-secrets in one call;  no credential file)
   infisical  every ZULIP_<CODE>_EMAIL / ZULIP_<CODE>_API_KEY pair in Infisical prod /zulip,
              through the automation identity from `fleet-secrets get`
 Only bots are touched:  a key whose users/me is a human, or an admin or owner, is skipped.
@@ -123,8 +123,8 @@ def mac_credentials() -> list[Z.Credentials]:
 
 
 def _handoff(name: str) -> str:
-    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
-    file ~/.secrets/global-api-keys is retired.  Only the name is ever reported."""
+    """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The old flat
+    credentials file is retired.  Only the name is ever reported."""
     value = os.environ.get(name, "").strip()
     if value:
         return value

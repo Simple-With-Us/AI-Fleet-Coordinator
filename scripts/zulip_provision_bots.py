@@ -10,7 +10,7 @@ Run it in your own terminal:
     python3 scripts/zulip_provision_bots.py --yes --only "Codex"   # no prompt, one bot
     python3 scripts/zulip_provision_bots.py --only "Codex" --regenerate   # rotate an existing bot's key
 
-Credentials (AFC-359:  the owner's key is not needed, nothing prompts, nothing under ~/.secrets):
+Credentials (AFC-359:  the owner's key is not needed, nothing prompts, no credential folder is read):
 it signs in only as the realm-admin bot (role 200, administrator).  Each of
 REALM_ADMIN_ZULIP_EMAIL and REALM_ADMIN_ZULIP_KEY is read from the environment first, then
 from Infisical Fleet-OPS folder /zulipadmin through `fleet-secrets get NAME --path /zulipadmin`
@@ -34,7 +34,7 @@ For each bot in ROSTER it:
     --out-dir defaults to ~/.agent-sync/provisioned/ (created mode 700).  An existing file is
     never overwritten without --force, and such a bot is skipped BEFORE anything is created
     or rotated, so a key can never be lost to a kept file.  Nothing is ever written under
-    ~/.secrets,
+    the retired credentials folder,
   - subscribes the bot to CHANNELS with the bot's own key.
 
 After each bot it prints, names only, what to store in Infisical Fleet-OPS folder /zulip:

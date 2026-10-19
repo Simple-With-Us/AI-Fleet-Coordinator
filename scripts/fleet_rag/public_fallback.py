@@ -108,7 +108,7 @@ USER_AGENT = (
 # rarely already in os.environ.  Mirror core.py's own env-then-fallback pattern instead of
 # requiring every MCP config to be rewritten as a `sh -c 'set -a; . ...; exec ...'` wrapper:
 # a name not in the environment comes from Infisical through `fleet-secrets get` (AFC-359:  no
-# file under ~/.secrets is read).  RECALL_API_TOKEN is a root key of that name;  the Cloudflare
+# credential file is read).  RECALL_API_TOKEN is a root key of that name;  the Cloudflare
 # Access service token (docs/RECALL-ACCESS-CHECK.md, shared with agents.jays.services) lives
 # under the AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_ prefix.  A value already in the
 # environment always wins.

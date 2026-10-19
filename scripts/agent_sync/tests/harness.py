@@ -2,7 +2,7 @@
 
 Every environment is an explicit dict handed to cli.main(env=...), so the real shell's
 CLAUDE_CODE_SESSION_ID, AGENT_SEAT and HOME never leak in, and no test can touch
-~/.secrets, ~/.agent-sync, the real fleet-secrets or the live realm.  The fake API key is generated per test run, so
+~/.agent-sync, the real fleet-secrets or the live realm.  The fake API key is generated per test run, so
 the source holds no key-looking literal (the gitleaks job runs on this repo).  Every byte any
 command prints is collected, and tearDown fails the test if the key or its base64 form appears.
 """

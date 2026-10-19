@@ -704,7 +704,7 @@ def _append_log(log_path: pathlib.Path, report: dict) -> None:
 
 def _heartbeat() -> None:
     """GET the heartbeat URL (environment, then Infisical `fleet-secrets get`) if defined.  Never
-    prints the URL.  No file under ~/.secrets is read (AFC-359)."""
+    prints the URL.  No credential file is read (AFC-359)."""
     url = (os.environ.get(HEARTBEAT_KEY) or "").strip()
     if not url:
         url = (core.fleet_secret(HEARTBEAT_KEY) or "").strip()

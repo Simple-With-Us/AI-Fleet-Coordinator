@@ -2,7 +2,7 @@
 
 Runs the script against a fake Zulip server on 127.0.0.1 and a fake fleet-secrets.
 Every key below is a made-up test value.  Nothing here touches the real realm,
-Infisical or ~/.secrets.
+Infisical or the retired credentials folder.
 """
 
 from __future__ import annotations

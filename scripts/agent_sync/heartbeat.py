@@ -18,7 +18,7 @@ Secrets:  the DSN comes from `AGENT_SYNC_SENTRY_DSN` or `SENTRY_FLEET_DSN` in th
 Infisical `prod` `/zulip`, loaded at start by `server/infisical_env.py`), else from the same two names in
 the KEY=value file that `AGENT_SYNC_SENTRY_ENV_FILE` names (an explicit override;  there is no default
 file), else (the Mac) `fleet-secrets get SENTRY_FLEET_DSN --path /agent-sync` from Infisical Fleet-OPS.
-Nothing under ~/.secrets is read (AFC-359).  The DSN
+No credential file is read (AFC-359).  The DSN
 is never logged, never put in an error and never written to status.json.  With no DSN the heartbeat is off
 and says so once.  A send never blocks the daemon:  it runs on its own short-lived thread, and a failure
 backs off (30 seconds, doubling up to the five-minute interval) and logs at most once every 30 minutes.
