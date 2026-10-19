@@ -489,7 +489,7 @@ _pushover_secret() {
 
 _send_pushover_notification() {
   local user_key token
-  # Environment first, then `fleet-secrets get` (OPS-818;  the flat file ~/.secrets/global-api-keys is retired).
+  # Environment first, then `fleet-secrets get` (OPS-818;  the old flat secrets file is retired, AFC-359).
   user_key=$(_pushover_secret PUSHOVER_USER_KEY)
   token=$(_pushover_secret PUSHOVER_USAGE_API_TOKEN)
   [[ -z "$token" ]] && token=$(_pushover_secret PUSHOVER_ST_API_TOKEN)

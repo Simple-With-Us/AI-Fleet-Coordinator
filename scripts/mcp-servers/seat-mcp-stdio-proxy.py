@@ -1,33 +1,37 @@
 #!/usr/bin/env python3
 """stdio MCP proxy to local seat-mcp (127.0.0.1:8793).
 
-Reads SEAT_MCP_TOKEN from ~/.secrets/seat-mcp.env.  Never prints it.
-Never puts the token on argv.  Loopback only.
+Reads SEAT_MCP_TOKEN from the environment, else Infisical Fleet-OPS /seat-mcp through
+`fleet-secrets get` (AFC-359).  Never prints it.  Never puts the token on argv.  Loopback only.
 """
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-SECRET = Path.home() / ".secrets" / "seat-mcp.env"
+FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(Path.home() / ".local" / "bin" / "fleet-secrets")
 BASE = "http://127.0.0.1:8793/mcp"
 
 
 def load_token() -> str:
-    token = ""
-    if not SECRET.is_file():
-        sys.stderr.write("missing %s\n" % SECRET)
-        sys.exit(1)
-    for raw in SECRET.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if line.startswith("SEAT_MCP_TOKEN="):
-            token = line.split("=", 1)[1].strip().strip("'\"")
-            break
+    token = os.environ.get("SEAT_MCP_TOKEN", "").strip()
     if not token:
-        sys.stderr.write("SEAT_MCP_TOKEN empty\n")
+        try:
+            proc = subprocess.run(
+                [FLEET_SECRETS, "get", "SEAT_MCP_TOKEN", "--path", "/seat-mcp"],
+                capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL, timeout=60,
+            )
+            if proc.returncode == 0:
+                token = proc.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            token = ""
+    if not token:
+        sys.stderr.write("SEAT_MCP_TOKEN missing in Infisical /seat-mcp\n")
         sys.exit(1)
     return token
 

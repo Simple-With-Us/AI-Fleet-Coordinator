@@ -28,13 +28,10 @@ class TestLoginForm(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.secrets = Path(cls.tmp.name) / "mac-collab.env"
-        cls.secrets.write_text(
-            'MAC_COLLAB_TOKEN="%s"\nMAC_COLLAB_TOKEN_INSTINCT="%s"\n' % (ROOT_TOKEN, SEAT_TOKEN),
-            encoding="utf-8",
-        )
-        cls._orig = (server.SECRETS, server.AUDIT_LOG, os.environ.get("MAC_COLLAB_TOKEN"))
-        server.SECRETS = cls.secrets
+        # The tokens come from a stubbed Infisical read (AFC-359);  nothing touches the real fleet-secrets.
+        cls._orig = (server._fetch_vault_tokens, server.AUDIT_LOG, os.environ.get("MAC_COLLAB_TOKEN"))
+        server._fetch_vault_tokens = lambda: {ROOT_TOKEN: None, SEAT_TOKEN: "INSTINCT"}
+        server._VAULT_CACHE = (0.0, None)
         server.AUDIT_LOG = Path(cls.tmp.name) / "audit.log"
         server._LOGGED_FILE_WINS = False
         os.environ.pop("MAC_COLLAB_TOKEN", None)
@@ -47,7 +44,8 @@ class TestLoginForm(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
-        server.SECRETS, server.AUDIT_LOG, env_was = cls._orig
+        server._fetch_vault_tokens, server.AUDIT_LOG, env_was = cls._orig
+        server._VAULT_CACHE = (0.0, None)
         server._LOGGED_FILE_WINS = False
         if env_was is not None:
             os.environ["MAC_COLLAB_TOKEN"] = env_was

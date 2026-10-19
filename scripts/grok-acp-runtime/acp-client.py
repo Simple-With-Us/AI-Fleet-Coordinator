@@ -33,21 +33,25 @@ from mcp_catalog import CatalogError, expand_names
 HOST = "127.0.0.1"
 PORT = 12419
 WS_PATH = "/ws"
-SECRET_FILE = Path.home() / ".secrets" / "grok-acp.env"
 DEFAULT_OUTPUT_LIMIT = 1_048_576
+FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(Path.home() / ".local" / "bin" / "fleet-secrets")
 
 
 def load_secret() -> str:
-    if not SECRET_FILE.is_file():
-        sys.exit(f"missing {SECRET_FILE}")
-    secret = ""
-    for line in SECRET_FILE.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.startswith("GROK_AGENT_SECRET="):
-            secret = line.split("=", 1)[1].strip().strip("'\"")
-            break
+    """GROK_AGENT_SECRET from the environment, else Infisical Fleet-OPS /grok-acp (`fleet-secrets get`)."""
+    secret = os.environ.get("GROK_AGENT_SECRET", "").strip()
     if not secret:
-        sys.exit("GROK_AGENT_SECRET empty")
+        try:
+            proc = subprocess.run(
+                [FLEET_SECRETS, "get", "GROK_AGENT_SECRET", "--path", "/grok-acp"],
+                capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL, timeout=60,
+            )
+            if proc.returncode == 0:
+                secret = proc.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            secret = ""
+    if not secret:
+        sys.exit("GROK_AGENT_SECRET missing in Infisical /grok-acp")
     return secret
 
 

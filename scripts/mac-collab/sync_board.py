@@ -36,7 +36,7 @@ from pathlib import Path
 WRITEBACK_GRACE_S = 900  # 15 minutes
 
 BASE_URL = os.environ.get("MAC_COLLAB_URL", "http://127.0.0.1:8792")
-SECRETS = Path.home() / ".secrets" / "mac-collab.env"
+FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(Path.home() / ".local" / "bin" / "fleet-secrets")
 APPS = Path.home() / "apps"
 SYNC_INTERVAL_S = 600  # 10 minutes
 CLOSED_ISSUE_LOOKBACK_DAYS = 30
@@ -212,14 +212,14 @@ def load_token() -> str:
     env = os.environ.get("MAC_COLLAB_TOKEN", "").strip()
     if env:
         return env
-    if SECRETS.is_file():
-        for line in SECRETS.read_text().splitlines():
-            s = line.strip()
-            if s.startswith("export "):
-                s = s[7:]
-            if s.startswith("MAC_COLLAB_TOKEN="):
-                return s.split("=", 1)[1].strip().strip('"').strip("'")
-    return ""
+    try:
+        proc = subprocess.run(
+            [FLEET_SECRETS, "get", "MAC_COLLAB_TOKEN", "--path", "/mac-collab"],
+            capture_output=True, text=True, timeout=60, check=False, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
 def post_finding(token: str, payload: dict) -> dict:

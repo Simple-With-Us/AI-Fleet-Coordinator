@@ -6,19 +6,17 @@
 # Bind 12419 — NOT 2419.
 set -euo pipefail
 
-SECRET_FILE="${HOME}/.secrets/grok-acp.env"
-if [[ ! -f "$SECRET_FILE" ]]; then
-  echo "missing $SECRET_FILE (GROK_AGENT_SECRET)" >&2
-  exit 1
-fi
-set -a
-# shellcheck disable=SC1090
-source "$SECRET_FILE"
-set +a
+# GROK_AGENT_SECRET lives in Infisical Fleet-OPS /grok-acp (AFC-359), read through `fleet-secrets`.
+FLEET_SECRETS="${FLEET_SECRETS:-${HOME}/.local/bin/fleet-secrets}"
 if [[ -z "${GROK_AGENT_SECRET:-}" ]]; then
-  echo "GROK_AGENT_SECRET empty in $SECRET_FILE" >&2
+  GROK_AGENT_SECRET="$("$FLEET_SECRETS" get GROK_AGENT_SECRET --path /grok-acp)" \
+    || { echo "missing GROK_AGENT_SECRET in Infisical /grok-acp" >&2; exit 1; }
+fi
+if [[ -z "${GROK_AGENT_SECRET}" ]]; then
+  echo "GROK_AGENT_SECRET empty in Infisical /grok-acp" >&2
   exit 1
 fi
+export GROK_AGENT_SECRET
 
 export GROK_DISABLE_AUTOUPDATER=1
 # Conductor sessions pick MCPs per job.  Do not inherit the TUI kitchen sink

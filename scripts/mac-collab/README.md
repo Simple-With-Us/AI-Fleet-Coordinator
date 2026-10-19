@@ -16,7 +16,7 @@ and only shows the in-page token bar on 401.  Agents still use Bearer.
 `GET /login` is an HTML form for browsers whose password manager cannot fill the native
 Basic dialog (browser-only seats such as Instinct): `POST /login` with a form field `token`
 runs the same token check, mints the same 30-day cookie, and 303s to `/board`.  A
-`MAC_COLLAB_TOKEN_<SEAT>=` line in `~/.secrets/mac-collab.env` keeps that seat's writes
+`MAC_COLLAB_TOKEN_<SEAT>` key in Infisical Fleet-OPS `/mac-collab` keeps that seat's writes
 attributed to itself.  Failures share the Bearer rate limit and are never echoed or logged.
 `board show` / `board status` accept unique 8-char id prefixes.
 `mac-collab-sync` snapshots `findings.db` under `~/apps/mac-collab/backups/` (14-day keep).
@@ -37,15 +37,17 @@ an unrelated process, lsof-timeout -> ps fallback).  Board `cd895d6f`.
 
 ## Token rotation (board `029f6346`)
 
-`~/.secrets/mac-collab.env` is canonical.  `load_tokens()` re-reads it on
-every request so a file rotation takes effect without a server restart.
-Process-env `MAC_COLLAB_TOKEN*` is ignored when the file is present (cloud
-seats with no file still use env).  Authenticated `GET /health` includes
-`token_source`, `token_count`, `secrets_mtime`, `secrets_newer_than_process`,
-`pid`, and `restart_hint` — never the token value.  A 401 body carries the
-same restart hint.  `board` CLI prefers the file and prints that hint on 401.
+Infisical Fleet-OPS `/mac-collab` is canonical (AFC-359).  `load_tokens()` re-reads it
+through `fleet-secrets run --path /mac-collab` at most once every `MAC_COLLAB_TOKEN_TTL`
+seconds (60 by default), so a rotation takes effect without a server restart;  a failed
+read keeps the last good tokens.  Process-env `MAC_COLLAB_TOKEN*` is ignored when
+Infisical has tokens (cloud seats with none still use env).  Authenticated `GET /health`
+includes `token_source` (`infisical`, `env` or `missing`), `token_count`,
+`vault_refreshed_at`, `pid`, and `restart_hint` — never the token value.  A 401 body
+carries the same restart hint.  `board` CLI reads `fleet-secrets get MAC_COLLAB_TOKEN
+--path /mac-collab` first and prints that hint on 401.
 
-After rotating the file, long-running processes that exported the old token
+After rotating the token, long-running processes that exported the old token
 at start still need a new shell.  `pm2 restart mac-collab --update-env` if
-the server process env itself still holds a stale token (file-canonical
+the server process env itself still holds a stale token (Infisical-canonical
 auth does not need that restart).

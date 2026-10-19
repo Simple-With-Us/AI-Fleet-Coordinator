@@ -3,10 +3,10 @@
 
 Launchd: com.jay.mac-resource-watch (every 5 min).
 On-demand: python3 ~/apps/mac-resource-watch.py --once
-Never prints webhook secrets.  Load BOTFLEET_HOUSEKEEPER_WEBHOOK_* from
-~/.secrets/botfleet-housekeeper-webhook.env and, if present,
-GROK_BOT_HOUSEKEEPER_WEBHOOK_* from ~/.secrets/grok-bot-housekeeper-webhook.env
-without echoing values.  BotFleet is the primary wake.  Grok Bot is optional.
+Never prints webhook secrets.  Load BOTFLEET_HOUSEKEEPER_WEBHOOK_* from the environment, else Infisical
+Fleet-OPS /botfleet-housekeeper-webhook (`fleet-secrets get`), and, if present,
+GROK_BOT_HOUSEKEEPER_WEBHOOK_* from the environment or Infisical Fleet-OPS (root), without echoing
+values (AFC-359).  BotFleet is the primary wake.  Grok Bot is optional.
 """
 from __future__ import annotations
 
@@ -26,8 +26,9 @@ HOME = Path.home()
 STATE_DIR = HOME / ".claude-disk-janitor"
 STATE_FILE = STATE_DIR / "resource-watch-state.json"
 LOG_FILE = HOME / "Library" / "Logs" / "mac-resource-watch.log"
-SECRET_FILE = HOME / ".secrets" / "botfleet-housekeeper-webhook.env"
-GB_SECRET_FILE = HOME / ".secrets" / "grok-bot-housekeeper-webhook.env"
+FLEET_SECRETS = Path(os.environ.get("FLEET_SECRETS_BIN") or HOME / ".local" / "bin" / "fleet-secrets")
+BF_FOLDER = "/botfleet-housekeeper-webhook"
+GB_FOLDER = "/"
 CLEANUP = HOME / "apps" / "mac-auto-cleanup.sh"
 JANITOR = HOME / ".claude-disk-janitor" / "janitor.sh"
 
@@ -160,28 +161,37 @@ def save_state(state: dict) -> None:
     tmp.replace(STATE_FILE)
 
 
-def _read_env_file(path: Path, url_key: str, secret_key: str) -> tuple[str, str]:
-    url = os.environ.get(url_key, "").strip()
-    secret = os.environ.get(secret_key, "").strip()
-    if path.is_file() and not (url and secret):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.startswith(url_key + "=") and not url:
-                url = line.split("=", 1)[1].strip().strip('"')
-            elif line.startswith(secret_key + "=") and not secret:
-                secret = line.split("=", 1)[1].strip().strip('"')
+def _fleet_secret(name: str, folder: str) -> str:
+    """One Fleet-OPS secret through `fleet-secrets get`, or "" when it is absent or the call fails."""
+    if not FLEET_SECRETS.is_file():
+        return ""
+    try:
+        proc = subprocess.run(
+            [str(FLEET_SECRETS), "get", name, "--path", folder],
+            capture_output=True, text=True, timeout=60, check=False, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _read_webhook(folder: str, url_key: str, secret_key: str) -> tuple[str, str]:
+    """Environment first, then Infisical Fleet-OPS."""
+    url = os.environ.get(url_key, "").strip() or _fleet_secret(url_key, folder)
+    secret = os.environ.get(secret_key, "").strip() or (_fleet_secret(secret_key, folder) if url else "")
     return url, secret
 
 
 def load_webhooks() -> list[tuple[str, str, str]]:
     """Return list of (name, url, secret).  Never print url/secret."""
     hooks: list[tuple[str, str, str]] = []
-    bf_url, bf_secret = _read_env_file(
-        SECRET_FILE, "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"
+    bf_url, bf_secret = _read_webhook(
+        BF_FOLDER, "BOTFLEET_HOUSEKEEPER_WEBHOOK_URL", "BOTFLEET_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if bf_url and bf_secret:
         hooks.append(("BotFleet", bf_url, bf_secret))
-    gb_url, gb_secret = _read_env_file(
-        GB_SECRET_FILE, "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL", "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET"
+    gb_url, gb_secret = _read_webhook(
+        GB_FOLDER, "GROK_BOT_HOUSEKEEPER_WEBHOOK_URL", "GROK_BOT_HOUSEKEEPER_WEBHOOK_SECRET"
     )
     if gb_url and gb_secret:
         hooks.append(("GrokBot", gb_url, gb_secret))

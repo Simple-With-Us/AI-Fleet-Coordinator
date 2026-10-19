@@ -451,9 +451,8 @@ class RunCliTests(ParityCliTest):
     def test_writes_check_the_seat_apps_identity(self):
         cid, secret = "claude-app-client-id", "claude-app-client-secret-value"
         self.mock.add_client(cid, secret, "Codex")                   # swapped credentials
-        p = self.creds.parent / "CLAUDE.env"
-        p.write_text(f'LINEAR_CLIENT_ID="{cid}"\nLINEAR_CLIENT_SECRET="{secret}"\n')
-        p.chmod(0o600)
+        self.ops_put("CLAUDE_LINEAR_CLIENT_ID", cid)
+        self.ops_put("CLAUDE_LINEAR_CLIENT_SECRET", secret)
         out = self.board("run", "archive_issue", "--arg", "id=OPS-10", "--idempotency-key", "k", code=4)
         self.assertIn("refusing to write as CLAUDE", out.stderr)
         self.assertEqual(self.mock.api_requests, [])

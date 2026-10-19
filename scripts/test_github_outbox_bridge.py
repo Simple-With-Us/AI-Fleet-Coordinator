@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("github_outbox_bridge", HERE / "github-outbox-bridge.py")
@@ -245,6 +247,28 @@ class RuleTests(unittest.TestCase):
             http.write_text("[api]\nemail=x@y\nkey=k\nsite=http://simplewithus.zulipchat.com\n")
             with self.assertRaises(bridge.BridgeError):
                 bridge.ZulipClient(http)
+
+    def test_zulip_client_reads_the_bot_keys_from_infisical(self):
+        # AFC-359:  no zuliprc path by default;  the Claude bot's keys come from Infisical /zulip.
+        import stat
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fleet-secrets"
+            fake.write_text(
+                "#!/bin/sh\n"
+                '[ "$1" = get ] && [ "$3" = --path ] && [ "$4" = /zulip ] || exit 3\n'
+                'case "$2" in\n'
+                "  CLAUDE_ZULIP_EMAIL) printf claude-bot@example.test;;\n"
+                "  CLAUDE_ZULIP_KEY) printf test-key;;\n"
+                "  CLAUDE_ZULIP_SITE) printf https://simplewithus.zulipchat.com;;\n"
+                "  *) exit 3;;\n"
+                "esac\n"
+            )
+            fake.chmod(stat.S_IRWXU)
+            with mock.patch.dict(os.environ, {"FLEET_SECRETS_BIN": str(fake)}):
+                client = bridge.ZulipClient()
+                self.assertEqual((client.email, client.key), ("claude-bot@example.test", "test-key"))
+                other = bridge.ZulipClient(bot="NOBODY")
+                self.assertIsNone(other.key)
 
     def test_mirror_body_clips_and_stamps(self):
         body = bridge.mirror_body("x" * 5000, "1789679400.0", "GROK", SEAT)
