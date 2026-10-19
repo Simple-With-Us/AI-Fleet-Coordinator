@@ -9,7 +9,9 @@
         key names only, one per line.
   set NAME [--path /]
         create or update one secret in Fleet-OPS prod.  The value is read from standard input (one
-        trailing newline removed), never from an argument.  Needs a machine identity.
+        trailing newline removed), never from an argument.  Needs a machine identity.  Only names on the
+        built-in allowlist in core.WRITE_ALLOWLIST (now CACHE_* under /linear) are accepted;  everything
+        else exits 2.
   doctor [--json]
         booleans and counts only, never a value.
 
@@ -33,7 +35,7 @@ USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
     "       fleet-secrets get NAME [--path /]\n"
     "       fleet-secrets names [--path /]\n"
-    "       fleet-secrets set NAME [--path /]   (value on standard input)\n"
+    "       fleet-secrets set NAME --path /linear   (value on standard input;  CACHE_* names only)\n"
     "       fleet-secrets doctor [--json]\n"
 )
 
@@ -90,6 +92,7 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
     opts = _parse(args, False, 1)
     name = core.check_name(str(opts["args"][0]))  # type: ignore[index]
     path = core.check_path(str(opts["path"]))
+    core.check_writable(name, path)  # refuse before reading the value or touching auth
     value = stdin.read(core.MAX_VALUE_BYTES + 1)
     value = value.removesuffix("\n")
     if not value:

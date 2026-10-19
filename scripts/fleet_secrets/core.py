@@ -42,6 +42,11 @@ API_BASE = "https://app.infisical.com/api"
 ENV_API = "FLEET_SECRETS_API"
 API_TIMEOUT = 30.0
 MAX_VALUE_BYTES = 256 * 1024
+# What `set` may write:  (folder, name pattern) pairs, and nothing else.  This list is code on purpose:
+# widening it takes a reviewed change, never a flag, an environment variable or a config file.  A general
+# write command would let any agent on this Mac overwrite any Fleet-OPS secret with the shared automation
+# identity.  CACHE_<APP> in /linear is the minted Linear token that `board` stores there (AFC-359).
+WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (("/linear", r"^CACHE_[A-Z0-9_]+$"),)
 LOGIN_TIMEOUT = 30.0
 KEYCHAIN_TIMEOUT = 10.0
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -486,10 +491,22 @@ def _api(method: str, path: str, token: str, body: dict | None, env: Mapping[str
         data = None
 
 
+def check_writable(name: str, path: str) -> None:
+    """Raise SecretsError (exit 2) unless (path, name) is on the built-in write allowlist."""
+    for folder, pattern in WRITE_ALLOWLIST:
+        if path == folder and re.match(pattern, name):
+            return
+    raise SecretsError(
+        "set refused:  %s at %s is not on the built-in write allowlist (%s);  widening it needs a code change"
+        % (name, path, ", ".join("%s %s" % (f, p) for f, p in WRITE_ALLOWLIST)),
+        2,
+    )
+
+
 def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
     """Create or update one Fleet-OPS prod secret at `path`, and return "created" or "updated".
 
-    Needs a machine identity (token, keychain or system-keychain):  the CLI's own login session
+    Only names on WRITE_ALLOWLIST are accepted.  Needs a machine identity (token, keychain or system-keychain):  the CLI's own login session
     cannot hand its token to a REST call, so mode `session` is refused.  The folder is created when
     absent.  The value never appears in an argument list, a message or a log."""
     refusal = environment_refusal(env)
@@ -497,6 +514,7 @@ def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
         raise SecretsError(refusal, 2)
     check_name(name)
     check_path(path)
+    check_writable(name, path)
     if "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
         raise SecretsError("value is empty-unsafe or larger than %d bytes" % MAX_VALUE_BYTES, 2)
     project = infisical_project_id(env, home_dir(env))
