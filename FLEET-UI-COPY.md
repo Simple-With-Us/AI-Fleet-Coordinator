@@ -212,13 +212,17 @@ destination:
   (anything a tool writes that a Markdown or HTML renderer then shows): a real U+00A0 plus a
   space (owner ruling 2026-10-08).  Never the entity there, because GitHub can copy a PR body
   into a plain-text squash commit, where it would show literally.  You cannot type U+00A0 in
-  chat, and you cannot count on emitting a double space either — a run of whitespace written
-  into a tool call or heredoc is silently normalized to one space.  So generate the gap in the
-  shell; this regex matches one *or more* spaces, so it works either way:
-  `perl -CSDA -pe 's/([.!?])[ \t]+(?=[A-Z0-9"*`#@])/$1\x{a0} /g'`.  Then **assert** before posting:
-  `grep -o $'\xc2\xa0' body.nbsp.txt | wc -l` must not print `0`.  A conversion that matched
-  nothing still exits 0, so a failed run is silent.  `agent-sync post --body-file` additionally
-  refuses any file whose mode is not `0600` or `0400`, so `chmod 600` it first.
+  chat, and a double space you emit into a tool call *sometimes* arrives collapsed to a single
+  space — intermittently, not deterministically, so never diagnose it and always verify.  So
+  generate the gap in the shell, matching one *or more* spaces so it works in both states:
+  `perl -CSDA -pe 's/([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g'`.  Then run both checks before posting:
+  `grep -o $'\xc2\xa0' body.nbsp.txt | wc -l` must be `> 0`, and `grep -c '[.!?] [A-Z"]' body.nbsp.txt`
+  must be `0`, because a partly converted body can hold real U+00A0 and still carry one leftover
+  single-space gap.  A conversion that matched nothing still exits 0, so a failed run is silent.
+  `agent-sync post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
+  so `chmod 600` it first.  Source files (Swift, TypeScript, shell, and markdown read as source)
+  are not affected and keep two literal ASCII spaces; never put a U+00A0 into a committed source
+  file, which is a real defect rather than a fix.
 - **Files read as source and other plain text** (repo markdown and text, commit messages,
   code comments, config, Linear issue text, terminal output): two LITERAL ASCII
   spaces.  An entity would appear as literal text.

@@ -913,16 +913,19 @@ Sentry's Slack workflow (`3930668`:  production high-priority alerts, plus Seer 
 
 These bind every message, bot-to-bot included.
 
-- **Sentence gap.**  A real U+00A0 plus a space between sentences in every Zulip post, DM included, from the CLI or the raw API, and in GitHub titles, bodies, and comments (owner ruling Thu, Oct 8, which supersedes the Wed, Oct 7 finding that two literal ASCII spaces rendered the same).  Never type the HTML entity for a non-breaking space.  You cannot type U+00A0 in chat, and you cannot count on emitting a double space either — a run of whitespace you write into a tool call or heredoc is silently normalized to one space (verified 2026-10-18).  So generate the gap in the shell.  The regex matches one *or more* spaces, so it is correct whether the double space survived or was collapsed:
+- **Sentence gap.**  A real U+00A0 plus a space between sentences in every Zulip post, DM included, from the CLI or the raw API, and in GitHub titles, bodies, and comments (owner ruling Thu, Oct 8, which supersedes the Wed, Oct 7 finding that two literal ASCII spaces rendered the same).  Never type the HTML entity for a non-breaking space.  You cannot type U+00A0 in chat, and a double space you emit into a tool call **sometimes** arrives collapsed to a single space.  That collapse is intermittent, not deterministic — on 2026-10-18, same machine and same tool, a ~3 KB PR body kept all eight of its double spaces while a ~3 KB Zulip body lost every one.  So generate the gap in the shell.  The pattern must match one *or more* spaces so it is correct in both states:
 
   ```
-  perl -CSDA -pe 's/([.!?])[ \t]+(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
-  grep -o $'\xc2\xa0' body.nbsp.txt | wc -l      # must not print 0; a no-op run still exits 0
+  perl -CSDA -pe 's/([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+  grep -o $'\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
+  grep -c '[.!?] [A-Z"]' body.nbsp.txt          # must be 0 — a leftover single-space gap
   chmod 600 body.nbsp.txt                       # agent-sync post --body-file refuses other modes
   agent-sync post --topic "<ID> <subject>" --body-file body.nbsp.txt
   ```
 
-  Never type a raw U+00A0 into a message body or tool call; it is normalized exactly like a double space.  Let perl emit it.
+  Run both greps every time.  A no-op conversion still exits 0, and a count above zero is not by itself sufficient — a partly converted body can hold real U+00A0 and still ship one wrong gap, which only the second grep catches.  Expect rare benign hits from abbreviations such as `Dr. Smith`.  Never type a raw U+00A0 into a message body or tool call; it is normalized the same way a double space is, so let perl emit it.
+
+  **This is for renderer-bound text only.**  Swift, TypeScript, shell, and markdown read as source want two literal ASCII spaces and are *not* affected — those gaps came through the write tool intact in the same session.  Never put a U+00A0 into a committed source file; that is a real defect, not a fix.  Let perl emit it.
 
   The count is the number of sentence ends that were converted, so a body with several sentences must show several.  Do this on every post.  Files in this repo, including this guide, are read as source and keep two ASCII spaces.
 - A single space stays correct after `e.g.`, in `v1.2.3`, and inside URLs, emails, and filenames.  Never "fix" a brand period (`Congress.Trade`, `Socratic.Trade`) or `U.S.`

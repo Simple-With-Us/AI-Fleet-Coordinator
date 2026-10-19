@@ -94,9 +94,9 @@ export function noConnectionPage() {
 
 /**
  * One or more ASCII spaces after a sentence become SENTENCE_GAP, which survives HTML.
- * The class is one-or-more on purpose: a double space can arrive collapsed to a single
- * space by the time it reaches us, and a two-space-only pattern then silently matched
- * nothing and rendered with no gap at all (verified 2026-10-18).
+ * One-or-more on purpose: a double space can arrive collapsed to a single space by the
+ * time it reaches us, and that collapse is intermittent, so a two-space-only pattern
+ * silently matched nothing and rendered with no gap at all (verified 2026-10-18).
  */
 export function gapped(text) {
   return escapeHtml(text).replace(/([.!?])[ \t]+(?=\S)/g, `$1${SENTENCE_GAP}`);

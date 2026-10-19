@@ -48,35 +48,63 @@ depends on the surface, so pick by destination:
 | **Markdown source** | two literal spaces *between* sentences | ⚠️ Two spaces at the **end of a line** is the unrelated hard-line-break syntax — don't confuse the two |
 
 **Producing U+00A0 through a tool.**  You cannot type a raw U+00A0 into your own chat reply.
-Worse, you cannot count on emitting a *double* space either:  a run of whitespace you write
-into a tool call or a shell heredoc is silently normalized to a single space before it lands
-(verified 2026-10-18).  So **generate the gap in the shell, never in the text you emit.**  Use
-a regex that matches one *or more* spaces, so it is correct whether the double space survived
-or was collapsed:
+Worse, you cannot count on emitting a *double* space either:  a run of whitespace you write into
+a tool call or a shell heredoc **sometimes** gets normalized to a single space before it lands.
+This is **intermittent, not deterministic** — in one session on 2026-10-18 a ~3 KB PR body kept
+all eight of its double spaces while a ~3 KB Zulip body lost every one, same machine, same tool.
+So you cannot tell from one write whether it will happen again, and you cannot diagnose it after
+the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a regex that
+matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-perl -CSDA -pe 's/([.!?])[ \t]+(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+perl -CSDA -pe 's/([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-The lookahead class keeps the gap out of `e.g.`, `i.e.`, and lower-case domains, and `[ \t]+`
-requires whitespace after the punctuation, so a dotted version like `v1.2.3` is left alone.
+Matching one *or more* is the whole fix.  The old pattern requiring exactly two spaces — written
+here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
+single-space pattern `([.!?]) (?=...)` is no better, because it matches nothing on text that kept
+its two spaces.  Both exit `0` and post with no gap.  `[ \t]+` is the same idea and additionally
+tolerates a tab.  The lookahead class keeps the gap out of `e.g.`, `i.e.`, and lower-case
+domains, and requiring whitespace after the punctuation leaves a dotted version like `v1.2.3`
+alone.
 
-**Assert before you post — this step is not optional.**  A conversion that matches nothing
-still exits 0, so a failed run is silent and the post goes out with no visible gap:
+**Known limitation — the lookahead is a heuristic.**  It skips a lowercase follower, so
+`e.g. this` and `U.S. rules` are left alone, but it gaps a *capitalised* abbreviation:  `Dr. Smith`
+and `e.g. Acme` both come out with a U+00A0, against the rule above about non-terminal
+abbreviations.  That is the deliberate cost of a pattern that needs no dictionary.  If a body
+carries such an abbreviation, fix that one gap by hand after the run, or accept it;  do not
+silently ship it.
+
+**Assert before you post — both checks, every time.**  A conversion that matches nothing still
+exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
+partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
 
 ```sh
-grep -o $'\xc2\xa0' body.nbsp.txt | wc -l    # must be greater than 0
+grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -c '[.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
 ```
 
-A count of `0` means the run changed nothing.  Fix it before posting, never after.  Then pass
-the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
+The second check is what the one-or-more pattern prevents, and it catches the case the first
+one misses:  a body with three gaps where one survived unconverted has a non-zero U+00A0 count
+and still ships a wrong gap.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
+read them and confirm they are abbreviations rather than real sentences.
+
+A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
+Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
 `agent-sync post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
 
+**Source files are a different surface and are NOT affected.**  Swift, TypeScript, shell, and
+markdown read as source want **two literal ASCII spaces**, and in the same session those
+two-space gaps came through the write tool completely intact.  Do **not** "fix" a source file by
+inserting U+00A0 on the strength of this chat-surface problem:  plain source wants plain ASCII,
+and a U+00A0 committed into a source file is a real defect.  The perl conversion above is for
+text bound for GitHub, Zulip, or any renderer.  Never run it over source.
+
 Two more traps, both hit 2026-10-18:
 
-- **Never type a raw U+00A0 into a message body or tool call.**  It is normalized exactly like
-  a double space.  Let perl emit it.
+- **Never type a raw U+00A0 into a message body or tool call.**  It is normalized the same way
+  a double space is.  Let perl emit it.
 - The first `agent-sync` call in a session can die with "Parent-death guardian target
   registration timed out".  Retry verbatim.  If the retry fails with "cannot open it (No such
   file or directory)", the first attempt died before writing the file — the perl step never
