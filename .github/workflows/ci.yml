@@ -185,10 +185,11 @@ jobs:
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
-    # slower and stays a local run.  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
+    # slower and stays a local run.  TokenBlobTests (about 8 seconds) pins the per-key fleet-secrets reads and the
+    # zero-mint, zero-write fresh-blob path (AFC-361).  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
     # needs-owner notifier checks the owner's Linear reply by.
     - name: Board CLI input files and flat labels
-      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests
+      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests TokenBlobTests
     # Infisical for the board CLI (AFC-348):  client pairs from /linear before local files, the shared
     # LINEAR_<SEAT>_CACHE_TOKEN adopted and published, and the fallback when Infisical is down.  Mock servers only.
     - name: Board CLI Infisical tests
