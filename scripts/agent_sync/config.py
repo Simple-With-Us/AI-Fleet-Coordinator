@@ -913,7 +913,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                 'seat.%s.mcode applies only to wake = "claude" or "muse"' % seat_name
             )
         # The model the mcode fallback runs on:  `provider/model`, named on the command line.
-        mcode_model = section.get("mcode_model") or MCODE_DEFAULT_MODEL
+        mcode_model = section.get("mcode_model", MCODE_DEFAULT_MODEL)
         if not isinstance(mcode_model, str) or not re.fullmatch(MCODE_MODEL_PATTERN, mcode_model):
             wake_problems.append(
                 "seat.%s.mcode_model must be provider/model, such as %s"

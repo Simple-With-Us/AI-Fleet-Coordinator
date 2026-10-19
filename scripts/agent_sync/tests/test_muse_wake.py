@@ -514,6 +514,39 @@ class McodeFallbackTest(unittest.TestCase):
                 fh.write("#!/bin/sh\n")
             self.assertEqual(A.mcode_pin_state(paths, moved)["why"], "pin_stale")
 
+    def test_a_fallback_pin_covers_the_model_it_was_made_for(self) -> None:
+        # The argv carries --model, so a pin made for one model says nothing about another, and a
+        # pin with no model recorded cannot vouch for the model the seat runs now.
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = L.SeatPaths(tmp, "MM")
+            os.makedirs(paths.seat_dir, exist_ok=True)
+            exe = os.path.join(tmp, "mcode")
+            with open(exe, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            A.record_mcode_pin(paths, exe, time.time(), model="minimax/MiniMax-M3.1-Flash")
+            self.assertTrue(A.mcode_pinned(paths, exe, "minimax/MiniMax-M3.1-Flash"))
+            self.assertEqual(
+                A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3")["why"], "model_changed"
+            )
+            self.assertFalse(A.mcode_pinned(paths, exe, "minimax/MiniMax-M3"))
+            A.record_mcode_pin(paths, exe, time.time())
+            self.assertEqual(
+                A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3.1-Flash")["why"], "model_changed"
+            )
+
+    def test_a_candidate_pin_from_another_model_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = L.SeatPaths(tmp, "MM")
+            os.makedirs(paths.seat_dir, exist_ok=True)
+            exe = os.path.join(tmp, "mcode")
+            with open(exe, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            A.record_mcode_candidate(paths, exe, time.time(), model="minimax/MiniMax-M3")
+            problem = A.mcode_pin_candidate(paths, exe, time.time(), "minimax/MiniMax-M3.1-Flash")
+            self.assertIsNotNone(problem)
+            self.assertIn("model changed since the test", problem)
+            self.assertIsNone(A.mcode_pin_candidate(paths, exe, time.time(), "minimax/MiniMax-M3"))
+
     def test_the_fallback_is_optional_and_may_not_be_the_wake_itself(self) -> None:
         ok = C.from_dict(
             {
@@ -925,6 +958,15 @@ class MuseConfigTest(unittest.TestCase):
     def test_a_malformed_fallback_model_is_refused(self) -> None:
         cfg = _config_with_wake("muse", extra={"mcode_model": "not-a-provider-model"})
         self.assertTrue(any("mcode_model must be provider/model" in e for e in cfg.errors))
+
+    def test_a_present_but_empty_fallback_model_is_refused_not_defaulted(self) -> None:
+        # `section.get(...) or DEFAULT` treats False, 0 and "" as absent and quietly substitutes
+        # the default, so a malformed value never reaches the check.  Only an omitted key is absent.
+        for value in (False, 0, "", [], {}):
+            cfg = _config_with_wake("muse", extra={"mcode_model": value})
+            self.assertTrue(
+                any("mcode_model must be provider/model" in e for e in cfg.errors), repr(value)
+            )
 
 
 class LiveMuseTest(unittest.TestCase):

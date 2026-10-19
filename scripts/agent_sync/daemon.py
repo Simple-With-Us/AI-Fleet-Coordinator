@@ -2511,7 +2511,7 @@ class Daemon:
         mcode = A.resolve_mcode(runner.cfg.mcode, self.wake_path)
         if not mcode:
             return None, "no_mcode"
-        state = A.mcode_pin_state(runner.paths, mcode)
+        state = A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model)
         if not state["pinned"]:
             return None, str(state["why"] or "not_pinned")
         return str(state["mcode"]), None

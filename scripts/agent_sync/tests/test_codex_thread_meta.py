@@ -56,6 +56,22 @@ class CodexThreadMetaTests(McpHarness):
         )
         return reply["result"]
 
+    def test_the_session_id_reaches_the_native_thread_ledger(self):
+        # A native Codex thread builds its own ledger under its own key, and the State is rebuilt
+        # for it:  the full session id has to be written there too, or a headless resume cannot
+        # find the session that produced the post.
+        env = self.mcp_env(
+            AGENT_SEAT="CODEX",
+            CLAUDE_CODE_SESSION_ID=None,
+            AGENT_SESSION="owner session",
+        )
+        session = self.session(env, argv=("--codex-thread-meta",))
+        self.native(session, "zulip_post", {"topic": "t", "text": "one"}, thread=A)
+        path = self.state_dir / "CODEX" / ("codex-thread-" + A) / "state.json"
+        self.assertTrue(path.exists(), sorted(str(p) for p in self.state_dir.rglob("state.json")))
+        data = json.loads(path.read_text())
+        self.assertEqual(data.get("session"), "owner session")
+
     def test_envelope_thread_id_not_session_id_controls_resume_and_new(self):
         session = self.session(self.env, argv=("--codex-thread-meta",))
         first = self.native(session, sessionId=B)["structuredContent"]

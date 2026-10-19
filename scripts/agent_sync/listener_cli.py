@@ -770,7 +770,12 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
             if is_mcode
             else (A.muse_pin_candidate if is_muse else A.pin_candidate)
         )
-        problem = pin_fn(paths, binary, time.time())
+        if is_mcode:
+            # The model is part of what the test verified:  the argv carries --model, so a pin
+            # made for another model does not carry over.
+            problem = A.mcode_pin_candidate(paths, binary, time.time(), seat_cfg.mcode_model)
+        else:
+            problem = pin_fn(paths, binary, time.time())
         if problem:
             rt.out("NOT PINNED: %s\n" % problem)
             return 1

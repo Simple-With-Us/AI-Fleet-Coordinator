@@ -1412,24 +1412,64 @@ class McodeRunner:
         return out
 
 
-def mcode_pin_state(paths: L.SeatPaths, mcode: str | None) -> dict[str, Any]:
-    """Why the fallback pin does or does not match the binary.  Same never-self-heal rule as the
-    other two, on its own file, so a fallback is only trusted once a person verified it."""
+def mcode_pin_state(
+    paths: L.SeatPaths, mcode: str | None, model: str | None = None
+) -> dict[str, Any]:
+    """Why the fallback pin does or does not match the binary AND the model.  Same never-self-heal
+    rule as the other two, on its own file, so a fallback is only trusted once a person verified it.
+
+    The model is part of what a person verified:  the argv carries `--model provider/model`, so a
+    pin made for one model says nothing about another.  A pin with no model recorded cannot vouch
+    for the model the seat runs now, and holds rather than re-pinning itself."""
     if not mcode:
-        return {"pinned": False, "why": "no_mcode", "pinned_mcode": None, "mcode": None}
+        return {
+            "pinned": False,
+            "why": "no_mcode",
+            "pinned_mcode": None,
+            "mcode": None,
+            "model": model,
+        }
     current = binary_pin(mcode)
-    recorded = L.read_json(paths.wake_pin_mcode).get("mcode")
+    pin = L.read_json(paths.wake_pin_mcode)
+    recorded = pin.get("mcode")
+    recorded_model = pin.get("model")
     if not isinstance(recorded, str) or not recorded:
-        return {"pinned": False, "why": "not_pinned", "pinned_mcode": None, "mcode": current}
+        return {
+            "pinned": False,
+            "why": "not_pinned",
+            "pinned_mcode": None,
+            "mcode": current,
+            "model": recorded_model,
+        }
     if recorded != current:
-        return {"pinned": False, "why": "pin_stale", "pinned_mcode": recorded, "mcode": current}
-    return {"pinned": True, "why": None, "pinned_mcode": recorded, "mcode": current}
+        return {
+            "pinned": False,
+            "why": "pin_stale",
+            "pinned_mcode": recorded,
+            "mcode": current,
+            "model": recorded_model,
+        }
+    if model is not None and recorded_model != model:
+        return {
+            "pinned": False,
+            "why": "model_changed",
+            "pinned_mcode": recorded,
+            "mcode": current,
+            "model": recorded_model,
+        }
+    return {
+        "pinned": True,
+        "why": None,
+        "pinned_mcode": recorded,
+        "mcode": current,
+        "model": recorded_model,
+    }
 
 
-def mcode_pinned(paths: L.SeatPaths, mcode: str | None) -> bool:
+def mcode_pinned(paths: L.SeatPaths, mcode: str | None, model: str | None = None) -> bool:
     if not mcode:
         return False
-    return L.read_json(paths.wake_pin_mcode).get("mcode") == binary_pin(mcode)
+    return mcode_pin_state(paths, mcode, model)["pinned"]
 
 
 def record_mcode_pin(
@@ -1446,7 +1486,9 @@ def record_mcode_candidate(
     )
 
 
-def mcode_pin_candidate(paths: L.SeatPaths, mcode: str, now: float) -> str | None:
+def mcode_pin_candidate(
+    paths: L.SeatPaths, mcode: str, now: float, model: str | None = None
+) -> str | None:
     cand = L.read_json(paths.wake_pin_candidate_mcode)
     if not cand:
         return "no passing test-wake --run to pin; run that first"
@@ -1457,6 +1499,11 @@ def mcode_pin_candidate(paths: L.SeatPaths, mcode: str, now: float) -> str | Non
         return (
             "the mcode binary changed since the test (%s, tested %s); run test-wake --run again"
             % (binary_pin(mcode), cand.get("mcode"))
+        )
+    if model is not None and cand.get("model") != model:
+        return (
+            "the mcode model changed since the test (%s, tested %s); run test-wake --run again"
+            % (model, cand.get("model"))
         )
     record_mcode_pin(
         paths, mcode, now, model=cand.get("model") if isinstance(cand.get("model"), str) else None

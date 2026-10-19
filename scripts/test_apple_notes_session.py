@@ -171,6 +171,44 @@ class SessionIdTests(unittest.TestCase):
             p.stdout,
         )
 
+    def test_a_stale_session_row_is_dropped_even_when_a_spacer_follows_it(self):
+        # The markdown path ends every paragraph with a spacer, so the stale row the caller echoed
+        # back is not the last thing in the body:  it still has to be found and dropped.
+        body = "Old body line.\n\nSession: old-session-0001 - Mon, Oct 19, 3:35pm\n"
+        p = self.run_script(
+            "--update",
+            "--session",
+            "abc12345-def6",
+            "[AFC, Claude] topic",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=body,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
+        self.assertIn("Session: abc12345-def6 -", p.stdout)
+        self.assertNotIn("old-session-0001", p.stdout)
+
+    def test_the_stamp_leaves_one_divider_not_two(self):
+        # The stamp block brings its own divider and the echoed body keeps the one that followed
+        # its old stamp:  two blank lines read as a hole in the note.
+        body = "\n\nOld body line.\n"
+        p = self.run_script(
+            "--update",
+            "--session",
+            "abc12345-def6",
+            "[AFC, Claude] topic",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=body,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        m = re.search(
+            r"<p>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m</p>"
+            r"((?:<div><br\s*/?></div>)+)",
+            p.stdout,
+        )
+        self.assertIsNotNone(m, p.stdout)
+        self.assertEqual(m.group(1).count("<div>"), 1, p.stdout)
+
     def test_platform_variables_are_found_per_seat(self):
         cases = {
             "CLAUDE": "CLAUDE_CODE_SESSION_ID",
