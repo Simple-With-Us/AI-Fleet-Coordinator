@@ -94,7 +94,13 @@ def _path_reason(tool: str, path: str, cwd, ctx, secret_guard) -> str | None:
 
 
 def decide(payload: dict, ctx=None, secret_guard=None):
-    """Return a known-policy denial.  Each policy fails open independently."""
+    """Return a known-policy denial.
+
+    Shell policy is `fleet.decide`, which isolates its lane and secret checks from each other.
+    The file policies are one sequence, so an error raised by any of them (a secret-guard module
+    without SECRET_FILE_PATTERNS, a resolve error, a registry read error) drops the whole set and
+    allows the operation; they are not independent, and they fail open together.
+    """
     if payload.get("tool_name") in ("Bash", "bash"):
         args = payload.get("tool_input")
         if isinstance(args, dict) and isinstance(args.get("command"), str):
