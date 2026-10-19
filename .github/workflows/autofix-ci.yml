@@ -14,6 +14,8 @@ concurrency:
 
 jobs:
   autofix:
+    # The handbook sync job owns handbook-sync/mirror and refuses a pull request whose head it did not push (AFC-402).
+    if: github.head_ref != 'handbook-sync/mirror'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
