@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .builders import (
@@ -197,7 +197,7 @@ class NoMac(Sandbox):
 
 class MacParts(Sandbox):
     def test_lanes_backup_and_autopush_on_the_mac(self):
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)  # noqa: UP017 (3.9 has no datetime.UTC)
         report = doctor_report(
             [doctor_checkout("/home/example/apps/lanes/Example/claude-x", unpushed=2)],
             generated_at=now.isoformat(timespec="seconds"),
