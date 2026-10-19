@@ -1610,6 +1610,11 @@ class CliTests(World):
         self.assertEqual(rc, 0, text)
         self.assertIn("self-test PASS", text)
         self.assertIn("with guard.py renamed", text)
+        self.assertIn("with the MiniMax hook shim allowing everything", text)
+        self.assertIn("with the MiniMax adapter renamed", text)
+        self.assertIn("FAIL  minimax", text)
+        self.assertIn("Read/deny/hook-env", text)
+        self.assertIn("Write/deny/hook-env", text)
         self.assertIn("FAIL  claude", text)  # the failures it provoked are printed
         self.assertNotIn("self-test FAIL", text)
 
@@ -1624,6 +1629,7 @@ class CliTests(World):
             rc = T.self_test(lines.append, timeout=TIMEOUT, minimal_path=False, source=self.source)
         self.assertEqual(rc, 1, "\n".join(lines))
         self.assertIn("did NOT fail", "\n".join(lines))
+        self.assertIn("did NOT fail minimax Read/deny/hook-env", "\n".join(lines))
 
 
 # --------------------------------------------------------------------------- review round 2: confirmed findings

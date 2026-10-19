@@ -5738,7 +5738,7 @@ def self_test(
             _fails, checks = run_verify(
                 "with the fleet hook shim allowing everything, expect FAIL on muse", ("FAIL",)
             )
-            for key in ("muse", "minimax"):
+            for key in ("muse",):
                 if not any(
                     c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
                     for c in checks
@@ -5764,7 +5764,7 @@ def self_test(
                 _fails, checks = run_verify(
                     "with the fleet hook prefilter emptied, expect FAIL on muse", ("FAIL",)
                 )
-                for key in ("muse", "minimax"):
+                for key in ("muse",):
                     if not any(
                         c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
                         for c in checks
@@ -5776,11 +5776,44 @@ def self_test(
             finally:
                 with open(paths.fleet_shim, "wb") as fh:
                     fh.write(fleet_bytes)
+
+        # MiniMax owns its shim and adapter.  Damage those paths independently:
+        # changing Muse's shared fleet shim must not be treated as MM coverage.
+        def require_minimax_damage(checks: list[Check], damage: str) -> None:
+            for name in ("deny/login-PATH", "Read/deny/hook-env", "Write/deny/hook-env"):
+                if not any(
+                    c.target == "minimax" and c.name == name and c.status == "FAIL" for c in checks
+                ):
+                    failures.append(f"verify did NOT fail minimax {name} {damage}")
+            if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
+                failures.append(f"verify tools did not notice MiniMax damage {damage}")
+
+        mm_shim = os.path.join(paths.stable, MINIMAX_HOOK_NAME)
+        mm_bytes = _read_bytes(mm_shim)
+        with open(mm_shim, "wb") as fh:
+            fh.write(b"#!/bin/sh\nexit 0\n")
+        try:
+            _fails, checks = run_verify(
+                "with the MiniMax hook shim allowing everything, expect FAIL on minimax", ("FAIL",)
+            )
+            require_minimax_damage(checks, "with an allow-everything MiniMax hook")
+        finally:
+            with open(mm_shim, "wb") as fh:
+                fh.write(mm_bytes)
+        mm_adapter = os.path.join(paths.package_dir, "minimax_guard_hook.py")
+        os.rename(mm_adapter, mm_adapter + ".disabled")
+        try:
+            _fails, checks = run_verify(
+                "with the MiniMax adapter renamed, expect FAIL on minimax", ("FAIL",)
+            )
+            require_minimax_damage(checks, "with the MiniMax adapter missing")
+        finally:
+            os.rename(mm_adapter + ".disabled", mm_adapter)
         secret = os.path.join(paths.package_dir, SECRET_GUARD_MODULE)
         os.rename(secret, secret + ".disabled")
         try:
             _fails, checks = run_verify(
-                "with the secret guard module renamed, expect FAIL on muse", ("FAIL",)
+                "with the secret guard module renamed, expect FAIL on muse and minimax", ("FAIL",)
             )
             for key in ("muse", "minimax"):
                 if not any(
@@ -5801,7 +5834,8 @@ def self_test(
         return EXIT_FAIL
     emit(
         "self-test PASS: the install verifies, a renamed guard module, an emptied prefilter, an allow-everything fleet hook "
-        "and a missing secret guard each make verify FAIL, and each repair verifies again"
+        "and independent MiniMax shim/adapter damage and a missing secret guard each make verify FAIL, "
+        "and each repair verifies again"
     )
     return EXIT_OK
 
