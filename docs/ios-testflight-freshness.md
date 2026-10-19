@@ -20,8 +20,8 @@ fleet's TestFlight guards.
 | `scripts/launchd/com.jay.ios-testflight-freshness.plist` | The LaunchAgent:  every two hours at :20. |
 
 `~/apps/ios-fleet` stays the install target, as for the rest of the fleet's TestFlight tooling.
-The check calls `~/apps/ios-fleet/asc-api.mjs` for App Store Connect (that script reads
-`~/.secrets/appstore-connect.env`; the check never reads a credential and never echoes
+The check calls `~/apps/ios-fleet/asc-api.mjs` for App Store Connect (that script takes the
+`ASC_*` env or Infisical `/appstore-connect` through `fleet-secrets`; the check never reads a credential and never echoes
 `asc-api.mjs` stderr, because a crash there can name the key path) and
 `~/apps/ios-fleet/build-window.sh` for the build window.  Set `IOS_FLEET_DIR` to point both
 somewhere else.
@@ -125,7 +125,7 @@ atomically), and a lock directory beside it keeps two mutating runs apart.
 
 A Mac LaunchAgent, `com.jay.ios-testflight-freshness`, every two hours at :20 (scheduled, not
 always-on;  registered in `MAC-LOCAL-PROCESSES.md`).  It needs **no new secret**:  App Store
-Connect credentials are already in `~/.secrets` for `asc-api.mjs`, `gh` is signed in with the
+Connect credentials are already in Infisical (`/appstore-connect` and `/authkey-<key id>-p8`, read with `fleet-secrets get`) for `asc-api.mjs`, `gh` is signed in with the
 `workflow` scope that `workflow_dispatch` needs, and `agent-sync` has the CLAUDE bot's Zulip
 credential, all verified under a launchd-style clean environment.  A GitHub Actions cron in
 AI-Fleet-Coordinator could read the App Store Connect key through the org's Fleet-OPS Infisical

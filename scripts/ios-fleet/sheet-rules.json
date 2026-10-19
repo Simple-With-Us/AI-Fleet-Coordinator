@@ -230,7 +230,7 @@
         {
           "id": "SHEET-1",
           "rule": "This spreadsheet is strictly private.",
-          "detail": "Never enable public link sharing or anonymous viewing. Programmatic access uses the service account at ~/.secrets/google-sheets-sa.json only."
+          "detail": "Never enable public link sharing or anonymous viewing. Programmatic access uses the service account in Infisical Fleet-OPS /google-sheets-sa (GOOGLE_SHEETS_SA, read with fleet-secrets get) only."
         },
         {
           "id": "SHEET-2",
