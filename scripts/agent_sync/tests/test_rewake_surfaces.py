@@ -39,17 +39,35 @@ class FlagTests(unittest.TestCase):
             flags("rewake_verified = false\nrewake_verified_cli = true"), (True, False)
         )
 
-    def test_a_non_boolean_per_surface_key_is_false_and_never_falls_back_to_the_old_key(self) -> None:
-        self.assertEqual(flags('rewake_verified = true\nrewake_verified_desktop = "false"'), (True, False))
-        self.assertEqual(flags('rewake_verified = true\nrewake_verified_cli = "true"'), (False, True))
-        self.assertEqual(flags("rewake_verified = true\nrewake_verified_cli = 1\nrewake_verified_desktop = 0"), (False, False))
+    def test_a_non_boolean_per_surface_key_is_false_and_never_falls_back_to_the_old_key(
+        self,
+    ) -> None:
+        self.assertEqual(
+            flags('rewake_verified = true\nrewake_verified_desktop = "false"'), (True, False)
+        )
+        self.assertEqual(
+            flags('rewake_verified = true\nrewake_verified_cli = "true"'), (False, True)
+        )
+        self.assertEqual(
+            flags("rewake_verified = true\nrewake_verified_cli = 1\nrewake_verified_desktop = 0"),
+            (False, False),
+        )
 
-    def test_a_non_boolean_per_surface_key_is_a_reported_config_problem_that_keeps_the_seat(self) -> None:
-        cfg = C.from_dict(tomllib.loads(
-            '[daemon]\nowner_user_id = 1\n' + BARE % 'rewake_verified = true\nrewake_verified_desktop = "false"'
-            + '[seat.CLAUDE]\nbot = "Claude"\nwake = "inbox"\n'))
+    def test_a_non_boolean_per_surface_key_is_a_reported_config_problem_that_keeps_the_seat(
+        self,
+    ) -> None:
+        cfg = C.from_dict(
+            tomllib.loads(
+                "[daemon]\nowner_user_id = 1\n"
+                + BARE % 'rewake_verified = true\nrewake_verified_desktop = "false"'
+                + '[seat.CLAUDE]\nbot = "Claude"\nwake = "inbox"\n'
+            )
+        )
         self.assertEqual((cfg.rewake_verified_cli, cfg.rewake_verified_desktop), (True, False))
-        self.assertTrue(any("rewake_verified_desktop must be true or false" in e for e in cfg.errors), cfg.errors)
+        self.assertTrue(
+            any("rewake_verified_desktop must be true or false" in e for e in cfg.errors),
+            cfg.errors,
+        )
         self.assertIn("CLAUDE", cfg.seats, "the seat keeps capturing")
 
     def test_surface_names_come_from_the_entrypoint(self) -> None:
