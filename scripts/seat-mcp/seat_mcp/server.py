@@ -7,7 +7,6 @@ Supports initialize / tools/* (2025-03-26 and 2025-11-25) and server/discover
 from __future__ import annotations
 
 import json
-import socket
 import sys
 import traceback
 import uuid
@@ -265,11 +264,17 @@ class SeatHandler(BaseHTTPRequestHandler):
     def _hook_reject(self, code: int, error: str) -> None:
         """Refuse a /hooks/ request and drop the connection, so an unread body is never parsed as a next request."""
         self.close_connection = True
-        self._send(code, _json_bytes({"ok": False, "error": error}), "application/json", [("Connection", "close")])
+        self._send(
+            code,
+            _json_bytes({"ok": False, "error": error}),
+            "application/json",
+            [("Connection", "close")],
+        )
 
     def _proxy_to_webhook_ingress(self) -> None:
         import urllib.error
         import urllib.request
+
         # Unauthenticated surface:  bound what one request can cost a handler thread.
         length_s = self.headers.get("Content-Length")
         if self.headers.get("Transfer-Encoding") or (length_s is None and self.command == "POST"):
@@ -295,7 +300,7 @@ class SeatHandler(BaseHTTPRequestHandler):
             try:
                 self.connection.settimeout(HOOK_READ_TIMEOUT_SECONDS)
                 body = self.rfile.read(length)
-            except (socket.timeout, TimeoutError):
+            except TimeoutError:
                 self._hook_reject(408, "webhook body read timed out")
                 return
             if len(body) != length:
