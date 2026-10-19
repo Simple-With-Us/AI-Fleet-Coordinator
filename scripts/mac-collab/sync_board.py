@@ -14,6 +14,7 @@ Usage:
     python3 sync_board.py             # one sync pass
     python3 sync_board.py --loop      # sync every SYNC_INTERVAL_S forever (pm2 entrypoint)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -26,7 +27,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # How long after write_back.py stamps writeback_at should sync_board.py
@@ -36,7 +37,9 @@ from pathlib import Path
 WRITEBACK_GRACE_S = 900  # 15 minutes
 
 BASE_URL = os.environ.get("MAC_COLLAB_URL", "http://127.0.0.1:8792")
-SECRETS = Path.home() / ".secrets" / "mac-collab.env"
+FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(
+    Path.home() / ".local" / "bin" / "fleet-secrets"
+)
 APPS = Path.home() / "apps"
 SYNC_INTERVAL_S = 600  # 10 minutes
 CLOSED_ISSUE_LOOKBACK_DAYS = 30
@@ -49,7 +52,10 @@ APP_REGISTRY = {
     "socratic-trade": (APPS / "TRADING-EFFORT-LOG.md", "Simple-With-Us/Socratic-Trade"),
     "congress-trade": (APPS / "CONGRESS-TRADE-EFFORT-LOG.md", "Simple-With-Us/Congress.Trade"),
     "usage-monitor": (APPS / "API-USAGE-MONITOR-EFFORT-LOG.md", "Simple-With-Us/Usage-Monitor"),
-    "congress-trading-shared": (APPS / "CONGRESS-SHARED-EFFORT-LOG.md", "Simple-With-Us/congress-trading-shared"),
+    "congress-trading-shared": (
+        APPS / "CONGRESS-SHARED-EFFORT-LOG.md",
+        "Simple-With-Us/congress-trading-shared",
+    ),
     "dealdex": (APPS / "DEALDEX-EFFORT-LOG.md", "Simple-With-Us/DealDex"),
     "personal-site": (APPS / "PERSONAL-SITE-EFFORT-LOG.md", "Simple-With-Us/Personal-Site"),
     "autorotate": (APPS / "AUTOROTATE-EFFORT-LOG.md", "Simple-With-Us/Autorotate"),
@@ -79,7 +85,12 @@ PLACEHOLDER_RE = re.compile(
     re.IGNORECASE,
 )
 BULLET_RE = re.compile(r"^[-*]\s+(.*)$")
-BUCKET_TO_STATUS = {"planned": "open", "in-progress": "in_progress", "completed": "completed", "deployed": "deployed"}
+BUCKET_TO_STATUS = {
+    "planned": "open",
+    "in-progress": "in_progress",
+    "completed": "completed",
+    "deployed": "deployed",
+}
 
 
 class BoardItem:
@@ -177,10 +188,18 @@ def parse_board(text: str) -> list[BoardItem]:
 
 # --- GitHub issues ---
 
+
 def gh_issue_list(repo: str, extra_args: list[str]) -> list[dict]:
     cmd = [
-        "gh", "issue", "list", "--repo", repo, "--limit", "500",
-        "--json", "number,title,url,state,stateReason,updatedAt,labels,body",
+        "gh",
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--limit",
+        "500",
+        "--json",
+        "number,title,url,state,stateReason,updatedAt,labels,body",
         *extra_args,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -192,7 +211,7 @@ def gh_issue_list(repo: str, extra_args: list[str]) -> list[dict]:
 
 def fetch_repo_issues(repo: str) -> list[dict]:
     open_issues = gh_issue_list(repo, ["--state", "open"])
-    since = (datetime.now(timezone.utc) - timedelta(days=CLOSED_ISSUE_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    since = (datetime.now(UTC) - timedelta(days=CLOSED_ISSUE_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     closed_recent = gh_issue_list(repo, ["--search", f"is:closed closed:>={since}"])
     return open_issues + closed_recent
 
@@ -208,24 +227,31 @@ def issue_status(issue: dict) -> str:
 
 # --- mac-collab API client ---
 
+
 def load_token() -> str:
     env = os.environ.get("MAC_COLLAB_TOKEN", "").strip()
     if env:
         return env
-    if SECRETS.is_file():
-        for line in SECRETS.read_text().splitlines():
-            s = line.strip()
-            if s.startswith("export "):
-                s = s[7:]
-            if s.startswith("MAC_COLLAB_TOKEN="):
-                return s.split("=", 1)[1].strip().strip('"').strip("'")
-    return ""
+    try:
+        proc = subprocess.run(
+            [FLEET_SECRETS, "get", "MAC_COLLAB_TOKEN", "--path", "/mac-collab"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
 def post_finding(token: str, payload: dict) -> dict:
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        f"{BASE_URL}/findings", data=body, method="POST",
+        f"{BASE_URL}/findings",
+        data=body,
+        method="POST",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
@@ -233,6 +259,7 @@ def post_finding(token: str, payload: dict) -> dict:
 
 
 # --- write-back grace-window guard ---
+
 
 def fetch_writeback_protected() -> set[str]:
     """
@@ -244,9 +271,7 @@ def fetch_writeback_protected() -> set[str]:
     """
     if not FINDINGS_DB.is_file():
         return set()
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(seconds=WRITEBACK_GRACE_S)
-    ).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(seconds=WRITEBACK_GRACE_S)).isoformat()
     try:
         conn = sqlite3.connect(f"file:{FINDINGS_DB}?mode=ro", uri=True, timeout=3.0)
         conn.row_factory = sqlite3.Row
@@ -264,13 +289,16 @@ def fetch_writeback_protected() -> set[str]:
 
 # --- one sync pass ---
 
+
 def sync_once(dry_run: bool = False) -> None:
     effort_payloads = []
     issue_payloads = []
 
     protected = fetch_writeback_protected()
     if protected:
-        print(f"Grace-protected (skipping status for {len(protected)} item(s) within {WRITEBACK_GRACE_S}s window).")
+        print(
+            f"Grace-protected (skipping status for {len(protected)} item(s) within {WRITEBACK_GRACE_S}s window)."
+        )
 
     for app, (board_path, repo) in APP_REGISTRY.items():
         if board_path.is_file():
@@ -324,10 +352,13 @@ def sync_once(dry_run: bool = False) -> None:
                     payload.pop("status")
                 issue_payloads.append(payload)
 
-    print(f"Parsed {len(effort_payloads)} effort-board items, {len(issue_payloads)} GitHub issues (open + closed<{CLOSED_ISSUE_LOOKBACK_DAYS}d).")
+    print(
+        f"Parsed {len(effort_payloads)} effort-board items, {len(issue_payloads)} GitHub issues (open + closed<{CLOSED_ISSUE_LOOKBACK_DAYS}d)."
+    )
 
     if dry_run:
         from collections import Counter
+
         print("Effort rows by app:", dict(Counter(p["app"] for p in effort_payloads)))
         print("Issues by app:", dict(Counter(p["app"] for p in issue_payloads)))
         return
@@ -354,7 +385,7 @@ def backup_findings_db() -> None:
         return
     try:
         BACKUP_DIR.mkdir(mode=0o700, exist_ok=True)
-        dest = BACKUP_DIR / f"findings-{datetime.now(timezone.utc).strftime('%Y%m%d')}.db"
+        dest = BACKUP_DIR / f"findings-{datetime.now(UTC).strftime('%Y%m%d')}.db"
         src = sqlite3.connect(f"file:{FINDINGS_DB}?mode=ro", uri=True)
         try:
             dst = sqlite3.connect(dest)
@@ -365,12 +396,10 @@ def backup_findings_db() -> None:
         finally:
             src.close()
         dest.chmod(0o600)
-        cutoff = datetime.now(timezone.utc) - timedelta(days=BACKUP_KEEP_DAYS)
+        cutoff = datetime.now(UTC) - timedelta(days=BACKUP_KEEP_DAYS)
         for path in BACKUP_DIR.glob("findings-*.db"):
             try:
-                day = datetime.strptime(path.stem.split("-", 1)[1], "%Y%m%d").replace(
-                    tzinfo=timezone.utc
-                )
+                day = datetime.strptime(path.stem.split("-", 1)[1], "%Y%m%d").replace(tzinfo=UTC)
             except (ValueError, IndexError):
                 continue
             if day < cutoff:

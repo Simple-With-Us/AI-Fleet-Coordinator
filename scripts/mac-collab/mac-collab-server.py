@@ -32,6 +32,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import uuid
@@ -50,7 +51,9 @@ HEALTH_PROBE_TIMEOUT = 20.0
 STARTED = time.time()
 HOME = Path("/Users/jay")
 APPS = HOME / "apps"
-SECRETS = HOME / ".secrets" / "mac-collab.env"
+# The tokens live in Infisical Fleet-OPS /mac-collab (AFC-359), read through `fleet-secrets`.
+TOKEN_FOLDER = "/mac-collab"
+TOKEN_TTL_S = float(os.environ.get("MAC_COLLAB_TOKEN_TTL", "60"))
 DB_PATH = Path(__file__).resolve().parent / "findings.db"
 
 ALLOW = {
@@ -149,9 +152,7 @@ def app_filter_variants(app: str) -> list[str]:
     return sorted(variants)
 
 
-FLEET_SECRETS_BIN = (
-    HOME / ".local" / "bin" / "fleet-secrets"
-)  # OPS-818:  replaces the flat global-api-keys file
+FLEET_SECRETS_BIN = HOME / ".local" / "bin" / "fleet-secrets"  # OPS-818:  Fleet-OPS in Infisical
 AUDIT_LOG = Path(__file__).resolve().parent / "audit.log"
 AUTH_FAIL_WINDOW_S = 60.0
 AUTH_FAIL_MAX = 20
@@ -307,23 +308,118 @@ def _env_tokens() -> dict:
     return tokens
 
 
-def _file_tokens() -> dict:
-    if not SECRETS.is_file():
-        return {}
+# Last good Infisical read.  A failed read keeps the last good copy, so an Infisical or network outage never
+# locks the board out;  a rotation shows up within TOKEN_TTL_S seconds with no restart.  The fetch (a
+# `fleet-secrets` subprocess that can hang) never runs under the lock and never on a request thread after
+# the first load:  requests always get the last-known-good tokens at once.
+_VAULT_LOCK = threading.Lock()
+_VAULT = {
+    "tokens": None,  # {token: identity} from the last good read, or None before the first one
+    "last_ok_at": None,  # when that read happened;  not moved by a failed read
+    "next_try": 0.0,  # earliest time of the next fetch (TTL after a success, a short back-off after a failure)
+    "attempted": False,  # a first fetch has been started
+    "thread": None,  # the background refresh in flight, if any
+}
+VAULT_RETRY_S = 10.0
+
+
+def _fetch_vault_tokens():
+    """{token: identity} for every MAC_COLLAB_TOKEN* in Infisical Fleet-OPS /mac-collab, or None when the
+    read failed.  One `fleet-secrets run` call;  the values stay in this process and are never logged.
+    Inherited MAC_COLLAB_TOKEN* variables are removed from the child's environment, so only what Infisical
+    injects can be parsed back as a vault value."""
+    if not FLEET_SECRETS_BIN.is_file():
+        return None
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MAC_COLLAB_TOKEN")}
     try:
-        return _parse_token_assignments(SECRETS.read_text().splitlines())
-    except OSError:
-        return {}
+        proc = subprocess.run(
+            [str(FLEET_SECRETS_BIN), "run", "--path", TOKEN_FOLDER, "--", "/usr/bin/env"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return _parse_token_assignments(
+        [ln for ln in proc.stdout.splitlines() if ln.startswith("MAC_COLLAB_TOKEN")]
+    )
 
 
-# Logged at most once per process so a rotated file is a restart signal,
+def _refresh_vault() -> None:
+    """Fetch OUTSIDE the lock, then swap the result in under it."""
+    try:
+        fresh = _fetch_vault_tokens()
+    except Exception:  # a refresh must never kill a request or leave the in-flight mark set
+        fresh = None
+    with _VAULT_LOCK:
+        now = time.time()
+        if fresh is None:
+            _VAULT["next_try"] = (
+                now + VAULT_RETRY_S
+            )  # back off;  keep the old tokens and refreshed_at
+        else:
+            _VAULT["tokens"] = fresh
+            _VAULT["last_ok_at"] = now
+            _VAULT["next_try"] = now + TOKEN_TTL_S
+        _VAULT["thread"] = None
+
+
+def _vault_tokens() -> dict:
+    """The last-known-good vault tokens.  The very first call (process start) fetches inline;  after that a
+    due refresh runs on a background thread and this returns at once, so a slow or hung `fleet-secrets`
+    never stalls a request."""
+    t = None
+    with _VAULT_LOCK:
+        due = time.time() >= _VAULT["next_try"] and _VAULT["thread"] is None
+        first = due and not _VAULT["attempted"]
+        if due:
+            _VAULT["attempted"] = True
+            if first:
+                _VAULT["thread"] = (
+                    threading.current_thread()
+                )  # in flight:  no other caller starts a fetch
+            else:
+                t = threading.Thread(
+                    target=_refresh_vault, name="mac-collab-vault-refresh", daemon=True
+                )
+                _VAULT["thread"] = t
+        tokens = _VAULT["tokens"]
+    if first:
+        _refresh_vault()  # outside the lock
+        with _VAULT_LOCK:
+            tokens = _VAULT["tokens"]
+    elif t is not None:
+        t.start()
+    return tokens or {}
+
+
+def _reset_vault() -> None:
+    """Forget everything (tests)."""
+    with _VAULT_LOCK:
+        _VAULT.update(tokens=None, last_ok_at=None, next_try=0.0, attempted=False, thread=None)
+
+
+def _vault_wait() -> None:
+    """Join the background refresh, if one is running (tests)."""
+    with _VAULT_LOCK:
+        t = _VAULT["thread"]
+    if t is not None and t is not threading.current_thread():
+        t.join()
+
+
+# Logged at most once per process so a rotated token is a refresh signal,
 # not a line of noise on every request.
 _LOGGED_FILE_WINS = False
 
 AUTH_FAIL_HINT = (
     "token rejected.  If MAC_COLLAB_TOKEN was rotated, unset the env var "
-    "(file ~/.secrets/mac-collab.env is canonical) and restart long-running "
-    "processes that cached it at start.  mac-collab itself: "
+    "(Infisical Fleet-OPS /mac-collab is canonical;  the server re-reads it about once a minute) "
+    "and restart long-running processes that cached it at start.  mac-collab itself: "
     "pm2 restart mac-collab --update-env"
 )
 
@@ -331,58 +427,48 @@ AUTH_FAIL_HINT = (
 def load_tokens() -> dict:
     """Return {token: identity}.
 
-    ~/.secrets/mac-collab.env is canonical when it has any MAC_COLLAB_TOKEN*
-    assignment, so rotating the file takes effect on the next request without
-    a server restart.  Process-env tokens are used only when the file is
-    missing (cloud / test).  Never cache this at import -- that was the
-    029f6346 silent-401 after rotation.
+    Infisical Fleet-OPS /mac-collab is canonical when it has any MAC_COLLAB_TOKEN*
+    key, so rotating it takes effect within TOKEN_TTL_S seconds without a server
+    restart.  Process-env tokens are used only when Infisical has none (cloud /
+    test).  Never cache this at import -- that was the 029f6346 silent-401 after
+    rotation.
     """
     global _LOGGED_FILE_WINS
-    file_tokens = _file_tokens()
+    vault_tokens = _vault_tokens()
     env_tokens = _env_tokens()
-    if file_tokens:
+    if vault_tokens:
         if env_tokens and not _LOGGED_FILE_WINS:
             _LOGGED_FILE_WINS = True
-            mtime = None
-            try:
-                mtime = int(SECRETS.stat().st_mtime)
-            except OSError:
-                pass
             print(
-                "mac-collab: ~/.secrets/mac-collab.env is canonical; "
+                "mac-collab: Infisical /mac-collab is canonical; "
                 "ignoring process-env MAC_COLLAB_TOKEN* "
                 "(unset the env var or restart after rotation).  "
-                "mtime=%s pid=%d" % (mtime, os.getpid()),
+                "pid=%d" % os.getpid(),
                 flush=True,
             )
-        return file_tokens
+        return vault_tokens
     return env_tokens
 
 
 def token_auth_meta() -> dict:
     """Staleness signal for /health.  Never includes token values."""
-    mtime = None
-    try:
-        if SECRETS.is_file():
-            mtime = int(SECRETS.stat().st_mtime)
-    except OSError:
-        mtime = None
-    file_tokens = _file_tokens()
+    vault_tokens = _vault_tokens()
     env_tokens = _env_tokens()
-    if file_tokens:
-        source = "file"
-        count = len(file_tokens)
+    if vault_tokens:
+        source = "infisical"
+        count = len(vault_tokens)
     elif env_tokens:
         source = "env"
         count = len(env_tokens)
     else:
         source = "missing"
         count = 0
+    with _VAULT_LOCK:
+        refreshed = int(_VAULT["last_ok_at"]) if _VAULT["last_ok_at"] else None
     return {
         "token_source": source,
         "token_count": count,
-        "secrets_mtime": mtime,
-        "secrets_newer_than_process": bool(mtime and mtime > STARTED),
+        "vault_refreshed_at": refreshed,
         "pid": os.getpid(),
         "restart_hint": "pm2 restart mac-collab --update-env",
     }
@@ -1017,7 +1103,7 @@ class Handler(BaseHTTPRequestHandler):
         if not authorized(self):
             return self._deny_auth()
         name = path.split("/", 2)[2]
-        if name in ("global-api-keys", "key-names"):
+        if name in ("global-api-keys", "key-names"):  # the old flat file's name stays denied
             audit(self, "file-denied-secret", name, ok=False)
             return self._send(
                 404, {"error": "not_on_allowlist", "hint": "use GET /files/key-names"}
@@ -2207,13 +2293,10 @@ def main():
         print("mac-collab: MAC_COLLAB_TOKEN missing; /files and /findings will 401", flush=True)
     meta = token_auth_meta()
     print(
-        "mac-collab token_source=%s token_count=%s secrets_mtime=%s "
-        "secrets_newer_than_process=%s pid=%s"
+        "mac-collab token_source=%s token_count=%s pid=%s"
         % (
             meta["token_source"],
             meta["token_count"],
-            meta["secrets_mtime"],
-            meta["secrets_newer_than_process"],
             meta["pid"],
         ),
         flush=True,

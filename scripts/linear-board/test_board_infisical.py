@@ -185,12 +185,14 @@ class InfisicalTests(T.BoardTest):
         second = json.loads(self.vault.secrets["LINEAR_CLAUDE_CACHE_TOKEN"])
         self.assertNotEqual(second["access_token"], first["access_token"])
 
-    def test_infisical_outage_falls_back_to_local_files(self):
-        self.seat_app("CLAUDE", "Claude")  # CLAUDE.env on disk
+    def test_infisical_outage_keeps_fleet_ops_credentials(self):
+        self.seat_app("CLAUDE", "Claude")  # CLAUDE's pair in Fleet-OPS /linear
         self.vault.down = True
         p = self.as_seat("CLAUDE", "whoami")
         self.assertIn("Infisical is unavailable", p.stderr)
-        self.assertIn(f"credentials: {self.creds.parent / 'CLAUDE.env'}", p.stdout)
+        self.assertIn(
+            "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID", p.stdout
+        )
         self.assertIn("viewer:      Claude (app user)", p.stdout)
 
     def test_identity_from_fleet_secrets_when_not_in_the_environment(self):
@@ -218,12 +220,18 @@ class InfisicalTests(T.BoardTest):
         self.assertIn("LINEAR_CLAUDE_CACHE_TOKEN", self.vault.secrets)
 
     def test_no_identity_means_no_infisical_calls(self):
-        self.seat_app("CLAUDE", "Claude")
+        cid, secret = self.seat_app(
+            "CLAUDE", "Claude", file=False
+        )  # the pair comes from the environment
         self.as_seat(
             "CLAUDE",
             "whoami",
             drop=("INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET"),
-            extra={"LINEAR_BOARD_FLEET_SECRETS": str(self.tmp / "no-such-fleet-secrets")},
+            extra={
+                "LINEAR_BOARD_FLEET_SECRETS": str(self.tmp / "no-such-fleet-secrets"),
+                "LINEAR_CLAUDE_CLIENT_ID": cid,
+                "LINEAR_CLAUDE_CLIENT_SECRET": secret,
+            },
         )
         self.assertEqual(self.vault.requests, [])
 
