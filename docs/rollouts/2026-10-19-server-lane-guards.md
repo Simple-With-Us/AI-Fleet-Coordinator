@@ -31,4 +31,23 @@ Muse additionally needs the installer-generated plugin installed at user scope a
 
 Test both an integration-root destination and the sanctioned lanes destination through the persisted hook command.  For Muse, also use `muse plugins hook test` with those fixtures so the native plugin dispatcher executes the installed hook.  Keep synthetic commands in fixture JSON; never execute the fixture's Git command.  The standalone installer probe proves the command works, while a native dispatcher probe additionally proves that the platform loads and runs it.
 
+Muse's native test fixture wraps the hook payload, rather than taking it at the top level:
+
+```json
+{
+  "event": "PreToolUse",
+  "cwd": "/root",
+  "stdin": {
+    "tool_name": "bash",
+    "hook_event_name": "PreToolUse",
+    "tool_input": {
+      "command": "false && git -C /root/Code/AI-Fleet-Coordinator worktree add /root/Code/never-create origin/main"
+    },
+    "cwd": "/root"
+  }
+}
+```
+
+The installed server Claude hook passed integration-deny, temp-deny and lane-allow probes from its persisted Bash registration.  Muse's approved native plugin dispatcher passed the same three cases, recording `blocked` for forbidden destinations and `completed` for the lane destination.  No probe checkout was created.  Claude's unrelated settings and the existing native Codex hook file were byte/content checked unchanged.  A new full Claude session was not started for this proof.
+
 Start a new agent session to load newly installed hooks.  Existing sessions are not interrupted.  Platforms absent from this server require their supported installer target and verification when installed; this rollout does not claim coverage for absent binaries or tools without a hook surface.  Future platform support remains tracked in AFC-353 and AFC-387.
