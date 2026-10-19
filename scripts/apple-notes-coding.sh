@@ -707,14 +707,15 @@ if m:
 # An update rewrites the whole body, so a Session row the caller echoed back from the old body is dropped
 # wherever it sat (under the timestamp, or at the end, where a version of 2026-10-19 put it) and the current one is
 # stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts "Session:" is not a row
-# and stays.  A spacer after the row belongs to it, so a stale row at the end goes with the spacer it left behind.
+# and stays.  A spacer after the row belongs to it, so a stale row at the end goes with every spacer it left behind
+# (an old note can end on more than one of them, so the row must not have to be the last characters of the body).
 _SESSION_ROW = (
     r'(?:<p>\s*)?(?:<span[^>]*>\s*)?\s*Session:\s*'
     r'[A-Za-z0-9][A-Za-z0-9._:-]{3,127}'
     r'(?:\s*-\s*[^<\n]*)?'  # a row from before 2026-10-19 carried a second date after the id
     r'\s*(?:</span>\s*)?</p>'
 )
-_SPACER = r'(?:<div><br\s*/?></div>)?'
+_SPACER = r'(?:<div><br\s*/?></div>\s*)*'
 inner = re.sub(r'^' + _SESSION_ROW + r'\s*' + _SPACER + r'\s*', '', inner, flags=re.I)
 inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*' + _SPACER + r'\s*' + _SESSION_ROW + r'\s*' + _SPACER + r'\s*$', '', inner, flags=re.I)
 session_p = ''

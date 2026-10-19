@@ -324,6 +324,25 @@ class SessionIdTests(unittest.TestCase):
         self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
         self.assertNotIn("old-id-0001", p.stdout)
 
+    def test_a_stale_row_left_at_the_end_goes_with_every_spacer_behind_it(self):
+        """An old note can end on more than one spacer:  the row still goes, or two rows are left."""
+        old = (
+            "<p>Mon, Oct 19, 9:40pm</p><p>Body.</p>"
+            '<p><span style="font-size: 11px;">Session: old-id-0001</span></p>'
+            "<div><br></div><div><br></div>"
+        )
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=old,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
+        self.assertNotIn("old-id-0001", p.stdout)
+
     def test_a_date_inside_a_file_name_or_a_query_string_keeps_its_iso_form(self):
         body = (
             "<p>Merged 2026-10-19.  Ship 2026-10-19.tar.gz, keep backup-2026-10-19.tar, "
