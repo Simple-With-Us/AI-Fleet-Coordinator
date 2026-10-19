@@ -43,10 +43,13 @@ HOME = pathlib.Path.home()
 APPS_DIR = HOME / "apps"
 CODE_DIR = HOME / "Code"
 # THE BOARD was retired 2026-10-19 (AFC-363);  the database is frozen here and still ingested so the
-# resolved findings stay searchable.
-BOARD_DB = APPS_DIR / "_retired" / "mac-collab-20261019" / "findings.db"
-# No BOARD_URL:  the board's web host is gone (404), so board docs carry no url and point at the frozen
-# database through `path` instead of a link that cannot resolve.
+# resolved findings stay searchable.  FLEET_RAG_BOARD_DB overrides the path.
+BOARD_DB = pathlib.Path(os.environ.get("FLEET_RAG_BOARD_DB")
+                        or APPS_DIR / "_retired" / "mac-collab-20261019" / "findings.db")
+# Every board row was imported into Linear;  the migration left board_id -> Linear URL in this TSV
+# (columns board_id, source_key, team, linear_identifier, linear_url, linear_id).  FLEET_RAG_BOARD_MAP overrides.
+BOARD_MAP = pathlib.Path(os.environ.get("FLEET_RAG_BOARD_MAP")
+                         or HOME / ".local" / "share" / "linear-migration" / "data" / "board-to-linear.tsv")
 FLEET_REPO = CODE_DIR / "AI-Fleet-Coordinator"
 FLEET_OPS_REPO = CODE_DIR / "fleet-ops"
 GROK_HOME = HOME / ".grok"
@@ -476,8 +479,28 @@ def _board_markdown(row: dict, comments: list[dict]) -> str:
     return "\n".join(parts).rstrip() + "\n"
 
 
-def iter_board(db_path: pathlib.Path | str = BOARD_DB, limit: int | None = None) -> Iterator[Doc]:
+def load_board_url_map(path: pathlib.Path | str | None = None) -> dict[str, str]:
+    """board row id -> Linear issue URL, from the migration's TSV.  Empty when the file is missing or unreadable,
+    so a board finding never gets a link at all rather than a dead one."""
+    path = pathlib.Path(BOARD_MAP if path is None else path)
+    out: dict[str, str] = {}
+    try:
+        with path.open(encoding="utf-8") as fh:
+            next(fh, None)  # header
+            for line in fh:
+                cols = line.rstrip("\n").split("\t")
+                if len(cols) >= 5 and cols[0].strip() and cols[4].startswith("https://linear.app/"):
+                    out[cols[0].strip()] = cols[4].strip()
+    except OSError:
+        return {}
+    return out
+
+
+def iter_board(db_path: pathlib.Path | str = BOARD_DB, limit: int | None = None,
+               url_map: dict[str, str] | None = None) -> Iterator[Doc]:
     db_path = pathlib.Path(db_path)
+    if url_map is None:
+        url_map = load_board_url_map()
     if not db_path.exists():
         raise FileNotFoundError(f"board db not found: {db_path}")
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -508,6 +531,7 @@ def iter_board(db_path: pathlib.Path | str = BOARD_DB, limit: int | None = None)
                 app=app,
                 category="lesson" if resolved else "finding",
                 seat=seat_tag(row.get("addressed_by") or row.get("reported_by")),
+                url=url_map.get(str(row["id"]), ""),
                 path=str(db_path),
                 created_at_ms=created or updated,
                 updated_at_ms=updated or created,

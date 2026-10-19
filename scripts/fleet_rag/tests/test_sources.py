@@ -80,10 +80,7 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(a.app, "congress-trade")
         self.assertEqual(a.seat, "CLAUDE")
         self.assertEqual(a.title, "No account deletion path")
-        # the board web host is retired, so a doc must not advertise a dead link; `path` points at the
-        # frozen database instead
-        self.assertEqual(a.url, "")
-        self.assertEqual(a.path, str(self.db))
+        self.assertEqual(a.url, "")  # no mapping given: never a dead link
         self.assertEqual(a.created_at_ms, sources.parse_ts_ms("2026-08-20T01:57:12.791030+00:00"))
         # updated_at is the last comment, and comments come in chronological order
         self.assertEqual(a.updated_at_ms, sources.parse_ts_ms("2026-08-23T10:00:00+00:00"))
@@ -97,6 +94,25 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(b.seat, "GROK")
         self.assertIn("## Resolution\n\nLanded in #123.", b.text_markdown)
         self.assertEqual(b.updated_at_ms, sources.parse_ts_ms("2026-08-22T08:42:11.038241+00:00"))
+
+    def test_url_is_the_linear_issue_from_the_migration_map(self) -> None:
+        tsv = pathlib.Path(self.tmp.name) / "board-to-linear.tsv"
+        tsv.write_text("board_id\tsource_key\tteam\tlinear_identifier\tlinear_url\tlinear_id\n"
+                       "\teffortlog:x:1\tST\tST-1\thttps://linear.app/simple-with-us/issue/ST-1/x\tu1\n"
+                       "aaaa1111\tboard:aaaa1111\tCTS\tCTS-5\thttps://linear.app/simple-with-us/issue/CTS-5/y\tu2\n",
+                       encoding="utf-8")
+        urls = sources.load_board_url_map(tsv)
+        self.assertEqual(urls, {"aaaa1111": "https://linear.app/simple-with-us/issue/CTS-5/y"})
+        docs = {d.doc_id: d for d in sources.iter_board(self.db, url_map=urls)}
+        self.assertEqual(docs["board/aaaa1111"].url, "https://linear.app/simple-with-us/issue/CTS-5/y")
+        self.assertEqual(docs["board/bbbb2222"].url, "")  # unmapped row: empty, not mac.jays.services
+        self.assertEqual(sources.load_board_url_map(pathlib.Path(self.tmp.name) / "missing.tsv"), {})
+        for d in docs.values():
+            self.assertNotIn("mac.jays.services", d.url)
+
+    def test_default_paths_point_at_the_retired_database(self) -> None:
+        self.assertEqual(sources.BOARD_DB.parts[-3:], ("_retired", "mac-collab-20261019", "findings.db")) \
+            if "FLEET_RAG_BOARD_DB" not in os.environ else None
 
     def test_limit_and_missing_db(self) -> None:
         self.assertEqual(len(list(sources.iter_board(self.db, limit=2))), 2)
