@@ -45,7 +45,8 @@ CODE_DIR = HOME / "Code"
 # THE BOARD was retired 2026-10-19 (AFC-363);  the database is frozen here and still ingested so the
 # resolved findings stay searchable.
 BOARD_DB = APPS_DIR / "_retired" / "mac-collab-20261019" / "findings.db"
-BOARD_URL = "https://mac.jays.services/board"
+# No BOARD_URL:  the board's web host is gone (404), so board docs carry no url and point at the frozen
+# database through `path` instead of a link that cannot resolve.
 FLEET_REPO = CODE_DIR / "AI-Fleet-Coordinator"
 FLEET_OPS_REPO = CODE_DIR / "fleet-ops"
 GROK_HOME = HOME / ".grok"
@@ -507,7 +508,6 @@ def iter_board(db_path: pathlib.Path | str = BOARD_DB, limit: int | None = None)
                 app=app,
                 category="lesson" if resolved else "finding",
                 seat=seat_tag(row.get("addressed_by") or row.get("reported_by")),
-                url=f"{BOARD_URL}?app={app}",
                 path=str(db_path),
                 created_at_ms=created or updated,
                 updated_at_ms=updated or created,

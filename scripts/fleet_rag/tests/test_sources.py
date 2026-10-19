@@ -80,7 +80,10 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(a.app, "congress-trade")
         self.assertEqual(a.seat, "CLAUDE")
         self.assertEqual(a.title, "No account deletion path")
-        self.assertTrue(a.url.startswith("https://mac.jays.services/board"))
+        # the board web host is retired, so a doc must not advertise a dead link; `path` points at the
+        # frozen database instead
+        self.assertEqual(a.url, "")
+        self.assertEqual(a.path, str(self.db))
         self.assertEqual(a.created_at_ms, sources.parse_ts_ms("2026-08-20T01:57:12.791030+00:00"))
         # updated_at is the last comment, and comments come in chronological order
         self.assertEqual(a.updated_at_ms, sources.parse_ts_ms("2026-08-23T10:00:00+00:00"))
