@@ -196,7 +196,8 @@ def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str
         )
         if not (email and key):
             sys.exit(
-                "no REALM_ADMIN_ZULIP_EMAIL / REALM_ADMIN_ZULIP_KEY in env or Infisical Fleet-OPS /zulipadmin"
+                "no REALM_ADMIN_ZULIP_EMAIL / REALM_ADMIN_ZULIP_KEY in env or Infisical Fleet-OPS "
+                "/zulipadmin, /zulip, or the root"
             )
         return email, key, (site or REALM).rstrip("/")
     path = rc_path
