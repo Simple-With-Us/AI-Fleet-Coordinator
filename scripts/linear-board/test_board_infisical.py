@@ -153,6 +153,7 @@ class InfisicalTests(T.BoardTest):
         )
         shared = json.loads(self.vault.secrets["LINEAR_CLAUDE_CACHE_TOKEN"])
         self.assertIn(shared["access_token"], self.mock.tokens)
+        self.assertEqual(shared["viewer"]["name"], "Claude")  # the viewer is kept too
         # a second process on the same host (or another host) reads the shared copy and mints nothing
         self.as_seat("CLAUDE", "whoami", extra=self.legacy_host())
         self.assertEqual(self.mock.mints, 1)

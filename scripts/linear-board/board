@@ -977,7 +977,8 @@ class Auth:
         if ident.blob and fleet_secrets_bin():
             ok, where = fleet_ops_set(ident.blob, text), f"{FLEET_OPS_WHERE} {ident.blob}"
         else:
-            row = {k: blob[k] for k in ("access_token", "token_type", "scope", "minted_at", "expires_at", "cred_fp")}
+            row = {k: blob[k] for k in ("access_token", "token_type", "scope", "minted_at", "expires_at", "cred_fp",
+                                        "viewer") if k in blob}
             row["minted_by"] = os.uname().nodename
             ok, where = Infisical.get().put(ident.shared, json.dumps(row)), f"{INFISICAL_WHERE} {ident.shared}"
         if not ok:
