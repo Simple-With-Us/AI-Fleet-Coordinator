@@ -211,9 +211,7 @@ def gh_issue_list(repo: str, extra_args: list[str]) -> list[dict]:
 
 def fetch_repo_issues(repo: str) -> list[dict]:
     open_issues = gh_issue_list(repo, ["--state", "open"])
-    since = (datetime.now(UTC) - timedelta(days=CLOSED_ISSUE_LOOKBACK_DAYS)).strftime(
-        "%Y-%m-%d"
-    )
+    since = (datetime.now(UTC) - timedelta(days=CLOSED_ISSUE_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     closed_recent = gh_issue_list(repo, ["--search", f"is:closed closed:>={since}"])
     return open_issues + closed_recent
 
@@ -401,9 +399,7 @@ def backup_findings_db() -> None:
         cutoff = datetime.now(UTC) - timedelta(days=BACKUP_KEEP_DAYS)
         for path in BACKUP_DIR.glob("findings-*.db"):
             try:
-                day = datetime.strptime(path.stem.split("-", 1)[1], "%Y%m%d").replace(
-                    tzinfo=UTC
-                )
+                day = datetime.strptime(path.stem.split("-", 1)[1], "%Y%m%d").replace(tzinfo=UTC)
             except (ValueError, IndexError):
                 continue
             if day < cutoff:
