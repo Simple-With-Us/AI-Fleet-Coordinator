@@ -237,7 +237,39 @@ def find_repo(name: str) -> Path | None:
     return None
 
 
+def check_git_runtime(
+    report: Report, checkout: Path, network: bool, runner: Callable = subprocess.run
+) -> None:
+    """The server runs from a git checkout (fleet-cli-git-update.py, 2026-10-19):  is it at origin/main?"""
+    commit = git(checkout, "rev-parse", "HEAD", runner=runner)
+    main = remote_main(checkout, network, runner)
+    try:
+        state = json.loads((RUNTIME / "git-state.json").read_text())
+    except (OSError, ValueError):
+        state = {}
+    if not main:
+        report.add("runtime", "WARN", f"running from git at {commit[:7]};  origin/main unknown")
+    elif commit == main:
+        report.add("runtime", "OK", f"running from git at origin/main {main[:7]}")
+    elif state.get("bad") == main:
+        report.add(
+            "runtime",
+            "WARN",
+            f"origin/main {main[:7]} failed the smoke test ({state.get('bad_reason')});  staying on {commit[:7]} until main moves",
+        )
+    else:
+        report.add(
+            "runtime",
+            "FAIL",
+            f"running from git at {commit[:7]}, origin/main {main[:7]}:  run systemctl start fleet-cli-git-update",
+        )
+
+
 def check_runtime(report: Report, network: bool, runner: Callable = subprocess.run) -> None:
+    checkout = RUNTIME / "repo"
+    if (checkout / ".git").exists() and (RUNTIME / "current").resolve() == checkout.resolve():
+        check_git_runtime(report, checkout, network, runner)
+        return
     # The live release is what `current` points at;  status.json is only the last receive's
     # receipt and goes stale after a rollback.
     live = RUNTIME / "current" / "release.json"

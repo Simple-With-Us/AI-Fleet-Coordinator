@@ -22,7 +22,7 @@ Every fleet capability exists on three surfaces:  the hosted Agent-Sync MCP serv
 
 ## Hosts
 
-**The Hetzner server.**  `agent-sync`, `board`, `recall`, `lane` and `fleet-mode` run from the fleet-cli release the Mac pushes (`scripts/fleet-cli-release.py` holds the allowlist, and AFC-331 added the last three);  the server never fetches code for them itself.  `fleet-share` (`~/.local/bin/fleet-share`) runs FleetLink's CLI from `/root/Code/FleetLink`, which `code-main-sync.timer` keeps on `origin/main` every 10 minutes along with the other clean checkouts.  Each seat that works here (CLAUDE, CODEX) holds its own credentials:  `~/.secrets/Zulip/<Seat>-zuliprc` (from Infisical `/zulip`), its Linear app (`~/.secrets/Linear/<SEAT>.env` or `LINEAR_<SEAT>_CLIENT_ID`/`_SECRET` in the environment), and its FleetLink bot token, `~/.secrets/FleetLink/<SEAT>.env` (from Infisical `/fleetlink`, `FLEETLINK_TOKEN_<SEAT>`).  Codex (`~/.codex/config.toml`) and Claude Code (`~/.claude.json`, user scope) register the `agent-sync` stdio server with their own default seat, and the `fleetlink` HTTP server with their bot token.
+**The Hetzner server.**  `agent-sync`, `board`, `recall`, `lane` and `fleet-mode` run straight from a git checkout of AFC main at `~/.local/share/fleet-cli/repo` (since 2026-10-19;  `docs/protocols/fleet-cli-from-git.md`).  A merge to main signals the server to move it after a smoke test, and an hourly timer is the safety net.  The Mac no longer pushes release copies.  `fleet-share` (`~/.local/bin/fleet-share`) runs FleetLink's CLI from `/root/Code/FleetLink`, which `code-main-sync.timer` keeps on `origin/main` every 10 minutes along with the other clean checkouts.  Each seat that works here (CLAUDE, CODEX) holds its own credentials:  `~/.secrets/Zulip/<Seat>-zuliprc` (from Infisical `/zulip`), its Linear app (`~/.secrets/Linear/<SEAT>.env` or `LINEAR_<SEAT>_CLIENT_ID`/`_SECRET` in the environment), and its FleetLink bot token, `~/.secrets/FleetLink/<SEAT>.env` (from Infisical `/fleetlink`, `FLEETLINK_TOKEN_<SEAT>`).  Codex (`~/.codex/config.toml`) and Claude Code (`~/.claude.json`, user scope) register the `agent-sync` stdio server with their own default seat, and the `fleetlink` HTTP server with their bot token.
 
 **What the server must provide for the tools a release cannot carry.**  `recall` needs its corpus credentials in the environment or a machine-identity file (`docs/protocols/coolify-fleet-cli-sync.md` lists the names), and `gitleaks` for `contribute`;  `lane` needs `git` and, for PR reviews, `gh`.  No credential ever ships in a release.
 
@@ -35,7 +35,7 @@ python3 scripts/fleet-tools-doctor.py --seats CLAUDE,CODEX
 ```
 
 One line per check, OK, WARN or FAIL, and exit 1 on a FAIL.  It covers:
-- whether the installed release is behind `origin/main` in any shipped file;
+- whether the server's git checkout is behind `origin/main` (or, on a host still on release copies, whether the release is behind in any shipped file);
 - whether the CLI checkouts are on `origin/main`;
 - that the five fleet tools and `fleet-share` are on PATH (or in `~/apps` on the Mac);
 - that the files `recall`, `lane` and `fleet-mode` run from ship with the runtime;

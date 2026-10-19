@@ -316,6 +316,18 @@ verifies the stored identity and provisions the Worker secret.  Its live
 identity check requires the CLAUDE bot and member role 400 before writing.
 See [the CLAUDE rollout](scripts/agent-sync-mcp/DEPLOY.md#add-hosted-claude-afc-296).
 
+## Server fleet-tools update signal (2026-10-19)
+
+AFC `prod` `/fleet-cli` holds the three values the GitHub workflow `fleet-cli-server-update.yml` uses to tell the Hetzner server to move its fleet-tools checkout (`docs/protocols/fleet-cli-from-git.md`), copied to repository secrets of the same names:
+
+| Key | Kind | Notes |
+|---|---|---|
+| `FLEET_CLI_UPDATE_SSH_KEY` | secret | An ed25519 private key.  Its public half is in the server's `/root/.ssh/authorized_keys` with `restrict` and a forced command that only starts `fleet-cli-git-update.service`. |
+| `FLEET_CLI_UPDATE_HOST` | private infrastructure | The server's address, kept out of this public repo. |
+| `FLEET_CLI_UPDATE_KNOWN_HOSTS` | public | The server's host key line, so the workflow checks the host strictly. |
+
+Rotate by minting a new key, replacing the `authorized_keys` line and both copies.  The repository variable `FLEET_CLI_SIGNAL_ENABLED=true` turns the workflow on.
+
 ## FleetLink agent server credential (AFC-328)
 
 Canonical location: AI Fleet Coordinator, `prod`, `/fleetlink`.
