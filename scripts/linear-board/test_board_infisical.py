@@ -190,7 +190,9 @@ class InfisicalTests(T.BoardTest):
         self.vault.down = True
         p = self.as_seat("CLAUDE", "whoami")
         self.assertIn("Infisical is unavailable", p.stderr)
-        self.assertIn("credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID", p.stdout)
+        self.assertIn(
+            "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID", p.stdout
+        )
         self.assertIn("viewer:      Claude (app user)", p.stdout)
 
     def test_identity_from_fleet_secrets_when_not_in_the_environment(self):
@@ -218,7 +220,9 @@ class InfisicalTests(T.BoardTest):
         self.assertIn("LINEAR_CLAUDE_CACHE_TOKEN", self.vault.secrets)
 
     def test_no_identity_means_no_infisical_calls(self):
-        cid, secret = self.seat_app("CLAUDE", "Claude", file=False)  # the pair comes from the environment
+        cid, secret = self.seat_app(
+            "CLAUDE", "Claude", file=False
+        )  # the pair comes from the environment
         self.as_seat(
             "CLAUDE",
             "whoami",

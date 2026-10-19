@@ -152,9 +152,7 @@ def app_filter_variants(app: str) -> list[str]:
     return sorted(variants)
 
 
-FLEET_SECRETS_BIN = (
-    HOME / ".local" / "bin" / "fleet-secrets"
-)  # OPS-818:  Fleet-OPS in Infisical
+FLEET_SECRETS_BIN = HOME / ".local" / "bin" / "fleet-secrets"  # OPS-818:  Fleet-OPS in Infisical
 AUDIT_LOG = Path(__file__).resolve().parent / "audit.log"
 AUTH_FAIL_WINDOW_S = 60.0
 AUTH_FAIL_MAX = 20
@@ -325,7 +323,11 @@ def _fetch_vault_tokens():
     try:
         proc = subprocess.run(
             [str(FLEET_SECRETS_BIN), "run", "--path", TOKEN_FOLDER, "--", "/usr/bin/env"],
-            capture_output=True, text=True, timeout=60, check=False, stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -338,7 +340,9 @@ def _fetch_vault_tokens():
 
 def _vault_tokens() -> dict:
     global _VAULT_CACHE
-    with _VAULT_LOCK:  # one fetch at a time;  the other request threads wait for it and reuse the result
+    with (
+        _VAULT_LOCK
+    ):  # one fetch at a time;  the other request threads wait for it and reuse the result
         at, cached = _VAULT_CACHE
         now = time.time()
         if cached is not None and now - at < TOKEN_TTL_S:

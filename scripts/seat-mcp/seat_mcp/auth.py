@@ -21,7 +21,11 @@ def load_token() -> str:
         try:
             proc = subprocess.run(
                 [binary, "get", TOKEN_NAME, "--path", TOKEN_FOLDER],
-                capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL, timeout=60,
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                timeout=60,
             )
             if proc.returncode == 0:
                 token = proc.stdout.strip()
@@ -55,9 +59,7 @@ ACCESS_HEADERS = (
     "Cf-Access-Authenticated-User-Email",
 )
 
-ALLOWED_PUBLIC_ORIGINS = (
-    "https://agents.jays.services",
-)
+ALLOWED_PUBLIC_ORIGINS = ("https://agents.jays.services",)
 
 
 def access_authenticated(headers) -> bool:

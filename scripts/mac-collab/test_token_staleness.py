@@ -3,6 +3,7 @@
 Never asserts on token values in health/401 bodies -- those must stay secret.  The Infisical read is
 stubbed (`_fetch_vault_tokens`);  nothing here runs the real fleet-secrets or opens the old secrets folder.
 """
+
 import importlib.util
 import os
 import stat
@@ -52,7 +53,9 @@ class TestTokenStaleness(unittest.TestCase):
         first = server.load_tokens()
         self.assertIn("file-token-aaa", first)
         self.vault = {"file-token-ccc": None}
-        self.assertIn("file-token-aaa", server.load_tokens(), "served from the cache inside the TTL")
+        self.assertIn(
+            "file-token-aaa", server.load_tokens(), "served from the cache inside the TTL"
+        )
         at, cached = server._VAULT_CACHE
         server._VAULT_CACHE = (at - server.TOKEN_TTL_S - 1, cached)
         second = server.load_tokens()
@@ -108,9 +111,7 @@ class TestTokenStaleness(unittest.TestCase):
 
         handler = MagicMock()
         handler.headers = {"Authorization": "Bearer snap-token"}
-        with patch.object(
-            server, "load_tokens", side_effect=AssertionError("should not reload")
-        ):
+        with patch.object(server, "load_tokens", side_effect=AssertionError("should not reload")):
             ident = server.authorized(handler, tokens={"snap-token": None})
         self.assertEqual(ident, "OWNER")
 

@@ -4,6 +4,7 @@
 Reads SEAT_MCP_TOKEN from the environment, else Infisical Fleet-OPS /seat-mcp through
 `fleet-secrets get` (AFC-359).  Never prints it.  Never puts the token on argv.  Loopback only.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,7 +15,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(Path.home() / ".local" / "bin" / "fleet-secrets")
+FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(
+    Path.home() / ".local" / "bin" / "fleet-secrets"
+)
 BASE = "http://127.0.0.1:8793/mcp"
 
 
@@ -24,7 +27,11 @@ def load_token() -> str:
         try:
             proc = subprocess.run(
                 [FLEET_SECRETS, "get", "SEAT_MCP_TOKEN", "--path", "/seat-mcp"],
-                capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL, timeout=60,
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                timeout=60,
             )
             if proc.returncode == 0:
                 token = proc.stdout.strip()
@@ -51,9 +58,12 @@ def post(token: str, body: bytes, timeout: float) -> bytes:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
     except urllib.error.HTTPError as exc:
-        return exc.read() or json.dumps(
-            {"jsonrpc": "2.0", "error": {"code": -32000, "message": "http %s" % exc.code}}
-        ).encode()
+        return (
+            exc.read()
+            or json.dumps(
+                {"jsonrpc": "2.0", "error": {"code": -32000, "message": "http %s" % exc.code}}
+            ).encode()
+        )
 
 
 def main() -> None:
