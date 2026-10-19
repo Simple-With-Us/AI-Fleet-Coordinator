@@ -3197,12 +3197,12 @@ class Daemon:
         self, message_id: int, channel: str, topic: str, where: FAN.Scope, places: Any = None
     ) -> dict[str, Any]:
         """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform."""
-        result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}, "held": 0}
+        result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}}
         try:
             rows = self.chat_catalog().discover(
                 force=True, wait_grok=True, grok_timeout=CT.discovery_wait_budget()
             )
-            chosen = FAN.select(rows, self.clock.time(), where, places)
+            chosen = FAN.select(rows, self.clock.time(), where, places or FAN.ChatPlaces())
         except Exception as exc:
             self.log.write("fanout-error", id=message_id, error=self.scrub(str(exc))[:200])
             return dict(result, error="catalog")
@@ -3212,9 +3212,8 @@ class Daemon:
             if platform not in CN.SUPPORTED_PLATFORMS or runner is None or not runner.cfg.enabled:
                 result["no_transport"][platform] = result["no_transport"].get(platform, 0) + 1
                 continue
-            if not (row.get("capabilities") or {}).get("wake"):
-                result["held"] += 1  # busy or not resumable right now
-                continue
+            # A busy chat is queued too:  the nudge queue's preflight holds it until the chat is idle, so a chat
+            # that was picked is never silently dropped.
             binding = {
                 key: str(row.get(key) or "") for key in ("platform", "host", "session_id", "cwd")
             }
@@ -3225,6 +3224,15 @@ class Daemon:
                 )
             except ValueError:
                 result["no_transport"][platform] = result["no_transport"].get(platform, 0) + 1
+                continue
+            except Exception as exc:  # one chat's failure never stops the rest of the alert
+                result["failed"] = result.get("failed", 0) + 1
+                self.log.write(
+                    "fanout-chat-error",
+                    id=message_id,
+                    platform=platform,
+                    error=self.scrub(str(exc))[:200],
+                )
                 continue
             result["queued" if added else "already"] += 1
         self.log.write(

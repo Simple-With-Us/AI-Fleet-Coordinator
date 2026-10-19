@@ -14,7 +14,7 @@ HOUR = 3600.0
 ST_URL = "https://github.com/Simple-With-Us/Socratic-Trade"
 
 
-def chat(n, minutes_ago, platform="grok-leader", cwd=None, title="chat"):
+def chat(n, minutes_ago, platform="grok-leader", cwd=None, title="chat", repo=None):
     return {
         "id": f"id{n}",
         "session_id": f"s{n}",
@@ -22,10 +22,18 @@ def chat(n, minutes_ago, platform="grok-leader", cwd=None, title="chat"):
         "seat": "GROK",
         "host": "mac",
         "cwd": cwd,
+        "repo": repo,
         "title": title,
         "updated_at": NOW - minutes_ago * 60,
         "capabilities": {"wake": True},
     }
+
+
+def cloud(n, minutes_ago, repo_url):
+    """A Cursor cloud chat:  its cwd is `cursor-cloud://<id>`, and the catalog carries the repo URL."""
+    return chat(
+        n, minutes_ago, platform="cursor-cloud", cwd=f"cursor-cloud://bc-{n}", repo=repo_url
+    )
 
 
 def ids(rows):
@@ -81,17 +89,39 @@ class ScopeTests(unittest.TestCase):
             (issue.repos, issue.issues), (frozenset({"simple-with-us"}), frozenset({"SWU-32"}))
         )
         self.assertEqual(F.scope("SWU-32 @**all**", "misc").issues, frozenset({"SWU-32"}))
+        url = "https://github.com/jaywedgeworth-example/Socratic-Trade/pull/12345"
+        self.assertEqual(
+            F.scope(url + " @**all** look", "misc").repos, st, "a full PR link fits the prefix form"
+        )
+
+    def test_a_cloud_chats_id_is_never_taken_for_its_repo(self):
+        row = cloud(1, 1, None)
+        self.assertIsNone(F.ChatPlaces(lambda *a: "").repo(row))
+
+    def test_a_slightly_future_timestamp_counts_as_now(self):
+        rows = [chat(1, -2), chat(2, -60)]
+        self.assertEqual(
+            ids(F.select(rows, NOW, F.Scope())), ["s1"], "2 minutes ahead counts;  an hour does not"
+        )
+
+    def test_git_queries_share_one_budget(self):
+        calls = []
+
+        def slow(cwd, *args):
+            calls.append(cwd)
+            time.sleep(0.05)
+            return ""
+
+        places = F.ChatPlaces(slow, budget=0.12)
+        rows = [chat(i, 1, platform="claude", cwd=f"/w/{i}") for i in range(10)]
+        F.select(rows, NOW, F.Scope(frozenset({"example-trade"})), places)
+        self.assertLess(len(calls), 5, "the budget stops further git queries")
 
     def test_repo_scope_takes_every_recent_chat_on_that_repo(self):
-        rows = [chat(i, i, platform="cursor-cloud", cwd=ST_URL) for i in range(1, 7)]
+        rows = [cloud(i, i, ST_URL) for i in range(1, 7)]
         rows += [
-            chat(
-                8,
-                1,
-                platform="cursor-cloud",
-                cwd="https://github.com/Simple-With-Us/Congress.Trade",
-            ),
-            chat(9, 400, platform="cursor-cloud", cwd=ST_URL),
+            cloud(8, 1, "https://github.com/Simple-With-Us/Congress.Trade"),
+            cloud(9, 400, ST_URL),
         ]
         picked = F.select(rows, NOW, F.Scope(frozenset({"socratic-trade"})))
         self.assertEqual(
@@ -129,6 +159,9 @@ class ScopeTests(unittest.TestCase):
         for text in ("@**all** x", "@**everyone** x", "@ALL x", "ST @everyone"):
             self.assertTrue(R.fleet_wake_mention(text, []) or R._PLAIN_ALL_RE.search(text), text)
         self.assertIsNone(R._PLAIN_ALL_RE.search("mail@allstate.com and @alloy"))
+        c = R.Classes()
+        c.everyone = True
+        self.assertIn("everyone", c.labels())
 
 
 class FakeCatalog:
@@ -144,14 +177,12 @@ class DaemonFanoutTests(DaemonHarness):
         daemon = self.started()
         now = self.clock.time()
         st = [
-            dict(
-                chat(i, 0, platform="cursor-cloud", cwd=ST_URL),
-                seat="CLAUDE",
-                updated_at=now - 60 * i,
-            )
-            for i in range(1, 6)
+            dict(cloud(i, 0, ST_URL), seat="CLAUDE", updated_at=now - 60 * i) for i in range(1, 6)
         ]
-        other = dict(chat(9, 0, platform="claude", cwd=ST_URL), seat="CLAUDE", updated_at=now - 60)
+        st[0]["capabilities"] = {
+            "wake": False
+        }  # busy:  still queued, and the queue holds it until idle
+        other = dict(chat(9, 0, platform="claude", repo=ST_URL), seat="CLAUDE", updated_at=now - 60)
         daemon._chat_catalog = FakeCatalog(st + [other])
         message_id = self.fake.add_message(
             "Jay Wedgeworth", "agent-sync", "misc", "@**all** for ST: deploy is out"
@@ -175,13 +206,7 @@ class DaemonFanoutTests(DaemonHarness):
     def test_a_peers_all_queues_nothing(self):
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog(
-            [
-                dict(
-                    chat(1, 0, platform="cursor-cloud", cwd=ST_URL),
-                    seat="CLAUDE",
-                    updated_at=self.clock.time(),
-                )
-            ]
+            [dict(cloud(1, 0, ST_URL), seat="CLAUDE", updated_at=self.clock.time())]
         )
         message_id = self.fake.add_message("Codex", "agent-sync", "misc", "@**all** for ST: hi")
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen or bool(self.inbox()))

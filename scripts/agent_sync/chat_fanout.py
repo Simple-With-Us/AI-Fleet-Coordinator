@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,6 +32,8 @@ from typing import Any
 MAX_AGE_SECONDS = 6 * 3600
 MIN_PICK = 2
 MAX_PICK = 4
+GIT_BUDGET_SECONDS = 10.0  # every git query in one alert, together
+CLOCK_SKEW_SECONDS = 300.0  # a chat stamped a little in the future counts as just now
 
 # Linear team key to the repos it covers (the same map as scripts/gh_linear_pairing.py, AFC-339).
 TEAM_REPOS: dict[str, tuple[str, ...]] = {
@@ -88,7 +91,7 @@ _SCOPE_RE = re.compile(
     re.IGNORECASE,
 )
 _PREFIX_RE = re.compile(
-    r"(?m)^\s*([^\n@]{1,60}?)\s*@\*{0,2}(?:all|everyone|channel|stream)\*{0,2}(?![\w*])",
+    r"(?m)^\s*([^\n@]{1,200}?)\s*@\*{0,2}(?:all|everyone|channel|stream)\*{0,2}(?![\w*])",
     re.IGNORECASE,
 )
 
@@ -162,12 +165,19 @@ class ChatPlaces:
     """A chat's repo and branch from its folder, asked once per alert.  A Cursor cloud chat carries its repo URL;  a
     local chat's folder is asked for its git origin and current branch."""
 
-    def __init__(self, git: Callable[..., str] = git_out) -> None:
+    def __init__(
+        self, git: Callable[..., str] = git_out, budget: float = GIT_BUDGET_SECONDS
+    ) -> None:
         self.git = git
         self.cache: dict[tuple[str, str], str] = {}
+        self.deadline = time.monotonic() + budget
 
     def _ask(self, cwd: str, what: str) -> str:
+        """One git query per folder and question, cached.  Once the alert's shared budget is spent, an unasked folder
+        answers '' (no repo, no branch), so a slow or network-mounted folder cannot delay the reminders."""
         if (cwd, what) not in self.cache:
+            if time.monotonic() >= self.deadline:
+                return ""
             args = (
                 ("config", "--get", "remote.origin.url")
                 if what == "remote"
@@ -177,14 +187,18 @@ class ChatPlaces:
         return self.cache[(cwd, what)]
 
     def repo(self, row: Mapping[str, Any]) -> str | None:
+        """A Cursor cloud chat's repo comes from the catalog's `repo` URL (its cwd is `cursor-cloud://<id>`);  a local
+        chat's from its folder's git origin."""
+        if isinstance(row.get("repo"), str) and row["repo"]:
+            return repo_from_remote(row["repo"])
         cwd = row.get("cwd")
-        if not isinstance(cwd, str) or not cwd:
+        if not isinstance(cwd, str) or not cwd.startswith("/"):
             return None
-        return repo_from_remote(cwd if "://" in cwd else self._ask(cwd, "remote"))
+        return repo_from_remote(self._ask(cwd, "remote"))
 
     def on_issue(self, row: Mapping[str, Any], issues: frozenset[str]) -> bool:
         cwd = row.get("cwd") if isinstance(row.get("cwd"), str) else ""
-        branch = self._ask(cwd, "branch") if cwd and "://" not in cwd else ""
+        branch = self._ask(cwd, "branch") if cwd.startswith("/") else ""
         text = " ".join((str(row.get("title") or ""), cwd, branch))
         return any(
             re.search(rf"(?<![A-Za-z0-9]){re.escape(issue)}(?![0-9])", text, re.IGNORECASE)
@@ -196,12 +210,12 @@ def pick_recent(rows: Iterable[Mapping[str, Any]], now: float) -> list[Mapping[s
     """One platform's chats to alert (see the module docstring), most recent first."""
     recent = sorted(
         (r for r in rows if _recent(r, now)),
-        key=lambda r: float(r["updated_at"]),
+        key=lambda r: min(float(r["updated_at"]), now),
         reverse=True,
     )
     if len(recent) <= MAX_PICK:
         return recent
-    ages = [now - float(r["updated_at"]) for r in recent]
+    ages = [max(0.0, now - float(r["updated_at"])) for r in recent]
     # ages[k] - ages[k - 1] is the pause between the k-th most recent chat and the next older one.
     keep = max(range(MIN_PICK, MAX_PICK + 1), key=lambda k: (ages[k] - ages[k - 1], k))
     return recent[:keep]
@@ -238,4 +252,6 @@ def select(
 
 def _recent(row: Mapping[str, Any], now: float) -> bool:
     updated = row.get("updated_at")
-    return isinstance(updated, (int, float)) and 0 <= now - float(updated) <= MAX_AGE_SECONDS
+    if not isinstance(updated, (int, float)) or isinstance(updated, bool):
+        return False
+    return -CLOCK_SKEW_SECONDS <= now - float(updated) <= MAX_AGE_SECONDS

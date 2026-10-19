@@ -163,7 +163,8 @@ class ChatCatalog:
     def _row(self, platform: str, seat: str, session_id: str, *, cwd: str | None, title: str,
              updated_at: float, status: str = "available", wake: bool = False,
              source: str = "", internal_path: str | None = None,
-             excerpts: list[dict[str, str]] | None = None, host: str | None = None) -> dict[str, Any]:
+             excerpts: list[dict[str, str]] | None = None, host: str | None = None,
+             repo: str | None = None) -> dict[str, Any]:
         safe_cwd = cwd if isinstance(cwd, str) and (cwd.startswith("/") or
                                                     (platform == "cursor-cloud" and "://" in cwd)) else None
         if safe_cwd and platform == "cursor-cloud":
@@ -174,6 +175,7 @@ class ChatCatalog:
         return {"id": _stable_id(stable_host, platform, session_id), "platform": platform,
                 "host": stable_host, "seat": seat, "session_id": session_id,
                 "cwd": safe_cwd, "title": safe_title,
+                "repo": self.scrub(repo)[:300] if isinstance(repo, str) and "://" in repo else None,
                 "updated_at": updated_at or None, "status": status,
                 "stale": status == "stale",
                 "capabilities": {"read": readable, "wake": bool(wake),
@@ -399,7 +401,8 @@ class ChatCatalog:
                                   title=_safe_text(record.get("title"), max_chars=180) or "Cursor Cloud chat " + sid[:12],
                                   updated_at=_timestamp(record.get("updated_at")), status=state,
                                   wake=state in {"idle", "active", "busy"}, source="cursor-cloud",
-                                  host=record.get("host") if isinstance(record.get("host"), str) else None))
+                                  host=record.get("host") if isinstance(record.get("host"), str) else None,
+                                  repo=record.get("repo_url")))
         return rows or [self._unavailable("cursor-cloud", "CURSOR", "no discoverable existing chats")]
 
     def _scan_cursor_local(self) -> list[dict[str, Any]]:
@@ -642,7 +645,7 @@ class ChatCatalog:
 
     @staticmethod
     def _public(row: dict[str, Any]) -> dict[str, Any]:
-        result = {key: row[key] for key in ("id", "platform", "host", "seat", "session_id", "cwd", "title",
+        result = {key: row[key] for key in ("id", "platform", "host", "seat", "session_id", "cwd", "repo", "title",
                                             "updated_at", "status", "stale", "capabilities") if key in row}
         if row.get("status") == "unavailable" and row.get("_source"):
             result["error"] = row["_source"]

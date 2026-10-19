@@ -267,6 +267,7 @@ class Classes:
                 "eligible",
                 "direct",
                 "fleet",
+                "everyone",
                 "wildcard",
                 "dm",
                 "wake_tag",
