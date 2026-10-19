@@ -578,12 +578,14 @@ class LinearToolTests(FakePrograms):
         session = self.session(self.env())
         error = self.assert_tool_error(session.call("linear_claim", {"id": "AFC-331"}, identity=None), "identity_required")
         self.assertEqual(self.calls(self.board_out), [])
-        result = session.call("linear_claim", {"id": "AFC-331", "comment": "on it"}, identity="CURSOR")
+        result = session.call("linear_claim", {"id": "AFC-331", "comment": "on it", "session": "cursor-chat-0001"},
+                              identity="CURSOR")
         self.assertNotIn("isError", result, result)
         call = self.calls(self.board_out)[0]
         self.assertEqual(call["seat"], "CURSOR", "AGENT_SEAT is the claimed identity, not the connection's default")
         self.assertEqual(call["writes"], "1")
         self.assertEqual(call["argv"][:5], ["claim", "AFC-331", "--by", "CURSOR", "--comment=on it"])
+        self.assertEqual(call["argv"][-2:], ["--session", "cursor-chat-0001"])
         text = result["content"][0]["text"]
         self.assertIn("BEGIN_UNTRUSTED_LINEAR nonce=", text)
         self.assertIn("as CURSOR", text.splitlines()[0])

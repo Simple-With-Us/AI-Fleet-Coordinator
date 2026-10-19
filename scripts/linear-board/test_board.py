@@ -1399,7 +1399,7 @@ class WriteTests(BoardTest):
         self.assertEqual((iss["state"], iss["priority"], iss["team"]), ("Todo", 2, "CT"))
         self.assertEqual(self.label_names(iss), ["Env/Cloud", "Kind/agent-report", "Severity/P1"])
         self.assertTrue(
-            iss["description"].startswith("\\[CLAUDE\\] Filed with the board CLI."),
+            iss["description"].startswith("\\[CLAUDE·5e55105a\\] Filed with the board CLI."),
             iss["description"],
         )
         self.assertIn("## Recommended fix\n\nRetry.", iss["description"])
@@ -1612,7 +1612,7 @@ class WriteTests(BoardTest):
         iss = self.mock.issues[hy(B_A)]
         self.assertEqual(iss["state"], "Done")
         self.assertEqual(
-            self.comments_of(iss)[-1], "[CLAUDE] Resolution (completed): Landed in #2894."
+            self.comments_of(iss)[-1], f"[CLAUDE·5e55105a] Resolution (completed): Landed in #2894.\n\nSessions: {BASE_SESSION}"
         )
         d = json.loads(self.board("show", "OPS-10", "--json").stdout)
         self.assertEqual(d["resolution"], "Landed in #2894.")
@@ -1626,7 +1626,7 @@ class WriteTests(BoardTest):
         ):
             self.board("status", B_C[:8], value)
             self.assertEqual(self.mock.issues[hy(B_C)]["state"], state)
-        self.assertEqual(self.comments_of(self.mock.issues[hy(B_C)])[-1], "[CLAUDE] Status: parked")
+        self.assertEqual(self.comments_of(self.mock.issues[hy(B_C)])[-1], f"[CLAUDE·5e55105a] Status: parked\n\nSessions: {BASE_SESSION}")
         self.board("status", B_C[:8], "bogus", code=2)
         self.board("status", B_C[:8], "completed", "--of", "OPS-10", code=2)
 
@@ -1675,7 +1675,7 @@ class WriteTests(BoardTest):
         body = self.comments_of(self.mock.issues[hy(B_A)])[-1]
         self.assertEqual(
             body,
-            "[CLAUDE·s1] Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: s-1, s-2",
+            "[CLAUDE·sess1] Verified on main.\n\nWhere: Mac, ~/apps/lanes/A @ b\n\nSessions: sess-1, sess-2",
         )
         p = self.board("show", "OPS-10")
         self.assertIn("CLAUDE (Mac, ~/apps/lanes/A @ b): Verified on main.", p.stdout)
@@ -2958,7 +2958,7 @@ class FileInputTests(BoardTest):
         self.assertEqual(p.stdout.strip(), f"commented on {B_A[:8]} as CLAUDE{TAIL}  OPS-10")
         iss = self.mock.issues[hy(B_A)]
         self.assertEqual(
-            self.comments_of(iss)[-1], "[CLAUDE] Checked on main.\n\nNo change needed."
+            self.comments_of(iss)[-1], f"[CLAUDE·5e55105a] Checked on main.\n\nNo change needed.\n\nSessions: {BASE_SESSION}"
         )
         n = len(self.mock.comments)
         p = self.board(
@@ -2974,11 +2974,11 @@ class FileInputTests(BoardTest):
             "--text-file",
             "-",
             "--session",
-            "s-1",
+            "sess-1",
             stdin="From standard input.\n",
         )
         self.assertEqual(
-            self.comments_of(iss)[-1], "[CLAUDE·s1] From standard input.\n\nSessions: s-1"
+            self.comments_of(iss)[-1], "[CLAUDE·sess1] From standard input.\n\nSessions: sess-1"
         )
         ops = len(self.mock.ops)
         p = self.board("comment", "OPS-10", "--text-file", f, code=2)

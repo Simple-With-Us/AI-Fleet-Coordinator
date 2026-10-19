@@ -21,7 +21,6 @@ An id found for an exempt seat is still recorded.
 
 Standard library only, Python 3.11+.
 """
-
 from __future__ import annotations
 
 import fnmatch
@@ -72,9 +71,7 @@ def is_exempt(seat: str | None) -> bool:
     name = _seat(seat)
     if not name:
         return False
-    return name in EXEMPT_SEATS or any(
-        fnmatch.fnmatchcase(name, pattern) for pattern in EXEMPT_PATTERNS
-    )
+    return name in EXEMPT_SEATS or any(fnmatch.fnmatchcase(name, pattern) for pattern in EXEMPT_PATTERNS)
 
 
 def check(value: object, where: str = "the session id") -> str:
@@ -109,9 +106,7 @@ def _from_env(seat: str | None, env: Mapping[str, str]) -> str | None:
     return check(found[1], "the %s environment variable" % found[0]) if found else None
 
 
-def detect(
-    seat: str | None, explicit: str | None = None, env: Mapping[str, str] | None = None
-) -> str | None:
+def detect(seat: str | None, explicit: str | None = None, env: Mapping[str, str] | None = None) -> str | None:
     """The session id for `seat` (steps 1 to 3), or None.  `env` defaults to os.environ;  pass {} to look at
     nothing (the relay does, since the listener's own environment is not the sender's).  Raises ValueError for
     an explicit or environment value that is not a valid id."""
@@ -122,34 +117,29 @@ def detect(
     return _from_env(seat, os.environ if env is None else env)
 
 
-def refusal(seat: str | None, surface: str = "tool") -> str:
-    """The refusal text for a non-exempt writer with no session id (no note body, no secret)."""
+def refusal(seat: str | None, surface: str = "tool", board: bool = False) -> str:
+    """The refusal text for a non-exempt writer with no session id (no note body, no secret).  `board` words it for
+    the Linear board writes (linear_file, linear_claim, linear_comment, linear_status) instead of Apple Notes."""
     name = _seat(seat) or "this writer"
     own = own_variables(seat)
     if surface == "relay":
         return (
             "a session id is required to write an Apple Note as %s and this request carries none.  Resend it with "
             "the `session` argument of notes_create or notes_update%s, so a headless resume can find the session "
-            "from the note's Session line."
-            % (name, " (for %s it is $%s)" % (name, " or $".join(own)) if own else "")
+            "from the note's Session line." % (name, " (for %s it is $%s)" % (name, " or $".join(own)) if own else "")
         )
     how = "the `session` argument" if surface == "tool" else "--session ID"
-    text = (
-        "a session id is required to write an Apple Note as %s.  Pass it as %s, or set the AGENT_SESSION environment variable"
-        % (name, how)
-    )
+    what = "write to the Linear board" if board else "write an Apple Note"
+    text = "a session id is required to %s as %s.  Pass it as %s, or set the AGENT_SESSION environment variable" % (what, name, how)
     if own:
         text += ";  %s's own variable is %s, and it is empty here" % (name, " or ".join(own))
-    text += ".  A headless resume finds the session from the note's Session line."
+    text += (".  A headless resume finds the session from the issue's Sessions line." if board
+             else ".  A headless resume finds the session from the note's Session line.")
     return text
 
 
-def require(
-    seat: str | None,
-    explicit: str | None = None,
-    env: Mapping[str, str] | None = None,
-    surface: str = "tool",
-) -> str | None:
+def require(seat: str | None, explicit: str | None = None, env: Mapping[str, str] | None = None,
+            surface: str = "tool", board: bool = False) -> str | None:
     """The session id for `seat`, None for an exempt seat that has none, or SessionRequired.  `surface` is
     "tool" (the `session` argument), "cli" (--session) or "relay" (the listener judging an envelope).  A bad
     explicit value is a ValueError for everyone;  a bad environment value is a ValueError for a non-exempt
@@ -165,4 +155,4 @@ def require(
         found = None
     if found is not None or exempt:
         return found
-    raise SessionRequired(refusal(seat, surface))
+    raise SessionRequired(refusal(seat, surface, board))
