@@ -74,7 +74,10 @@ export async function writeStatus({ email, apiKey, channel, topic, content, stat
       method: "PATCH",
       form: { content, propagate_mode: "change_one" },
     });
-    if (patched && patched.id) return statusId;
+    // Zulip's edit endpoint answers {result:"success"} with no message id,
+    // so a truthy response alone is not proof; without this check every
+    // refresh fell through and posted a duplicate message.
+    if (patched && patched.result === "success") return statusId;
   }
   const created = await zulip("/messages", {
     email,
