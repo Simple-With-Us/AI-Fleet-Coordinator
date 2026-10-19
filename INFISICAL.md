@@ -51,7 +51,7 @@ before copying the key, and the hosted Worker repeats those checks at runtime.
 `AGENT_SYNC_CURSOR_TOOL_BUDGETS` is a JSON policy in AFC `prod` `/zulip`,
 copied to the same encrypted Worker binding.  Config validation rejects unknown
 kinds, invalid limits and pacing changes outside Linear.  Missing policy retains
-the existing limits.  The policy applies only to CURSOR, across all its grants.
+the existing limits.  The policy applies only to CURSOR, across all its grants, and only ever raises a default:  each window is the larger of the policy and the built-in limit (owner 2026-10-19), so Cursor's 100 Zulip writes an hour now count as 120.
 
 Owner requested capacity for approximately 40 Cursor agents on 2026-10-15:
 Linear writes 2,000/hour and 20,000/day, Linear reads 12,000/hour with separate
