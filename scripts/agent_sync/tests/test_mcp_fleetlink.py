@@ -40,6 +40,9 @@ FAKE_FLEET_SHARE = textwrap.dedent("""\
 TOKEN_CLAUDE = "fla_" + "1" * 64
 TOKEN_GENERIC = "fla_" + "2" * 64
 TOKEN_CURSOR = "fla_" + "3" * 64
+# Secret-shaped test fixtures (a GitHub token pattern the scan must catch), built at import so no literal is a token.
+TEST_GHP_FIXTURE = "ghp_" + "A1b2" * 9
+TEST_GHP_STDERR = "Error: bad %s\n" % TEST_GHP_FIXTURE
 WHOAMI = {
     "user": {"id": "usr_agent_claude", "display_name": "Claude", "kind": "agent"},
     "auth": {"kind": "token"},
@@ -374,7 +377,7 @@ class ScanAndFenceTests(FleetLinkHarness):
     def test_secret_shaped_text_is_refused_before_any_child_runs(self):
         self.token_file()
         session = self.session(self.env())
-        leak = "the key is ghp_" + "A1b2" * 9
+        leak = "the key is " + TEST_GHP_FIXTURE
         for field in ("text", "markdown", "title"):
             with self.subTest(field=field):
                 args = {field: leak} if field != "title" else {"text": "ok", "title": leak}
@@ -517,7 +520,7 @@ class ErrorTests(FleetLinkHarness):
         self.assertNotIn("BEGIN_UNTRUSTED", error["message"])
         self.assertIn("[marker removed]", error["message"])
         leaked = self.assert_tool_error(
-            self.error_for(stderr="Error: bad ghp_%s\n" % ("A1b2" * 9), exit=1), "fleetlink_refused"
+            self.error_for(stderr=TEST_GHP_STDERR, exit=1), "fleetlink_refused"
         )
         self.assertNotIn("ghp_", leaked["message"])
 
