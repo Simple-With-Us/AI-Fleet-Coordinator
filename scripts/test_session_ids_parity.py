@@ -92,7 +92,9 @@ class NotesScriptParity(unittest.TestCase):
         m = re.search(r"_session_envs\(\) \{.*?esac\n\}", self.text, re.DOTALL)
         self.assertIsNotNone(m)
         got = {}
-        for seat, names in re.findall(r"^\s*([A-Z]+)\) echo ([A-Z_ ]+) ;;", m.group(0), re.MULTILINE):
+        for seat, names in re.findall(
+            r"^\s*([A-Z]+)\) echo ([A-Z_ ]+) ;;", m.group(0), re.MULTILINE
+        ):
             got[seat] = tuple(names.split())
         self.assertEqual(got, _tuples(REGISTRY["envBySeat"]))
 
