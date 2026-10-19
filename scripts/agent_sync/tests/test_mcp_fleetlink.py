@@ -279,6 +279,24 @@ class CredentialTests(FleetLinkHarness):
         self.assertIn("FLEETLINK_TOKEN_CURSOR", error["message"])
         self.assertEqual(len(self.calls()), 1)
 
+    def test_a_seat_from_a_flag_binds_the_generic_token_like_one_from_the_environment(self):
+        # A platform registers `agent-sync mcp --default-seat S` and no AGENT_SEAT, so the generic token
+        # belongs to S:  another identity on the same connection is not configured, exactly as when the
+        # environment named S (AFC-331 identity, fleetlink_tools.py generic_token_allowed).
+        self.answer(stdout=json.dumps(SHARE))
+        session = self.session(
+            self.env(FLEETLINK_TOKEN=TOKEN_GENERIC, AGENT_SEAT=None), argv=("--default-seat", "CLAUDE")
+        )
+        result = session.call("fleetlink_get_share", {"slug": "plan"})
+        self.assertEqual(result["structuredContent"]["share"]["slug"], "plan")
+        [call] = self.calls()
+        self.assertEqual(call["env"]["FLEETLINK_TOKEN"], TOKEN_GENERIC)
+        error = self.assert_tool_error(
+            session.call("fleetlink_get_share", {"slug": "plan", "identity": "CURSOR"}), "not_configured"
+        )
+        self.assertIn("FLEETLINK_TOKEN_CURSOR", error["message"])
+        self.assertEqual(len(self.calls()), 1, "CURSOR's call ran no child")
+
     def test_each_identity_signs_in_as_its_own_bot(self):
         self.token_file()
         session = self.session(self.env(FLEETLINK_TOKEN_CURSOR=TOKEN_CURSOR))

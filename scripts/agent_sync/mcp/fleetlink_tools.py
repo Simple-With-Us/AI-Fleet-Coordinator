@@ -11,7 +11,9 @@ in order:
 
   1. FLEETLINK_TOKEN_<SEAT> (hyphens as underscores) in this process's environment;
   2. FLEETLINK_TOKEN, only when no launcher is set (AGENT_LAUNCHER, AGENT_LAUNCH_SEAT) and AGENT_SEAT is unset or
-     names this same seat, so one connection acting as several bots never lends one bot's token to another;
+     names this same seat, so one connection acting as several bots never lends one bot's token to another;  the
+     server sets AGENT_SEAT to the seat it resolved from --as or --default-seat when the environment named none, so
+     a seat that came from a flag is as binding as one from the environment;
   3. the file ~/.secrets/FleetLink/<SEAT>.env (hyphens as underscores):  a regular file owned by this user, mode
      0600 or 0400, handed to the child as FLEETLINK_AUTH_FILE.  This process never reads it.
 

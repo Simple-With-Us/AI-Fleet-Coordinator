@@ -611,6 +611,12 @@ def run(
     if codex_thread_meta:
         # A Claude engine/session variable must not become the Codex chat identity.
         env.pop("CLAUDE_CODE_SESSION_ID", None)
+    if seat and not (env.get("AGENT_SEAT") or "").strip():
+        # The seat this connection serves came from --as or --default-seat (how a platform registers),
+        # and nothing in the environment named it.  Record it as AGENT_SEAT so a credential that names
+        # no seat -- FLEETLINK_TOKEN -- is read as this seat's alone, never as another identity's,
+        # since one connection may act as every seat whose key is on this host (fleetlink_tools.py).
+        env["AGENT_SEAT"] = seat
     home = _home(env, rt.home)
     if ignored:
         log(

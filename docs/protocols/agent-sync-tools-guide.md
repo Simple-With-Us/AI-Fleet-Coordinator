@@ -177,7 +177,7 @@ From a shell, `board run NAME` is the tool `linear_NAME` (`board run list_issues
 
 ### fleetlink
 
-Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleet-share`, or `AGENT_SYNC_FLEETLINK_CLI`) with the seat's token:  `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat), else `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, mode 0600);  without one it answers `not_configured`.
+Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleet-share`, or `AGENT_SYNC_FLEETLINK_CLI`) with the seat's token:  `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat;  a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, mode 0600);  without one it answers `not_configured`.
 
 | Tool | R/W | Purpose |
 |---|---|---|
