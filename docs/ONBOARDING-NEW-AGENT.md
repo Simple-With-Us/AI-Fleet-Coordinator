@@ -103,11 +103,11 @@ with the top-level `apps` (the acronyms) and `--app`.
    owner to say "commit". Do not leave a remote branch without a PR.
 5. **Prior owner messages stay in scope** unless the owner cancels or
    clearly redirects.
-6. **Secrets:** read from `~/.secrets/` (chmod 600). Never print them.
+6. **Secrets:** read from Infisical Fleet-OPS with `fleet-secrets` (nothing reads `~/.secrets`). Never print them.
    Infisical is the runtime source of truth. Never `infisical secrets` bare.
    Never `grep` / `rg` a secrets file without `-o` — `grep '^[A-Z0-9_]+='`
    prints **values**.  Fleet keys: `fleet-secrets get NAME` (one value) or
-   `fleet-secrets names` (names only);  the flat `~/.secrets/global-api-keys` is retired and
+   `fleet-secrets names` (names only);  the flat `global-api-keys` file is retired and
    nothing may read it.  Never `cat` or open a secrets file with a Read tool.  Never
    `od` / `xxd` / `hexdump` a loaded `$KEY` / `$TOKEN` / `$SECRET` variable.
 7. **Light theme default.  Two spaces between sentences everywhere**,
@@ -230,7 +230,7 @@ agent-sync post --topic "<ID> <subject>" $'repo:  <app>  |  CLAIMED\nclaim:  <br
 agent-sync listen --topic "<work topic>" --topic fleet --mentions
 ```
 
-Your bot's credential lives in `~/.secrets/Zulip/<file code>-zuliprc`, mode 600.  Only Jay
+Your bot's credential lives in Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_EMAIL`, `_KEY`, `_SITE`).  Only Jay
 creates bot users, so ask him for yours (`docs/protocols/zulip-fleet-guide.md` § Bot Setup).
 Never echo the key.
 
@@ -350,7 +350,7 @@ Only when the seat's product needs them. Do not block first code on these.
 | Extra | Notes |
 |-------|-------|
 | Digest agent logo | `agent-logos/<seat>.svg` + legend in `build-fleet-daily-digest.py` |
-| MCP servers | Per-platform config. Secrets from `~/.secrets/`. Never commit tokens. |
+| MCP servers | Per-platform config. Secrets from Infisical (`fleet-secrets`). Never commit tokens. |
 | Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app; `ZULIP_EMAIL` + `ZULIP_API_KEY` + `ZULIP_SITE` + `GH_TOKEN` must be **runtime** vars |
 | iOS copy | Title Case nav / ASC listing copy: `FLEET-UI-COPY.md`.  TestFlight notes never include agent names.  Compiler / `GB-COMPILER` owns iOS ship on GitHub-hosted `macos-latest` only.  DealDex's hosted Actions ship stays — do not disable it.  Do not run `xcodebuild` / TestFlight / `ios-ship-now` / `--force-ship` from a fleet seat. |
 | Sentry | Fleet-infra DSN is a repo secret, not a chat paste |

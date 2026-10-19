@@ -6,7 +6,7 @@ description: >-
 
 # Secret handoff (CLAUDE)
 
-> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Claude-zuliprc` (mode 600).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
 
 
 Load `~/.claude/skills/secret-safety/SKILL.md` as well when that file exists.  This skill is the fleet overlay.
@@ -40,9 +40,9 @@ When the owner hands you a new secret, it arrives as the path to a `chmod 600` f
 
 ## Zulip bot credentials
 
-Each seat bot's key is its own credential and nobody else's.  Mac seats:  `~/.secrets/Zulip/<file code>-zuliprc`, mode 600 (`Claude-zuliprc`, `Codex-zuliprc`, `MM-zuliprc`, …).  Cloud seats with no Mac filesystem:  env `ZULIP_EMAIL`, `ZULIP_API_KEY`, `ZULIP_SITE`.  `agent-sync` picks the source:  `--rc PATH`, then `ZULIP_RC`, then the seat file, then the env triple; `agent-sync whoami` shows which source it used, never the key.
+Each seat bot's key is its own credential and nobody else's.  Mac seats:  Infisical Fleet-OPS `/zulip`, keys `<BOT>_ZULIP_EMAIL`, `<BOT>_ZULIP_KEY`, `<BOT>_ZULIP_SITE` (`CLAUDE_ZULIP_KEY`, `CODEX_ZULIP_KEY`, `MM_ZULIP_KEY`, …), read through `fleet-secrets`.  Cloud seats with no Mac filesystem:  env `ZULIP_EMAIL`, `ZULIP_API_KEY`, `ZULIP_SITE`.  `agent-sync` picks the source:  `--rc PATH`, then `ZULIP_RC`, then the env triple, then the seat's Infisical names; `agent-sync whoami` shows which source it used, never the key.
 
-Never print, `cat`, echo, or paste a zuliprc or a key, never put one in a message, a DM, a commit, or a log, and never type one literally on a command line.  Never use another seat's key, and never handle Jay's personal API key.  If a key ever lands in a message:  delete the message (do not edit — Zulip keeps edit history), have the owner rotate it in Settings → Bots, update Infisical first, then the seat file, and note the leak on the Linear issue (`board comment <id>`) without the value.
+Never print, `cat`, echo, or paste a zuliprc or a key, never put one in a message, a DM, a commit, or a log, and never type one literally on a command line.  Never use another seat's key, and never handle Jay's personal API key.  If a key ever lands in a message:  delete the message (do not edit — Zulip keeps edit history), have the owner rotate it in Settings → Bots, update Infisical (the only home of the key), and note the leak on the Linear issue (`board comment <id>`) without the value.
 
 ## Secrets-file grep trap (2026-08-14)
 

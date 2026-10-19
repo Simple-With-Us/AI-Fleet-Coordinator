@@ -66,7 +66,6 @@ STATE_PATH = STATE_DIR / "ingest-state.json"
 LAST_RUN_PATH = STATE_DIR / "last-run.json"
 LOCK_PATH = STATE_DIR / "ingest.lock"
 LOG_PATH = LOG_DIR / "ingest.log"
-HEARTBEAT_ENV = pathlib.Path.home() / ".secrets" / "fleet-rag.env"
 HEARTBEAT_KEY = "FLEET_RAG_INGEST_HEARTBEAT_URL"
 
 SEED_DOC_ID = "seed/fleet-standards"
@@ -585,15 +584,11 @@ def _append_log(log_path: pathlib.Path, report: dict) -> None:
 
 
 def _heartbeat() -> None:
-    """GET the heartbeat URL from ~/.secrets/fleet-rag.env if defined.  Never prints the URL."""
-    url = None
-    try:
-        for line in HEARTBEAT_ENV.read_text(encoding="utf-8").splitlines():
-            m = re.match(rf"^\s*(?:export\s+)?{HEARTBEAT_KEY}\s*=\s*(.+?)\s*$", line)
-            if m:
-                url = m.group(1).strip().strip('"').strip("'")
-    except OSError:
-        return
+    """GET the heartbeat URL (environment, then Infisical `fleet-secrets get`) if defined.  Never
+    prints the URL.  No file under ~/.secrets is read (AFC-359)."""
+    url = (os.environ.get(HEARTBEAT_KEY) or "").strip()
+    if not url:
+        url = (core.fleet_secret(HEARTBEAT_KEY) or "").strip()
     if not url:
         return
     try:

@@ -11,14 +11,17 @@ never a bot key), so run it in your own terminal:
 
 Owner credentials, first hit wins:
   1. --owner-rc PATH (a zuliprc downloaded from Settings > Account & privacy > API key)
-  2. ~/.secrets/Zulip/Jay-zuliprc
+  2. Infisical Fleet-OPS /zulip JAY_ZULIP_EMAIL + JAY_ZULIP_KEY (`fleet-secrets get`)
   3. env ZULIP_OWNER_EMAIL + ZULIP_OWNER_API_KEY (exported in your own shell)
   4. prompt: email, then the API key via getpass (never echoed)
 
 For each bot in ROSTER it:
   - creates a generic bot (POST /bots) unless one with that full name exists,
-  - writes ~/.secrets/Zulip/<file>-zuliprc with mode 600 if that file is missing
-    (an existing file is never overwritten unless --force),
+  - writes <out-dir>/<file>-zuliprc with mode 600 if that file is missing
+    (an existing file is never overwritten unless --force).  --out-dir defaults to a fresh
+    mode-700 temp directory;  load each bot into Infisical Fleet-OPS /zulip as
+    <BOT>_ZULIP_EMAIL / _KEY / _SITE, then delete the directory.  Nothing is written under
+    ~/.secrets (AFC-359).
   - subscribes the bot to CHANNELS using the bot's own key.
 
 Keys are never printed.  Output names bots, emails and file paths only.
@@ -31,13 +34,25 @@ import configparser
 import getpass
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 
 REALM = "https://simplewithus.zulipchat.com"
-SECRETS_DIR = os.path.expanduser("~/.secrets/Zulip")
+FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
+
+
+def fleet_secret(name):
+    """One Infisical /zulip value via `fleet-secrets get`, or "" (never printed)."""
+    try:
+        proc = subprocess.run([FLEET_SECRETS_BIN, "get", name, "--path", "/zulip"],
+                              capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
 CHANNELS = ["agent-sync", "alerts", "builds", "trading", "ideas"]
 
 # (full name shown in Zulip, short name, zuliprc file stem).
@@ -111,14 +126,17 @@ def read_rc(path):
 
 
 def owner_credentials(args):
-    path = args.owner_rc or os.path.join(SECRETS_DIR, "Jay-zuliprc")
-    if os.path.exists(path):
+    path = args.owner_rc
+    if path:
+        if not os.path.exists(path):
+            raise SystemExit(f"{args.owner_rc} not found")
         if os.stat(path).st_mode & 0o077:
             raise SystemExit(f"{path} is readable by other users; run chmod 600 on it first")
         email, key, site = read_rc(path)
         source = path
-    elif args.owner_rc:
-        raise SystemExit(f"{args.owner_rc} not found")
+    elif fleet_secret("JAY_ZULIP_EMAIL") and fleet_secret("JAY_ZULIP_KEY"):
+        email, key = fleet_secret("JAY_ZULIP_EMAIL"), fleet_secret("JAY_ZULIP_KEY")
+        site, source = fleet_secret("JAY_ZULIP_SITE") or REALM, "Infisical /zulip JAY_ZULIP_*"
     elif os.environ.get("ZULIP_OWNER_EMAIL") and os.environ.get("ZULIP_OWNER_API_KEY"):
         email, key = os.environ["ZULIP_OWNER_EMAIL"].strip(), os.environ["ZULIP_OWNER_API_KEY"].strip()
         site, source = REALM, "env ZULIP_OWNER_EMAIL/ZULIP_OWNER_API_KEY"
@@ -146,6 +164,7 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="print the plan and write nothing")
     ap.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     ap.add_argument("--force", action="store_true", help="overwrite existing zuliprc files")
+    ap.add_argument("--out-dir", help="where to write the zuliprc files (default: a new mode-700 temp directory)")
     ap.add_argument("--only", action="append", help="limit to these full names (repeatable)")
     args = ap.parse_args(argv)
 
@@ -159,10 +178,11 @@ def main(argv=None):
     everyone = {u["full_name"]: u for u in call(email, key, "GET", "users").get("members", [])}
     roster = [r for r in ROSTER if not args.only or r[0] in args.only]
 
-    os.makedirs(SECRETS_DIR, mode=0o700, exist_ok=True)
+    out_dir = args.out_dir or tempfile.mkdtemp(prefix="zulip-provision-")
+    os.makedirs(out_dir, mode=0o700, exist_ok=True)
     plan = []
     for full_name, short_name, stem in roster:
-        path = os.path.join(SECRETS_DIR, f"{stem}-zuliprc")
+        path = os.path.join(out_dir, f"{stem}-zuliprc")
         if full_name in owned:
             action = "exists (yours)"
         elif full_name in everyone:
@@ -201,7 +221,7 @@ def main(argv=None):
         except ZulipError as err:
             failures += 1
             print(f"  ERR {full_name:<16} {err}", file=sys.stderr)
-    print(f"Done: {len(plan) - failures} ok, {failures} failed.  Files are in {SECRETS_DIR} with mode 600.")
+    print(f"Done: {len(plan) - failures} ok, {failures} failed.  Files are in {out_dir} with mode 600;  load them into Infisical /zulip, then delete the directory.")
     return 1 if failures else 0
 
 

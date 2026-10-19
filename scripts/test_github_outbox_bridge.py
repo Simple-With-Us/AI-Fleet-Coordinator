@@ -6,6 +6,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -245,6 +246,28 @@ class RuleTests(unittest.TestCase):
             http.write_text("[api]\nemail=x@y\nkey=k\nsite=http://simplewithus.zulipchat.com\n")
             with self.assertRaises(bridge.BridgeError):
                 bridge.ZulipClient(http)
+
+    def test_zulip_client_reads_infisical_through_fleet_secrets(self):
+        # With no --rc the client takes <BOT>_ZULIP_EMAIL / _KEY / _SITE from Infisical /zulip.
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fleet-secrets"
+            fake.write_text(
+                "#!/bin/sh\n"
+                '[ "$1" = get ] && [ "$3" = --path ] && [ "$4" = /zulip ] || exit 3\n'
+                'case "$2" in\n'
+                "  CLAUDE_ZULIP_EMAIL) echo claude-bot@example.test;;\n"
+                "  CLAUDE_ZULIP_KEY) echo fake-key;;\n"
+                "  CLAUDE_ZULIP_SITE) echo https://simplewithus.zulipchat.com;;\n"
+                "  *) exit 3;;\n"
+                "esac\n"
+            )
+            fake.chmod(0o700)
+            with mock.patch.object(bridge, "FLEET_SECRETS_BIN", str(fake)):
+                client = bridge.ZulipClient()
+                self.assertEqual((client.email, client.key), ("claude-bot@example.test", "fake-key"))
+                gone = bridge.ZulipClient(bot="NOBODY")
+                self.assertIsNone(gone.email)
+                self.assertIsNone(gone.key)
 
     def test_mirror_body_clips_and_stamps(self):
         body = bridge.mirror_body("x" * 5000, "1789679400.0", "GROK", SEAT)

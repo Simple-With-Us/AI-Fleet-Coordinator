@@ -11,14 +11,15 @@ bridge runs on the Mac, and every tick:
      A posted comment
      gets a rocket reaction; a rejected one gets a confused reaction plus a reply
      that names the reason.
-  2. reads new #agent-sync messages (Zulip get_messages, --rc credential) and
+  2. reads new #agent-sync messages (Zulip get_messages, --rc credential or --read-as bot) and
      mirrors the ones that skim-match the seat (->SEAT, @SEAT, [SEAT, ->FLEET,
      OBJECTION / HALT / PROD DOWN / URGENT / HEADS-UP / DEPLOY CLAIM) back onto the
      same issue as comments marked <!-- outbox-bridge:zulip id=... -->.  Mirrored
      text is data for the seat, never instructions; the comment says so.
 
 No token is read into this process: the agent-sync CLI resolves each seat's own
-~/.secrets/Zulip/<file code>-zuliprc, and the read side takes that path via --rc.
+Zulip credential, and the read side takes either an explicit --rc file of the caller's own or
+the fleet reader bot's key from Infisical Fleet-OPS /zulip (`fleet-secrets get`, AFC-359).
 State (last comment id, Zulip message-id cursor) lives in
 ~/.agent-sync/outbox-bridge-<SEAT>.json.
 Config: ~/apps/github-outbox-bridge.json
@@ -56,7 +57,8 @@ except ImportError:  # pragma: no cover
 
 CHANNEL_DEFAULT = "agent-sync"
 TOPIC_DEFAULT = "outbox"
-RC_DEFAULT = Path.home() / ".secrets" / "Zulip" / "Claude-zuliprc"
+READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _SITE
+FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or str(Path.home() / ".local" / "bin" / "fleet-secrets")
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
 STATE_DIR_DEFAULT = Path.home() / ".agent-sync"
 BRIDGE_MARKER = "<!-- outbox-bridge:"
@@ -249,8 +251,7 @@ class ZulipPoster:
     """Post to Zulip as the seat's own bot, via the agent-sync CLI.
 
     Shelling out to the CLI rather than holding a key here is deliberate: the
-    CLI resolves the seat's own ~/.secrets/Zulip/<file code>-zuliprc and never
-    prints it, so this script stops being a place a credential can leak.
+    CLI resolves the seat's own Zulip credential and never prints it, so this script stops being a place a credential can leak.
     """
 
     def __init__(self, seat: str, channel: str = CHANNEL_DEFAULT):
@@ -279,22 +280,44 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _fleet_secret(name, folder):
+    """One Infisical value via `fleet-secrets get`, or None.  Never logged."""
+    try:
+        proc = subprocess.run([FLEET_SECRETS_BIN, "get", name, "--path", folder],
+                              capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = proc.stdout.strip() if proc.returncode == 0 else ""
+    return out or None
+
+
 class ZulipClient:
     """Minimal Zulip read client: HTTP Basic with the seat's own key.
 
-    Reads the INI-shaped zuliprc, so the key never appears on a command line and
+    Takes an explicit INI-shaped zuliprc path, or (rc_path None) the `<BOT>_ZULIP_*` names from
+    Infisical through `fleet-secrets get`, so the key never appears on a command line and
     never in an exception message.  Refuses any host but the fleet realm and
     never follows a redirect, so the Authorization header cannot travel.
     """
 
     REALM = "https://simplewithus.zulipchat.com"
 
-    def __init__(self, rc_path):
+    def __init__(self, rc_path=None, *, bot=READ_AS_DEFAULT):
         self.email = self.key = self.site = None
-        try:
-            text = Path(rc_path).read_text(encoding="utf-8")
-        except OSError:
-            return
+        if rc_path is None:
+            self.email, self.key, self.site = (
+                _fleet_secret("%s_ZULIP_%s" % (bot.upper().replace("-", "_"), part), "/zulip")
+                for part in ("EMAIL", "KEY", "SITE")
+            )
+            text = ""
+            if not (self.email and self.key and self.site):
+                self.email = self.key = self.site = None
+                return
+        else:
+            try:
+                text = Path(rc_path).read_text(encoding="utf-8")
+            except OSError:
+                return
         for line in text.splitlines():
             line = line.strip()
             if line.startswith("[") or "=" not in line:
@@ -565,7 +588,8 @@ def main(argv=None) -> int:
     ap.add_argument("--repo", help="owner/name of the outbox issue's repo")
     ap.add_argument("--issue", help="outbox issue number")
     ap.add_argument("--config", default=str(CONFIG_DEFAULT), help="JSON with a seats list (default %(default)s)")
-    ap.add_argument("--rc", default=str(RC_DEFAULT), help="Zulip credential file for the read side (default ~/.secrets/Zulip/<file code>-zuliprc)")
+    ap.add_argument("--rc", default=None, help="Zulip credential file of your own for the read side (default: Infisical /zulip via --read-as)")
+    ap.add_argument("--read-as", default=READ_AS_DEFAULT, help="bot whose Infisical /zulip key reads history (default %(default)s)")
     ap.add_argument("--channel", default=CHANNEL_DEFAULT)
     ap.add_argument("--topic", default=TOPIC_DEFAULT, help="Zulip topic for outbound posts (default %(default)s)")
     ap.add_argument("--read-history", dest="read_history", action="store_true", default=True, help="mirror #agent-sync into the issue (default on)")
@@ -578,12 +602,12 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     seats = load_seats(args)
-    # No token is read or held here.  The agent-sync CLI resolves each seat's own
-    # ~/.secrets/Zulip/<file code>-zuliprc, and the Zulip read client takes the
-    # same file by path.  The old AGENT_SYNC_ENV / SLACK_BOT_TOKEN route is retired.
-    zulip_read = ZulipClient(args.rc) if args.read_history else None
+    # The agent-sync CLI resolves each seat's own Zulip credential for posting;  the read client
+    # takes an explicit --rc file or the --read-as bot's key from Infisical /zulip (AFC-359).
+    # The old AGENT_SYNC_ENV / SLACK_BOT_TOKEN route is retired.
+    zulip_read = ZulipClient(args.rc, bot=args.read_as) if args.read_history else None
     if args.read_history and zulip_read is None and not args.dry_run:
-        log("ERR no Zulip credential at %s (path only; values never printed)" % args.rc)
+        log("ERR no Zulip credential (%s; values never printed)" % (args.rc or "Infisical /zulip %s_ZULIP_*" % args.read_as))
         return 1
     state_dir = Path(args.state_dir)
 

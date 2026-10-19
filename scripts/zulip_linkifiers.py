@@ -8,9 +8,12 @@ only a member key, so any seat can run them:
     python3 scripts/zulip_linkifiers.py                 # plan:  diff live rules against TARGET
     python3 scripts/zulip_linkifiers.py --check         # render CHECKS, and diff Linear's teams with rule 5119
     python3 scripts/zulip_linkifiers.py --apply --owner-rc PATH   # owner:  apply the plan, then check
+    python3 scripts/zulip_linkifiers.py --apply --admin           # realm-admin bot key from Infisical
 
 Credentials, first hit wins:  --owner-rc PATH (or --rc PATH for a read-only run), then env
-ZULIP_EMAIL + ZULIP_API_KEY, then ~/.secrets/Zulip/Claude-zuliprc.  Keys are never printed.
+ZULIP_EMAIL + ZULIP_API_KEY, then Infisical Fleet-OPS /zulip through `fleet-secrets get`
+(REALM_ADMIN_ZULIP_* with --admin, otherwise CLAUDE_ZULIP_*;  /zulip, then the root).  Keys are never printed.
+Nothing under ~/.secrets is read (AFC-359).
 
 Rules are matched to live ones by id, then by identical pattern, because Zulip numbers a rule it
 creates itself (a deleted and re-added rule, a restored backup, a fresh realm) and the pin in
@@ -161,7 +164,26 @@ CHECKS: list[tuple[str, str | None]] = [
 ]
 
 
-def credentials(rc_path: str | None) -> tuple[str, str, str]:
+def _fleet_secret(name: str) -> str:
+    """One Infisical value via `fleet-secrets get` (folder /zulip, else the root), or "" (never logged)."""
+    binary = os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
+    for extra in (["--path", "/zulip"], []):
+        try:
+            proc = subprocess.run(
+                [binary, "get", name, *extra],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    return ""
+
+
+def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str]:
     path = rc_path
     if not path and os.environ.get("ZULIP_EMAIL") and os.environ.get("ZULIP_API_KEY"):
         return (
@@ -169,7 +191,12 @@ def credentials(rc_path: str | None) -> tuple[str, str, str]:
             os.environ["ZULIP_API_KEY"],
             os.environ.get("ZULIP_SITE", REALM),
         )
-    path = path or os.path.expanduser("~/.secrets/Zulip/Claude-zuliprc")
+    if not path:
+        bot = "REALM_ADMIN" if admin else "CLAUDE"
+        email, key, site = (_fleet_secret(f"{bot}_ZULIP_{part}") for part in ("EMAIL", "KEY", "SITE"))
+        if not (email and key):
+            sys.exit(f"no {bot}_ZULIP_EMAIL / {bot}_ZULIP_KEY in Infisical Fleet-OPS (and no --rc or env)")
+        return email, key, (site or REALM).rstrip("/")
     cfg = configparser.ConfigParser()
     if not cfg.read(path) or "api" not in cfg:
         sys.exit(f"no [api] section in {path}")
@@ -344,7 +371,10 @@ def apply_plan(zulip: Zulip, steps: list[tuple], doomed: list[dict]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--rc", help="zuliprc for a read-only plan or check")
-    parser.add_argument("--owner-rc", help="the owner's zuliprc (needed for --apply)")
+    parser.add_argument("--owner-rc", help="the owner's zuliprc (--apply needs this or --admin)")
+    parser.add_argument(
+        "--admin", action="store_true", help="use the realm-admin bot key from Infisical /zulip"
+    )
     parser.add_argument(
         "--apply", action="store_true", help="apply the plan (realm administrator only)"
     )
@@ -356,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    zulip = Zulip(*credentials(args.owner_rc or args.rc))
+    zulip = Zulip(*credentials(args.owner_rc or args.rc, admin=args.admin))
     if args.check and not args.apply:
         return 1 if check(zulip) + check_linear() else 0
 

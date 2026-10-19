@@ -186,10 +186,9 @@ The master key (`BACKBLAZE_MASTER_KEY_ID` / `BACKBLAZE_MASTER_APPLICATION_KEY`) 
 init or install:  it has no prefix.  With `FLEET_WORK_BACKUP_ALLOW_MASTER=1` the restore commands (`restic`,
 `snapshots`) may fall back to it for names the scoped key leaves empty.
 
-All four names live in Infisical (project `AI Fleet Coordinator`, `prod`) and reach the handoff
-file through the one-way `com.jay.infisical-secrets-sync` job:  `scripts/infisical-secrets-sync.sh`
-has a `MAP` row for each (the password's is write-once, the other three follow Infisical), and the sync reads
-exactly the rows in that array.  The password must be a
+All four names live in Infisical Fleet-OPS (`prod`, root `/`), and the job reads them with `fleet-secrets` (AFC-359:
+nothing is read from `~/.secrets`).  They were seeded from the `AI Fleet Coordinator` project by the one-way
+`com.jay.infisical-secrets-sync` job, which is being retired.  The password must be a
 urlsafe token of at least 16 characters, with no whitespace and no backslash (the sync's plausibility
 check rejects anything else, and its `awk -v` mangles backslashes).  Generate it with
 
@@ -400,8 +399,7 @@ Order matters;  nothing here runs by itself:
    (project `AI Fleet Coordinator`, `prod`), and copy `scripts/fleet-work-backup/fleet_work_backup.py` to
    `~/apps/fleet-work-backup/` (`install.py --skip-launchd` does that), then run `fleet_work_backup.py
    new-password` for `RESTIC_FLEET_WORK_PASSWORD`.
-4. `install -m 755 scripts/infisical-secrets-sync.sh ~/bin/` and wait one tick;  `~/.secrets/infisical-sync.log`
-   shows `updated <KEY> (new_len=N)` for each.
+4. Confirm `fleet-secrets names | grep -E 'B2_FLEET_WORK|RESTIC_FLEET_WORK'` lists all four names (Fleet-OPS, root `/`).
 5. `python3 ~/apps/fleet-work-backup/fleet_work_backup.py init` (it checks the key's scope and the lifecycle
    rule first), then add the recovery key (Credentials, above) and keep its password outside Infisical.
 6. `python3 scripts/fleet-work-backup/install.py --check-repo` (loads the LaunchAgent and records the installed
