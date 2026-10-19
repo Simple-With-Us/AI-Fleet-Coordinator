@@ -617,7 +617,10 @@ def build_argv(
         if flags.get("pin") is False:
             extra["APPLE_NOTES_PIN"] = "0"
     if envelope.get("session") and action in ("create", "update"):
-        argv += ["--session", str(envelope["session"])]  # AFC-361:  not secret, so argv;  the script stamps the Session line
+        argv += [
+            "--session",
+            str(envelope["session"]),
+        ]  # AFC-361:  not secret, so argv;  the script stamps the Session line
     if envelope.get("identity"):
         # The identity the request was verified for (the tool's seat, or the relay sender's bot):  the script decides
         # its single-thread exemption from this and from nothing the caller typed.  CHILD_ENV_KEYS strips AGENT_SEAT.
