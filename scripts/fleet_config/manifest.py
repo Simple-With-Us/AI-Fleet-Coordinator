@@ -47,6 +47,7 @@ __all__ = [
     "load_manifest",
     "validate_coverage",
     "validate_platforms",
+    "validate_rules",
 ]
 
 # The pinned manifest version, checked exactly.  A breaking manifest change raises it.
@@ -149,6 +150,7 @@ def _parse_rule(raw: object, seat: str) -> Rule:
         proof_level=_enum(ProofLevel, raw.get("proofLevel"), "rule %s proofLevel" % rule_id),
         owner_seat=str(raw.get("ownerSeat") or ""),
         autofix_allowed=bool(raw.get("autofixAllowed")),
+        seat=seat,
         collector=_enum(Collector, raw.get("collector") or "mac", "rule %s collector" % rule_id),
         ttl_seconds=int(raw.get("ttlSeconds") or 900),
         description=str(raw.get("description") or ""),
@@ -245,3 +247,16 @@ def validate_platforms(manifest: Manifest, known_platforms: Tuple[str, ...]) -> 
     Skeleton:  the manifest implementer fills this body in against design section 7.
     """
     raise NotImplementedError("platform validation is pinned in the design doc, section 7")
+
+
+def validate_rules(manifest: Manifest) -> None:
+    """Every rule is internally consistent, or ManifestError is raised.
+
+    A rule must name the seat it checks, an owner seat, at least one platform, and a
+    kind its check type actually supports.  A rule whose proof level is above L0 for a
+    kind other than hooks is rejected, because no proof machinery exists for the other
+    kinds and ``UNPROVEN`` would become their permanent state.
+
+    Skeleton:  the manifest implementer fills this body in against design section 7.
+    """
+    raise NotImplementedError("rule validation is pinned in the design doc, section 7")
