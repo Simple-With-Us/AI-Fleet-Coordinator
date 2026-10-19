@@ -3478,7 +3478,7 @@ class TokenBlobTests(BoardTest):
     def sets(self):
         return [v for v in self.fs_verbs() if v.startswith("set ")]
 
-    def test_a_fresh_blob_means_zero_mints_zero_writes_and_one_fleet_secrets_call(self):
+    def test_a_fresh_blob_means_zero_mints_zero_writes_and_three_per_key_reads(self):
         blob = self.seat()
         self.as_seat("CLAUDE", "list")
         self.assertEqual(self.mock.mints, 1)
@@ -3487,8 +3487,11 @@ class TokenBlobTests(BoardTest):
         self.as_seat("CLAUDE", "list")
         self.assertEqual(self.mock.mints, 1)
         self.assertEqual(self.sets(), ["set CACHE_CLAUDE"], "only the first run wrote")
-        # the client pair and the blob come back together, in one fleet-secrets call
-        self.assertEqual(self.fs_verbs()[before:], ["run --path"])
+        # AFC-361:  no bundle dump, one `fleet-secrets get` per key (client id, client secret, blob)
+        self.assertEqual(
+            self.fs_verbs()[before:],
+            ["get CLAUDE_LINEAR_CLIENT_ID", "get CLAUDE_LINEAR_CLIENT_SECRET", "get CACHE_CLAUDE"],
+        )
 
     def test_an_expired_blob_means_one_mint_and_one_write_with_the_value_on_stdin(self):
         blob = self.seat()
