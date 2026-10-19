@@ -99,7 +99,7 @@ export function noConnectionPage() {
  * silently matched nothing and rendered with no gap at all (verified 2026-10-18).
  */
 export function gapped(text) {
-  return escapeHtml(text).replace(/([.!?])[ \t]+(?=\S)/g, `$1${SENTENCE_GAP}`);
+  return escapeHtml(text).replace(/(?<![0-9])([.!?])[ \t]+(?=\S)/g, `$1${SENTENCE_GAP}`);
 }
 
 export function errorPage(title, message, status = 400) {

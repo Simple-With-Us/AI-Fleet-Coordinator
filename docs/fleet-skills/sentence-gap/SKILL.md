@@ -51,23 +51,29 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-perl -CSDA -pe 's/([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
 Matching one *or more* is the whole fix.  The old pattern requiring exactly two spaces — written
 here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
 single-space pattern `([.!?]) (?=...)` is no better, because it matches nothing on text that kept
-its two spaces.  Both exit `0` and post with no gap.  `[ \t]+` is the same idea and additionally
-tolerates a tab.  The lookahead class keeps the gap out of `e.g.`, `i.e.`, and lower-case
-domains, and requiring whitespace after the punctuation leaves a dotted version like `v1.2.3`
-alone.
+its two spaces.  Both exit `0` and post with no gap.  The `(?<![0-9])` lookbehind protects a
+numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tolerates a tab.  The
+lookahead class skips a lowercase follower, so `e.g. this` and lower-case domains keep their plain
+space.
 
-**Known limitation — the lookahead is a heuristic.**  It skips a lowercase follower, so
-`e.g. this` and `U.S. rules` are left alone, but it gaps a *capitalised* abbreviation:  `Dr. Smith`
-and `e.g. Acme` both come out with a U+00A0, against the rule above about non-terminal
-abbreviations.  That is the deliberate cost of a pattern that needs no dictionary.  If a body
-carries such an abbreviation, fix that one gap by hand after the run, or accept it;  do not
-silently ship it.
+**Known limitations — the pattern is a heuristic, not a dictionary.**  Two deliberate costs:
+
+- It gaps a *capitalised* abbreviation:  `Dr. Smith` and `e.g. Acme` both come out with a U+00A0,
+  against the rule above about non-terminal abbreviations.
+- `(?<![0-9])` is what keeps a numbered list marker intact.  CommonMark only recognises `1.  Item`
+  when the character after the period is a real space, so a U+00A0 there silently stops the list
+  parsing as a list, and a body with steps in it renders as one run-on paragraph.  The lookbehind
+  skips any period preceded by a digit, which fixes the marker and also protects `v1.2.3`, but it
+  costs the gap on a sentence that ends in a digit:  `The answer is 42. Next thing.` gets none.
+
+If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
+it, and do not widen the pattern to chase it.
 
 **Assert before you post — both checks, every time.**  A conversion that matches nothing still
 exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
@@ -75,12 +81,14 @@ partly-converted body can have real U+00A0 and still carry a leftover single-spa
 
 ```sh
 grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -c '[.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
+grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
 one misses:  a body with three gaps where one survived unconverted has a non-zero U+00A0 count
-and still ships a wrong gap.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
+and still ships a wrong gap.  `[^0-9]` in front is deliberate, so a legitimate numbered-list
+marker (`1. Item`) is not mistaken for an unconverted gap — the same reason the conversion
+carries `(?<![0-9])`.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
 read them and confirm they are abbreviations rather than real sentences.
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
