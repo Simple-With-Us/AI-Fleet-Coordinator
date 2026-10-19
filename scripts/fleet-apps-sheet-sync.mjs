@@ -34,7 +34,7 @@
  *   • Facts no registry file carries live in scripts/fleet-apps-sheet-facts.json, never in the sheet.
  *
  * Auth: Google service account from GOOGLE_SHEETS_SA (env) or Infisical /google-sheets-sa via
- * fleet-secrets; ASC via ios-fleet/asc-api.mjs (env, else Infisical /appstore-connect).
+ * fleet-secrets; ASC via ios-fleet/asc-api.mjs (env, else Infisical /asc).
  * Neither prints credentials.
  */
 
