@@ -217,9 +217,11 @@ class Rule:
     """One desired-state rule for one seat, as loaded from the manifest.
 
     ``id`` is unique across the whole manifest.  ``owner_seat`` is the seat that owns the
-    rule (it answers for drift), which may differ from the seat being checked.
-    ``autofix_allowed`` is the only route by which the apply side may change anything for
-    this rule.  ``ttl_seconds`` bounds how long a result stays fresh.
+    rule (it answers for drift), which may differ from the seat being checked;
+    ``seat`` is the seat whose config is being checked, and the two are different
+    fields on purpose.  ``autofix_allowed`` is the only route by which the apply side
+    may change anything for this rule.  ``ttl_seconds`` bounds how long a result stays
+    fresh.
     """
 
     id: str
@@ -230,6 +232,7 @@ class Rule:
     proof_level: ProofLevel
     owner_seat: str
     autofix_allowed: bool
+    seat: str = ""
     collector: Collector = Collector.MAC
     ttl_seconds: int = 900
     description: str = ""

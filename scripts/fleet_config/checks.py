@@ -175,7 +175,7 @@ def build_result(
     expires_at = checked_at + timedelta(seconds=rule.ttl_seconds)
     return CheckResult(
         rule_id=rule.id,
-        seat=rule.owner_seat if rule.owner_seat else "",
+        seat=rule.seat,
         platform=platform,
         kind=rule.kind,
         state=state,
