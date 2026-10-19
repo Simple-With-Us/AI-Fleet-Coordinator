@@ -301,9 +301,15 @@ def main(argv=None):
     if not any(p[4] in ("create", "regenerate") for p in plan):
         print("Nothing to create or rotate.")
         return 0
-    if not args.yes and input("Proceed? [y/N] ").strip().lower() != "y":
-        print("Stopped.")
-        return 1
+    if not args.yes:
+        try:
+            answer = input("Proceed? [y/N] ").strip().lower()
+        except EOFError:
+            print("Stopped: no input.")
+            return 1
+        if answer != "y":
+            print("Stopped.")
+            return 1
 
     make_out_dir(out_dir)
     failures = 0

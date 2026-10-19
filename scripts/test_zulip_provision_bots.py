@@ -435,6 +435,20 @@ class ProvisionTests(unittest.TestCase):
         self.assertIsInstance(value, str)
         self.assertTrue(value.startswith("ok"))
 
+    def test_empty_stdin_at_the_prompt_stops_cleanly(self):
+        with mock.patch("builtins.input", side_effect=EOFError):
+            code, out, err = self.run_main("--only", "Clutch")
+        self.assertEqual(code, 1)
+        self.assertIn("Stopped: no input.", out)
+        self.assertEqual(self.fake.posts(), [])
+        self.assertFalse(self.out.exists())
+
+    def test_answering_n_stops(self):
+        with mock.patch("builtins.input", return_value="n"):
+            code, out, err = self.run_main("--only", "Clutch")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.fake.posts(), [])
+
     def test_unknown_only_name_is_an_error(self):
         code, out, err = self.run_main("--dry-run", "--only", "Nobody")
         self.assertIsInstance(code, SystemExit)
