@@ -155,7 +155,7 @@ class SessionIdTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         m = re.search(
             r"<p>((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m)</p>"
-            r"<p>Session: abc12345-def6 · \1</p>",
+            r"<p>Session: abc12345-def6 - \1</p>",
             p.stdout,
         )
         self.assertIsNotNone(m, p.stdout)
@@ -173,11 +173,11 @@ class SessionIdTests(unittest.TestCase):
             sid = f"{seat.lower()}-sess-0001"
             p = self.run_script("[AFC, Agent] topic", env={"AGENT_SEAT": seat, var: sid})
             self.assertEqual(p.returncode, 0, f"{seat}: {p.stderr}")
-            self.assertIn(f"Session: {sid} ·", p.stdout, seat)
+            self.assertIn(f"Session: {sid} -", p.stdout, seat)
         p = self.run_script(
             "[AFC, Cursor] topic", env={"AGENT_SEAT": "CURSOR", "CURSOR_AGENT_CHAT_ID": "chat-0002"}
         )
-        self.assertIn("Session: chat-0002 ·", p.stdout)
+        self.assertIn("Session: chat-0002 -", p.stdout)
 
     def test_a_seat_with_its_own_variable_ignores_other_platforms(self):
         p = self.run_script(
@@ -190,7 +190,7 @@ class SessionIdTests(unittest.TestCase):
             "[AFC, Agent] topic", env={"AGENT_SEAT": "BF-FIXER", "CODEX_THREAD_ID": "codex-0004"}
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("Session: codex-0004 ·", p.stdout)
+        self.assertIn("Session: codex-0004 -", p.stdout)
 
     def test_precedence_flag_then_agent_session_then_platform(self):
         env = {
@@ -198,14 +198,14 @@ class SessionIdTests(unittest.TestCase):
             "AGENT_SESSION": "generic-0005",
             "CLAUDE_CODE_SESSION_ID": "platform-0006",
         }
-        self.assertIn("Session: generic-0005 ·", self.run_script("[AFC, Claude] t", env=env).stdout)
+        self.assertIn("Session: generic-0005 -", self.run_script("[AFC, Claude] t", env=env).stdout)
         self.assertIn(
-            "Session: flag-0007 ·",
+            "Session: flag-0007 -",
             self.run_script("--session", "flag-0007", "[AFC, Claude] t", env=env).stdout,
         )
         env.pop("AGENT_SESSION")
         self.assertIn(
-            "Session: platform-0006 ·", self.run_script("[AFC, Claude] t", env=env).stdout
+            "Session: platform-0006 -", self.run_script("[AFC, Claude] t", env=env).stdout
         )
 
     def test_a_malformed_id_is_refused(self):
@@ -219,10 +219,10 @@ class SessionIdTests(unittest.TestCase):
     def test_an_exempt_seat_with_an_id_still_stamps_it(self):
         p = self.run_script("--session", "wise-thread-1", "[AFC, Wise] topic")
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("Session: wise-thread-1 ·", p.stdout)
+        self.assertIn("Session: wise-thread-1 -", p.stdout)
 
     def test_an_update_replaces_a_session_row_echoed_from_the_old_body(self):
-        old = "<p>Mon, Oct 19, 9:40pm</p><p>Session: old-id-0001 · Mon, Oct 19, 9:40pm</p><p>Body.</p>"
+        old = "<p>Mon, Oct 19, 9:40pm</p><p>Session: old-id-0001 - Mon, Oct 19, 9:40pm</p><p>Body.</p>"
         p = self.run_script(
             "--update",
             "--session",
@@ -233,7 +233,7 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
-        self.assertIn("Session: new-id-0002 ·", p.stdout)
+        self.assertIn("Session: new-id-0002 -", p.stdout)
         self.assertNotIn("old-id-0001", p.stdout)
 
     def test_the_body_never_reaches_the_refusal(self):

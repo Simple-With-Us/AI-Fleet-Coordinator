@@ -690,7 +690,7 @@ if m:
 inner = re.sub(r'^(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*(?:<div><br\s*/?></div>)?\s*', '', inner, flags=re.I)
 session_p = ''
 if note_session:
-    session_p = '<p>' + html.escape('Session: ' + note_session + ' · ' + stamp) + '</p>'
+    session_p = '<p>' + html.escape('Session: ' + note_session + ' - ' + stamp) + '</p>'
 stamp += pr_suffix
 stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
 
