@@ -16,7 +16,11 @@ class MissingTokenTests(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != "SEAT_MCP_TOKEN"}
         env["FLEET_SECRETS_BIN"] = "/nonexistent/fleet-secrets"
         err = io.StringIO()
-        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(entry, "serve") as serve, redirect_stderr(err):
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(entry, "serve") as serve,
+            redirect_stderr(err),
+        ):
             code = entry.main()
         self.assertEqual(code, 2)
         serve.assert_not_called()
@@ -25,7 +29,11 @@ class MissingTokenTests(unittest.TestCase):
         self.assertIn("SEAT_MCP_TOKEN missing in Infisical /seat-mcp", lines[0])
 
     def test_token_in_the_environment_starts_the_server(self) -> None:
-        with mock.patch.dict(os.environ, {"SEAT_MCP_TOKEN": "t"}), mock.patch.object(entry, "serve") as serve, mock.patch.object(entry, "ensure_jobs_dir"):
+        with (
+            mock.patch.dict(os.environ, {"SEAT_MCP_TOKEN": "t"}),
+            mock.patch.object(entry, "serve") as serve,
+            mock.patch.object(entry, "ensure_jobs_dir"),
+        ):
             self.assertIsNone(entry.main())
         serve.assert_called_once()
 
