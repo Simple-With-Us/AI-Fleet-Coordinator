@@ -97,6 +97,7 @@ def make_db(path: pathlib.Path) -> None:
 FAKE_EFFORT_KEY = "0123456789abcdef" * 2 + "01234567"  # 40 hex characters
 FAKE_SLACK = "xoxb-" + "1" * 12 + "-abcdefghijkl"
 
+
 class BoardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
