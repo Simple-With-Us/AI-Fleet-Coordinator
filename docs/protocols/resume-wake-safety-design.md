@@ -181,12 +181,12 @@ Reply "default" (Claude Code:  <model>, <effort>, <permission mode>), name the s
 
 ```text
 [CLAUDE·ask] re=<trigger id>
-No CLAUDE session for #<channel> > <topic>, but CODEX has one:  <session8>, "<title>", last active yesterday in lane AI-Fleet-Coordinator/codex-<slug>.
-Owner grant from this trigger:  force-push (msg 4821).  It carries to the routed run in that lane.
-Reply "route" to send it there, "new" to start a new CLAUDE session, or "no".
+No CLAUDE session for #<channel> > <topic>, but CODEX has one in lane AI-Fleet-Coordinator/codex-<slug> on codex/<slug>:  <session8>, "<title>", last active yesterday.
+Your message contains owner-authorized action classes:  force-push.  "route force-push" will run them on codex/<slug> (CODEX's lane), not in CLAUDE's lane;  a bare "route" sends the message with no grant.
+Reply "route force-push", "route", "new" (fresh CLAUDE session), or "no".
 ```
 
-The grant line is present only when the trigger matched an action class, and it names every class and message id the daemon built into the grant (section 5), so Jay sees what he is authorizing on the seat he did not address.  The grant still travels with the routed run, scoped to the routed seat's own lane:  it never reaches the lane Jay addressed, `main`, or any other lane, and the credential wall and the loop rule are unchanged.
+**A grant never crosses seats silently.**  When the owner trigger's grant (section 5) names any action class, the ask names the receiving seat's lane and branch and lists every class, so Jay sees exactly what routing will do and where.  To carry the grant he must name each class again in his reply (`route force-push`);  a bare `route` routes the message with an empty grant, and a reply naming a class the trigger did not contain adds nothing.  The carried grant is bound to the routed seat's lane and branch from the ask:  the guard refuses the action anywhere else, `main` and the addressed seat's lane included.
 
 With matches on several other seats it lists each, numbered, as the several-candidates ask does.  "route" (or a number) resumes that seat's session if that seat is in `RESUME_WAKE_SEATS` with a passing pin, and otherwise routes the message to that seat's inbox and tool-less wake, as a `·route` post does today.  "new" goes to the new-session flow for the seat Jay addressed.  A peer trigger never gets this ask:  it stays with the seat it addressed.
 
@@ -395,7 +395,7 @@ Then four variants, same topic:
 5. **Owner grant:**  Jay, from a human Zulip app, posts "@**Claude** force-push `claude/resume-canary` back one commit" — the run does it on that branch only, the push is logged and scanned, the breaker does not trip, and the receipt DM arrives.  The same text from the peer bot is declined and DMs the owner.
 6. **No session:**  a mention in a second canary topic whose claim names a lane with no session — the owner gets one `[CLAUDE·ask]` DM, "no" starts nothing, and "default" starts a new session in the lane.
 7. **Two sessions:**  a third canary topic bound to two canary sessions — the owner gets the candidate list, and the pick is the session that resumes.
-8. **Other platform:**  Jay mentions CLAUDE in a topic only a canary CODEX session is bound to — he gets the "CODEX has one" ask, and "route" reaches CODEX, while the same mention from a peer gets no ask.  Run it once more with a force-push action class in the trigger:  the ask names that class, the forced push lands on the CODEX lane only — never `main`, never the CLAUDE lane Jay addressed — and the receipt DM names the action.
+8. **Other platform:**  Jay mentions CLAUDE in a topic only a canary CODEX session is bound to — he gets the "CODEX has one" ask, and "route" reaches CODEX, while the same mention from a peer gets no ask.  Then Jay asks CLAUDE to force-push the canary branch back one commit in that topic:  the ask names CODEX's lane, branch and `force-push`;  a bare "route" runs with no grant and the force-push is refused;  "route force-push" runs it on the CODEX canary lane's branch only, and `main` and CLAUDE's lane are untouched (checked by their remote tips and the integrity manifest).
 
 During the canary, peer triggers are allowed only in the canary topic;  at `on`, `RESUME_WAKE_SENDERS` is `owner+peers`.
 
