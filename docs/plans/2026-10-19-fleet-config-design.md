@@ -1,0 +1,369 @@
+# Fleet-Config Design:  The Contract For The Muster Read And Write Engine
+
+Mon, Oct 19, 2026.  Issues AFC-384, AFC-385 and AFC-386.  Project Muster:  Fleet Admin Mac App, team AFC.  This document is the shared contract for Phase 2.  An implementer who has read it should need no further design answers.  Where a choice was forced, the rejected alternative is named next to it.
+
+## 1. Purpose And Scope
+
+Muster is a native Mac SwiftUI admin app for monitoring and controlling every fleet seat's tooling config.  Phase 2 builds the engine under it:  a `fleet-config` CLI in `scripts/fleet_config/`, stdlib only, in the style of `scripts/fleet_knobs/`.  The CLI answers one question in machine-readable form:  does each seat's installed tooling config match the desired state in the manifest, and how strongly was that proved.  A later phase adds the plan and apply side on the same contract, and the SwiftUI app renders the JSON envelope defined here.
+
+In scope for the contract:  the check vocabulary, the proof levels, the `status --json` envelope, the per-seat desired-state manifest, the boundary with AFC-375, and the module ownership map.  Out of scope for Phase 2:  the SwiftUI app, the Infisical knob panel (it reads `fleet_knobs`, and this engine never redefines a knob value), live fleet status transport, and the compliance rule registry UI.  Those phases consume this contract and do not amend it silently.
+
+## 2. Boundary With AFC-375 (Fleet GitOps G7)
+
+AFC-375 plans `deploy/mac/manifest.toml` describing Mac LaunchAgents and pm2 jobs.  The two manifests describe disjoint surfaces, and neither may describe the other's rows.
+
+| Surface | Owner |
+|---|---|
+| Per-seat harness tooling config inside harness config dirs:  instruction files, hook registrations, MCP server registrations, skills, sub-agents, permissions and credential file stat | `fleet-config`, manifest `fleet-seats.json` (this design) |
+| Mac LaunchAgents and pm2 jobs:  labels, plists, programs, keepalive, run intervals, working directories | AFC-375, `deploy/mac/manifest.toml` |
+| Runtime modes, caps and flags read by jobs | Infisical through `scripts/fleet_knobs/`;  neither manifest copies a knob value |
+| Git checkout health and lane safety | `scripts/fleet_lanes/doctor.py`, folded in as a consumer later;  `fleet-config` is not a third doctor |
+
+The edge case is a hook that is also a daemon.  The registration of a hook in a harness settings file, and the hook script's presence and mode, belong to `fleet-config`.  A LaunchAgent or pm2 job that runs a long-lived process belongs to AFC-375, even when the process is the same script.  If a surface seems to fit both, it goes to AFC-375 when it is a process and to `fleet-config` when it is harness config.  Describing a LaunchAgent in `fleet-seats.json` is a review blocker, because the two engines would then fight over one row.
+
+## 3. Fixed Vocabulary
+
+### 3.1 Check States
+
+Exactly six, spelled as in `types.py` `CheckState`:  `PASS`, `DRIFT`, `MISSING`, `UNPROVEN`, `UNSUPPORTED`, `UNKNOWN`.  `PASS` is the only healthy state.  `DRIFT` means present but not matching.  `MISSING` means the target is absent.  `UNPROVEN` means the config matches at the achieved proof level but the required proof was not run or is stale.  `UNSUPPORTED` means this platform or collector cannot be checked for this kind in this phase.  `UNKNOWN` means the check could not produce a trustworthy answer, and it must never render as healthy in any consumer.
+
+### 3.2 Proof Levels
+
+Exactly three, spelled `L0`, `L1`, `L2` (`types.py` `ProofLevel`, ordered by `rank`).
+
+| Level | Meaning | When it runs |
+|---|---|---|
+| L0 | Config present and matching by hash, or by the name-set and mode comparison its check type defines | Every `status` run |
+| L1 | A synthetic PreToolUse payload that attempts a write into a sentinel lane is piped into the installed hook, and the hook must deny it | Every `status` run, for `hooks` rules that require it |
+| L2 | A headless platform canary (such as `claude -p` or `codex exec`) runs in a throwaway lane with a read-only prompt, showing the platform actually loads the hook | Only `status --prove l2`, or a daily job;  it costs a model turn, so it never runs by default |
+
+Two invariants keep `UNPROVEN` rare by construction.  Only `hooks` rules may require `L1` or `L2` in Phase 2, and the manifest loader's validation rejects a higher requirement on any other kind.  An `L2` rule must set `ttlSeconds` to at least 86400, so a daily canary can stay fresh between runs.
+
+### 3.3 Config Kinds, Collectors And Platforms
+
+The six config kinds (`types.py` `ConfigKind`) are `instructions`, `hooks`, `mcp`, `skills`, `subagents` and `permissions`.  No check module invents a seventh kind.
+
+A `collector` says where a check runs:  `mac` now, with `vm`, `hetzner` and `api` reserved.  A rule with a reserved collector yields one `UNSUPPORTED` result per named platform in Phase 2, with the reason naming the collector.  Reserving the values now means a later phase adds collectors with no schema change.
+
+A `platform` is a harness config surface id from `scripts/fleet_lanes/install_rules.py` `PLATFORMS` (such as `claude`, `codex`, `grok`, `antigravity`, `minimax`, `cursor`, `clutch`, `kimi`, `copilot`, `opencode`, `muse-code`).  Platform ids are passed into `fleet_config` as data, never hardcoded in this package and never imported from `fleet_lanes` at runtime.  The shared `home-agents` file is not a seat platform and must not appear in a manifest.  A platform with no file for a kind (per the installer tables) yields `UNSUPPORTED` for that kind, not an invented path.
+
+## 4. Fail-Closed Semantics
+
+A check that is stale (past its TTL), errors, times out or produces unparseable output counts as failing, never as passing.  The mapping is total, and the aggregator applies it in this order per rule and platform:
+
+| Step | Condition | State | Reason code | Failing |
+|---|---|---|---|---|
+| 1 | Collector is not `mac` in Phase 2 | `UNSUPPORTED` | `unsupported` | No, but never healthy |
+| 2 | The platform has no such config surface | `UNSUPPORTED` | `unsupported` | No, but never healthy |
+| 3 | The target is absent | `MISSING` | `missing` | Yes |
+| 4 | The check raised, timed out or returned unparseable output | `UNKNOWN` | `error`, `timeout` or `unparseable` | Yes |
+| 5 | The observed state does not match the expected state at L0 | `DRIFT` | `drift` | Yes |
+| 6 | L0 matches but the required L1 or L2 proof was not run, or its evidence is stale | `UNPROVEN` | `proof-not-run` | No, but never healthy |
+| 7 | L1 or L2 ran and the hook or platform did not deny the sentinel write | `DRIFT` | `proof-failed` | Yes |
+| 8 | The required proof is achieved and fresh | `PASS` | `ok` | No |
+
+A cached result read after its `expiresAt` is re-labelled before it reaches the envelope:  state `UNKNOWN`, reason code `stale`, `stale` true.  It keeps its original `checkedAt` as evidence.  The envelope builder does not do this relabelling;  the aggregator owns the clock.
+
+The verdict math lives in `contract.py` as pure functions, so every consumer shares it.  `is_failing` is true for `DRIFT` and `MISSING`, and for any result whose reason code is `stale`, `error`, `timeout`, `unparseable` or `proof-failed`.  `overall_verdict` is `FAIL` when any result is failing, else `PASS` when at least one result exists and every result is `PASS`, else `UNKNOWN`.  An empty run is `UNKNOWN`, never `PASS`.
+
+Finished CLI exit codes are pinned now:  0 for verdict `PASS`, 1 for verdict `FAIL`, 3 for verdict `UNKNOWN` (the `fleet_knobs` precedent for an unreachable source), 2 for a refused run (bad manifest, bad registry or an unimplemented verb in the skeleton), and 64 for a usage error.  The skeleton in `__main__.py` returns 2 for its stub verbs, which is a placeholder, not the finished mapping.
+
+## 5. Check Types Per Kind
+
+`check.type` is one of `types.py` `CheckType`.  `check.target` is a path for file checks and a name (never a value) for a credential reference.  `check.detail` names the part inside the target.  The allowed pairings are fixed:
+
+| Kind | Check type | Target and detail | Expected fields used |
+|---|---|---|---|
+| `instructions` | `marked_block_hash` | File path;  detail is the marked block name (the `fleet_lanes/marked_block.py` marker family) | `sha256`, `present` |
+| `instructions` | `file_hash` | File path;  detail empty | `sha256`, `present` |
+| `hooks` | `hook_registered` | Harness settings file;  detail is the event, Phase 2 only `PreToolUse` | `names` (hook ids), `timeoutSeconds`, `present` |
+| `mcp` | `mcp_servers_registered` | Harness MCP config file | `names` (server names only) |
+| `skills` | `skills_installed` | Skills directory for the platform | `names` (skill directory names) |
+| `subagents` | `subagents_installed` | Sub-agent definitions directory for the platform | `names` (file stems) |
+| `permissions` | `permissions_match` | Harness settings file | `names` (permission identifiers), `mode` |
+| `permissions` | `credential_stat` | Credential file path;  detail is the credential reference name | `present`, `mode` |
+
+Hash rules are exact, so two implementations agree byte for byte.  `file_hash` is the lowercase hex SHA-256 of the raw file bytes.  `marked_block_hash` is the lowercase hex SHA-256 of the marked block body as `fleet_lanes.marked_block.block_body` returns it (CR stripped, markers excluded), encoded as the lines joined by `\n` with one trailing `\n`, in UTF-8.  A file with malformed markers is step 4 (`UNKNOWN`, `unparseable`), never a guessed hash.  This package reimplements that body extraction rather than importing `fleet_lanes`, for the packaging reason in section 12, and a test must pin the two implementations to the same digest on a shared fixture.
+
+Name-set comparisons are set equality.  The envelope lists expected names in manifest order and observed names sorted, so a diff is stable to read.  A credential file is checked by `stat` only:  existence, mode, size and mtime.  Its contents are never opened, hashed or compared, and no field in `types.py` can hold them.
+
+## 6. The Manifest:  `fleet-seats.json`
+
+The manifest is a new file `fleet-seats.json` at the repo root, a sibling of `fleet-apps.json`.  It is not an edit to `fleet-apps.json`.  The top level is an object with `schemaVersion` (the integer 1, pinned by `manifest.py` `MANIFEST_SCHEMA_VERSION`) and `seats`, an object keyed by registry seat tag.
+
+One seat entry, excerpted (a real file must carry every live seat, per section 7):
+
+```json
+{
+  "schemaVersion": 1,
+  "seats": {
+    "CLAUDE": {
+      "platforms": ["claude"],
+      "rules": [
+        {
+          "id": "claude-instructions-lane-map",
+          "kind": "instructions",
+          "platforms": ["claude"],
+          "check": {"type": "marked_block_hash", "target": "~/.claude/CLAUDE.md", "detail": "fleet-lane-map"},
+          "expected": {"description": "Lane Map block matches the installer source", "present": true, "sha256": "<64 lowercase hex>"},
+          "proofLevel": "L0",
+          "ownerSeat": "CLAUDE",
+          "autofixAllowed": false,
+          "collector": "mac",
+          "ttlSeconds": 900
+        },
+        {
+          "id": "claude-hooks-lane-guard",
+          "kind": "hooks",
+          "platforms": ["claude"],
+          "check": {"type": "hook_registered", "target": "~/.claude/settings.json", "detail": "PreToolUse"},
+          "expected": {"description": "Lane guard hook registered with its timeout", "present": true, "names": ["lane-guard"], "timeoutSeconds": 10},
+          "proofLevel": "L1",
+          "ownerSeat": "CLAUDE",
+          "autofixAllowed": false,
+          "collector": "mac",
+          "ttlSeconds": 900
+        },
+        {
+          "id": "claude-mcp-fleet-recall",
+          "kind": "mcp",
+          "platforms": ["claude"],
+          "check": {"type": "mcp_servers_registered", "target": "~/.claude.json", "detail": ""},
+          "expected": {"description": "Fleet MCP servers registered by name", "present": true, "names": ["fleet-recall"]},
+          "proofLevel": "L0",
+          "ownerSeat": "CLAUDE",
+          "autofixAllowed": false,
+          "collector": "mac",
+          "ttlSeconds": 900
+        },
+        {
+          "id": "claude-skills-fleet",
+          "kind": "skills",
+          "platforms": ["claude"],
+          "check": {"type": "skills_installed", "target": "~/.claude/skills", "detail": ""},
+          "expected": {"description": "Fleet skills installed by name", "present": true, "names": ["fleet-mode"]},
+          "proofLevel": "L0",
+          "ownerSeat": "CLAUDE",
+          "autofixAllowed": false,
+          "collector": "mac",
+          "ttlSeconds": 900
+        },
+        {
+          "id": "claude-subagents-fleet",
+          "kind": "subagents",
+          "platforms": ["claude"],
+          "check": {"type": "subagents_installed", "target": "~/.claude/agents", "detail": ""},
+          "expected": {"description": "Fleet sub-agent definitions installed by name", "present": true, "names": ["code-scout"]},
+          "proofLevel": "L0",
+          "ownerSeat": "CLAUDE",
+          "autofixAllowed": false,
+          "collector": "mac",
+          "ttlSeconds": 900
+        },
+        {
+          "id": "claude-permissions-zuliprc",
+          "kind": "permissions",
+          "platforms": ["claude"],
+          "check": {"type": "credential_stat", "target": "~/.secrets/Zulip/Claude-zuliprc", "detail": "ZULIP_CLAUDE"},
+          "expected": {"description": "Claude Zulip credential present with mode 0600, stat only", "present": true, "mode": "0600"},
+          "proofLevel": "L0",
+          "ownerSeat": "CLAUDE",
+          "autofixAllowed": false,
+          "collector": "mac",
+          "ttlSeconds": 900
+        }
+      ],
+      "notApplicable": []
+    }
+  }
+}
+```
+
+### 6.1 Rule Fields
+
+Every rule carries exactly these fields (camelCase in JSON, snake_case in `types.py` `Rule`):  `id`, `kind`, `platforms`, `check`, `expected`, `proofLevel`, `ownerSeat`, `autofixAllowed`, `collector` and `ttlSeconds`, plus an optional `description`.  This is the Muse Assist rule shape (`id`, `platforms`, `check`, expected state, owner seat, autofix allowed) with two Phase 2 additions:  `proofLevel` and `collector`.
+
+| Field | Meaning |
+|---|---|
+| `id` | Unique across the whole manifest;  lowercase letters, digits and hyphens;  the apply side addresses rules by it (`apply --only`) |
+| `kind` | One of the six config kinds |
+| `platforms` | Non-empty list of platform ids this rule checks;  each produces one result |
+| `check` | `{type, target, detail}` per section 5;  never holds a secret value |
+| `expected` | `{description, present, sha256, names, mode, timeoutSeconds}`;  only the fields its check type uses;  names and booleans only where a secret could stand |
+| `proofLevel` | The proof the rule needs:  `L0`, `L1` or `L2` |
+| `ownerSeat` | The registry tag of the seat that answers for this rule's drift;  may differ from the checked seat |
+| `autofixAllowed` | The only permission the apply side has;  false means report only, forever, until a human edits the manifest |
+| `collector` | `mac` in Phase 2;  `vm`, `hetzner` and `api` reserved |
+| `ttlSeconds` | How long a result stays fresh;  default 900;  at least 86400 for an `L2` rule |
+
+### 6.2 Where A Seat Entry Comes From
+
+A seat with no Mac config surface (a hosted or cloud seat) still gets an entry.  It lists `platforms` as an empty list and carries one seat-wide `notApplicable` entry per kind, each with a human reason, for example `"hosted seat;  no Mac harness config surface in Phase 2"`.  Not-applicable entries produce no check results.  The app renders them from the manifest, so the seat is visible without inventing a check nobody can run.
+
+## 7. Registry Source Of Truth And Coverage
+
+Seat names come from the fleet registry, never hand-typed.  The source of truth is `fleet-apps.json` at the repo root, key `seats`, field `tag`, parsed canonically by `scripts/fleet_lanes/layout.py` `load_registry()` into `Registry.seats[].name`.  The live roster is every row that is not retired and carries no `aliasOf`.  Pattern families in `seatApps.patterns` (`BF-*`, `GB-*`) and `seatApps.extraSeats` (`JET`) are not roster seats and get no manifest entries until the registry gives them their own `seats` rows.
+
+The manifest references the registry by key, not by literal string in code:  the `seats` object is keyed by tag, `manifest.py` `registry_seat_tags()` reads the same file as JSON and returns the live tags in registry order, and `load_manifest()` refuses an unknown key, a retired or alias key, and a live seat with no entry.  No module in this package hardcodes a seat tag.  The loader reads the registry as JSON instead of importing `fleet_lanes`, because a stable copy of this package run with `python3 -I` carries just this package (section 12);  the JSON read mirrors `load_registry()` semantics for the three fields it needs (`tag`, `retired`, `aliasOf`), and a test must pin the two to the same roster.
+
+Coverage is a validation rule, enforced by `manifest.py` `validate_coverage()`:
+
+1. For each seat entry, for each platform in its `platforms`, for each of the six kinds:  some rule of that seat names the kind and the platform, or a `notApplicable` entry covers it (matching platform, or empty `platforms` for a seat-wide cover).  Otherwise the manifest is rejected, naming the uncovered triple.
+2. A seat with an empty `platforms` list needs one seat-wide `notApplicable` entry per kind, each with a non-empty `reason`.
+3. Every `notApplicable` entry needs a non-empty `reason`.  Silence is never a cover.
+4. Rule ids are unique across the manifest (enforced in `load_manifest()`).
+5. Only `hooks` rules may require `L1` or `L2`, and an `L2` rule needs `ttlSeconds` of at least 86400.
+6. Every platform named anywhere is in the known platform list passed to `validate_platforms()` from the installer tables at the call site.
+
+## 8. The `status --json` Envelope
+
+`contract.py` `SCHEMA_VERSION` is the integer 1, pinned by a contract test.  A breaking envelope change raises it deliberately and updates this document in the same commit.  The envelope is one flat `results` list;  consumers group by seat, platform and kind.  It carries no second grouped copy that could disagree with the flat list.
+
+```json
+{
+  "schemaVersion": 1,
+  "tool": "fleet-config",
+  "command": "status",
+  "generatedAt": "2026-10-19T14:30:00Z",
+  "summary": {
+    "total": 2,
+    "byState": {"PASS": 1, "DRIFT": 1, "MISSING": 0, "UNPROVEN": 0, "UNSUPPORTED": 0, "UNKNOWN": 0},
+    "overallVerdict": "FAIL",
+    "failing": 1
+  },
+  "results": [
+    {
+      "ruleId": "claude-hooks-lane-guard",
+      "seat": "CLAUDE",
+      "platform": "claude",
+      "kind": "hooks",
+      "state": "PASS",
+      "reason": "Hook lane-guard is registered and denied the sentinel write at L1.",
+      "reasonCode": "ok",
+      "expected": {"description": "Lane guard hook registered with its timeout", "present": true, "names": ["lane-guard"], "timeoutSeconds": 10},
+      "observed": {"present": true, "names": ["lane-guard"], "timeoutSeconds": 10},
+      "proofLevelRequired": "L1",
+      "proofLevelAchieved": "L1",
+      "collector": "mac",
+      "checkType": "hook_registered",
+      "checkedAt": "2026-10-19T14:30:00Z",
+      "expiresAt": "2026-10-19T14:45:00Z",
+      "ttlSeconds": 900,
+      "stale": false,
+      "failing": false
+    },
+    {
+      "ruleId": "claude-skills-fleet",
+      "seat": "CLAUDE",
+      "platform": "claude",
+      "kind": "skills",
+      "state": "DRIFT",
+      "reason": "Skill set differs:  fleet-mode is installed, sentence-gap is not.",
+      "reasonCode": "drift",
+      "expected": {"description": "Fleet skills installed by name", "present": true, "names": ["fleet-mode", "sentence-gap"]},
+      "observed": {"present": true, "names": ["fleet-mode"]},
+      "proofLevelRequired": "L0",
+      "proofLevelAchieved": null,
+      "collector": "mac",
+      "checkType": "skills_installed",
+      "checkedAt": "2026-10-19T14:30:00Z",
+      "expiresAt": "2026-10-19T14:45:00Z",
+      "ttlSeconds": 900,
+      "stale": false,
+      "failing": true
+    }
+  ]
+}
+```
+
+Field rules for every result:  `ruleId`, `seat`, `platform`, `kind`, `expected` versus `observed`, `proofLevelRequired`, `proofLevelAchieved` (null when no level was achieved), `state`, a human-readable `reason`, a machine `reasonCode`, plus `collector`, `checkType`, `checkedAt`, `expiresAt`, `ttlSeconds`, `stale` and `failing`.  The top level carries `schemaVersion`, `tool`, `command`, `generatedAt` (ISO 8601 UTC with a `Z` suffix, one clock for the whole run) and `summary` with `total`, `byState` (all six state keys, always), `overallVerdict` and `failing`.  It never carries a secret value:  names, booleans, modes, sizes and hashes of non-secret config only, and `stat` fields only for a credential file.
+
+The human (non-JSON) `status` output is a rendering of the same report, one line per result, worst state first.  It adds no facts the envelope lacks.
+
+## 9. Proof Machinery
+
+L0 lives inside each per-kind check module:  hash or name-set comparison against `expected`.  L1 and L2 live in `proof.py` and nowhere else.
+
+L1 is a pure probe.  `proof.py` builds a synthetic PreToolUse payload per platform adapter whose tool input attempts a write to a sentinel path under a throwaway sentinel lane (a path string only;  nothing creates the lane and nothing writes the file), pipes it to the installed hook's stdin, and reads the platform's deny signal (exit code and output shape per adapter).  A deny achieves L1.  An allow is step 7 (`DRIFT`, `proof-failed`).  A hook that crashes, is missing or times out is step 4, never a pass.  Payload shapes differ per platform, so each adapter is one small function in `proof.py` with its own fixture test.  The hook under test is the installed one named by the rule, resolved through the platform's settings file, never a copy from the repo.
+
+L2 is a canary with a cost guard.  `proof.py` creates a throwaway lane, runs the platform's headless command (`claude -p`, `codex exec`, per adapter) with a read-only prompt that asks the model to attempt the sentinel write, and looks for deny evidence in the transcript.  Deny evidence with a clean exit achieves L2.  No deny evidence is step 7.  The lane is removed afterwards, pass or fail.  L2 runs only under `--prove l2` or from the daily job, it is the only part of this engine that may spend a model turn, and its result is cached under the rule's TTL like any other result.  A `status` run without `--prove` reuses a fresh cached L2 result and reports `UNPROVEN` for an L2 rule whose cache is absent or stale.
+
+## 10. Module Ownership Map
+
+Every module in `scripts/fleet_config/`, with one owner lane each, so four parallel implementers never edit the same file.  Flat modules, matching `fleet_knobs`.
+
+| Module | Responsibility | Owner lane |
+|---|---|---|
+| `__init__.py` | Package docstring and the public re-exports;  no logic | Kernel (done) |
+| `types.py` | The fixed vocabulary:  states, proof levels, kinds, collectors, check types, reason codes and every dataclass | Kernel (done) |
+| `contract.py` | `SCHEMA_VERSION`, the envelope builder and the pure verdict math (`is_failing`, `overall_verdict`, `summarize`) | Kernel (done);  changes only with a schema version bump |
+| `manifest.py` | Manifest loading, registry roster reading, coverage and platform validation | Implementer 1 (manifest) |
+| `checks_instructions.py` | `instructions` checks:  marked block hash and file hash, including the marked-block body extraction that mirrors `fleet_lanes/marked_block.py` | Implementer 2 (checks) |
+| `checks_hooks.py` | `hooks` checks at L0:  registration, hook ids and timeouts in harness settings files | Implementer 2 (checks) |
+| `checks_mcp.py` | `mcp` checks:  registered server names per platform config format | Implementer 2 (checks) |
+| `checks_skills.py` | `skills` checks:  installed skill names per platform | Implementer 2 (checks) |
+| `checks_subagents.py` | `subagents` checks:  installed sub-agent definition names per platform | Implementer 2 (checks) |
+| `checks_permissions.py` | `permissions` checks:  permission identifiers, file modes and credential `stat` (never contents) | Implementer 2 (checks) |
+| `proof.py` | L1 sentinel probes and L2 headless canaries, per-platform adapters, TTL evidence handling | Implementer 3 (proof) |
+| `collectors.py` | Collector dispatch:  `mac` runs locally;  reserved collectors return the pinned `UNSUPPORTED` result | Implementer 3 (proof) |
+| `aggregator.py` | Runs every rule through collectors, checks and proof;  applies the section 4 mapping, the clock, staleness and timeouts;  builds the `StatusReport` | Implementer 4 (engine) |
+| `cache.py` | The last-known-good copy of the latest report, mirroring `fleet_knobs/lkg.py` trust rules (0700 dir, 0600 file, atomic rename, age cap) | Implementer 4 (engine) |
+| `plan.py` | The read-only plan side:  desired versus observed per rule, with the exact change apply would make | Implementer 4 (engine) |
+| `apply.py` | The write side:  only rules with `autofixAllowed` true, only via the existing installer engines, backup then atomic replace, never a hand-rolled file edit | Implementer 4 (engine), after plan |
+| `__main__.py` | Argument parsing and verb dispatch only;  no check logic | Implementer 4 (engine) |
+| `tests/` | Unit and contract tests per module, mirroring `fleet_knobs/tests/` | Each implementer for their module |
+
+Coordination rules:  `types.py` and `contract.py` change only through the design, never inside a check module's lane.  A check module returns `CheckResult` values and never prints, never exits and never reads the clock (the aggregator passes `checked_at` in).  `apply.py` calls the existing engines under `scripts/fleet_lanes/` as libraries or subprocesses and adds no third installer.  Nobody edits `scripts/fleet_lanes/`, `scripts/fleet_knobs/`, `fleet-apps.json` or `scripts/check-fleet-registry.py` from a `fleet_config` lane.
+
+## 11. CLI Surface
+
+Run from `scripts/`, as `python3 -m fleet_config` (packaged later as `fleet-config`):
+
+```
+python3 -m fleet_config status [--json] [--seat TAG] [--platform ID] [--prove l2]
+python3 -m fleet_config plan   [--json] [--seat TAG] [--platform ID]
+python3 -m fleet_config apply  [--json] --only RULE-ID [...]
+```
+
+`status` is read-only and runs L0 plus L1.  `plan` is read-only and shows what `apply` would change.  `apply` requires at least one `--only` rule id, refuses a rule whose `autofixAllowed` is false, and refuses to run without a fresh `status` or `plan` to act on.  `--seat` takes a registry tag and `--platform` a platform id;  both filter, and an unknown value is a usage error, never an empty pass.
+
+## 12. Style, Packaging And Safety Rules
+
+Stdlib only, Python 3.9 safe, type hints, a docstring on every public symbol, and two spaces between sentences in every docstring, comment and document.  No `Any` where a precise type is obvious.
+
+Like `fleet_knobs`, this package must work as a stable copy run with `python3 -I` carrying just `scripts/fleet_config/`.  That is why it imports nothing outside the stdlib and never imports `fleet_lanes` at runtime:  shared facts (the registry roster, the platform id list, the marked-block hash) are read as files or passed in as data, and a parity test pins each mirror to its source.  The alternative, importing `fleet_lanes.layout` and `fleet_lanes.marked_block` directly, is simpler today and is rejected because it silently breaks the isolated copy that hooks and LaunchAgents run.
+
+Safety rules, non-negotiable:  no secret value is ever read into a result, a log or a plan (credential files are `stat` only);  `status` and `plan` write nothing outside `cache.py`'s state dir;  `apply` writes only through the existing installer engines, with their backup and atomic-replace discipline;  and every subprocess the checks run goes through one allowlisted runner with a timeout, on the `fleet_lanes/doctor.py` precedent, so a hung harness cannot hang the run.
+
+## 13. Testing
+
+Each implementer lands tests with their module, under `scripts/fleet_config/tests/`, in the `fleet_knobs` style (temp dirs, fake executables on `PATH`, no network, no real home).  Four contract-level tests are pinned by this design and are not optional:
+
+1. `test_schema_version_is_pinned` asserts `contract.SCHEMA_VERSION` is exactly 1 and that a built envelope carries it.
+2. `test_envelope_never_carries_a_secret` builds a report over a credential rule and asserts the serialized envelope holds the mode, size and mtime, and no file contents (the fixture writes a known sentinel string as contents and asserts its absence).
+3. `test_fail_closed_mapping` asserts stale, error, timeout and unparseable results are failing and that an all-`UNKNOWN` run and an empty run both verdict `UNKNOWN`, never `PASS`.
+4. `test_marked_block_hash_parity` asserts `checks_instructions` and `fleet_lanes.marked_block` give the same digest for the same fixture file (this test may import `fleet_lanes`;  the package under test may not).
+
+## 14. Decisions And Rejected Alternatives
+
+| # | Decision | Why | Rejected alternative |
+|---|---|---|---|
+| D1 | The manifest is a sibling file `fleet-seats.json`, keyed by registry tag | `fleet-apps.json` is the identity registry with its own owner and checker;  desired state churns at a different rate | Extending `fleet-apps.json` with a per-seat config block, rejected because two workers would own one file and the registry checker would need to learn config semantics |
+| D2 | `schemaVersion` and `SCHEMA_VERSION` are the integer 1 | Matches `fleet_knobs` (`schema: 1`) and the lane doctor (`SCHEMA = 2`);  an exact integer is trivially pinned by a contract test | A semver string such as `"1.0"`, rejected because nothing in the fleet versions JSON contracts that way and a string invites range matching that hides a breaking change |
+| D3 | The envelope is one flat `results` list;  grouping is a consumer view | One canonical list cannot disagree with itself;  the SwiftUI app groups by seat, platform and kind for free | Nested seats-then-platforms-then-results, rejected because summary counts and per-rule lookups then need a second traversal and a second source of truth |
+| D4 | Stale, error, timeout and unparseable map to `UNKNOWN` with a failing reason code, not to a seventh state | The six-state vocabulary is fixed by the task and by the app;  the reason code carries the failing distinction without widening it | Reusing `DRIFT` for a failed check, rejected because drift is a positive finding about config, and a broken checker must not accuse a seat of drift it did not observe |
+| D5 | A seat with no Mac surface gets `notApplicable` covers and no results, not `UNSUPPORTED` results | It is honest (nothing is checkable yet), it keeps the daily verdict clean, and the app renders the covers from the manifest | One `UNSUPPORTED` result per kind for cloud seats, rejected because a permanent wall of unsupported rows trains everyone to ignore the state that a genuinely unsupported Mac platform needs |
+| D6 | Only `hooks` rules may require `L1` or `L2` in Phase 2 | L1 and L2 are hook proofs;  a higher requirement anywhere else would make `UNPROVEN` the permanent state of five kinds | Allowing any kind to require any level, rejected because no proof machinery exists for the other kinds and the manifest would promise what the engine cannot run |
+| D7 | This package mirrors `fleet_lanes` semantics (roster, marked-block hash) instead of importing it | The isolated stable copy under `python3 -I` carries just this package, as `fleet_knobs` established | Direct imports of `fleet_lanes.layout` and `fleet_lanes.marked_block`, rejected because they break that copy silently, at hook time, on the worst possible day |
+| D8 | Credential checks are `stat` only, with no content hash | A hash of contents is a fingerprint of a secret and needs the file opened;  mode plus presence is the compliance fact Muster needs | Hashing the credential file to detect rotation, rejected because presence and mode answer the admin question and rotation is the credential owner's business, not a config drift |
+
+## 15. Risks And Blockers For Other Workers
+
+Read this before starting a lane.  These are the places where the contract meets facts this kernel did not own.
+
+1. **No registry maps a seat tag to a platform id.**  `fleet-apps.json` `seatApps.bySeat` uses app slugs (`claude-code`, `grok-terminal`, `minimax-code`) that are a different vocabulary from the `install_rules.py` platform ids (`claude`, `grok`, `minimax`).  The seed manifest therefore hand-maps each seat to its platform ids once, in `fleet-seats.json` itself, and the loader can only validate that the ids are known, not that the pairing is right.  Whoever seeds the manifest must verify each pairing against the harness the seat actually runs, seat by seat.
+2. **Expected hashes must come from the installer source, not from installed files.**  If the seed manifest snapshots whatever hash is on this Mac today, drift detection is circular and proves nothing.  The `instructions` seed hashes must be computed from what `fleet_lanes.install_rules` composes (its rules sources), and the seeding task needs a small hash helper from `checks_instructions.py` to do it.  Until that helper lands, the manifest cannot be seeded honestly.
+3. **`fleet-seats.json` does not exist yet, and this kernel does not create it.**  `load_manifest()` correctly refuses without it.  Seeding it (every live seat, six kinds each, per section 7) is a separate task that needs the seat-to-platform mapping from risk 1 and the hashes from risk 2.  The Muster app phase must not hardcode a seat list while it waits.
+4. **Hook deny signals differ per platform and are not yet catalogued in one place.**  L1 needs, per platform, the hook invocation shape and the exact deny signal (exit code and output).  `proof.py`'s implementer must extract these from each platform's installed hook config and pin them as fixtures.  Any platform whose deny signal cannot be determined gets `UNSUPPORTED` for L1 (its hooks rules then cap at `UNPROVEN` if they require L1, so such a rule should require `L0` until the adapter lands).
+5. **Reserved collectors produce `UNSUPPORTED`, and there is no `api` collector design yet.**  A later phase that wants cloud seats (risk:  they are `notApplicable` today) must design the `api` collector and replace those covers with rules.  Nothing in Phase 2 should pre-build that transport.
+6. **AFC-375's `deploy/mac/manifest.toml` is not in this repo yet.**  The section 2 boundary is written against its planned shape.  When AFC-375 lands, one reviewer must check both manifests for a doubly described row, because neither loader can see the other's file today.
