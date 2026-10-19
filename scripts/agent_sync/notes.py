@@ -36,6 +36,7 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -46,8 +47,10 @@ import tempfile
 import threading
 import uuid
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import identity as I
 from . import session_ids as SID
@@ -614,10 +617,7 @@ def build_argv(
         if flags.get("pin") is False:
             extra["APPLE_NOTES_PIN"] = "0"
     if envelope.get("session") and action in ("create", "update"):
-        argv += [
-            "--session",
-            str(envelope["session"]),
-        ]  # AFC-361:  not secret, so argv;  the script stamps the Session line
+        argv += ["--session", str(envelope["session"])]  # AFC-361:  not secret, so argv;  the script stamps the Session line
     if envelope.get("identity"):
         # The identity the request was verified for (the tool's seat, or the relay sender's bot):  the script decides
         # its single-thread exemption from this and from nothing the caller typed.  CHILD_ENV_KEYS strips AGENT_SEAT.
@@ -635,6 +635,53 @@ def child_env(env: Mapping[str, str], extra: Mapping[str, str]) -> dict[str, str
 def _note_id(stdout: str) -> str | None:
     match = re.search(r"\bid=(\S+)", stdout)
     return match.group(1)[:200] if match else None
+
+
+PROVENANCE_SITE = "https://simplewithus.zulipchat.com"
+
+
+def with_provenance(
+    envelope: dict, identity: str, message_id: int, site: str = PROVENANCE_SITE
+) -> dict:
+    """The envelope with a footer saying who asked for the note and where (AFC-331, owner 2026-10-18).
+
+    Apple Notes has no authorship, so a title like `[APP, Agent]` is only text.  The relay stamps every note it
+    creates or updates with the requesting bot and a permalink to its #notes-relay message, so any relayed note can
+    be checked against Zulip, and a note without the footer is visibly unverified.  Pin and unpin carry no body."""
+    if envelope.get("action") not in ("create", "update"):
+        return envelope
+    url = "%s/#narrow/id/%d" % (site.rstrip("/"), int(message_id))
+    now = datetime.now(ZoneInfo("America/Chicago"))
+    when = "%s %d, %d" % (now.strftime("%a, %b"), now.day, now.year)  # no %-d:  not portable
+    if (envelope.get("flags") or {}).get("html"):
+        footer = (
+            '<hr><p><i>Relayed for %s by the notes relay on %s:  <a href="%s">request message</a>.</i></p>'
+            % (html.escape(identity), when, url)
+        )
+    else:
+        footer = "\n\n---\n\n*Relayed for %s by the notes relay on %s:  [request message](%s).*" % (
+            re.sub(r"([\\*_\[\]`])", r"\\\1", identity),
+            when,
+            url,
+        )
+        return dict(
+            envelope, markdown=recover_newlines(str(envelope.get("markdown") or "")) + footer
+        )
+    return dict(envelope, markdown=str(envelope.get("markdown") or "") + footer)
+
+
+def recover_newlines(text: str) -> str:
+    """The Markdown recovery apple-notes-coding.sh applies to a body with few newlines, done here first.
+
+    The script restores a body that arrived with literal `\\n` escapes, and splits a collapsed one-line body
+    at its headings and bullets, but only while the body has (almost) no newlines.  The provenance footer adds
+    newlines, which would switch that recovery off, so the relay applies it before appending the footer."""
+    if "\n" not in text and r"\n" in text:
+        text = text.replace(r"\n", "\n")
+    if text.count("\n") < 3:
+        text = re.sub(r"(?<=\S)\s+(#{1,4}\s+)", r"\n\n\1", text)
+        text = re.sub(r"(?<=\S)\s+([-\*]\s+)", r"\n\1", text)
+    return text
 
 
 def run_direct(

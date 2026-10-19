@@ -10,16 +10,13 @@ Run it in your own terminal:
     python3 scripts/zulip_provision_bots.py --yes --only "Codex"   # no prompt, one bot
     python3 scripts/zulip_provision_bots.py --only "Codex" --regenerate   # rotate an existing bot's key
 
-Credentials, first hit wins (AFC-359:  no personal key, no prompt, nothing under ~/.secrets):
-  1. --owner-rc PATH, only when you pass it yourself:  an admin-or-owner zuliprc (mode 600).
-     Nothing defaults to it.
-  2. The realm-admin bot (role 200, administrator).  Each of REALM_ADMIN_ZULIP_EMAIL and
-     REALM_ADMIN_ZULIP_KEY is read from the environment first, then from Infisical Fleet-OPS
-     folder /zulipadmin through `fleet-secrets get NAME --path /zulipadmin`
-     (binary:  env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets).
-     REALM_ADMIN_ZULIP_SITE is read the same way and defaults to the realm when absent.
-     A fleet-secrets failure stops the run with a message naming the folder and the key,
-     never the value.
+Credentials (AFC-359:  the owner's key is not needed, nothing prompts, nothing under ~/.secrets):
+it signs in only as the realm-admin bot (role 200, administrator).  Each of
+REALM_ADMIN_ZULIP_EMAIL and REALM_ADMIN_ZULIP_KEY is read from the environment first, then
+from Infisical Fleet-OPS folder /zulipadmin through `fleet-secrets get NAME --path /zulipadmin`
+(binary:  env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets).  REALM_ADMIN_ZULIP_SITE is
+read the same way and defaults to the realm when absent.  A fleet-secrets failure stops the
+run with a message naming the folder and the key, never the value.
 
 The caller must be an administrator or the owner (role <= 200);  anyone else is refused.
 
@@ -53,7 +50,6 @@ never uses it.  Grok Bot (GB-*) personas are out of scope.
 
 import argparse
 import base64
-import configparser
 import json
 import os
 import subprocess
@@ -106,7 +102,7 @@ def admin_secret(name, required=True):
         return ""
     raise SystemExit(
         f"missing {name} in Infisical Fleet-OPS {ADMIN_FOLDER} ({problem}).  Set env {name} or "
-        f"fix `fleet-secrets get {name} --path {ADMIN_FOLDER}`, or pass --owner-rc PATH."
+        f"fix `fleet-secrets get {name} --path {ADMIN_FOLDER}`."
     )
 
 
@@ -184,32 +180,14 @@ def call(email, key, method, path, data=None):
     return payload
 
 
-def read_rc(path):
-    cp = configparser.ConfigParser()
-    if not cp.read(path):
-        raise SystemExit(f"cannot read {path}")
-    api = cp["api"]
-    return api["email"], api["key"], api.get("site", REALM).rstrip("/")
-
-
-def credentials(args):
-    """(email, key, source):  an explicit --owner-rc, else the realm-admin bot."""
-    if args.owner_rc:
-        path = args.owner_rc
-        if not os.path.exists(path):
-            raise SystemExit(f"{path} not found")
-        if os.stat(path).st_mode & 0o077:
-            raise SystemExit(f"{path} is readable by other users; run chmod 600 on it first")
-        email, key, site = read_rc(path)
-        source = "--owner-rc"
-    else:
-        email = admin_secret("REALM_ADMIN_ZULIP_EMAIL")
-        key = admin_secret("REALM_ADMIN_ZULIP_KEY")
-        site = admin_secret("REALM_ADMIN_ZULIP_SITE", required=False) or REALM
-        source = f"realm-admin bot (env, else Infisical {ADMIN_FOLDER})"
+def credentials():
+    """(email, key, source):  the realm-admin bot, from env else Infisical /zulipadmin."""
+    email = admin_secret("REALM_ADMIN_ZULIP_EMAIL")
+    key = admin_secret("REALM_ADMIN_ZULIP_KEY")
+    site = admin_secret("REALM_ADMIN_ZULIP_SITE", required=False) or REALM
     if urllib.parse.urlparse(site).hostname != urllib.parse.urlparse(REALM).hostname:
         raise SystemExit(f"credential is for {site}, expected {REALM}")
-    return email, key, source
+    return email, key, f"realm-admin bot (env, else Infisical {ADMIN_FOLDER})"
 
 
 def infisical_prefix(stem):
@@ -259,10 +237,6 @@ def find_member(members, full_name, short_name):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument(
-        "--owner-rc",
-        help="an admin-or-owner zuliprc you pass explicitly (mode 600);  default is the realm-admin bot",
-    )
     ap.add_argument("--dry-run", action="store_true", help="print the plan and write nothing")
     ap.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     ap.add_argument("--force", action="store_true", help="overwrite existing zuliprc files")
@@ -281,13 +255,13 @@ def main(argv=None):
     if args.regenerate and not args.only:
         raise SystemExit("--regenerate needs --only NAME:  it invalidates the bot's current key")
 
-    email, key, source = credentials(args)
+    email, key, source = credentials()
     me = call(email, key, "GET", "users/me")
     role = me.get("role")
     if not isinstance(role, int) or role > ROLE_ADMIN:
         raise SystemExit(
             f"{me.get('full_name')} has role {role};  creating bots here needs an administrator "
-            f"(200) or the owner (100).  Use --owner-rc with an admin zuliprc, or ask Jay."
+            f"(200) or the owner (100).  Ask Jay."
         )
     print(f"Acting as {me.get('full_name')} <{email}> role {role} (credentials from {source})")
 

@@ -587,6 +587,10 @@ class Consumer:
                         "secret",
                         "the %s looked like it contains a secret;  nothing was written" % field,
                     )
+            creds = getattr(runner, "creds", None)
+            full = N.with_provenance(
+                full, identity, message_id, getattr(creds, "site", "") or N.PROVENANCE_SITE
+            )
             kwargs = {"runner": self.runner} if self.runner is not None else {}
             N.run_direct(full, script, env=self.env, **kwargs)
         except N.NotesError as exc:

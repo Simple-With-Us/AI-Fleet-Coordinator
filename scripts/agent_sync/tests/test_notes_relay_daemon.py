@@ -35,6 +35,34 @@ def make_envelope(action, title, markdown, flags, rid, identity, session=SESSION
     return N.make_envelope(action, title, markdown, flags, rid, identity, session)
 
 
+class AdminSeatTests(unittest.TestCase):
+    """Only the inbox-only [notes_relay] seat may hold an administrator key (AFC-331, owner 2026-10-18)."""
+
+    def test_only_the_inbox_notes_seat_may_hold_an_admin_key(self):
+        from types import SimpleNamespace as NS
+
+        from agent_sync import daemon as D
+
+        cfg = NS(notes_relay_enabled=True, notes_relay_seat="ADMIN")
+        admin, owner = {"role": 200, "is_admin": True}, {"role": 100, "is_owner": True}
+        self.assertTrue(D.admin_allowed(cfg, NS(seat="ADMIN", wake="inbox")))
+        self.assertFalse(
+            D.role_refused(admin, D.admin_allowed(cfg, NS(seat="ADMIN", wake="inbox")))
+        )
+        self.assertTrue(D.role_refused(owner, True), "an owner key is never accepted")
+        for seat in (NS(seat="ADMIN", wake="claude"), NS(seat="CLAUDE", wake="inbox")):
+            self.assertTrue(D.role_refused(admin, D.admin_allowed(cfg, seat)), seat)
+        self.assertTrue(
+            D.role_refused(
+                admin,
+                D.admin_allowed(
+                    NS(notes_relay_enabled=False, notes_relay_seat="ADMIN"),
+                    NS(seat="ADMIN", wake="inbox"),
+                ),
+            )
+        )
+
+
 class ConfigTests(unittest.TestCase):
     def load(self, text: str) -> C.Config:
         import tomllib
@@ -109,6 +137,21 @@ class DaemonRelayTests(DaemonHarness):
         )
         return self.fake.add_message("Codex", "notes-relay", title, N.render_message(env))
 
+    def test_a_reload_that_ends_the_admin_exception_drops_the_admin_key(self):
+        self.write_config(wake="inbox")
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text() + "\n" + RELAY_SECTION)
+        self.fake.set_role(self.fake.me["user_id"], 200)
+        self.addCleanup(self.fake.me.update, role=400, is_admin=False, is_owner=False)
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        self.assertTrue(runner.connected, "the inbox-only relay seat may hold an administrator key")
+        self.write_config(wake="inbox")  # the [notes_relay] section is gone
+        daemon.reload()
+        self.assertTrue(runner.fatal)
+        self.assertFalse(runner.connected)
+        self.assertIn("refuses admin and owner keys", runner.error)
+
     def wait(self, predicate, seconds=10.0):
         end = time.time() + seconds
         while time.time() < end:
@@ -131,7 +174,11 @@ class DaemonRelayTests(DaemonHarness):
         mid = self.envelope_message(mention=True)
         self.pump_until(daemon, self.ran.is_set)
         self.assertTrue(self.wait(lambda: (mid, 10, "check") in self.fake.reactions))
-        self.assertEqual(self.calls[0]["input"], b"relay body @**Claude** please look")
+        self.assertTrue(
+            self.calls[0]["input"].startswith(
+                b"relay body @**Claude** please look\n\n---\n\n*Relayed for CODEX "
+            )
+        )
         self.assertEqual(self.calls[0]["argv"][-2:], ["--title", "[AFC, Codex] relay"])
         daemon.pump("CLAUDE", timeout=0.3)
         self.assertEqual(self.inbox(), [], "a relay request must not become seat inbox work")
