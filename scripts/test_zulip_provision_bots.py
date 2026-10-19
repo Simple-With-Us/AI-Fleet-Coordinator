@@ -190,9 +190,7 @@ class ProvisionTests(unittest.TestCase):
         )
         fs.chmod(0o755)
         self.fs = fs
-        env = {
-            k: v for k, v in os.environ.items() if not k.startswith("REALM_ADMIN_")
-        }
+        env = {k: v for k, v in os.environ.items() if not k.startswith("REALM_ADMIN_")}
         env.update({"HOME": str(self.home), "FLEET_SECRETS_BIN": str(fs)})
         self.env = mock.patch.dict(os.environ, env, clear=True)
         self.env.start()
@@ -279,7 +277,11 @@ class ProvisionTests(unittest.TestCase):
     def test_only_the_realm_admin_bot_is_ever_asked_for(self):
         with mock.patch.dict(
             os.environ,
-            {"ZULIP_EMAIL": "someone@example.invalid", "ZULIP_API_KEY": "x", "ZULIP_OWNER_EMAIL": "o@x"},
+            {
+                "ZULIP_EMAIL": "someone@example.invalid",
+                "ZULIP_API_KEY": "x",
+                "ZULIP_OWNER_EMAIL": "o@x",
+            },
         ):
             code, out, err = self.run_main("--dry-run", "--only", "Clutch")
         self.assertEqual(code, 0, err)
