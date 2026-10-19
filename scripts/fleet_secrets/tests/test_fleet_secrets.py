@@ -646,5 +646,75 @@ class UsageTests(Base):
         self.assertEqual(self.call("help")[0], 0)
 
 
+
+class SetTests(Base):
+    """`set` writes one secret over REST with the machine identity's token.  _api is faked, so no network."""
+
+    def setUp(self):
+        super().setUp()
+        self.api = []
+        self.statuses = {}
+
+    def fake_api(self, method, path, token, body, env):
+        self.api.append((method, path, token, dict(body or {})))
+        return self.statuses.get((method, path.split("/v3/secrets/raw/")[0] if "/v3/" in path else path), self.statuses.get(method, 200))
+
+    def run_set(self, *argv, stdin="VAL_TO_WRITE_1\n", env=None):
+        with mock.patch.object(core, "_api", self.fake_api), mock.patch.object(cli.sys, "stdin", io.StringIO(stdin)):
+            return self.call("set", *argv, env=env)
+
+    def test_update_path_sends_the_value_in_the_body_only_and_strips_one_newline(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        code, out, err = self.run_set("MY_KEY", "--path", "/linear")
+        self.assertEqual((code, out, err), (0, "updated MY_KEY at /linear\n", ""))
+        method, path, token, body = self.api[-1]
+        self.assertEqual((method, path, token), ("PATCH", "/v3/secrets/raw/MY_KEY", ACCESS_TOKEN))
+        self.assertEqual(body["secretValue"], "VAL_TO_WRITE_1")
+        self.assertEqual((body["environment"], body["secretPath"], body["type"]), ("prod", "/linear", "shared"))
+        self.assertEqual(body["workspaceId"], PROJECT)
+
+    def test_a_missing_secret_is_created_after_the_patch_404s(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["PATCH"] = 404
+        code, out, _ = self.run_set("NEW_KEY", "--path", "/linear")
+        self.assertEqual((code, out), (0, "created NEW_KEY at /linear\n"))
+        self.assertEqual([a[0] for a in self.api if "/v3/" in a[1]], ["PATCH", "POST"])
+
+    def test_the_folder_chain_is_created_first(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.run_set("K", "--path", "/a/b")
+        folders = [(a[3]["name"], a[3]["path"]) for a in self.api if a[1] == "/v1/folders"]
+        self.assertEqual(folders, [("a", "/"), ("b", "/a")])
+
+    def test_a_failed_write_exits_4_and_never_echoes_the_value_or_token(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses["PATCH"] = 403
+        code, out, err = self.run_set("K", "--path", "/linear", stdin=VAL_A + "\n")
+        self.assertEqual(code, 4)
+        self.assertIn("http-403", err)
+        self.assertNoSentinel(out, err)
+
+    def test_the_cli_login_session_is_refused_because_it_cannot_hand_over_a_token(self):
+        self.use(World())  # no keychain items:  session mode
+        code, out, err = self.run_set("K", "--path", "/linear")
+        self.assertEqual(code, 4)
+        self.assertIn("machine identity", err)
+        self.assertEqual(self.api, [])
+
+    def test_an_empty_value_and_a_bad_name_are_usage_errors_before_any_call(self):
+        w = self.use(World(keychain=KEYCHAIN_FULL))
+        self.assertEqual(self.run_set("K", "--path", "/linear", stdin="")[0], 2)
+        self.assertEqual(self.run_set("A-B", "--path", "/linear")[0], 2)
+        self.assertEqual(self.api, [])
+        self.assertEqual(w.logins(), [])
+
+    def test_the_value_is_never_an_argument_and_never_reaches_a_subprocess(self):
+        w = self.use(World(keychain=KEYCHAIN_FULL))
+        self.run_set("K", "--path", "/linear", stdin=VAL_B)
+        for argv, env in w.calls:
+            self.assertNotIn(VAL_B, " ".join(argv))
+            self.assertNotIn(VAL_B, " ".join(env.values()))
+
+
 if __name__ == "__main__":
     unittest.main()
