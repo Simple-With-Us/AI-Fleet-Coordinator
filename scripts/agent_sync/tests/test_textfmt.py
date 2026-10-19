@@ -7,7 +7,10 @@ import unittest
 
 from agent_sync import secretscan
 from agent_sync import zulip as Z
-from agent_sync.textfmt import GAP, NBSP, sentence_gap
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from agent_sync.textfmt import GAP, NBSP, fix_outbound, fleet_dates, sentence_gap, single_gaps
 from agent_sync.tests.harness import TAG, Harness
 
 G = GAP  # U+00A0 then an ASCII space
@@ -214,6 +217,52 @@ class OutboundParamsTests(unittest.TestCase):
                 self.assertIs(Z.outbound_params("POST", "messages", params), params)
 
 
+class FleetFormatTests(unittest.TestCase):
+    """Owner 2026-10-19:  one-space sentence gaps are widened and ISO dates in prose take the fleet form."""
+
+    NOW = datetime(2026, 10, 19, 12, tzinfo=ZoneInfo("America/Chicago"))
+
+    def test_single_gaps(self) -> None:
+        for text, expected in (
+            ("Merged it. Next step.", "Merged it.%sNext step." % G),
+            ("Done! Then? Yes.", "Done!%sThen?%sYes." % (G, G)),
+            ("Done. @**Codex** look.", "Done.%s@**Codex** look." % G),
+            ('He said "Go." Then left.', 'He said "Go."%sThen left.' % G),
+            ("4 tests failed. Next.", "4 tests failed.%sNext." % G),
+        ):
+            self.assertEqual(single_gaps(text)[0], expected, text)
+        for text in ("Ask Dr. Smith.", "The U.S. Army.", "J. Doe.", "e.g. this", "v1.2.3 ok", "1. Item\n2. Next",
+                     "  3. Nested item", "> 4. Quoted item", "`x. Y`", "vs. Apple", "a.b.c Next"):
+            self.assertEqual(single_gaps(text), (text, 0), text)
+
+    def test_fleet_dates(self) -> None:
+        text, changes = fleet_dates(
+            "Landed 2026-10-19, deployed 2026-10-20T02:03:00Z, filed 2025-03-07 at 2026-10-19T09:05:00-05:00.",
+            self.NOW,
+        )
+        self.assertEqual(
+            text, "Landed Mon, Oct 19, deployed Mon, Oct 19, 9:03pm, filed Fri, Mar 7, 2025 at Mon, Oct 19, 9:05am."
+        )
+        self.assertEqual(len(changes), 4)
+        self.assertEqual(
+            fleet_dates("Standup 2026-10-19 10:30-11:00 Central.", self.NOW)[0],
+            "Standup Mon, Oct 19, 10:30am-11:00am Central.",
+            "a time range end is not a UTC offset",
+        )
+        self.assertEqual(fleet_dates("see ?d=2026-10-19 and v2026-10-19.x", self.NOW)[1], [])
+        for kept in ("backup-2026-10-19.tar", "https://x.test/2026-10-19/", "`2026-10-19`", "2026-13-45",
+                     "```\n2026-10-19\n```", "v2026-10-19"):
+            self.assertEqual(fleet_dates(kept, self.NOW), (kept, []), kept)
+
+    def test_fix_outbound_reports_and_respects_the_length_cap(self) -> None:
+        fixed, report = fix_outbound("Merged 2026-10-19. Next.", now=self.NOW)
+        self.assertEqual(fixed, "Merged Mon, Oct 19.%sNext." % G)
+        self.assertEqual(len(report), 2)
+        self.assertEqual(fix_outbound("A.  B.", now=self.NOW), ("A.%sB." % G, []))
+        long = "x" * 9995 + ". Next"
+        self.assertEqual(fix_outbound(long, limit=10000, now=self.NOW), (long, []))
+
+
 class SendPathTests(Harness):
     """Through the fake Zulip server:  what arrives is converted, what is read is not."""
 
@@ -272,6 +321,19 @@ class SendPathTests(Harness):
         shown = self.run_cli("read", "--topic", "t", "--include-self").out
         self.assertIn("One.%sTwo." % G, shown)
         self.assertEqual(shown.count(NBSP), 1)
+
+    def test_one_space_gaps_and_iso_dates_are_fixed_and_reported(self) -> None:
+        result = self.run_cli("post", "--topic", "t", "--no-tag", "--", "Merged 2026-10-19. Next is CI.")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertEqual(self.last_form()["content"], "Merged Mon, Oct 19.%sNext is CI." % G)
+        self.assertIn("reformatted:  dates rewritten in the fleet format (2026-10-19 to Mon, Oct 19)", result.err)
+        self.assertIn("1 sentence gap had one space", result.err)
+        as_json = self.run_cli("post", "--topic", "t", "--no-tag", "--json", "--", "One. Two.")
+        self.assertEqual(json.loads(as_json.out)["reformatted"], [
+            "1 sentence gap had one space and was widened;  put two spaces after a sentence"])
+        clean = self.run_cli("post", "--topic", "t", "--no-tag", "--json", "--", "One.  Two.")
+        self.assertNotIn("reformatted", json.loads(clean.out))
+        self.assertNotIn("reformatted", clean.err)
 
     def test_unicode_text_survives(self) -> None:
         self.run_cli("post", "--topic", "t", "--no-tag", "--", "Caf\u00e9.  \u00dcn\u00ef.  \u65e5\u672c\u8a9e\u3002  \U0001f600.  Done!")

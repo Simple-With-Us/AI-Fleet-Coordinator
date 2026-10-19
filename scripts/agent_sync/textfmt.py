@@ -27,8 +27,9 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import re
+from typing import Any
 
-__all__ = ["NBSP", "GAP", "sentence_gap"]
+__all__ = ["NBSP", "GAP", "sentence_gap", "single_gaps", "fleet_dates", "fix_outbound"]
 
 NBSP = " "
 GAP = NBSP + " "
@@ -125,3 +126,156 @@ def sentence_gap(text: str) -> str:
         return text
     pieces.append(text[last:])
     return "".join(pieces)
+
+
+
+# ---- Owner 2026-10-19:  enforce the gap and the fleet date format, and say what changed ------------------------------
+#
+# sentence_gap only widens a gap the author typed as two spaces.  Agents often type one (and some tools collapse two
+# into one before the text reaches this client), so single_gaps also widens ONE space after a sentence when a capital
+# letter, digit, quote, `*`, `#`, `(`, code or a mention follows.  It is a heuristic:  a list marker (`1. Item`) is
+# skipped, and so are known abbreviations, dotted words and single-letter initials (`Dr. Smith`, `U.S. Army`,
+# `J. Doe`).  A missed gap is the old behaviour;  a wrong one is a slightly wider space, never changed words.
+#
+# fleet_dates rewrites an ISO date in prose (`2026-10-19`, `2026-10-20T02:03:00Z`) into the fleet form
+# (`Mon, Oct 19`, `Mon, Oct 19, 9:03pm`), in Central, with the year only when it is not this year.  A date inside a
+# name or a path (`backup-2026-10-19.tar`, `/2026-10-19/`) is left alone.
+#
+# Both skip code, math and mentions (the same protected ranges as sentence_gap), and both report what they changed,
+# so the CLI can tell the agent and it learns to write it that way.
+
+_ABBREVIATIONS = frozenset(
+    "mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq".split()
+)
+_SINGLE_GAP_RE = re.compile(r"(?P<end>[.!?][\"'”’)\]*_]*)(?P<space>[ ])(?=[A-Z0-9\"“(*#])")
+_WORD_BEFORE_RE = re.compile(r"([A-Za-z][A-Za-z.]*)$")
+
+# The same rules as the Apple Notes script's date rewrite.  A date is a token of its own:  a name or a query string
+# that merely contains one keeps it, and a dot after the date ends a sentence unless a word character follows.  A
+# +HH:MM / -HH:MM offset is only an offset on the ISO T form;  on the space form (2026-10-19 10:30-11:00) a bare -11:00
+# is the end of a time range, rendered in the fleet form too.
+_ISO_RE = re.compile(
+    r"(?<![\w/.:=?&-])(\d{4})-(\d{2})-(\d{2})"
+    r"(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?"
+    r"| (\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z)?(?:-(\d{2}):(\d{2}))?)?"
+    r"(?![\w/-]|\.[A-Za-z0-9])"
+)
+
+
+def _masked(text: str) -> str:
+    masked = list(text)
+    for start, end in _protected(text):
+        for index in range(start, end):
+            if masked[index] not in "\n\r":
+                masked[index] = _MASK
+    return "".join(masked)
+
+
+def single_gaps(text: str) -> tuple[str, int]:
+    """(`text` with each one-space sentence gap widened to U+00A0 plus a space, how many)."""
+    if not re.search(r"[.!?]\S* ", text):
+        return text, 0
+    masked = _masked(text)
+    pieces: list[str] = []
+    last = 0
+    count = 0
+    for match in _SINGLE_GAP_RE.finditer(masked):
+        before = _WORD_BEFORE_RE.search(masked[max(0, match.start() - 40) : match.start()])
+        word = before.group(1).casefold().rstrip(".") if before else ""
+        if match.group("end").startswith(".") and before and (
+            word in _ABBREVIATIONS or len(word) == 1 or "." in word
+        ):
+            continue
+        if match.group("end") == ".":
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            if _LIST_MARKER_PREFIX_RE.fullmatch(text[line_start : match.start()]):
+                continue  # `1. Item`:  U+00A0 after the marker would end the list
+        pieces.append(text[last : match.start("space")])
+        pieces.append(GAP)
+        last = match.end("space")
+        count += 1
+    if not count:
+        return text, 0
+    pieces.append(text[last:])
+    return "".join(pieces), count
+
+
+def _central_now() -> Any:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("America/Chicago"))
+
+
+def _fleet_day(when: Any, this_year: int) -> str:
+    out = when.strftime("%a, %b ") + str(when.day)
+    return out + (", " + str(when.year) if when.year != this_year else "")
+
+
+def _fleet_date(match: re.Match[str], this_year: int) -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    year, month, day, t_hour, t_minute, t_zone, hour, minute, zone, r_hour, r_minute = match.groups()
+    if t_hour is not None:
+        hour, minute, zone = t_hour, t_minute, t_zone
+
+    def clock(when: Any) -> str:
+        return str(when.hour % 12 or 12) + when.strftime(":%M") + ("am" if when.hour < 12 else "pm")
+
+    try:
+        if hour is None:
+            return _fleet_day(datetime(int(year), int(month), int(day)), this_year)
+        when = datetime(int(year), int(month), int(day), int(hour), int(minute))
+        if zone:
+            offset = "+00:00" if zone == "Z" else (zone if ":" in zone else zone[:3] + ":" + zone[3:])
+            when = datetime.fromisoformat(when.isoformat() + offset).astimezone(ZoneInfo("America/Chicago"))
+        out = _fleet_day(when, this_year) + ", " + clock(when)
+        if r_hour is not None:
+            out += "-" + clock(datetime(int(year), int(month), int(day), int(r_hour), int(r_minute)))
+        return out
+    except ValueError:
+        return match.group(0)
+
+
+def fleet_dates(text: str, now: Any = None) -> tuple[str, list[tuple[str, str]]]:
+    """(`text` with ISO dates in prose in the fleet form, [(old, new), ...])."""
+    if not re.search(r"\d{4}-\d{2}-\d{2}", text):
+        return text, []
+    this_year = (now or _central_now()).year
+    masked = _masked(text)
+    pieces: list[str] = []
+    changes: list[tuple[str, str]] = []
+    last = 0
+    for match in _ISO_RE.finditer(masked):
+        new = _fleet_date(match, this_year)
+        if new == match.group(0):
+            continue
+        pieces.append(text[last : match.start()])
+        pieces.append(new)
+        changes.append((match.group(0), new))
+        last = match.end()
+    if not changes:
+        return text, []
+    pieces.append(text[last:])
+    return "".join(pieces), changes
+
+
+def fix_outbound(text: str, limit: int | None = None, now: Any = None) -> tuple[str, list[str]]:
+    """Every outbound fix, and a short report of what changed for the author.  With `limit`, a result longer than it
+    keeps only the length-safe double-space conversion (a single gap and a date each add a character)."""
+    gapped = sentence_gap(text)
+    fixed, singles = single_gaps(gapped)
+    fixed, dates = fleet_dates(fixed, now)
+    if limit is not None and len(fixed) > limit:
+        return gapped, []
+    report: list[str] = []
+    if dates:
+        shown = ", ".join("%s to %s" % pair for pair in dates[:5]) + (" and more" if len(dates) > 5 else "")
+        report.append("dates rewritten in the fleet format (%s);  write dates that way" % shown)
+    if singles:
+        report.append(
+            "%d sentence gap%s had one space and %s widened;  put two spaces after a sentence"
+            % (singles, "" if singles == 1 else "s", "was" if singles == 1 else "were")
+        )
+    return fixed, report
