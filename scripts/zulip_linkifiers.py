@@ -193,9 +193,13 @@ def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str
         )
     if not path:
         bot = "REALM_ADMIN" if admin else "CLAUDE"
-        email, key, site = (_fleet_secret(f"{bot}_ZULIP_{part}") for part in ("EMAIL", "KEY", "SITE"))
+        email, key, site = (
+            _fleet_secret(f"{bot}_ZULIP_{part}") for part in ("EMAIL", "KEY", "SITE")
+        )
         if not (email and key):
-            sys.exit(f"no {bot}_ZULIP_EMAIL / {bot}_ZULIP_KEY in Infisical Fleet-OPS (and no --rc or env)")
+            sys.exit(
+                f"no {bot}_ZULIP_EMAIL / {bot}_ZULIP_KEY in Infisical Fleet-OPS (and no --rc or env)"
+            )
         return email, key, (site or REALM).rstrip("/")
     cfg = configparser.ConfigParser()
     if not cfg.read(path) or "api" not in cfg:

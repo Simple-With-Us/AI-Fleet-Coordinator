@@ -33,11 +33,12 @@ Full-Read Only on a Match.  Tracked in AI-Fleet-Coordinator as
 scripts/github-outbox-bridge.py; live copy ~/apps/github-outbox-bridge.py.
 Runs on the Mac's /usr/bin/python3 (3.9): stdlib only, no 3.10+ syntax.
 """
+
 from __future__ import annotations
 
 import argparse
-import fcntl
 import base64
+import fcntl
 import json
 import os
 import re
@@ -47,7 +48,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 try:
@@ -58,7 +59,9 @@ except ImportError:  # pragma: no cover
 CHANNEL_DEFAULT = "agent-sync"
 TOPIC_DEFAULT = "outbox"
 READ_AS_DEFAULT = "CLAUDE"  # Infisical /zulip keys <BOT>_ZULIP_EMAIL / _KEY / _SITE
-FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or str(Path.home() / ".local" / "bin" / "fleet-secrets")
+FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or str(
+    Path.home() / ".local" / "bin" / "fleet-secrets"
+)
 CONFIG_DEFAULT = Path.home() / "apps" / "github-outbox-bridge.json"
 STATE_DIR_DEFAULT = Path.home() / ".agent-sync"
 BRIDGE_MARKER = "<!-- outbox-bridge:"
@@ -81,6 +84,7 @@ def log(msg: str) -> None:
 
 # --- secrets (names only ever leave this function) ---------------------------
 
+
 def load_env_tokens(path: Path) -> dict:
     """Kept for compatibility.  No credential is read into this process any more."""
     out = {}
@@ -100,6 +104,7 @@ def load_env_tokens(path: Path) -> dict:
 
 
 # --- message rules -----------------------------------------------------------
+
 
 def header_error(text: str, seat: str):
     """Why `text` breaks the #agent-sync header shape, or None when it is fine."""
@@ -134,7 +139,7 @@ def skim_match(text: str, seat: str) -> bool:
 
 def central_stamp(ts: float) -> str:
     """`Thu, Sep 17, 2026 at 4:10 PM CT` (AGENT-SYNC.md § Timestamps)."""
-    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    dt = datetime.fromtimestamp(ts, tz=UTC)
     label = "UTC"
     if ZoneInfo is not None:
         try:
@@ -143,7 +148,14 @@ def central_stamp(ts: float) -> str:
         except Exception:  # missing tzdata: keep UTC, still labeled
             pass
     hour = dt.strftime("%I").lstrip("0") or "12"
-    return "%s %d, %d at %s:%s %s" % (dt.strftime("%a, %b"), dt.day, dt.year, hour, dt.strftime("%M %p"), label)
+    return "%s %d, %d at %s:%s %s" % (
+        dt.strftime("%a, %b"),
+        dt.day,
+        dt.year,
+        hour,
+        dt.strftime("%M %p"),
+        label,
+    )
 
 
 def mirror_body(text: str, ts: str, who: str, seat: str) -> str:
@@ -182,6 +194,7 @@ def parse_concat_json(raw: str) -> list:
 
 # --- transports --------------------------------------------------------------
 
+
 class GitHubIssue:
     def __init__(self, repo: str, number: int, gh: str = "gh"):
         self.repo = repo
@@ -200,22 +213,44 @@ class GitHubIssue:
         return proc.stdout
 
     def list_comments(self, since_iso=None) -> list:
-        args = ["api", "-X", "GET", "repos/%s/issues/%d/comments" % (self.repo, self.number),
-                "--paginate", "-f", "per_page=100"]
+        args = [
+            "api",
+            "-X",
+            "GET",
+            "repos/%s/issues/%d/comments" % (self.repo, self.number),
+            "--paginate",
+            "-f",
+            "per_page=100",
+        ]
         if since_iso:
             args += ["-f", "since=%s" % since_iso]
         return parse_concat_json(self._run(args))
 
     def post_comment(self, body: str) -> dict:
         out = self._run(
-            ["api", "-X", "POST", "repos/%s/issues/%d/comments" % (self.repo, self.number), "--input", "-"],
+            [
+                "api",
+                "-X",
+                "POST",
+                "repos/%s/issues/%d/comments" % (self.repo, self.number),
+                "--input",
+                "-",
+            ],
             stdin=json.dumps({"body": body}),
         )
         return json.loads(out or "{}")
 
     def react(self, comment_id: int, content: str) -> None:
-        self._run(["api", "-X", "POST", "repos/%s/issues/comments/%d/reactions" % (self.repo, int(comment_id)),
-                   "-f", "content=%s" % content])
+        self._run(
+            [
+                "api",
+                "-X",
+                "POST",
+                "repos/%s/issues/comments/%d/reactions" % (self.repo, int(comment_id)),
+                "-f",
+                "content=%s" % content,
+            ]
+        )
 
 
 class ZulipChannel:
@@ -226,7 +261,7 @@ class ZulipChannel:
     seat's own bot: the credential file named by --rc, or the env triple.
     """
 
-    def __init__(self, client: "ZulipClient", channel: str = CHANNEL_DEFAULT):
+    def __init__(self, client: ZulipClient, channel: str = CHANNEL_DEFAULT):
         self.client = client
         self.channel = channel
 
@@ -259,18 +294,28 @@ class ZulipPoster:
         self.channel = channel
 
     def post(self, text: str, topic: str) -> dict:
-        argv = ["agent-sync", "--as", self.seat, "post", "--channel", self.channel,
-                "--topic", topic, text]
+        argv = [
+            "agent-sync",
+            "--as",
+            self.seat,
+            "post",
+            "--channel",
+            self.channel,
+            "--topic",
+            topic,
+            text,
+        ]
         try:
             done = subprocess.run(argv, capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.SubprocessError) as exc:
             raise BridgeError("agent-sync post failed: %s" % exc)
         if done.returncode != 0:
             detail = (done.stderr or done.stdout or "").strip().splitlines()
-            raise BridgeError("agent-sync post exit %d: %s" % (done.returncode, detail[-1] if detail else "no output"))
+            raise BridgeError(
+                "agent-sync post exit %d: %s"
+                % (done.returncode, detail[-1] if detail else "no output")
+            )
         return {"ok": True}
-
-
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -283,8 +328,13 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 def _fleet_secret(name, folder):
     """One Infisical value via `fleet-secrets get`, or None.  Never logged."""
     try:
-        proc = subprocess.run([FLEET_SECRETS_BIN, "get", name, "--path", folder],
-                              capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        proc = subprocess.run(
+            [FLEET_SECRETS_BIN, "get", name, "--path", folder],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     out = proc.stdout.strip() if proc.returncode == 0 else ""
@@ -351,7 +401,7 @@ class ZulipClient:
                 data = json.load(resp)
         except urllib.error.HTTPError as exc:
             raise BridgeError("Zulip HTTP %d" % exc.code)
-        except (json.JSONDecodeError, ValueError) as exc:
+        except (json.JSONDecodeError, ValueError):
             raise BridgeError("Zulip returned invalid JSON")
         except urllib.error.URLError as exc:
             raise BridgeError("Zulip unreachable: %s" % getattr(exc, "reason", exc))
@@ -361,6 +411,7 @@ class ZulipClient:
 
 
 # --- state -------------------------------------------------------------------
+
 
 class State:
     DEFAULTS = {
@@ -391,6 +442,7 @@ class State:
 
 # --- the bridge --------------------------------------------------------------
 
+
 class Bridge:
     def __init__(self, seat, issue, poster, zulip, state, topic="", dry_run=False, logger=log):
         self.seat = seat
@@ -406,7 +458,7 @@ class Bridge:
         summary = {"posted": 0, "rejected": 0, "skipped": 0, "mirrored": 0, "errors": []}
         self._drain_outbox(summary)
         self._mirror_zulip(summary)
-        self.state.data["last_run"] = datetime.now(timezone.utc).isoformat() if now is None else now
+        self.state.data["last_run"] = datetime.now(UTC).isoformat() if now is None else now
         if not self.dry_run:
             self.state.save()
         return summary
@@ -419,7 +471,9 @@ class Bridge:
         except BridgeError as exc:
             summary["errors"].append(str(exc))
             return
-        fresh = sorted((c for c in comments if int(c.get("id", 0)) > last), key=lambda c: int(c["id"]))
+        fresh = sorted(
+            (c for c in comments if int(c.get("id", 0)) > last), key=lambda c: int(c["id"])
+        )
         for comment in fresh:
             cid = int(comment["id"])
             body = comment.get("body") or ""
@@ -454,7 +508,9 @@ class Bridge:
 
     def _advance(self, comment) -> None:
         cid = int(comment["id"])
-        self.state.data["last_comment_id"] = max(int(self.state.data.get("last_comment_id") or 0), cid)
+        self.state.data["last_comment_id"] = max(
+            int(self.state.data.get("last_comment_id") or 0), cid
+        )
         created = comment.get("created_at")
         if created:
             self.state.data["last_comment_created_at"] = created
@@ -523,8 +579,12 @@ class Bridge:
             # apply_markdown=false gives the raw first line, so sender_email is a real field.
             text = message.get("content") or message.get("text") or ""
             if text.strip() and not is_own_post(text, self.seat) and skim_match(text, self.seat):
-                who = (message.get("sender_full_name") or message.get("sender_email")
-                       or message.get("sender_id") or "unknown")
+                who = (
+                    message.get("sender_full_name")
+                    or message.get("sender_email")
+                    or message.get("sender_id")
+                    or "unknown"
+                )
                 body = mirror_body(text, str(mid), str(who), self.seat)
                 if self.dry_run:
                     self.log("DRY would mirror Zulip %s from %s" % (mid, who))
@@ -542,6 +602,7 @@ class Bridge:
 
 # --- CLI ---------------------------------------------------------------------
 
+
 def load_seats(args) -> list:
     if args.seat or args.repo or args.issue:
         if not (args.seat and args.repo and args.issue):
@@ -557,7 +618,13 @@ def load_seats(args) -> list:
     seats = []
     for entry in cfg.get("seats", []):
         try:
-            seats.append({"seat": str(entry["seat"]).upper(), "repo": str(entry["repo"]), "issue": int(entry["issue"])})
+            seats.append(
+                {
+                    "seat": str(entry["seat"]).upper(),
+                    "repo": str(entry["repo"]),
+                    "issue": int(entry["issue"]),
+                }
+            )
         except (KeyError, TypeError, ValueError):
             raise SystemExit("ERR each seat needs seat, repo, issue: %r" % (entry,))
     if not seats:
@@ -587,13 +654,38 @@ def main(argv=None) -> int:
     ap.add_argument("--seat", help="seat tag, e.g. INSTINCT (with --repo and --issue)")
     ap.add_argument("--repo", help="owner/name of the outbox issue's repo")
     ap.add_argument("--issue", help="outbox issue number")
-    ap.add_argument("--config", default=str(CONFIG_DEFAULT), help="JSON with a seats list (default %(default)s)")
-    ap.add_argument("--rc", default=None, help="Zulip credential file of your own for the read side (default: Infisical /zulip via --read-as)")
-    ap.add_argument("--read-as", default=READ_AS_DEFAULT, help="bot whose Infisical /zulip key reads history (default %(default)s)")
+    ap.add_argument(
+        "--config", default=str(CONFIG_DEFAULT), help="JSON with a seats list (default %(default)s)"
+    )
+    ap.add_argument(
+        "--rc",
+        default=None,
+        help="Zulip credential file of your own for the read side (default: Infisical /zulip via --read-as)",
+    )
+    ap.add_argument(
+        "--read-as",
+        default=READ_AS_DEFAULT,
+        help="bot whose Infisical /zulip key reads history (default %(default)s)",
+    )
     ap.add_argument("--channel", default=CHANNEL_DEFAULT)
-    ap.add_argument("--topic", default=TOPIC_DEFAULT, help="Zulip topic for outbound posts (default %(default)s)")
-    ap.add_argument("--read-history", dest="read_history", action="store_true", default=True, help="mirror #agent-sync into the issue (default on)")
-    ap.add_argument("--no-read-history", dest="read_history", action="store_false", help="outbound only, never read Zulip")
+    ap.add_argument(
+        "--topic",
+        default=TOPIC_DEFAULT,
+        help="Zulip topic for outbound posts (default %(default)s)",
+    )
+    ap.add_argument(
+        "--read-history",
+        dest="read_history",
+        action="store_true",
+        default=True,
+        help="mirror #agent-sync into the issue (default on)",
+    )
+    ap.add_argument(
+        "--no-read-history",
+        dest="read_history",
+        action="store_false",
+        help="outbound only, never read Zulip",
+    )
     ap.add_argument("--state-dir", default=str(STATE_DIR_DEFAULT))
     ap.add_argument("--once", action="store_true", help="one tick (default)")
     ap.add_argument("--loop", action="store_true", help="tick forever every --interval seconds")
@@ -607,7 +699,10 @@ def main(argv=None) -> int:
     # The old AGENT_SYNC_ENV / SLACK_BOT_TOKEN route is retired.
     zulip_read = ZulipClient(args.rc, bot=args.read_as) if args.read_history else None
     if args.read_history and zulip_read is None and not args.dry_run:
-        log("ERR no Zulip credential (%s; values never printed)" % (args.rc or "Infisical /zulip %s_ZULIP_*" % args.read_as))
+        log(
+            "ERR no Zulip credential (%s; values never printed)"
+            % (args.rc or "Infisical /zulip %s_ZULIP_*" % args.read_as)
+        )
         return 1
     state_dir = Path(args.state_dir)
 
@@ -616,12 +711,29 @@ def main(argv=None) -> int:
             state = State(state_dir / ("outbox-bridge-%s.json" % entry["seat"]))
             poster = ZulipPoster(entry["seat"], args.channel)
             reader = ZulipChannel(zulip_read, args.channel) if zulip_read is not None else None
-            bridge = Bridge(entry["seat"], GitHubIssue(entry["repo"], entry["issue"]), poster, reader, state,
-                            topic=args.topic, dry_run=args.dry_run)
+            bridge = Bridge(
+                entry["seat"],
+                GitHubIssue(entry["repo"], entry["issue"]),
+                poster,
+                reader,
+                state,
+                topic=args.topic,
+                dry_run=args.dry_run,
+            )
             summary = bridge.run_once()
-            print("%s %s#%d posted=%d rejected=%d skipped=%d mirrored=%d errors=%d" % (
-                entry["seat"], entry["repo"], entry["issue"], summary["posted"], summary["rejected"],
-                summary["skipped"], summary["mirrored"], len(summary["errors"])))
+            print(
+                "%s %s#%d posted=%d rejected=%d skipped=%d mirrored=%d errors=%d"
+                % (
+                    entry["seat"],
+                    entry["repo"],
+                    entry["issue"],
+                    summary["posted"],
+                    summary["rejected"],
+                    summary["skipped"],
+                    summary["mirrored"],
+                    len(summary["errors"]),
+                )
+            )
             for err in summary["errors"]:
                 log("  ERR %s: %s" % (entry["seat"], err))
         return 0

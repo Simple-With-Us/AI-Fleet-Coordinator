@@ -10,9 +10,7 @@ every test that reaches it.
 from __future__ import annotations
 
 import os
-import pathlib
 import subprocess
-import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock

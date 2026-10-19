@@ -28,6 +28,7 @@ Keys are never printed.  Output names bots, emails and file paths only.
 Existing bots you own get their zuliprc written from GET /bots, so a lost file
 can be recovered by rerunning.  Grok Bot (GB-*) personas are out of scope.
 """
+
 import argparse
 import base64
 import configparser
@@ -42,17 +43,26 @@ import urllib.parse
 import urllib.request
 
 REALM = "https://simplewithus.zulipchat.com"
-FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
+FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser(
+    "~/.local/bin/fleet-secrets"
+)
 
 
 def fleet_secret(name):
     """One Infisical /zulip value via `fleet-secrets get`, or "" (never printed)."""
     try:
-        proc = subprocess.run([FLEET_SECRETS_BIN, "get", name, "--path", "/zulip"],
-                              capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        proc = subprocess.run(
+            [FLEET_SECRETS_BIN, "get", name, "--path", "/zulip"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            stdin=subprocess.DEVNULL,
+        )
     except (OSError, subprocess.SubprocessError):
         return ""
     return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 CHANNELS = ["agent-sync", "alerts", "builds", "trading", "ideas"]
 
 # (full name shown in Zulip, short name, zuliprc file stem).
@@ -72,7 +82,11 @@ ROSTER = [
     ("FX", "fx", "FX"),
     ("MiniMax", "mm", "MM"),
     ("Muse Code", "mc", "MC"),
-    ("OpenCode", "opencode", "OpenCode"),  # the stem breaks the Title Case rule: SEAT_FILE_OVERRIDES in agent_sync/zulip.py
+    (
+        "OpenCode",
+        "opencode",
+        "OpenCode",
+    ),  # the stem breaks the Title Case rule: SEAT_FILE_OVERRIDES in agent_sync/zulip.py
     ("Rob (Muse)", "muse-assist", "MA"),
     # BotFleet role bots
     ("BF-Builder", "bf-builder", "BF-Builder"),
@@ -100,8 +114,12 @@ def call(email, key, method, path, data=None):
         url += "?" + urllib.parse.urlencode(data)
     elif data is not None:
         body = urllib.parse.urlencode(data).encode()
-    req = urllib.request.Request(url, data=body, method=method,
-                                 headers={"Authorization": auth, "User-Agent": "agent-sync-provision/1"})
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers={"Authorization": auth, "User-Agent": "agent-sync-provision/1"},
+    )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             payload = json.load(resp)
@@ -113,7 +131,9 @@ def call(email, key, method, path, data=None):
     except urllib.error.URLError as err:
         raise ZulipError(f"network error on {method} {path}: {err.reason}") from None
     if payload.get("result") != "success":
-        raise ZulipError(f"{method} {path}: {payload.get('msg', 'error')} ({payload.get('code', '')})")
+        raise ZulipError(
+            f"{method} {path}: {payload.get('msg', 'error')} ({payload.get('code', '')})"
+        )
     return payload
 
 
@@ -138,7 +158,10 @@ def owner_credentials(args):
         email, key = fleet_secret("JAY_ZULIP_EMAIL"), fleet_secret("JAY_ZULIP_KEY")
         site, source = fleet_secret("JAY_ZULIP_SITE") or REALM, "Infisical /zulip JAY_ZULIP_*"
     elif os.environ.get("ZULIP_OWNER_EMAIL") and os.environ.get("ZULIP_OWNER_API_KEY"):
-        email, key = os.environ["ZULIP_OWNER_EMAIL"].strip(), os.environ["ZULIP_OWNER_API_KEY"].strip()
+        email, key = (
+            os.environ["ZULIP_OWNER_EMAIL"].strip(),
+            os.environ["ZULIP_OWNER_API_KEY"].strip(),
+        )
         site, source = REALM, "env ZULIP_OWNER_EMAIL/ZULIP_OWNER_API_KEY"
     else:
         email = input("Your Zulip login email: ").strip()
@@ -164,14 +187,19 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="print the plan and write nothing")
     ap.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     ap.add_argument("--force", action="store_true", help="overwrite existing zuliprc files")
-    ap.add_argument("--out-dir", help="where to write the zuliprc files (default: a new mode-700 temp directory)")
+    ap.add_argument(
+        "--out-dir",
+        help="where to write the zuliprc files (default: a new mode-700 temp directory)",
+    )
     ap.add_argument("--only", action="append", help="limit to these full names (repeatable)")
     args = ap.parse_args(argv)
 
     email, key, source = owner_credentials(args)
     me = call(email, key, "GET", "users/me")
     if me.get("is_bot"):
-        raise SystemExit("that credential is a bot; bots cannot create bots.  Use your personal API key.")
+        raise SystemExit(
+            "that credential is a bot; bots cannot create bots.  Use your personal API key."
+        )
     print(f"Acting as {me.get('full_name')} <{email}> (credentials from {source})")
 
     owned = {b["full_name"]: b for b in call(email, key, "GET", "bots").get("bots", [])}
@@ -206,8 +234,13 @@ def main(argv=None):
             if action.startswith("SKIP"):
                 continue
             if action.startswith("create"):
-                call(email, key, "POST", "bots",
-                     {"full_name": full_name, "short_name": short_name, "bot_type": 1})
+                call(
+                    email,
+                    key,
+                    "POST",
+                    "bots",
+                    {"full_name": full_name, "short_name": short_name, "bot_type": 1},
+                )
                 owned = {b["full_name"]: b for b in call(email, key, "GET", "bots").get("bots", [])}
             bot = owned.get(full_name)
             if not bot or not bot.get("api_key"):
@@ -215,13 +248,22 @@ def main(argv=None):
             bot_email, bot_key = bot.get("email") or bot.get("username"), bot["api_key"]
             if file_action == "write file":
                 write_rc(path, bot_email, bot_key)
-            call(bot_email, bot_key, "POST", "users/me/subscriptions",
-                 {"subscriptions": json.dumps([{"name": c} for c in CHANNELS])})
-            print(f"  ok  {full_name:<16} {bot_email}  file={'written' if file_action == 'write file' else 'kept'}")
+            call(
+                bot_email,
+                bot_key,
+                "POST",
+                "users/me/subscriptions",
+                {"subscriptions": json.dumps([{"name": c} for c in CHANNELS])},
+            )
+            print(
+                f"  ok  {full_name:<16} {bot_email}  file={'written' if file_action == 'write file' else 'kept'}"
+            )
         except ZulipError as err:
             failures += 1
             print(f"  ERR {full_name:<16} {err}", file=sys.stderr)
-    print(f"Done: {len(plan) - failures} ok, {failures} failed.  Files are in {out_dir} with mode 600;  load them into Infisical /zulip, then delete the directory.")
+    print(
+        f"Done: {len(plan) - failures} ok, {failures} failed.  Files are in {out_dir} with mode 600;  load them into Infisical /zulip, then delete the directory."
+    )
     return 1 if failures else 0
 
 
