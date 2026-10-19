@@ -190,7 +190,7 @@ class HooksProxyTest(unittest.TestCase):
         fake = FakeIngress(202)
         with mock.patch("urllib.request.urlopen", fake):
             code, payload = self._raw(
-                self._head("Content-Length: %d\r\n" % (server.HOOK_MAX_BODY_BYTES + 1))
+                self._head("Content-Length: %d\r\n" % (server.MAX_BODY_BYTES + 1))
             )
         self.assertEqual(code, 413)
         self.assertFalse(payload["ok"])

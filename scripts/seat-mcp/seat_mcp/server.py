@@ -22,8 +22,9 @@ from .seats import SeatError
 from .tools import TOOL_IMPL, tool_schemas
 
 RECALL_PATHS = ("/recall/stats", "/recall/search", "/recall/contribute")
-# /hooks/ pass-through limits (AFC-359).  The BotFleet ingress itself refuses bodies over 256 KiB.
-HOOK_MAX_BODY_BYTES = 1024 * 1024
+# Largest request body any path reads:  JSON-RPC, /recall/* and the /hooks/ pass-through (AFC-359).
+MAX_BODY_BYTES = 2_000_000
+# /hooks/ body read timeout (AFC-359).  The BotFleet ingress itself refuses bodies over 256 KiB.
 HOOK_READ_TIMEOUT_SECONDS = 30.0
 
 JsonDict = dict[str, Any]
@@ -225,7 +226,7 @@ class SeatHandler(BaseHTTPRequestHandler):
             length = int(length_s)
         except ValueError:
             length = 0
-        if length < 0 or length > 2_000_000:
+        if length < 0 or length > MAX_BODY_BYTES:
             self._send(413, b"payload too large\n", "text/plain; charset=utf-8")
             return None
         raw = self.rfile.read(length) if length else b"{}"
@@ -291,7 +292,7 @@ class SeatHandler(BaseHTTPRequestHandler):
             if length < 0:
                 self._hook_reject(400, "invalid Content-Length")
                 return
-        if length > HOOK_MAX_BODY_BYTES:
+        if length > MAX_BODY_BYTES:
             # Answer without reading the body, then drop the connection so it is never parsed as a next request.
             self._hook_reject(413, "webhook body too large")
             return
@@ -356,7 +357,7 @@ class SeatHandler(BaseHTTPRequestHandler):
             length = int(length_s)
         except ValueError:
             length = 0
-        if length < 0 or length > 2_000_000:
+        if length < 0 or length > MAX_BODY_BYTES:
             self._send(413, b"payload too large\n", "text/plain; charset=utf-8")
             return
         raw = self.rfile.read(length) if length else b""
