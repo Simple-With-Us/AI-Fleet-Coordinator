@@ -13,12 +13,12 @@ The case that matters most is the one that hid for months: a matcher that covers
 but not `bash` covers half the shell names, and reporting the whole group as missed (or
 as covered) would hide the drift in both directions.
 """
+
 from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
 import json
-import os
 import stat
 import sys
 import tempfile
@@ -57,9 +57,7 @@ def write_plugin(root: Path, matcher: str, command: str) -> Path:
                     "PreToolUse": [
                         {
                             "matcher": matcher,
-                            "hooks": [
-                                {"type": "command", "command": command, "timeout": 10}
-                            ],
+                            "hooks": [{"type": "command", "command": command, "timeout": 10}],
                         }
                     ]
                 }
@@ -83,9 +81,7 @@ class CoveredNames(unittest.TestCase):
         self.assertEqual(missed, ["bash"])
 
     def test_alternation_covers_both_spellings(self):
-        covered, missed = proof._covered_names(
-            "Bash|bash", ("bash", "Bash")
-        )
+        covered, missed = proof._covered_names("Bash|bash", ("bash", "Bash"))
         self.assertEqual(sorted(covered), ["Bash", "bash"])
         self.assertEqual(missed, [])
 
@@ -116,9 +112,7 @@ class CheckMatcher(unittest.TestCase):
         self.assertIn("Read", result["file_missed"])
 
     def test_a_full_matcher_passes(self):
-        plugin = write_plugin(
-            self.root, "Bash|bash|Read|Write|Edit|read|write|edit", "/bin/true"
-        )
+        plugin = write_plugin(self.root, "Bash|bash|Read|Write|Edit|read|write|edit", "/bin/true")
         report = proof.read_plugin(plugin)
         result = proof.check_matcher(report)
         self.assertTrue(result["ok"])
@@ -130,9 +124,7 @@ class CheckMatcher(unittest.TestCase):
         (plugin / ".claude-plugin").mkdir(parents=True)
         (plugin / "hooks").mkdir(parents=True)
         (plugin / ".claude-plugin" / "plugin.json").write_text("{}", encoding="utf-8")
-        (plugin / "hooks" / "hooks.json").write_text(
-            json.dumps({"hooks": {}}), encoding="utf-8"
-        )
+        (plugin / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {}}), encoding="utf-8")
         result = proof.check_matcher(proof.read_plugin(plugin))
         self.assertFalse(result["ok"])
 
@@ -166,8 +158,8 @@ class CheckPolicy(unittest.TestCase):
     def test_a_denying_hook_passes(self):
         deny = (
             "printf '%s' "
-            "'{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", "
-            "\"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"no\"}}'"
+            '\'{"hookSpecificOutput": {"hookEventName": "PreToolUse", '
+            '"permissionDecision": "deny", "permissionDecisionReason": "no"}}\''
         )
         command = write_fake_hook(self.root / "deny.sh", deny)
         plugin = write_plugin(self.root, "Bash|bash", command)
@@ -204,8 +196,8 @@ class Main(unittest.TestCase):
     def test_skip_live_reports_incomplete_and_exits_two(self):
         deny = (
             "printf '%s' "
-            "'{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", "
-            "\"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"no\"}}'"
+            '\'{"hookSpecificOutput": {"hookEventName": "PreToolUse", '
+            '"permissionDecision": "deny", "permissionDecisionReason": "no"}}\''
         )
         command = write_fake_hook(self.root / "deny.sh", deny)
         plugin = write_plugin(self.root, "Bash|bash", command)
@@ -213,15 +205,13 @@ class Main(unittest.TestCase):
         import io
 
         with contextlib.redirect_stdout(io.StringIO()):
-            code = proof.main(
-                ["--plugin-dir", str(plugin), "--skip-live", "--json"]
-            )
+            code = proof.main(["--plugin-dir", str(plugin), "--skip-live", "--json"])
         self.assertEqual(code, 2)
 
     def test_json_output_carries_the_stages(self):
         plugin = write_plugin(self.root, "Bash", "/bin/true")
-        import io
         import contextlib
+        import io
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):

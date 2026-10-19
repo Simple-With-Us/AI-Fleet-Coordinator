@@ -175,11 +175,7 @@ def _canary_payload(tool_name: str) -> str:
 def check_policy(plugin: dict) -> dict:
     """Stage 2: run the installed hook command directly with the canary payload."""
     handler = next(
-        (
-            h
-            for h in plugin["hooks"]
-            if h["event"] == "PreToolUse" and h.get("command")
-        ),
+        (h for h in plugin["hooks"] if h["event"] == "PreToolUse" and h.get("command")),
         None,
     )
     if handler is None:
@@ -238,9 +234,7 @@ def check_dispatch(model: str, timeout: int) -> dict:
         ]
         try:
             with open(out_path, "w", encoding="utf-8") as handle:
-                proc = subprocess.run(
-                    cmd, stdout=handle, stderr=subprocess.STDOUT, timeout=timeout
-                )
+                proc = subprocess.run(cmd, stdout=handle, stderr=subprocess.STDOUT, timeout=timeout)
         except subprocess.TimeoutExpired:
             return {"ok": False, "why": "the live session timed out after %ds" % timeout}
         except OSError as exc:
@@ -252,8 +246,7 @@ def check_dispatch(model: str, timeout: int) -> dict:
     markers = [m for m in DENY_MARKERS if m in text]
     return {
         "ok": bool(markers),
-        "why": "the live session was refused by the guard (%s)"
-        % ", ".join(markers)
+        "why": "the live session was refused by the guard (%s)" % ", ".join(markers)
         if markers
         else "the live session was not refused by the guard, so the hook never fired",
         "exit_code": proc.returncode,
@@ -307,17 +300,14 @@ def main(argv=None) -> int:
     else:
         print("Plugin: %s" % plugin["plugin_dir"])
         for hook in plugin["hooks"]:
-            print(
-                "  %s matcher=%r command=%s"
-                % (hook["event"], hook["matcher"], hook["command"])
-            )
+            print("  %s matcher=%r command=%s" % (hook["event"], hook["matcher"], hook["command"]))
         for name in ("matcher", "policy", "dispatch"):
             stage = report["stages"][name]
             flag = {True: "ok", False: "FAIL", None: "skip"}[stage.get("ok")]
             print("[%s] %-8s %s" % (flag, name, stage.get("why", "")))
         print(report["verdict"])
         if report["verdict"].startswith("NOT PROVED"):
-            print("")
+            print()
             print("Where to fix it:")
             print("  the matcher is read in install_tools.py (render_minimax_hooks); a")
             print("  hand edit of the installed plugin is reverted by the next")
