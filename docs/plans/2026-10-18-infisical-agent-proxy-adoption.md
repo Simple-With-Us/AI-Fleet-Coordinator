@@ -76,7 +76,7 @@ Each phase is additive until Phase 5.  Nothing is deleted, booted out or rotated
 - **Autorotate.**  Unarchive it so the migration lands, or confirm it is dead.
 - **pm2 auth.**  Move the pm2 daemon into the GUI login session (a LaunchAgent in the `gui` domain), or give pm2 jobs a machine-identity token another way.
 - **Kody rules.**  Kody's org rules still list the flat file as an approved source, so it requests changes on every migration PR.  Update them.
-- **Exposed tokens.**  `~/apps/rotate.py` holds two plain-text tokens (`ghp_…`, `rnd_…`).  Rotate both and delete the file.
+- **Exposed tokens.**  A local helper script holds two plain-text tokens (details in the owner's Apple Note, not here).  Rotate both and delete the script.
 - **fleet-work-backup LaunchAgent.**  The installer would add a new `com.jay.fleet-work-backup` LaunchAgent, which was skipped.  Add it or not.
 - **Rotation scope at cutover.**  All keys, or only the keys with spend, write or admin power?
 - **Desktop apps.**  Accept that the desktop Code tab, Cursor, Antigravity and Codex desktop keep reading keys until a standalone-proxy setup is proven, or restrict them to MCP connectors that hold their own credentials?
