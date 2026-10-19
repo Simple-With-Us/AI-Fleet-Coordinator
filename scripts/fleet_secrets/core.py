@@ -27,6 +27,8 @@ import os
 import re
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
@@ -36,6 +38,15 @@ CLI_NAME = "infisical"
 FALLBACK_DIRS = ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin")
 SECURITY_BIN = "/usr/bin/security"
 EXPORT_TIMEOUT = 30.0
+API_BASE = "https://app.infisical.com/api"
+ENV_API = "FLEET_SECRETS_API"
+API_TIMEOUT = 30.0
+MAX_VALUE_BYTES = 256 * 1024
+# What `set` may write:  (folder, name pattern) pairs, and nothing else.  This list is code on purpose:
+# widening it takes a reviewed change, never a flag, an environment variable or a config file.  A general
+# write command would let any agent on this Mac overwrite any Fleet-OPS secret with the shared automation
+# identity.  CACHE_<APP> in /linear is the minted Linear token that `board` stores there (AFC-359).
+WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (("/linear", r"^CACHE_[A-Z0-9_]+$"),)
 LOGIN_TIMEOUT = 30.0
 KEYCHAIN_TIMEOUT = 10.0
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -452,3 +463,103 @@ def injectable(name: str) -> bool:
         and not name.startswith(NOT_INJECTED_PREFIXES)
         and not name.upper().startswith("INFISICAL_")
     )
+
+
+def _api(method: str, path: str, token: str, body: dict | None, env: Mapping[str, str]) -> int:
+    """One Infisical REST call.  Returns the HTTP status;  the response body is never read into a message.
+    The token travels in a header, never in an argument list."""
+    base = (env.get(ENV_API) or API_BASE).rstrip("/")
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        base + path,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+            "User-Agent": "fleet-secrets",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return 0
+    finally:
+        data = None
+
+
+def check_writable(name: str, path: str) -> None:
+    """Raise SecretsError (exit 2) unless (path, name) is on the built-in write allowlist."""
+    for folder, pattern in WRITE_ALLOWLIST:
+        if path == folder and re.match(pattern, name):
+            return
+    raise SecretsError(
+        "set refused:  %s at %s is not on the built-in write allowlist (%s);  widening it needs a code change"
+        % (name, path, ", ".join("%s %s" % (f, p) for f, p in WRITE_ALLOWLIST)),
+        2,
+    )
+
+
+def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
+    """Create or update one Fleet-OPS prod secret at `path`, and return "created" or "updated".
+
+    Only names on WRITE_ALLOWLIST are accepted.  Needs a machine identity (token, keychain or system-keychain):  the CLI's own login session
+    cannot hand its token to a REST call, so mode `session` is refused.  The value never appears in an argument list, a message or a log."""
+    refusal = environment_refusal(env)
+    if refusal:
+        raise SecretsError(refusal, 2)
+    check_name(name)
+    check_path(path)
+    check_writable(name, path)
+    if "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
+        raise SecretsError("value is empty-unsafe or larger than %d bytes" % MAX_VALUE_BYTES, 2)
+    project = infisical_project_id(env, home_dir(env))
+    cli = find_cli(env)
+    if not cli:
+        raise SecretsError("cli-missing:  the infisical CLI is not installed")
+    mode = auth_mode(env)
+    if mode == "session":
+        raise SecretsError(
+            "write-needs-machine-identity:  set needs a keychain machine identity or INFISICAL_TOKEN",
+            4,
+        )
+    token = env[ENV_TOKEN].strip() if mode == "token" else machine_token(cli, env, mode)
+    body = {
+        "workspaceId": project,
+        "environment": ENVIRONMENT,
+        "secretPath": path,
+        "secretValue": value,
+        "type": "shared",
+    }
+    try:
+        quoted = urllib.request.quote(name, safe="")
+        # `set` never creates folders:  the allowlist names a folder that already exists.  A missing folder
+        # (404 on a listing of it) is an error and nothing is written.
+        probe = _api(
+            "GET",
+            "/v3/secrets/raw?workspaceId=%s&environment=%s&secretPath=%s&recursive=false&include_imports=false"
+            % (project, ENVIRONMENT, urllib.request.quote(path, safe="/")),
+            token,
+            None,
+            env,
+        )
+        if probe == 404:
+            raise SecretsError(
+                "folder-missing:  %s does not exist in Fleet-OPS;  nothing was written" % path, 4
+            )
+        if probe != 200:
+            raise SecretsError("write-failed:  folder-check http-%d" % probe, 4)
+        status = _api("PATCH", "/v3/secrets/raw/" + quoted, token, body, env)
+        if status in (200, 201):
+            return "updated"
+        if status in (404, 400):
+            status = _api("POST", "/v3/secrets/raw/" + quoted, token, body, env)
+            if status in (200, 201):
+                return "created"
+        raise SecretsError("write-failed:  http-%d" % status)
+    finally:
+        body = {}
+        token = ""
