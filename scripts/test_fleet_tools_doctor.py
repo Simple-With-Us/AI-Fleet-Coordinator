@@ -321,9 +321,13 @@ class RegisteredEnvTests(unittest.TestCase):
     def test_the_probe_reads_each_clients_registered_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            (home / ".claude.json").write_text(json.dumps({"mcpServers": {"agent-sync": {"env": {"ZULIP_RC": "/c"}}}}))
+            (home / ".claude.json").write_text(
+                json.dumps({"mcpServers": {"agent-sync": {"env": {"ZULIP_RC": "/c"}}}})
+            )
             (home / ".codex").mkdir()
-            (home / ".codex/config.toml").write_text('[mcp_servers.agent-sync]\ncommand = "x"\n\n[mcp_servers.agent-sync.env]\nZULIP_RC = "/x"\n')
+            (home / ".codex/config.toml").write_text(
+                '[mcp_servers.agent-sync]\ncommand = "x"\n\n[mcp_servers.agent-sync.env]\nZULIP_RC = "/x"\n'
+            )
             self.assertEqual(doctor.registered_env("CLAUDE", home), {"ZULIP_RC": "/c"})
             self.assertEqual(doctor.registered_env("CODEX", home), {"ZULIP_RC": "/x"})
             self.assertEqual(doctor.registered_env("CURSOR", home), {})
@@ -336,8 +340,10 @@ class RegisteredEnvTests(unittest.TestCase):
             seen.update(kw.get("env") or {})
             return subprocess.CompletedProcess(argv, 1, b"", b"x\n")
 
-        with mock.patch.object(doctor, "registered_env", return_value={"ZULIP_RC": "/c"}), \
-                mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/agent-sync"):
+        with (
+            mock.patch.object(doctor, "registered_env", return_value={"ZULIP_RC": "/c"}),
+            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/agent-sync"),
+        ):
             doctor.check_mcp_startup(doctor.Report(), "CLAUDE", runner)
         self.assertEqual(seen.get("ZULIP_RC"), "/c")
 

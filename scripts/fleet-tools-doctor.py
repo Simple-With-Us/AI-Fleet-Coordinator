@@ -518,7 +518,9 @@ def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
         if seat == "CLAUDE":
             servers = json.loads((home / ".claude.json").read_text()).get("mcpServers") or {}
         elif seat == "CODEX":
-            servers = tomllib.loads((home / ".codex/config.toml").read_text()).get("mcp_servers") or {}
+            servers = (
+                tomllib.loads((home / ".codex/config.toml").read_text()).get("mcp_servers") or {}
+            )
         else:
             return {}
     except (OSError, ValueError):
