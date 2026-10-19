@@ -85,6 +85,8 @@ jobs:
       run: |
         cd scripts && python3 -m unittest discover -s fleet_secrets/tests -t . -v
         bash -n install-fleet-secrets.sh
+        bash -n fleet_secrets/seed-system-keychain.sh
+        bash -n fleet_secrets/switch-pm2-jobs.sh
     # needs-owner (open-loops C6-1 and C6-2):  a fake `board` and `agent-sync` on PATH, built on the real parsers, a fixed
     # clock and fake K1 knobs for the fallback notifier;  the stable copy installed into a temp HOME must run under
     # `python3 -I`, and the LaunchAgent plist must parse.

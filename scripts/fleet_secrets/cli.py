@@ -143,10 +143,14 @@ def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
         rep["project_id_resolvable"] = True
     except SecretsError:
         rep["project_id_resolvable"] = False
-    rep["keychain_client_id_present"] = core.keychain_item(core.KEYCHAIN_CLIENT_ID) is not None
-    rep["keychain_client_secret_present"] = (
-        core.keychain_item(core.KEYCHAIN_CLIENT_SECRET) is not None
-    )
+    (
+        rep["keychain_client_id_present"],
+        rep["keychain_client_secret_present"],
+    ) = core.keychain_presence(core.login_keychain())
+    (
+        rep["system_keychain_client_id_present"],
+        rep["system_keychain_client_secret_present"],
+    ) = core.keychain_presence(core.SYSTEM_KEYCHAIN)
     try:
         rep["auth_mode"] = core.auth_mode(env)
     except SecretsError:
