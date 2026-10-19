@@ -26,7 +26,6 @@ import io
 import json
 import os
 import re
-import stat
 import subprocess
 import sys
 import tempfile
@@ -788,7 +787,7 @@ def make_handler(mock: MockLinear):
     return H
 
 
-FAKE_FLEET_SECRETS = r'''#!@PY@
+FAKE_FLEET_SECRETS = r"""#!@PY@
 import os, sys
 V = "@VAULT@"
 a = sys.argv[1:]
@@ -830,7 +829,7 @@ elif verb == "run":
     os.execvpe(a[6], a[6:], env)
 else:
     sys.exit(2)
-'''
+"""
 
 
 class BoardTest(unittest.TestCase):
@@ -855,8 +854,11 @@ class BoardTest(unittest.TestCase):
         # appended to fs_calls (verbs and key names only, never a value).
         self.fs_calls = self.tmp / "fs-calls.log"
         self.fleet_secrets_stub = self.tmp / "fleet-secrets"
-        self.fleet_secrets_stub.write_text(FAKE_FLEET_SECRETS.replace("@VAULT@", str(self.ops_vault)).replace(
-            "@CALLS@", str(self.fs_calls)).replace("@PY@", PY))
+        self.fleet_secrets_stub.write_text(
+            FAKE_FLEET_SECRETS.replace("@VAULT@", str(self.ops_vault))
+            .replace("@CALLS@", str(self.fs_calls))
+            .replace("@PY@", PY)
+        )
         self.fleet_secrets_stub.chmod(0o700)
         # The stored token blobs are keys of the same fake vault:  CACHE_FLEET, CACHE_<SEAT>.
         self.token_cache = self.ops_vault / "CACHE_FLEET"
@@ -1195,7 +1197,9 @@ class AuthTests(BoardTest):
         self.board("whoami")
         self.assertEqual(self.mock.mints, 1)
         self.assertEqual(self.mock.scopes, [EXPECTED_SCOPE])
-        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_FLEET (no token on disk)", p.stdout)
+        self.assertIn(
+            "token store: Infisical Fleet-OPS prod /linear CACHE_FLEET (no token on disk)", p.stdout
+        )
 
     def test_whoami_refuses_a_human_viewer(self):
         self.mock.viewer = {
@@ -2149,7 +2153,7 @@ class SeatAppTests(BoardTest):
             "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID, CLAUDE_LINEAR_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn(f"token store: Infisical Fleet-OPS prod /linear CACHE_CLAUDE", p.stdout)
+        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_CLAUDE", p.stdout)
         self.assertNotIn("notice:", p.stdout)
         self.assertNotIn(claude, p.stdout + p.stderr)  # the path is printed, never a value
         p = self.as_seat("CODEX", "whoami")
@@ -2260,7 +2264,7 @@ class SeatAppTests(BoardTest):
             "credentials: Infisical Fleet-OPS prod /linear (GROK_WEB_LINEAR_CLIENT_ID, GROK_WEB_LINEAR_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn(f"token store: Infisical Fleet-OPS prod /linear CACHE_GROK_WEB", p.stdout)
+        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_GROK_WEB", p.stdout)
         # the environment form spells the hyphen as an underscore
         self.ops_drop_seat("GROK-WEB")
         self.cache("GROK-WEB").unlink()
@@ -2274,7 +2278,7 @@ class SeatAppTests(BoardTest):
             p.stdout,
         )
         self.assertIn("viewer:      Grok Web (app user)", p.stdout)
-        self.assertIn(f"token store: Infisical Fleet-OPS prod /linear CACHE_GROK_WEB", p.stdout)
+        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_GROK_WEB", p.stdout)
         # every GROK-BUILD spelling is GROK, and reads GROK_LINEAR_CLIENT_ID
         self.seat_app("GROK", "Grok")
         p = self.as_seat("Grok-Build", "whoami")
@@ -2293,7 +2297,7 @@ class SeatAppTests(BoardTest):
             "credentials: environment (LINEAR_CODEX_CLIENT_ID, LINEAR_CODEX_CLIENT_SECRET)",
             p.stdout,
         )
-        self.assertIn(f"token store: Infisical Fleet-OPS prod /linear CACHE_CODEX", p.stdout)
+        self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_CODEX", p.stdout)
         self.as_seat(
             "CODEX",
             "comment",
@@ -2509,8 +2513,13 @@ class SeatAppTests(BoardTest):
         blob["minted_at"] -= 3 * 86400
         self.cache("CLAUDE").write_text(json.dumps(blob))
         procs = [
-            subprocess.Popen([PY, str(CLI), "list"], env=dict(self.env, AGENT_SEAT="CLAUDE"),
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.Popen(
+                [PY, str(CLI), "list"],
+                env=dict(self.env, AGENT_SEAT="CLAUDE"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
             for _ in range(2)
         ]
         outs = [pr.communicate(timeout=60) for pr in procs]
@@ -2550,7 +2559,14 @@ class SeatAppTests(BoardTest):
         self.assertIn("token store: Infisical Fleet-OPS prod /linear CACHE_CLAUDE", p.stdout)
         after = sorted(str(q.relative_to(home)) for q in (home / ("." + "secrets")).rglob("*"))
         self.assertEqual(after, before)
-        self.assertEqual(sorted(str(q.relative_to(home)) for q in home.rglob("*") if q.is_file() and ".secrets" not in str(q)), [])  # no token file, no cache, nothing
+        self.assertEqual(
+            sorted(
+                str(q.relative_to(home))
+                for q in home.rglob("*")
+                if q.is_file() and ".secrets" not in str(q)
+            ),
+            [],
+        )  # no token file, no cache, nothing
 
     def test_relabel_stays_on_the_fleet_app(self):
         self.seat_app("CLAUDE", "Claude")
@@ -3239,7 +3255,10 @@ class TokenBlobTests(BoardTest):
         # the fake refuses any `set` that carries the value in an argument, so reaching here proves stdin
         stored = json.loads(blob.read_text())
         self.assertIn(stored["access_token"], self.mock.tokens)
-        self.assertEqual(sorted(stored), ["access_token", "cred_fp", "expires_at", "minted_at", "scope", "token_type"])
+        self.assertEqual(
+            sorted(stored),
+            ["access_token", "cred_fp", "expires_at", "minted_at", "scope", "token_type"],
+        )
 
     def test_a_failed_write_still_works_and_leaves_nothing_on_disk(self):
         blob = self.seat()

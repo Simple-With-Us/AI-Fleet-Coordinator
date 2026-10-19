@@ -135,14 +135,17 @@ class InfisicalTests(T.BoardTest):
 
     def pair_in_old_folder(self):
         cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
-        self.vault.secrets.update({"LINEAR_CLAUDE_CLIENT_ID": cid, "LINEAR_CLAUDE_CLIENT_SECRET": secret})
+        self.vault.secrets.update(
+            {"LINEAR_CLAUDE_CLIENT_ID": cid, "LINEAR_CLAUDE_CLIENT_SECRET": secret}
+        )
 
     def test_legacy_host_reads_the_pair_and_shares_the_token_through_the_old_folder(self):
         self.pair_in_old_folder()
         p = self.as_seat("CLAUDE", "whoami", extra=self.legacy_host())
         self.assertIn("viewer:      Claude (app user)", p.stdout)
         self.assertIn(
-            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID", p.stdout
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
+            p.stdout,
         )
         self.assertIn(
             "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_CLAUDE_CACHE_TOKEN (no token on disk)",
@@ -153,7 +156,9 @@ class InfisicalTests(T.BoardTest):
         # a second process on the same host (or another host) reads the shared copy and mints nothing
         self.as_seat("CLAUDE", "whoami", extra=self.legacy_host())
         self.assertEqual(self.mock.mints, 1)
-        self.assertFalse(list((self.tmp / "home").rglob("*.token")), "no token file anywhere under HOME")
+        self.assertFalse(
+            list((self.tmp / "home").rglob("*.token")), "no token file anywhere under HOME"
+        )
 
     def test_legacy_host_remints_a_refused_shared_token_and_shares_it_again(self):
         self.pair_in_old_folder()
