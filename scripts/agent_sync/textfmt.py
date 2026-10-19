@@ -299,7 +299,8 @@ def _fleet_date(match: re.Match[str], this_year: int) -> str:
                 datetime(int(year), int(month), int(day), int(r_hour), int(r_minute))
             )
         return out
-    except ValueError:
+    except (ValueError, OverflowError):
+        # OverflowError:  a zone conversion off a year-1 stamp runs out of range;  leave the date alone.
         return match.group(0)
 
 
