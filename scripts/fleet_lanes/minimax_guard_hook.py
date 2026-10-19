@@ -43,7 +43,9 @@ def file_reason(payload: dict, ctx=None, secret_guard=None) -> str | None:
     if any(".secrets" in p.lower().split(os.sep) for p in candidates) or (
         sg is not None
         and any(
-            re.search(pattern, p, re.IGNORECASE) for p in candidates for pattern in sg.SECRET_FILE_PATTERNS
+            re.search(pattern, p, re.IGNORECASE)
+            for p in candidates
+            for pattern in sg.SECRET_FILE_PATTERNS
         )
     ):
         return (
