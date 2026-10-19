@@ -183,13 +183,14 @@ _SINGLE_GAP_RE = re.compile(r"(?P<end>[.!?][\"'”’)\]*_]*)(?P<space>[ ])(?=[A
 _WORD_BEFORE_RE = re.compile(r"([A-Za-z][A-Za-z.]*)$")
 
 # The same rules as the Apple Notes script's date rewrite.  A date is a token of its own:  a name or a query string
-# that merely contains one keeps it, and a dot after the date ends a sentence unless a word character follows.  A
-# +HH:MM / -HH:MM offset is only an offset on the ISO T form;  on the space form (2026-10-19 10:30-11:00) a bare -11:00
-# is the end of a time range, rendered in the fleet form too.
+# that merely contains one keeps it, and a dot after the date ends a sentence unless a word character follows.  On
+# the space form a -HH:MM is the end of a time range (2026-10-19 10:30-11:00), so it is tried first;  it is read as
+# a UTC offset only when the start carried seconds and the end did not (2026-10-19 10:30:00-05:00), because a
+# range that shows seconds shows them on both ends (2026-10-19 10:30:00-11:00:00).  A +HH:MM is never a range.
 _ISO_RE = re.compile(
     r"(?<![\w/.:=?&-])(\d{4})-(\d{2})-(\d{2})"
     r"(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?"
-    r"| (\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z)?(?:-(\d{2}):(\d{2}))?)?"
+    r"| (\d{2}):(\d{2})(:\d{2}(?:\.\d+)?)?(?:-(\d{2}):(\d{2})(:\d{2}(?:\.\d+)?)?)?(Z|[+-]\d{2}:?\d{2})?)?"
     r"(?![\w/-]|\.[A-Za-z0-9])"
 )
 
@@ -234,11 +235,32 @@ def single_gaps(text: str) -> tuple[str, int]:
     return "".join(pieces), count
 
 
-def _central_now() -> Any:
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+def _central(value: Any) -> Any:
+    """`value` (an aware datetime) as Central wall-clock time.  Uses zoneinfo;  if the machine has no tz
+    database, applies the US rule (second Sunday of March to first Sunday of November) directly, the same
+    fallback the CLI and open_loops use."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-    return datetime.now(ZoneInfo("America/Chicago"))
+    utc = value.astimezone(timezone.utc)
+    try:
+        return utc.astimezone(ZoneInfo("America/Chicago"))
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        pass
+
+    def nth_sunday(year: int, month: int, n: int) -> int:
+        first = datetime(year, month, 1)
+        return 1 + (6 - first.weekday()) % 7 + 7 * (n - 1)
+
+    start = datetime(utc.year, 3, nth_sunday(utc.year, 3, 2), 8, tzinfo=timezone.utc)
+    end = datetime(utc.year, 11, nth_sunday(utc.year, 11, 1), 7, tzinfo=timezone.utc)
+    return utc.astimezone(timezone(timedelta(hours=-5 if start <= utc < end else -6)))
+
+
+def _central_now() -> Any:
+    from datetime import datetime, timezone
+
+    return _central(datetime.now(timezone.utc))
 
 
 def _fleet_day(when: Any, this_year: int) -> str:
@@ -248,13 +270,16 @@ def _fleet_day(when: Any, this_year: int) -> str:
 
 def _fleet_date(match: re.Match[str], this_year: int) -> str:
     from datetime import datetime
-    from zoneinfo import ZoneInfo
 
-    year, month, day, t_hour, t_minute, t_zone, hour, minute, zone, r_hour, r_minute = (
+    year, month, day, t_hour, t_minute, t_zone, hour, minute, s_secs, r_hour, r_minute, r_secs, zone = (
         match.groups()
     )
     if t_hour is not None:
         hour, minute, zone = t_hour, t_minute, t_zone
+    elif r_hour is not None and s_secs is not None and r_secs is None:
+        # Seconds on the start of a range but not on its end:  a UTC offset, not a range (see _ISO_RE).
+        zone = "-" + r_hour + ":" + r_minute
+        r_hour = r_minute = None
 
     def clock(when: Any) -> str:
         return str(when.hour % 12 or 12) + when.strftime(":%M") + ("am" if when.hour < 12 else "pm")
@@ -267,9 +292,7 @@ def _fleet_date(match: re.Match[str], this_year: int) -> str:
             offset = (
                 "+00:00" if zone == "Z" else (zone if ":" in zone else zone[:3] + ":" + zone[3:])
             )
-            when = datetime.fromisoformat(when.isoformat() + offset).astimezone(
-                ZoneInfo("America/Chicago")
-            )
+            when = _central(datetime.fromisoformat(when.isoformat() + offset))
         out = _fleet_day(when, this_year) + ", " + clock(when)
         if r_hour is not None:
             out += "-" + clock(

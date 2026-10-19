@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import re
 import unittest
-from datetime import datetime
+import zoneinfo
+from datetime import datetime, timezone
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 from agent_sync import secretscan
+from agent_sync import textfmt
 from agent_sync import zulip as Z
 from agent_sync.tests.harness import TAG, Harness
 from agent_sync.textfmt import GAP, NBSP, fix_outbound, fleet_dates, sentence_gap, single_gaps
@@ -313,6 +316,41 @@ class FleetFormatTests(unittest.TestCase):
             "v2026-10-19",
         ):
             self.assertEqual(fleet_dates(kept, self.NOW), (kept, []), kept)
+
+    def test_space_form_offsets_are_not_time_ranges(self) -> None:
+        """A -HH:MM on the space form is a range only when the start did not carry seconds alone."""
+        for text, expected in (
+            # The existing range forms keep working:  a range that shows seconds shows them on both ends.
+            ("Standup 2026-10-19 10:30-11:00 Central.", "Standup Mon, Oct 19, 10:30am-11:00am Central."),
+            ("2026-10-19 10:30-11:00:00", "Mon, Oct 19, 10:30am-11:00am"),
+            ("2026-10-19 10:30:00-11:00:00", "Mon, Oct 19, 10:30am-11:00am"),
+            # Seconds on the start only:  a UTC offset, converted like the T form, not a 5:00am range end.
+            ("2026-10-19 10:30:00-05:00", "Mon, Oct 19, 10:30am"),
+            ("2026-10-19 10:30:00+05:30", "Mon, Oct 19, 12:00am"),
+            ("2026-10-19 10:30:00Z", "Mon, Oct 19, 5:30am"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(fleet_dates(text, self.NOW)[0], expected)
+                self.assertNotRegex(fleet_dates(text, self.NOW)[0], r"[:+-]\d{2}:\d{2}$")
+
+    def test_fleet_dates_without_a_tz_database(self) -> None:
+        """No tz database must not raise, and the US rule must agree with zoneinfo (sentry: 2 reported 18131371)."""
+        stamps = []
+        for year in range(2024, 2031):
+            for month, day in ((1, 15), (3, 20), (7, 4), (11, 20)):
+                stamp = datetime(year, month, day, 18, 0, tzinfo=timezone.utc)
+                # both the T form and the space form, so the Z path inside _fleet_date is covered too
+                stamps.append(
+                    stamp.strftime("%Y-%m-%dT%H:%M:%SZ") + " and " + stamp.strftime("%Y-%m-%d %H:%M:%SZ")
+                )
+        expected = [fleet_dates(text, self.NOW) for text in stamps]
+        with mock.patch.object(
+            zoneinfo, "ZoneInfo", side_effect=zoneinfo.ZoneInfoNotFoundError("no tzdata")
+        ):
+            self.assertIsNotNone(textfmt._central_now())
+            for text, want in zip(stamps, expected):
+                with self.subTest(stamp=text):
+                    self.assertEqual(fleet_dates(text, self.NOW), want)
 
     def test_fix_outbound_reports_and_respects_the_length_cap(self) -> None:
         fixed, report = fix_outbound("Merged 2026-10-19. Next.", now=self.NOW)
