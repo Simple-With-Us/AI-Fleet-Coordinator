@@ -646,7 +646,6 @@ class UsageTests(Base):
         self.assertEqual(self.call("help")[0], 0)
 
 
-
 class SetTests(Base):
     """`set` writes one secret over REST with the machine identity's token.  _api is faked, so no network."""
 
@@ -657,10 +656,16 @@ class SetTests(Base):
 
     def fake_api(self, method, path, token, body, env):
         self.api.append((method, path, token, dict(body or {})))
-        return self.statuses.get((method, path.split("/v3/secrets/raw/")[0] if "/v3/" in path else path), self.statuses.get(method, 200))
+        return self.statuses.get(
+            (method, path.split("/v3/secrets/raw/")[0] if "/v3/" in path else path),
+            self.statuses.get(method, 200),
+        )
 
     def run_set(self, *argv, stdin="VAL_TO_WRITE_1\n", env=None):
-        with mock.patch.object(core, "_api", self.fake_api), mock.patch.object(cli.sys, "stdin", io.StringIO(stdin)):
+        with (
+            mock.patch.object(core, "_api", self.fake_api),
+            mock.patch.object(cli.sys, "stdin", io.StringIO(stdin)),
+        ):
             return self.call("set", *argv, env=env)
 
     def test_update_path_sends_the_value_in_the_body_only_and_strips_one_newline(self):
@@ -670,7 +675,9 @@ class SetTests(Base):
         method, path, token, body = self.api[-1]
         self.assertEqual((method, path, token), ("PATCH", "/v3/secrets/raw/MY_KEY", ACCESS_TOKEN))
         self.assertEqual(body["secretValue"], "VAL_TO_WRITE_1")
-        self.assertEqual((body["environment"], body["secretPath"], body["type"]), ("prod", "/linear", "shared"))
+        self.assertEqual(
+            (body["environment"], body["secretPath"], body["type"]), ("prod", "/linear", "shared")
+        )
         self.assertEqual(body["workspaceId"], PROJECT)
 
     def test_a_missing_secret_is_created_after_the_patch_404s(self):

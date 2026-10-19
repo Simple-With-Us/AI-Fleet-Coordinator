@@ -91,8 +91,7 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
     name = core.check_name(str(opts["args"][0]))  # type: ignore[index]
     path = core.check_path(str(opts["path"]))
     value = stdin.read(core.MAX_VALUE_BYTES + 1)
-    if value.endswith("\n"):
-        value = value[:-1]
+    value = value.removesuffix("\n")
     if not value:
         raise UsageError("set reads the value from standard input and it was empty")
     try:

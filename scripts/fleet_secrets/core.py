@@ -476,7 +476,7 @@ def _api(method: str, path: str, token: str, body: dict | None, env: Mapping[str
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:  # noqa: S310 - https base, fixed host
+        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
             return resp.status
     except urllib.error.HTTPError as exc:
         return exc.code
@@ -505,7 +505,10 @@ def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
         raise SecretsError("cli-missing:  the infisical CLI is not installed")
     mode = auth_mode(env)
     if mode == "session":
-        raise SecretsError("write-needs-machine-identity:  set needs a keychain machine identity or INFISICAL_TOKEN", 4)
+        raise SecretsError(
+            "write-needs-machine-identity:  set needs a keychain machine identity or INFISICAL_TOKEN",
+            4,
+        )
     token = env[ENV_TOKEN].strip() if mode == "token" else machine_token(cli, env, mode)
     body = {
         "workspaceId": project,
