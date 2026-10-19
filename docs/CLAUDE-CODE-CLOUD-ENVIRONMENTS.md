@@ -56,11 +56,11 @@ in a Claude setup script.
 
 | Field | Fleet default |
 |-------|----------------|
-| Network access | **Full** (Infisical, Coolify, private package fetches, `mac.jays.services`) |
+| Network access | **Full** (Infisical, Coolify, private package fetches) |
 | Environment variables | Non-secret selectors only. No API keys. Cloud environments have no secrets store; anyone who can open the dialog can read the values. |
 | Base branch | `main` |
 
-Do not paste Infisical client secrets, Zulip bot keys, the Linear Fleet app's `LINEAR_CLIENT_SECRET`, or `MAC_COLLAB_TOKEN` into
+Do not paste Infisical client secrets, Zulip bot keys, or the Linear Fleet app's `LINEAR_CLIENT_SECRET` into
 the environment dialog. Apps that need Infisical stay keyless in cloud and
 resolve secrets only when identities are injected by a later, private path.
 

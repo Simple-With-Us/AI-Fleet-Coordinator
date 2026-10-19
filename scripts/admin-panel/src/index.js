@@ -81,7 +81,6 @@ const ENDPOINTS = [
   { name: 'FleetLink', url: 'https://fleetlink.online/' },
   { name: 'Fleet Activity', url: 'https://simple-with-us.github.io/AI-Fleet-Coordinator/' },
   { name: 'Start Page', url: 'https://start.jays.services' },
-  { name: 'The Board', url: 'https://mac.jays.services/board' },
   { name: 'Coolify', url: 'https://host.jays.services' },
   { name: 'Agents Gateway', url: 'https://agents.jays.services/health' },
   // Scout retired 2026-09-09 — DNS removed; do not probe scout.jays.services.
@@ -279,7 +278,7 @@ async function probe(ep) {
     }
     return { name: ep.name, url: ep.url, state: 'down', status, ms, detail: `HTTP ${status}` };
   } catch (err) {
-    // The tunnel-backed hosts (the Mac's board, the Xcode bridge, agent sync)
+    // The tunnel-backed hosts (the Xcode bridge, agent sync)
     // answer in well under a second from the Mac and time out from
     // Cloudflare's edge.  That is a route we cannot see from here, not a dead
     // service, so it is amber and says where the timeout was measured.
@@ -481,72 +480,6 @@ async function checkRecall(env) {
     breakdown,
     items: canary.items || [],
     error: [health.error, stats.error, canary.error].filter(Boolean).join(' · ') || undefined,
-  };
-}
-
-/* -------------------------------------------------------------- the board */
-/* Subrequests: stats + findings list.  Worst case 2.                       */
-
-// scripts/mac-collab/mac-collab-server.py:
-//   GET /health         public
-//   GET /findings/stats bearer -> { total, open, p0p1_open, done, by_kind, apps }
-//   GET /findings       bearer -> { findings: [...], count, total_matching }
-// The stats route has no per-severity or per-status breakdown, so the open
-// rows are listed once and counted here.
-async function checkBoard(env) {
-  if (!env.MAC_COLLAB_TOKEN) return notConfigured('MAC_COLLAB_TOKEN');
-  const base = env.BOARD_BASE || 'https://mac.jays.services';
-  const headers = { Authorization: `Bearer ${env.MAC_COLLAB_TOKEN}` };
-
-  const [stats, rows] = await Promise.all([
-    apiJson(`${base}/findings/stats`, { headers }),
-    apiJson(`${base}/findings?status=open,in_progress&limit=2000`, { headers })
-      .catch((err) => ({ __error: errText(err) })),
-  ]);
-
-  const findings = (rows && rows.findings) || [];
-  const bySeverity = { P0: 0, P1: 0, P2: 0, P3: 0, P4: 0 };
-  let open = 0;
-  let inProgress = 0;
-  for (const f of findings) {
-    if (bySeverity[f.severity] !== undefined) bySeverity[f.severity] += 1;
-    if (f.status === 'open') open += 1;
-    else if (f.status === 'in_progress') inProgress += 1;
-  }
-
-  const items = Object.entries(bySeverity)
-    .filter(([key, n]) => n > 0 || key === 'P0' || key === 'P1')
-    .map(([name, count]) => ({
-      name,
-      count,
-      state: count === 0 ? 'up' : (name === 'P0' ? 'down' : (name === 'P1' ? 'warn' : 'up')),
-    }));
-
-  const urgent = findings
-    .filter((f) => f.severity === 'P0' || f.severity === 'P1')
-    .slice(0, 6)
-    .map((f) => ({
-      name: f.title || `Finding ${f.id}`,
-      sub: [f.app, f.addressed_by || 'unclaimed'].filter(Boolean).join(' · '),
-      status: `${f.severity} ${String(f.status || '').replace('_', ' ')}`,
-      state: f.severity === 'P0' ? 'down' : 'warn',
-      url: `${base}/board`,
-    }));
-
-  const openTotal = Number(stats.open ?? (open + inProgress));
-  const p0p1 = Number(stats.p0p1_open ?? (bySeverity.P0 + bySeverity.P1));
-  const state = bySeverity.P0 > 0 ? 'down' : (p0p1 > 0 ? 'warn' : 'up');
-
-  return {
-    ok: !(rows && rows.__error),
-    state,
-    summary: `${open} open, ${inProgress} in progress, ${p0p1} at P0 or P1`,
-    items,
-    urgent,
-    counts: { total: Number(stats.total || 0), open: openTotal, done: Number(stats.done || 0), p0p1 },
-    byKind: stats.by_kind || {},
-    apps: stats.apps || [],
-    error: rows && rows.__error ? `Findings list: ${rows.__error}` : undefined,
   };
 }
 
@@ -960,7 +893,6 @@ const CHECKS = {
     cost: (env) => (missing(env, 'RECALL_API_TOKEN', 'CF_ACCESS_CLIENT_ID', 'CF_ACCESS_CLIENT_SECRET').length ? 1 : 3),
     run: (env) => checkRecall(env),
   },
-  board: { cost: (env) => (env.MAC_COLLAB_TOKEN ? 2 : 0), run: (env) => checkBoard(env) },
   coolify: { cost: (env) => (env.COOLIFY_TOKEN ? 2 : 0), run: (env) => checkCoolify(env) },
   github: { cost: (env) => (env.GITHUB_TOKEN ? OWNER_SEARCHES + APPS.length : 0), run: (env) => checkGitHub(env) },
   vercel: { cost: (env) => (env.VERCEL_TOKEN ? 2 + VERCEL_MAX_TEAMS : 0), run: (env) => checkVercel(env) },

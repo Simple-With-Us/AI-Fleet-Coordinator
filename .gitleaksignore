@@ -39,3 +39,10 @@ a0df50e5843d698782688de322e01948d0710292:scripts/agent_sync/tests/test_mcp_extra
 # "KEYS", in one commit of PR #637 (AFC-347).  The next commits remove it and look the project up by
 # slug instead, and the PR is squash-merged, so the id never reaches main.
 253d5b0f79834fc0448ba10da16798908c9e7b63:scripts/agent-sync-mcp/install_seat_key.py:generic-api-key:50
+# AFC-363 (#681), autofix.ci reformat commit:  it re-wrapped scripts/fleet_rag/tests/test_sources.py, so two long-standing
+# made-up fixtures (an effort-key hash and a Slack-shaped token) moved to new line numbers and gitleaks read them as new.
+# Fingerprints are per commit and line;  the fixtures are built at run time from the next commit on.
+5e308316d1e3be63b2b18be825e4aec246caf909:scripts/fleet_rag/tests/test_sources.py:generic-api-key:77
+5e308316d1e3be63b2b18be825e4aec246caf909:scripts/fleet_rag/tests/test_sources.py:generic-api-key:385
+# AFC-363 (#681), run-time fixture commit:  the first split still left a hex literal on one line (fixed in the next commit).
+533058ad64546eb2d3f6c0dee0335a494a39f7da:scripts/fleet_rag/tests/test_sources.py:generic-api-key:97

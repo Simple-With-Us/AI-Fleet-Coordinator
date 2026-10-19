@@ -29,7 +29,7 @@ On the Mac:
 - `fleet-secrets run --only A,B -- CMD` runs a command with just those keys as environment variables.
 - `fleet-secrets names` lists key names only.  `fleet-secrets doctor` prints booleans and counts only.
 
-Cloud: `GET https://mac.jays.services/files/key-names` with the same Bearer as `/files` (`MAC_COLLAB_TOKEN`) gives names only;  runtime keys are managed via Infisical per app.
+Cloud: there is no key-names endpoint now (the old `mac.jays.services/files/key-names` was retired 2026-10-19);  ask a Mac seat or the owner.  Runtime keys are managed via Infisical per app.
 
 Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  Copy cross-app keys into the consuming Infisical project (store-to-store), and do not teach an app to read `fleet-secrets` or the retired flat file.
 

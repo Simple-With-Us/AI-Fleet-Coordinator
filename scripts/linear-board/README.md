@@ -39,9 +39,11 @@ EOF
 chmod 755 "$HOME/.local/bin/board"
 ```
 
-The old CLI stays as `~/.local/bin/board-legacy` (a symlink to `~/apps/mac-collab/board`).  Cloud seats and BotFleet set `LINEAR_BOARD_WRITES=1` in their own environment at the same moment.
+The old CLI was kept as `~/.local/bin/board-legacy` (a symlink to `~/apps/mac-collab/board`) until it was removed on 2026-10-19 (AFC-363).  Cloud seats and BotFleet set `LINEAR_BOARD_WRITES=1` in their own environment at the same moment.
 
 ### Rollback
+
+**Retired 2026-10-19 (AFC-363).**  The `BOARD_BACKEND=mac-collab` rollback no longer exists:  the old board server is retired, `board-legacy` is removed, and `~/apps/mac-collab` was moved to `~/apps/_retired/mac-collab-20261019/`.  There is no way back to the old board;  Linear is the only tracker.  The text below is kept as history.
 
 Set `BOARD_BACKEND=mac-collab`.  The CLI then runs the old board CLI with the same arguments, before any other check, so the result matches today's behavior exactly.  The old script stays where it is (`~/apps/mac-collab/board`, or the path in `BOARD_MAC_COLLAB_CLI`); nothing is copied.
 
@@ -77,7 +79,7 @@ Everything else is unchanged:  claims keep their `claimed:<SEAT>` label and `CLA
 
 ## Frozen contract
 
-Every verb and flag of `~/apps/mac-collab/board` is accepted and prints the same lines, with these deliberate breaks:
+Every verb and flag of the old board CLI (`~/apps/mac-collab/board`, retired 2026-10-19) is accepted and prints the same lines, with these deliberate breaks:
 
 - `status <id> duplicate` needs `--of <id>` (or a `dup of <id>` in `--resolution`).  The old CLI took a bare `duplicate`; 88 board rows used it.  Linear only makes a Duplicate through a relation to a canonical issue.
 - `claim` refuses (exit 3) when another seat holds an In Progress claim, unless `--steal --reason "..."`.
@@ -220,8 +222,8 @@ CI enforces it twice.  `scripts/agent-sync-mcp/test/linear-catalog-parity.test.m
 |---|---|---|
 | `AGENT_SEAT` | required for writes | The seat tag every write carries.  `list`, `show`, `stats` and `whoami` run without it |
 | `LINEAR_BOARD_WRITES` | off | `1` enables `file`, `claim`, `status`, `comment`, `label`, and the parity writes (`run` of a write command, `api mutation`, a write `mcp call`) |
-| `BOARD_BACKEND` | `linear` | `mac-collab` runs the old board CLI (rollback) |
-| `BOARD_MAC_COLLAB_CLI` | `~/apps/mac-collab/board` | The old CLI that `BOARD_BACKEND=mac-collab` runs |
+| `BOARD_BACKEND` | `linear` | `mac-collab` ran the old board CLI (rollback);  retired 2026-10-19 |
+| `BOARD_MAC_COLLAB_CLI` | `~/apps/mac-collab/board` | The old CLI that `BOARD_BACKEND=mac-collab` ran;  retired 2026-10-19 |
 | `LINEAR_BOARD_FLEET_SECRETS` | `fleet-secrets` on `PATH`, else `~/.local/bin/fleet-secrets` | The `fleet-secrets` binary used for the Fleet-OPS reads (tests point it at a stub) |
 | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET` | unset | Cloud runtimes:  the seat's own app or Fleet.  When both are set they come first |
 | `LINEAR_<SEAT>_CLIENT_ID`, `LINEAR_<SEAT>_CLIENT_SECRET` | unset | Cloud runtimes:  the seat's own app, for the seat in `AGENT_SEAT` only, with hyphens as underscores (`LINEAR_GROK_WEB_CLIENT_ID`) |

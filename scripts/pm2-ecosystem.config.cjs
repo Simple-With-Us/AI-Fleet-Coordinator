@@ -10,10 +10,11 @@
  * system cloudflared).  Do not start scheduled fire-and-exit jobs here
  * (watchdog, janitor, collector) — those stay launchd StartInterval.
  *
- * Deprecated / removed from this ecosystem (do not resurrect): mac-collab-sync
- * and mac-collab-writeback (retired at the Linear cutover:  the effort logs are
- * archived and Linear is the tracker;  mac-collab itself stays as a read-only
- * archive with mac-collab-litestream until about day 30), scout,
+ * Deprecated / removed from this ecosystem (do not resurrect): mac-collab,
+ * mac-collab-litestream, mac-collab-sync and mac-collab-writeback (the board
+ * server and its replicas;  the sync and writeback jobs retired at the Linear
+ * cutover, the server and litestream on 2026-10-19, AFC-363;  Linear is the
+ * tracker and the directory is parked in ~/apps/_retired/), scout,
  * residential-proxy, senate-relay, senate-tunnel.  Senate/residential stay
  * off this Mac; Coolify/Texas paths own them.
  *
@@ -83,14 +84,6 @@ module.exports = {
       error_file: `${logs}/xcode-health-error.log`,
     }),
     app({
-      name: "mac-collab",
-      script: `${home}/apps/mac-collab/mac-collab-server.py`,
-      interpreter: "/usr/bin/python3",
-      cwd: `${home}/apps/mac-collab`,
-      out_file: `${logs}/mac-collab-out.log`,
-      error_file: `${logs}/mac-collab-error.log`,
-    }),
-    app({
       name: "agy-acp",
       script: `${home}/apps/agy-acp-runtime/start.sh`,
       interpreter: "bash",
@@ -147,14 +140,6 @@ module.exports = {
       cwd: `${home}/apps/seat-mcp`,
       out_file: `${logs}/seat-mcp-out.log`,
       error_file: `${logs}/seat-mcp-error.log`,
-    }),
-    app({
-      name: "mac-collab-litestream",
-      script: `${home}/apps/mac-collab/start_litestream.sh`,
-      interpreter: "bash",
-      cwd: `${home}/apps/mac-collab`,
-      out_file: `${logs}/mac-collab-litestream-out.log`,
-      error_file: `${logs}/mac-collab-litestream-error.log`,
     }),
     app({
       name: "botfleet-mcp",
