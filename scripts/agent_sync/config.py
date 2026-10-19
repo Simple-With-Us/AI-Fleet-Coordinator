@@ -321,7 +321,8 @@ class Config:
         self.owner_coalesce_seconds = 5.0
         self.presence: list[tuple[str, str]] = [(c, t) for c, t in L.DEFAULT_PRESENCE]
         self.claude_seat: str | None = None
-        self.rewake_verified = False
+        self.rewake_verified_cli = False
+        self.rewake_verified_desktop = False
         self.seats: dict[str, SeatConfig] = {}
         self.disabled: dict[
             str, SeatConfig
@@ -364,6 +365,11 @@ class Config:
         self.host_wake_load_per_core = 3.0
         self.host_wake_defer_max_minutes = 20.0
         self.host_wake_max_running = 0
+
+    @property
+    def rewake_verified(self) -> bool:
+        """True only when both surfaces are verified (the blanket answer for an unnamed surface)."""
+        return self.rewake_verified_cli and self.rewake_verified_desktop
 
     @property
     def ok(self) -> bool:
@@ -763,7 +769,12 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             cfg.claude_seat = seat.upper()
         else:
             errors.append("platform.claude-code.seat must be a seat name such as CLAUDE")
-    cfg.rewake_verified = L.rewake_verified(raw)
+    cfg.rewake_verified_cli, cfg.rewake_verified_desktop = L.rewake_flags(raw)
+    for key in L.REWAKE_SURFACE_KEYS:
+        if key in platform and not isinstance(platform[key], bool):
+            # Fail soft:  the flag is False for that surface (never the legacy value) and the seat keeps
+            # capturing;  the problem shows in status and raises the config banner.
+            errors.append("platform.claude-code.%s must be true or false;  treated as false" % key)
     seats = raw.get("seat") or {}
     if not isinstance(seats, dict):
         errors.append("[seat.X] sections must be tables")

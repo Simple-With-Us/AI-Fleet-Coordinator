@@ -344,12 +344,15 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
     )
     if status:
         lines.append(
-            "status updated %s; instance %s; owner pinned: %s; rewake verified: %s"
+            "status updated %s; instance %s; owner pinned: %s; rewake verified: terminal %s, Desktop %s"
             % (
                 _when(status.get("updated")),
                 status.get("instance") or "mac",
                 "yes" if status.get("owner_user_id") else "NO",
-                "yes" if status.get("rewake_verified") else "no",
+                "yes" if status.get("rewake_verified_cli", status.get("rewake_verified")) else "no",
+                "yes"
+                if status.get("rewake_verified_desktop", status.get("rewake_verified"))
+                else "no",
             )
         )
         bridge = status.get("muse_bridge") or {}

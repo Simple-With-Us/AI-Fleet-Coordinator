@@ -1493,7 +1493,11 @@ class Daemon:
             capable = (
                 claude
                 and lease.get("wake_capable") is not False
-                and self.config.rewake_verified
+                and L.rewake_verified_for(
+                    self.config.rewake_verified_cli,
+                    self.config.rewake_verified_desktop,
+                    L.surface_of(lease.get("entrypoint")),
+                )
                 and not L.paused(self.root, runner.seat)
                 and L.watcher_alive(runner.paths, lease_id)
             )
@@ -4856,6 +4860,8 @@ class Daemon:
             "chat_nudges": all_nudges,
             "loop_guard": self.loopguard.holding(now),
             "rewake_verified": self.config.rewake_verified,
+            "rewake_verified_cli": self.config.rewake_verified_cli,
+            "rewake_verified_desktop": self.config.rewake_verified_desktop,
             "pause": L.read_json(pause_path(self.root)),
             "seats": seats,
         }
