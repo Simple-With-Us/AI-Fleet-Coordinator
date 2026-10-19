@@ -815,7 +815,10 @@ class Daemon:
                 kind="config-wake",
                 key="config-wake:%s" % seat,
                 note="%d problem%s in listener.toml for this seat; agent-sync status lists them"
-                % (len(seat_cfg.config_problems), "" if len(seat_cfg.config_problems) == 1 else "s"),
+                % (
+                    len(seat_cfg.config_problems),
+                    "" if len(seat_cfg.config_problems) == 1 else "s",
+                ),
             )
         for seat, problems in sorted(cfg.skipped_seats.items()):
             self.notifier.notify(

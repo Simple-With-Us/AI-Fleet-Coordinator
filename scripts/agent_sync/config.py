@@ -849,7 +849,9 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                     problems.append('seat.%s.%s applies only to creds = "env"' % (seat_name, key))
         wake = section.get("wake", "inbox")
         if wake not in KNOWN_WAKES:
-            wake_problems.append("seat.%s.wake must be one of %s" % (seat_name, ", ".join(KNOWN_WAKES)))
+            wake_problems.append(
+                "seat.%s.wake must be one of %s" % (seat_name, ", ".join(KNOWN_WAKES))
+            )
         routine = None
         if wake == "http":
             routine = _routine(seat_name, section.get("routine"), wake_problems)
@@ -870,7 +872,9 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if mcode is not None and (not isinstance(mcode, str) or not os.path.isabs(mcode)):
             wake_problems.append("seat.%s.mcode must be an absolute path" % seat_name)
         if "mcode" in section and wake not in ("claude", "muse"):
-            wake_problems.append('seat.%s.mcode applies only to wake = "claude" or "muse"' % seat_name)
+            wake_problems.append(
+                'seat.%s.mcode applies only to wake = "claude" or "muse"' % seat_name
+            )
         # The fallback runtime, tried only when the primary could not produce a usable answer.  It
         # is never consulted for a quota refusal:  a capped provider stays capped whatever runs.
         fallback = section.get("fallback")
@@ -879,7 +883,9 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                 "seat.%s.fallback must be one of %s" % (seat_name, ", ".join(KNOWN_FALLBACKS))
             )
         if fallback is not None and wake not in WORKER_WAKES:
-            wake_problems.append("seat.%s.fallback applies only to a wake that runs a turn" % seat_name)
+            wake_problems.append(
+                "seat.%s.fallback applies only to a wake that runs a turn" % seat_name
+            )
         if fallback is not None and fallback == wake:
             wake_problems.append("seat.%s.fallback may not be its own wake type" % seat_name)
         # Naming a fallback is not enough to run it.  mcode's tools are live while it answers, and a
@@ -893,7 +899,9 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             )
         uncontained = section.get("fallback_uncontained_ok", False)
         if not isinstance(uncontained, bool):
-            wake_problems.append("seat.%s.fallback_uncontained_ok must be true or false" % seat_name)
+            wake_problems.append(
+                "seat.%s.fallback_uncontained_ok must be true or false" % seat_name
+            )
         provider = section.get("provider")
         if provider is not None:
             if not isinstance(provider, str) or not re.fullmatch(
