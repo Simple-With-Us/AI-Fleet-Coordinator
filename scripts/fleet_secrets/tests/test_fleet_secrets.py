@@ -22,15 +22,25 @@ CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"
 CLIENT_SECRET = "SENTINEL_CLIENT_SECRET_5ec7"
 ACCESS_TOKEN = "SENTINEL_ACCESS_TOKEN_a11"
 ALL_SENTINELS = (VAL_A, VAL_B, CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN)
+FAKE_LOGIN_KEYCHAIN = "/fake/home/Library/Keychains/login.keychain-db"
 KEYCHAIN_FULL = {core.KEYCHAIN_CLIENT_ID: CLIENT_ID, core.KEYCHAIN_CLIENT_SECRET: CLIENT_SECRET}
 
 
 class World:
     """Stands in for subprocess.run:  the infisical CLI plus /usr/bin/security."""
 
-    def __init__(self, secrets=None, keychain=None, export_rc=0, export_stdout=None, login_rc=0):
+    def __init__(
+        self,
+        secrets=None,
+        keychain=None,
+        export_rc=0,
+        export_stdout=None,
+        login_rc=0,
+        system_keychain=None,
+    ):
         self.secrets = {"ALPHA": VAL_A, "BETA": VAL_B} if secrets is None else secrets
         self.keychain = keychain or {}
+        self.system_keychain = system_keychain or {}
         self.export_rc = export_rc
         self.export_stdout = export_stdout
         self.login_rc = login_rc
@@ -42,10 +52,14 @@ class World:
         self.calls.append((argv, env))
         if argv[0] == core.SECURITY_BIN:
             acct = argv[argv.index("-a") + 1]
-            if acct in self.keychain:
-                return subprocess.CompletedProcess(
-                    argv, 0, (self.keychain[acct] + "\n").encode(), b""
-                )
+            if argv[-1] == core.SYSTEM_KEYCHAIN:
+                store = self.system_keychain
+            elif argv[-1] == FAKE_LOGIN_KEYCHAIN:
+                store = self.keychain
+            else:
+                raise AssertionError("keychain lookup without an explicit keychain path: %r" % argv)
+            if acct in store:
+                return subprocess.CompletedProcess(argv, 0, (store[acct] + "\n").encode(), b"")
             return subprocess.CompletedProcess(argv, 44, b"", b"not found")
         if argv[0] != FAKE_CLI:
             raise AssertionError("unexpected program %r" % argv[0])
@@ -94,6 +108,7 @@ class Base(unittest.TestCase):
         patches = [
             mock.patch.object(core, "find_cli", lambda env: FAKE_CLI),
             mock.patch.object(core, "SECURITY_BIN", sys.executable),  # exists on every platform
+            mock.patch.object(core, "login_keychain", lambda: FAKE_LOGIN_KEYCHAIN),
             mock.patch.object(
                 cli.os, "execvpe", lambda f, a, e: self.exec_calls.append((f, list(a), dict(e)))
             ),
@@ -337,6 +352,125 @@ class AuthSelectionTests(Base):
         self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
         self.assertNotIn(core.ENV_CLIENT_SECRET, eenv)
 
+    def test_system_keychain_identity_is_used_when_the_login_keychain_is_empty(self):
+        w = self.use(World(system_keychain=KEYCHAIN_FULL))
+        code, out, _ = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (0, VAL_A))
+        ((largv, lenv),) = w.logins()
+        self.assertIn("--method=universal-auth", largv)
+        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
+        self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
+        eargv, eenv = w.exports()[0]
+        self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
+        self.assertNotIn(core.ENV_CLIENT_SECRET, eenv)
+        lookups = [a for a, _ in w.calls if a[0] == core.SECURITY_BIN]
+        self.assertIn(
+            [
+                core.SECURITY_BIN,
+                "find-generic-password",
+                "-s",
+                "fleet-secrets",
+                "-a",
+                core.KEYCHAIN_CLIENT_SECRET,
+                "-w",
+                core.SYSTEM_KEYCHAIN,
+            ],
+            lookups,
+        )
+
+    def test_only_system_has_the_items_so_the_mode_is_system_keychain_not_keychain(self):
+        # Every lookup names its keychain, so System items are never found through the login lookup.
+        w = self.use(World(system_keychain=KEYCHAIN_FULL))
+        self.assertEqual(core.auth_mode(self.env), "system-keychain")
+        lookups = [a for a, _ in w.calls if a[0] == core.SECURITY_BIN]
+        self.assertTrue(lookups)
+        self.assertTrue(all(a[-1] in (FAKE_LOGIN_KEYCHAIN, core.SYSTEM_KEYCHAIN) for a in lookups))
+
+    def test_no_usable_login_keychain_falls_cleanly_to_system(self):
+        self.use(World(system_keychain=KEYCHAIN_FULL))
+        with mock.patch.object(core, "login_keychain", lambda: None):
+            self.assertEqual(core.auth_mode(self.env), "system-keychain")
+            code, out, _ = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (0, VAL_A))
+
+    def test_one_item_in_each_keychain_is_not_mixed(self):
+        w = self.use(
+            World(
+                keychain={core.KEYCHAIN_CLIENT_ID: CLIENT_ID},
+                system_keychain={core.KEYCHAIN_CLIENT_SECRET: CLIENT_SECRET},
+            )
+        )
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn("keychain-incomplete", err)
+        self.assertEqual(w.logins(), [])
+
+    def test_login_keychain_beats_the_system_keychain(self):
+        w = self.use(
+            World(
+                keychain=KEYCHAIN_FULL,
+                system_keychain={
+                    core.KEYCHAIN_CLIENT_ID: "OTHER_ID",
+                    core.KEYCHAIN_CLIENT_SECRET: "OTHER_SECRET",
+                },
+            )
+        )
+        self.call("get", "ALPHA")
+        ((_, lenv),) = w.logins()
+        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
+
+    def test_env_token_beats_both_keychains(self):
+        w = self.use(World(keychain=KEYCHAIN_FULL, system_keychain=KEYCHAIN_FULL))
+        self.env[core.ENV_TOKEN] = "ENV_TOKEN_SENTINEL"
+        self.call("get", "ALPHA")
+        self.assertEqual(w.logins(), [])
+        self.assertEqual(w.exports()[0][1][core.ENV_TOKEN], "ENV_TOKEN_SENTINEL")
+
+    def test_half_filled_system_keychain_fails_instead_of_downgrading(self):
+        w = self.use(World(system_keychain={core.KEYCHAIN_CLIENT_SECRET: CLIENT_SECRET}))
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn("keychain-incomplete", err)
+        self.assertIn("System keychain", err)
+        self.assertEqual(w.exports(), [])
+        self.assertNoSentinel(err)
+
+    def test_system_keychain_secret_and_token_never_appear_in_argv_or_the_run_child(self):
+        w = self.use(World(system_keychain=KEYCHAIN_FULL))
+        self.call("get", "ALPHA")
+        self.call("run", "--", "mycmd")
+        for argv, _ in w.calls:
+            joined = "\x00".join(argv)
+            for s in (CLIENT_ID, CLIENT_SECRET, ACCESS_TOKEN):
+                self.assertNotIn(s, joined)
+        env = self.exec_calls[0][2]
+        for var in (core.ENV_TOKEN, core.ENV_CLIENT_ID, core.ENV_CLIENT_SECRET):
+            self.assertNotIn(var, env)
+
+    def test_failed_system_keychain_login_error_holds_no_secret(self):
+        self.use(World(system_keychain=KEYCHAIN_FULL, login_rc=1))
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn("login-failed", err)
+        self.assertNoSentinel(err)
+
+    def test_get_returns_the_automation_identity_keys_that_run_refuses_to_inject(self):
+        # `get` is how the seeding script reads the pair;  only `run` withholds INFISICAL_* names.
+        self.use(
+            World(
+                secrets={
+                    "INFISICAL_AUTOMATION_CLIENT_ID": VAL_A,
+                    "INFISICAL_AUTOMATION_CLIENT_SECRET": VAL_B,
+                }
+            )
+        )
+        code, out, _ = self.call("get", "INFISICAL_AUTOMATION_CLIENT_ID")
+        self.assertEqual((code, out), (0, VAL_A))
+        code, out, _ = self.call("get", "INFISICAL_AUTOMATION_CLIENT_SECRET")
+        self.assertEqual((code, out), (0, VAL_B))
+        self.assertEqual(self.call("run", "--", "mycmd")[0], 0)
+        self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_ID", self.exec_calls[0][2])
+
     def test_client_secret_and_token_never_appear_in_any_argv(self):
         w = self.use(World(keychain=KEYCHAIN_FULL))
         self.call("get", "ALPHA")
@@ -475,6 +609,18 @@ class DoctorTests(Base):
             self.assertIsInstance(v, (bool, int, str, type(None)))
         self.assertNoSentinel(out, err)
         self.assertNotIn(PROJECT, out)
+
+    def test_doctor_reports_the_system_keychain_as_booleans_and_its_auth_mode(self):
+        self.use(World(system_keychain=KEYCHAIN_FULL))
+        code, out, err = self.call("doctor", "--json")
+        rep = json.loads(out)
+        self.assertEqual(code, 0)
+        self.assertEqual(rep["auth_mode"], "system-keychain")
+        self.assertIs(rep["system_keychain_client_id_present"], True)
+        self.assertIs(rep["system_keychain_client_secret_present"], True)
+        self.assertIs(rep["keychain_client_id_present"], False)
+        self.assertIs(rep["keychain_client_secret_present"], False)
+        self.assertNoSentinel(out, err)
 
     def test_doctor_session_mode_text_output(self):
         self.use(World())

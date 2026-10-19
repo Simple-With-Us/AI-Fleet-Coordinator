@@ -11,9 +11,11 @@ Contract (same family as ``fleet_knobs/source.py`` and ``fleet_rag/infisical_set
   command and names the key, never the value.
 * Auth, first match wins:  ``INFISICAL_TOKEN`` already in the environment ("token"), a
   universal-auth machine identity whose id and secret are in the login Keychain ("keychain"),
-  or the Infisical CLI's own login session ("session").  A machine-identity secret travels to
-  the CLI by environment variable and is never put in an argument list.  The access token it
-  returns goes to the export call by ``INFISICAL_TOKEN`` for the same reason.
+  the same pair in the System keychain ("system-keychain", for pm2 and other boot-time jobs
+  that run in the launchd System session, where the login Keychain is unreachable), or the
+  Infisical CLI's own login session ("session").  A machine-identity secret travels to the CLI
+  by environment variable and is never put in an argument list.  The access token it returns
+  goes to the export call by ``INFISICAL_TOKEN`` for the same reason.
 
 Stdlib only, so a stable copy run with ``python3 -I`` needs nothing beside this package.
 """
@@ -42,6 +44,7 @@ ENV_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 PROJECT_FILE = ".agent-sync/fleet-ops-project-id"
 ENV_NAMES = ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV")
 
+SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain"
 KEYCHAIN_SERVICE = "fleet-secrets"
 KEYCHAIN_CLIENT_ID = "infisical-client-id"
 KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
@@ -178,13 +181,39 @@ def _base_env(env: Mapping[str, str]) -> dict[str, str]:
 # --------------------------------------------------------------------------- authentication
 
 
-def keychain_item(account: str) -> str | None:
-    """The generic-password value for service fleet-secrets, or None when absent.  Captured, never echoed."""
-    if not os.path.exists(SECURITY_BIN):
+def login_keychain() -> str | None:
+    """Path of the user's login keychain file, or None when there is none.
+
+    Always searched by explicit path:  the default search list also holds the System keychain, so a
+    path-less lookup would find System items and report `keychain` instead of `system-keychain`, or mix
+    one item from each.  In the launchd System session the file exists but is locked, so the lookup simply
+    fails and the System keychain is used."""
+    base = os.path.expanduser("~/Library/Keychains")
+    for name in ("login.keychain-db", "login.keychain"):
+        candidate = os.path.join(base, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def keychain_item(account: str, keychain: str | None) -> str | None:
+    """The generic-password value for service fleet-secrets in ONE keychain file, or None when absent
+    (`keychain` None means there is no such keychain).  Captured, never echoed."""
+    if not keychain or not os.path.exists(SECURITY_BIN):
         return None
+    argv = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w",
+        keychain,
+    ]
     try:
         proc = subprocess.run(
-            [SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w"],
+            argv,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=KEYCHAIN_TIMEOUT,
@@ -201,26 +230,43 @@ def keychain_item(account: str) -> str | None:
     return value or None
 
 
-def auth_mode(env: Mapping[str, str]) -> str:
-    """ "token", "keychain" or "session".  Raises on a half-filled Keychain rather than downgrade."""
-    if (env.get(ENV_TOKEN) or "").strip():
-        return "token"
-    have_id = keychain_item(KEYCHAIN_CLIENT_ID) is not None
-    have_secret = keychain_item(KEYCHAIN_CLIENT_SECRET) is not None
+def keychain_presence(keychain: str | None) -> tuple[bool, bool]:
+    """(client id present, client secret present) in one keychain.  Booleans only."""
+    return (
+        keychain_item(KEYCHAIN_CLIENT_ID, keychain) is not None,
+        keychain_item(KEYCHAIN_CLIENT_SECRET, keychain) is not None,
+    )
+
+
+def _complete_or_none(label: str, keychain: str | None) -> bool:
+    have_id, have_secret = keychain_presence(keychain)
     if have_id and have_secret:
-        return "keychain"
+        return True
     if have_id or have_secret:
         raise SecretsError(
-            "keychain-incomplete:  service %s needs both accounts %s and %s, or neither"
-            % (KEYCHAIN_SERVICE, KEYCHAIN_CLIENT_ID, KEYCHAIN_CLIENT_SECRET)
+            "keychain-incomplete:  %s needs both accounts %s and %s under service %s, or neither"
+            % (label, KEYCHAIN_CLIENT_ID, KEYCHAIN_CLIENT_SECRET, KEYCHAIN_SERVICE)
         )
+    return False
+
+
+def auth_mode(env: Mapping[str, str]) -> str:
+    """ "token", "keychain", "system-keychain" or "session".  Raises on a half-filled keychain rather
+    than downgrade."""
+    if (env.get(ENV_TOKEN) or "").strip():
+        return "token"
+    if _complete_or_none("the login Keychain", login_keychain()):
+        return "keychain"
+    if _complete_or_none("the System keychain", SYSTEM_KEYCHAIN):
+        return "system-keychain"
     return "session"
 
 
-def machine_token(cli: str, env: Mapping[str, str]) -> str:
-    """Log in with the Keychain's machine identity and return the access token (in memory only)."""
-    client_id = keychain_item(KEYCHAIN_CLIENT_ID)
-    client_secret = keychain_item(KEYCHAIN_CLIENT_SECRET)
+def machine_token(cli: str, env: Mapping[str, str], mode: str = "keychain") -> str:
+    """Log in with the mode's machine identity and return the access token (in memory only)."""
+    keychain = SYSTEM_KEYCHAIN if mode == "system-keychain" else login_keychain()
+    client_id = keychain_item(KEYCHAIN_CLIENT_ID, keychain)
+    client_secret = keychain_item(KEYCHAIN_CLIENT_SECRET, keychain)
     if not client_id or not client_secret:
         raise SecretsError("keychain-incomplete")
     child = _base_env(env)
@@ -312,8 +358,8 @@ def fetch_all(path: str, env: Mapping[str, str]) -> dict[str, str]:
         raise SecretsError("cli-missing:  the infisical CLI is not installed")
     mode = auth_mode(env)
     child = _base_env(env)
-    if mode == "keychain":
-        child[ENV_TOKEN] = machine_token(cli, env)
+    if mode in ("keychain", "system-keychain"):
+        child[ENV_TOKEN] = machine_token(cli, env, mode)
     if mode != "token":
         for var in (ENV_CLIENT_ID, ENV_CLIENT_SECRET):
             child.pop(var, None)
