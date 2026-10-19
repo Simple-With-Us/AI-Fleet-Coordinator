@@ -87,6 +87,8 @@ def admin_secret(name, required=True):
             [fleet_secrets_bin(), "get", name, "--path", ADMIN_FOLDER],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
             stdin=subprocess.DEVNULL,
         )
@@ -96,7 +98,7 @@ def admin_secret(name, required=True):
             value = proc.stdout.rstrip("\n").strip()
             if not value:
                 problem = "fleet-secrets returned an empty value"
-    except (OSError, subprocess.SubprocessError) as err:
+    except (OSError, ValueError, subprocess.SubprocessError) as err:
         problem = f"fleet-secrets could not run ({type(err).__name__})"
     if value:
         return value
@@ -233,10 +235,9 @@ def resolve_out_dir(out_dir):
 
 
 def make_out_dir(real):
-    """Create the directory with mode 700 when it is new."""
-    created = not os.path.isdir(real)
+    """Create the directory (or tighten an existing one) to mode 700;  it holds new bot keys."""
     os.makedirs(real, mode=0o700, exist_ok=True)
-    if created:
+    if os.stat(real).st_uid == os.getuid():
         os.chmod(real, 0o700)
 
 

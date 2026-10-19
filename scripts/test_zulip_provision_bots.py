@@ -431,6 +431,19 @@ class ProvisionTests(unittest.TestCase):
         self.assertFalse(bad.exists())
         self.assertEqual(self.fake.posts(), [])
 
+    def test_existing_out_dir_is_tightened_to_700(self):
+        self.out.mkdir()
+        self.out.chmod(0o755)
+        code, out, err = self.run_main("--yes", "--only", "Clutch")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(stat.S_IMODE(self.out.stat().st_mode), 0o700)
+
+    def test_undecodable_fleet_secrets_output_does_not_crash(self):
+        self.fs.write_text("#!/bin/sh\nprintf 'ok\\377\\376'\n")
+        value = prov.admin_secret("REALM_ADMIN_ZULIP_SITE", required=False)
+        self.assertIsInstance(value, str)
+        self.assertTrue(value.startswith("ok"))
+
     def test_unknown_only_name_is_an_error(self):
         code, out, err = self.run_main("--dry-run", "--only", "Nobody")
         self.assertIsInstance(code, SystemExit)
