@@ -293,6 +293,23 @@ check "rollback restores from the newest directory that holds files, skipping an
 rm -f "$RETIRE_HOME/bin/infisical-secrets-sync.sh" "$RETIRE_HOME/Library/LaunchAgents/com.jay.infisical-secrets-sync.plist"
 : > "$STUB_UNLOADED"
 
+# 4. disable on an unloaded job:  still attempted, and a non-zero exit is a warning, not a failure.
+cat > "$tmp/launchctl-nodisable" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_LC"
+case "$1" in
+  print) exit 1 ;;
+  disable) exit 113 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$tmp/launchctl-nodisable"
+mkdir -p "$RETIRE_HOME/Library/LaunchAgents"
+printf 'x\n' > "$RETIRE_HOME/Library/LaunchAgents/com.jay.infisical-secrets-sync.plist"
+: > "$STUB_LC"
+RETIRE_LAUNCHCTL="$tmp/launchctl-nodisable" RETIRE_STAMP=D1 bash "$script" bootout > "$tmp/boot-nd.txt" 2>&1; rcd=$?
+check "bootout on an unloaded, unregistered job still tries to disable it and only warns when launchctl refuses" bash -c "test $rcd -eq 0 && grep -q 'disable gui/501/com.jay.infisical-secrets-sync' '$STUB_LC' && grep -q 'not registered with launchd' '$tmp/boot-nd.txt' && test -f '$retired/infisical-secrets-sync-D1/com.jay.infisical-secrets-sync.plist'"
+
 # 3. archive verification.  A stub hdiutil copies the folder into a fake volume;  STUB_ATTACH_MODE breaks it on purpose.
 mkdir -p "$tmp/archives" "$tmp/volumes" "$tmp/arch"
 cat > "$tmp/hdiutil" <<'STUB'
@@ -318,7 +335,7 @@ case "$1" in
 esac
 STUB
 chmod +x "$tmp/hdiutil"
-printf 'pw-test\npw-test\n' > "$tmp/tty-in"
+printf 'pw-test-long-enough\npw-test-long-enough\n' > "$tmp/tty-in"
 export RETIRE_HDIUTIL="$tmp/hdiutil" RETIRE_VOLUMES="$tmp/volumes" RETIRE_ARCHIVE_DIR="$tmp/arch" RETIRE_TTY_IN="$tmp/tty-in" RETIRE_TTY_OUT=/dev/null STUB_ARCHIVES="$tmp/archives"
 arch() { # $1 = stamp, $2 = attach mode, rest = archive args
   local st="$1" mode="$2"; shift 2
@@ -327,6 +344,12 @@ arch() { # $1 = stamp, $2 = attach mode, rest = archive args
 arch OK ok --rename
 check "archive with a good mount verifies, renames the folder and never deletes" bash -c "test \"\$(cat '$tmp/arch-OK.rc')\" -eq 0 && grep -q 'byte-for-byte identical' '$tmp/arch-OK.txt' && test -d '$RETIRE_HOME/.secrets.retired-OK' && test ! -e '$RETIRE_HOME/.secrets'"
 mv "$RETIRE_HOME/.secrets.retired-OK" "$RETIRE_HOME/.secrets"
+printf 'short-pw\nshort-pw\n' > "$tmp/tty-short"
+RETIRE_TTY_IN="$tmp/tty-short" arch SHORT ok --rename
+check "archive refuses a passphrase shorter than 12 characters and leaves the folder alone" bash -c "test \"\$(cat '$tmp/arch-SHORT.rc')\" -ne 0 && grep -q 'at least 12 characters' '$tmp/arch-SHORT.txt' && test -f '$RETIRE_HOME/.secrets/dummy.env' && test ! -e '$tmp/arch/secrets-archive-SHORT.dmg.sha256'"
+printf 'long-enough-pw-1\nlong-enough-pw-2\n' > "$tmp/tty-mismatch"
+RETIRE_TTY_IN="$tmp/tty-mismatch" arch MISMATCH ok --rename
+check "archive refuses mismatched passphrases" bash -c "test \"\$(cat '$tmp/arch-MISMATCH.rc')\" -ne 0 && grep -q 'different passphrases' '$tmp/arch-MISMATCH.txt'"
 for mode in nomount differ extra unreadable; do
   arch "F$mode" "$mode" --rename
   check "archive FAILS and leaves the folder in place when verification hits: $mode" bash -c "test \"\$(cat '$tmp/arch-F$mode.rc')\" -ne 0 && test -f '$RETIRE_HOME/.secrets/dummy.env' && test ! -e '$RETIRE_HOME/.secrets.retired-F$mode' && ! grep -q 'byte-for-byte' '$tmp/arch-F$mode.txt'"

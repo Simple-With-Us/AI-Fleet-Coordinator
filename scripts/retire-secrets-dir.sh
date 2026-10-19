@@ -252,10 +252,10 @@ scan_symlinks() {
 }
 
 # Program paths:  every file a LaunchAgent or pm2 job runs (and the directory it runs in) must lie inside something
-# this check scans, or be a system location.  Python reads the plist JSON (plutil converts it) and the pm2 JSON and
+# this check scans, or be a system location.  Python reads the plists (plistlib, no plutil needed) and the pm2 JSON and
 # prints only the label or name and the paths:  never an EnvironmentVariables or env entry.
 PY_PLISTS='
-import json, os, re, subprocess, sys
+import json, os, re, subprocess, sys, plistlib
 d = sys.argv[1]
 def found(obj):
     out = []
@@ -280,8 +280,8 @@ for name in sorted(os.listdir(d)):
         continue
     f = os.path.join(d, name)
     try:
-        r = subprocess.run(["plutil", "-convert", "json", "-o", "-", f], capture_output=True, text=True, check=False)
-        obj = json.loads(r.stdout)
+        with open(f, "rb") as fh:
+            obj = plistlib.load(fh)  # XML or binary plist;  works on any host, no plutil needed
     except Exception:
         continue
     label = str(obj.get("Label") or name[:-6])
@@ -355,12 +355,11 @@ program_verdict() { # $1 = absolute path
 
 # "<label><TAB><path>" lines from the LaunchAgents and from pm2 (also kept in $PROG_RAW for the checkout scan).
 collect_programs() {
-  local pm2_bin have_plutil=0 have_pm2=0
-  command -v plutil >/dev/null 2>&1 && have_plutil=1
+  local pm2_bin have_pm2=0
   pm2_bin="${PM2_CMD%% *}"
   command -v "$pm2_bin" >/dev/null 2>&1 && have_pm2=1
   {
-    if [ -d "$PLIST_DIR" ] && [ "$have_plutil" -eq 1 ]; then python3 -I -c "$PY_PLISTS" "$PLIST_DIR" 2>/dev/null; fi
+    if [ -d "$PLIST_DIR" ]; then python3 -I -c "$PY_PLISTS" "$PLIST_DIR" 2>/dev/null; fi
     if [ "$have_pm2" -eq 1 ]; then bash -c "$PM2_CMD" 2>/dev/null </dev/null | python3 -I -c "$PY_PM2" 2>/dev/null; fi
   } | sort -u
 }
@@ -368,7 +367,6 @@ collect_programs() {
 # Classifies the paths in $PROG_RAW;  prints "<verdict>:<label>:<path>" (and "note:" lines).
 scan_programs() {
   local label p v
-  command -v plutil >/dev/null 2>&1 || { [ -d "$PLIST_DIR" ] && say "note:plutil not found;  LaunchAgent program paths not checked"; }
   command -v "${PM2_CMD%% *}" >/dev/null 2>&1 || say "note:pm2 not found;  pm2 program paths not checked"
   while IFS=$'\t' read -r label p; do
     [ -n "$p" ] || continue
@@ -446,10 +444,14 @@ cmd_bootout() {
   fi
   if writer_loaded; then
     "$LAUNCHCTL" bootout "gui/$UID_NUM/$WRITER_LABEL" || die "bootout failed"
+    "$LAUNCHCTL" disable "gui/$UID_NUM/$WRITER_LABEL" || die "disable failed"
   else
+    # Not loaded, but an installed plist would load again at the next login:  still ask for it to be disabled.  launchctl
+    # fails when the job is not registered at all;  that only means there is nothing to disable, and moving the plist away
+    # below is what guarantees it never loads.
     say "$WRITER_LABEL was not loaded"
+    "$LAUNCHCTL" disable "gui/$UID_NUM/$WRITER_LABEL" 2>/dev/null || say "warning:  $WRITER_LABEL is not registered with launchd;  nothing to disable"
   fi
-  "$LAUNCHCTL" disable "gui/$UID_NUM/$WRITER_LABEL" || die "disable failed"
   if writer_loaded; then die "$WRITER_LABEL is still loaded"; fi
   # Retire the writer's files (moved, never deleted) so nothing reinstalls or reruns it.  The directory exists only
   # when there is something to put in it.
@@ -477,11 +479,14 @@ cmd_archive() {
   mkdir -p "$ARCHIVE_DIR"
   out="$ARCHIVE_DIR/secrets-archive-$STAMP.dmg"
   [ -e "$out" ] && die "$out already exists"
-  printf 'Passphrase for the encrypted archive (not shown):  ' > "$TTY_OUT"
-  IFS= read -rs pw < "$TTY_IN"; printf '\n' > "$TTY_OUT"
+  exec 3< "$TTY_IN"
+  printf 'Passphrase for the encrypted archive, at least 12 characters (not shown):  ' > "$TTY_OUT"
+  IFS= read -rs pw <&3; printf '\n' > "$TTY_OUT"
   printf 'Again:  ' > "$TTY_OUT"
-  IFS= read -rs pw2 < "$TTY_IN"; printf '\n' > "$TTY_OUT"
+  IFS= read -rs pw2 <&3; printf '\n' > "$TTY_OUT"
+  exec 3<&-
   [ -n "$pw" ] && [ "$pw" = "$pw2" ] || die "empty or different passphrases"
+  [ "${#pw}" -ge 12 ] || die "the passphrase must be at least 12 characters"
   vol="secrets-archive-$STAMP"
   printf '%s' "$pw" | "$HDIUTIL" create -encryption AES-256 -stdinpass -srcfolder "$SECRETS" -volname "$vol" \
     -fs APFS -format UDZO -quiet "$out" || die "hdiutil create failed"
