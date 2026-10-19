@@ -45,12 +45,40 @@ depends on the surface, so pick by destination:
 | **GitHub PR and issue titles, bodies and comments, review comments, Zulip posts, and any text a tool writes that a Markdown or HTML renderer then displays** | a real U+00A0 plus a space | Owner ruling 2026-10-08.  Tools preserve the character, and the renderer shows a real gap.  Never use the `&nbsp;` entity here: GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.  Supersedes the 2026-10-07 finding that two ASCII spaces were enough in Zulip. |
 | **Markdown source** | two literal spaces *between* sentences | ⚠️ Two spaces at the **end of a line** is the unrelated hard-line-break syntax — don't confuse the two |
 
-**Producing U+00A0 through a tool.**  You cannot type a raw U+00A0 into your own chat reply,
-but a shell step can produce one.  Write the text with two ASCII spaces after each sentence,
-then convert it before it leaves your hands:
-`perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g' body.txt > body.nbsp.txt`.  Check that the
-output holds at least one U+00A0 (`grep -c $'\xc2\xa0' body.nbsp.txt`) before passing it to
-`gh pr create --body-file`, `gh pr comment --body-file`, or the text you hand to `agent-sync post`.
+**Producing U+00A0 through a tool.**  You cannot type a raw U+00A0 into your own chat reply.
+Worse, you cannot count on emitting a *double* space either:  a run of whitespace you write
+into a tool call or a shell heredoc is silently normalized to a single space before it lands
+(verified 2026-10-18).  So **generate the gap in the shell, never in the text you emit.**  Use
+a regex that matches one *or more* spaces, so it is correct whether the double space survived
+or was collapsed:
+
+```sh
+perl -CSDA -pe 's/([.!?])[ \t]+(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+```
+
+The lookahead class keeps the gap out of `e.g.`, `i.e.`, and lower-case domains, and `[ \t]+`
+requires whitespace after the punctuation, so a dotted version like `v1.2.3` is left alone.
+
+**Assert before you post — this step is not optional.**  A conversion that matches nothing
+still exits 0, so a failed run is silent and the post goes out with no visible gap:
+
+```sh
+grep -o $'\xc2\xa0' body.nbsp.txt | wc -l    # must be greater than 0
+```
+
+A count of `0` means the run changed nothing.  Fix it before posting, never after.  Then pass
+the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
+`agent-sync post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
+run `chmod 600` on it first.  There is no override flag.
+
+Two more traps, both hit 2026-10-18:
+
+- **Never type a raw U+00A0 into a message body or tool call.**  It is normalized exactly like
+  a double space.  Let perl emit it.
+- The first `agent-sync` call in a session can die with "Parent-death guardian target
+  registration timed out".  Retry verbatim.  If the retry fails with "cannot open it (No such
+  file or directory)", the first attempt died before writing the file — the perl step never
+  ran.  That is not evidence the post went out.
 
 ### Verify, don't assume — run this self-test only on a NEW, unlisted surface
 

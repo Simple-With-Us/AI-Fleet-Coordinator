@@ -913,13 +913,16 @@ Sentry's Slack workflow (`3930668`:  production high-priority alerts, plus Seer 
 
 These bind every message, bot-to-bot included.
 
-- **Sentence gap.**  A real U+00A0 plus a space between sentences in every Zulip post, DM included, from the CLI or the raw API, and in GitHub titles, bodies, and comments (owner ruling Thu, Oct 8, which supersedes the Wed, Oct 7 finding that two literal ASCII spaces rendered the same).  Never type the HTML entity for a non-breaking space.  You cannot type U+00A0 in chat, so write the text with two ASCII spaces, then convert it and check the result before you post:
+- **Sentence gap.**  A real U+00A0 plus a space between sentences in every Zulip post, DM included, from the CLI or the raw API, and in GitHub titles, bodies, and comments (owner ruling Thu, Oct 8, which supersedes the Wed, Oct 7 finding that two literal ASCII spaces rendered the same).  Never type the HTML entity for a non-breaking space.  You cannot type U+00A0 in chat, and you cannot count on emitting a double space either — a run of whitespace you write into a tool call or heredoc is silently normalized to one space (verified 2026-10-18).  So generate the gap in the shell.  The regex matches one *or more* spaces, so it is correct whether the double space survived or was collapsed:
 
   ```
-  perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g' body.txt > body.nbsp.txt
-  perl -CSDA -ne '$n += () = /\x{a0}/g; END { print "$n\n" }' body.nbsp.txt   # must not print 0
-  agent-sync post --topic "<ID> <subject>" - < body.nbsp.txt
+  perl -CSDA -pe 's/([.!?])[ \t]+(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+  grep -o $'\xc2\xa0' body.nbsp.txt | wc -l      # must not print 0; a no-op run still exits 0
+  chmod 600 body.nbsp.txt                       # agent-sync post --body-file refuses other modes
+  agent-sync post --topic "<ID> <subject>" --body-file body.nbsp.txt
   ```
+
+  Never type a raw U+00A0 into a message body or tool call; it is normalized exactly like a double space.  Let perl emit it.
 
   The count is the number of sentence ends that were converted, so a body with several sentences must show several.  Do this on every post.  Files in this repo, including this guide, are read as source and keep two ASCII spaces.
 - A single space stays correct after `e.g.`, in `v1.2.3`, and inside URLs, emails, and filenames.  Never "fix" a brand period (`Congress.Trade`, `Socratic.Trade`) or `U.S.`

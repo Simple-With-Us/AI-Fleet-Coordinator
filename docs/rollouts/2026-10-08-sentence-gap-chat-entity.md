@@ -40,6 +40,14 @@ Producing U+00A0 through a tool:  write two ASCII spaces after each sentence, th
 `perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g' body.txt > body.nbsp.txt`, and check the
 output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 
+> ⚠️ **Superseded 2026-10-18 — do not copy the perl line above.**  A run of whitespace written
+> into a tool call or heredoc is silently normalized to a single space, so that regex matched
+> nothing, exited 0, and produced a file with zero U+00A0.  The working form matches one *or
+> more* spaces: `perl -CSDA -pe 's/([.!?])[ \t]+(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt`,
+> and you must assert `grep -o $'\xc2\xa0' body.nbsp.txt | wc -l` is not `0` before posting.
+> This file is a dated record of the 2026-10-08 ruling and is kept as-is above; the live
+> procedure is in `docs/fleet-skills/sentence-gap/SKILL.md`.
+
 ## What landed (docs, in this PR)
 
 - `AGENT-SYNC.md` § Sentence Gap (the authoritative per-surface table), the Zulip summary
