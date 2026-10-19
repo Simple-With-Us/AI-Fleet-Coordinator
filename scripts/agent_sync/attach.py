@@ -475,7 +475,9 @@ def _take_seat_inbox_headlines(paths: L.SeatPaths, lease_id: str) -> str:
         if isinstance(seen, int) and not isinstance(seen, bool):
             found, upto = L.scan_seat_mentions(paths, seen)
             shown.extend(found)
-            data["inbox_seen"] = upto  # what this read saw, so an append mid-hook is shown next time
+            data["inbox_seen"] = (
+                upto  # what this read saw, so an append mid-hook is shown next time
+            )
         else:
             data["inbox_seen"] = L.seat_inbox_head(paths)
 
