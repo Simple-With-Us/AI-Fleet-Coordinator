@@ -102,6 +102,9 @@ ENV_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
 FLEET_SECRETS_TIMEOUT = (
     15.0  # interactive commands wait at most this long for one fleet-secrets call
 )
+# The listener is not interactive, and it starts right after a runtime update, often while the Mac's load
+# average is above 100:  a 15 second cap left two seats refused for five minutes on Mon, Oct 19 (AFC-359).
+DAEMON_FLEET_SECRETS_TIMEOUT = 90.0
 INFISICAL_CACHE_TTL = 600.0
 # After a failed fetch with nothing held, the same request fails at once for this long instead of paying the
 # timeout again (an Infisical outage must not cost every seat or every identity candidate its own timeout).
@@ -544,7 +547,11 @@ def _fetch_from_fleet_secrets(
         if all(v is not None and now - v[0] < INFISICAL_CACHE_TTL for v in held.values()):
             return {n: v[1] for n, v in held.items() if v is not None}
         failure_key = (binary, "values", *wanted)
-        recent = _recent_failure(failure_key, now)
+        # A timeout or an auth or fetch failure is about Infisical, not about these names:  it is remembered
+        # per binary, so the seats after a failed prefetch fail at once instead of each waiting out the cap.
+        # A missing key stays a failure of this request only.
+        outage_key = (binary, "outage")
+        recent = _recent_failure(failure_key, now) or _recent_failure(outage_key, now)
         if recent is not None and not all(v is not None for v in held.values()):
             raise CredentialError(
                 "%s (not retried for %d seconds)" % (recent, INFISICAL_FAILURE_BACKOFF)
@@ -576,12 +583,15 @@ def _fetch_from_fleet_secrets(
             got = {n: payload[n] for n in wanted if isinstance(payload.get(n), str)}
         except CredentialError as exc:
             _failures[failure_key] = (now, str(exc))
+            if "key-absent" not in str(exc):
+                _failures[outage_key] = (now, str(exc))
             if all(v is not None for v in held.values()):
                 return {
                     n: v[1] for n, v in held.items() if v is not None
                 }  # last known good, memory only
             raise
         _failures.pop(failure_key, None)
+        _failures.pop(outage_key, None)
         for n, v in got.items():
             _value_cache[(binary, n)] = (now, v)
         return got

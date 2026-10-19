@@ -7,7 +7,7 @@ Cloudflare Worker with no build step, no npm dependencies, and no TypeScript.
 The Worker holds every fleet API token, so the browser never sees a credential and
 never talks to a fleet API directly.  That also means **the hostname must stay behind
 Cloudflare Access** — the Worker proxies authenticated fleet APIs, so anyone who can
-open the page can read The Board, the RAG corpus, Coolify, Sentry, and PagerDuty.
+open the page can read the RAG corpus, Coolify, Sentry, and PagerDuty.
 Access is the only thing standing in front of it.
 
 ## What each card shows
@@ -16,7 +16,7 @@ Access is the only thing standing in front of it.
 |---|---|---|
 | **Public Endpoints** | Direct HTTPS probe of 18 fleet surfaces, 8 s timeout, run in parallel | HTTP status and latency.  2xx and 3xx are up; a redirect to `cloudflareaccess.com` reads "Up, behind Access"; 401 and 403 read "Up, auth required"; a timeout is amber and reads "Timed out from Cloudflare". |
 | **Fleet Recall** | `GET /health`, `GET /recall/stats`, and a canary `POST /recall/search` for `fleet mode` on `recall.jays.services` | Point count, collection name and status, embedder and reranker health, per-source breakdown, and the canary hits.  The search box at the top of the card queries the live corpus. |
-| **The Board** (retired 2026-10-19) | none | The card is gone:  THE BOARD (`mac.jays.services`) was retired on 2026-10-19 (AFC-363) and the hostname answers 404.  Linear is the system of record.  A per-team Linear counts card needs the job in `docs/protocols/linear-migration.md` section 5 (open issue). |
+| **The Board** (retired 2026-10-19) | none | The card is gone:  THE BOARD (`mac.jays.services`) was retired on 2026-10-19 (AFC-363) and its DNS record was deleted the same day, so the hostname no longer resolves.  Linear is the system of record.  A per-team Linear counts card needs the job in `docs/protocols/linear-migration.md` section 5 (open issue). |
 | **Coolify Applications** | `GET /api/v1/applications` and `/api/v1/servers` on `host.jays.services` | Container status (`running:healthy`, `exited:unhealthy`, …) per application, then server reachability. |
 | **GitHub Repositories** | One Search API call for every open PR the owner has, then the Actions API for the latest run on `main`, per repo in `fleet-apps.json` | Open PR count and the conclusion of the most recent `main` run.  The row links to that run.  Past 100 open PRs the total stays exact but the per-repo split is capped, and the card says so. |
 | **Vercel Projects** | `GET /v9/projects?limit=50`, retried per team when the personal scope is empty | Newest READY deployment when present (else `latestDeployments[0].readyState`) — READY is green, ERROR is red, everything else amber.  A **CANCELED** deployment is amber, not red: it is an abandoned or superseded build, and the production alias keeps serving the last READY one.  See "A canceled deploy is not a down service". |
@@ -59,7 +59,6 @@ seconds.  Worst case per section:
 |---|---|
 | `endpoints` | 18 — one per entry in `ENDPOINTS` |
 | `recall` | 3 — health, stats, canary search |
-| `board` | 2 |
 | `coolify` | 2 |
 | `github` | 17 — one PR search plus one Actions call per repo (it was 24) |
 | `vercel` | 6 — projects, teams, and up to four team-scoped calls |
@@ -91,7 +90,7 @@ open, again every 60 seconds, and when the tab becomes visible.
 | Call | Timeout | Why |
 |---|---|---|
 | Endpoint probes | 8 s | Enough for a cold origin, short enough that the card is not held hostage. |
-| Control-plane APIs | 12 s | Coolify, GitHub, Vercel, Sentry, PagerDuty, Datadog, the board. |
+| Control-plane APIs | 12 s | Coolify, GitHub, Vercel, Sentry, PagerDuty, Datadog. |
 | `POST /recall/search` | 25 s | Hybrid search plus rerank is genuinely slow.  At 8 s the proxy and the canary both timed out on a query that answers fine in a terminal. |
 
 The canary asks for 3 hits and the search box asks for 8.  Fewer hits is less work

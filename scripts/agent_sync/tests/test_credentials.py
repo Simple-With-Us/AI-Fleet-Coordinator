@@ -333,6 +333,37 @@ class InfisicalFallbackTests(Harness):
         self.assertIn("not retried", str(ctx.exception))
         self.assertEqual(log.read_text().split(), ["names", "run"])
 
+    def test_an_outage_on_the_prefetch_fails_every_later_seat_at_once(self) -> None:
+        log = self.tmp / "calls.log"
+        wrapper = self.tmp / "hanging-fleet-secrets"
+        wrapper.write_text(
+            '#!/bin/sh\necho "$1" >> "%s"\nexit 4\n' % log
+        )  # an auth or fetch failure
+        wrapper.chmod(0o755)
+        env = self.fake_fleet_secrets({}, binary=wrapper)
+        with mock.patch.object(Z, "_default_infisical_fetch", Z._fetch_from_fleet_secrets):
+            Z.prefetch_infisical(
+                ("CLAUDE", "CODEX", "MM"), env, self.home
+            )  # the daemon's one call fails
+            for seat in ("CLAUDE", "CODEX", "MM"):
+                with self.assertRaises(Z.CredentialError) as ctx:
+                    Z.infisical_credentials(seat, env=env, home=self.home)
+                self.assertIn("not retried", str(ctx.exception))
+        self.assertEqual(log.read_text().split(), ["run"])  # one call in all, not one per seat
+
+    def test_a_missing_key_does_not_block_other_seats(self) -> None:
+        env = self.fake_fleet_secrets(
+            {
+                "CLAUDE_ZULIP_EMAIL": BOT_EMAIL,
+                "CLAUDE_ZULIP_KEY": self.key,
+                "CLAUDE_ZULIP_SITE": self.fake.url,
+            }
+        )
+        with self.assertRaises(Z.CredentialError):
+            Z._fetch_from_fleet_secrets(Z.infisical_key_names("CODEX"), env, self.home)
+        got = Z._fetch_from_fleet_secrets(Z.infisical_key_names("CLAUDE"), env, self.home)
+        self.assertEqual(sorted(got), sorted(Z.infisical_key_names("CLAUDE")))
+
     def test_the_old_default_file_under_home_is_never_read(self) -> None:
         # AFC-359:  ~/.secrets/Zulip is retired.  A file there, with no override and nothing in Infisical, is ignored.
         write_rc(

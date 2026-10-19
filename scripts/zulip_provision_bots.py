@@ -303,11 +303,11 @@ def main(argv=None):
         return 0
     if not args.yes:
         try:
-            ans = input("Proceed? [y/N] ").strip().lower()
+            answer = input("Proceed? [y/N] ").strip().lower()
         except EOFError:
             print("Stopped: no input.")
             return 1
-        if ans != "y":
+        if answer != "y":
             print("Stopped.")
             return 1
 

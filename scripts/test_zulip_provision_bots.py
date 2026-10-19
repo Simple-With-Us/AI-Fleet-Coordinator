@@ -395,15 +395,6 @@ class ProvisionTests(unittest.TestCase):
         self.assertIn("--only", str(code.code))
         self.assertEqual(self.fake.requests, [])
 
-    def test_exhausted_stdin_at_the_prompt_stops_without_writing_anything(self):
-        with mock.patch("builtins.input", side_effect=EOFError("EOF")):
-            code, out, err = self.run_main("--only", "Grok")
-        self.assertEqual(code, 1)
-        self.assertIn("Stopped: no input.", out)
-        self.assertEqual(self.fake.posts(), [])
-        self.assertFalse((self.out / "Grok-zuliprc").exists())
-        self.assert_no_keys(out, err)
-
     def test_regenerate_never_touches_a_non_bot_user(self):
         code, out, err = self.run_main("--yes", "--regenerate", "--only", "Cursor")
         self.assertEqual(code, 0, err)
@@ -443,6 +434,20 @@ class ProvisionTests(unittest.TestCase):
         value = prov.admin_secret("REALM_ADMIN_ZULIP_SITE", required=False)
         self.assertIsInstance(value, str)
         self.assertTrue(value.startswith("ok"))
+
+    def test_empty_stdin_at_the_prompt_stops_cleanly(self):
+        with mock.patch("builtins.input", side_effect=EOFError):
+            code, out, err = self.run_main("--only", "Clutch")
+        self.assertEqual(code, 1)
+        self.assertIn("Stopped: no input.", out)
+        self.assertEqual(self.fake.posts(), [])
+        self.assertFalse(self.out.exists())
+
+    def test_answering_n_stops(self):
+        with mock.patch("builtins.input", return_value="n"):
+            code, out, err = self.run_main("--only", "Clutch")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.fake.posts(), [])
 
     def test_unknown_only_name_is_an_error(self):
         code, out, err = self.run_main("--dry-run", "--only", "Nobody")
