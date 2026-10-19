@@ -190,9 +190,7 @@ class ProvisionTests(unittest.TestCase):
         )
         fs.chmod(0o755)
         self.fs = fs
-        env = {
-            k: v for k, v in os.environ.items() if not k.startswith(("REALM_ADMIN_", "JAY_ZULIP"))
-        }
+        env = {k: v for k, v in os.environ.items() if not k.startswith("REALM_ADMIN_")}
         env.update({"HOME": str(self.home), "FLEET_SECRETS_BIN": str(fs)})
         self.env = mock.patch.dict(os.environ, env, clear=True)
         self.env.start()
@@ -276,34 +274,27 @@ class ProvisionTests(unittest.TestCase):
         self.assertIsInstance(code, SystemExit)
         self.assertIn("/zulipadmin", str(code.code))
 
-    def test_jay_zulip_is_never_read_or_used(self):
+    def test_only_the_realm_admin_bot_is_ever_asked_for(self):
         with mock.patch.dict(
             os.environ,
             {
-                "JAY_ZULIP_EMAIL": "jay@example.invalid",
-                "JAY_ZULIP_KEY": "x",
+                "ZULIP_EMAIL": "someone@example.invalid",
+                "ZULIP_API_KEY": "x",
                 "ZULIP_OWNER_EMAIL": "o@x",
-                "ZULIP_OWNER_API_KEY": "y",
             },
         ):
             code, out, err = self.run_main("--dry-run", "--only", "Clutch")
         self.assertEqual(code, 0, err)
-        self.assertFalse([c for c in self.fs_calls() if "JAY_ZULIP" in c])
-        self.assertNotIn("JAY_ZULIP", Path(prov.__file__).read_text().split('"""', 2)[2])
+        self.assertTrue(self.fs_calls())
+        self.assertTrue(all(c.split()[1].startswith("REALM_ADMIN_ZULIP_") for c in self.fs_calls()))
         self.assertIn(ADMIN_EMAIL, out)
 
-    def test_owner_rc_is_used_only_when_passed_and_must_be_mode_600(self):
-        rc = self.root / "admin-zuliprc"
-        rc.write_text(f"[api]\nemail={ADMIN_EMAIL}\nkey={ADMIN_KEY}\nsite={self.fake.url}\n")
-        rc.chmod(0o644)
-        code, out, err = self.run_main("--dry-run", "--owner-rc", str(rc))
-        self.assertIsInstance(code, SystemExit)
-        self.assertIn("chmod 600", str(code.code))
-        rc.chmod(0o600)
-        code, out, err = self.run_main("--dry-run", "--owner-rc", str(rc), "--only", "Clutch")
-        self.assertEqual(code, 0, err)
-        self.assertEqual(self.fs_calls(), [])
-        self.assertIn("--owner-rc", out)
+    def test_no_credential_override_option_exists(self):
+        for flag in ("--owner-rc", "--personal-key", "--rc", "--email"):
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
+                prov.main([flag, "x", "--dry-run"])
+            self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(self.fake.requests, [])
 
     def test_credential_for_another_realm_is_refused(self):
         with mock.patch.dict(
