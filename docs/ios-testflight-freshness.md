@@ -50,14 +50,15 @@ A full run also writes the report to `~/.cache/ios-fleet/freshness-last.json`.
 
 App Store Connect never records a git sha, so the check reconstructs it:
 
-1. **The ship run.**  The build number is the UTC cut time (`YYYYMMDDHHmm`).  The ship workflow
-   run whose start-to-end window contains that cut time is the run that uploaded the build, and
-   its `head_sha` is the shipped source.  The run's conclusion is ignored on purpose:  most green
-   ship runs are gate skips that upload nothing, and BotFleet 1.0.113 was uploaded by a run that
-   went red afterwards.
+1. **The ship run.**  The build number is the repo commit count, so a current build carries no cut
+   time.  The ship workflow run whose start-to-end window contains the upload is the run that
+   uploaded the build, and its `head_sha` is the shipped source.  The run's conclusion is ignored on
+   purpose:  most green ship runs are gate skips that upload nothing, and BotFleet 1.0.113 was
+   uploaded by a run that went red afterwards.  A build uploaded under the retired scheme still
+   carries a 12-digit UTC stamp, and those are correlated by their cut time instead.
 2. **The state file** `~/.cache/ios-fleet/last-ship-<app>.txt`, when its time matches the upload.
    Hosted runners do not write it here, so this mostly covers local ships.
-3. **Time**, labelled `time` in the output:  the build's cut time against the commit time.
+3. **Time**, labelled `time` in the output:  the build's upload time against the commit time.
 
 Containment uses the compare API:  `ahead` or `identical` from the newest native commit to the
 shipped sha means current.  The table's SHIPPED column says which source was used.
