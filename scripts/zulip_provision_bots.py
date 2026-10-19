@@ -1,66 +1,113 @@
 #!/usr/bin/env python3
 """Create the fleet's Zulip seat bots and write one zuliprc per bot.  OWNER-RUN ONLY.
 
-Agents must not run this: creating bot users is account creation, which the
-owner does himself.  The script authenticates as the owner (a personal API key,
-never a bot key), so run it in your own terminal:
+OWNER-RUN ONLY:  agents never run this.  Creating bot users is account creation, and
+--regenerate rotates a live bot's key, which breaks that bot until Infisical is updated.
+Run it in your own terminal:
 
-    python3 scripts/zulip_provision_bots.py            # plan, then asks y/N
-    python3 scripts/zulip_provision_bots.py --yes      # no prompt
-    python3 scripts/zulip_provision_bots.py --dry-run  # plan only, writes nothing
+    python3 scripts/zulip_provision_bots.py --dry-run              # plan only, no writes, no POSTs
+    python3 scripts/zulip_provision_bots.py                        # plan, then asks y/N
+    python3 scripts/zulip_provision_bots.py --yes --only "Codex"   # no prompt, one bot
+    python3 scripts/zulip_provision_bots.py --only "Codex" --regenerate   # rotate an existing bot's key
 
-Owner credentials, first hit wins:
-  1. --owner-rc PATH (a zuliprc downloaded from Settings > Account & privacy > API key)
-  2. Infisical Fleet-OPS /zulip JAY_ZULIP_EMAIL + JAY_ZULIP_KEY (`fleet-secrets get`)
-  3. env ZULIP_OWNER_EMAIL + ZULIP_OWNER_API_KEY (exported in your own shell)
-  4. prompt: email, then the API key via getpass (never echoed)
+Credentials, first hit wins (AFC-359:  no personal key, no prompt, nothing under ~/.secrets):
+  1. --owner-rc PATH, only when you pass it yourself:  an admin-or-owner zuliprc (mode 600).
+     Nothing defaults to it.
+  2. The realm-admin bot (role 200, administrator).  Each of REALM_ADMIN_ZULIP_EMAIL and
+     REALM_ADMIN_ZULIP_KEY is read from the environment first, then from Infisical Fleet-OPS
+     folder /zulipadmin through `fleet-secrets get NAME --path /zulipadmin`
+     (binary:  env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets).
+     REALM_ADMIN_ZULIP_SITE is read the same way and defaults to the realm when absent.
+     A fleet-secrets failure stops the run with a message naming the folder and the key,
+     never the value.
+
+The caller must be an administrator or the owner (role <= 200);  anyone else is refused.
 
 For each bot in ROSTER it:
-  - creates a generic bot (POST /bots) unless one with that full name exists,
-  - writes <out-dir>/<file>-zuliprc with mode 600 if that file is missing
-    (an existing file is never overwritten unless --force).  --out-dir defaults to a fresh
-    mode-700 temp directory;  load each bot into Infisical Fleet-OPS /zulip as
-    <BOT>_ZULIP_EMAIL / _KEY / _SITE, then delete the directory.  Nothing is written under
-    ~/.secrets (AFC-359).
-  - subscribes the bot to CHANNELS using the bot's own key.
+  - lists the realm's users (GET /users) and finds the roster bot by display name or email,
+  - creates a missing bot (POST /bots, generic bot, owned by the caller) and takes its key
+    from the response,
+  - leaves an existing bot alone:  Zulip never returns an existing bot's key, so it prints
+    "exists:  key not recoverable here" and skips it.  With --regenerate (which needs --only)
+    it rotates that bot's key (POST /bots/{id}/api_key/regenerate).  WARNING:  that
+    invalidates the bot's current key everywhere, so the bot stays broken until the new key
+    is stored in Infisical /zulip,
+  - skips a name that belongs to a non-bot user,
+  - writes <out-dir>/<file>-zuliprc (mode 600, atomically) for each new or regenerated bot.
+    --out-dir defaults to ~/.agent-sync/provisioned/ (created mode 700).  An existing file is
+    never overwritten without --force, and such a bot is skipped BEFORE anything is created
+    or rotated, so a key can never be lost to a kept file.  Nothing is ever written under
+    ~/.secrets,
+  - subscribes the bot to CHANNELS with the bot's own key.
 
-Keys are never printed.  Output names bots, emails and file paths only.
-Existing bots you own get their zuliprc written from GET /bots, so a lost file
-can be recovered by rerunning.  Grok Bot (GB-*) personas are out of scope.
+After each bot it prints, names only, what to store in Infisical Fleet-OPS folder /zulip:
+<PREFIX>_ZULIP_EMAIL, <PREFIX>_ZULIP_KEY, <PREFIX>_ZULIP_SITE, where PREFIX is the file stem in
+upper case with hyphens as underscores (Grok-Build -> GROK_BUILD).  Load them, then delete
+the out-dir.  Keys are never printed.
+
+What the realm-admin bot CANNOT do (needs the organization OWNER, role 100, i.e. Jay's own
+login in the web UI):  change a user's role to owner, deactivate or reactivate users, and
+change realm-level settings.  GET /bots answers HTTP 400 to a bot caller, so this script
+never uses it.  Grok Bot (GB-*) personas are out of scope.
 """
 
 import argparse
 import base64
 import configparser
-import getpass
 import json
 import os
 import subprocess
 import sys
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 
 REALM = "https://simplewithus.zulipchat.com"
-FLEET_SECRETS_BIN = os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser(
-    "~/.local/bin/fleet-secrets"
-)
+ADMIN_FOLDER = "/zulipadmin"
+DEFAULT_OUT_DIR = "~/.agent-sync/provisioned"
+ROLE_OWNER, ROLE_ADMIN = 100, 200
 
 
-def fleet_secret(name):
-    """One Infisical /zulip value via `fleet-secrets get`, or "" (never printed)."""
+def fleet_secrets_bin():
+    return os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
+
+
+def admin_secret(name, required=True):
+    """A realm-admin value:  env var of that name first, then fleet-secrets /zulipadmin.
+
+    Never prints a value or the tool's stderr.  Returns "" for a missing optional value and
+    exits with a message naming the folder and key for a missing required one.
+    """
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    problem = ""
     try:
         proc = subprocess.run(
-            [FLEET_SECRETS_BIN, "get", name, "--path", "/zulip"],
+            [fleet_secrets_bin(), "get", name, "--path", ADMIN_FOLDER],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
             stdin=subprocess.DEVNULL,
         )
-    except (OSError, subprocess.SubprocessError):
+        if proc.returncode != 0:
+            problem = f"fleet-secrets exited {proc.returncode}"
+        else:
+            value = proc.stdout.rstrip("\n").strip()
+            if not value:
+                problem = "fleet-secrets returned an empty value"
+    except (OSError, ValueError, subprocess.SubprocessError) as err:
+        problem = f"fleet-secrets could not run ({type(err).__name__})"
+    if value:
+        return value
+    if not required:
         return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+    raise SystemExit(
+        f"missing {name} in Infisical Fleet-OPS {ADMIN_FOLDER} ({problem}).  Set env {name} or "
+        f"fix `fleet-secrets get {name} --path {ADMIN_FOLDER}`, or pass --owner-rc PATH."
+    )
 
 
 CHANNELS = ["agent-sync", "alerts", "builds", "trading", "ideas"]
@@ -112,13 +159,13 @@ def call(email, key, method, path, data=None):
     body = None
     if data is not None and method == "GET":
         url += "?" + urllib.parse.urlencode(data)
-    elif data is not None:
-        body = urllib.parse.urlencode(data).encode()
+    elif method != "GET":
+        body = urllib.parse.urlencode(data or {}).encode()
     req = urllib.request.Request(
         url,
         data=body,
         method=method,
-        headers={"Authorization": auth, "User-Agent": "agent-sync-provision/1"},
+        headers={"Authorization": auth, "User-Agent": "agent-sync-provision/2"},
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -145,31 +192,28 @@ def read_rc(path):
     return api["email"], api["key"], api.get("site", REALM).rstrip("/")
 
 
-def owner_credentials(args):
-    path = args.owner_rc
-    if path:
+def credentials(args):
+    """(email, key, source):  an explicit --owner-rc, else the realm-admin bot."""
+    if args.owner_rc:
+        path = args.owner_rc
         if not os.path.exists(path):
-            raise SystemExit(f"{args.owner_rc} not found")
+            raise SystemExit(f"{path} not found")
         if os.stat(path).st_mode & 0o077:
             raise SystemExit(f"{path} is readable by other users; run chmod 600 on it first")
         email, key, site = read_rc(path)
-        source = path
-    elif fleet_secret("JAY_ZULIP_EMAIL") and fleet_secret("JAY_ZULIP_KEY"):
-        email, key = fleet_secret("JAY_ZULIP_EMAIL"), fleet_secret("JAY_ZULIP_KEY")
-        site, source = fleet_secret("JAY_ZULIP_SITE") or REALM, "Infisical /zulip JAY_ZULIP_*"
-    elif os.environ.get("ZULIP_OWNER_EMAIL") and os.environ.get("ZULIP_OWNER_API_KEY"):
-        email, key = (
-            os.environ["ZULIP_OWNER_EMAIL"].strip(),
-            os.environ["ZULIP_OWNER_API_KEY"].strip(),
-        )
-        site, source = REALM, "env ZULIP_OWNER_EMAIL/ZULIP_OWNER_API_KEY"
+        source = "--owner-rc"
     else:
-        email = input("Your Zulip login email: ").strip()
-        key = getpass.getpass("Your personal Zulip API key (not echoed): ").strip()
-        site, source = REALM, "prompt"
+        email = admin_secret("REALM_ADMIN_ZULIP_EMAIL")
+        key = admin_secret("REALM_ADMIN_ZULIP_KEY")
+        site = admin_secret("REALM_ADMIN_ZULIP_SITE", required=False) or REALM
+        source = f"realm-admin bot (env, else Infisical {ADMIN_FOLDER})"
     if urllib.parse.urlparse(site).hostname != urllib.parse.urlparse(REALM).hostname:
-        raise SystemExit(f"owner credential is for {site}, expected {REALM}")
+        raise SystemExit(f"credential is for {site}, expected {REALM}")
     return email, key, source
+
+
+def infisical_prefix(stem):
+    return stem.upper().replace("-", "_")
 
 
 def write_rc(path, email, key):
@@ -181,73 +225,143 @@ def write_rc(path, email, key):
     os.replace(path + ".tmp", path)
 
 
+def resolve_out_dir(out_dir):
+    """The real path of out_dir;  refuses anything under ~/.secrets."""
+    real = os.path.realpath(os.path.expanduser(out_dir))
+    secrets = os.path.realpath(os.path.expanduser("~/.secrets"))
+    if real == secrets or real.startswith(secrets + os.sep):
+        raise SystemExit("refusing to write under ~/.secrets (AFC-359);  pick another --out-dir")
+    return real
+
+
+def make_out_dir(real):
+    """Create the directory (or tighten an existing one) to mode 700;  it holds new bot keys."""
+    os.makedirs(real, mode=0o700, exist_ok=True)
+    if os.stat(real).st_uid == os.getuid():
+        os.chmod(real, 0o700)
+
+
+def expected_email(short_name):
+    return f"{short_name}-bot@{urllib.parse.urlparse(REALM).hostname}"
+
+
+def find_member(members, full_name, short_name):
+    """The realm member a roster row refers to, by display name first, then by bot email."""
+    for member in members:
+        if member.get("full_name") == full_name:
+            return member
+    want = expected_email(short_name)
+    for member in members:
+        if (member.get("email") or "").lower() == want:
+            return member
+    return None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--owner-rc", help="path to YOUR personal zuliprc (not a bot's)")
+    ap.add_argument(
+        "--owner-rc",
+        help="an admin-or-owner zuliprc you pass explicitly (mode 600);  default is the realm-admin bot",
+    )
     ap.add_argument("--dry-run", action="store_true", help="print the plan and write nothing")
     ap.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     ap.add_argument("--force", action="store_true", help="overwrite existing zuliprc files")
     ap.add_argument(
+        "--regenerate",
+        action="store_true",
+        help="rotate the key of an existing roster bot (needs --only);  invalidates its current key everywhere",
+    )
+    ap.add_argument(
         "--out-dir",
-        help="where to write the zuliprc files (default: a new mode-700 temp directory)",
+        default=DEFAULT_OUT_DIR,
+        help=f"where to write the zuliprc files (default {DEFAULT_OUT_DIR}/, created mode 700)",
     )
     ap.add_argument("--only", action="append", help="limit to these full names (repeatable)")
     args = ap.parse_args(argv)
+    if args.regenerate and not args.only:
+        raise SystemExit("--regenerate needs --only NAME:  it invalidates the bot's current key")
 
-    email, key, source = owner_credentials(args)
+    email, key, source = credentials(args)
     me = call(email, key, "GET", "users/me")
-    if me.get("is_bot"):
+    role = me.get("role")
+    if not isinstance(role, int) or role > ROLE_ADMIN:
         raise SystemExit(
-            "that credential is a bot; bots cannot create bots.  Use your personal API key."
+            f"{me.get('full_name')} has role {role};  creating bots here needs an administrator "
+            f"(200) or the owner (100).  Use --owner-rc with an admin zuliprc, or ask Jay."
         )
-    print(f"Acting as {me.get('full_name')} <{email}> (credentials from {source})")
+    print(f"Acting as {me.get('full_name')} <{email}> role {role} (credentials from {source})")
 
-    owned = {b["full_name"]: b for b in call(email, key, "GET", "bots").get("bots", [])}
-    everyone = {u["full_name"]: u for u in call(email, key, "GET", "users").get("members", [])}
+    members = call(email, key, "GET", "users").get("members", [])
     roster = [r for r in ROSTER if not args.only or r[0] in args.only]
+    unknown = sorted(set(args.only or []) - {r[0] for r in ROSTER})
+    if unknown:
+        raise SystemExit(f"--only names not in ROSTER: {', '.join(unknown)}")
 
-    out_dir = args.out_dir or tempfile.mkdtemp(prefix="zulip-provision-")
-    os.makedirs(out_dir, mode=0o700, exist_ok=True)
-    plan = []
+    out_dir = resolve_out_dir(args.out_dir)
+
+    plan = []  # (full_name, short_name, stem, path, kind, member, note)
     for full_name, short_name, stem in roster:
         path = os.path.join(out_dir, f"{stem}-zuliprc")
-        if full_name in owned:
-            action = "exists (yours)"
-        elif full_name in everyone:
-            action = "SKIP: name taken by a user or bot you do not own"
+        member = find_member(members, full_name, short_name)
+        file_kept = os.path.exists(path) and not args.force
+        if member is None:
+            kind, note = "create", f"create {short_name}-bot@"
+        elif not member.get("is_bot"):
+            kind, note = "skip", "SKIP: name taken by a non-bot user"
+        elif args.regenerate:
+            kind = "regenerate"
+            note = "regenerate key (WARNING: invalidates its current key everywhere;  update Infisical /zulip)"
         else:
-            action = f"create {short_name}-bot@"
-        file_action = "keep file" if os.path.exists(path) and not args.force else "write file"
-        plan.append((full_name, short_name, path, action, file_action))
-        print(f"  {full_name:<16} {action:<44} {file_action:<10} {path}")
+            kind = "skip"
+            note = "exists:  key not recoverable here;  rerun with --regenerate to rotate it"
+        if kind in ("create", "regenerate") and file_kept:
+            kind, note = "skip", f"SKIP: {path} exists;  use --force or remove it first"
+        plan.append((full_name, short_name, stem, path, kind, member, note))
+        print(f"  {full_name:<16} {note}")
+        if kind in ("create", "regenerate"):
+            print(f"  {'':<16} -> {path}")
 
     if args.dry_run:
-        print("Dry run: nothing created or written.")
+        print("Dry run: nothing created, rotated or written.")
+        return 0
+    if not any(p[4] in ("create", "regenerate") for p in plan):
+        print("Nothing to create or rotate.")
         return 0
     if not args.yes and input("Proceed? [y/N] ").strip().lower() != "y":
         print("Stopped.")
         return 1
 
+    make_out_dir(out_dir)
     failures = 0
-    for full_name, short_name, path, action, file_action in plan:
+    done = 0
+    for full_name, short_name, stem, path, kind, member, note in plan:
+        if kind == "skip":
+            continue
         try:
-            if action.startswith("SKIP"):
-                continue
-            if action.startswith("create"):
-                call(
+            if kind == "create":
+                made = call(
                     email,
                     key,
                     "POST",
                     "bots",
                     {"full_name": full_name, "short_name": short_name, "bot_type": 1},
                 )
-                owned = {b["full_name"]: b for b in call(email, key, "GET", "bots").get("bots", [])}
-            bot = owned.get(full_name)
-            if not bot or not bot.get("api_key"):
-                raise ZulipError("bot created but its key was not returned by GET /bots")
-            bot_email, bot_key = bot.get("email") or bot.get("username"), bot["api_key"]
-            if file_action == "write file":
-                write_rc(path, bot_email, bot_key)
+                bot_id, bot_key = made.get("user_id"), made.get("api_key")
+                bot_email = made.get("email")
+                if not bot_email and bot_id is not None:
+                    fresh = call(email, key, "GET", "users").get("members", [])
+                    bot_email = next(
+                        (u.get("email") for u in fresh if u.get("user_id") == bot_id), None
+                    )
+                bot_email = bot_email or expected_email(short_name)
+            else:
+                bot_id, bot_email = member["user_id"], member["email"]
+                bot_key = call(email, key, "POST", f"bots/{bot_id}/api_key/regenerate").get(
+                    "api_key"
+                )
+            if not bot_key:
+                raise ZulipError("Zulip did not return an API key for this bot")
+            write_rc(path, bot_email, bot_key)
             call(
                 bot_email,
                 bot_key,
@@ -255,14 +369,19 @@ def main(argv=None):
                 "users/me/subscriptions",
                 {"subscriptions": json.dumps([{"name": c} for c in CHANNELS])},
             )
+            prefix = infisical_prefix(stem)
+            verb = "created" if kind == "create" else "key rotated"
+            print(f"  ok  {full_name:<16} {bot_email}  {verb}, file written: {path}")
             print(
-                f"  ok  {full_name:<16} {bot_email}  file={'written' if file_action == 'write file' else 'kept'}"
+                f"      Infisical /zulip: {prefix}_ZULIP_EMAIL, {prefix}_ZULIP_KEY, {prefix}_ZULIP_SITE"
             )
+            done += 1
         except ZulipError as err:
             failures += 1
             print(f"  ERR {full_name:<16} {err}", file=sys.stderr)
     print(
-        f"Done: {len(plan) - failures} ok, {failures} failed.  Files are in {out_dir} with mode 600;  load them into Infisical /zulip, then delete the directory."
+        f"Done: {done} ok, {failures} failed.  Files are in {out_dir} with mode 600;  "
+        "load the values into Infisical /zulip, then delete the directory."
     )
     return 1 if failures else 0
 
