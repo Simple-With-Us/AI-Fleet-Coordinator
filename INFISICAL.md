@@ -265,6 +265,22 @@ Delete the file reader, read `os.environ` (`process.env` in Node) and launch the
 
 **One-time setup for a machine identity** (owner action, not done by the tool):  create a universal-auth machine identity in Infisical with read access to Fleet-OPS `prod`, then store its two values in the Keychain without printing them, for example `security add-generic-password -U -s fleet-secrets -a infisical-client-id -w` and the same for `infisical-client-secret`, answering the prompts.  `fleet-secrets doctor` then reports `auth_mode: keychain`.  **System keychain (owner action, once, with sudo):**  run `{ fleet-secrets get INFISICAL_AUTOMATION_CLIENT_ID; echo; fleet-secrets get INFISICAL_AUTOMATION_CLIENT_SECRET; echo; } | sudo bash scripts/fleet_secrets/seed-system-keychain.sh` from a checkout of this repo, in your GUI shell.  `get` returns `INFISICAL_*` names (only `run` withholds them), so no extra flag is needed.  The script writes the two items with `security add-generic-password -U -A` fed to `security -i` on stdin (so no value is ever on a command line), refuses a value with a character outside `[A-Za-z0-9+/=_.:@-]`, reads them back and prints only `match: true` or `match: false`.  After that, `bash scripts/fleet_secrets/switch-pm2-jobs.sh` proves `fleet-secrets doctor` passes from inside pm2 (`auth_mode: system-keychain`) and moves the pm2 jobs `mac-collab-litestream`, `vision-worker` and `mac-collab` onto `fleet-secrets`, restoring a job's backup if it does not come back online.
 
+## Brokering credentials to agents
+
+`fleet-secrets` injects values into a process it starts.  A **broker** is the other shape:  the agent never receives the value, only a placeholder, and a proxy attaches the real credential to the outbound HTTPS request.  Infisical ships two, and they are not interchangeable.
+
+| | Agent Proxy | Agent Vault |
+|---|---|---|
+| Command | `infisical secrets agent-proxy run \| start \| connect` | `infisical agent-vault proxy \| run` |
+| Sandbox | `run` sandboxes on macOS (Seatbelt) | no sandbox |
+| Agent credential | universal-auth client id and secret | time-bound session token over a named access bundle |
+| Plan | any plan | Pro add-on, 5,000 brokered requests a month included, then $2 per 1,000 |
+| Infisical's guidance | local sandboxed proxy, or dynamic secrets | **recommended for new setups** |
+
+Measured on this Mac, Oct 18 (OPS-818):  the `run` sandbox denies `~/.infisical`, `~/.ssh`, `~/.aws` and `~/.config/gh` but **not** `~/.secrets`, `~/Library/Keychains`, `~/.codex/config.toml` or `~/.claude.json`, and it has no deny flag;  `127.0.0.1` is unreachable inside it even with `--allow-host`, so local MCP servers and hooks break;  `--unmatched-host block` works;  and the first run writes `~/.infisical/agent-proxy/local-ca.{crt,key}`, which expires in about a week.  Agent Vault has no sandbox and `--no-proxy` always merges `localhost` and `127.0.0.1`, and its CA is fetched per run with optional `--ca-fingerprint` pinning.
+
+Not everything can be brokered.  A broker attaches a header to an HTTPS request, so App Store Connect (a JWT signed by the p8), the Google service-account JSON, OAuth refresh tokens, IMAP/SMTP app passwords, certificates and private keys, and every loopback service are out of its reach and stay on `fleet-secrets run`.  `docs/plans/2026-10-18-fleet-ops-brokerable-host-map.md` classifies all 667 keys in Fleet-OPS `prod` by host, scheme and whether a broker can carry them, and names the two identities in `/agent-proxy` the pilot needs.  Adoption plan and phase gates:  `docs/plans/2026-10-18-infisical-agent-proxy-adoption.md`.
+
 ## Mac `global-api-keys` sync (`scripts/infisical-secrets-sync.sh`)
 
 The LaunchAgent `com.jay.infisical-secrets-sync` copies selected secrets from Infisical
