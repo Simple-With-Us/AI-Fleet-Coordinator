@@ -308,22 +308,29 @@ def _env_tokens() -> dict:
     return tokens
 
 
-# {token: identity} from the last good Infisical read, and when it was taken.  A failed read keeps the last
-# good copy, so an Infisical or network outage never locks the board out;  a rotation shows up within
-# TOKEN_TTL_S seconds with no restart.
-_VAULT_CACHE: tuple = (0.0, None)
-_VAULT_LAST_GOOD = 0.0  # when the cache last held a *successful* read;  a failed attempt leaves it alone
+# Last good Infisical read.  A failed read keeps the last good copy, so an Infisical or network outage never
+# locks the board out;  a rotation shows up within TOKEN_TTL_S seconds with no restart.  The fetch (a
+# `fleet-secrets` subprocess that can hang) never runs under the lock and never on a request thread after
+# the first load:  requests always get the last-known-good tokens at once.
 _VAULT_LOCK = threading.Lock()
+_VAULT = {
+    "tokens": None,  # {token: identity} from the last good read, or None before the first one
+    "refreshed_at": None,  # when that read happened;  not moved by a failed read
+    "next_try": 0.0,  # earliest time of the next fetch (TTL after a success, a short back-off after a failure)
+    "attempted": False,  # a first fetch has been started
+    "thread": None,  # the background refresh in flight, if any
+}
+VAULT_RETRY_S = 10.0
 
 
 def _fetch_vault_tokens():
     """{token: identity} for every MAC_COLLAB_TOKEN* in Infisical Fleet-OPS /mac-collab, or None when the
-    read failed.  One `fleet-secrets run` call;  the values stay in this process and are never logged."""
+    read failed.  One `fleet-secrets run` call;  the values stay in this process and are never logged.
+    Inherited MAC_COLLAB_TOKEN* variables are removed from the child's environment, so only what Infisical
+    injects can be parsed back as a vault value."""
     if not FLEET_SECRETS_BIN.is_file():
         return None
-    # Strip inherited MAC_COLLAB_TOKEN* from the child env:  /usr/bin/env prints those alongside whatever
-    # fleet-secrets injects, so a token already rotated out of Infisical would keep authenticating here.
-    child_env = {k: v for k, v in os.environ.items() if not k.startswith("MAC_COLLAB_TOKEN")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MAC_COLLAB_TOKEN")}
     try:
         proc = subprocess.run(
             [str(FLEET_SECRETS_BIN), "run", "--path", TOKEN_FOLDER, "--", "/usr/bin/env"],
@@ -332,7 +339,7 @@ def _fetch_vault_tokens():
             timeout=60,
             check=False,
             stdin=subprocess.DEVNULL,
-            env=child_env,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -343,24 +350,60 @@ def _fetch_vault_tokens():
     )
 
 
-def _vault_tokens() -> dict:
-    global _VAULT_CACHE, _VAULT_LAST_GOOD
-    with (
-        _VAULT_LOCK
-    ):  # one fetch at a time;  the other request threads wait for it and reuse the result
-        at, cached = _VAULT_CACHE
-        now = time.time()
-        if cached is not None and now - at < TOKEN_TTL_S:
-            return cached
+def _refresh_vault() -> None:
+    """Fetch OUTSIDE the lock, then swap the result in under it."""
+    try:
         fresh = _fetch_vault_tokens()
+    except Exception:  # a refresh must never kill a request or leave the in-flight mark set
+        fresh = None
+    with _VAULT_LOCK:
+        now = time.time()
         if fresh is None:
-            # Failed read:  keep the last good copy, and retry after a short pause rather than on every request.
-            cached = {} if cached is None else cached
-            _VAULT_CACHE = (time.time() - TOKEN_TTL_S + 10.0, cached)
-            return cached
-        _VAULT_CACHE = (time.time(), fresh)
-        _VAULT_LAST_GOOD = _VAULT_CACHE[0]
-        return fresh
+            _VAULT["next_try"] = now + VAULT_RETRY_S  # back off;  keep the old tokens and refreshed_at
+        else:
+            _VAULT["tokens"] = fresh
+            _VAULT["refreshed_at"] = now
+            _VAULT["next_try"] = now + TOKEN_TTL_S
+        _VAULT["thread"] = None
+
+
+def _vault_tokens() -> dict:
+    """The last-known-good vault tokens.  The very first call (process start) fetches inline;  after that a
+    due refresh runs on a background thread and this returns at once, so a slow or hung `fleet-secrets`
+    never stalls a request."""
+    t = None
+    with _VAULT_LOCK:
+        due = time.time() >= _VAULT["next_try"] and _VAULT["thread"] is None
+        first = due and not _VAULT["attempted"]
+        if due:
+            _VAULT["attempted"] = True
+            if first:
+                _VAULT["thread"] = threading.current_thread()  # in flight:  no other caller starts a fetch
+            else:
+                t = threading.Thread(target=_refresh_vault, name="mac-collab-vault-refresh", daemon=True)
+                _VAULT["thread"] = t
+        tokens = _VAULT["tokens"]
+    if first:
+        _refresh_vault()  # outside the lock
+        with _VAULT_LOCK:
+            tokens = _VAULT["tokens"]
+    elif t is not None:
+        t.start()
+    return tokens or {}
+
+
+def _reset_vault() -> None:
+    """Forget everything (tests)."""
+    with _VAULT_LOCK:
+        _VAULT.update(tokens=None, refreshed_at=None, next_try=0.0, attempted=False, thread=None)
+
+
+def _vault_wait() -> None:
+    """Join the background refresh, if one is running (tests)."""
+    with _VAULT_LOCK:
+        t = _VAULT["thread"]
+    if t is not None and t is not threading.current_thread():
+        t.join()
 
 
 # Logged at most once per process so a rotated token is a refresh signal,
@@ -414,7 +457,8 @@ def token_auth_meta() -> dict:
     else:
         source = "missing"
         count = 0
-    refreshed = int(_VAULT_LAST_GOOD) if _VAULT_LAST_GOOD else None
+    with _VAULT_LOCK:
+        refreshed = int(_VAULT["refreshed_at"]) if _VAULT["refreshed_at"] else None
     return {
         "token_source": source,
         "token_count": count,

@@ -38,7 +38,7 @@ class TestLoginForm(unittest.TestCase):
             os.environ.get("MAC_COLLAB_TOKEN"),
         )
         server._fetch_vault_tokens = lambda: {ROOT_TOKEN: None, SEAT_TOKEN: "INSTINCT"}
-        server._VAULT_CACHE = (0.0, None)
+        server._reset_vault()
         server.AUDIT_LOG = Path(cls.tmp.name) / "audit.log"
         server._LOGGED_FILE_WINS = False
         os.environ.pop("MAC_COLLAB_TOKEN", None)
@@ -52,7 +52,7 @@ class TestLoginForm(unittest.TestCase):
         cls.httpd.shutdown()
         cls.httpd.server_close()
         server._fetch_vault_tokens, server.AUDIT_LOG, env_was = cls._orig
-        server._VAULT_CACHE = (0.0, None)
+        server._reset_vault()
         server._LOGGED_FILE_WINS = False
         if env_was is not None:
             os.environ["MAC_COLLAB_TOKEN"] = env_was

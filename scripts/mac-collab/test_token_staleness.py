@@ -29,21 +29,26 @@ class TestTokenStaleness(unittest.TestCase):
         self.fetch = lambda: dict(self.vault) if self.vault is not None else None
         self._orig_fetch = server._fetch_vault_tokens
         server._fetch_vault_tokens = lambda: self.fetch()
-        server._VAULT_CACHE = (0.0, None)
-        server._VAULT_LAST_GOOD = 0.0
+        server._reset_vault()
         server._LOGGED_FILE_WINS = False
         self._env_was = os.environ.get("MAC_COLLAB_TOKEN")
         os.environ.pop("MAC_COLLAB_TOKEN", None)
 
     def tearDown(self):
         server._fetch_vault_tokens = self._orig_fetch
-        server._VAULT_CACHE = (0.0, None)
-        server._VAULT_LAST_GOOD = 0.0
+        server._reset_vault()
         server._LOGGED_FILE_WINS = False
         if self._env_was is None:
             os.environ.pop("MAC_COLLAB_TOKEN", None)
         else:
             os.environ["MAC_COLLAB_TOKEN"] = self._env_was
+
+    def expire(self):
+        """Make the next read due and let the background refresh finish."""
+        with server._VAULT_LOCK:
+            server._VAULT["next_try"] = 0.0
+        server._vault_tokens()
+        server._vault_wait()
 
     def test_vault_wins_over_env(self):
         os.environ["MAC_COLLAB_TOKEN"] = "env-token-bbb"
@@ -58,8 +63,7 @@ class TestTokenStaleness(unittest.TestCase):
         self.assertIn(
             "file-token-aaa", server.load_tokens(), "served from the cache inside the TTL"
         )
-        at, cached = server._VAULT_CACHE
-        server._VAULT_CACHE = (at - server.TOKEN_TTL_S - 1, cached)
+        self.expire()
         second = server.load_tokens()
         self.assertIn("file-token-ccc", second)
         self.assertNotIn("file-token-aaa", second)
@@ -73,9 +77,75 @@ class TestTokenStaleness(unittest.TestCase):
     def test_a_failed_read_keeps_the_last_good_tokens(self):
         self.assertIn("file-token-aaa", server.load_tokens())
         self.vault = None  # the fetch now fails
-        at, cached = server._VAULT_CACHE
-        server._VAULT_CACHE = (at - server.TOKEN_TTL_S - 1, cached)
+        self.expire()
         self.assertIn("file-token-aaa", server.load_tokens())
+
+    def test_a_hung_refresh_does_not_block_requests_and_serves_the_last_good_tokens(self):
+        import threading
+        import time
+
+        self.assertIn("file-token-aaa", server.load_tokens())  # first load, inline
+        started, release = threading.Event(), threading.Event()
+
+        def hung():
+            started.set()
+            release.wait(30)
+            return {"file-token-new": None}
+
+        server._fetch_vault_tokens = hung
+        with server._VAULT_LOCK:
+            server._VAULT["next_try"] = 0.0
+        try:
+            t0 = time.time()
+            self.assertIn("file-token-aaa", server.load_tokens())  # starts the background fetch
+            self.assertTrue(started.wait(5), "the refresh did not start")
+            results = []
+
+            def request():
+                results.append(server.load_tokens())
+                results.append(server.token_auth_meta())
+
+            workers = [threading.Thread(target=request) for _ in range(5)]
+            for w in workers:
+                w.start()
+            for w in workers:
+                w.join(5)
+            self.assertFalse(any(w.is_alive() for w in workers), "a request was stalled by the hung fetch")
+            self.assertLess(time.time() - t0, 5)
+            self.assertTrue(all("file-token-aaa" in r for r in results[0::2]))
+            self.assertEqual(results[1]["token_source"], "infisical")
+        finally:
+            release.set()
+            server._vault_wait()
+        self.assertIn("file-token-new", server.load_tokens())  # the finished refresh is swapped in
+
+    def test_a_failed_refresh_backs_off_and_keeps_refreshed_at(self):
+        server.load_tokens()
+        before = server.token_auth_meta()["vault_refreshed_at"]
+        calls = []
+        server._fetch_vault_tokens = lambda: calls.append(1)  # returns None:  a failed read
+        self.expire()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(server.token_auth_meta()["vault_refreshed_at"], before)
+        server.load_tokens()
+        server._vault_wait()
+        self.assertEqual(len(calls), 1, "no retry inside the back-off window")
+        self.assertGreater(server._VAULT["next_try"], __import__("time").time())
+
+    def test_the_fetch_scrubs_inherited_token_variables(self):
+        server._fetch_vault_tokens = self._orig_fetch
+        os.environ["MAC_COLLAB_TOKEN_STALE"] = "inherited-value"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                fake = Path(tmp) / "fleet-secrets"
+                # Runs the real command after `--` with the environment it was given, as fleet-secrets does.
+                fake.write_text("#!/bin/sh\nshift 4\nMAC_COLLAB_TOKEN=vault-tok exec \"$@\"\n")
+                fake.chmod(stat.S_IRWXU)
+                with patch.object(server, "FLEET_SECRETS_BIN", fake):
+                    got = server._fetch_vault_tokens()
+        finally:
+            os.environ.pop("MAC_COLLAB_TOKEN_STALE", None)
+        self.assertEqual(got, {"vault-tok": None})
 
     def test_auth_meta_has_source_not_token(self):
         meta = server.token_auth_meta()
@@ -85,38 +155,6 @@ class TestTokenStaleness(unittest.TestCase):
         blob = str(meta)
         self.assertNotIn("file-token-aaa", blob)
         self.assertIn("pm2 restart mac-collab --update-env", meta["restart_hint"])
-
-    def test_a_failed_read_never_reports_a_refresh(self):
-        """`vault_refreshed_at` is the staleness signal, so it must only move on a read that actually
-        succeeded -- a backoff attempt against a dead fleet-secrets must not look like a fresh read."""
-        self.vault = None  # the very first fetch fails
-        self.assertIsNone(server.token_auth_meta()["vault_refreshed_at"])
-        self.vault = {"file-token-aaa": None}  # and now it reads, once the failure backoff passes
-        at, cached = server._VAULT_CACHE
-        server._VAULT_CACHE = (at - server.TOKEN_TTL_S - 1, cached)
-        self.assertIn("file-token-aaa", server.load_tokens())
-        good = server.token_auth_meta()["vault_refreshed_at"]
-        self.vault = None  # and now it fails again
-        at, cached = server._VAULT_CACHE
-        server._VAULT_CACHE = (at - server.TOKEN_TTL_S - 1, cached)
-        self.assertEqual(server.token_auth_meta()["vault_refreshed_at"], good)
-
-    def test_an_inherited_env_token_is_not_read_as_a_vault_token(self):
-        """`/usr/bin/env` in the child prints inherited vars too:  a token rotated out of Infisical but
-        still in this process's env must not keep authenticating as if Infisical still held it."""
-        server._fetch_vault_tokens = self._orig_fetch
-        os.environ["MAC_COLLAB_TOKEN"] = "stale-env-token"
-        with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "fleet-secrets"
-            fake.write_text(
-                "#!/bin/sh\n"
-                "echo MAC_COLLAB_TOKEN=${MAC_COLLAB_TOKEN:-}\n"
-                "echo MAC_COLLAB_TOKEN_CLAUDE=claude-tok\n"
-            )
-            fake.chmod(stat.S_IRWXU)
-            with patch.object(server, "FLEET_SECRETS_BIN", fake):
-                got = server._fetch_vault_tokens()
-        self.assertEqual(got, {"claude-tok": "CLAUDE"})
 
     def test_the_real_fetch_runs_fleet_secrets_run_and_parses_only_token_keys(self):
         """`_fetch_vault_tokens` itself, against a fake binary:  folder /mac-collab, only MAC_COLLAB_TOKEN* lines."""
@@ -161,8 +199,7 @@ class TestTokenStaleness(unittest.TestCase):
         handler.headers = {"Cookie": f"{server.SESSION_COOKIE}={cookie}"}
         self.assertEqual(server.cookie_authorized(handler), "OWNER")
         self.vault = {}
-        at, cached = server._VAULT_CACHE
-        server._VAULT_CACHE = (at - server.TOKEN_TTL_S - 1, cached)
+        self.expire()
         self.assertIsNone(server.cookie_authorized(handler))
         self.assertIsNone(server.authorized(handler))
 
