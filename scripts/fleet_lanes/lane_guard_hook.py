@@ -24,15 +24,19 @@ with nothing on stdout.
 
 Tests: fleet_lanes/tests/test_guard.py (HookCliTests).
 """
+
 from __future__ import annotations
 
 import json
 import os
 import sys
-from typing import IO, Sequence
+from collections.abc import Sequence
+from typing import IO
 
 FORMATS = ("claude", "codex", "grok", "antigravity", "cursor", "muse", "kimi")
-EXIT2_FORMATS = ("kimi",)       # formats that are the plain-text exit-2 contract, whatever flags come with them
+EXIT2_FORMATS = (
+    "kimi",
+)  # formats that are the plain-text exit-2 contract, whatever flags come with them
 DEFAULT_FORMAT = "claude"
 
 
@@ -71,12 +75,21 @@ def render(reason: str, fmt: str, destination: str = "") -> str:
     if fmt in ("grok", "antigravity"):
         body: dict = {"decision": "deny", "reason": reason}
     elif fmt == "cursor":
-        short = "Blocked a fleet-repo checkout in a temp directory"
+        short = (
+            "Blocked a fleet-repo checkout in the integration tree"
+            if "inside the ~/Code integration tree" in reason
+            else "Blocked a fleet-repo checkout in a temp directory"
+        )
         short += f": {destination}." if destination else "."
         body = {"permission": "deny", "user_message": short, "agent_message": reason}
     else:  # claude, codex, muse
-        body = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                       "permissionDecisionReason": reason}}
+        body = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
     return json.dumps(body)
 
 
@@ -102,8 +115,12 @@ def _read_stdin(stdin: IO) -> str:
     return stdin.read()
 
 
-def main(argv: Sequence[str] | None = None, stdin: IO | None = None, stdout: IO | None = None,
-         stderr: IO | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    stdin: IO | None = None,
+    stdout: IO | None = None,
+    stderr: IO | None = None,
+) -> int:
     stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr

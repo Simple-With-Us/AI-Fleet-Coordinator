@@ -2862,7 +2862,7 @@ class GuardFactsTests(World):
     def test_a_source_tree_with_an_odd_trigger_is_read_the_same_way(self) -> None:
         odd = {
             "regex": self.guard_with('r"clone|worktree', 'r"clon.|worktree'),
-            "re.I alias": self.guard_with("re.IGNORECASE)\n\n_UNK", "re.I)\n\n_UNK"),
+            "re.I alias": self.guard_with("re.IGNORECASE", "re.I"),
             "no trigger at all": BROKEN_GUARD,
             "syntax error": "def evaluate(:\n",
         }
