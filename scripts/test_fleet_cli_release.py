@@ -223,6 +223,31 @@ class ReleaseTests(unittest.TestCase):
                 "'/usr/bin/python3', '-I', '-B', str(release", (bin_dir / name).read_text()
             )
 
+    def test_a_routine_update_adds_new_wrappers_but_never_overwrites(self):
+        # A host installed before recall, lane and fleet-mode existed gets their wrappers on the next push.
+        self.receive()
+        bin_dir = self.home / ".local/bin"
+        for name in ("recall", "lane", "fleet-mode"):
+            (bin_dir / name).unlink()
+        custom = b"#!/bin/sh\n# my own board, not managed\n"
+        (bin_dir / "board").write_bytes(custom)
+        config = self.home / ".codex/config.toml"
+        before = config.read_bytes() if config.exists() else None
+        result = self.receive(make_bundle("two"), install=False)
+        self.assertEqual(result["status"], "activated")
+        for name in ("recall", "lane", "fleet-mode"):
+            self.assertIn(release.MARKER, (bin_dir / name).read_text(), name)
+        self.assertEqual(
+            (bin_dir / "board").read_bytes(), custom, "an existing wrapper is never overwritten"
+        )
+        self.assertEqual(
+            config.read_bytes() if config.exists() else None,
+            before,
+            "the Codex config is untouched",
+        )
+        # Nothing new to add:  a further update writes no wrapper.
+        self.assertEqual(release.new_wrapper_plan(self.home), {})
+
     def test_installed_bash_wrappers_run_their_script(self):
         # A release holding real (tiny) tools:  the wrapper must reach the script in the current release.
         bundle = make_bundle()

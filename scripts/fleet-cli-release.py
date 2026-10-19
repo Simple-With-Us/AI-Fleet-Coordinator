@@ -114,8 +114,8 @@ TOOL_REQUIRED = frozenset(
         "scripts/agent_sync/mcp/listener-tools.json",
         # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
-        # The fleetlink_* MCP tools:  `agent-sync mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained release
-        # built before it stays a valid rollback target.
+        # The fleetlink_* MCP tools:  `agent-sync mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
+        # release built before it stays a valid rollback target.
         "scripts/agent_sync/mcp/fleetlink-tools.json",
     }
 )
@@ -310,9 +310,10 @@ for key in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT"):
     ).encode()
 
 
-def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
+def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
+    """Every managed command wrapper a release provides, by path."""
     bin_dir = home / ".local/bin"
-    files = {
+    return {
         bin_dir / "board": (wrapper(home, "scripts/linear-board/board"), 0o755),
         bin_dir / "agent-sync": (wrapper(home, "scripts/agent-sync"), 0o755),
         bin_dir / "agent-sync-codex-mcp": (
@@ -329,6 +330,23 @@ def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
         bin_dir / "lane": (wrapper(home, "scripts/fleet_lanes/bin/lane"), 0o755),
         bin_dir / "fleet-mode": (wrapper(home, "scripts/fleet-mode"), 0o755),
     }
+
+
+def new_wrapper_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
+    """On a routine update (no --install), the wrappers a newer release added that this host lacks.
+    Only absent paths are written:  an existing file, managed or not, and a symlink are left alone, and
+    the Codex config is never touched here.  Without this, a command added after the first install
+    (recall, lane, fleet-mode) would ship in every release and never reach PATH."""
+    return {
+        path: entry
+        for path, entry in wrapper_files(home).items()
+        if not path.exists() and not path.is_symlink()
+    }
+
+
+def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
+    bin_dir = home / ".local/bin"
+    files = wrapper_files(home)
     for path in files:
         if path.is_symlink() or (
             path.exists() and (not path.is_file() or MARKER.encode() not in path.read_bytes())
@@ -449,7 +467,7 @@ def receive(raw: bytes, home: Path, install: bool = False) -> dict:
         old = release_at(base, "current")
         if old is None and not install:
             raise Refused("initial_install_required")
-        plan = install_plan(home) if install else {}
+        plan = install_plan(home) if install else new_wrapper_plan(home)
         new = base / "releases" / bundle["bundle_sha256"]
         if new.is_symlink():
             raise Refused("unsafe_release")

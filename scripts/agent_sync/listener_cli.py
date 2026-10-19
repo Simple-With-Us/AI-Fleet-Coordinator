@@ -386,6 +386,10 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             )
         for error in status.get("config_errors") or []:
             lines.append("RED config: %s" % error)
+        for seat, why in sorted((status.get("skipped_seats") or {}).items()):
+            lines.append("%-12s NOT LOADED  nothing is captured for this seat" % seat)
+            for problem in why or []:
+                lines.append("  RED %s" % problem)
         for seat, s in sorted((status.get("seats") or {}).items()):
             routine = s.get("routine") or {}
             if s.get("wake") == "claude":
