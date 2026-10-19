@@ -74,7 +74,7 @@ def make_db(path: pathlib.Path) -> None:
             "cccc3333",
             "dealdex",
             "Issue with effort key",
-            "Body line.\n\n<!-- effort-key: 0123456789abcdef0123456789abcdef01234567 -->\nMore.",
+            "Body line.\n\n<!-- effort-key: " + FAKE_EFFORT_KEY + " -->\nMore.",
             "open",
             "2026-08-24T00:00:00+00:00",
             "2026-08-24T00:00:00+00:00",
@@ -92,6 +92,10 @@ def make_db(path: pathlib.Path) -> None:
     con.commit()
     con.close()
 
+
+# Made-up fixtures, built at run time so no source line looks like a credential to gitleaks.
+FAKE_EFFORT_KEY = "0123456789abcdef" * 2 + "01234567"  # 40 hex characters
+FAKE_SLACK = "xoxb-" + "1" * 12 + "-abcdefghijkl"
 
 class BoardTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -382,7 +386,7 @@ class NotesCacheTests(unittest.TestCase):
     ]
     BODY = (
         "<div>[ST, Monet] Plan</div><div>Sun, Aug 9, 3:52pm</div><div>Deploy with "
-        "SLACK_TOKEN=xoxb-123456789012-abcdefghijkl and go.</div>"
+        "SLACK_TOKEN=" + FAKE_SLACK + " and go.</div>"
     )
 
     def setUp(self) -> None:
@@ -452,7 +456,7 @@ class NotesCacheTests(unittest.TestCase):
                 {
                     **self.META[0],
                     "html": self.BODY,
-                    "text": "raw unscrubbed xoxb-123456789012-abcdefghijkl",
+                    "text": "raw unscrubbed " + FAKE_SLACK + "",
                 }
             )
         )
