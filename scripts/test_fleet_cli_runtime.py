@@ -228,8 +228,9 @@ class ActualRuntime(unittest.TestCase):
         self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-11-25")
         self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "agent-sync")
         # What the real server serves:  tools.json, listener-tools.json (AFC-330), notes-tools.json and
-        # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs.  Every file must
-        # ship, or `agent-sync mcp` fails at startup on the server (it did, 2026-10-16).
+        # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs, then
+        # fleetlink-tools.json.  Every file must ship, or `agent-sync mcp` fails at startup on the server (it
+        # did, 2026-10-16).
         mcp = self.release / "scripts/agent_sync/mcp"
         served = []
         for name in ("tools.json", "listener-tools.json", "notes-tools.json", "recall-tools.json"):
@@ -241,7 +242,10 @@ class ActualRuntime(unittest.TestCase):
         linear = ([t["name"] for t in json.loads((catalog / "core-tools.json").read_bytes())["tools"]]
                   + [c["name"] for c in json.loads((catalog / "named-commands.json").read_bytes())["commands"]]
                   + [t["name"] for t in json.loads((catalog / "official-mcp-tools.json").read_bytes())["tools"]])
-        self.assertEqual([t["name"] for t in listed[len(served):]], linear)
+        self.assertEqual([t["name"] for t in listed[len(served):len(served) + len(linear)]], linear)
+        fleetlink = json.loads((mcp / "fleetlink-tools.json").read_bytes())["tools"]
+        self.assertTrue(fleetlink)
+        self.assertEqual(listed[len(served) + len(linear):], fleetlink)
 
     def test_generated_wrapper_isolation_flags(self):
         for name in ("agent-sync", "board", "fleet-cli-release", "agent-sync-codex-mcp", "recall"):

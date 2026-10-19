@@ -40,14 +40,19 @@ READ_TOOLS = {"whoami", "identities", "guide", "notes_status", "recall_search", 
               "zulip_dm_read", "zulip_get_message", "zulip_message_history", "zulip_search", "zulip_channels",
               "zulip_channel_info", "zulip_channel_members", "zulip_users", "zulip_presence", "zulip_user_groups",
               "zulip_custom_emoji", "zulip_scheduled_list", "zulip_drafts_list", "listener_status", "listener_inbox",
-              "listener_owner_queue", "listener_wakes", "listener_held_back"}
+              "listener_owner_queue", "listener_wakes", "listener_held_back",
+              "fleetlink_list_shares", "fleetlink_get_share", "fleetlink_list_teams", "fleetlink_read_file",
+              "fleetlink_whoami"}
 WRITE_TOOLS = {"zulip_post", "zulip_reply", "zulip_react", "zulip_dm_send", "zulip_edit_message",
                "zulip_delete_message", "zulip_move_topic", "zulip_resolve_topic", "zulip_unresolve_topic",
                "zulip_unreact", "zulip_mark_read", "zulip_mark_unread", "zulip_star", "zulip_unstar",
                "zulip_unsubscribe", "zulip_topic_visibility", "zulip_set_status", "zulip_upload",
                "zulip_scheduled_create", "zulip_scheduled_edit", "zulip_scheduled_delete", "zulip_draft_create",
                "zulip_draft_edit", "zulip_draft_delete", "zulip_typing", "listener_ack", "notes_create", "notes_update",
-               "notes_pin", "notes_unpin", "recall_contribute"}
+               "notes_pin", "notes_unpin", "recall_contribute",
+               "fleetlink_create_share", "fleetlink_create_link", "fleetlink_share_to_team", "fleetlink_make_personal",
+               "fleetlink_update_share", "fleetlink_add_file", "fleetlink_delete_file", "fleetlink_upload_url",
+               "fleetlink_renew_share", "fleetlink_delete_share"}
 
 
 def _linear_kinds() -> tuple[set, set]:
@@ -587,7 +592,9 @@ class ProtocolTests(McpHarness):
             self.assertEqual(schema["type"], "object")
             self.assertIs(schema["additionalProperties"], False, name)
             self.assertFalse(IDENTITY_ARGS & set(schema["properties"]), name)
-            if not name.startswith("linear_"):  # board prints its own JSON:  no structured result to promise
+            # board prints its own JSON, and the hosted fleetlink_* specs (fleetlink-tools.json) promise no
+            # structured shape either:  no outputSchema for those two families.
+            if not name.startswith(("linear_", "fleetlink_")):
                 self.assertIn("outputSchema", tool)
             self.assertIs(tool["annotations"]["readOnlyHint"], name in READ_TOOLS, name)
         for name in ("zulip_post", "zulip_reply"):
@@ -608,7 +615,8 @@ class ProtocolTests(McpHarness):
         self.assertEqual(names[:4], ["whoami", "identities", "guide", "zulip_topics"])
         for name in names:
             self.assertTrue(name in ("whoami", "identities", "guide")
-                            or name.startswith(("zulip_", "listener_", "notes_", "recall_", "linear_")), name)
+                            or name.startswith(("zulip_", "listener_", "notes_", "recall_", "linear_", "fleetlink_")),
+                            name)
         renamed = R.renamed_tools()
         for old, new in renamed.items():
             self.assertNotIn(old, names)
@@ -619,11 +627,15 @@ class ProtocolTests(McpHarness):
     def test_every_tool_maps_to_a_cli_command_that_parses(self):
         """tools.json is the contract:  every MCP tool (and every listener tool) names the CLI command
         that does the same job, and that command exists in the CLI's parser."""
+        external = ("recall_", "fleetlink_")  # the recall CLI and FleetLink's own CLI, fleet-share
         served = [t["name"] for t in T.load_served_tools()["tools"]
-                  if not t["name"].startswith(("linear_", "recall_"))]  # run through board and the recall CLI
+                  if not t["name"].startswith(("linear_", *external))]  # linear_* run through board
         self.assertEqual(set(served), set(T.CLI_VERBS), "tools and CLI_VERBS differ")
-        self.assertEqual({t["name"] for t in T.load_served_tools()["tools"] if t["name"].startswith("recall_")},
+        self.assertEqual({t["name"] for t in T.load_served_tools()["tools"] if t["name"].startswith(external)},
                          set(T.EXTERNAL_CLI))
+        for name, command in T.EXTERNAL_CLI.items():
+            program = "fleet-share" if name.startswith("fleetlink_") else "recall"
+            self.assertEqual(command.split()[0], program, name)
         parser = cli.build_parser()
         actions = {a.dest: a for a in parser._actions if isinstance(a, argparse._SubParsersAction)}
         top = actions["command"].choices
