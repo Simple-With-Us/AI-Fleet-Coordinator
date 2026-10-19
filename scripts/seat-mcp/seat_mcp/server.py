@@ -7,6 +7,7 @@ Supports initialize / tools/* (2025-03-26 and 2025-11-25) and server/discover
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import traceback
 import uuid
@@ -22,6 +23,9 @@ from .seats import SeatError
 from .tools import TOOL_IMPL, tool_schemas
 
 RECALL_PATHS = ("/recall/stats", "/recall/search", "/recall/contribute")
+# /hooks/ pass-through limits (AFC-359).  The BotFleet ingress itself refuses bodies over 256 KiB.
+HOOK_MAX_BODY_BYTES = 1024 * 1024
+HOOK_READ_TIMEOUT_SECONDS = 30.0
 
 JsonDict = dict[str, Any]
 PROTOCOL_VERSIONS = ("2025-03-26", "2025-11-25", "2026-07-28")
@@ -258,21 +262,45 @@ class SeatHandler(BaseHTTPRequestHandler):
             return
         self._send(200, _json_bytes({"ok": True, **data}), "application/json")
 
+    def _hook_reject(self, code: int, error: str) -> None:
+        """Refuse a /hooks/ request and drop the connection, so an unread body is never parsed as a next request."""
+        self.close_connection = True
+        self._send(code, _json_bytes({"ok": False, "error": error}), "application/json", [("Connection", "close")])
+
     def _proxy_to_webhook_ingress(self) -> None:
         import urllib.error
         import urllib.request
-
-        length_s = self.headers.get("Content-Length", "0")
-        try:
-            length = int(length_s)
-        except ValueError:
-            length = 0
-        # The /hooks/ path carries its own credential, so it must still refuse an
-        # oversized or slow body (AFC-359).  Same cap as every other body path.
-        if length < 0 or length > 2_000_000:
-            self._send(413, b"payload too large\n", "text/plain; charset=utf-8")
+        # Unauthenticated surface:  bound what one request can cost a handler thread.
+        length_s = self.headers.get("Content-Length")
+        if self.headers.get("Transfer-Encoding") or (length_s is None and self.command == "POST"):
+            # Chunked bodies are not de-chunked here, so only a declared Content-Length is accepted.
+            self._hook_reject(411, "Content-Length required")
             return
-        body = self.rfile.read(length) if length > 0 else None
+        if length_s is None:
+            length = 0
+        else:
+            try:
+                length = int(length_s.strip())
+            except ValueError:
+                length = -1
+            if length < 0:
+                self._hook_reject(400, "invalid Content-Length")
+                return
+        if length > HOOK_MAX_BODY_BYTES:
+            # Answer without reading the body, then drop the connection so it is never parsed as a next request.
+            self._hook_reject(413, "webhook body too large")
+            return
+        body = None
+        if length > 0:
+            try:
+                self.connection.settimeout(HOOK_READ_TIMEOUT_SECONDS)
+                body = self.rfile.read(length)
+            except (socket.timeout, TimeoutError):
+                self._hook_reject(408, "webhook body read timed out")
+                return
+            if len(body) != length:
+                self._hook_reject(400, "incomplete webhook body")
+                return
         target_url = f"http://127.0.0.1:8800{self.path}"
         headers = {}
         for key, val in self.headers.items():

@@ -5,10 +5,11 @@ No live ingress:  urllib.request.urlopen is replaced inside the server thread, s
 from __future__ import annotations
 
 import email.message
-import http.client
 import io
 import json
+import socket
 import threading
+import time
 import unittest
 import urllib.error
 from http.server import ThreadingHTTPServer
@@ -38,7 +39,7 @@ class FakeResponse:
     def read(self) -> bytes:
         return self._body
 
-    def __enter__(self) -> FakeResponse:
+    def __enter__(self) -> "FakeResponse":
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -48,32 +49,26 @@ class FakeResponse:
 class FakeIngress:
     """Records what the proxy forwarded and answers like the BotFleet ingress."""
 
-    def __init__(
-        self, status: int = 202, body: dict | None = None, fail: Exception | None = None
-    ) -> None:
+    def __init__(self, status: int = 202, body: dict | None = None, fail: Exception | None = None) -> None:
         self.status = status
         self.body = json.dumps(body if body is not None else {"accepted": True}).encode()
         self.fail = fail
         self.calls: list[dict] = []
 
     def __call__(self, req, timeout=None):  # urllib.request.urlopen signature
-        self.calls.append(
-            {
-                "url": req.full_url,
-                "method": req.get_method(),
-                "data": req.data,
-                "headers": {k.lower(): v for k, v in req.header_items()},
-                "timeout": timeout,
-            }
-        )
+        self.calls.append({
+            "url": req.full_url,
+            "method": req.get_method(),
+            "data": req.data,
+            "headers": {k.lower(): v for k, v in req.header_items()},
+            "timeout": timeout,
+        })
         if self.fail is not None:
             raise self.fail
         if self.status >= 400:
             hdrs = email.message.Message()
             hdrs["Content-Type"] = "application/json"
-            raise urllib.error.HTTPError(
-                req.full_url, self.status, "error", hdrs, io.BytesIO(self.body)
-            )
+            raise urllib.error.HTTPError(req.full_url, self.status, "error", hdrs, io.BytesIO(self.body))
         return FakeResponse(self.status, self.body)
 
 
@@ -91,12 +86,8 @@ class HooksProxyTest(unittest.TestCase):
         cls.httpd.server_close()
 
     def _post(self, path: str, body: bytes, headers: dict | None = None):
-        req = Request(
-            self.base + path,
-            data=body,
-            method="POST",
-            headers={"Content-Type": "application/json", **(headers or {})},
-        )
+        req = Request(self.base + path, data=body, method="POST",
+                      headers={"Content-Type": "application/json", **(headers or {})})
         try:
             with urlopen(req, timeout=5) as resp:
                 return resp.status, json.loads(resp.read().decode())
@@ -107,9 +98,7 @@ class HooksProxyTest(unittest.TestCase):
     def test_post_is_forwarded_to_the_local_ingress(self) -> None:
         fake = FakeIngress(202, {"accepted": True, "status": "queued"})
         with mock.patch("urllib.request.urlopen", fake):
-            code, payload = self._post(
-                HOOK_PATH, b'{"action":"opened"}', {"X-GitHub-Event": "pull_request"}
-            )
+            code, payload = self._post(HOOK_PATH, b'{"action":"opened"}', {"X-GitHub-Event": "pull_request"})
         self.assertEqual(code, 202)
         self.assertEqual(payload, {"accepted": True, "status": "queued"})
         self.assertEqual(len(fake.calls), 1)
@@ -153,29 +142,87 @@ class HooksProxyTest(unittest.TestCase):
         self.assertIn("/health", log.getvalue())
         self.assertNotIn("<redacted>", log.getvalue())
 
-    def test_oversized_body_is_refused_without_forwarding(self) -> None:
+    def _raw(self, request: bytes, then: bytes = b"", pause: float = 0.0) -> tuple[int, dict]:
+        """Send a hand-built request on a raw socket;  return (status, json body)."""
+        host, port = self.httpd.server_address
+        with socket.create_connection((host, port), timeout=10) as sock:
+            sock.sendall(request)
+            if pause:
+                time.sleep(pause)
+            if then:
+                try:
+                    sock.sendall(then)
+                except OSError:
+                    pass
+            chunks = []
+            while True:
+                try:
+                    data = sock.recv(65536)
+                except OSError:
+                    break
+                if not data:
+                    break
+                chunks.append(data)
+        raw = b"".join(chunks)
+        head, _, body = raw.partition(b"\r\n\r\n")
+        status = int(head.split(b" ", 2)[1])
+        return status, json.loads(body.decode() or "{}")
+
+    def _head(self, extra: str) -> bytes:
+        return ("POST %s HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n%s\r\n" % (HOOK_PATH, extra)).encode()
+
+    def test_oversized_body_is_413_without_reading_or_forwarding(self) -> None:
         fake = FakeIngress(202)
         with mock.patch("urllib.request.urlopen", fake):
-            host, port = self.httpd.server_address
-            conn = http.client.HTTPConnection(host, port, timeout=5)
-            try:
-                conn.putrequest("POST", HOOK_PATH)
-                # Claim far more than the cap without sending it:  the handler must
-                # answer 413 on the header alone and never read or forward the body.
-                conn.putheader("Content-Length", "2000001")
-                conn.putheader("Content-Type", "application/json")
-                conn.endheaders()
-                conn.send(b"{}")
-                resp = conn.getresponse()
-                code, text = resp.status, resp.read()
-            finally:
-                conn.close()
+            code, payload = self._raw(self._head("Content-Length: %d\r\n" % (server.HOOK_MAX_BODY_BYTES + 1)))
         self.assertEqual(code, 413)
-        self.assertIn(b"too large", text)
+        self.assertFalse(payload["ok"])
         self.assertEqual(fake.calls, [])
 
-    def test_handler_sets_a_socket_timeout(self) -> None:
-        self.assertIsNotNone(server.SeatHandler.timeout)
+    def test_missing_content_length_is_411(self) -> None:
+        fake = FakeIngress(202)
+        with mock.patch("urllib.request.urlopen", fake):
+            code, _ = self._raw(self._head(""))
+        self.assertEqual(code, 411)
+        self.assertEqual(fake.calls, [])
+
+    def test_chunked_body_is_411(self) -> None:
+        fake = FakeIngress(202)
+        with mock.patch("urllib.request.urlopen", fake):
+            code, _ = self._raw(self._head("Transfer-Encoding: chunked\r\n"), b"2\r\n{}\r\n0\r\n\r\n")
+        self.assertEqual(code, 411)
+        self.assertEqual(fake.calls, [])
+
+    def test_invalid_or_negative_content_length_is_400(self) -> None:
+        fake = FakeIngress(202)
+        with mock.patch("urllib.request.urlopen", fake):
+            for value in ("-5", "abc"):
+                code, _ = self._raw(self._head("Content-Length: %s\r\n" % value))
+                self.assertEqual(code, 400, value)
+        self.assertEqual(fake.calls, [])
+
+    def test_stalled_body_is_408(self) -> None:
+        fake = FakeIngress(202)
+        with mock.patch("urllib.request.urlopen", fake), mock.patch.object(server, "HOOK_READ_TIMEOUT_SECONDS", 0.3):
+            started = time.monotonic()
+            code, payload = self._raw(self._head("Content-Length: 100\r\n") + b'{"a"')
+        self.assertEqual(code, 408)
+        self.assertFalse(payload["ok"])
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(fake.calls, [])
+
+    def test_get_without_a_body_is_still_forwarded(self) -> None:
+        fake = FakeIngress(405, {"error": "Webhooks accept POST requests"})
+        with mock.patch("urllib.request.urlopen", fake):
+            try:
+                urlopen(Request(self.base + HOOK_PATH), timeout=5)
+                code = 200
+            except HTTPError as exc:
+                with exc:
+                    code = exc.code
+        self.assertEqual(code, 405)
+        self.assertEqual(fake.calls[0]["method"], "GET")
+        self.assertIsNone(fake.calls[0]["data"])
 
 
 if __name__ == "__main__":
