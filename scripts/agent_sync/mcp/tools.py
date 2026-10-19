@@ -51,6 +51,7 @@ from .. import listener_records as LR
 from .. import live as LIVE
 from .. import notes as NOTES
 from .. import secretscan
+from .. import session_ids as SESSION_IDS
 from .. import wakes as W
 from .. import zulip as Z
 from .. import zulip_cli as ZCLI
@@ -2082,8 +2083,21 @@ class Tools:
     def _notes_error(self, exc: NOTES.NotesError) -> ToolError:
         return ToolError(exc.code, exc.message)
 
+    def _notes_session(self, action: str, args: Mapping[str, Any]) -> str | None:
+        """The session id a create or update carries (AFC-361):  the `session` argument, else this server's own
+        environment, judged for the identity the call acts as.  An exempt single-thread identity needs none.
+        Nothing the caller sends can make a seat exempt:  the exemption is read from self.seat."""
+        if action not in ("create", "update"):
+            return None
+        try:
+            return SESSION_IDS.require(self.seat, args.get("session"), self.agent.rt.env, "tool")
+        except ValueError as exc:  # SessionRequired is a ValueError
+            code = "session_required" if isinstance(exc, SESSION_IDS.SessionRequired) else "invalid_argument"
+            raise ToolError(code, str(exc)) from None
+
     def _notes_envelope(self, action: str, args: Mapping[str, Any]) -> dict[str, Any]:
         flags = notes_flags(args, action)
+        session = self._notes_session(action, args)
         try:
             request_id = (
                 NOTES.check_request_id(args["request_id"])
@@ -2097,6 +2111,7 @@ class Tools:
                 flags,
                 request_id,
                 self.seat,
+                session,
             )
         except NOTES.NotesError as exc:
             raise self._notes_error(exc) from None

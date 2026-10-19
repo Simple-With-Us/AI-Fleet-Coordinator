@@ -1598,6 +1598,11 @@ def board_app(topic: str, acronyms: set[str]) -> str:
     return first if first in acronyms else "AFC"
 
 
+# The daemon files this board item with no agent session behind it, and `board file` needs a session id from every
+# seat but the single-thread ones (AFC-361).  A label that is not a transcript id resolves to no session.
+BOARD_SESSION_LABEL = "agent-sync-wake"
+
+
 def board_argv(board: str, *, seat: str, title: str, desc: str, severity: str, app: str, trigger_id: int,
                url: str) -> list[str]:
     if severity not in ("P2", "P3"):
@@ -1606,7 +1611,7 @@ def board_argv(board: str, *, seat: str, title: str, desc: str, severity: str, a
         raise ValueError("app must be a fleet acronym")
     return [board, "file", "--title=" + title, "--desc=" + desc, "--severity=" + severity, "--app=" + app,
             "--by", seat, "--env", "Mac", "--kind", "agent-report", "--uid", "zulip:%s:%d" % (seat, trigger_id),
-            "--url", url]
+            "--url", url, "--session", BOARD_SESSION_LABEL]
 
 
 def run_board(argv: Sequence[str], env: Mapping[str, str], runner: Callable[..., Any] | None = None) -> tuple[bool, str]:

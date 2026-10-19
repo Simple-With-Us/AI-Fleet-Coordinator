@@ -27,6 +27,12 @@ CODEX_ID = 11
 MENTION = "@**Claude** can you check the AFC cutover?"
 RELAY_SECTION = "[notes_relay]\nenabled = true\nseat = \"CLAUDE\"\n"
 
+SESSION = "relay-test-session-0001"  # AFC-361:  a create or update from a non-exempt sender carries a session id
+
+
+def make_envelope(action, title, markdown, flags, rid, identity, session=SESSION):
+    return N.make_envelope(action, title, markdown, flags, rid, identity, session)
+
 
 class ConfigTests(unittest.TestCase):
     def load(self, text: str) -> C.Config:
@@ -80,7 +86,7 @@ class DaemonRelayTests(DaemonHarness):
         return subprocess.CompletedProcess(argv, 0, b"created note id=n1\n", b"")
 
     def envelope_message(self, body="relay body", title="[AFC, Codex] relay", rid="daemon-request-1", mention=False):
-        env = N.make_envelope("create", title, body + (" @**Claude** please look" if mention else ""), {}, rid, "CODEX")
+        env = make_envelope("create", title, body + (" @**Claude** please look" if mention else ""), {}, rid, "CODEX")
         return self.fake.add_message("Codex", "notes-relay", title, N.render_message(env))
 
     def wait(self, predicate, seconds=10.0):
@@ -609,7 +615,7 @@ class DaemonRelayTests(DaemonHarness):
             daemon.reload()
         self.assertIs(daemon.notes_relay, old, "the old worker is still inside a request:  the swap is pending")
         # CODEX's runner sees a relay request now:  the old consumer does not take it, but the cursor moves on.
-        env = N.make_envelope("create", "[AFC, Cursor] gap", "gap body", {}, "handover-gap-001", "CURSOR")
+        env = make_envelope("create", "[AFC, Cursor] gap", "gap body", {}, "handover-gap-001", "CURSOR")
         gap = self.fake.add_message("Cursor", "notes-relay", "[AFC, Cursor] gap", N.render_message(env))
         daemon.handle_events(new_runner, [{"type": "message", "message": dict(self.fake.messages[-1])}])
         self.assertEqual(daemon.notes_relay_overflow["CODEX"][1], gap, "the gap is marked at once")

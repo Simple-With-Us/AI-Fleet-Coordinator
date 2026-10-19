@@ -832,6 +832,9 @@ def run(args: argparse.Namespace, io: Any, seat: str) -> int:
             return 0
     try:
         runner = Runner(seat, io.environ)
+        # The notifier is a daemon, so no agent session stands behind its board comments;  `board comment` needs
+        # a session id from every seat but the single-thread ones (AFC-361), and this label is its own.
+        runner.env.setdefault("AGENT_SESSION", SESSION)
         state = ledger.State(directory, lambda: now().timestamp())
         state.load()
         probe = runner.agent_sync("whoami", "--as", SEAT, "--session", SESSION, "--json")

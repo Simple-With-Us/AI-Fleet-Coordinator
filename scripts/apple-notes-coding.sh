@@ -13,10 +13,21 @@
 #   apple-notes-coding.sh --update "Title" "Body text"
 #   apple-notes-coding.sh --update --pin --pr "46" "Title" "Body text"
 #   echo "body" | apple-notes-coding.sh "Title"
+#   apple-notes-coding.sh --session "$CLAUDE_CODE_SESSION_ID" "Title" "Body"   # create/update need a session id
 #   apple-notes-coding.sh --pin-only "Exact Note Title"
 #   apple-notes-coding.sh --unpin-only "Exact Note Title"
 #   APPLE_NOTES_PIN=0 apple-notes-coding.sh "Title" ...        # skip pinning
 #   APPLE_NOTES_ACTIVATE=1 apple-notes-coding.sh "Title" ... # bring Notes to front
+#
+# Session id (AFC-361, owner 2026-10-19):  create and update stamp the writer's session id into the note, so a
+# headless resume can find a seat's session for a topic from the note (resume-wake design section 4).  The id is
+# --session ID, else $AGENT_SESSION, else the seat's platform variable (Claude Code CLAUDE_CODE_SESSION_ID, Codex
+# CODEX_THREAD_ID, Cursor CURSOR_CONVERSATION_ID, Grok GROK_SESSION_ID, OpenCode OPENCODE_SESSION_ID, MiniMax
+# __MAVIS_RUNTIME_SESSION_ID).  With none the script exits 2 before it touches Notes.  A seat with one thread with the
+# owner (Grok bots, MA/Rob, JET, WISE, ECHO) needs none.  The seat is $AGENT_LAUNCH_SEAT (with $AGENT_LAUNCHER),
+# else $AGENT_SEAT, else the Agent named in the title ("[APP, Wise] topic", how Instinct's bots call this over ssh);
+# it is never a flag.  Data copy of fleet-apps.json `sessionIds`;  scripts/test_session_ids_parity.py keeps it equal.
+# APPLE_NOTES_PRINT_HTML=1 prints the note HTML and exits before Notes is touched (the tests use it).
 #
 # Focus policy (owner 2026-08-10): create/update MUST NOT steal focus by default.
 # Notes receives AppleScript body edits without activate/show.
@@ -43,6 +54,7 @@ SUMMARY_TEXT=""
 PR_NUMBERS="${PR_NUMBERS:-${APPLE_NOTES_PR:-}}"
 HTML_PATH=""
 TITLE=""
+SESSION_ARG=""
 
 # Env overrides (agents may set these explicitly).
 [[ "${APPLE_NOTES_PIN:-0}" == "1" || "${APPLE_NOTES_PIN:-}" == "true" ]] && WANT_PIN=1
@@ -102,13 +114,18 @@ while [[ $# -gt 0 ]]; do
       TITLE="${1:-}"
       shift || true
       ;;
+    --session)
+      shift || true
+      SESSION_ARG="${1:-}"
+      shift || true
+      ;;
     --)
       shift || true
       break
       ;;
     -*)
       echo "unknown flag: $1" >&2
-      echo "usage: $0 [--update] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path] \"Title\" [body]" >&2
+      echo "usage: $0 [--update] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path|--session id] \"Title\" [body]" >&2
       exit 2
       ;;
     *)
@@ -129,6 +146,90 @@ fi
 
 # Strip accidental backslash escaping on title brackets e.g. \[APP, Agent\]
 TITLE=$(printf '%s' "$TITLE" | sed -e 's/^\\\[/[/' -e 's/\\\]$/]/' -e 's/\\\[/[/g' -e 's/\\\]/]/g')
+
+
+# ---- Session id (AFC-361) ---------------------------------------------------------------------------------------
+# Data copy of fleet-apps.json `sessionIds`;  scripts/test_session_ids_parity.py keeps it equal.
+SESSION_ID_PATTERN='^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$'
+SESSION_GENERIC_ENV="AGENT_SESSION"
+SESSION_FALLBACK_ENV="CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID GROK_SESSION_ID OPENCODE_SESSION_ID __MAVIS_RUNTIME_SESSION_ID"
+
+_session_seat_token() {  # $1 = a seat or Notes name -> the canonical seat tag, upper case ("" when nothing usable)
+  local t
+  t="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]' | sed -E 's/^[^A-Z0-9]+//; s/[^A-Z0-9]+$//; s/[^A-Z0-9]+/-/g')"
+  case "$t" in
+    ROB|ROB-MUSE|MUSE-ASSIST) t=MA ;;
+    INSTINCT|WISE-INSTINCT|ECHO-INSTINCT) t=WISE ;;
+    GROK-BUILD) t=GROK ;;
+    MINIMAX) t=MM ;;
+  esac
+  printf '%s' "$t"
+}
+
+_session_seat() {  # the resolved seat:  launcher's seat, else AGENT_SEAT, else the Agent in the title
+  local raw="" agent
+  if [[ -n "${AGENT_LAUNCHER:-}" && -n "${AGENT_LAUNCH_SEAT:-}" ]]; then
+    raw="$AGENT_LAUNCH_SEAT"
+  elif [[ -n "${AGENT_SEAT:-}" ]]; then
+    raw="$AGENT_SEAT"
+  else
+    agent="$(printf '%s' "$TITLE" | sed -nE 's/^\[[^]]*, ?([^],]+)\].*$/\1/p')"
+    case "$(printf '%s' "$agent" | tr '[:lower:]' '[:upper:]')" in
+      JET|JET\ *) raw=JET ;;
+      GROK\ BOT*|GROK-BOT*) raw=GROK-BOT ;;
+      *) raw="$agent" ;;
+    esac
+  fi
+  _session_seat_token "$raw"
+}
+
+_session_exempt() {  # $1 = seat tag:  one thread with the owner, so no session id to pass
+  case "$1" in ECHO|GROK-BOT|JET|MA|WISE|GB-*) return 0 ;; esac
+  return 1
+}
+
+_session_envs() {  # $1 = seat tag -> the platform variables to try, in order
+  case "$1" in
+    CLAUDE) echo CLAUDE_CODE_SESSION_ID ;;
+    CODEX) echo CODEX_THREAD_ID ;;
+    CURSOR) echo CURSOR_CONVERSATION_ID CURSOR_AGENT_CHAT_ID ;;
+    GROK) echo GROK_SESSION_ID ;;
+    MM) echo __MAVIS_RUNTIME_SESSION_ID ;;
+    OPENCODE) echo OPENCODE_SESSION_ID ;;
+    *) echo "$SESSION_FALLBACK_ENV" ;;
+  esac
+}
+
+_session_own_var() {  # $1 = seat tag -> its own variable, for the refusal text
+  case "$1" in
+    CLAUDE) echo CLAUDE_CODE_SESSION_ID ;; CODEX) echo CODEX_THREAD_ID ;; CURSOR) echo CURSOR_CONVERSATION_ID ;;
+    GROK) echo GROK_SESSION_ID ;; MM) echo __MAVIS_RUNTIME_SESSION_ID ;; OPENCODE) echo OPENCODE_SESSION_ID ;;
+  esac
+}
+
+NOTE_SESSION=""
+if [[ "$MODE" == "create" || "$MODE" == "update" ]]; then
+  _seat="$(_session_seat)"
+  if [[ -n "$SESSION_ARG" ]]; then
+    NOTE_SESSION="$SESSION_ARG"
+  elif [[ -n "${!SESSION_GENERIC_ENV:-}" ]]; then
+    NOTE_SESSION="${!SESSION_GENERIC_ENV}"
+  else
+    for _var in $(_session_envs "$_seat"); do
+      if [[ -n "${!_var:-}" ]]; then NOTE_SESSION="${!_var}"; break; fi
+    done
+  fi
+  if [[ -n "$NOTE_SESSION" ]]; then
+    if ! printf '%s' "$NOTE_SESSION" | grep -Eq "$SESSION_ID_PATTERN"; then
+      echo "session id is not valid:  use 4 to 128 letters, digits, . _ : - starting with a letter or digit" >&2
+      exit 2
+    fi
+  elif ! _session_exempt "$_seat"; then
+    _own="$(_session_own_var "$_seat")"
+    echo "no session id.  Notes record the session they come from, so a headless resume can find this seat's session for the topic.  Pass --session <id>, or export AGENT_SESSION=<id>${_own:+ ($_seat sets $_own;  it is empty here)}.  Grok bots, MA, JET, WISE and ECHO have one thread with the owner and need none.  (seat: ${_seat:-unknown})" >&2
+    exit 2
+  fi
+fi
 
 if [[ "$MODE" == "pin" || "$MODE" == "unpin" ]]; then
   NOTE_ID=$(osascript -e "tell application \"Notes\" to get id of note \"$TITLE\" of folder \"Coding\" of account \"iCloud\"" 2>/dev/null || true)
@@ -516,7 +617,7 @@ _send_pushover_notification() {
 }
 
 if [[ "$SKIP_BODY" == "0" ]]; then
-BODY_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" NEEDS_OWNER="$NEEDS_OWNER" SUMMARY_TEXT="$SUMMARY_TEXT" PR_NUMBERS="$PR_NUMBERS" /usr/bin/python3 -c "
+BODY_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" NEEDS_OWNER="$NEEDS_OWNER" SUMMARY_TEXT="$SUMMARY_TEXT" PR_NUMBERS="$PR_NUMBERS" NOTE_SESSION="$NOTE_SESSION" /usr/bin/python3 -c "
 import sys, re, html, os
 from datetime import datetime
 body = sys.stdin.read()
@@ -524,6 +625,7 @@ title = os.environ.get('NOTE_TITLE', '').strip()
 needs_owner = os.environ.get('NEEDS_OWNER') == '1'
 summary_text = os.environ.get('SUMMARY_TEXT', '').strip()
 pr_numbers = os.environ.get('PR_NUMBERS', '').strip()
+note_session = os.environ.get('NOTE_SESSION', '').strip()
 now = datetime.now()
 # Sun, Aug 9, 3:52pm — no leading zero on day/hour (portable; avoid %-I)
 _h = now.hour % 12 or 12
@@ -583,8 +685,14 @@ if m:
         if pr_match:
             pr_suffix = ' · ' + pr_match.group(1).strip()
 
+# AFC-361:  the writer's session id, as the row under the timestamp.  An update rewrites the whole body, so a
+# Session row the caller echoed back from the old body is dropped and the current one is stamped.
+inner = re.sub(r'^(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*(?:<div><br\s*/?></div>)?\s*', '', inner, flags=re.I)
+session_p = ''
+if note_session:
+    session_p = '<p>' + html.escape('Session: ' + note_session + ' · ' + stamp) + '</p>'
 stamp += pr_suffix
-stamp_p = '<p>' + html.escape(stamp) + '</p><div><br></div>'
+stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
 
 extra_blocks = ''
 if needs_owner:
@@ -601,6 +709,11 @@ title = sys.argv[1]
 body = sys.argv[2]
 print("<h1>" + html.escape(title) + "</h1>" + body)
 ' "$TITLE" "$BODY_HTML")
+
+if [[ "${APPLE_NOTES_PRINT_HTML:-0}" == "1" ]]; then
+  printf '%s\n' "$FULL_HTML"
+  exit 0
+fi
 
 TMP=$(mktemp /tmp/apple-note.XXXXXX)
 printf '%s' "$FULL_HTML" >"$TMP"

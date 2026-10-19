@@ -449,6 +449,7 @@ class NotifyAndBoardTests(unittest.TestCase):
         self.assertIn('--title=t"; rm -rf ~', argv)
         self.assertIn("--desc=$(whoami)", argv)
         self.assertIn("zulip:CLAUDE:42", argv)
+        self.assertEqual(argv[argv.index("--session") + 1], A.BOARD_SESSION_LABEL)  # AFC-361:  board file needs one
         with self.assertRaises(ValueError):
             A.board_argv("/bin/board", seat="CLAUDE", title="t", desc="d", severity="P0", app="CT", trigger_id=1, url="u")
         with self.assertRaises(ValueError):

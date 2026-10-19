@@ -254,7 +254,7 @@ class DirectRunnerTests(unittest.TestCase):
         self.run_direct(envelope(flags={"pin": False}), run)
         env = run.calls[0]["env"]
         self.assertEqual(env["APPLE_NOTES_PIN"], "0")
-        self.assertEqual(set(env) - {"APPLE_NOTES_PIN"}, {"HOME", "PATH"})
+        self.assertEqual(set(env) - {"APPLE_NOTES_PIN"}, {"HOME", "PATH", "AGENT_SEAT"})  # AFC-361:  AGENT_SEAT is the verified identity
 
     def test_script_exit_codes_become_tool_errors(self):
         for code, expected in ((2, "invalid_argument"), (3, "not_found"), (4, "unavailable"), (9, "internal")):

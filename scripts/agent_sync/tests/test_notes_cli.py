@@ -9,7 +9,7 @@ from unittest import mock
 
 from agent_sync import notes as N
 from agent_sync.mcp import guide as G
-from agent_sync.tests.harness import Harness
+from agent_sync.tests.harness import SESSION, Harness
 from agent_sync.tests.test_notes import FakeRun
 
 TITLE = "[AFC, Claude] cli check"
@@ -75,7 +75,7 @@ class NotesCliTests(Harness):
         self.assertEqual(run.calls[0]["input"], b"# From a file")
         self.assertEqual(
             run.calls[0]["argv"][1:],
-            ["--update", "--notify", "--summary", "short", "--pr", "46", "--title", TITLE],
+            ["--update", "--notify", "--summary", "short", "--pr", "46", "--session", SESSION, "--title", TITLE],
         )
         self.assertEqual(run.calls[0]["env"]["APPLE_NOTES_PIN"], "0")
         self.assertIn("--html", run.calls[1]["argv"])

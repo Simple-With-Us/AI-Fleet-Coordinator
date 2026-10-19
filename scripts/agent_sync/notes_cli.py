@@ -24,6 +24,7 @@ from . import identities as X
 from . import identity as I
 from . import config as C
 from . import notes as N
+from . import session_ids as SID
 from .idem import IdemStore
 from .secretscan import scan as scan_text
 from .state import state_root
@@ -187,6 +188,17 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
                 call_args["summary"] = args.summary
             if args.pr:
                 call_args["pr"] = args.pr
+            # AFC-361:  the session id, from the CLI's global --session ID or the environment, judged for the resolved
+            # identity.  The relay path below hands it to the same tool code.
+            try:
+                session = SID.require(identity, getattr(args, "session", None), rt.env, "cli")
+            except SID.SessionRequired as exc:
+                audit["outcome"] = "session_required"
+                raise Z.UsageError(str(exc)) from None
+            except ValueError as exc:
+                raise Z.UsageError(str(exc)) from None
+            if session:
+                call_args["session"] = session
         tool_name = "notes_" + action
     # Direct on a Mac:  no credential, no network.
     if action != "status" and not args.relay:
@@ -196,7 +208,7 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
             try:
                 envelope = N.make_envelope(action, args.title, call_args.get("markdown", ""),
                                            T.notes_flags(call_args, action), call_args.get("request_id") or N.new_request_id(),
-                                           identity)
+                                           identity, call_args.get("session"))
                 problem = N.title_problem(envelope["title"], identity, env=rt.env)
                 if problem:
                     raise N.NotesError("invalid_argument", "%s;  the Agent in the title must be %s" % (problem, identity))

@@ -30,6 +30,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from .. import session_ids as SESSION_IDS
+
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent.parent  # scripts/
 BOARD_PATH = SCRIPTS / "linear-board" / "board"
@@ -75,6 +77,7 @@ CHILD_ENV_KEYS = (
 # The variables board itself reads (LINEAR_BOARD_*, and the LINEAR_<SEAT>_CLIENT_ID / _SECRET pairs a cloud
 # host keeps in its environment).  Nothing else passes through.
 PASS_PREFIXES = ("LINEAR_",)
+SESSION_ENV = (SESSION_IDS.GENERIC_ENV, *SESSION_IDS.FALLBACK_ENV)
 
 
 class LinearInvalid(Exception):
@@ -207,7 +210,7 @@ def plan_for(spec: Spec, args: Mapping[str, Any], identity: str, uid: str | None
     session = args.get("session")
     extra: dict[str, str] = {}
     if session:
-        extra["CLAUDE_CODE_SESSION_ID"] = str(session)
+        extra["AGENT_SESSION"] = str(session)  # board takes AGENT_SESSION from any seat;  the --session flag below wins
     if spec.family == "named":
         body = {k: v for k, v in args.items() if k not in ("idempotency_key", "session")}
         argv = ["run", name, "--args-json", "-", "--json"]
@@ -331,6 +334,9 @@ def child_env(env: Mapping[str, str], identity: str, extra: Mapping[str, str]) -
     out.update(
         {key: value for key, value in env.items() if key.startswith(PASS_PREFIXES) and value}
     )
+    # The session id a write records (AFC-361):  board refuses a write from a seat with none, so the server's own
+    # session variables go on to it, and an explicit `session` argument (plan.env / --session) overrides them.
+    out.update({key: env[key] for key in SESSION_ENV if env.get(key)})
     out["AGENT_SEAT"] = identity
     out["LINEAR_BOARD_WRITES"] = "1"
     out.update(extra)
