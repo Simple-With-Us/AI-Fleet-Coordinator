@@ -4,6 +4,7 @@ quota gate, and the subscription-backed capping decision.
 Everything here is deterministic and offline except `LiveMuseTest`, which runs the real
 `muse exec` against the real wake schema -- the one test that proves the runtime, not the mock.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -22,8 +23,14 @@ from agent_sync import wakes as W
 
 
 def _record(payload_type: str, **payload: object) -> str:
-    return json.dumps({"schema_version": 1, "record_type": "event", "payload_type": payload_type,
-                       "payload": payload})
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "record_type": "event",
+            "payload_type": payload_type,
+            "payload": payload,
+        }
+    )
 
 
 class MuseArgvTest(unittest.TestCase):
@@ -35,8 +42,15 @@ class MuseArgvTest(unittest.TestCase):
         # Every switch that makes "read this topic, touch nothing" true rather than inferred.
         self.assertIn("--approval-mode", argv)
         self.assertEqual(argv[argv.index("--approval-mode") + 1], "never")
-        for switch in ("--disable-shell", "--disable-write", "--disable-web-tools", "--disable-reminders", "--no-session-log",
-                       "--no-foreign-personal-context", "--json"):
+        for switch in (
+            "--disable-shell",
+            "--disable-write",
+            "--disable-web-tools",
+            "--disable-reminders",
+            "--no-session-log",
+            "--no-foreign-personal-context",
+            "--json",
+        ):
             self.assertIn(switch, argv)
         # The sandbox is left ON:  muse has no --disable-sandbox in this argv.
         self.assertNotIn("--disable-sandbox", argv)
@@ -86,8 +100,10 @@ class MuseRunnerPromptTest(unittest.TestCase):
                 fh.write("prompt = args[args.index('--prompt-file') + 1]\n")
                 fh.write("with open(os.environ['CAPTURE_PROMPT'], 'w', encoding='utf-8') as out:\n")
                 fh.write("    out.write(open(prompt, encoding='utf-8').read())\n")
-                fh.write("print(json.dumps({'schema_version': 1, 'record_type': 'event', "
-                          "'payload_type': 'run.terminal.completed', 'payload': {'text': '{}'}}))\n")
+                fh.write(
+                    "print(json.dumps({'schema_version': 1, 'record_type': 'event', "
+                    "'payload_type': 'run.terminal.completed', 'payload': {'text': '{}'}}))\n"
+                )
             os.chmod(executable, 0o700)
             with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
                 contract = fh.read()
@@ -95,20 +111,27 @@ class MuseRunnerPromptTest(unittest.TestCase):
             result = A.MuseRunner(timeout=20).run(
                 [executable, "exec", "--prompt-file", A.MUSE_PROMPT_SLOT],
                 {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CAPTURE_PROMPT": capture},
-                wake, supplied, schema="{}")
+                wake,
+                supplied,
+                schema="{}",
+            )
 
             self.assertTrue(result.ok, (result.refused, result.error))
             with open(capture, encoding="utf-8") as fh:
                 actual = fh.read()
-            self.assertTrue(actual.startswith(contract.rstrip() + "\n\n--- BEGIN DAEMON WAKE PROMPT ---\n"))
+            self.assertTrue(
+                actual.startswith(contract.rstrip() + "\n\n--- BEGIN DAEMON WAKE PROMPT ---\n")
+            )
             self.assertIn(supplied, actual)
             self.assertLess(actual.index(contract.rstrip()), actual.index("Untrusted message:"))
             self.assertFalse(os.path.exists(os.path.join(wake, "prompt.md")))
 
     def test_missing_contract_fails_before_spawn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(A, "CONTRACT_PATH", os.path.join(tmp, "missing-contract.md")), \
-                    mock.patch.object(A.subprocess, "Popen") as popen:
+            with (
+                mock.patch.object(A, "CONTRACT_PATH", os.path.join(tmp, "missing-contract.md")),
+                mock.patch.object(A.subprocess, "Popen") as popen,
+            ):
                 result = A.MuseRunner().run(["/does/not/run"], {}, tmp, "prompt")
             self.assertEqual(result.error, "wake contract unavailable")
             popen.assert_not_called()
@@ -116,9 +139,18 @@ class MuseRunnerPromptTest(unittest.TestCase):
 
 class MuseEnvTest(unittest.TestCase):
     def test_env_is_minimal_and_names_the_seat(self) -> None:
-        env = A.muse_env({"USER": "jay", "TMPDIR": "/tmp", "ANTHROPIC_API_KEY": "secret",
-                          "ZULIP_API_KEY": "secret", "MUSE_TOKEN": "secret"},
-                         "/home/jay", "/wake/path", seat="MM")
+        env = A.muse_env(
+            {
+                "USER": "jay",
+                "TMPDIR": "/tmp",
+                "ANTHROPIC_API_KEY": "secret",
+                "ZULIP_API_KEY": "secret",
+                "MUSE_TOKEN": "secret",
+            },
+            "/home/jay",
+            "/wake/path",
+            seat="MM",
+        )
         self.assertEqual(env["HOME"], "/home/jay")
         self.assertEqual(env["PATH"], "/wake/path")
         self.assertEqual(env["AGENT_LAUNCHER"], A.WAKE_LAUNCHER)
@@ -139,20 +171,32 @@ class MuseEnvelopeTest(unittest.TestCase):
     """The MSP records, not claude's stream-json."""
 
     def test_reads_the_final_answer_and_the_model(self) -> None:
-        lines = [_record("run.model.configured", model_id="muse-spark-1.3-contributor"),
-                 _record("status", text="starting"),
-                 _record("run.terminal.completed",
-                         text='{"action":"none","board":null,"owner_note":null,"reply":null,'
-                              '"risk":null,"route":null}')]
+        lines = [
+            _record("run.model.configured", model_id="muse-spark-1.3-contributor"),
+            _record("status", text="starting"),
+            _record(
+                "run.terminal.completed",
+                text='{"action":"none","board":null,"owner_note":null,"reply":null,'
+                '"risk":null,"route":null}',
+            ),
+        ]
         answer, why, models = A.parse_muse_records(lines)
         self.assertIsNone(why)
         self.assertEqual(models, ["muse-spark-1.3-contributor"])
         self.assertEqual(W.validate(A.parse_muse_result(answer))[1], None)
 
     def test_a_populated_result_survives_the_round_trip(self) -> None:
-        payload = {"action": "board", "reply": "Filed it.", "owner_note": None, "risk": None,
-                   "route": None, "board": {"title": "muse Gate 0 timing", "severity": "P3", "desc": "d"}}
-        answer, why, _ = A.parse_muse_records([_record("run.terminal.completed", text=json.dumps(payload))])
+        payload = {
+            "action": "board",
+            "reply": "Filed it.",
+            "owner_note": None,
+            "risk": None,
+            "route": None,
+            "board": {"title": "muse Gate 0 timing", "severity": "P3", "desc": "d"},
+        }
+        answer, why, _ = A.parse_muse_records(
+            [_record("run.terminal.completed", text=json.dumps(payload))]
+        )
         self.assertIsNone(why)
         result, err = W.validate(A.parse_muse_result(answer))
         self.assertIsNone(err)
@@ -161,14 +205,20 @@ class MuseEnvelopeTest(unittest.TestCase):
 
     def test_a_non_completed_terminal_is_a_refusal_that_names_itself(self) -> None:
         answer, why, _ = A.parse_muse_records(
-            [_record("run.terminal.cancelled", reason="the run was stopped")])
+            [_record("run.terminal.cancelled", reason="the run was stopped")]
+        )
         self.assertIsNone(answer)
         self.assertIn("cancelled", why or "")
 
     def test_malformed_and_unknown_records_are_ignored_not_fatal(self) -> None:
-        lines = ["not json at all", "", "[]", json.dumps({"payload_type": "run.model.configured"}),
-                 _record("something.new", text="ignored"),
-                 _record("run.terminal.completed", text='{"action":"none"}')]
+        lines = [
+            "not json at all",
+            "",
+            "[]",
+            json.dumps({"payload_type": "run.model.configured"}),
+            _record("something.new", text="ignored"),
+            _record("run.terminal.completed", text='{"action":"none"}'),
+        ]
         answer, why, models = A.parse_muse_records(lines)
         self.assertIsNone(why)
         self.assertIsNotNone(answer)
@@ -245,11 +295,15 @@ class MusePinTest(unittest.TestCase):
 
     def test_legacy_pin_and_candidate_without_fingerprints_are_stale(self) -> None:
         muse = self._muse("muse")
-        L.write_json(self.paths.wake_pin_muse, {"muse": A.binary_pin(muse), "at": time.time(),
-                                                "model": C.MUSE_DEFAULT_MODEL})
+        L.write_json(
+            self.paths.wake_pin_muse,
+            {"muse": A.binary_pin(muse), "at": time.time(), "model": C.MUSE_DEFAULT_MODEL},
+        )
         self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
-        L.write_json(self.paths.wake_pin_candidate_muse, {"muse": A.binary_pin(muse), "at": time.time(),
-                                                          "model": C.MUSE_DEFAULT_MODEL})
+        L.write_json(
+            self.paths.wake_pin_candidate_muse,
+            {"muse": A.binary_pin(muse), "at": time.time(), "model": C.MUSE_DEFAULT_MODEL},
+        )
         self.assertIn("changed since the test", A.muse_pin_candidate(self.paths, muse, time.time()))
 
     def test_changed_fixed_argv_invalidates_pin_and_candidate(self) -> None:
@@ -294,9 +348,14 @@ class QuotaRefusalTest(unittest.TestCase):
     cap that actually stopped the run."""
 
     def _result(self, **over: object) -> dict:
-        base = {"type": "result", "subtype": "success", "is_error": True,
-                "result": "You've hit your weekly limit · resets Oct 13 at 5pm (America/Chicago)",
-                "modelUsage": {}, "total_cost_usd": 0.0}
+        base = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": True,
+            "result": "You've hit your weekly limit · resets Oct 13 at 5pm (America/Chicago)",
+            "modelUsage": {},
+            "total_cost_usd": 0.0,
+        }
         base.update(over)
         return base
 
@@ -306,8 +365,10 @@ class QuotaRefusalTest(unittest.TestCase):
 
     def test_the_reason_falls_back_to_the_subtype(self) -> None:
         # A run that failed without saying why still says something useful.
-        self.assertEqual(A.result_reason({"subtype": "error_during_execution", "result": ""}),
-                         "error_during_execution")
+        self.assertEqual(
+            A.result_reason({"subtype": "error_during_execution", "result": ""}),
+            "error_during_execution",
+        )
         self.assertEqual(A.result_reason({}), "error")
 
     def test_the_reason_is_control_stripped(self) -> None:
@@ -349,6 +410,23 @@ class McodeFallbackTest(unittest.TestCase):
         self.assertNotIn("--disable-sandbox", argv)
         self.assertNotIn("--no-foreign-personal-context", argv)
 
+    def test_the_backup_names_its_model_on_the_command_line(self) -> None:
+        # Without `--model`, mcode inherits MiniMax Code's own `defaultModel`, and on this Mac that
+        # names `minimax/MiniMax-M3.1-Flash-Preview` — an id the current catalog does not carry.
+        argv = A.mcode_argv("/usr/local/bin/mcode")
+        self.assertIn("--model", argv)
+        self.assertEqual(argv[argv.index("--model") + 1], C.MCODE_DEFAULT_MODEL)
+
+    def test_the_backup_model_is_one_the_catalog_serves(self) -> None:
+        # The catalog holds `MiniMax-M3` and `MiniMax-M3.1-Flash`;  the -Preview id is stale.
+        self.assertEqual(C.MCODE_DEFAULT_MODEL, "minimax/MiniMax-M3.1-Flash")
+        self.assertNotIn("Preview", C.MCODE_DEFAULT_MODEL)
+        self.assertRegex(C.MCODE_DEFAULT_MODEL, C.MCODE_MODEL_PATTERN)
+
+    def test_a_seat_may_name_another_backup_model(self) -> None:
+        argv = A.mcode_argv("/usr/local/bin/mcode", "minimax/MiniMax-M3")
+        self.assertEqual(argv[argv.index("--model") + 1], "minimax/MiniMax-M3")
+
     def test_the_fallback_can_never_become_the_primary(self) -> None:
         # mcode is not in KNOWN_WAKES:  there is no way to configure a seat to wake on it directly.
         self.assertNotIn("mcode", C.KNOWN_WAKES)
@@ -367,39 +445,55 @@ class McodeFallbackTest(unittest.TestCase):
         # A capped provider stays capped whichever binary asks, so a fallback there would spend a
         # second run to learn what the first one already said.
         from agent_sync.daemon import _is_fallbackable
-        for quota in ("You've hit your weekly limit · resets Oct 13 at 5pm",
-                      "Claude Code quota is exhausted until 2026-10-13",
-                      "usage limit reached", "mcap exhausted"):
+
+        for quota in (
+            "You've hit your weekly limit · resets Oct 13 at 5pm",
+            "Claude Code quota is exhausted until 2026-10-13",
+            "usage limit reached",
+            "mcap exhausted",
+        ):
             self.assertFalse(_is_fallbackable(quota), quota)
 
     def test_an_unanticipated_quota_wording_still_does_not_fall_back(self) -> None:
         # The reason this is an ALLOWLIST and not a blocklist of known words:  a cap whose phrasing
         # nobody anticipated must not read as "some other fault" and buy itself a second run.
         from agent_sync.daemon import _is_fallbackable
+
         self.assertFalse(_is_fallbackable("a wholly unexpected vendor message"))
         self.assertFalse(_is_fallbackable("something nobody has seen before"))
 
     def test_a_real_fault_does_fall_back(self) -> None:
         from agent_sync.daemon import _is_fallbackable
-        for fault in ("no parseable result", "could not start claude (Permission denied)",
-                      "timed out after 240 seconds"):
+
+        for fault in (
+            "no parseable result",
+            "could not start claude (Permission denied)",
+            "timed out after 240 seconds",
+        ):
             self.assertTrue(_is_fallbackable(fault), fault)
 
     def test_a_safety_refusal_never_falls_back(self) -> None:
         # The daemon killed that child on purpose (it listed tools, ran a hook, or never emitted an
         # init event).  Re-running it on a second runtime would be trying to get around a guard.
         from agent_sync.daemon import _is_fallbackable
+
         for refusal in ("init listed tools", "hook ran", "no init event"):
             self.assertFalse(_is_fallbackable(refusal), refusal)
 
     def test_limited_is_structural_not_read_from_the_wording(self) -> None:
         # The signature of a provider refusal is an error result in which NO model ran.  A cap whose
         # message we do not recognise still sets it;  an ordinary failure never does.
-        capped = {"is_error": True, "modelUsage": {},
-                  "result": "a wholly unexpected vendor message"}
+        capped = {
+            "is_error": True,
+            "modelUsage": {},
+            "result": "a wholly unexpected vendor message",
+        }
         self.assertEqual(sorted(capped["modelUsage"]), [])
-        genuine = {"is_error": True, "modelUsage": {"claude-x": {}},
-                   "result": "something failed mid-run"}
+        genuine = {
+            "is_error": True,
+            "modelUsage": {"claude-x": {}},
+            "result": "something failed mid-run",
+        }
         self.assertTrue(sorted(genuine["modelUsage"]))
 
     def test_a_fallback_pin_is_its_own_and_never_self_heals(self) -> None:
@@ -420,22 +514,73 @@ class McodeFallbackTest(unittest.TestCase):
                 fh.write("#!/bin/sh\n")
             self.assertEqual(A.mcode_pin_state(paths, moved)["why"], "pin_stale")
 
+    def test_a_fallback_pin_goes_stale_when_the_model_changes(self) -> None:
+        # The pin records the model, and the model is on the command line:  a pin made under one
+        # model must not read as verified after the seat moves to another.
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = L.SeatPaths(tmp, "MM")
+            os.makedirs(paths.seat_dir, exist_ok=True)
+            exe = os.path.join(tmp, "mcode")
+            with open(exe, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            A.record_mcode_pin(paths, exe, time.time(), model="minimax/MiniMax-M3")
+            self.assertTrue(A.mcode_pinned(paths, exe, "minimax/MiniMax-M3"))
+            self.assertEqual(
+                A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3.1-Flash")["why"], "pin_stale"
+            )
+            # A pin recorded before the fingerprint existed cannot stand in for one.
+            L.write_json(paths.wake_pin_mcode, {"mcode": A.binary_pin(exe), "at": time.time()})
+            self.assertEqual(A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3")["why"], "pin_stale")
+
+    def test_a_fallback_candidate_from_another_model_is_not_pinned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = L.SeatPaths(tmp, "MM")
+            os.makedirs(paths.seat_dir, exist_ok=True)
+            exe = os.path.join(tmp, "mcode")
+            with open(exe, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            A.record_mcode_candidate(paths, exe, time.time(), model="minimax/MiniMax-M3")
+            self.assertIsNotNone(
+                A.mcode_pin_candidate(paths, exe, time.time(), model="minimax/Other-Model")
+            )
+            self.assertIsNone(
+                A.mcode_pin_candidate(paths, exe, time.time(), model="minimax/MiniMax-M3")
+            )
+
     def test_the_fallback_is_optional_and_may_not_be_the_wake_itself(self) -> None:
-        ok = C.from_dict({"daemon": {"owner_user_id": 12},
-                          "seat": {"MM": {"bot": "MiniMax", "wake": "muse", "fallback": "mcode"}}})
+        ok = C.from_dict(
+            {
+                "daemon": {"owner_user_id": 12},
+                "seat": {"MM": {"bot": "MiniMax", "wake": "muse", "fallback": "mcode"}},
+            }
+        )
         self.assertEqual(ok.errors, [])
         self.assertEqual(ok.seats["MM"].fallback, "mcode")
-        for bad in ({"wake": "muse", "fallback": "muse"}, {"wake": "inbox", "fallback": "mcode"},
-                    {"wake": "muse", "fallback": "grok"}):
-            cfg = C.from_dict({"daemon": {"owner_user_id": 12},
-                               "seat": {"MM": dict({"bot": "MiniMax"}, **bad)}})
+        for bad in (
+            {"wake": "muse", "fallback": "muse"},
+            {"wake": "inbox", "fallback": "mcode"},
+            {"wake": "muse", "fallback": "grok"},
+        ):
+            cfg = C.from_dict(
+                {"daemon": {"owner_user_id": 12}, "seat": {"MM": dict({"bot": "MiniMax"}, **bad)}}
+            )
             self.assertTrue(cfg.errors, bad)
 
     def test_a_fallback_may_be_named_on_a_claude_seat_too(self) -> None:
         # The CLAUDE seat is capped until Oct 13, which is exactly the case a fallback exists for.
-        cfg = C.from_dict({"daemon": {"owner_user_id": 12},
-                           "seat": {"CLAUDE": {"bot": "Claude", "wake": "claude", "fallback": "mcode",
-                                               "provider": "Claude Code"}}})
+        cfg = C.from_dict(
+            {
+                "daemon": {"owner_user_id": 12},
+                "seat": {
+                    "CLAUDE": {
+                        "bot": "Claude",
+                        "wake": "claude",
+                        "fallback": "mcode",
+                        "provider": "Claude Code",
+                    }
+                },
+            }
+        )
         self.assertEqual(cfg.errors, [])
         self.assertEqual(cfg.seats["CLAUDE"].fallback, "mcode")
 
@@ -443,12 +588,15 @@ class McodeFallbackTest(unittest.TestCase):
         # Kody's blocking finding on PR #509:  `--runtime fallback` is advertised in the argparse
         # choices, the help text and the protocol doc, but "fallback" is not a runtime name, so the
         # flag fell straight through to UsageError and the self-test could never be run.
-        src = " ".join(inspect.getsource(__import__("agent_sync.listener_cli",
-                                                   fromlist=["cmd_test_wake"]).cmd_test_wake).split())
+        src = " ".join(
+            inspect.getsource(
+                __import__("agent_sync.listener_cli", fromlist=["cmd_test_wake"]).cmd_test_wake
+            ).split()
+        )
         self.assertIn('if want == "fallback":', src)
         self.assertIn("seat %s has no fallback to test", src)
         # "auto" must map to the seat's own wake, and never to a literal "fallback".
-        self.assertIn("elif want == \"auto\":", src)
+        self.assertIn('elif want == "auto":', src)
         self.assertNotIn('seat_cfg.fallback if seat_cfg.wake == "auto"', src)
 
     def test_naming_a_fallback_is_not_enough_to_run_it(self) -> None:
@@ -456,22 +604,39 @@ class McodeFallbackTest(unittest.TestCase):
         # `--permission off` means "never ask", so its tools are live while it composes an answer, and
         # a parent cannot undo a side effect that already happened inside the child.  So the fallback
         # is held unless the config names the risk explicitly, on top of pinning the binary.
-        cfg = C.from_dict({"daemon": {"owner_user_id": 12},
-                           "seat": {"MM": {"bot": "MiniMax", "wake": "muse", "fallback": "mcode"}}})
+        cfg = C.from_dict(
+            {
+                "daemon": {"owner_user_id": 12},
+                "seat": {"MM": {"bot": "MiniMax", "wake": "muse", "fallback": "mcode"}},
+            }
+        )
         self.assertEqual(cfg.errors, [])
         self.assertEqual(cfg.seats["MM"].fallback, "mcode")
         self.assertFalse(cfg.seats["MM"].fallback_uncontained_ok)  # held by default
 
-        ok = C.from_dict({"daemon": {"owner_user_id": 12},
-                          "seat": {"MM": {"bot": "MiniMax", "wake": "muse", "fallback": "mcode",
-                                          "fallback_uncontained_ok": True}}})
+        ok = C.from_dict(
+            {
+                "daemon": {"owner_user_id": 12},
+                "seat": {
+                    "MM": {
+                        "bot": "MiniMax",
+                        "wake": "muse",
+                        "fallback": "mcode",
+                        "fallback_uncontained_ok": True,
+                    }
+                },
+            }
+        )
         self.assertEqual(ok.errors, [])
         self.assertTrue(ok.seats["MM"].fallback_uncontained_ok)
 
     def test_the_acknowledgment_needs_a_fallback_to_acknowledge(self) -> None:
-        cfg = C.from_dict({"daemon": {"owner_user_id": 12},
-                           "seat": {"MM": {"bot": "MiniMax", "wake": "muse",
-                                          "fallback_uncontained_ok": True}}})
+        cfg = C.from_dict(
+            {
+                "daemon": {"owner_user_id": 12},
+                "seat": {"MM": {"bot": "MiniMax", "wake": "muse", "fallback_uncontained_ok": True}},
+            }
+        )
         self.assertTrue(any("applies only with a fallback" in e for e in cfg.errors))
 
     def test_the_fallback_cannot_be_reached_by_the_primary_dispatch(self) -> None:
@@ -479,6 +644,7 @@ class McodeFallbackTest(unittest.TestCase):
         # choke point every wake passes through, so the asymmetry is structural rather than a table
         # lookup someone could edit away.
         from agent_sync.daemon import PRIMARY_RUNTIMES
+
         self.assertIn("claude", PRIMARY_RUNTIMES)
         self.assertIn("muse", PRIMARY_RUNTIMES)
         self.assertNotIn("mcode", PRIMARY_RUNTIMES)
@@ -487,7 +653,9 @@ class McodeFallbackTest(unittest.TestCase):
         self.assertEqual(A.parse_mcode_result("succeeded", "{}")[0], None)
         self.assertIn("cancelled", A.parse_mcode_result("cancelled", None)[0] or "")
         # A failed status carries the first stderr line so the fallback's failure is legible.
-        self.assertIn("boom", A.parse_mcode_result("failed", None, "boom: quota provider down\n")[0] or "")
+        self.assertIn(
+            "boom", A.parse_mcode_result("failed", None, "boom: quota provider down\n")[0] or ""
+        )
 
 
 class JetPinnedReviewTest(unittest.TestCase):
@@ -501,18 +669,33 @@ class JetPinnedReviewTest(unittest.TestCase):
         # it, so a capped CLAUDE seat kept spawning a child:  exactly the waste the gate exists to
         # stop, on the seat that actually hit it.
         import inspect
+
         from agent_sync.daemon import Daemon
+
         src = inspect.getsource(Daemon._wake_block)
         self.assertIn('if runner.cfg.wake in ("claude", "muse"):', src)
         # The quota check must live inside that shared branch, not only under muse.
-        self.assertLess(src.index('if runner.cfg.wake in ("claude", "muse"):'),
-                        src.index("spent = self._quota_reason(runner)"))
+        self.assertLess(
+            src.index('if runner.cfg.wake in ("claude", "muse"):'),
+            src.index("spent = self._quota_reason(runner)"),
+        )
 
     def test_a_safety_refusal_is_terminal_for_every_refusal_kind(self) -> None:
         # Finding 2.  Refusals, pins and policy stops must all produce ZERO fallback attempts.
         from agent_sync.daemon import _is_fallbackable
-        for refusal in ("init listed tools", "hook ran", "no init event", "not pinned", "pin_stale",
-                        "seat_refused", "paused", "owner_not_pinned", "policy", ""):
+
+        for refusal in (
+            "init listed tools",
+            "hook ran",
+            "no init event",
+            "not pinned",
+            "pin_stale",
+            "seat_refused",
+            "paused",
+            "owner_not_pinned",
+            "policy",
+            "",
+        ):
             self.assertFalse(_is_fallbackable(refusal), refusal)
 
     def test_a_stale_output_file_cannot_be_replayed(self) -> None:
@@ -531,6 +714,7 @@ class JetPinnedReviewTest(unittest.TestCase):
         # Finding 4, acceptance side.  Each clause closes a way a stale or foreign answer could be
         # taken for this run's reply.
         import inspect
+
         src = inspect.getsource(A.McodeRunner.run)
         self.assertIn("if out.exit not in (0, None):", src)
         self.assertIn("elif envelopes != 1:", src)
@@ -542,7 +726,9 @@ class JetPinnedReviewTest(unittest.TestCase):
         # Finding 6.  `act` surfaces the seat's held-back items, so recording an unreadable answer
         # as done made a queued item look handled on the strength of output nobody could read.
         import inspect
+
         from agent_sync.daemon import Daemon
+
         src = inspect.getsource(Daemon.run_wake)
         self.assertIn("invalid result: %s", src)
         # wakes.validate always returns a dict, so `why and not obj` is dead.  The gate is `why`
@@ -575,25 +761,45 @@ class QuotaGateTest(unittest.TestCase):
     def _write(self, windows: list[dict], *, age: float = 60.0) -> str:
         path = os.path.join(self.tmp.name, "quota.json")
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"format": "usage-monitor-local-quotas", "version": 1, "producer": "codecaps",
-                       "generatedAt": _iso(self.now - age), "windows": windows}, fh)
+            json.dump(
+                {
+                    "format": "usage-monitor-local-quotas",
+                    "version": 1,
+                    "producer": "codecaps",
+                    "generatedAt": _iso(self.now - age),
+                    "windows": windows,
+                },
+                fh,
+            )
         return path
 
     def test_a_fresh_exhaustion_blocks_and_names_the_reset(self) -> None:
-        path = self._write([{"provider": "Claude Code", "isExhausted": True, "skip": True,
-                             "remainingPercent": 0, "resetAt": "2026-10-13T21:59:59Z"}])
+        path = self._write(
+            [
+                {
+                    "provider": "Claude Code",
+                    "isExhausted": True,
+                    "skip": True,
+                    "remainingPercent": 0,
+                    "resetAt": "2026-10-13T21:59:59Z",
+                }
+            ]
+        )
         block = A.quota_block("Claude Code", self.now, path)
         self.assertIsNotNone(block)
         self.assertIn("exhausted", block)
 
     def test_an_available_provider_never_blocks(self) -> None:
-        path = self._write([{"provider": "MiniMax", "isExhausted": False, "skip": False,
-                             "remainingPercent": 34.0}])
+        path = self._write(
+            [{"provider": "MiniMax", "isExhausted": False, "skip": False, "remainingPercent": 34.0}]
+        )
         self.assertIsNone(A.quota_block("MiniMax", self.now, path))
 
     def test_a_stale_snapshot_never_blocks(self) -> None:
         # A quota source that is down must not silence the fleet:  an old reading is not a verdict.
-        path = self._write([{"provider": "Claude Code", "isExhausted": True, "skip": True}], age=3600)
+        path = self._write(
+            [{"provider": "Claude Code", "isExhausted": True, "skip": True}], age=3600
+        )
         self.assertIsNone(A.quota_block("Claude Code", self.now, path))
 
     def test_a_future_dated_snapshot_never_blocks(self) -> None:
@@ -601,7 +807,9 @@ class QuotaGateTest(unittest.TestCase):
         self.assertIsNone(A.quota_block("Claude Code", self.now, path))
 
     def test_a_missing_malformed_or_unknown_provider_never_blocks(self) -> None:
-        self.assertIsNone(A.quota_block("Claude Code", self.now, os.path.join(self.tmp.name, "absent")))
+        self.assertIsNone(
+            A.quota_block("Claude Code", self.now, os.path.join(self.tmp.name, "absent"))
+        )
         broken = os.path.join(self.tmp.name, "broken.json")
         with open(broken, "w", encoding="utf-8") as fh:
             fh.write("{not json")
@@ -611,8 +819,9 @@ class QuotaGateTest(unittest.TestCase):
 
     def test_exhaustion_is_the_producers_own_verdict_never_a_derived_zero(self) -> None:
         # 0% with neither flag means a passed reset or an unknown remainder, not a refusal.
-        path = self._write([{"provider": "Grok", "isExhausted": False, "skip": False,
-                             "remainingPercent": 0.0}])
+        path = self._write(
+            [{"provider": "Grok", "isExhausted": False, "skip": False, "remainingPercent": 0.0}]
+        )
         state = A.provider_quota("Grok", self.now, path)
         self.assertTrue(state["known"])
         self.assertFalse(state["exhausted"])
@@ -633,26 +842,39 @@ class QuotaGateTest(unittest.TestCase):
     def test_a_claude_seat_may_name_a_provider(self) -> None:
         # The first live failure this gate could have prevented was a CLAUDE seat at its weekly cap,
         # so a claude seat must be able to name the provider its quota is read under.
-        cfg = C.from_dict({"daemon": {"owner_user_id": 12},
-                           "seat": {"CLAUDE": {"bot": "Claude", "wake": "claude",
-                                               "provider": "Claude Code"}}})
+        cfg = C.from_dict(
+            {
+                "daemon": {"owner_user_id": 12},
+                "seat": {"CLAUDE": {"bot": "Claude", "wake": "claude", "provider": "Claude Code"}},
+            }
+        )
         self.assertEqual(cfg.errors, [])
         self.assertEqual(cfg.seats["CLAUDE"].provider, "Claude Code")
 
     def test_a_seat_that_names_no_provider_is_never_gated(self) -> None:
-        cfg = C.from_dict({"daemon": {"owner_user_id": 12},
-                           "seat": {"CLAUDE": {"bot": "Claude", "wake": "claude"}}})
+        cfg = C.from_dict(
+            {
+                "daemon": {"owner_user_id": 12},
+                "seat": {"CLAUDE": {"bot": "Claude", "wake": "claude"}},
+            }
+        )
         self.assertEqual(A.quota_block(cfg.seats["CLAUDE"].provider or "", self.now), None)
 
     def test_provider_still_belongs_to_a_worker_wake(self) -> None:
-        cfg = C.from_dict({"daemon": {"owner_user_id": 12},
-                           "seat": {"MM": {"bot": "MiniMax", "wake": "inbox", "provider": "MiniMax"}}})
+        cfg = C.from_dict(
+            {
+                "daemon": {"owner_user_id": 12},
+                "seat": {"MM": {"bot": "MiniMax", "wake": "inbox", "provider": "MiniMax"}},
+            }
+        )
         self.assertTrue(any("applies only to wake" in e for e in cfg.errors))
 
     def test_the_generated_at_reader_survives_dst(self) -> None:
         # The naive strptime reading was wrong by an hour twice a year, which would make a fresh
         # reading look stale.  UTC is the only correct reading of the trailing Z.
-        self.assertAlmostEqual(A._quota_generated_at("2026-10-11T23:12:55Z"), 1791760375.0, places=0)
+        self.assertAlmostEqual(
+            A._quota_generated_at("2026-10-11T23:12:55Z"), 1791760375.0, places=0
+        )
         self.assertIsNone(A._quota_generated_at("not a time"))
         self.assertIsNone(A._quota_generated_at(None))
 
@@ -665,7 +887,9 @@ class SubscriptionCappingTest(unittest.TestCase):
         self.assertEqual(cfg.seats["MM"].wake_max_usd, 0.0)
 
     def test_a_claude_seat_still_reserves_its_maximum(self) -> None:
-        self.assertEqual(_config_with_wake("claude").seats["MM"].wake_max_usd, C.WAKE_MAX_BUDGET_USD)
+        self.assertEqual(
+            _config_with_wake("claude").seats["MM"].wake_max_usd, C.WAKE_MAX_BUDGET_USD
+        )
 
     def test_the_count_caps_are_unchanged_and_still_the_spam_guard(self) -> None:
         budget = _config_with_wake("muse").seats["MM"].budget
@@ -679,10 +903,20 @@ class SubscriptionCappingTest(unittest.TestCase):
         # The dollar axis is inert, so prove the count axis is what actually stops it.
         budget = _config_with_wake("muse").seats["MM"].budget
         now = time.time()
-        views = {"w%d" % i: {"state": "done", "owner": False, "topic_key": "t", "cost_usd": 0.0,
-                              "times": {"accepted": now - 60}} for i in range(6)}
-        self.assertEqual(W.budget_block(views, budget, owner=False, key="other", now=now, run_max=0.0),
-                         "wakes_per_hour")
+        views = {
+            "w%d" % i: {
+                "state": "done",
+                "owner": False,
+                "topic_key": "t",
+                "cost_usd": 0.0,
+                "times": {"accepted": now - 60},
+            }
+            for i in range(6)
+        }
+        self.assertEqual(
+            W.budget_block(views, budget, owner=False, key="other", now=now, run_max=0.0),
+            "wakes_per_hour",
+        )
 
     def test_usd_per_day_never_blocks_a_muse_seat(self) -> None:
         # Every wake costs 0, so a ceiling of dollars spent against dollars spent is a real ceiling
@@ -690,7 +924,9 @@ class SubscriptionCappingTest(unittest.TestCase):
         cfg = _config_with_wake("muse")
         budget = dict(cfg.seats["MM"].budget)
         self.assertGreater(budget["usd_per_day"], 0)
-        self.assertIsNone(W.budget_block({}, budget, owner=True, key="t", now=time.time(), run_max=0.0))
+        self.assertIsNone(
+            W.budget_block({}, budget, owner=True, key="t", now=time.time(), run_max=0.0)
+        )
 
 
 class MuseConfigTest(unittest.TestCase):
@@ -713,6 +949,16 @@ class MuseConfigTest(unittest.TestCase):
         # A muse seat runs a turn, so it is exactly the case catch_up exists for.
         self.assertTrue(_config_with_wake("muse").seats["MM"].held_back["catch_up"])
 
+    def test_the_fallback_model_defaults_and_can_be_moved(self) -> None:
+        cfg = _config_with_wake("muse")
+        self.assertEqual(cfg.seats["MM"].mcode_model, C.MCODE_DEFAULT_MODEL)
+        moved = _config_with_wake("muse", extra={"mcode_model": "minimax/MiniMax-M3"})
+        self.assertEqual(moved.seats["MM"].mcode_model, "minimax/MiniMax-M3")
+
+    def test_a_malformed_fallback_model_is_refused(self) -> None:
+        cfg = _config_with_wake("muse", extra={"mcode_model": "not-a-provider-model"})
+        self.assertTrue(any("mcode_model must be provider/model" in e for e in cfg.errors))
+
 
 class LiveMuseTest(unittest.TestCase):
     """The one test that touches the real runtime.  Skipped unless MUSE_WAKE_LIVE=1."""
@@ -727,14 +973,20 @@ class LiveMuseTest(unittest.TestCase):
             self.skipTest("no muse binary on the wake PATH")
         work = tempfile.mkdtemp(prefix="afc291-live-")
         os.chmod(work, 0o700)
-        prompt = "Daemon header (trusted):\nSeat: MM\n" \
-            'Where: channel "agent-sync", topic "AFC-291 muse headless wake type"\n' \
-            "Board filing: disabled; never use action board\n" \
-            "Routing: disabled (no owner trigger); leave route null\n" \
+        prompt = (
+            "Daemon header (trusted):\nSeat: MM\n"
+            'Where: channel "agent-sync", topic "AFC-291 muse headless wake type"\n'
+            "Board filing: disabled; never use action board\n"
+            "Routing: disabled (no owner trigger); leave route null\n"
             "Return only the JSON object the schema describes.\n"
-        result = A.MuseRunner(timeout=300).run(A.muse_argv(A.binary_pin(muse), C.MUSE_DEFAULT_MODEL),
-                                                A.muse_env(os.environ, home, wake_path, seat="MM"),
-                                                work, prompt, schema=W.schema_text(["CLAUDE", "MM"]))
+        )
+        result = A.MuseRunner(timeout=300).run(
+            A.muse_argv(A.binary_pin(muse), C.MUSE_DEFAULT_MODEL),
+            A.muse_env(os.environ, home, wake_path, seat="MM"),
+            work,
+            prompt,
+            schema=W.schema_text(["CLAUDE", "MM"]),
+        )
         self.assertTrue(result.ok, "muse refused or failed: %s" % (result.refused or result.error))
         self.assertEqual(result.models, [C.MUSE_DEFAULT_MODEL])
         self.assertEqual(result.cost_usd, 0.0)  # subscription-backed:  no marginal cost to report
@@ -744,7 +996,8 @@ class LiveMuseTest(unittest.TestCase):
 
 def _iso(when: float) -> str:
     import datetime
-    return datetime.datetime.fromtimestamp(when, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return datetime.datetime.fromtimestamp(when, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _config_with_wake(wake: str, extra: dict | None = None) -> C.Config:

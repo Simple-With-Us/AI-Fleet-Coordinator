@@ -78,6 +78,21 @@ WAKE_MAX_BUDGET_USD = 0.25
 # contributor tier explicitly.  It is a default, not a hardcode:  `seat.X.model` still wins, so a
 # seat can be moved to another tier deliberately and the change shows up in the config.
 MUSE_DEFAULT_MODEL = "muse-spark-1.3-contributor"
+# The MiniMax Code fallback runtime's model (AFC-291).  `mcode exec` inherits MiniMax Code's own
+# `defaultModel` when it is given no `--model`, and that default names
+# `minimax/MiniMax-M3.1-Flash-Preview`:  an id the MiniMax Code RUNTIME CATALOG does not carry (it
+# holds `MiniMax-M3` and `MiniMax-M3.1-Flash` only), so a headless fallback run on it times out
+# with `usageSource: unavailable` and no answer.  The fallback therefore names its model on the
+# command line, so the backup runtime runs on a model the catalog serves instead of inheriting a
+# stale default.  A seat can still move deliberately:  `seat.X.mcode_model` wins over this.
+#
+# Two namespaces, one name:  `MiniMax-M3.1-Flash-Preview` IS the public API model id (the CI
+# autofix workflows send it to api.minimax.io), so it stays there.  The MiniMax Code runtime on this
+# Mac is a different catalog, and it does not have that id.
+MCODE_DEFAULT_MODEL = "minimax/MiniMax-M3.1-Flash"
+# A MiniMax Code model id is `provider/model`, so the case and the slash are part of it (unlike a
+# muse model alias, which is lowercase).  This is the shape the fallback's `--model` value must have.
+MCODE_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]{0,59}$"
 # Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
 # ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
 # with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
@@ -221,6 +236,7 @@ class SeatConfig:
         muse: str | None = None,
         provider: str | None = None,
         mcode: str | None = None,
+        mcode_model: str = MCODE_DEFAULT_MODEL,
         fallback: str | None = None,
         fallback_uncontained_ok: bool = False,
         muse_bridge: bool = False,
@@ -237,6 +253,10 @@ class SeatConfig:
         )
         self.muse = muse  # an absolute path to the muse binary, else resolved on the wake PATH
         self.mcode = mcode  # an absolute path to the mcode binary, else resolved on the wake PATH
+        # The model the MiniMax Code fallback runtime runs on.  It is named on the command line
+        # (mcode takes `--model provider/model`), so the fallback never inherits a MiniMax Code
+        # default that the catalog does not serve.  A seat may name another one deliberately.
+        self.mcode_model = mcode_model
         # The fallback runtime, tried only when the primary could not produce a usable answer.  It is
         # never consulted for a quota refusal:  a capped provider stays capped whatever runs.
         self.fallback = fallback
@@ -892,6 +912,13 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             wake_problems.append(
                 'seat.%s.mcode applies only to wake = "claude" or "muse"' % seat_name
             )
+        # The model the mcode fallback runs on:  `provider/model`, named on the command line.
+        mcode_model = section.get("mcode_model", MCODE_DEFAULT_MODEL)
+        if not isinstance(mcode_model, str) or not re.fullmatch(MCODE_MODEL_PATTERN, mcode_model):
+            wake_problems.append(
+                "seat.%s.mcode_model must be provider/model, such as %s"
+                % (seat_name, MCODE_DEFAULT_MODEL)
+            )
         # The fallback runtime, tried only when the primary could not produce a usable answer.  It
         # is never consulted for a quota refusal:  a capped provider stays capped whatever runs.
         fallback = section.get("fallback")
@@ -992,6 +1019,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             claude = muse = mcode = None
             uncontained = False
             provider = None
+            mcode_model = MCODE_DEFAULT_MODEL
             if not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
                 model = "sonnet"
         seat_cfg = SeatConfig(
@@ -1014,6 +1042,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             muse=muse,
             provider=provider,
             mcode=mcode,
+            mcode_model=mcode_model,
             fallback=fallback,
             fallback_uncontained_ok=uncontained,
             muse_bridge=muse_bridge,
