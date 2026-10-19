@@ -317,7 +317,7 @@ The names for every other file match its name (lower case, dashes), with one fol
 3. `bash scripts/retire-secrets-dir.sh archive --rename`  copies the folder into an AES-256 encrypted disk image in `~/Documents` (you type the passphrase twice), verifies the image by mounting it read-only and comparing it with the folder, then renames the folder to `~/.secrets.retired-<stamp>`.  `rollback` puts it back and re-enables the writer.
 4. After a quiet day, delete the renamed folder yourself.  The script prints the command and never runs it.
 
-**Backups are not verified (OPS-907).**  `fleet-work-backup` now reads its credentials through `fleet-secrets` (the restic password and the B2 keys) and its restic repository decrypts (`restic cat config` succeeds, Oct 19).  But the repository has zero snapshots and the `com.jay.fleet-work-backup` LaunchAgent is not installed on this Mac, so no backup has run and OPS-907 remains unverified.  Installing the scheduler is Jay's decision.  Do not describe backups as working.
+**fleet-work-backup is retired (owner ruling 2026-10-19).**  It was never installed on this Mac and its restic repository has zero snapshots, so OPS-907's backup never ran.  The B2 bucket `jays-fleet-work-backup` is left in place and empty, and the code stays in the repo (`scripts/fleet-work-backup/`) with nothing scheduling it.  Do not describe backups as working.
 
 ## Hosted CLAUDE Zulip identity (AFC-296)
 
