@@ -98,8 +98,14 @@ def decide(payload: dict, ctx=None, secret_guard=None):
 
     Shell policy is `fleet.decide`, which isolates its lane and secret checks from each other.
     The file policies are one sequence, so an error raised by any of them (a secret-guard module
-    without SECRET_FILE_PATTERNS, a resolve error, a registry read error) drops the whole set and
-    allows the operation; they are not independent, and they fail open together.
+    without SECRET_FILE_PATTERNS, a resolve error) drops the whole set and allows the operation;
+    they are not independent, and they fail open together.
+
+    A registry read error is different: `guard.make_context` catches it and hands back a fallback
+    registry, so nothing raises and the set still runs.  That fallback keeps only the EXTRA_APPS
+    rows and no seats, so the integration-tree and other-seat checks silently stop matching while
+    the secret and review-lane checks keep running -- a partial bypass, not the total fail-open
+    above.  `source == "fallback"` marks that state.
     """
     if payload.get("tool_name") in ("Bash", "bash"):
         args = payload.get("tool_input")
