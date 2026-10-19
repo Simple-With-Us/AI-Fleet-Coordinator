@@ -43,10 +43,12 @@ request reports, so this catches honest API use but cannot stop someone holding 
 from claiming a human client:  owner priority is a routing hint, never authority for a side
 effect.
 """
+
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable, Mapping
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from .identity import seat_tag_for
 from .live import is_presence, topic_key
@@ -93,7 +95,7 @@ def is_owner_topic(topic: str) -> bool:
     name = str(topic or "").strip()
     for mark in _RESOLVED_MARKS:
         if name.startswith(mark):
-            name = name[len(mark):].lstrip()
+            name = name[len(mark) :].lstrip()
             break
     return name.casefold().startswith(OWNER_TOPIC_PREFIX)
 
@@ -108,8 +110,13 @@ def outside_code(content: str) -> str:
 GENERIC_BOT = 1  # Zulip bot_type:  2 incoming webhook, 3 outgoing webhook, 4 embedded
 
 
-def fleet_bots_by_seat(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str],
-                       owner_user_id: int, *, outgoing_webhook_seats: Iterable[str] = ()) -> dict[str, list[dict[str, Any]]]:
+def fleet_bots_by_seat(
+    users: Mapping[int, Mapping[str, Any]],
+    tags: Iterable[str],
+    owner_user_id: int,
+    *,
+    outgoing_webhook_seats: Iterable[str] = (),
+) -> dict[str, list[dict[str, Any]]]:
     """seat tag -> the fleet bots (as fleet_bot_ids decides) that sign as it, canonical email first:
     the bot whose email local part is the seat's own (`codex-bot@` for CODEX), then by user id.  One
     seat can have two bots (`grok-build-bot@` also signs as GROK)."""
@@ -128,8 +135,13 @@ def fleet_bots_by_seat(users: Mapping[int, Mapping[str, Any]], tags: Iterable[st
     return found
 
 
-def fleet_bot_ids(users: Mapping[int, Mapping[str, Any]], tags: Iterable[str], owner_user_id: int, *,
-                  outgoing_webhook_seats: Iterable[str] = ()) -> set[int]:
+def fleet_bot_ids(
+    users: Mapping[int, Mapping[str, Any]],
+    tags: Iterable[str],
+    owner_user_id: int,
+    *,
+    outgoing_webhook_seats: Iterable[str] = (),
+) -> set[int]:
     """User ids of the fleet bots in a realm user list:  active registered bots that the owner owns
     (`bot_owner_id`) and whose email maps to one of `tags` (config.fleet_tags).  Outgoing webhook bots count only for explicitly enabled seats.  Incoming webhook and embedded
     bots never count, whatever their email, and neither does a person.  The owner check is the trust
@@ -167,9 +179,19 @@ class Context:
     """What the router needs to know beyond the message.  `is_bot` maps user ids to the bot flag;
     an unknown sender counts as a bot."""
 
-    def __init__(self, *, owner_user_id: int, owner_clients: Iterable[str], eligible_user_ids: Iterable[int],
-                 is_bot: Mapping[int, bool], now: float, stale_after: float,
-                 presence: list[tuple[str, str]], muted: Iterable[str] = (), followed: Iterable[str] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        owner_user_id: int,
+        owner_clients: Iterable[str],
+        eligible_user_ids: Iterable[int],
+        is_bot: Mapping[int, bool],
+        now: float,
+        stale_after: float,
+        presence: list[tuple[str, str]],
+        muted: Iterable[str] = (),
+        followed: Iterable[str] = (),
+    ) -> None:
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
         self.eligible_user_ids = set(eligible_user_ids)
@@ -184,9 +206,20 @@ class Context:
 class LeaseView:
     """A live lease as the router sees it (the daemon decides liveness and wake capability)."""
 
-    def __init__(self, lease_id: str, *, platform: str, topics: Iterable[str], mentions: bool,
-                 wake_capable: bool, posted: Iterable[int], prefix: str | None, last_prompt: float = 0.0,
-                 created: float = 0.0, room: Mapping[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        lease_id: str,
+        *,
+        platform: str,
+        topics: Iterable[str],
+        mentions: bool,
+        wake_capable: bool,
+        posted: Iterable[int],
+        prefix: str | None,
+        last_prompt: float = 0.0,
+        created: float = 0.0,
+        room: Mapping[str, Any] | None = None,
+    ) -> None:
         self.lease_id = lease_id
         self.platform = platform
         self.topics = set(topics)
@@ -205,14 +238,18 @@ class LeaseView:
         if message.get("id") in self.posted:
             return True
         content = str(message.get("content") or "")
-        return bool(self.prefix) and any(content.startswith(self.prefix + end) for end in ("]", "→", "->"))
+        return bool(self.prefix) and any(
+            content.startswith(self.prefix + end) for end in ("]", "→", "->")
+        )
 
 
 class Classes:
     def __init__(self) -> None:
         self.own = self.owner = self.owner_api = self.eligible = self.direct = False
         self.everyone = False
-        self.fleet = self.wildcard = self.dm = self.wake_tag = self.stale = self.sender_is_bot = False
+        self.fleet = self.wildcard = self.dm = self.wake_tag = self.stale = self.sender_is_bot = (
+            False
+        )
         self.route_tag = False
         self.owner_topic = self.owner_topic_peer = self.owner_note = False
         self.reply_to: int | None = None
@@ -221,9 +258,26 @@ class Classes:
         self.key = ""
 
     def labels(self) -> list[str]:
-        return [name for name in ("own", "owner", "owner_api", "eligible", "direct", "fleet", "wildcard", "dm",
-                                  "wake_tag", "route_tag", "stale", "owner_topic", "owner_topic_peer", "owner_note")
-                if getattr(self, name)]
+        return [
+            name
+            for name in (
+                "own",
+                "owner",
+                "owner_api",
+                "eligible",
+                "direct",
+                "fleet",
+                "wildcard",
+                "dm",
+                "wake_tag",
+                "route_tag",
+                "stale",
+                "owner_topic",
+                "owner_topic_peer",
+                "owner_note",
+            )
+            if getattr(self, name)
+        ]
 
 
 def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Classes:
@@ -233,26 +287,44 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     flags = list(message.get("flags") or [])
     c.dm = message.get("type") == "private"
     if c.dm:
-        others = sorted(r.get("id") for r in message.get("display_recipient") or [] if isinstance(r, dict))
+        others = sorted(
+            r.get("id") for r in message.get("display_recipient") or [] if isinstance(r, dict)
+        )
         c.channel, c.topic = "DM", ",".join(str(i) for i in others)
     else:
         recipient = message.get("display_recipient")
         c.channel = recipient if isinstance(recipient, str) else ""
-        c.topic = str(message.get("subject") if message.get("subject") is not None else message.get("topic") or "")
+        c.topic = str(
+            message.get("subject")
+            if message.get("subject") is not None
+            else message.get("topic") or ""
+        )
     c.key = topic_key(c.channel, c.topic)
     c.own = sender_id == me.user_id
     from_owner_account = ctx.owner_user_id > 0 and sender_id == ctx.owner_user_id
-    c.owner = from_owner_account and str(message.get("client") or "") in ctx.owner_clients and not c.own
+    c.owner = (
+        from_owner_account and str(message.get("client") or "") in ctx.owner_clients and not c.own
+    )
     c.owner_api = from_owner_account and not c.owner
     c.sender_is_bot = bool(ctx.is_bot.get(sender_id, True)) if isinstance(sender_id, int) else True
-    c.eligible = not c.own and (c.owner or (isinstance(sender_id, int) and sender_id in ctx.eligible_user_ids
-                                            and not from_owner_account))
+    c.eligible = not c.own and (
+        c.owner
+        or (
+            isinstance(sender_id, int)
+            and sender_id in ctx.eligible_user_ids
+            and not from_owner_account
+        )
+    )
     c.owner_topic = not c.dm and is_owner_topic(c.topic)
     if c.owner_topic and c.eligible and not c.owner:
         # Only CLAUDE's bot may wake a seat here, and only with the notifier's tag:  the sender's email is the
         # server's, not the message's, so a peer cannot copy it, and the tag alone (which anyone can type) is not enough.
-        c.owner_note = (c.sender_is_bot and _NOTE_TAG_RE.match(content) is not None
-                        and seat_tag_for({"is_bot": True, "email": message.get("sender_email")}) == NOTE_SENDER_SEAT)
+        c.owner_note = (
+            c.sender_is_bot
+            and _NOTE_TAG_RE.match(content) is not None
+            and seat_tag_for({"is_bot": True, "email": message.get("sender_email")})
+            == NOTE_SENDER_SEAT
+        )
         if not c.owner_note:
             c.owner_topic_peer = True
             c.eligible = False
@@ -286,9 +358,14 @@ class Decision:
         self.throttled: list[tuple[str, str]] = []  # (lease id, reason) for interrupts made passive
 
     def describe(self) -> dict[str, Any]:
-        return {"drop": self.drop_reason, "leases": [[l, c, k] for l, c, k in self.lease_items],
-                "inbox": self.seat_inbox, "delivered_to": self.delivered_to, "wake": self.wake,
-                "wake_block": self.wake_block}
+        return {
+            "drop": self.drop_reason,
+            "leases": [[l, c, k] for l, c, k in self.lease_items],
+            "inbox": self.seat_inbox,
+            "delivered_to": self.delivered_to,
+            "wake": self.wake,
+            "wake_block": self.wake_block,
+        }
 
 
 def prefilter(c: Classes) -> tuple[str | None, str | None]:
@@ -296,7 +373,9 @@ def prefilter(c: Classes) -> tuple[str | None, str | None]:
     if c.own:
         return None, "own"
     if not c.eligible:
-        return None, "owner_api" if c.owner_api else ("owner_topic" if c.owner_topic_peer else "not_eligible")
+        return None, "owner_api" if c.owner_api else (
+            "owner_topic" if c.owner_topic_peer else "not_eligible"
+        )
     if c.wake_tag:
         return None, "wake_tag"
     if c.owner and (c.direct or c.dm or c.fleet):
@@ -309,7 +388,9 @@ def prefilter(c: Classes) -> tuple[str | None, str | None]:
     return None, "not_a_mention"
 
 
-def route(message: Mapping[str, Any], me: SeatIdentity, ctx: Context, leases: list[LeaseView]) -> tuple[Classes, Decision]:
+def route(
+    message: Mapping[str, Any], me: SeatIdentity, ctx: Context, leases: list[LeaseView]
+) -> tuple[Classes, Decision]:
     c = classify(message, me, ctx)
     d = Decision()
     kind, block = prefilter(c)
@@ -329,7 +410,9 @@ def route(message: Mapping[str, Any], me: SeatIdentity, ctx: Context, leases: li
     if on_topic:
         presence = is_presence(c.channel, c.topic, ctx.presence)
         for lease in on_topic:
-            wants = c.eligible and (c.owner or c.direct or (c.reply_to is not None and c.reply_to in lease.posted))
+            wants = c.eligible and (
+                c.owner or c.direct or (c.reply_to is not None and c.reply_to in lease.posted)
+            )
             klass = PASSIVE
             if wants and not presence:
                 reason = lease.has_room(c.key, c.owner)
@@ -341,8 +424,14 @@ def route(message: Mapping[str, Any], me: SeatIdentity, ctx: Context, leases: li
         return c, d
     mention_class = c.eligible and (c.direct or c.dm or (c.owner and c.fleet))
     if mention_class:
-        candidates = [l for l in leases if l.platform == "claude-code" and l.mentions and l.wake_capable
-                      and l.has_room(c.key, c.owner) is None]
+        candidates = [
+            l
+            for l in leases
+            if l.platform == "claude-code"
+            and l.mentions
+            and l.wake_capable
+            and l.has_room(c.key, c.owner) is None
+        ]
         if candidates:
             chosen = max(candidates, key=lambda l: (l.last_prompt, l.created))
             d.lease_items.append((chosen.lease_id, INTERRUPT, "message"))

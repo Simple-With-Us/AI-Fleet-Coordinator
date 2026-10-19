@@ -3215,7 +3215,9 @@ class Daemon:
             if not (row.get("capabilities") or {}).get("wake"):
                 result["held"] += 1  # busy or not resumable right now
                 continue
-            binding = {key: str(row.get(key) or "") for key in ("platform", "host", "session_id", "cwd")}
+            binding = {
+                key: str(row.get(key) or "") for key in ("platform", "host", "session_id", "cwd")
+            }
             binding.update(channel=channel, topic=topic)
             try:
                 added = self.chat_queue(runner.seat).enqueue_target(

@@ -68,7 +68,9 @@ _REPO_TEAM = {repo.casefold(): team for team, repos in TEAM_REPOS.items() for re
 _NAME_RES = [
     (
         repo.casefold(),
-        re.compile(r"(?<![\w-])" + _SEP.join(map(re.escape, _words(repo))) + r"(?![\w-])", re.IGNORECASE),
+        re.compile(
+            r"(?<![\w-])" + _SEP.join(map(re.escape, _words(repo))) + r"(?![\w-])", re.IGNORECASE
+        ),
     )
     for repos in TEAM_REPOS.values()
     for repo in repos
@@ -86,7 +88,8 @@ _SCOPE_RE = re.compile(
     re.IGNORECASE,
 )
 _PREFIX_RE = re.compile(
-    r"(?m)^\s*([^\n@]{1,60}?)\s*@\*{0,2}(?:all|everyone|channel|stream)\*{0,2}(?![\w*])", re.IGNORECASE
+    r"(?m)^\s*([^\n@]{1,60}?)\s*@\*{0,2}(?:all|everyone|channel|stream)\*{0,2}(?![\w*])",
+    re.IGNORECASE,
 )
 
 
