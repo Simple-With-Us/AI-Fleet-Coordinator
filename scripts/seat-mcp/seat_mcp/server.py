@@ -112,6 +112,9 @@ def _dispatch(method: str, params: JsonDict) -> JsonDict:
 class SeatHandler(BaseHTTPRequestHandler):
     server_version = "seat-mcp/1.0"
     token = ""
+    # Per-operation socket timeout:  a stalled or slow client must not hold a
+    # handler thread open forever (BaseHTTPRequestHandler defaults to none).
+    timeout = 60
 
     def log_message(self, fmt: str, *args: Any) -> None:
         # Do not log Authorization or query strings that might carry a token.
@@ -264,6 +267,11 @@ class SeatHandler(BaseHTTPRequestHandler):
             length = int(length_s)
         except ValueError:
             length = 0
+        # The /hooks/ path carries its own credential, so it must still refuse an
+        # oversized or slow body (AFC-359).  Same cap as every other body path.
+        if length < 0 or length > 2_000_000:
+            self._send(413, b"payload too large\n", "text/plain; charset=utf-8")
+            return
         body = self.rfile.read(length) if length > 0 else None
         target_url = f"http://127.0.0.1:8800{self.path}"
         headers = {}

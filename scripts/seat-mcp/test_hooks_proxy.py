@@ -5,6 +5,7 @@ No live ingress:  urllib.request.urlopen is replaced inside the server thread, s
 from __future__ import annotations
 
 import email.message
+import http.client
 import io
 import json
 import threading
@@ -151,6 +152,30 @@ class HooksProxyTest(unittest.TestCase):
                 resp.read()
         self.assertIn("/health", log.getvalue())
         self.assertNotIn("<redacted>", log.getvalue())
+
+    def test_oversized_body_is_refused_without_forwarding(self) -> None:
+        fake = FakeIngress(202)
+        with mock.patch("urllib.request.urlopen", fake):
+            host, port = self.httpd.server_address
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            try:
+                conn.putrequest("POST", HOOK_PATH)
+                # Claim far more than the cap without sending it:  the handler must
+                # answer 413 on the header alone and never read or forward the body.
+                conn.putheader("Content-Length", "2000001")
+                conn.putheader("Content-Type", "application/json")
+                conn.endheaders()
+                conn.send(b"{}")
+                resp = conn.getresponse()
+                code, text = resp.status, resp.read()
+            finally:
+                conn.close()
+        self.assertEqual(code, 413)
+        self.assertIn(b"too large", text)
+        self.assertEqual(fake.calls, [])
+
+    def test_handler_sets_a_socket_timeout(self) -> None:
+        self.assertIsNotNone(server.SeatHandler.timeout)
 
 
 if __name__ == "__main__":
