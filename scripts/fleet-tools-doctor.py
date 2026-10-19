@@ -67,6 +67,7 @@ SHIPPED_EXACT = frozenset({
     "scripts/agent_sync/mcp/listener-tools.json", "scripts/agent_sync/mcp/renamed-tools.json",
     "scripts/agent_sync/mcp/gb-identities.json", "scripts/agent_sync/mcp/notes-tools.json",
     "scripts/agent_sync/mcp/recall-tools.json", "scripts/linear-board/catalog/core-tools.json",
+    "scripts/agent_sync/mcp/fleetlink-tools.json",
     "docs/protocols/agent-sync-tools-guide.md",
     "scripts/agent_sync/wake/wake-schema.json",
     "scripts/linear-board/catalog/named-commands.json", "scripts/linear-board/catalog/official-mcp-tools.json",

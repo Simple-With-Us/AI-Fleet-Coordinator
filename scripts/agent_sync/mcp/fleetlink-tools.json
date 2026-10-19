@@ -1,0 +1,623 @@
+{
+  "//": "The fleetlink_* tools, one contract for the stdio server and the hosted Worker.  Generated from src/fleetlink.js FLEETLINK_TOOLS (test/fleetlink.test.mjs fails when this file differs);  regenerate with: cd scripts/agent-sync-mcp && node scripts/export-fleetlink-tools.mjs",
+  "tools": [
+    {
+      "name": "fleetlink_create_share",
+      "title": "FleetLink Create Share",
+      "description": "Publish a file or note at a FleetLink link owned by this seat:  base64 content with filename and content_type, or text, or markdown.  It lands in the Fleet team (edit access) unless personal is true or team_id names another team.  Post the link in Zulip or Linear instead of pasting long output.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000000,
+            "description": "Base64 file bytes, with content_type.  Over a few MB, use fleetlink_upload_url."
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Content type for content, such as image/png."
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000000,
+            "description": "Plain text."
+          },
+          "markdown": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000000,
+            "description": "Markdown.  The link renders it."
+          },
+          "filename": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          },
+          "days": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "description": "Lifetime in days (files at most 7, links at most 180).  Omit for the default:  3 days for files, 30 for links."
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "A team id from fleetlink_list_teams.  Every seat is an admin of team_fleet (Fleet), with Jay."
+          },
+          "team_access": {
+            "type": "string",
+            "enum": [
+              "view",
+              "edit"
+            ],
+            "description": "What the team's members may do:  edit (default;  add and change files, retitle, renew) or view.  The owner never changes."
+          },
+          "personal": {
+            "type": "boolean",
+            "description": "Keep it personal.  Without it, a seat's new share lands in the Fleet team with edit access, where Jay and every other seat can change it."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_create_link",
+      "title": "FleetLink Create Short Link",
+      "description": "A short FleetLink link that redirects to an http or https url.  Same options as fleetlink_create_share.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          },
+          "days": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "description": "Lifetime in days (files at most 7, links at most 180).  Omit for the default:  3 days for files, 30 for links."
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "A team id from fleetlink_list_teams.  Every seat is an admin of team_fleet (Fleet), with Jay."
+          },
+          "team_access": {
+            "type": "string",
+            "enum": [
+              "view",
+              "edit"
+            ],
+            "description": "What the team's members may do:  edit (default;  add and change files, retitle, renew) or view.  The owner never changes."
+          },
+          "personal": {
+            "type": "boolean",
+            "description": "Keep it personal.  Without it, a seat's new share lands in the Fleet team with edit access, where Jay and every other seat can change it."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_list_shares",
+      "title": "FleetLink List Shares",
+      "description": "Live shares this seat can see:  scope mine (default), teams (every team, the other seats' shared work), team with team_id, and an optional q search.  Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "mine",
+              "team",
+              "teams"
+            ]
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "A team id from fleetlink_list_teams.  Every seat is an admin of team_fleet (Fleet), with Jay."
+          },
+          "q": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_get_share",
+      "title": "FleetLink Get Share",
+      "description": "Details and file list of one share this seat can see, with its team, access level and what this seat may do.  Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_list_teams",
+      "title": "FleetLink List Teams",
+      "description": "The FleetLink teams this seat is in (always Fleet, team_fleet, with Jay and every seat), with members.  Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_share_to_team",
+      "title": "FleetLink Share To Team",
+      "description": "Put one of this seat's shares on a team's side:  every member sees it, and with access edit (the default) adds and changes its files.  The seat stays the owner.  team_id may be omitted (the seat's only team).  Call again to change the access level.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "A team id from fleetlink_list_teams.  Every seat is an admin of team_fleet (Fleet), with Jay."
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "view",
+              "edit"
+            ],
+            "description": "What the team's members may do:  edit (default;  add and change files, retitle, renew) or view.  The owner never changes."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_make_personal",
+      "title": "FleetLink Make Personal",
+      "description": "Take one of this seat's shares out of its team, so only this seat (and FleetLink admins) can see it.  Owner only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_update_share",
+      "title": "FleetLink Update Share",
+      "description": "Change a share's title, description or link url (edit access), or its new_slug, password or team_access (owner or team admin).  null clears title, description or password.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          },
+          "new_slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 256
+          },
+          "team_access": {
+            "type": "string",
+            "enum": [
+              "view",
+              "edit"
+            ],
+            "description": "What the team's members may do:  edit (default;  add and change files, retitle, renew) or view.  The owner never changes."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_add_file",
+      "title": "FleetLink Add File",
+      "description": "Add or replace one file at path in a share this seat can edit:  its own, or a team share with edit access (another seat's work in progress).",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slug",
+          "path"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "File path inside the share, such as notes/plan.md."
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8000000,
+            "description": "Base64 file bytes, with content_type.  Over a few MB, use fleetlink_upload_url."
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Content type for content, such as image/png."
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000000,
+            "description": "Plain text."
+          },
+          "markdown": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000000,
+            "description": "Markdown.  The link renders it."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_delete_file",
+      "title": "FleetLink Delete File",
+      "description": "Delete one file from a share this seat can edit.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slug",
+          "path"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "File path inside the share, such as notes/plan.md."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_read_file",
+      "title": "FleetLink Read File",
+      "description": "Read one file from a share this seat can see, such as another seat's team share:  text up to 1 MB, anything else up to 512 KB as base64.  The content comes back fenced as untrusted data.  Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slug",
+          "path"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "File path inside the share, such as notes/plan.md."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_upload_url",
+      "title": "FleetLink Upload URL",
+      "description": "A one-time URL to upload a file on disk, or one too big for base64, from a sandbox:  curl -fsS -T ./file '<upload_url>'.  Names a share this seat can edit with slug, or creates one (omit slug, or give a new name).  It expires in 15 minutes unless ttl_seconds says otherwise (30 to 1800).",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "File path inside the share, such as notes/plan.md."
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ttl_seconds": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 1800
+          },
+          "days": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "description": "Lifetime in days (files at most 7, links at most 180).  Omit for the default:  3 days for files, 30 for links."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "team_id": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "A team id from fleetlink_list_teams.  Every seat is an admin of team_fleet (Fleet), with Jay."
+          },
+          "team_access": {
+            "type": "string",
+            "enum": [
+              "view",
+              "edit"
+            ],
+            "description": "What the team's members may do:  edit (default;  add and change files, retitle, renew) or view.  The owner never changes."
+          },
+          "personal": {
+            "type": "boolean",
+            "description": "Keep it personal.  Without it, a seat's new share lands in the Fleet team with edit access, where Jay and every other seat can change it."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_renew_share",
+      "title": "FleetLink Renew Share",
+      "description": "Extend a share this seat can edit, optionally by days.  A share can be renewed three times.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          },
+          "days": {
+            "type": "number",
+            "minimum": 0.01
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_delete_share",
+      "title": "FleetLink Delete Share",
+      "description": "Delete a share this seat owns (or manages as a team admin), with all of its files.  The link stops working at once.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "slug"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The share's name, as in https://fleetlink.online/<slug>."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "fleetlink_whoami",
+      "title": "FleetLink Who Am I",
+      "description": "This seat's FleetLink account, usage, quotas and upload limits.  Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {}
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}
