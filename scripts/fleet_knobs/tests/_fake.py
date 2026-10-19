@@ -5,6 +5,7 @@ It records every argv, so a test can prove how many fetches ran and that ``--env
 the only environment ever asked for.  Nothing here touches the network, the real CLI, the
 real HOME or any credential folder.
 """
+
 from __future__ import annotations
 
 import json
@@ -58,8 +59,12 @@ class FakeInfisical:
         self.set()
 
     def set(self, mode: str = "ok", secrets=None, shape: str = "map", **extra) -> None:
-        cfg = {"mode": mode, "secrets": secrets or {}, "shape": shape,
-               "calls": str(self.calls_file)}
+        cfg = {
+            "mode": mode,
+            "secrets": secrets or {},
+            "shape": shape,
+            "calls": str(self.calls_file),
+        }
         cfg.update(extra)
         self.config.write_text(json.dumps(cfg))
 
@@ -80,8 +85,11 @@ class KnobTestCase(unittest.TestCase):
         self.home = self.root / "home"
         self.home.mkdir()
         self.fake = FakeInfisical(self.root)
-        env = {"HOME": str(self.home), "PATH": str(self.fake.bin_dir),
-               "FAKE_INFISICAL_CONFIG": str(self.fake.config)}
+        env = {
+            "HOME": str(self.home),
+            "PATH": str(self.fake.bin_dir),
+            "FAKE_INFISICAL_CONFIG": str(self.fake.config),
+        }
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)

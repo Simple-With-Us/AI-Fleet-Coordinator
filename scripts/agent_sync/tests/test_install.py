@@ -2,6 +2,7 @@
 
 Always runs with HOME pointed at a temp directory, against a fake checkout holding only
 scripts/agent-sync, so the real home, LaunchAgents and credential folders are never involved."""
+
 from __future__ import annotations
 
 import os
@@ -29,8 +30,14 @@ class InstallTests(unittest.TestCase):
 
     def run_install(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         env = {"HOME": str(self.home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
-        return subprocess.run(["bash", str(INSTALL), *args], capture_output=True, text=True, env=env, timeout=30,
-                              cwd=str(cwd) if cwd else None)
+        return subprocess.run(
+            ["bash", str(INSTALL), *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            cwd=str(cwd) if cwd else None,
+        )
 
     def home_listing(self) -> list[str]:
         return sorted(str(p.relative_to(self.home)) for p in self.home.rglob("*"))
@@ -40,15 +47,21 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(os.access(INSTALL, os.X_OK))
         self.assertTrue(ENTRY.read_text().startswith("#!/usr/bin/env python3"))
 
-    def test_the_default_checkout_is_the_managed_runtime_checkout_never_the_human_tree(self) -> None:
+    def test_the_default_checkout_is_the_managed_runtime_checkout_never_the_human_tree(
+        self,
+    ) -> None:
         text = INSTALL.read_text()
-        self.assertIn('DEFAULT_CHECKOUT="/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"', text)
+        self.assertIn(
+            'DEFAULT_CHECKOUT="/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime"', text
+        )
         self.assertNotIn('DEFAULT_CHECKOUT="/Users/jay/Code', text)
 
     def test_the_runtime_sync_script_is_executable_and_parses(self) -> None:
         script = Path(__file__).resolve().parents[2] / "agent-sync-runtime-sync.sh"
         self.assertTrue(os.access(script, os.X_OK))
-        result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            ["bash", "-n", str(script)], capture_output=True, text=True, timeout=30
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_dry_run_changes_nothing(self) -> None:
@@ -66,12 +79,18 @@ class InstallTests(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertEqual(os.readlink(link), str(self.checkout / "scripts" / "agent-sync"))
         self.assertEqual(stat.S_IMODE(os.stat(self.home / ".agent-sync").st_mode), 0o700)
-        self.assertEqual(self.home_listing(), [".agent-sync", ".local", ".local/bin", ".local/bin/agent-sync"])
+        self.assertEqual(
+            self.home_listing(), [".agent-sync", ".local", ".local/bin", ".local/bin/agent-sync"]
+        )
 
     def test_a_relative_checkout_path_still_makes_an_absolute_link_that_works(self) -> None:
         link = self.home / ".local" / "bin" / "agent-sync"
         wanted = os.path.realpath(self.checkout / "scripts" / "agent-sync")
-        for argument, cwd in (("checkout", self.tmp), (".", self.checkout), ("../checkout", self.home)):
+        for argument, cwd in (
+            ("checkout", self.tmp),
+            (".", self.checkout),
+            ("../checkout", self.home),
+        ):
             with self.subTest(argument=argument):
                 if link.is_symlink():
                     link.unlink()
@@ -79,7 +98,9 @@ class InstallTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 target = os.readlink(link)
                 self.assertTrue(os.path.isabs(target), target)
-                self.assertTrue(os.path.exists(link), "the link dangles: " + target)  # exists() follows the link
+                self.assertTrue(
+                    os.path.exists(link), "the link dangles: " + target
+                )  # exists() follows the link
                 self.assertEqual(os.path.realpath(link), wanted)
 
     def test_a_checkout_that_is_a_file_or_missing_is_refused(self) -> None:
@@ -92,10 +113,17 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(self.home_listing(), [])
 
     def test_the_symlink_runs_through_its_own_real_path(self) -> None:
-        self.run_install(str(Path(__file__).resolve().parents[3]))  # the real checkout this file lives in
+        self.run_install(
+            str(Path(__file__).resolve().parents[3])
+        )  # the real checkout this file lives in
         link = self.home / ".local" / "bin" / "agent-sync"
-        done = subprocess.run([str(link), "--version"], capture_output=True, text=True, timeout=30,
-                              env={"HOME": str(self.home), "PATH": os.environ.get("PATH", "")})
+        done = subprocess.run(
+            [str(link), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={"HOME": str(self.home), "PATH": os.environ.get("PATH", "")},
+        )
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("agent-sync", done.stdout)
 
@@ -112,7 +140,9 @@ class InstallTests(unittest.TestCase):
         bin_dir.mkdir(parents=True)
         (bin_dir / "agent-sync").symlink_to(self.tmp / "old-place")
         self.assertEqual(self.run_install(str(self.checkout)).returncode, 0)
-        self.assertEqual(os.readlink(bin_dir / "agent-sync"), str(self.checkout / "scripts" / "agent-sync"))
+        self.assertEqual(
+            os.readlink(bin_dir / "agent-sync"), str(self.checkout / "scripts" / "agent-sync")
+        )
         (bin_dir / "agent-sync").unlink()
         (bin_dir / "agent-sync").write_text("mine")
         refused = self.run_install(str(self.checkout))
