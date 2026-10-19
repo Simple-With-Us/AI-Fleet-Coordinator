@@ -704,7 +704,7 @@ if m:
 # row the caller echoed back from the old body is dropped (wherever it sat:  the old note had it
 # under the timestamp, the new one has it at the end) and the current one is stamped.
 inner = re.sub(r'^(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*(?:<div><br\s*/?></div>)?\s*', '', inner, flags=re.I)
-inner = re.sub(r'(?:<div><br\s*/?></div>)?\s*(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*$', '', inner, flags=re.I)
+inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*(?:<div><br\s*/?></div>)?\s*(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*$', '', inner, flags=re.I)
 session_p = ''
 if note_session:
     session_p = '<p>' + html.escape('Session: ' + note_session + ' - ' + stamp) + '</p>'

@@ -264,6 +264,22 @@ class SessionIdTests(unittest.TestCase):
         self.assertIn("Session: new-id-0002 -", p.stdout)
         self.assertNotIn("old-id-0001", p.stdout)
 
+    def test_prose_ending_in_session_is_not_truncated(self):
+        # The trailing-row strip only fires on a standalone metadata row, so body text that merely
+        # ends in "Session: ..." keeps its tail.
+        old = "<p>Mon, Oct 19, 9:40pm</p><p>We checked the Session: old-id-0001 logs</p>"
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] topic",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=old,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("the Session: old-id-0001 logs", p.stdout)
+        self.assertIn("Session: new-id-0002 -", p.stdout)
+
     def test_the_body_never_reaches_the_refusal(self):
         p = self.run_script(
             "[AFC, Claude] topic", env={"AGENT_SEAT": "CLAUDE"}, body="TOPSECRETBODY"
