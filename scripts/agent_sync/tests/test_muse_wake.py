@@ -349,6 +349,23 @@ class McodeFallbackTest(unittest.TestCase):
         self.assertNotIn("--disable-sandbox", argv)
         self.assertNotIn("--no-foreign-personal-context", argv)
 
+    def test_the_backup_names_its_model_on_the_command_line(self) -> None:
+        # Without `--model`, mcode inherits MiniMax Code's own `defaultModel`, and on this Mac that
+        # names `minimax/MiniMax-M3.1-Flash-Preview` — an id the current catalog does not carry.
+        argv = A.mcode_argv("/usr/local/bin/mcode")
+        self.assertIn("--model", argv)
+        self.assertEqual(argv[argv.index("--model") + 1], C.MCODE_DEFAULT_MODEL)
+
+    def test_the_backup_model_is_one_the_catalog_serves(self) -> None:
+        # The catalog holds `MiniMax-M3` and `MiniMax-M3.1-Flash`;  the -Preview id is stale.
+        self.assertEqual(C.MCODE_DEFAULT_MODEL, "minimax/MiniMax-M3.1-Flash")
+        self.assertNotIn("Preview", C.MCODE_DEFAULT_MODEL)
+        self.assertRegex(C.MCODE_DEFAULT_MODEL, C.MCODE_MODEL_PATTERN)
+
+    def test_a_seat_may_name_another_backup_model(self) -> None:
+        argv = A.mcode_argv("/usr/local/bin/mcode", "minimax/MiniMax-M3")
+        self.assertEqual(argv[argv.index("--model") + 1], "minimax/MiniMax-M3")
+
     def test_the_fallback_can_never_become_the_primary(self) -> None:
         # mcode is not in KNOWN_WAKES:  there is no way to configure a seat to wake on it directly.
         self.assertNotIn("mcode", C.KNOWN_WAKES)
@@ -712,6 +729,16 @@ class MuseConfigTest(unittest.TestCase):
     def test_held_back_catch_up_applies_to_a_muse_seat(self) -> None:
         # A muse seat runs a turn, so it is exactly the case catch_up exists for.
         self.assertTrue(_config_with_wake("muse").seats["MM"].held_back["catch_up"])
+
+    def test_the_fallback_model_defaults_and_can_be_moved(self) -> None:
+        cfg = _config_with_wake("muse")
+        self.assertEqual(cfg.seats["MM"].mcode_model, C.MCODE_DEFAULT_MODEL)
+        moved = _config_with_wake("muse", extra={"mcode_model": "minimax/MiniMax-M3"})
+        self.assertEqual(moved.seats["MM"].mcode_model, "minimax/MiniMax-M3")
+
+    def test_a_malformed_fallback_model_is_refused(self) -> None:
+        cfg = _config_with_wake("muse", extra={"mcode_model": "not-a-provider-model"})
+        self.assertTrue(any("mcode_model must be provider/model" in e for e in cfg.errors))
 
 
 class LiveMuseTest(unittest.TestCase):

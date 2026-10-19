@@ -56,6 +56,20 @@ class StateTests(unittest.TestCase):
         state.record_posted(1)
         self.assertTrue((self.root / "CLAUDE" / "nosession" / "state.json").exists())
 
+    def test_the_full_session_id_is_recorded_next_to_its_short_tag(self) -> None:
+        # The tag in a post is 8 characters, so it cannot carry the id;  a resume-wake that reads
+        # `[SEAT·tag]` needs this to find the session that wrote it.
+        state = S.State(self.root, "CLAUDE", "abcd1234", session_id="abcd1234-full-session-id")
+        state.record_posted(1)
+        data = json.loads(state.path.read_text())
+        self.assertEqual(data.get("session"), "abcd1234-full-session-id")
+
+    def test_a_seat_with_no_session_id_records_none(self) -> None:
+        state = S.State(self.root, "ECHO", None)
+        state.record_posted(1)
+        data = json.loads(state.path.read_text())
+        self.assertNotIn("session", data)
+
     def test_cursors_never_move_backwards_and_keys_ignore_case(self) -> None:
         state = S.State(self.root, "CLAUDE", "t")
         state.advance_cursor("Agent-Sync", "Roll Call", 10)

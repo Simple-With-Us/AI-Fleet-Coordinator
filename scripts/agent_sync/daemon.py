@@ -2577,7 +2577,7 @@ class Daemon:
         )
         if runner.cfg.fallback == "mcode":
             return self.mcode_runner.run(
-                A.mcode_argv(binary),
+                A.mcode_argv(binary, runner.cfg.mcode_model),
                 A.mcode_env(self.env, self.home, self.wake_path, seat=runner.seat),
                 runner.paths.wake_dir,
                 prompt,

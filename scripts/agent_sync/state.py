@@ -149,11 +149,24 @@ def _as_int(value: Any) -> int | None:
 class State:
     """Cursor and ledger store for one seat and one session tag."""
 
-    def __init__(self, root: Path, seat: str, tag: str | None, *, retain_posted: bool = False) -> None:
+    def __init__(
+        self,
+        root: Path,
+        seat: str,
+        tag: str | None,
+        *,
+        retain_posted: bool = False,
+        session_id: str | None = None,
+    ) -> None:
         self.root = Path(root)
         self.retain_posted = retain_posted
         self.seat = seat
         self.tag = tag
+        # The FULL session id behind this session's short tag.  The tag is 8 characters, so it
+        # cannot carry the id;  a resume-wake that reads a post's `[SEAT·tag]` needs this to find
+        # the session that wrote it.  It is written into this session's state file, never into a
+        # post, and a seat with no session id (the single-thread ones) simply has none.
+        self.session_id = session_id
         self.seat_dir = self.root / seat
         self.session_dir = self.seat_dir / (tag or NO_SESSION)
         self.path = self.session_dir / "state.json"
@@ -163,7 +176,13 @@ class State:
         make_private_dir(path.parent)
         for directory in (self.seat_dir, path.parent):  # the seat and session directories, never the root
             tighten_private_dir(directory)
-        return _update(path, mutate)
+
+        def with_session(data: dict[str, Any]) -> None:
+            mutate(data)
+            if path == self.path and self.session_id:
+                data["session"] = self.session_id
+
+        return _update(path, with_session)
 
     # ---- per-session cursors ---------------------------------------------------------------
     def cursor(self, channel: str, topic: str) -> int | None:

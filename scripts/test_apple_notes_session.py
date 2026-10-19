@@ -148,17 +148,28 @@ class SessionIdTests(unittest.TestCase):
         p = self.run_script("--session", "", "[AFC, Claude] topic", env={"AGENT_SEAT": "CLAUDE"})
         self.assertEqual(p.returncode, 2)
 
-    def test_the_stamp_has_the_session_under_the_timestamp(self):
+    def test_the_stamp_has_the_session_as_the_last_row(self):
+        # Owner 2026-10-19:  the Session row is the LAST row of the note, not the third one.
         p = self.run_script(
             "--session", "abc12345-def6", "[AFC, Claude] topic", env={"AGENT_SEAT": "CLAUDE"}
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         m = re.search(
             r"<p>((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m)</p>"
-            r"<p>Session: abc12345-def6 - \1</p>",
+            r".*<p>Session: abc12345-def6 - \1</p></div>\s*$",
             p.stdout,
+            re.S,
         )
         self.assertIsNotNone(m, p.stdout)
+        # It is not the row under the timestamp any more.
+        self.assertIsNone(
+            re.search(
+                r"<p>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m</p>"
+                r"\s*<p>Session:",
+                p.stdout,
+            ),
+            p.stdout,
+        )
 
     def test_platform_variables_are_found_per_seat(self):
         cases = {
@@ -222,7 +233,24 @@ class SessionIdTests(unittest.TestCase):
         self.assertIn("Session: wise-thread-1 -", p.stdout)
 
     def test_an_update_replaces_a_session_row_echoed_from_the_old_body(self):
+        # The old note had the row under the timestamp;  the new one has it at the end.  Both
+        # shapes are dropped, so an update never leaves two Session rows behind.
         old = "<p>Mon, Oct 19, 9:40pm</p><p>Session: old-id-0001 - Mon, Oct 19, 9:40pm</p><p>Body.</p>"
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] topic",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=old,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
+        self.assertIn("Session: new-id-0002 -", p.stdout)
+        self.assertNotIn("old-id-0001", p.stdout)
+
+    def test_an_update_replaces_a_session_row_echoed_from_the_end_of_the_old_body(self):
+        old = "<p>Mon, Oct 19, 9:40pm</p><p>Body.</p><p>Session: old-id-0001 - Mon, Oct 19, 9:40pm</p>"
         p = self.run_script(
             "--update",
             "--session",

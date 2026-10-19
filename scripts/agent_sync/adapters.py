@@ -53,7 +53,7 @@ from typing import Any
 
 from . import live as L
 from . import zulip as Z
-from .config import WAKE_MAX_BUDGET_USD, RoutineConfig
+from .config import MCODE_DEFAULT_MODEL, WAKE_MAX_BUDGET_USD, RoutineConfig
 from .identity import WAKE_LAUNCHER
 from .wakes import CONTRACT_PATH, parse_result, schema_text
 
@@ -1147,6 +1147,7 @@ def quota_block(provider: str, now: float | None = None, path: str | None = None
 # --------------------------------------------------------------------------------------------
 #
 #   mcode exec --prompt-mode work --permission off --output-format json
+#             --model minimax/MiniMax-M3.1-Flash
 #             --output-schema <schema> --max-steps N --timeout 4m --cwd <inert dir>
 #             -o <last-message file> --prompt
 #
@@ -1185,9 +1186,14 @@ def resolve_mcode(explicit: str | None, wake_path: str) -> str | None:
     return os.path.abspath(found) if found else None
 
 
-def mcode_argv(mcode: str, prompt_path: str | None = None) -> list[str]:
+def mcode_argv(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> list[str]:
     """The fixed fallback argv.  The schema, the inert cwd and the last-message file are path slots
     filled in by McodeRunner.run, so the argv prints and diffs as-is.
+
+    The model is named on the command line (`--model provider/model`).  Without it mcode inherits
+    MiniMax Code's own `defaultModel`, which on this Mac names `minimax/MiniMax-M3.1-Flash-Preview`
+    — an id the current catalog does not carry, so the run times out with no usage and no answer.
+    Naming the model here makes the backup runtime run on a model the catalog serves.
 
     The prompt arrives on STDIN, not as a positional argument:  mcode has no `--prompt-file`, and
     `--input -` is its documented stdin form.  Keeping the prompt off the command line also keeps it
@@ -1201,6 +1207,8 @@ def mcode_argv(mcode: str, prompt_path: str | None = None) -> list[str]:
         MCODE_PERMISSION,
         "--output-format",
         "json",
+        "--model",
+        model,
         "--input",
         "-",
         "--output-schema",

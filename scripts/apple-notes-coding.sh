@@ -277,8 +277,18 @@ fi
 # - Formats code blocks with SF Mono font and light styling.
 # - Formats tables with clean border-collapse.
 _convert_body_to_html() {
-  local _md_py
-  _md_py=$(mktemp /tmp/apple-notes-md.XXXXXX.py)
+  local _md_py _md_dir
+  # A private temp DIRECTORY with the converter inside it.  macOS mktemp does not substitute an X
+  # template that does not end the name, so `mktemp /tmp/apple-notes-md.XXXXXX.py` returns a FIXED
+  # path:  two seats writing at once collide, and a stale file (a crash, or a cleanup the runtime's
+  # recoverable-deletion wrapper refused) makes every LATER call fail with "File exists" and an
+  # empty interpreter path.  A directory whose name ends in X's is substituted, so the file inside
+  # it is unique per call and a stale one can never break the next call.
+  if ! _md_dir=$(mktemp -d /tmp/apple-notes-md.XXXXXX); then
+    echo "notes: cannot create a temp dir for the markdown converter" >&2
+    return 1
+  fi
+  _md_py="${_md_dir}/convert.py"
   cat >"${_md_py}" <<'PY'
 import html, os, re, sys
 
@@ -527,7 +537,11 @@ sys.stdout.write("<div>" + "".join(out) + "</div>")
 PY
   /usr/bin/python3 "${_md_py}"
   local _rc=$?
-  rm -f "${_md_py}"
+  # The scratch file and its directory go when they can:  a cleanup the runtime refuses must not
+  # fail the note, and the next call gets a fresh directory either way.  Its output goes nowhere:
+  # this runs inside the body capture, so a word on stdout would land in the note.
+  rm -f "${_md_py}" >/dev/null 2>&1
+  rmdir "${_md_dir}" >/dev/null 2>&1
   return ${_rc}
 }
 
@@ -685,14 +699,17 @@ if m:
         if pr_match:
             pr_suffix = ' · ' + pr_match.group(1).strip()
 
-# AFC-361:  the writer's session id, as the row under the timestamp.  An update rewrites the whole body, so a
-# Session row the caller echoed back from the old body is dropped and the current one is stamped.
+# AFC-361, and owner 2026-10-19:  the writer's session id is the LAST row of the note, so the body
+# reads first and the id is the final thing in it.  An update rewrites the whole body, so a Session
+# row the caller echoed back from the old body is dropped (wherever it sat:  the old note had it
+# under the timestamp, the new one has it at the end) and the current one is stamped.
 inner = re.sub(r'^(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*(?:<div><br\s*/?></div>)?\s*', '', inner, flags=re.I)
+inner = re.sub(r'(?:<div><br\s*/?></div>)?\s*(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*$', '', inner, flags=re.I)
 session_p = ''
 if note_session:
     session_p = '<p>' + html.escape('Session: ' + note_session + ' - ' + stamp) + '</p>'
 stamp += pr_suffix
-stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
+stamp_p = '<p>' + html.escape(stamp) + '</p><div><br></div>'
 
 extra_blocks = ''
 if needs_owner:
@@ -700,7 +717,7 @@ if needs_owner:
 if summary_text:
     extra_blocks += '<div style=\"background-color: #F8F9FA; border-left: 4px solid #0D6EFD; color: #212529; padding: 10px 14px; border-radius: 4px; margin-bottom: 12px; font-family: -apple-system, sans-serif;\"><b>📌 Mobile Quick View:</b> ' + html.escape(summary_text) + '</div>'
 
-sys.stdout.write('<div>' + stamp_p + extra_blocks + inner + '</div>')
+sys.stdout.write('<div>' + stamp_p + extra_blocks + inner + session_p + '</div>')
 ")
 
 FULL_HTML=$(/usr/bin/python3 -c '
