@@ -17,7 +17,7 @@
 //
 // Routes:
 //   POST /webhook/:source     receive a vendor event (signature-verified)
-//   GET  /status/:channel/:topic   read the current standing status
+//   GET  /status/:channel/:topic   rebuild the standing status (operator token required)
 //   GET  /sweep               promote incidents that aged past the window
 //
 // KV layout:
@@ -81,6 +81,15 @@ async function verify(request, raw, env, source) {
   }
   // Unknown source: require a shared bearer secret in the path/query.
   const token = new URL(request.url).searchParams.get("token") || "";
+  return !!env.INGRESS_SHARED_TOKEN && safeEqual(token, env.INGRESS_SHARED_TOKEN);
+}
+
+/** Shared-token gate for operator routes.  `token` query param or Bearer <redacted> */
+function authorized(request, env) {
+  const token =
+    new URL(request.url).searchParams.get("token") ||
+    request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ||
+    "";
   return !!env.INGRESS_SHARED_TOKEN && safeEqual(token, env.INGRESS_SHARED_TOKEN);
 }
 
@@ -263,8 +272,7 @@ export default {
 
     if (url.pathname === "/sweep") {
       // Allow an operator to trigger the sweep by hand.
-      const token = url.searchParams.get("token") || request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || "";
-      if (!env.INGRESS_SHARED_TOKEN || !safeEqual(token, env.INGRESS_SHARED_TOKEN)) {
+      if (!authorized(request, env)) {
         return json({ error: "unauthorized" }, 401);
       }
       return json(await runSweep(env));
@@ -289,6 +297,12 @@ export default {
 
     const statusMatch = url.pathname.match(/^\/status\/([^/]+)\/([^/]+)$/);
     if (statusMatch) {
+      // This route rewrites the standing Zulip message (refreshStatus calls
+      // writeStatus), so it is operator-only: an unauthenticated hit would let
+      // anyone make the bot post into any channel it can reach.
+      if (!authorized(request, env)) {
+        return json({ error: "unauthorized" }, 401);
+      }
       const [, channel, topic] = statusMatch;
       const content = await refreshStatus(env, decodeURIComponent(channel), decodeURIComponent(topic));
       return json({ channel, topic, content });
