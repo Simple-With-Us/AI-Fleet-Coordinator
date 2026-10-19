@@ -131,7 +131,7 @@ NEVER print, `cat`, `grep`, `rg`, or `view_file` lines matching `KEY=value` from
   ```bash
   fleet-secrets names
   ```
-  *(Or via cloud API: `GET https://mac.jays.services/files/key-names` with Bearer auth).*
+  *(Cloud seats have no names endpoint now:  the old `mac.jays.services/files/key-names` was retired 2026-10-19, so ask a Mac seat or the owner).*
 - **Extraction into single variable (Never echo):**
   ```bash
   SECRET_VAL="$(fleet-secrets get TARGET_KEY)" || exit $?

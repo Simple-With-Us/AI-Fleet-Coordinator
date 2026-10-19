@@ -20,7 +20,7 @@ Zulip's users/me for the key is that bot, a bot, and a member (role 400), never
 an administrator or owner.  So an admin key (openai-dot-bot until Fri, Oct 9) is refused and never installed.
 
 Seat keys come only from Infisical:  `--zuliprc` is gone, so nothing is read from
-~/.secrets/Zulip (owner 2026-10-18, AFC-347).
+any local credential file (owner 2026-10-18, AFC-347).
 
 Standard library only.  Python 3.11+.  Run from scripts/agent-sync-mcp/.
 """
@@ -70,7 +70,7 @@ def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
 
 def handoff(name: str) -> str:
     """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
-    file ~/.secrets/global-api-keys is retired.  Only the name is ever reported."""
+    handoff file is retired (AFC-359).  Only the name is ever reported."""
     value = os.environ.get(name, "").strip()
     if value:
         return value

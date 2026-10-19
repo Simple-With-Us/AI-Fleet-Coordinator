@@ -16,7 +16,7 @@ Access is the only thing standing in front of it.
 |---|---|---|
 | **Public Endpoints** | Direct HTTPS probe of 18 fleet surfaces, 8 s timeout, run in parallel | HTTP status and latency.  2xx and 3xx are up; a redirect to `cloudflareaccess.com` reads "Up, behind Access"; 401 and 403 read "Up, auth required"; a timeout is amber and reads "Timed out from Cloudflare". |
 | **Fleet Recall** | `GET /health`, `GET /recall/stats`, and a canary `POST /recall/search` for `fleet mode` on `recall.jays.services` | Point count, collection name and status, embedder and reranker health, per-source breakdown, and the canary hits.  The search box at the top of the card queries the live corpus. |
-| **The Board** (archive) | `GET /findings/stats` and `GET /findings?status=open,in_progress` on `mac.jays.services` | Open and in-progress counts by severity, plus the P0 and P1 rows that need attention.  Since the Linear cutover (owner 2026-10-10) this card shows the frozen archive, because THE BOARD is read-only and Linear is the system of record.  Replacing it needs the per-team counts job in `docs/protocols/linear-migration.md` section 5 (open issue), and the card goes away when the archive is retired at about day 30. |
+| **The Board** (retired 2026-10-19) | none | The card is gone:  THE BOARD (`mac.jays.services`) was retired on 2026-10-19 (AFC-363) and the hostname answers 404.  Linear is the system of record.  A per-team Linear counts card needs the job in `docs/protocols/linear-migration.md` section 5 (open issue). |
 | **Coolify Applications** | `GET /api/v1/applications` and `/api/v1/servers` on `host.jays.services` | Container status (`running:healthy`, `exited:unhealthy`, …) per application, then server reachability. |
 | **GitHub Repositories** | One Search API call for every open PR the owner has, then the Actions API for the latest run on `main`, per repo in `fleet-apps.json` | Open PR count and the conclusion of the most recent `main` run.  The row links to that run.  Past 100 open PRs the total stays exact but the per-repo split is capped, and the card says so. |
 | **Vercel Projects** | `GET /v9/projects?limit=50`, retried per team when the personal scope is empty | Newest READY deployment when present (else `latestDeployments[0].readyState`) — READY is green, ERROR is red, everything else amber.  A **CANCELED** deployment is amber, not red: it is an abandoned or superseded build, and the production alias keeps serving the last READY one.  See "A canceled deploy is not a down service". |
@@ -99,7 +99,7 @@ for the reranker, which is where the time goes.
 
 ## Tunnel-backed hosts
 
-`mac.jays.services`, `xcode.jays.services`, and `agent-sync.jays.services` reach the
+`xcode.jays.services` and `agent-sync.jays.services` reach the
 Mac through a Cloudflare Tunnel.  They answer in well under a second from the Mac
 and time out from Cloudflare's edge.  The panel cannot fix that route, so it reports
 it honestly: a timeout is **amber** and says "Timed out from Cloudflare", not red
@@ -122,7 +122,6 @@ wrangler secret put SENTRY_AUTH_TOKEN
 wrangler secret put PAGERDUTY_API_KEY
 wrangler secret put DD_API_KEY
 wrangler secret put DD_APP_KEY
-wrangler secret put MAC_COLLAB_TOKEN
 ```
 
 Read each value with `fleet-secrets get NAME` (Infisical Fleet-OPS;  it returns the bare value with no quote-wrapping).  Do not paste a
