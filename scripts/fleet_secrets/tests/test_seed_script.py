@@ -120,7 +120,11 @@ class SeedScriptTests(unittest.TestCase):
         self.assertNotIn("wrong", out)
 
     def test_refuses_a_terminal_and_a_non_root_run_on_the_real_keychain(self):
-        env = {"PATH": "/usr/bin:/bin", "SECURITY_BIN": str(self.fake), "FAKE_STORE": str(self.store)}
+        env = {
+            "PATH": "/usr/bin:/bin",
+            "SECURITY_BIN": str(self.fake),
+            "FAKE_STORE": str(self.store),
+        }
         p = subprocess.run(
             ["/bin/bash", str(SCRIPT)], input=b"a\nb\n", capture_output=True, env=env, timeout=30
         )
