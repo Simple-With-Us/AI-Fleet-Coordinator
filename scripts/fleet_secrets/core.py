@@ -547,7 +547,9 @@ def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
             env,
         )
         if probe == 404:
-            raise SecretsError("folder-missing:  %s does not exist in Fleet-OPS;  nothing was written" % path, 4)
+            raise SecretsError(
+                "folder-missing:  %s does not exist in Fleet-OPS;  nothing was written" % path, 4
+            )
         if probe != 200:
             raise SecretsError("write-failed:  folder-check http-%d" % probe, 4)
         status = _api("PATCH", "/v3/secrets/raw/" + quoted, token, body, env)
