@@ -1,7 +1,7 @@
 """install.sh: dry run changes nothing, a real run links and makes ~/.agent-sync 700, reruns are idempotent.
 
 Always runs with HOME pointed at a temp directory, against a fake checkout holding only
-scripts/agent-sync, so the real home, LaunchAgents and ~/.secrets are never involved."""
+scripts/agent-sync, so the real home, LaunchAgents and credential folders are never involved."""
 from __future__ import annotations
 
 import os

@@ -2,7 +2,7 @@
 
 Credentials come from the environment when set, otherwise from Infisical via a machine
 identity in the environment, otherwise from `fleet-secrets` when that command is installed
-(the Mac).  Nothing reads the flat file ~/.secrets/global-api-keys any more (OPS-818).
+(the Mac).  Nothing reads the old flat credentials file any more (OPS-818).
 Values are never printed or logged.
 
 Run your own: set QDRANT_URL, QDRANT_API_KEY, TEI_URL, TEI_API_KEY and
@@ -210,8 +210,8 @@ def infisical_env() -> str:
 def handoff_file() -> pathlib.Path | None:
     """An explicit credentials file of the caller's own, or None.
 
-    FLEET_RAG_HANDOFF_FILE names it.  There is no default file:  the flat file
-    ~/.secrets/global-api-keys is retired (OPS-818), and the Mac reads Infisical through
+    FLEET_RAG_HANDOFF_FILE names it.  There is no default file:  the old flat
+    credentials file is retired (OPS-818), and the Mac reads Infisical through
     `fleet-secrets` instead (see fleet_secrets_many()).  Only the client id / secret lines are
     ever read, and no value is printed or logged.
     """

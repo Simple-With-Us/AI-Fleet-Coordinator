@@ -859,7 +859,7 @@ class Identity:
 def resolve_identity(seat: str = "") -> Identity:
     """Which Linear app this run acts as.  Only OAuth client credentials of a
     fleet app are read:  a personal or admin API key never is, from any file or
-    variable, so the CLI cannot act as Jay.  Nothing is read from ~/.secrets
+    variable, so the CLI cannot act as Jay.  No credential file is read
     (AFC-359).  The first that applies wins:
 
     1. LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET in the environment (a cloud

@@ -116,8 +116,8 @@ def by_check(rep: dict) -> dict[str, dict]:
 class PlatformsReportTests(HermeticCredentialsMixin, unittest.TestCase):
     """Most of these call doctor.platforms_report() without a `rerank_check=` override, which
     falls back to doctor.default_rerank_check() -> recall_api.get_config() -> a REAL Infisical
-    login using whatever this Mac's real ~/.secrets/global-api-keys holds, if it exists.  On a
-    CI runner (no ~/.secrets) that silently no-ops; on an owner's Mac it reads real credentials
+    login using whatever this Mac's real fleet-secrets can supply.  On a
+    CI runner (no fleet-secrets) that silently no-ops; on an owner's Mac it reads real credentials
     and can make a real, slow network call.  make_hermetic() (see _hermetic.py) closes that off
     regardless of what's actually on disk here.
     """

@@ -3,7 +3,7 @@
 The fake is a real script on PATH, so the code under test runs its normal subprocess path.
 It records every argv, so a test can prove how many fetches ran and that ``--env=prod`` was
 the only environment ever asked for.  Nothing here touches the network, the real CLI, the
-real HOME or ~/.secrets.
+real HOME or any credential folder.
 """
 from __future__ import annotations
 

@@ -45,7 +45,7 @@ class SeatAndMcpTests(unittest.TestCase):
             doctor.check_seat(report, "GROK-WEB", {})
             self.assertEqual(report.rows[0]["status"], "FAIL")
             self.assertIn("zulip bot, linear app, fleetlink token", report.rows[0]["detail"])
-            # AFC-359:  files under ~/.secrets no longer count.
+            # AFC-359:  files in the retired credentials folder no longer count.
             self.touch(".secrets/Zulip/Grok-Web-zuliprc")
             report = doctor.Report()
             doctor.check_seat(report, "GROK-WEB", {})

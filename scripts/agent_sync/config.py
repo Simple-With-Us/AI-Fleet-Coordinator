@@ -17,7 +17,7 @@ seat's credential, refuses to start, so a seat is never held twice.
 Credentials:  `creds = "file"` (the default) is the seat's own bot, named by `bot` (its credential
 file stem, e.g. Grok-Build):  read from Infisical Fleet-OPS /zulip as <BOT>_ZULIP_EMAIL, _KEY and _SITE
 (BOT is the stem in upper case with hyphens as underscores), or from <dir>/<bot>-zuliprc only when the
-explicit override AGENT_SYNC_SECRETS_DIR is set.  Nothing under ~/.secrets is read (AFC-359).
+explicit override AGENT_SYNC_SECRETS_DIR is set (there is no default folder, AFC-359).
 `creds = "infisical"` is the same without the file override.  `creds = "env"`
 (server instance only) reads the seat's email and key from environment variables named in the
 config, ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY by default (CODE is the seat with hyphens

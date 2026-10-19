@@ -20,7 +20,7 @@ Checks:
   tool-file   the files the recall, lane and fleet-mode tools run from ship with the runtime
   fleet-mode-doc  the Mac's ~/apps/FLEET-MODE.md equals the repo's docs/FLEET-MODE.md (WARN if not)
   seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical Fleet-OPS
-              (/zulip, /linear, /fleetlink;  AFC-359:  nothing under ~/.secrets is read)
+              (/zulip, /linear, /fleetlink;  AFC-359:  no credential file is read)
   mcp:codex   Codex registers agent-sync (and FleetLink when a token exists)
   mcp:claude  Claude Code registers agent-sync (and FleetLink likewise)
 

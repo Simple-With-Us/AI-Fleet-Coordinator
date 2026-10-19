@@ -573,7 +573,7 @@ class FakeQdrant:
 
 def _fake_seed() -> list[dict]:
     rows = [
-        ("Never grep, cat, or Read ~/.secrets/global-api-keys for KEY=value lines - that prints "
+        ("Never grep, cat, or Read the global-api-keys file for KEY=value lines - that prints "
          "secret values into the transcript.  List names only.", "preference", "fleet"),
         ("The fleet vector database runs as Coolify service qdrant-st on the shared Hetzner box, "
          "bound to the Tailscale mesh address on port 6333.", "infrastructure", "fleet"),

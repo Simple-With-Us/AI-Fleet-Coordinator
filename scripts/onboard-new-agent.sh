@@ -138,7 +138,8 @@ FILE_CODE="${zulip_ids%% *}"
 BOT_EMAIL="${zulip_ids##* }"
 
 echo "== seat onboard: tag=$TAG notes=$NOTES_NAME suffix=$SUFFIX prefix=$PREFIX app=${APP:-(not set)}"
-echo "   zulip bot=$BOT_EMAIL  credential file=~/.secrets/Zulip/$FILE_CODE-zuliprc"
+BOT_KEY_PREFIX="$(printf '%s' "$FILE_CODE" | tr 'a-z-' 'A-Z_')"
+echo "   zulip bot=$BOT_EMAIL  credentials=Infisical Fleet-OPS /zulip (keys ${BOT_KEY_PREFIX}_ZULIP_EMAIL, _KEY, _SITE)"
 
 # Record the seat in fleet-apps.json if missing, and its app in seatApps.bySeat.
 if [ "$DRY_RUN" -eq 0 ]; then

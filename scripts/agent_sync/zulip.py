@@ -8,7 +8,7 @@ Credential order (first hit wins, nothing is merged):
   4. env ZULIP_EMAIL + ZULIP_API_KEY + ZULIP_SITE  (cloud seats)
   5. Infisical Fleet-OPS /zulip  (prod), the resolved seat's own three keys <BOT>_ZULIP_EMAIL, _KEY and
      _SITE, read through `fleet-secrets` (off with AGENT_SYNC_INFISICAL=0;  OPS-818, AFC-359)
-Nothing under ~/.secrets is read (AFC-359:  the folder is retired).  A .env file, ./zuliprc and
+No credential folder is read (AFC-359:  the old folder is retired).  A .env file, ./zuliprc and
 ~/.zuliprc are never read either.  Values fetched from Infisical stay in this process's memory only
 (never on disk), are fetched once per process and reused for INFISICAL_CACHE_TTL seconds, and a
 failed refresh falls back to the values this process already holds.  A failure with nothing held is
@@ -375,7 +375,7 @@ def env_credentials(
 
 def override_secrets_dir(env: Mapping[str, str]) -> str | None:
     """The explicit credential-file directory (env AGENT_SYNC_SECRETS_DIR), or None.  There is no
-    default:  ~/.secrets/Zulip is retired (AFC-359), and seats read Infisical instead."""
+    default:  the old per-seat file folder is retired (AFC-359), and seats read Infisical instead."""
     value = (env.get(ENV_SECRETS_DIR) or "").strip()
     return os.path.expanduser(value) if value else None
 

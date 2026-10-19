@@ -15,7 +15,7 @@ in order:
      server sets AGENT_SEAT to the seat it resolved from --as or --default-seat when the environment named none, so
      a seat that came from a flag is as binding as one from the environment;
   3. FLEETLINK_TOKEN_<SEAT> in Infisical Fleet-OPS /fleetlink, read through `fleet-secrets get` (AFC-359:  the old
-     ~/.secrets/FleetLink/<SEAT>.env file is retired and never read), held in memory and handed to the child as
+     per-seat FleetLink env file is retired and never read), held in memory and handed to the child as
      FLEETLINK_TOKEN.
 
 The child always gets FLEETLINK_SEAT, a minimal environment (no FLEET_ADMIN_SECRET or any other variable of this

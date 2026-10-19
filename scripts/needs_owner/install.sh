@@ -18,7 +18,7 @@
 # files before they parse anything, so a copy that lacks or has damaged one fails;  `notify` imports fleet_knobs when it runs).  Run it from a lane or from the managed
 # runtime checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator.
 #
-# It touches nothing else:  no LaunchAgents, no pm2, nothing under ~/.secrets.  `needs-owner` is an on-demand helper
+# It touches nothing else:  no LaunchAgents, no pm2, no credential files.  `needs-owner` is an on-demand helper
 # (docs/MAC-LOCAL-PROCESSES.md);  the scheduled fallback notifier is the separate LaunchAgent
 # scripts/launchd/com.jay.needs-owner-notify.plist, which the owner session loads (live step L16).
 set -euo pipefail

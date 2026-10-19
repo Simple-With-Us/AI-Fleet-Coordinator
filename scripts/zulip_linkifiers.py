@@ -13,7 +13,7 @@ Credentials:  with --admin, only the realm-admin bot:  env REALM_ADMIN_ZULIP_EMA
 first, then Infisical Fleet-OPS /zulipadmin through `fleet-secrets get` (then /zulip, then the root).
 Without --admin (plan and check), first hit wins:  --rc PATH, then env ZULIP_EMAIL + ZULIP_API_KEY, then
 Infisical CLAUDE_ZULIP_* (/zulip, then the root).  --apply needs --admin.  Keys are never printed.
-Nothing under ~/.secrets is read (AFC-359).
+No credential file is read (AFC-359).
 
 Rules are matched to live ones by id, then by identical pattern, because Zulip numbers a rule it
 creates itself (a deleted and re-added rule, a restored backup, a fresh realm) and the pin in
