@@ -460,9 +460,9 @@ export class HostedTools {
     this.me = { user_id: me.user_id, role: me.role };
   }
 
-  // Keep Cursor's parallel Linear work separate from its Zulip allowance.
+  // Every seat's Linear work has its own allowance, separate from its Zulip one (owner 2026-10-19).
   async reserveLinear(kind) {
-    return this.reserve(this.callerSeat === "CURSOR" ? `linear_${kind}` : kind);
+    return this.reserve(`linear_${kind}`);
   }
 
   async reserve(kind) {

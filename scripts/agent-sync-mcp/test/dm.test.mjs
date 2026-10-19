@@ -432,18 +432,19 @@ test("dm_send:  a Zulip refusal is zulip_error without Zulip's text, and a gatew
   toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "y" }), "outcome_unknown");
 });
 
-test("dm_send counts against the seat's write budget with post:  20 an hour across both, and a duplicate spends none", async () => {
+test("dm_send counts against the seat's write budget with post:  one hourly allowance across both, and a duplicate spends none", async () => {
   const { tools, gate, jay } = harness();
-  for (let i = 0; i < 10; i++) ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: `dm ${i}` }), "zulip_dm_send");
-  for (let i = 0; i < 10; i++) ok(await tools.call("zulip_post", { channel: "sandbox", topic: "b", text: `post ${i}` }), "zulip_post");
-  assert.equal((await gate.store.get("budget:write")).length, 20);
+  const half = 60; // 120 an hour across both
+  for (let i = 0; i < half; i++) ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: `dm ${i}` }), "zulip_dm_send");
+  for (let i = 0; i < half; i++) ok(await tools.call("zulip_post", { channel: "sandbox", topic: "b", text: `post ${i}` }), "zulip_post");
+  assert.equal((await gate.store.get("budget:write")).length, 2 * half);
   const error = toolError(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "one too many" }), "budget_exhausted");
   assert.match(error.reset_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   // A repeat of a sent DM is a duplicate, before the budget is touched.
   assert.equal(ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "dm 3" }), "zulip_dm_send").duplicate, true);
   // Reads (dm_list, dm_read) draw on the read budget, not the write one.
   ok(await tools.call("zulip_dm_list", {}), "zulip_dm_list");
-  assert.equal((await gate.store.get("budget:write")).length, 20);
+  assert.equal((await gate.store.get("budget:write")).length, 2 * half);
   assert.equal((await gate.store.get("budget:read")).length, 1);
 });
 
