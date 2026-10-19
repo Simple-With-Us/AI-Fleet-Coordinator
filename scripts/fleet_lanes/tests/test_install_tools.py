@@ -1766,6 +1766,7 @@ class StableDirOwnershipTests(World):
                 "fleet-guard-hook",
                 "fleet_lanes",
                 "lane-guard-hook",
+                "minimax-guard-hook",
                 "muse-plugin",
                 "muse-seat",
             ],
@@ -5827,8 +5828,8 @@ class MinimaxBundleTests(World):
             "[new]",
             ".claude-plugin/plugin.json",
             "hooks/hooks.json",
-            '"matcher": "Bash"',
-            "--format claude",
+            '"matcher": "Bash|Read|Write|Edit|bash|read|write|edit"',
+            "minimax-guard-hook",
             '"timeout": 10',
             "UNVERIFIED",
             "No SessionStart seat hook",
@@ -5862,11 +5863,11 @@ class MinimaxBundleTests(World):
         self.assertEqual(set(doc), {"hooks"})
         self.assertEqual(set(doc["hooks"]), {"PreToolUse"})
         (group,) = doc["hooks"]["PreToolUse"]
-        self.assertEqual(group["matcher"], "Bash")
+        self.assertEqual(group["matcher"], "Bash|Read|Write|Edit|bash|read|write|edit")
         (hook,) = group["hooks"]
         self.assertEqual(hook["type"], "command")
-        self.assertEqual(hook["command"], T.fleet_hook_command(self.paths, "claude"))
-        self.assertTrue(hook["command"].endswith("fleet-guard-hook --format claude"))
+        self.assertEqual(hook["command"], T.minimax_hook_command(self.paths))
+        self.assertTrue(hook["command"].endswith("minimax-guard-hook"))
         self.assertTrue(os.path.isabs(hook["command"].split()[0]))
         self.assertIs(type(hook["timeout"]), int)
         self.assertTrue(1 <= hook["timeout"] <= 10, hook)
@@ -6031,9 +6032,20 @@ class MinimaxBundleTests(World):
         self.assertIn("dangling", r.detail)
 
     def test_it_is_never_wired_in_when_the_fleet_hook_cannot_deny(self) -> None:
-        shim = Path(self.paths.fleet_shim)
+        shim = Path(self.paths.stable) / T.MINIMAX_HOOK_NAME
         shim.write_text("#!/bin/sh\nexit 0\n")
         os.chmod(shim, 0o755)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("fails its probes", r.detail)
+        self.assertFalse(self.bundle.exists())
+
+    def test_file_policy_must_pass_before_the_plugin_is_wired(self) -> None:
+        adapter = Path(self.paths.package_dir) / "minimax_guard_hook.py"
+        adapter.write_text(adapter.read_text().replace(
+            'if __name__ == "__main__":',
+            'def file_reason(*args, **kwargs):\n    return None\n\nif __name__ == "__main__":',
+        ))
         r = self.apply()
         self.assertEqual(r.status, "refused", r)
         self.assertIn("fails its probes", r.detail)
@@ -6068,7 +6080,7 @@ class MinimaxBundleTests(World):
             self.assertEqual(by[n].status, "PASS", by[n].line())
         self.assertIn("permissionDecision", by["deny/login-PATH"].detail)
         self.assertIn("deny", by["secret/hook-env"].detail)
-        self.assertEqual(by["hook command"].detail, T.fleet_hook_command(self.paths, "claude"))
+        self.assertEqual(by["hook command"].detail, T.minimax_hook_command(self.paths))
         self.assertEqual(by["fires"].status, "SKIP")
         self.assertAllPass(
             [
@@ -6094,7 +6106,7 @@ class MinimaxBundleTests(World):
 
     def test_verify_fails_when_the_fleet_hook_allows_everything(self) -> None:
         self.apply()
-        shim = Path(self.paths.fleet_shim)
+        shim = Path(self.paths.stable) / T.MINIMAX_HOOK_NAME
         shim.write_text("#!/bin/sh\nexit 0\n")
         os.chmod(shim, 0o755)
         checks = self.verify_mm()
