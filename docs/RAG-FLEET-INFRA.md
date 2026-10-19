@@ -66,7 +66,7 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 
 | Source | Where it comes from | Notes |
 |---|---|---|
-| `board` | `~/apps/mac-collab/findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (read-only after the Linear cutover; a `linear` source reading Linear through the read-only Fleet Reader app is planned) | category `lesson` when resolved, else `finding`; url is the board |
+| `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`;  a `linear` source reading Linear through the read-only Fleet Reader app is planned) | category `lesson` when resolved, else `finding`; url is the board |
 | `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[APP, Agent]` title convention |
 | `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
@@ -169,7 +169,7 @@ hand-registered entry is left alone).  Clutch is not in the list: it carries `fl
 - `recall_contribute(text, category, app="fleet", seat, title?, url?)`
 - `recall_stats()`
 
-The CLI is `recall`, on PATH through `~/.local/bin/recall` (and `~/apps/mac-collab/recall`) like `board`:
+The CLI is `recall`, on PATH through `~/.local/bin/recall` like `board` (the old `~/apps/mac-collab/recall` symlink was retired on 2026-10-19):
 
 ```bash
 recall "pm2 orphan holds port"                       # ranked hits with source, date, board id / url
