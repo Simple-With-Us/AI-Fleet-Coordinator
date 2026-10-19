@@ -241,21 +241,40 @@ class InfisicalFallbackTests(Harness):
         Z._names_cache.clear()
         self.addCleanup(Z._value_cache.clear)
         self.addCleanup(Z._names_cache.clear)
-        return {"HOME": str(self.home), "PATH": os.environ.get("PATH", ""),
-                "FLEET_SECRETS_BIN": str(binary or FAKE_FLEET_SECRETS), "FAKE_FLEET_SECRETS_FILE": str(data)}
+        return {
+            "HOME": str(self.home),
+            "PATH": os.environ.get("PATH", ""),
+            "FLEET_SECRETS_BIN": str(binary or FAKE_FLEET_SECRETS),
+            "FAKE_FLEET_SECRETS_FILE": str(data),
+        }
 
     def test_default_fetch_asks_fleet_secrets_for_only_these_names_in_one_call(self) -> None:
         env = self.fake_fleet_secrets({"A": "1", "B": "2", "C": "3", "OTHER": "never"})
-        self.assertEqual(Z._fetch_from_fleet_secrets(("A", "B", "C"), env, self.home), {"A": "1", "B": "2", "C": "3"})
+        self.assertEqual(
+            Z._fetch_from_fleet_secrets(("A", "B", "C"), env, self.home),
+            {"A": "1", "B": "2", "C": "3"},
+        )
 
     def test_default_fetch_is_cached_per_process_and_keeps_the_last_good_values(self) -> None:
         env = self.fake_fleet_secrets({"A": "1", "B": "2"})
-        self.assertEqual(Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"})
-        Path(env["FAKE_FLEET_SECRETS_FILE"]).write_text("{}", encoding="utf-8")  # Infisical now fails
-        self.assertEqual(Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"})
-        with mock.patch.object(Z, "INFISICAL_CACHE_TTL", 0.0):  # stale:  refetch fails, the held values win
-            self.assertEqual(Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"})
-        with self.assertRaises(Z.CredentialError) as ctx:  # never held:  fails closed with a reason token
+        self.assertEqual(
+            Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"}
+        )
+        Path(env["FAKE_FLEET_SECRETS_FILE"]).write_text(
+            "{}", encoding="utf-8"
+        )  # Infisical now fails
+        self.assertEqual(
+            Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"}
+        )
+        with mock.patch.object(
+            Z, "INFISICAL_CACHE_TTL", 0.0
+        ):  # stale:  refetch fails, the held values win
+            self.assertEqual(
+                Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"}
+            )
+        with self.assertRaises(
+            Z.CredentialError
+        ) as ctx:  # never held:  fails closed with a reason token
             Z._fetch_from_fleet_secrets(("C",), env, self.home)
         self.assertIn("key-absent", str(ctx.exception))
 
@@ -266,20 +285,38 @@ class InfisicalFallbackTests(Harness):
             Z._fetch_from_fleet_secrets(("A",), env, self.home)
         self.assertIn("cannot-start", str(ctx.exception))
 
-    def test_names_listing_never_offers_the_owner_the_realm_admin_or_an_integration_bot(self) -> None:
+    def test_names_listing_never_offers_the_owner_the_realm_admin_or_an_integration_bot(
+        self,
+    ) -> None:
         folder = {}
-        for prefix in ("CLAUDE", "BF_PLUMBER", "GROK_BUILD", "JAY", "REALM_ADMIN", "SENTRY", "LINEAR", "HALF"):
+        for prefix in (
+            "CLAUDE",
+            "BF_PLUMBER",
+            "GROK_BUILD",
+            "JAY",
+            "REALM_ADMIN",
+            "SENTRY",
+            "LINEAR",
+            "HALF",
+        ):
             for part in ("EMAIL", "KEY", "SITE"):
                 if not (prefix == "HALF" and part == "SITE"):
                     folder["%s_ZULIP_%s" % (prefix, part)] = "v"
         env = self.fake_fleet_secrets(folder)
         with mock.patch.object(Z, "_default_infisical_names", Z._list_from_fleet_secrets):
-            self.assertEqual(sorted(Z.infisical_seats(env, self.home)), ["BF-PLUMBER", "CLAUDE", "GROK"])
+            self.assertEqual(
+                sorted(Z.infisical_seats(env, self.home)), ["BF-PLUMBER", "CLAUDE", "GROK"]
+            )
             self.assertFalse(Z.infisical_has("JAY", env, self.home))
 
     def test_the_old_default_file_under_home_is_never_read(self) -> None:
         # AFC-359:  ~/.secrets/Zulip is retired.  A file there, with no override and nothing in Infisical, is ignored.
-        write_rc(self.home / ".secrets" / "Zulip" / "Claude-zuliprc", email=BOT_EMAIL, key=self.key, site=self.fake.url)
+        write_rc(
+            self.home / ".secrets" / "Zulip" / "Claude-zuliprc",
+            email=BOT_EMAIL,
+            key=self.key,
+            site=self.fake.url,
+        )
         self.assertIsNone(Z.default_rc_path("CLAUDE", {"HOME": str(self.home)}, self.home))
         result = self.run_cli("whoami", env=self.env(AGENT_SYNC_SECRETS_DIR=None))
         self.assertEqual(result.code, 3, result.out)

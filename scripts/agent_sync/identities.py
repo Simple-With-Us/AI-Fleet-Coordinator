@@ -24,13 +24,15 @@ A launcher pin (AGENT_LAUNCH_SEAT) narrows the set to the pinned seat alone.
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import re
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Iterable, Mapping, NamedTuple
+from typing import NamedTuple
 
 from . import identity as I
 from . import zulip as Z
@@ -44,7 +46,9 @@ def gb_identities() -> tuple[str, ...]:
     with open(GB_IDENTITIES_PATH, encoding="utf-8") as fh:
         data = json.load(fh)
     enabled = data.get("enabled") if isinstance(data, dict) else None
-    if not isinstance(enabled, list) or not all(isinstance(name, str) and name.startswith("GB-") for name in enabled):
+    if not isinstance(enabled, list) or not all(
+        isinstance(name, str) and name.startswith("GB-") for name in enabled
+    ):
         raise ValueError("%s: `enabled` must be a list of GB-* names" % GB_IDENTITIES_PATH)
     return tuple(enabled)
 
@@ -56,12 +60,17 @@ def agent_identity_problem(name: str, *, registry: I.SeatRegistry | None = None)
         reg = registry if registry is not None else I.load_seat_registry()
         seat = I.strict_seat(name, registry=reg)
     except I.UnknownSeat as exc:
-        return "%s is not an agent bot identity (%s)" % (exc.seat[:40], "a retired seat" if exc.retired else
-                                                           "not a live seat, extra seat, BF-* or GB-* name")
+        return "%s is not an agent bot identity (%s)" % (
+            exc.seat[:40],
+            "a retired seat" if exc.retired else "not a live seat, extra seat, BF-* or GB-* name",
+        )
     except I.SeatRegistryError as exc:
         return "the seat registry cannot be read:  %s" % exc
     if seat.startswith("GB-") and seat not in gb_identities():
-        return "%s is not an enabled Grok Bot persona (scripts/agent_sync/mcp/gb-identities.json)" % seat
+        return (
+            "%s is not an enabled Grok Bot persona (scripts/agent_sync/mcp/gb-identities.json)"
+            % seat
+        )
     return None
 
 
@@ -77,6 +86,7 @@ def env_code(name: str) -> str:
 class CredentialSource(NamedTuple):
     """Where one identity's key is:  a zuliprc file (`path`), Infisical /zulip (`infisical`, the seat
     whose three names to read), or its own environment variables (names only)."""
+
     path: Path | None = None
     email_env: str | None = None
     key_env: str | None = None
@@ -96,7 +106,10 @@ class CredentialSource(NamedTuple):
         if self.path is not None:
             return str(self.path)
         if self.infisical is not None:
-            return "Infisical Fleet-OPS %s %s" % (Z.INFISICAL_PATH, Z.infisical_key_names(self.infisical)[1])
+            return "Infisical Fleet-OPS %s %s" % (
+                Z.INFISICAL_PATH,
+                Z.infisical_key_names(self.infisical)[1],
+            )
         return "env %s" % self.key_env
 
     def present(self, env: Mapping[str, str], home: Path | None = None) -> bool:
@@ -104,18 +117,27 @@ class CredentialSource(NamedTuple):
             return self.path.is_file()
         if self.infisical is not None:
             return Z.infisical_has(self.infisical, env, home)
-        return all(str(env.get(name) or "").strip().strip('"').strip() for name in (self.email_env, self.key_env,
-                                                                                        self.site_env))
+        return all(
+            str(env.get(name) or "").strip().strip('"').strip()
+            for name in (self.email_env, self.key_env, self.site_env)
+        )
 
-    def credentials(self, env: Mapping[str, str], label: str, home: Path | None = None) -> Z.Credentials:
+    def credentials(
+        self, env: Mapping[str, str], label: str, home: Path | None = None
+    ) -> Z.Credentials:
         """Read the key (file, Infisical or env).  Errors name the file, the key names or the variables,
         never a value."""
         if self.path is not None:
             return Z.read_zuliprc(self.path)
         if self.infisical is not None:
             return Z.infisical_credentials(self.infisical, env=env, home=home)
-        return Z.env_credentials(env, email_env=str(self.email_env), key_env=str(self.key_env),
-                                 site_env=self.site_env, label=label)
+        return Z.env_credentials(
+            env,
+            email_env=str(self.email_env),
+            key_env=str(self.key_env),
+            site_env=self.site_env,
+            label=label,
+        )
 
 
 def default_env_source(name: str) -> CredentialSource:
@@ -129,8 +151,14 @@ def secrets_dir(env: Mapping[str, str], home: Path | None = None) -> Path | None
     return Path(directory) if directory else None
 
 
-def candidates(env: Mapping[str, str], home: Path, *, registry: I.SeatRegistry | None = None,
-               cred_env: Mapping[str, str] | None = None, extra: Iterable[str] = ()) -> list[str]:
+def candidates(
+    env: Mapping[str, str],
+    home: Path,
+    *,
+    registry: I.SeatRegistry | None = None,
+    cred_env: Mapping[str, str] | None = None,
+    extra: Iterable[str] = (),
+) -> list[str]:
     """Every identity name the registry and the GB table allow, before the credential check.  BF-* bots
     come from their credential files and from ZULIP_BF_<ROLE>_API_KEY variables in `cred_env`;  `extra`
     (the listener's env seats) is filtered the same way."""
@@ -144,8 +172,10 @@ def candidates(env: Mapping[str, str], home: Path, *, registry: I.SeatRegistry |
     found = [Z.seat_from_rc_path(entry) for entry in entries] + sorted(Z.infisical_seats(env, home))
     for seat in found:
         if seat and seat.startswith("BF-"):
-            names.add(seat)  # agent_identity_problem() below keeps it only when it matches the BF-* pattern
-    for variable in (cred_env or {}):
+            names.add(
+                seat
+            )  # agent_identity_problem() below keeps it only when it matches the BF-* pattern
+    for variable in cred_env or {}:
         match = _BF_KEY_ENV_RE.match(str(variable))
         if match:
             names.add(match.group(1).replace("_", "-"))
@@ -153,9 +183,14 @@ def candidates(env: Mapping[str, str], home: Path, *, registry: I.SeatRegistry |
     return sorted(name for name in names if agent_identity_problem(name, registry=reg) is None)
 
 
-def allowed_identities(env: Mapping[str, str], home: Path, *, registry: I.SeatRegistry | None = None,
-                       cred_env: Mapping[str, str] | None = None,
-                       env_seats: Mapping[str, CredentialSource] | None = None) -> dict[str, CredentialSource]:
+def allowed_identities(
+    env: Mapping[str, str],
+    home: Path,
+    *,
+    registry: I.SeatRegistry | None = None,
+    cred_env: Mapping[str, str] | None = None,
+    env_seats: Mapping[str, CredentialSource] | None = None,
+) -> dict[str, CredentialSource]:
     """identity -> where its key is, for every agent bot whose credentials are on this host:  its file
     (looked up with `env`), else its own environment variables in `cred_env` (`env_seats`, the
     listener's configured names, first;  then the default ZULIP_<CODE>_* names).  `cred_env` defaults to
@@ -174,8 +209,14 @@ def allowed_identities(env: Mapping[str, str], home: Path, *, registry: I.SeatRe
     return found
 
 
-def source_for(name: str, env: Mapping[str, str], home: Path, *, cred_env: Mapping[str, str],
-               env_seats: Mapping[str, CredentialSource] | None = None) -> CredentialSource | None:
+def source_for(
+    name: str,
+    env: Mapping[str, str],
+    home: Path,
+    *,
+    cred_env: Mapping[str, str],
+    env_seats: Mapping[str, CredentialSource] | None = None,
+) -> CredentialSource | None:
     """Where `name`'s key is (the override file first, then Infisical /zulip, then its environment
     variables), or None."""
     path = Z.default_rc_path(name, env, home)

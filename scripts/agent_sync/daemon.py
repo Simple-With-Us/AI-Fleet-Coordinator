@@ -5234,7 +5234,8 @@ class Daemon:
             stems=[
                 runner.cfg.bot
                 for runner in self.seats.values()
-                if runner.cfg.creds == "infisical" or (runner.cfg.creds == "file" and not self.secrets_dir)
+                if runner.cfg.creds == "infisical"
+                or (runner.cfg.creds == "file" and not self.secrets_dir)
             ],
         )
         self.log.write(

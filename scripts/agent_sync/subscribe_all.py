@@ -204,7 +204,9 @@ def gather(source: str, realm: str) -> list[Z.Credentials]:
     if source in ("infisical", "both"):
         creds += infisical_credentials(realm)
     seen: dict[str, Z.Credentials] = {}
-    for c in creds:  # the Fleet-OPS copy wins over the server project's for the same bot:  it is listed first
+    for c in (
+        creds
+    ):  # the Fleet-OPS copy wins over the server project's for the same bot:  it is listed first
         seen.setdefault(c.email.casefold(), c)
     return list(seen.values())
 

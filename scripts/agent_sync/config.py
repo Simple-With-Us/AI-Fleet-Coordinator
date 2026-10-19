@@ -821,7 +821,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if creds not in ("file", "infisical", "env"):
             problems.append(
                 'seat.%s.creds must be "file" (the bot\'s own credential:  Infisical /zulip, or a zuliprc '
-                'in AGENT_SYNC_SECRETS_DIR), "infisical" or "env" (environment variables)' % seat_name
+                'in AGENT_SYNC_SECRETS_DIR), "infisical" or "env" (environment variables)'
+                % seat_name
             )
             creds = "file"
         if creds == "env" and cfg.instance != "server":
@@ -1094,15 +1095,24 @@ def seat_credentials(
     if seat_cfg.creds == "file" and secrets_dir:
         return Z.read_zuliprc(os.path.join(secrets_dir, seat_cfg.bot + "-zuliprc"))
     return Z.infisical_credentials(
-        seat_cfg.seat, env=env, home=Path(env.get("HOME") or os.path.expanduser("~")), stem=seat_cfg.bot
+        seat_cfg.seat,
+        env=env,
+        home=Path(env.get("HOME") or os.path.expanduser("~")),
+        stem=seat_cfg.bot,
     )
 
 
-def seat_credential_present(seat_cfg: SeatConfig, env: Mapping[str, str], secrets_dir: str | None) -> bool:
+def seat_credential_present(
+    seat_cfg: SeatConfig, env: Mapping[str, str], secrets_dir: str | None
+) -> bool:
     """Whether the seat's credential exists (names only, never a value):  the override file, or its
     three /zulip names in Infisical, or (creds = "env") its variables."""
     if seat_cfg.creds == "env":
-        return all((env.get(n) or "").strip() for n in (seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env) if n)
+        return all(
+            (env.get(n) or "").strip()
+            for n in (seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env)
+            if n
+        )
     if seat_cfg.creds == "file" and secrets_dir:
         return os.path.isfile(os.path.join(secrets_dir, seat_cfg.bot + "-zuliprc"))
     names = Z.infisical_names(env)

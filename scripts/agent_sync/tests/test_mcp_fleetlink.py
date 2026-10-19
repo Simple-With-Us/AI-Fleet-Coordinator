@@ -245,7 +245,11 @@ class CredentialTests(FleetLinkHarness):
             FL.resolve_credential("CLAUDE", {"FLEETLINK_TOKEN": TOKEN_GENERIC}, home)[1],
             "FLEETLINK_TOKEN",
         )
-        file_cred = ("infisical", "Infisical Fleet-OPS /fleetlink FLEETLINK_TOKEN_CLAUDE", TOKEN_CLAUDE)
+        file_cred = (
+            "infisical",
+            "Infisical Fleet-OPS /fleetlink FLEETLINK_TOKEN_CLAUDE",
+            TOKEN_CLAUDE,
+        )
         # The generic token names no seat:  never used when the environment names another seat or a launcher.
         for env in (
             {"FLEETLINK_TOKEN": TOKEN_GENERIC, "AGENT_SEAT": "CURSOR"},
@@ -320,7 +324,9 @@ class CredentialTests(FleetLinkHarness):
             {"text": "draft", "personal": True},
         )
         self.assertEqual(second["env"]["FLEETLINK_SEAT"], "CLAUDE")
-        self.assertEqual(second["env"]["FLEETLINK_TOKEN"], TOKEN_CLAUDE)  # CLAUDE's own, from Infisical
+        self.assertEqual(
+            second["env"]["FLEETLINK_TOKEN"], TOKEN_CLAUDE
+        )  # CLAUDE's own, from Infisical
 
     def test_a_missing_token_is_not_configured_and_nothing_runs(self):
         session = self.session(self.env())
@@ -331,7 +337,8 @@ class CredentialTests(FleetLinkHarness):
         self.assertEqual(self.calls(), [])
         self.token_file(token="bad\ntoken")  # a control character is refused, never handed on
         self.assertEqual(
-            self.assert_tool_error(session.call("fleetlink_whoami"), "not_configured")["code"], "not_configured"
+            self.assert_tool_error(session.call("fleetlink_whoami"), "not_configured")["code"],
+            "not_configured",
         )
         self.token_file()
         self.assertNotIn("isError", session.call("fleetlink_whoami"))

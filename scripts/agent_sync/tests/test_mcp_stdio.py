@@ -1744,7 +1744,9 @@ class StartupTests(McpHarness):
                 self.assertIn("role %d" % role, stderr)
 
     def test_subprocess_refuses_a_credential_of_another_bot(self):
-        self.add_infisical_bot("CODEX", email=BOT_EMAIL, key=self.key)  # CODEX's names hold Claude's key
+        self.add_infisical_bot(
+            "CODEX", email=BOT_EMAIL, key=self.key
+        )  # CODEX's names hold Claude's key
         code, lines, stderr = self.spawn(
             self.mcp_env(AGENT_SEAT="CODEX"), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
         )
@@ -1793,7 +1795,9 @@ class StartupTests(McpHarness):
         self.assertIn(
             "ignoring ZULIP_EMAIL, ZULIP_API_KEY, ZULIP_SITE, AGENT_SYNC_SECRETS_DIR", stderr
         )
-        self.drop_infisical_bot("CLAUDE")  # no seat key:  refused, never a fall-through to the triple
+        self.drop_infisical_bot(
+            "CLAUDE"
+        )  # no seat key:  refused, never a fall-through to the triple
         code, lines, stderr = self.spawn(env, [self.WHOAMI])
         self.assertEqual((code, lines), (3, []))
         self.assertIn("CLAUDE_ZULIP_KEY", stderr)  # the Infisical names, not the moved secrets dir
@@ -1896,7 +1900,9 @@ class StartupTests(McpHarness):
         grok_key = zulip_shaped()
         self.extra_secrets.append(grok_key)
         self.fake.add_bot("grok-build-bot@zulip.test", "Grok", grok_key)
-        self.add_infisical_bot("GROK", email="grok-build-bot@zulip.test", key=grok_key)  # GROK_BUILD_ZULIP_*
+        self.add_infisical_bot(
+            "GROK", email="grok-build-bot@zulip.test", key=grok_key
+        )  # GROK_BUILD_ZULIP_*
         call = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -1964,7 +1970,9 @@ class StartupTests(McpHarness):
         self.assertEqual(self.assert_structured("zulip_read_topic", result)["count"], 50)
 
     def test_realm_lock_refuses_before_any_request(self):
-        self.add_infisical_bot("CLAUDE", email=BOT_EMAIL, key=self.key, site="http://127.0.0.1:1")  # not the realm's port
+        self.add_infisical_bot(
+            "CLAUDE", email=BOT_EMAIL, key=self.key, site="http://127.0.0.1:1"
+        )  # not the realm's port
         code, lines, stderr = self.spawn(
             self.mcp_env(), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
         )
@@ -1975,7 +1983,9 @@ class StartupTests(McpHarness):
     def test_group_readable_rc_is_refused(self):
         os.chmod(self.home_rc, 0o640)  # an explicit --rc file is still mode-checked
         code, lines, stderr = self.spawn(
-            self.mcp_env(), [{"jsonrpc": "2.0", "id": 1, "method": "ping"}], argv=("--rc", str(self.home_rc))
+            self.mcp_env(),
+            [{"jsonrpc": "2.0", "id": 1, "method": "ping"}],
+            argv=("--rc", str(self.home_rc)),
         )
         self.assertEqual((code, lines), (3, []))
         self.assertIn("chmod 600", stderr)

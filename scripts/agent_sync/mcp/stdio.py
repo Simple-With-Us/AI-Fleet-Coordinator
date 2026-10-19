@@ -628,7 +628,11 @@ def run(
             "ignoring %s:  mcp reads keys only from Infisical Fleet-OPS %s (each identity's own %s names), "
             "an explicit --rc or ZULIP_RC, or an identity's own ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY "
             "(with ZULIP_SITE) on the server"
-            % (", ".join(ignored), Z.INFISICAL_PATH, Z.infisical_key_names(seat or "SEAT")[0].replace("_ZULIP_EMAIL", "_ZULIP_*"))
+            % (
+                ", ".join(ignored),
+                Z.INFISICAL_PATH,
+                Z.infisical_key_names(seat or "SEAT")[0].replace("_ZULIP_EMAIL", "_ZULIP_*"),
+            )
         )
     session_id, source = getattr(args, "session", None), "flag"
     if not session_id:

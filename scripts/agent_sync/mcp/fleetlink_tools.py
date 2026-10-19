@@ -54,7 +54,9 @@ ENV_CLI = "AGENT_SYNC_FLEETLINK_CLI"
 CLI_NAME = "fleet-share"
 ENV_TOKEN = "FLEETLINK_TOKEN"
 TOKEN_PREFIX = "FLEETLINK_TOKEN_"
-INFISICAL_PATH = "/fleetlink"  # Fleet-OPS folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
+INFISICAL_PATH = (
+    "/fleetlink"  # Fleet-OPS folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
+)
 TOKEN_CACHE_TTL = 600.0
 TIMEOUT_S = 120.0
 OUTPUT_LIMIT = (
@@ -188,7 +190,12 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
         try:
             proc = subprocess.run(
                 [binary, "get", name, "--path", INFISICAL_PATH],
-                stdin=subprocess.DEVNULL, capture_output=True, timeout=60, cwd="/", env=child, check=False,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=60,
+                cwd="/",
+                env=child,
+                check=False,
             )
             if proc.returncode == 0:
                 value = proc.stdout.decode("utf-8").strip() or None

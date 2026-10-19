@@ -401,11 +401,21 @@ def infisical_names(folder: str, env: dict[str, str]) -> frozenset[str] | None:
     fleet-secrets is missing or fails.  Once per folder per run."""
     if folder in _names_cache:
         return _names_cache[folder]
-    binary = env.get("FLEET_SECRETS_BIN") or shutil.which("fleet-secrets") or str(HOME / ".local/bin/fleet-secrets")
+    binary = (
+        env.get("FLEET_SECRETS_BIN")
+        or shutil.which("fleet-secrets")
+        or str(HOME / ".local/bin/fleet-secrets")
+    )
     names: frozenset[str] | None = None
     try:
-        proc = subprocess.run([binary, "names", "--path", folder], stdin=subprocess.DEVNULL, capture_output=True,
-                              text=True, timeout=60, check=False)
+        proc = subprocess.run(
+            [binary, "names", "--path", folder],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
         if proc.returncode == 0:
             names = frozenset(line.strip() for line in proc.stdout.splitlines() if line.strip())
     except (OSError, subprocess.SubprocessError):
@@ -423,8 +433,12 @@ def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
     prefix = ZULIP_PREFIX_OVERRIDES.get(code, code)
     zulip = all(f"{prefix}_ZULIP_{part}" in zulip_names for part in ("EMAIL", "KEY", "SITE"))
     linear_names = infisical_names("/linear", env) or frozenset()
-    linear_env = bool(env.get(f"LINEAR_{code}_CLIENT_ID") and env.get(f"LINEAR_{code}_CLIENT_SECRET"))
-    linear = linear_env or {f"{code}_LINEAR_CLIENT_ID", f"{code}_LINEAR_CLIENT_SECRET"} <= linear_names
+    linear_env = bool(
+        env.get(f"LINEAR_{code}_CLIENT_ID") and env.get(f"LINEAR_{code}_CLIENT_SECRET")
+    )
+    linear = (
+        linear_env or {f"{code}_LINEAR_CLIENT_ID", f"{code}_LINEAR_CLIENT_SECRET"} <= linear_names
+    )
     fleetlink = bool(env.get(f"FLEETLINK_TOKEN_{code}")) or f"FLEETLINK_TOKEN_{code}" in (
         infisical_names("/fleetlink", env) or frozenset()
     )

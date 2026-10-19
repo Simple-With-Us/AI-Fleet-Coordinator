@@ -25,6 +25,7 @@ backs off (30 seconds, doubling up to the five-minute interval) and logs at most
 
 Standard library only.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -36,8 +37,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from typing import Any
 
 from . import __version__
 from . import zulip as Z
@@ -48,9 +50,11 @@ FAILURE_LOG_SECONDS = 30 * 60.0
 TIMEOUT_SECONDS = 10.0
 ENV_DSN_NAMES = ("AGENT_SYNC_SENTRY_DSN", "SENTRY_FLEET_DSN")  # the first wins
 ENV_FILE = "AGENT_SYNC_SENTRY_ENV_FILE"
-ENV_OFF = "AGENT_SYNC_SENTRY_HEARTBEAT"       # 0, off, false or no turns it off
+ENV_OFF = "AGENT_SYNC_SENTRY_HEARTBEAT"  # 0, off, false or no turns it off
 ENV_ENVIRONMENT = "AGENT_SYNC_SENTRY_ENVIRONMENT"
-DEFAULT_ENVIRONMENT = "production"            # the fleet's one Sentry environment tag (sentry-fleet-integration plan)
+DEFAULT_ENVIRONMENT = (
+    "production"  # the fleet's one Sentry environment tag (sentry-fleet-integration plan)
+)
 INFISICAL_DSN_PATH = "/agent-sync"  # Fleet-OPS folder that holds SENTRY_FLEET_DSN (AFC-359)
 MONITOR_PREFIX = "agent-sync-listener-"
 REASON_LIMIT = 120
@@ -131,7 +135,12 @@ def _fleet_secrets_dsn(env: Mapping[str, str], home: str) -> str:
     try:
         proc = subprocess.run(
             [binary, "get", "SENTRY_FLEET_DSN", "--path", INFISICAL_DSN_PATH],
-            stdin=subprocess.DEVNULL, capture_output=True, timeout=60, cwd="/", env=child, check=False,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            cwd="/",
+            env=child,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -169,8 +178,11 @@ def monitor_slug(instance: str) -> str:
     return MONITOR_PREFIX + (clean or "mac")
 
 
-def degraded_reasons(status: Mapping[str, Any], scrub: Callable[[str], str] = lambda s: s) -> list[str]:
+def degraded_reasons(
+    status: Mapping[str, Any], scrub: Callable[[str], str] = lambda s: s
+) -> list[str]:
     """Short, scrubbed reasons the listener is not healthy.  [] means healthy."""
+
     def clip(text: Any) -> str:
         return scrub(" ".join(str(text).split()))[:REASON_LIMIT]
 
@@ -194,43 +206,66 @@ def reason_key(reasons: list[str]) -> tuple[str, ...]:
 
 
 def _iso(now: float) -> str:
-    return datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(now, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def build_envelope(*, slug: str, instance: str, environment: str, ok: bool, reasons: list[str], send_event: bool,
-                   now: float, version: str = __version__) -> bytes:
+def build_envelope(
+    *,
+    slug: str,
+    instance: str,
+    environment: str,
+    ok: bool,
+    reasons: list[str],
+    send_event: bool,
+    now: float,
+    version: str = __version__,
+) -> bytes:
     """One Sentry envelope:  the cron check-in (with its monitor_config upsert), plus, when `send_event`,
     one warning event that names the reasons.  The DSN is not in it (the key travels in X-Sentry-Auth)."""
-    items: list[tuple[dict[str, Any], dict[str, Any]]] = [({"type": "check_in"}, {
-        "check_in_id": uuid.uuid4().hex,
-        "monitor_slug": slug,
-        "status": "ok" if ok else "error",
-        "environment": environment,
-        "monitor_config": {
-            "schedule": {"type": "interval", "value": int(INTERVAL_SECONDS // 60), "unit": "minute"},
-            "checkin_margin": 10,
-            "max_runtime": 5,
-            "timezone": "America/Chicago",
-            "failure_issue_threshold": 2,
-            "recovery_threshold": 1,
-        },
-    })]
+    items: list[tuple[dict[str, Any], dict[str, Any]]] = [
+        (
+            {"type": "check_in"},
+            {
+                "check_in_id": uuid.uuid4().hex,
+                "monitor_slug": slug,
+                "status": "ok" if ok else "error",
+                "environment": environment,
+                "monitor_config": {
+                    "schedule": {
+                        "type": "interval",
+                        "value": int(INTERVAL_SECONDS // 60),
+                        "unit": "minute",
+                    },
+                    "checkin_margin": 10,
+                    "max_runtime": 5,
+                    "timezone": "America/Chicago",
+                    "failure_issue_threshold": 2,
+                    "recovery_threshold": 1,
+                },
+            },
+        )
+    ]
     if send_event and reasons:
         shown = reasons[:REASONS_SHOWN]
         more = len(reasons) - len(shown)
-        items.append(({"type": "event"}, {
-            "event_id": uuid.uuid4().hex,
-            "timestamp": _iso(now),
-            "platform": "python",
-            "level": "warning",
-            "logger": "agent-sync.listener",
-            "message": "agent-sync listener (%s) degraded: %s%s" % (instance, "; ".join(shown),
-                                                                   "; +%d more" % more if more else ""),
-            "environment": environment,
-            "release": "agent-sync@%s" % version,
-            "tags": {"app": "agent-sync-listener", "instance": instance},
-            "fingerprint": ["agent-sync-listener", instance, "degraded"],
-        }))
+        items.append(
+            (
+                {"type": "event"},
+                {
+                    "event_id": uuid.uuid4().hex,
+                    "timestamp": _iso(now),
+                    "platform": "python",
+                    "level": "warning",
+                    "logger": "agent-sync.listener",
+                    "message": "agent-sync listener (%s) degraded: %s%s"
+                    % (instance, "; ".join(shown), "; +%d more" % more if more else ""),
+                    "environment": environment,
+                    "release": "agent-sync@%s" % version,
+                    "tags": {"app": "agent-sync-listener", "instance": instance},
+                    "fingerprint": ["agent-sync-listener", instance, "degraded"],
+                },
+            )
+        )
     lines = [json.dumps({"sent_at": _iso(now)})]
     for header, payload in items:
         body = json.dumps(payload)
@@ -240,7 +275,9 @@ def build_envelope(*, slug: str, instance: str, environment: str, ok: bool, reas
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:  # the auth header never follows a redirect
+    def redirect_request(
+        self, *args: Any, **kwargs: Any
+    ) -> None:  # the auth header never follows a redirect
         return None
 
 
@@ -265,10 +302,18 @@ class SentryHeartbeat:
     and the send runs on its own thread.  `status` is a zero-argument callable returning the status dict, so
     a non-due tick costs nothing."""
 
-    def __init__(self, *, env: Mapping[str, str], home: str, clock: Callable[[], float],
-                 log: Callable[..., None], scrub: Callable[[str], str] = lambda s: s,
-                 hide: Callable[[list[str]], None] | None = None, send: Send = http_send,
-                 background: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        env: Mapping[str, str],
+        home: str,
+        clock: Callable[[], float],
+        log: Callable[..., None],
+        scrub: Callable[[str], str] = lambda s: s,
+        hide: Callable[[list[str]], None] | None = None,
+        send: Send = http_send,
+        background: bool = True,
+    ) -> None:
         self.env = env
         self.home = home
         self.now = clock
@@ -279,12 +324,12 @@ class SentryHeartbeat:
         self.background = background
         self.lock = threading.Lock()
         self.thread: threading.Thread | None = None
-        self.next_at = 0.0                       # first beat on the first tick after start
+        self.next_at = 0.0  # first beat on the first tick after start
         self.failures = 0
         self.last_failure_log = -1e18
-        self.announced = ""                      # "", "on", "off" or "bad-dsn":  what the log already said
-        self.seen_key: tuple[str, ...] = ()      # reason_key of the last delivered beat
-        self.sent_key: tuple[str, ...] = ()      # reason_key Sentry already has an event for
+        self.announced = ""  # "", "on", "off" or "bad-dsn":  what the log already said
+        self.seen_key: tuple[str, ...] = ()  # reason_key of the last delivered beat
+        self.sent_key: tuple[str, ...] = ()  # reason_key Sentry already has an event for
         self.ever_ok = False
         self.last_ok_at: float | None = None
         self.hidden_dsn = ""
@@ -299,7 +344,9 @@ class SentryHeartbeat:
             return None
         text = resolve_dsn(self.env, self.home)
         if not text:
-            self._announce("off", "sentry-heartbeat-off", why="no DSN (%s)" % " or ".join(ENV_DSN_NAMES))
+            self._announce(
+                "off", "sentry-heartbeat-off", why="no DSN (%s)" % " or ".join(ENV_DSN_NAMES)
+            )
             return None
         if text != self.hidden_dsn:
             self.hidden_dsn = text
@@ -307,7 +354,9 @@ class SentryHeartbeat:
                 self.hide([text])
         dsn = parse_dsn(text)
         if dsn is None:
-            self._announce("bad-dsn", "sentry-heartbeat-off", why="the DSN is not a valid https Sentry DSN")
+            self._announce(
+                "bad-dsn", "sentry-heartbeat-off", why="the DSN is not a valid https Sentry DSN"
+            )
             return None
         if self.hide:
             self.hide([dsn.key])  # the key alone is scrubbed too, in case an error quotes it
@@ -329,25 +378,40 @@ class SentryHeartbeat:
                 return False
         dsn = self._dsn()
         if dsn is None:
-            self.next_at = now + INTERVAL_SECONDS  # look again in five minutes:  the file may have gained the DSN
+            self.next_at = (
+                now + INTERVAL_SECONDS
+            )  # look again in five minutes:  the file may have gained the DSN
             return False
         snapshot = status()
         instance = str(snapshot.get("instance") or "mac")
         reasons = degraded_reasons(snapshot, self.scrub)
         slug = monitor_slug(instance)
-        environment = (self.env.get(ENV_ENVIRONMENT) or DEFAULT_ENVIRONMENT).strip() or DEFAULT_ENVIRONMENT
+        environment = (
+            self.env.get(ENV_ENVIRONMENT) or DEFAULT_ENVIRONMENT
+        ).strip() or DEFAULT_ENVIRONMENT
         key = reason_key(reasons)
         send_event = bool(reasons) and key == self.seen_key and key != self.sent_key
-        body = build_envelope(slug=slug, instance=instance, environment=environment, ok=not reasons, reasons=reasons,
-                              send_event=send_event, now=now)
-        headers = {"Content-Type": "application/x-sentry-envelope",
-                   "X-Sentry-Auth": "Sentry sentry_version=7, sentry_client=agent-sync-listener/%s, sentry_key=%s"
-                                    % (__version__, dsn.key)}
+        body = build_envelope(
+            slug=slug,
+            instance=instance,
+            environment=environment,
+            ok=not reasons,
+            reasons=reasons,
+            send_event=send_event,
+            now=now,
+        )
+        headers = {
+            "Content-Type": "application/x-sentry-envelope",
+            "X-Sentry-Auth": "Sentry sentry_version=7, sentry_client=agent-sync-listener/%s, sentry_key=%s"
+            % (__version__, dsn.key),
+        }
         # Provisional next time, so a slow send is not started twice;  the outcome sets the real one.
         self.next_at = now + INTERVAL_SECONDS
         job = (dsn.envelope_url, body, headers, now, slug, reasons, key, send_event)
         if self.background:
-            thread = threading.Thread(target=self._deliver, args=job, name="sentry-heartbeat", daemon=True)
+            thread = threading.Thread(
+                target=self._deliver, args=job, name="sentry-heartbeat", daemon=True
+            )
             with self.lock:
                 self.thread = thread
             thread.start()
@@ -361,16 +425,28 @@ class SentryHeartbeat:
         if thread is not None:
             thread.join(timeout)
 
-    def _deliver(self, url: str, body: bytes, headers: Mapping[str, str], started: float, slug: str,
-                 reasons: list[str], key: tuple[str, ...], sent_event: bool) -> None:
+    def _deliver(
+        self,
+        url: str,
+        body: bytes,
+        headers: Mapping[str, str],
+        started: float,
+        slug: str,
+        reasons: list[str],
+        key: tuple[str, ...],
+        sent_event: bool,
+    ) -> None:
         failure = ""
         try:
             status = self.send(url, body, headers, TIMEOUT_SECONDS)
             if not 200 <= status < 300:
                 failure = "HTTP %d" % status
-        except (OSError, ValueError) as exc:     # URLError, timeouts and refused connections are OSErrors
+        except (
+            OSError,
+            ValueError,
+        ) as exc:  # URLError, timeouts and refused connections are OSErrors
             failure = type(exc).__name__
-        except Exception as exc:                 # noqa: BLE001 - the heartbeat must never take the daemon down
+        except Exception as exc:  # noqa: BLE001 - the heartbeat must never take the daemon down
             failure = type(exc).__name__
         with self.lock:
             if failure:
@@ -380,8 +456,13 @@ class SentryHeartbeat:
                 first = self.failures == 1
                 if first or started - self.last_failure_log >= FAILURE_LOG_SECONDS:
                     self.last_failure_log = started
-                    self.log("sentry-heartbeat-failed", monitor=slug, error=self.scrub(failure),
-                             attempts=self.failures, retry_in=int(delay))
+                    self.log(
+                        "sentry-heartbeat-failed",
+                        monitor=slug,
+                        error=self.scrub(failure),
+                        attempts=self.failures,
+                        retry_in=int(delay),
+                    )
                 return
             recovered = self.failures > 0
             first_beat = not self.ever_ok
@@ -393,5 +474,9 @@ class SentryHeartbeat:
             if sent_event or not reasons:
                 self.sent_key = key if reasons else ()
         if first_beat or recovered:
-            self.log("sentry-heartbeat-ok", monitor=slug, state="degraded" if reasons else "ok",
-                     recovered_after_failures=recovered)
+            self.log(
+                "sentry-heartbeat-ok",
+                monitor=slug,
+                state="degraded" if reasons else "ok",
+                recovered_after_failures=recovered,
+            )

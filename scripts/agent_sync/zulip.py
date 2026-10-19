@@ -71,16 +71,16 @@ __all__ = [
     "infisical_names",
     "infisical_project_id",
     "infisical_seats",
-    "override_secrets_dir",
-    "prefetch_infisical",
-    "seat_from_infisical_prefix",
     "message_channel",
     "message_topic",
     "normalise_seat",
     "outbound_params",
+    "override_secrets_dir",
+    "prefetch_infisical",
     "read_zuliprc",
     "realm_url",
     "resolve_credentials",
+    "seat_from_infisical_prefix",
     "seat_from_rc_path",
     "session_tag",
     "verify_realm",
@@ -101,7 +101,19 @@ ENV_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
 FLEET_SECRETS_TIMEOUT = 60.0
 INFISICAL_CACHE_TTL = 600.0
 # Key-name prefixes in /zulip that are never a seat:  the owner's own account and the integration bots.
-NOT_SEAT_PREFIXES = frozenset({"JAY", "OWNER", "REALM_ADMIN", "ZULIPADMIN", "BETTERSTACK", "DATADOG", "LINEAR", "PAGERDUTY", "SENTRY"})
+NOT_SEAT_PREFIXES = frozenset(
+    {
+        "JAY",
+        "OWNER",
+        "REALM_ADMIN",
+        "ZULIPADMIN",
+        "BETTERSTACK",
+        "DATADOG",
+        "LINEAR",
+        "PAGERDUTY",
+        "SENTRY",
+    }
+)
 DEFAULT_CHANNEL = "agent-sync"
 MAX_TOPIC_LENGTH = 60
 USER_AGENT = "agent-sync/1 (fleet)"
@@ -461,7 +473,9 @@ _FLEET_SECRETS_EXITS = {
     127: "cannot-start",
 }
 # Run by `fleet-secrets run --only ...`:  prints just the named variables, as JSON, to the pipe we read.
-_PRINT_NAMED_ENV = "import json,os,sys;json.dump({n:os.environ.get(n,'') for n in sys.argv[1:]},sys.stdout)"
+_PRINT_NAMED_ENV = (
+    "import json,os,sys;json.dump({n:os.environ.get(n,'') for n in sys.argv[1:]},sys.stdout)"
+)
 
 _cache_lock = threading.Lock()
 _value_cache: dict[tuple[str, str], tuple[float, str]] = {}  # (bin, name) -> (fetched at, value)
@@ -514,8 +528,18 @@ def _fetch_from_fleet_secrets(
         if all(v is not None and now - v[0] < INFISICAL_CACHE_TTL for v in held.values()):
             return {n: v[1] for n, v in held.items() if v is not None}
         argv = [
-            binary, "run", "--path", INFISICAL_PATH, "--only", ",".join(wanted), "--",
-            sys.executable, "-I", "-c", _PRINT_NAMED_ENV, *wanted,
+            binary,
+            "run",
+            "--path",
+            INFISICAL_PATH,
+            "--only",
+            ",".join(wanted),
+            "--",
+            sys.executable,
+            "-I",
+            "-c",
+            _PRINT_NAMED_ENV,
+            *wanted,
         ]
         try:
             out = _run_fleet_secrets(argv, env)
@@ -530,7 +554,9 @@ def _fetch_from_fleet_secrets(
             got = {n: payload[n] for n in wanted if isinstance(payload.get(n), str)}
         except CredentialError:
             if all(v is not None for v in held.values()):
-                return {n: v[1] for n, v in held.items() if v is not None}  # last known good, memory only
+                return {
+                    n: v[1] for n, v in held.items() if v is not None
+                }  # last known good, memory only
             raise
         for n, v in got.items():
             _value_cache[(binary, n)] = (now, v)
@@ -558,7 +584,9 @@ def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[st
         except UnicodeDecodeError:
             raise CredentialError("fleet-secrets bad-output") from None
         names = frozenset(
-            line.strip() for line in text.splitlines() if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", line.strip())
+            line.strip()
+            for line in text.splitlines()
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", line.strip())
         )
         _names_cache[binary] = (now, names)
         return names
@@ -569,7 +597,9 @@ _default_infisical_fetch = _fetch_from_fleet_secrets
 _default_infisical_names = _list_from_fleet_secrets
 
 
-def infisical_names(env: Mapping[str, str] | None = None, home: Path | None = None) -> frozenset[str]:
+def infisical_names(
+    env: Mapping[str, str] | None = None, home: Path | None = None
+) -> frozenset[str]:
     """Every key name in Fleet-OPS /zulip, or an empty set when Infisical is off or cannot be read
     (a presence check must never fail a command;  opening the identity reports the reason)."""
     env = env if env is not None else os.environ
@@ -577,13 +607,17 @@ def infisical_names(env: Mapping[str, str] | None = None, home: Path | None = No
         return frozenset()
     try:
         return frozenset(
-            _default_infisical_names(env, home if home is not None else Path(env.get("HOME") or os.path.expanduser("~")))
+            _default_infisical_names(
+                env, home if home is not None else Path(env.get("HOME") or os.path.expanduser("~"))
+            )
         )
     except Exception:
         return frozenset()
 
 
-def infisical_seats(env: Mapping[str, str] | None = None, home: Path | None = None) -> frozenset[str]:
+def infisical_seats(
+    env: Mapping[str, str] | None = None, home: Path | None = None
+) -> frozenset[str]:
     """Every seat whose three /zulip names are all present (never the owner or an integration bot)."""
     names = infisical_names(env, home)
     seats = set()
@@ -595,7 +629,9 @@ def infisical_seats(env: Mapping[str, str] | None = None, home: Path | None = No
     return frozenset(seats)
 
 
-def infisical_has(seat: str, env: Mapping[str, str] | None = None, home: Path | None = None) -> bool:
+def infisical_has(
+    seat: str, env: Mapping[str, str] | None = None, home: Path | None = None
+) -> bool:
     return seat.upper() in infisical_seats(env, home)
 
 

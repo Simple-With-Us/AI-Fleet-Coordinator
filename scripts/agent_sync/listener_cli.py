@@ -650,8 +650,7 @@ def cmd_init(rt: Any, args: argparse.Namespace) -> int:
         )
     ]
     rt.out(
-        "credentials present (not enabled by this command): %s\n"
-        % (", ".join(present) or "none")
+        "credentials present (not enabled by this command): %s\n" % (", ".join(present) or "none")
     )
     by_email = {str(u.get("email") or "").casefold(): u for u in members}
     for name, seat_cfg in sorted(cfg.seats.items()):
@@ -678,7 +677,9 @@ def cmd_init(rt: Any, args: argparse.Namespace) -> int:
                 name,
                 "environment credentials"
                 if seat_cfg.creds == "env"
-                else ("file mode" if seat_cfg.creds == "file" and secrets_dir else "Infisical /zulip"),
+                else (
+                    "file mode" if seat_cfg.creds == "file" and secrets_dir else "Infisical /zulip"
+                ),
                 role,
                 "" if ok_role else " (REFUSED: the listener takes moderator or member bots only)",
                 "yes" if "agent-sync" in subs else "NO",

@@ -117,7 +117,9 @@ class Harness(unittest.TestCase):
         self.assertNotIn(self.key, everything, "the API key reached the output")
         self.assertNotIn(token, everything, "the base64 auth token reached the output")
 
-    def add_infisical_bot(self, seat: str, *, email: str, key: str, site: str | None = None) -> None:
+    def add_infisical_bot(
+        self, seat: str, *, email: str, key: str, site: str | None = None
+    ) -> None:
         """Put a bot's three /zulip names (<BOT>_ZULIP_EMAIL, _KEY and _SITE) in the fake Infisical."""
         email_name, key_name, site_name = Z.infisical_key_names(seat)
         self.infisical_values.update(

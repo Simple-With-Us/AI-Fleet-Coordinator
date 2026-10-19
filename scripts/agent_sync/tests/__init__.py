@@ -27,6 +27,6 @@ def _no_live_fleetlink_token(*_args):  # pragma: no cover - a guard
     return None
 
 
-from agent_sync.mcp import fleetlink_tools as _fleetlink  # noqa: E402
+from agent_sync.mcp import fleetlink_tools as _fleetlink
 
 _fleetlink._default_token_fetch = _no_live_fleetlink_token
