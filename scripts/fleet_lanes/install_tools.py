@@ -4564,16 +4564,33 @@ def minimax_expected(paths: Paths) -> dict[str, str]:
 
 
 def registry_tree(registry: str) -> str:
-    """The first registered ~/Code folder name.  Probes follow the registry, not a literal."""
+    """The first registered ~/Code folder name.  Probes follow the registry, not a literal.
+
+    The registry is required input to a security probe, so an unreadable, unparseable, or
+    misshapen one is refused by name instead of degrading to no tree: silently returning ""
+    would drop the integration-tree deny probes and let the probe pass without ever running them.
+    """
     try:
-        apps = json.loads(_read_bytes(registry).decode("utf-8")).get("apps")
-        for app in apps or []:
-            name = (app.get("codeDir") or app.get("repo") or "").strip()
+        payload = json.loads(_read_bytes(registry).decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refused(f"required integration registry is unavailable or invalid: {registry}") from exc
+    if not isinstance(payload, dict):
+        raise Refused(f"required integration registry {registry}: top level must be an object")
+    apps = payload.get("apps")
+    if not isinstance(apps, list):
+        raise Refused(f"required integration registry {registry}: 'apps' must be a list")
+    for app in apps:
+        if not isinstance(app, dict):
+            raise Refused(f"required integration registry {registry}: app entries must be objects")
+        for candidate in (app.get("codeDir"), app.get("repo")):
+            if candidate is None:
+                continue
+            if not isinstance(candidate, str):
+                raise Refused(f"required integration registry {registry}: app paths must be strings")
+            name = candidate.strip()
             if name:
                 return name
-    except (OSError, ValueError, AttributeError, TypeError):
-        pass
-    return ""
+    raise Refused(f"required integration registry {registry} contains no registered tree")
 
 
 def probe_minimax_files(
@@ -4582,10 +4599,8 @@ def probe_minimax_files(
     """Run MM's compatible file payloads in its restricted subprocess environment."""
     env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
     env.update(HOME=home, PATH=MINIMAL_PATH if minimal_path else os.environ.get("PATH", ""))
-    # Without a registered ~/Code folder name there is no integration tree to probe, and a made-up
-    # one is not something the hook can deny.
     tree = registry_tree(registry)
-    integration = os.path.join("Code", tree, "probe-placeholder") if tree else None
+    integration = os.path.join("Code", tree, "probe-placeholder")
     out = []
     for tool, path, deny in (
         ("Read", ".secrets/probe-placeholder", True),
@@ -4597,8 +4612,6 @@ def probe_minimax_files(
         ("write", integration, True),
         ("edit", ".secrets/probe-placeholder", True),
     ):
-        if path is None:
-            continue
         field = "path" if tool in ("read", "write") else "file_path"
         payload = {"tool_name": tool, "tool_input": {field: os.path.join(home, path)}, "cwd": home}
         res = run_shell(command, json.dumps(payload).encode("utf-8"), env, timeout)
