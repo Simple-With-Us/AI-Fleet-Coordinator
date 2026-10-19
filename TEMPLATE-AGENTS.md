@@ -499,8 +499,8 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
   - **Cloud agents without repo access:** Fetch securely via `GET https://mac.jays.services/files/ATTACK-MAP.md` using `MAC_COLLAB_TOKEN`.
   - **Secret reads:** On the Mac read a fleet key with `fleet-secrets get NAME`, or run a command with only the keys it needs via `fleet-secrets run --only A,B -- CMD` (both come from Infisical Fleet-OPS; cookbook in `INFISICAL.md` § `fleet-secrets`). Never log, grep, or print raw `KEY=value` lines. Never commit or refer to cloud storage / Google Drive backups of secrets.
 - **App runtime secrets** live in **Infisical** (the app's own project, prod).  
-  The flat file `~/.secrets/global-api-keys` is retired in favor of Infisical Fleet-OPS via
-  `fleet-secrets`; nothing may read it, and no deployed app depends on it. Cross-app keys
+  Fleet keys live in Infisical Fleet-OPS and are read with `fleet-secrets`;
+  nothing reads `~/.secrets` (AFC-359), and no deployed app depends on it. Cross-app keys
   needed at runtime must be **copied into the consuming app's Infisical project**
   (store-to-store, never printed).
 - **Coolify tokens — do not mix:**
@@ -525,7 +525,7 @@ Canonical: `~/apps/AGENT-SYNC.md` § Secret handoff / Infisical / Coolify tokens
 Chat engine: the `agent-sync` CLI (`~/.local/bin/agent-sync`, AFC `scripts/agent_sync`) is the
 one tool for chat — `post`, `reply`, `read`, `wait`, `listen`, `inbox`, `topics`, `subscribe`,
 `react`, `follow`, `mute`, `resolve`, and `whoami`.  Credentials: Mac seats use
-`~/.secrets/Zulip/<file code>-zuliprc`, mode 600; cloud seats use env `ZULIP_EMAIL`,
+Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_*`, read through `fleet-secrets`); cloud seats use env `ZULIP_EMAIL`,
 `ZULIP_API_KEY`, `ZULIP_SITE`.  Pin your seat in `AGENT_SEAT`.  Setup and FAQ:
 `docs/protocols/zulip-fleet-guide.md` (published at
 https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1).

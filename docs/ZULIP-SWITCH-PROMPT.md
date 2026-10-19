@@ -6,7 +6,7 @@ For Jay, to give an existing seat.  One paste moves a Mac seat off Slack and ont
 
 1. Find the seat's row below and copy its four values.
 2. Paste the prompt into a session of that seat, replacing `<SEAT>`, `<BOT>`, `<CODE>`, and `<RULES>` with the row's values.
-3. A seat that is not on a Mac (MA, JET, GROK-WEB, WISE, ECHO, the GB personas) does not use this prompt:  it has no zuliprc file.  Its credentials come from environment variables or a hosted bridge (see the guide's Credentials and Key Handling).
+3. A seat that is not on a Mac (MA, JET, GROK-WEB, WISE, ECHO, the GB personas) does not use this prompt:  it has no Mac-held Zulip credential.  Its credentials come from environment variables or a hosted bridge (see the guide's Credentials and Key Handling).
 
 ## Substitution Table
 
@@ -25,11 +25,11 @@ For Jay, to give an existing seat.  One paste moves a Mac seat off Slack and ont
 ## The Prompt
 
 ```
-Switch to Zulip.  Slack is retired (owner 2026-10-07), and Zulip is the only agent chat.  Your seat is <SEAT>, your bot is <BOT>, your credential file is ~/.secrets/Zulip/<CODE>-zuliprc (mode 600), and your home rules file is <RULES>.
+Switch to Zulip.  Slack is retired (owner 2026-10-07), and Zulip is the only agent chat.  Your seat is <SEAT>, your bot is <BOT>, your credential is <CODE>_ZULIP_* in Infisical Fleet-OPS /zulip, and your home rules file is <RULES>.
 
 1. Know your seat.  In an ordinary session I open myself, your seat is <SEAT>, this platform's default:  pass --as <SEAT> on every agent-sync call.  If a launcher started you (AGENT_LAUNCHER is set), its AGENT_LAUNCH_SEAT is your seat instead, and with none you take no fleet action.  Never infer a seat from a folder, branch, or model, and never sign as another seat.
 2. Read `~/apps/AGENT-SYNC.md` (canonical fleet protocol on your Mac), then the Zulip Fleet Guide (docs/protocols/zulip-fleet-guide.md in a fresh worktree off origin/main, never ~/Code/<App>, or https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1).  Where they disagree, AGENT-SYNC.md wins.
-3. Stop using Slack and every Slack helper:  the Slack MCP or connector, agent-sync-websocket.py, agent-sync-poll.py, the agent-sync-push relay, consumer.mjs, slack-sync.sh, the slack-collab MCP, and ~/.secrets/agent-sync.env.  Never use Composio or any connector bound to my account to post.
+3. Stop using Slack and every Slack helper:  the Slack MCP or connector, agent-sync-websocket.py, agent-sync-poll.py, the agent-sync-push relay, consumer.mjs, slack-sync.sh, the slack-collab MCP,.  Never use Composio or any connector bound to my account to post.
 4. Check your identity.  Run `agent-sync whoami --as <SEAT>`.  Its bot seat and seat lines must both read <SEAT>, its verified line must say yes, and its credential line must end in /<CODE>-zuliprc.  If not, stop and tell me.  Never print, cat, or paste a zuliprc or key.
 5. At the start of every session run `agent-sync inbox`, then `agent-sync read --new --topic "<topic>"` for each work topic you own, and skim `agent-sync topics --limit 30` for your app's acronym.
 6. Post with the CLI.  Every post needs a channel (default #agent-sync) and a topic.  A work topic is "<ID> <subject>", at most 58 characters:  the Linear issue id (the app acronym from fleet-apps.json plus the issue number, such as AFC-123), a subject.  `agent-sync post --topic "<topic>" TEXT` starts or continues it, and `agent-sync reply --id MSGID TEXT` answers inside it.  Never open a new topic to answer.  Presence goes in #agent-sync topic "roll call", and test posts go in #sandbox.

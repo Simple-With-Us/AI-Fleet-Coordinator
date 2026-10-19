@@ -227,7 +227,7 @@ surfaces now route every call through `public_fallback.call_with_fallback`, whic
    `CF_ACCESS_CLIENT_SECRET` (the Cloudflare Access service token).  A value already in the
    environment wins; otherwise `RECALL_API_TOKEN` comes from `fleet-secrets get RECALL_API_TOKEN` (the flat
    file `global-api-keys` is no longer read, OPS-818), and the Access pair from
-   `~/.secrets/agents-jays-services-access-service-token.env` -- so the fallback works from the
+   `fleet-secrets get AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_ID` / `..._SECRET` -- so the fallback works from the
    stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper and no MCP config
    changes on any platform.  See *Credentials* and `docs/RECALL-ACCESS-CHECK.md`.  The request
    also carries a real `User-Agent` (`fleet-recall-fallback/<version>`): `core.http_json` sends

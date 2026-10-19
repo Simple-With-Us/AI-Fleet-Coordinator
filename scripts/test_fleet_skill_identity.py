@@ -830,7 +830,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         self.assertNotIn("Catalog copy", out)
         self.assertIn("clutch/<slug>", out)
         self.assertIn("clutch-bot@simplewithus.zulipchat.com", out)
-        self.assertIn("~/.secrets/Zulip/Clutch-zuliprc", out)
+        self.assertIn("`CLUTCH_ZULIP_KEY`", out)
         self.assertIn("[CLUTCH·session8]", out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
         self.assertNotIn("DSH·session8", out)
@@ -1177,10 +1177,10 @@ class RepoPlatformCopiesTests(unittest.TestCase):
             "`[MM·session8]`",
             "minimax/",
             "mm-bot@simplewithus.zulipchat.com",
-            "MM-zuliprc",
+            "MM_ZULIP_KEY",
         ):
             self.assertIn(wanted, text, wanted)
-        for foreign in ("CLAUDE", "CURSOR", "Claude-zuliprc", "`[CLAUDE·session8]`"):
+        for foreign in ("CLAUDE", "CURSOR", "CLAUDE_ZULIP_KEY", "`[CLAUDE·session8]`"):
             self.assertNotIn(foreign, text, foreign)
         self.assertIn("minimax/afc-123-zulip-cutover", text)
         self.assertNotIn("claude/afc-123-zulip-cutover", text)

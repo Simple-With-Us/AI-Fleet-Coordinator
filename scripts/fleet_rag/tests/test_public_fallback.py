@@ -10,9 +10,7 @@ every test that reaches it.
 from __future__ import annotations
 
 import os
-import pathlib
 import subprocess
-import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -545,60 +543,55 @@ class PublicCredentialsFileFallbackTests(unittest.TestCase):
         self.fs.stop()
         self.env.stop()
 
-    def test_env_value_wins_over_file(self):
-        with mock.patch.object(public_fallback, "_read_named_line", return_value="from-file"):
-            with mock.patch.dict(
-                os.environ, {"RECALL_API_TOKEN": "from-env", "CF_ACCESS_CLIENT_ID": "id-env"}
-            ):
-                resolved = public_fallback._resolve_public_env()
+    def test_env_value_wins_over_infisical(self):
+        with mock.patch.dict(
+            os.environ, {"RECALL_API_TOKEN": "from-env", "CF_ACCESS_CLIENT_ID": "id-env"}
+        ):
+            resolved = public_fallback._resolve_public_env()
         self.assertEqual(resolved["RECALL_API_TOKEN"], "from-env")
         self.assertEqual(resolved["CF_ACCESS_CLIENT_ID"], "id-env")
-        self.fleet_secret.assert_not_called()
+        # Only the two names missing from the environment were looked up.
+        self.assertEqual(
+            sorted(c.args[0] for c in self.fleet_secret.call_args_list),
+            sorted(
+                [
+                    public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"],
+                ]
+            ),
+        )
 
-    def test_falls_back_to_file_and_fleet_secrets_when_env_is_blank(self):
-        def fake_read(path, name):
-            return {
-                "CF_ACCESS_CLIENT_ID": "id-from-file",
-                "CF_ACCESS_CLIENT_SECRET": "secret-from-file",
-            }[name]
-
-        self.fleet_secret.return_value = "tok-from-fleet-secrets"
-        with mock.patch.object(public_fallback, "_read_named_line", side_effect=fake_read):
-            creds = public_fallback.public_credentials()
+    def test_falls_back_to_fleet_secrets_when_env_is_blank(self):
+        values = {
+            "RECALL_API_TOKEN": "tok-from-fleet-secrets",
+            public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_ID"]: "id-from-fleet-secrets",
+            public_fallback.PUBLIC_INFISICAL_NAMES["CF_ACCESS_CLIENT_SECRET"]: "secret-from-fs",
+        }
+        self.fleet_secret.side_effect = values.get
+        creds = public_fallback.public_credentials()
         self.assertEqual(
             creds,
             {
                 "RECALL_API_TOKEN": "tok-from-fleet-secrets",
-                "CF_ACCESS_CLIENT_ID": "id-from-file",
-                "CF_ACCESS_CLIENT_SECRET": "secret-from-file",
+                "CF_ACCESS_CLIENT_ID": "id-from-fleet-secrets",
+                "CF_ACCESS_CLIENT_SECRET": "secret-from-fs",
             },
         )
-        self.fleet_secret.assert_called_once_with("RECALL_API_TOKEN")
 
-    def test_none_when_the_file_and_fleet_secrets_are_also_missing(self):
-        with mock.patch.object(public_fallback, "_read_named_line", return_value=None):
-            self.assertIsNone(public_fallback.public_credentials())
+    def test_none_when_fleet_secrets_has_nothing(self):
+        self.assertIsNone(public_fallback.public_credentials())
 
-    def test_read_named_line_parses_a_real_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = pathlib.Path(d) / "handoff.env"
-            path.write_text('OTHER=ignored\nRECALL_API_TOKEN="quoted-value"\nTRAILING=x\n')
-            self.assertEqual(
-                public_fallback._read_named_line(path, "RECALL_API_TOKEN"), "quoted-value"
-            )
-            self.assertIsNone(public_fallback._read_named_line(path, "NOT_PRESENT"))
-            self.assertIsNone(
-                public_fallback._read_named_line(path.parent / "missing.env", "RECALL_API_TOKEN")
-            )
+    def test_no_secrets_file_reader_remains(self):
+        self.assertFalse(hasattr(public_fallback, "_read_named_line"))
+        self.assertFalse(hasattr(public_fallback, "CF_ACCESS_FILE"))
 
 
 class CallPublicTests(unittest.TestCase):
     def setUp(self):
         self.env = mock.patch.dict(os.environ, PUBLIC_ENV, clear=False)
         self.env.start()
-        # Isolate from whatever handoff files genuinely exist on the machine running the
-        # suite -- these tests control credentials via os.environ only.
-        self.no_files = mock.patch.object(public_fallback, "_read_named_line", return_value=None)
+        # Isolate from whatever Infisical holds on the machine running the suite -- these tests
+        # control credentials via os.environ only.
+        self.no_files = mock.patch.object(core, "fleet_secret", return_value=None)
         self.no_files.start()
         self.no_fs = mock.patch.object(core, "fleet_secret", return_value=None)
         self.no_fs.start()
@@ -675,9 +668,9 @@ class CallWithFallbackTests(unittest.TestCase):
         os.environ.pop("QDRANT_URL", None)
         os.environ.pop("TEI_URL", None)
         os.environ.pop(public_fallback.SKIP_PRIVATE_ENV, None)
-        # Isolate from whatever handoff files genuinely exist on the machine running the
-        # suite -- these tests control credentials via os.environ only.
-        self.no_files = mock.patch.object(public_fallback, "_read_named_line", return_value=None)
+        # Isolate from whatever Infisical holds on the machine running the suite -- these tests
+        # control credentials via os.environ only.
+        self.no_files = mock.patch.object(core, "fleet_secret", return_value=None)
         self.no_files.start()
         # Deterministic regardless of the platform/network this suite happens to run on (this
         # Mac's own route to the documented default Qdrant host is a real bypass signal per
