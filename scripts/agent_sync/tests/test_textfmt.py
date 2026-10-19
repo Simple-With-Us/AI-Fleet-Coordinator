@@ -262,73 +262,91 @@ class OutboundParamsTests(unittest.TestCase):
                 self.assertIs(Z.outbound_params("POST", "messages", params), params)
 
 
-class FleetFormatTests(unittest.TestCase):
-    """Owner 2026-10-19:  one-space sentence gaps are widened and ISO dates in prose take the fleet form."""
+# The fixed "now" the fleet-format tables are written against.  test/textfmt.test.mjs reads NOW_ISO so the JS port
+# runs the same tables against the same instant.
+NOW = datetime(2026, 10, 19, 12, tzinfo=ZoneInfo("America/Chicago"))
+NOW_ISO = NOW.astimezone(timezone.utc).isoformat()
 
-    NOW = datetime(2026, 10, 19, 12, tzinfo=ZoneInfo("America/Chicago"))
+# (text, expected) for single_gaps:  a one-space sentence gap becomes the gap, an abbreviation or a list marker
+# does not.
+SINGLE_GAPPED = (
+    ("Merged it. Next step.", "Merged it.%sNext step." % G),
+    ("Done! Then? Yes.", "Done!%sThen?%sYes." % (G, G)),
+    ("Done. @**Codex** look.", "Done.%s@**Codex** look." % G),
+    ('He said "Go." Then left.', 'He said "Go."%sThen left.' % G),
+    ("4 tests failed. Next.", "4 tests failed.%sNext." % G),
+)
+SINGLE_UNCHANGED = (
+    "Ask Dr. Smith.",
+    "The U.S. Army.",
+    "J. Doe.",
+    "e.g. this",
+    "v1.2.3 ok",
+    "1. Item\n2. Next",
+    "  3. Nested item",
+    "> 4. Quoted item",
+    "`x. Y`",
+    "vs. Apple",
+    "a.b.c Next",
+)
+
+# (text, expected) for fleet_dates.  A date in prose takes the fleet form; a date inside a name, a path, a query
+# string or code keeps its ISO form.
+FLEET_DATES = (
+    (
+        "Landed 2026-10-19, deployed 2026-10-20T02:03:00Z, filed 2025-03-07 at 2026-10-19T09:05:00-05:00.",
+        "Landed Mon, Oct 19, deployed Mon, Oct 19, 9:03pm, filed Fri, Mar 7, 2025 at Mon, Oct 19, 9:05am.",
+    ),
+    (
+        "Standup 2026-10-19 10:30-11:00 Central.",
+        "Standup Mon, Oct 19, 10:30am-11:00am Central.",
+    ),
+)
+FLEET_DATES_KEPT = (
+    "backup-2026-10-19.tar",
+    "https://x.test/2026-10-19/",
+    "`2026-10-19`",
+    "2026-13-45",
+    "```\n2026-10-19\n```",
+    "v2026-10-19",
+)
+
+# A -HH:MM on the space form is a range only when the start did not carry seconds alone.
+FLEET_OFFSET_FORMS = (
+    # The existing range forms keep working:  a range that shows seconds shows them on both ends.
+    ("Standup 2026-10-19 10:30-11:00 Central.", "Standup Mon, Oct 19, 10:30am-11:00am Central."),
+    ("2026-10-19 10:30-11:00:00", "Mon, Oct 19, 10:30am-11:00am"),
+    ("2026-10-19 10:30:00-11:00:00", "Mon, Oct 19, 10:30am-11:00am"),
+    # Seconds on the start only:  a UTC offset, converted like the T form, not a 5:00am range end.
+    ("2026-10-19 10:30:00-05:00", "Mon, Oct 19, 10:30am"),
+    ("2026-10-19 10:30:00+05:30", "Mon, Oct 19, 12:00am"),
+    ("2026-10-19 10:30:00Z", "Mon, Oct 19, 5:30am"),
+)
+
+
+class FleetFormatTests(unittest.TestCase):
+    """Owner 2026-10-19:  one-space sentence gaps are widened and ISO dates in prose take the fleet format."""
+
+    NOW = NOW
 
     def test_single_gaps(self) -> None:
-        for text, expected in (
-            ("Merged it. Next step.", "Merged it.%sNext step." % G),
-            ("Done! Then? Yes.", "Done!%sThen?%sYes." % (G, G)),
-            ("Done. @**Codex** look.", "Done.%s@**Codex** look." % G),
-            ('He said "Go." Then left.', 'He said "Go."%sThen left.' % G),
-            ("4 tests failed. Next.", "4 tests failed.%sNext." % G),
-        ):
+        for text, expected in SINGLE_GAPPED:
             self.assertEqual(single_gaps(text)[0], expected, text)
-        for text in (
-            "Ask Dr. Smith.",
-            "The U.S. Army.",
-            "J. Doe.",
-            "e.g. this",
-            "v1.2.3 ok",
-            "1. Item\n2. Next",
-            "  3. Nested item",
-            "> 4. Quoted item",
-            "`x. Y`",
-            "vs. Apple",
-            "a.b.c Next",
-        ):
+        for text in SINGLE_UNCHANGED:
             self.assertEqual(single_gaps(text), (text, 0), text)
 
     def test_fleet_dates(self) -> None:
-        text, changes = fleet_dates(
-            "Landed 2026-10-19, deployed 2026-10-20T02:03:00Z, filed 2025-03-07 at 2026-10-19T09:05:00-05:00.",
-            self.NOW,
-        )
-        self.assertEqual(
-            text,
-            "Landed Mon, Oct 19, deployed Mon, Oct 19, 9:03pm, filed Fri, Mar 7, 2025 at Mon, Oct 19, 9:05am.",
-        )
+        text, changes = fleet_dates(FLEET_DATES[0][0], self.NOW)
+        self.assertEqual(text, FLEET_DATES[0][1])
         self.assertEqual(len(changes), 4)
-        self.assertEqual(
-            fleet_dates("Standup 2026-10-19 10:30-11:00 Central.", self.NOW)[0],
-            "Standup Mon, Oct 19, 10:30am-11:00am Central.",
-            "a time range end is not a UTC offset",
-        )
+        for text, expected in FLEET_DATES[1:]:
+            self.assertEqual(fleet_dates(text, self.NOW)[0], expected, text)
         self.assertEqual(fleet_dates("see ?d=2026-10-19 and v2026-10-19.x", self.NOW)[1], [])
-        for kept in (
-            "backup-2026-10-19.tar",
-            "https://x.test/2026-10-19/",
-            "`2026-10-19`",
-            "2026-13-45",
-            "```\n2026-10-19\n```",
-            "v2026-10-19",
-        ):
+        for kept in FLEET_DATES_KEPT:
             self.assertEqual(fleet_dates(kept, self.NOW), (kept, []), kept)
 
     def test_space_form_offsets_are_not_time_ranges(self) -> None:
-        """A -HH:MM on the space form is a range only when the start did not carry seconds alone."""
-        for text, expected in (
-            # The existing range forms keep working:  a range that shows seconds shows them on both ends.
-            ("Standup 2026-10-19 10:30-11:00 Central.", "Standup Mon, Oct 19, 10:30am-11:00am Central."),
-            ("2026-10-19 10:30-11:00:00", "Mon, Oct 19, 10:30am-11:00am"),
-            ("2026-10-19 10:30:00-11:00:00", "Mon, Oct 19, 10:30am-11:00am"),
-            # Seconds on the start only:  a UTC offset, converted like the T form, not a 5:00am range end.
-            ("2026-10-19 10:30:00-05:00", "Mon, Oct 19, 10:30am"),
-            ("2026-10-19 10:30:00+05:30", "Mon, Oct 19, 12:00am"),
-            ("2026-10-19 10:30:00Z", "Mon, Oct 19, 5:30am"),
-        ):
+        for text, expected in FLEET_OFFSET_FORMS:
             with self.subTest(text=text):
                 self.assertEqual(fleet_dates(text, self.NOW)[0], expected)
                 self.assertNotRegex(fleet_dates(text, self.NOW)[0], r"[:+-]\d{2}:\d{2}$")
