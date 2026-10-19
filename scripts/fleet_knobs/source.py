@@ -12,7 +12,7 @@ token (``cli-missing``, ``timeout``, ``exit-1``, ``bad-output``, ``unresolved-re
 
 Why the CLI and not HTTP:  a stable copy run with ``python3 -I`` then needs no sibling
 package, and the Mac's LaunchAgents already rely on the CLI's login (see
-scripts/infisical-secrets-sync.sh).  ``fleet_rag/infisical_settings.py`` is the reference for
+scripts/fleet_secrets).  ``fleet_rag/infisical_settings.py`` is the reference for
 the contract (prod only, load once, keep the last-known-good, names only in logs).
 """
 
