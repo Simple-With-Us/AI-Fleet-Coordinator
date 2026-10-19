@@ -12,7 +12,7 @@ The existing temporary-checkout rules still apply.  Reads, Git fetches, worktree
 
 ## Server Inventory
 
-The read-only audit found Claude Code, Codex and Muse Code installed.  A native server Codex guard already denied integration-tree worktrees and allowed the lanes root, with its own persisted trust.  Keep that registration intact.  Claude had no registered hook, and Muse had no installed plugins.
+The audit found Claude Code, Codex, Muse Code and MiniMax Code installed.  MiniMax was initially missed because its executable was outside `PATH`; checking account-local installation directories found version 0.6.12.  A native server Codex guard already denied integration-tree worktrees and allowed the lanes root, with its own persisted trust.  Keep that registration intact.  Claude had no registered hook, Muse had no installed plugins, and MiniMax had no local fleet guard plugin.
 
 Existing worktrees changed location during the audit.  The final observation had only integration repositories directly under `~/Code`, and task worktrees under `~/apps/lanes`.  This task did not move or delete those trees and does not attribute another session's migration to its own work.
 
@@ -51,3 +51,13 @@ Muse's native test fixture wraps the hook payload, rather than taking it at the 
 The installed server Claude hook passed integration-deny, temp-deny and lane-allow probes from its persisted Bash registration.  Muse's approved native plugin dispatcher passed the same three cases, recording `blocked` for forbidden destinations and `completed` for the lane destination.  No probe checkout was created.  Claude's unrelated settings and the existing native Codex hook file were byte/content checked unchanged.  A new full Claude session was not started for this proof.
 
 Start a new agent session to load newly installed hooks.  Existing sessions are not interrupted.  Platforms absent from this server require their supported installer target and verification when installed; this rollout does not claim coverage for absent binaries or tools without a hook surface.  Future platform support remains tracked in AFC-353 and AFC-387.
+
+## MiniMax Server Follow-Up
+
+The owner explicitly added MiniMax to this rollout.  Its executable is in the account-local MiniMax Code installation, rather than on the SSH session's `PATH`.  Platform inventory must check known installation directories as well as command lookup.
+
+The installed MiniMax local plugin is `fleet-guard`, using the Claude-compatible manifest and the reviewed shared fleet hook from revision `372aeef8`.  Its `PreToolUse` matcher is **`bash`**, the actual shell tool name.  The hook command uses the compatible deny shape.  The native MiniMax manifest requires an icon, so this shell-only rollout keeps the existing compatible packaging contract.
+
+The installer at this revision still writes the incorrect `Bash` matcher.  Therefore this server bundle was staged with the corrected lowercase matcher, probed with the restricted hook environment, and atomically installed into the previously absent plugin directory.  Do not run that revision's `apply minimax` over this correction.  AFC-365 and PR #712 own the permanent installer correction and the broader MiniMax adapter; this rollout does not replace that work or claim its file-write and seat-identity guarantees.
+
+`mcode plugin list --json` recognizes `fleet-guard@local` as installed and enabled without diagnostics.  Direct subprocess probes deny integration-tree and temporary worktrees and allow the sanctioned lanes destination.  Those commands are payload strings only; the probes never execute Git.  Native dispatcher proof is recorded separately before closeout.  Existing agent sessions remain running and load the new plugin on their next start.
