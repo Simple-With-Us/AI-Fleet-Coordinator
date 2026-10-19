@@ -42,7 +42,7 @@ not fetched lately, the newest commit it shares with that branch;  `local-remote
 A checkout with nothing unpushed, no stash and nothing dirty leaves nothing behind.
 
 **(b) Non-git files** under `~/apps`, outside any checkout:  `AGENT-SYNC.md`, the effort logs,
-`MAC-LOCAL-PROCESSES.md`, helper scripts, `mac-collab/findings.db` and its `backups/` folder, runtime
+`MAC-LOCAL-PROCESSES.md`, helper scripts, runtime
 configs.  They are staged under `files/`, which mirrors the path relative to the home directory
 (`files/apps/AGENT-SYNC.md`).  The loose files directly in `~/Code` are included too.  SQLite files
 are copied with the online backup API (a live WAL-mode database is never torn;  `-wal` and `-shm`
@@ -127,8 +127,9 @@ later, or a new commit on that branch, no longer matches and the file is dropped
 `allow-stale`).  A line without `@ digest` is ignored (`allow-unpinned`), and a **secret name is never
 allowed**.  An allowed file still goes through gitleaks.
 
-If the gate drops `mac-collab/findings.db` or its backups, that shows in the detail log too;  the
-board's database not being backed up is not something to leave silent.
+`mac-collab` was retired on 2026-10-19 (AFC-363):  `~/apps/mac-collab` is gone from the live tree, and the
+old board database is now `~/apps/_retired/mac-collab-20261019/findings.db`.  Snapshots made before that
+day still hold `files/apps/mac-collab`.
 
 ## Where it goes
 

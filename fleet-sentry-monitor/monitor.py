@@ -78,7 +78,6 @@ PROD_HEALTH_ENDPOINTS = [
     {"name": "usage-monitor", "url": "https://usage.jays.services/api/health"},
     {"name": "dealdex", "url": "https://dealdex.net/"},
     {"name": "botfleet", "url": "https://botfleet.app/"},
-    {"name": "mac-collab", "url": "https://mac.jays.services/health"},
     {"name": "agent-sync", "url": "http://127.0.0.1:8787/health"},
     {"name": "cloudflared-ready", "url": "http://127.0.0.1:20241/ready"},
 ]

@@ -496,7 +496,7 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
 - **Private Infrastructure Hub & Secrets Inventory (LOUD NOTICE):**
   This repository and all public fleet repositories MUST NOT contain real host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, or secret values.
   - **Canonical private infrastructure inventory:** [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (local clone at `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`).
-  - **Cloud agents without repo access:** Fetch securely via `GET https://mac.jays.services/files/ATTACK-MAP.md` using `MAC_COLLAB_TOKEN`.
+  - **Seats without a local clone:** a seat with read access to the private repo fetches it with `gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'`;  a seat without access asks a Mac seat or the owner.  The old `GET https://mac.jays.services/files/ATTACK-MAP.md` relay was retired on 2026-10-19 (AFC-363).
   - **Secret reads:** On the Mac read a fleet key with `fleet-secrets get NAME`, or run a command with only the keys it needs via `fleet-secrets run --only A,B -- CMD` (both come from Infisical Fleet-OPS; cookbook in `INFISICAL.md` § `fleet-secrets`). Never log, grep, or print raw `KEY=value` lines. Never commit or refer to cloud storage / Google Drive backups of secrets.
 - **App runtime secrets** live in **Infisical** (the app's own project, prod).  
   Fleet keys live in Infisical Fleet-OPS and are read with `fleet-secrets`;

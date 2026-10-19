@@ -1,6 +1,8 @@
 # mac-collab (tracked copy)
 
-> **Archive after the Linear cutover (owner 2026-10-10).**  Linear replaced THE BOARD.  `mac-collab-sync` and `mac-collab-writeback` are stopped and removed, the server stays as a read-only archive with `mac-collab-litestream` for 14 days, and it is retired at about day 30.  `board-legacy` and `BOARD_BACKEND=mac-collab` (the rollback) still run the old CLI against it.  The server has no read-only switch, so after the cutover no seat is told to write to it.  See `scripts/linear-board/README.md` and `AGENT-SYNC.md` § Linear and the Claim Lifecycle.
+> **RETIRED 2026-10-19 (owner, AFC-363).**  The `mac-collab` service is gone.  The pm2 jobs `mac-collab`, `mac-collab-litestream`, `mac-collab-sync` and `mac-collab-writeback` are deleted, the `mac.jays.services` tunnel ingress is removed (the hostname answers 404), `~/apps/mac-collab` was moved to `~/apps/_retired/mac-collab-20261019/` (the database copy is `findings.db` there), and `board-legacy` and `BOARD_BACKEND=mac-collab` are removed.  The routes `/health`, `/board`, `/login`, `/findings*`, `/files*` and `/effort-logs*` no longer exist, and `MAC_COLLAB_TOKEN` and the per-seat `MAC_COLLAB_TOKEN_<SEAT>` tokens authenticate nothing.  Nothing below is in force;  it is kept as history only.  Linear replaced THE BOARD on 2026-10-10:  see `scripts/linear-board/README.md` and `AGENT-SYNC.md` § Linear and the Claim Lifecycle.
+
+> **Earlier note (owner 2026-10-10, history).**  Linear replaced THE BOARD.  `mac-collab-sync` and `mac-collab-writeback` were stopped and removed at the cutover, and the server stayed as a read-only archive with `mac-collab-litestream` until the retirement above.
 
 Live process: `~/apps/mac-collab/` under pm2 `mac-collab` (HTTP), `mac-collab-sync`
 (files+issues → board), and `mac-collab-writeback` (board writes → live effort logs

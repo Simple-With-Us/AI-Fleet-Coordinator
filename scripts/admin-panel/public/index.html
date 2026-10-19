@@ -256,7 +256,6 @@
   var CARDS = [
     { key: 'endpoints', title: 'Public Endpoints', wide: true, render: renderEndpoints, skeleton: 8 },
     { key: 'recall', title: 'Fleet Recall', wide: true, render: renderRecall, skeleton: 4 },
-    { key: 'board', title: 'The Board', render: renderBoard, skeleton: 4 },
     { key: 'coolify', title: 'Coolify Applications', render: renderCoolify, skeleton: 6 },
     { key: 'github', title: 'GitHub Repositories', wide: true, render: renderGitHub, skeleton: 6 },
     { key: 'vercel', title: 'Vercel Projects', render: renderSimple, skeleton: 5 },
@@ -458,32 +457,6 @@
         url: i.url || ''
       };
     });
-  }
-
-  function renderBoard(data) {
-    var frag = document.createDocumentFragment();
-    var items = data.items || [];
-    if (!items.length) frag.appendChild(emptyNode('No counts were returned.'));
-    else {
-      frag.appendChild(list(items, function (i) {
-        return {
-          name: i.name,
-          state: i.count ? i.state : 'up',
-          status: i.count + (i.count === 1 ? ' item' : ' items')
-        };
-      }));
-    }
-    if (data.counts) {
-      frag.appendChild(el('p', 'card-sub',
-        data.counts.total + ' rows total · ' + data.counts.done + ' resolved'));
-    }
-    if (data.urgent && data.urgent.length) {
-      frag.appendChild(el('p', 'card-sub', 'Needs attention'));
-      frag.appendChild(list(data.urgent, function (f) {
-        return { name: f.name, sub: f.sub, state: f.state, status: f.status, url: f.url || '' };
-      }));
-    }
-    return frag;
   }
 
   function renderSentry(data) {

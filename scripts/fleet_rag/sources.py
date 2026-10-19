@@ -5,7 +5,7 @@ orchestrator chunks, scrubs, embeds and upserts.  Generators never write anywher
 print; they raise on a hard failure so the orchestrator can record the source as errored.
 
 Sources (payload `source` value):
-  board          ~/apps/mac-collab/findings.db   (read-only sqlite; findings + comments)
+  board          ~/apps/_retired/mac-collab-20261019/findings.db   (frozen read-only sqlite; findings + comments)
   effort-log     ~/apps/*-EFFORT-LOG.md + EFFORT-LOG-PROTOCOL.md
   doc            markdown in fleet app repos (README/AGENTS/STATUS/CLAUDE + docs/**/*.md),
                  AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only when an
@@ -41,7 +41,9 @@ from typing import Callable, Iterable, Iterator
 HOME = pathlib.Path.home()
 APPS_DIR = HOME / "apps"
 CODE_DIR = HOME / "Code"
-BOARD_DB = APPS_DIR / "mac-collab" / "findings.db"
+# THE BOARD was retired 2026-10-19 (AFC-363);  the database is frozen here and still ingested so the
+# resolved findings stay searchable.
+BOARD_DB = APPS_DIR / "_retired" / "mac-collab-20261019" / "findings.db"
 BOARD_URL = "https://mac.jays.services/board"
 FLEET_REPO = CODE_DIR / "AI-Fleet-Coordinator"
 FLEET_OPS_REPO = CODE_DIR / "fleet-ops"
