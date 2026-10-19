@@ -165,6 +165,19 @@ class GitUpdateTests(unittest.TestCase):
             U.setup(self.home)
         self.assertFalse((self.base() / "current").exists())
 
+    def test_setup_re_run_with_a_broken_main_keeps_the_validated_commit(self) -> None:
+        # A prior validated commit is a working host:  setup keeps it, still records the bad one, and
+        # still points `current`, so only the never-validated case above is a failure.
+        U.setup(self.home)
+        good = run(self.work, "rev-parse", "HEAD")
+        bad = self.commit(agent_sync=PY_BROKEN)
+        result = U.setup(self.home)
+        self.assertEqual(result["status"], "smoke_failed")
+        self.assertEqual(U.status(self.home)["commit"], good)
+        self.assertEqual(U.status(self.home)["bad"], bad)
+        self.assertTrue(U.status(self.home)["current_is_checkout"])
+        self.assertEqual(U.main(["setup", "--home", str(self.home)]), 1)  # smoke_failed
+
     def test_update_before_setup_is_refused(self) -> None:
         with self.assertRaises(U.Failed):
             U.update(self.home)
