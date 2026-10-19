@@ -827,16 +827,10 @@ elif verb == "set":
     os.replace(tmp, os.path.join(V, a[1]))
     print("updated", a[1], "at /linear")
 elif verb == "run":
-    if a[1] != "--path" or a[2] != "/linear" or a[3] != "--only" or a[5] != "--":
-        sys.exit(2)
-    env = dict(os.environ)
-    for n in a[4].split(","):
-        f = os.path.join(V, n)
-        if not os.path.isfile(f):
-            sys.stderr.write("key %s is not in Infisical at /linear\n" % n)
-            sys.exit(3)
-        env[n] = open(f).read()
-    os.execvpe(a[6], a[6:], env)
+    # The board reads one named key at a time with `get`.  `run` would dump the store's environment, so it is
+    # refused here and recorded, and a test fails if the CLI ever calls it (AFC-361 review).
+    open(os.path.join(V, ".run-called"), "w").write("run")
+    sys.exit(9)
 else:
     sys.exit(2)
 """
@@ -2388,6 +2382,12 @@ class SeatAppTests(BoardTest):
 
     def callers_since(self, n):
         return {c for _, c in self.mock.calls[n:]}
+
+    def test_secrets_are_read_one_named_key_at_a_time_never_by_dumping_the_store(self):
+        self.seat_app("CLAUDE", "Claude")
+        p = self.as_seat("CLAUDE", "whoami")
+        self.assertIn("identity:    Claude (the CLAUDE seat's own Linear app)", p.stdout)
+        self.assertFalse((self.ops_vault / ".run-called").exists(), "board called `fleet-secrets run`")
 
     def test_two_seats_use_their_own_app_token_and_cache(self):
         claude, _ = self.seat_app("CLAUDE", "Claude")

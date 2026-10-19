@@ -807,30 +807,6 @@ def fleet_ops_secret(name: str) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-def fleet_ops_bundle(names: list) -> dict | None:
-    """Several Fleet-OPS /linear secrets in ONE `fleet-secrets run` call (one Infisical round trip instead of
-    one per name), or None when the call failed, for example because one name is absent.  Only the requested
-    names are read back from the child's environment, which is scrubbed of them first."""
-    binary = fleet_secrets_bin()
-    if not binary:
-        return None
-    child_env = {k: v for k, v in os.environ.items() if k not in names}
-    try:
-        proc = subprocess.run([binary, "run", "--path", FLEET_OPS_LINEAR_PATH, "--only", ",".join(names), "--",
-                               "/usr/bin/env"], capture_output=True, text=True, timeout=60, check=False,
-                              stdin=subprocess.DEVNULL, env=child_env)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    wanted, got = set(names), {}
-    for line in proc.stdout.splitlines():
-        k, sep, v = line.partition("=")
-        if sep and k in wanted:
-            got[k] = v.strip()
-    return got
-
-
 def fleet_ops_set(name: str, value: str) -> bool:
     """Write one Fleet-OPS /linear secret with `fleet-secrets set`.  The value goes on standard input, never
     in an argument.  False when the tool is absent or the write failed."""
@@ -908,12 +884,10 @@ def resolve_identity(seat: str = "") -> Identity:
                         tuple(n for n in (*app_names, fleet) if n), "LINEAR_CLIENT_ID app")
 
     def read_app(prefix: str, blob: str) -> tuple:
-        """(client id, client secret, token blob or None) for one app, in one fleet-secrets call when every
-        name exists, else one call per name."""
+        """(client id, client secret, token blob or None), each through its own `fleet-secrets get NAME`.  Nothing
+        dumps the secret store's environment or parses KEY=value lines, so no other value is ever held."""
         names = [f"{prefix}_LINEAR_CLIENT_ID", f"{prefix}_LINEAR_CLIENT_SECRET", blob]
-        got = fleet_ops_bundle(names)
-        if got is None:
-            got = {n: v for n in names if (v := fleet_ops_secret(n))}
+        got = {n: v for n in names if (v := fleet_ops_secret(n))}
         return got.get(names[0], ""), got.get(names[1], ""), got.get(blob)
 
     k = seat_env_key(seat)
