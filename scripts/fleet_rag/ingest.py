@@ -555,9 +555,7 @@ def _run_locked(
     heartbeat: bool,
     prune: bool,
 ) -> dict:
-    run_id = (
-        f"{_dt.datetime.now(_dt.UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
-    )
+    run_id = f"{_dt.datetime.now(_dt.UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
     started = now_ms()
     report: dict[str, Any] = {
         "run_id": run_id,
