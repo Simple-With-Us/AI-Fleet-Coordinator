@@ -49,7 +49,7 @@ Each phase is additive until Phase 5.  Nothing is deleted, booted out or rotated
 
 ### Phase 2:  Agent Proxy pilot
 
-**What retires `~/.secrets`, and what the broker is for (MiniMax, OPS-969, AFC #665).**  Of 667 Fleet-OPS keys, 320 can be carried by a broker as they stand, 21 after minting a short-lived token, and 89 never (App Store Connect p8 keys, the Google service-account JSON, OAuth refresh tokens).  So `fleet-secrets` is what retires `~/.secrets`, and the broker is a hardening layer on top for the brokerable keys.  File-type secrets move into Infisical as values and are written to a `0600` temp file from `fleet-secrets get` only for the life of the job.  The proxied-service map from #665 is the input for the pilot's first services, starting with each seat's Zulip Basic auth.
+**What retires `~/.secrets`, and what the broker is for (MiniMax, OPS-969, AFC #665).**  Of 667 Fleet-OPS keys, 320 can be carried by a broker as they stand, 21 after minting a short-lived token, and 89 never (App Store Connect p8 keys, the Google service-account JSON, OAuth refresh tokens).  So `fleet-secrets` is what retires `~/.secrets`, and the broker is a hardening layer on top for the brokerable keys.  File-type secrets move into Infisical as values and are written to a `0600` temp file from `fleet-secrets get` only for the life of the job.  The proxied-service map from #665 is the input for the pilot's first services, starting with each seat's Zulip Basic auth.
 
 - Run one standalone proxy (`infisical secrets agent-proxy start`, proxy identity from `/agent-proxy`, `--unmatched-host block`) as a LaunchAgent, and launch one terminal agent (the `claude` CLI or `opencode`) through `connect` with the agent identity.  Services for Zulip, Linear, GitHub and recall.
 - Unknowns to settle:  Claude Code subscription login behind the proxy, the `board` CLI's token, whether desktop apps honour `HTTPS_PROXY` and trust the local CA, and the CA's one-week expiry.
@@ -65,7 +65,7 @@ Each phase is additive until Phase 5.  Nothing is deleted, booted out or rotated
 
 ### Phase 5:  Cutover (owner gate)
 
-Gate:  no consumer reads anything under `~/.secrets` (checked by grep across repos on `origin/main`, the Mac's scripts and LaunchAgents, and pm2 jobs).  Brokering every key is not a gate.
+Gate:  no consumer reads anything under `~/.secrets` (checked by grep across repos on `origin/main`, the Mac's scripts and LaunchAgents, and pm2 jobs).  Brokering every key is not a gate.
 
 1. Boot out `com.jay.infisical-secrets-sync` and retire `scripts/infisical-secrets-sync.sh`.
 2. Move `~/.secrets/` into an encrypted archive (not delete) and confirm every consumer still works for a day.
