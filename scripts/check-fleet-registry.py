@@ -9,10 +9,17 @@ the AI-Fleet-Coordinator worktree:
 
     python3 scripts/check-fleet-registry.py
 
+It also checks the desired-state manifest, ``fleet-seats.json``, when that file is
+present:  the manifest must name exactly the live seats of the registry, cover every
+(seat, platform, kind) triple, name only platform ids the installer tables define,
+and hold rules that are internally consistent.  The manifest file is new, so an
+absent file is a skip with a note, never a failure:  a fresh worktree that has not
+seeded the manifest yet must still pass this check.
+
 Live-copy checks compare ~/apps/AGENT-SYNC.md against the registry, which exists
-on operator seats but never on CI runners. With FLEET_BOARD_HOME set, the live
-checks run against that directory and a missing directory fails the check. Without
-it, ~/apps is used when present; when neither exists the live checks are
+on operator seats but never on CI runners.  With FLEET_BOARD_HOME set, the live
+checks run against that directory and a missing directory fails the check.  Without
+it, ~/apps is used when present;  when neither exists the live checks are
 skipped and only the repository-portable assertions run.  The effort logs are
 archived (Linear is the tracker), so nothing checks a live effort log or
 EFFORT-LOG-PROTOCOL.md any more; `liveBoard` in the registry is an optional
@@ -35,6 +42,7 @@ from public_activity_repos import PUBLIC_REPOS
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "fleet-apps.json"
+MANIFEST = ROOT / "fleet-seats.json"
 
 # FLEET_BOARD_HOME opts the live-board checks into an explicit board checkout;
 # without it ~/apps is used when it exists (operator seats) and the live
@@ -297,6 +305,56 @@ def agent_sync_errors(
     return errors
 
 
+def manifest_errors(
+    manifest_path: Path | None = None,
+    registry_path: Path | None = None,
+) -> list[str]:
+    """The errors of the desired-state manifest, ``fleet-seats.json``.
+
+    The manifest is checked against the registry roster (the loader refuses a seat
+    key the registry does not hold live, and a live seat with no entry), against the
+    coverage rule (every seat, platform and kind is covered by a rule or by an
+    explicit not-applicable entry), against the platform ids the installer tables
+    define, and against the rule rules (a rule names its seat, an owner seat, at
+    least one platform and a check type its kind supports).
+
+    An absent manifest is a skip, not a failure:  the file is new, so a fresh
+    worktree that has not seeded it yet must still pass this check.  The caller
+    prints the note.
+    """
+    from fleet_config.manifest import (  # noqa: PLC0415 - imported here so the
+        ManifestError,  # checker runs before the package is on the path
+        known_platforms,
+        load_manifest,
+        validate_coverage,
+        validate_platforms,
+        validate_rules,
+    )
+
+    target = manifest_path if manifest_path is not None else MANIFEST
+    if not target.is_file():
+        return []
+    registry = registry_path if registry_path is not None else REGISTRY
+    errors: list[str] = []
+    try:
+        manifest = load_manifest(target, registry_path=registry)
+    except Exception as exc:  # noqa: BLE001 - a bad manifest is an error, not a crash
+        return ["fleet-seats.json: %s" % exc]
+    for check, name in (
+        (validate_coverage, "coverage"),
+        (validate_rules, "rules"),
+    ):
+        try:
+            check(manifest)
+        except Exception as exc:  # noqa: BLE001 - a bad manifest is an error, not a crash
+            errors.append("fleet-seats.json %s: %s" % (name, exc))
+    try:
+        validate_platforms(manifest, known_platforms())
+    except Exception as exc:  # noqa: BLE001 - a bad manifest is an error, not a crash
+        errors.append("fleet-seats.json platforms: %s" % exc)
+    return errors
+
+
 def main() -> int:
     data = load()
     apps = data.get("apps", [])
@@ -344,6 +402,14 @@ def main() -> int:
     errors.extend(zulip_errors(data))
     errors.extend(seat_apps_errors(data))
     errors.extend(engine_only_errors(data, strip_generated_header(agent_sync)))
+
+    if MANIFEST.is_file():
+        errors.extend(manifest_errors())
+    else:
+        print(
+            "note: the desired-state manifest (fleet-seats.json) is not here yet;  "
+            "the manifest check is skipped"
+        )
 
     colors: dict[str, str] = {}
     for app in apps:
