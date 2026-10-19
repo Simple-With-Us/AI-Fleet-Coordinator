@@ -3488,7 +3488,10 @@ class TokenBlobTests(BoardTest):
         self.assertEqual(self.mock.mints, 1)
         self.assertEqual(self.sets(), ["set CACHE_CLAUDE"], "only the first run wrote")
         # AFC-361:  no bundle dump, one `fleet-secrets get` per key (client id, client secret, blob)
-        self.assertEqual(self.fs_verbs()[before:], ["get CLAUDE_LINEAR_CLIENT_ID", "get CLAUDE_LINEAR_CLIENT_SECRET", "get CACHE_CLAUDE"])
+        self.assertEqual(
+            self.fs_verbs()[before:],
+            ["get CLAUDE_LINEAR_CLIENT_ID", "get CLAUDE_LINEAR_CLIENT_SECRET", "get CACHE_CLAUDE"],
+        )
 
     def test_an_expired_blob_means_one_mint_and_one_write_with_the_value_on_stdin(self):
         blob = self.seat()
