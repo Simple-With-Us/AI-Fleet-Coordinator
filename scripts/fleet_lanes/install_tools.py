@@ -22,7 +22,7 @@ PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, 
 a hook entry in their config file.  minimax is a plugin DIRECTORY that this tool owns: MiniMax Code reads no settings
 file for hooks, it loads them from a real directory under ~/.minimax/plugins/<name>/ (a symlink is skipped), so `apply
 minimax` writes ~/.minimax/plugins/fleet-guard/ (.claude-plugin/plugin.json and hooks/hooks.json: PreToolUse, matcher
-Bash, the fleet hook with --format claude), refuses a directory it did not write, and `verify minimax` runs the command
+Bash|Read|Write|Edit|bash|read|write|edit, its own minimax-guard-hook), refuses a directory it did not write, and `verify minimax` runs the command
 it reads back out of that hooks.json.  muse is different: Muse Code takes hooks from a PLUGIN, so `apply tools` writes a plugin
 bundle into the stable dir (with everything else, atomically), `plan muse` shows it and the OWNER ACTIONS
 that finish the job, `apply muse` is `apply tools` (the bundle is part of the stable copy, and an unchanged
@@ -252,6 +252,7 @@ EXIT_USAGE = 64
 
 PACKAGE = "fleet_lanes"
 HOOK_NAME = "lane-guard-hook"
+MINIMAX_HOOK_NAME = "minimax-guard-hook"
 FLEET_HOOK_NAME = "fleet-guard-hook"  # the lane guard and the secret guard in one command
 SECRET_GUARD_MODULE = "secret_guard.py"  # fleet_lanes/secret_guard.py in the stable copy
 SECRET_GUARD_SOURCE = ("hooks", "secret-guard-pretooluse.py")  # under the source's scripts dir
@@ -283,6 +284,7 @@ REQUIRED_MODULES = (
     "guard.py",
     "lane_guard_hook.py",
     "fleet_guard_hook.py",
+    "minimax_guard_hook.py",
 )
 LANE_MODULE = "lane.py"
 AG_GROUP = "lane-guard"
@@ -365,6 +367,8 @@ _OURS_RE = re.compile(
     + re.escape(HOOK_NAME)
     + "|"
     + re.escape(FLEET_HOOK_NAME)
+    + "|"
+    + re.escape(MINIMAX_HOOK_NAME)
     + r")(?=$|[\s'\"])"
 )
 
@@ -1132,6 +1136,15 @@ def hook_command(paths: Paths, fmt: str) -> str:
     return f"{shlex.quote(paths.hook_shim)} --format {fmt}"
 
 
+def render_minimax_hook_shim() -> str:
+    """MM owns its adapter.  No shell prefilter: native file paths need Python too."""
+    return render_hook_shim(
+        GuardFacts(),
+        module=f"{PACKAGE}.minimax_guard_hook",
+        purpose=("# MiniMax shell and file guards.  No seat is assigned or overwritten here.",),
+    )
+
+
 def fleet_hook_command(paths: Paths, fmt: str) -> str:
     """The fleet hook (lane guard plus secret guard) as a command string."""
     return f"{shlex.quote(paths.fleet_shim)} --format {fmt}"
@@ -1193,6 +1206,7 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
     facts = read_guard_facts(src.scripts_dir)
     files[HOOK_NAME] = render_hook_shim(facts).encode("utf-8")
     files[FLEET_HOOK_NAME] = render_fleet_hook_shim(facts).encode("utf-8")
+    files[MINIMAX_HOOK_NAME] = render_minimax_hook_shim().encode("utf-8")
     secret_src = os.path.join(src.scripts_dir, *SECRET_GUARD_SOURCE)
     try:
         files[f"{PACKAGE}/{SECRET_GUARD_MODULE}"] = _read_bytes(secret_src)
@@ -1212,7 +1226,11 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
 
 
 def file_mode(rel: str) -> int:
-    return 0o755 if rel in (HOOK_NAME, FLEET_HOOK_NAME, MUSE_SEAT_NAME, MUSE_WRAPPER) else 0o644
+    return (
+        0o755
+        if rel in (HOOK_NAME, FLEET_HOOK_NAME, MINIMAX_HOOK_NAME, MUSE_SEAT_NAME, MUSE_WRAPPER)
+        else 0o644
+    )
 
 
 def read_tree(root: str) -> dict[str, bytes]:
@@ -1235,6 +1253,7 @@ _TOP_FILES = (
     REGISTRY_NAME,
     HOOK_NAME,
     FLEET_HOOK_NAME,
+    MINIMAX_HOOK_NAME,
     CLUTCH_HOOKS_FILE,
 ) + _MUSE_FILES
 
@@ -2011,16 +2030,16 @@ PLATFORMS: dict[str, Platform] = {
                 f"MiniMax Code reads no settings.json for hooks.  It loads them from a LOCAL PLUGIN: this tool writes the "
                 f"directory ~/{MINIMAX_PLUGIN_REL}/ (a real directory, copied in, never a symlink: MiniMax skips symlinks) "
                 f"with {MINIMAX_MANIFEST_FILE} and {MINIMAX_HOOKS_FILE}, in the Claude-compatible plugin flavour, so the "
-                "matcher is the Claude tool name `Bash`.  Local plugins are enabled by default: there is no install or "
+                "matchers are the compatible tool names `Bash|Read|Write|Edit|bash|read|write|edit`.  Local plugins are enabled by default: there is no install or "
                 "approve step.  Nothing else under ~/.minimax is touched.",
-                "The hook is the fleet hook (lane guard, then secret guard) with `--format claude`, by absolute path into "
+                "The hook is MM-owned minimax-guard-hook (shared shell policy plus file guards), by absolute path into "
                 "the stable dir.  Deny is the Claude shape; MiniMax honours it, and a timeout, a crash or invalid output "
-                "FAILS OPEN, so only `verify` proves it works.  Hook stdin is Claude-shaped JSON; MiniMax gives a hook only "
+                "FAILS OPEN.  `verify` probes policy; native dispatch remains a separate proof step.  MiniMax gives a hook only "
                 "a small allowlist of environment variables, so no seat or switch reaches it and none is passed.",
                 "It is part of `all` (the owner runs MiniMax Code), and a missing ~/.minimax makes it a skip.  An existing "
                 "directory that holds anything but our two files, or is a symlink, is refused and left alone.",
-                "No SessionStart seat hook is wired: the only one that exists is ~/.claude/monet-sync/session-hook.sh, a "
-                "home-local file with no source in this repo, and this tool installs nothing it cannot copy from the repo.",
+                "No SessionStart seat hook is wired.  MiniMax omits seat variables from hook subprocesses; the adapter never "
+                "assigns MM or overwrites a launcher seat.  Other-seat lane protection requires trusted identity.",
             ),
             unverified=(
                 "That MiniMax Code fires the hook for its shell tool (verify runs the exact command, not MiniMax): the "
@@ -2878,7 +2897,13 @@ def apply_tools(
     lane_text = plan.lane_shim_text
     runnable = all(
         os.access(p, os.X_OK)
-        for p in (paths.hook_shim, paths.fleet_shim, paths.muse_seat, paths.muse_wrapper)
+        for p in (
+            paths.hook_shim,
+            paths.fleet_shim,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            paths.muse_seat,
+            paths.muse_wrapper,
+        )
     )
     if (
         plan.state == "current"
@@ -2918,6 +2943,32 @@ def apply_tools(
                     secret=True,
                 )
                 bad.extend(c for c in got if c.status == "FAIL")
+            staged_mm = shlex.quote(os.path.join(stage, MINIMAX_HOOK_NAME))
+            bad.extend(
+                c
+                for c in probe_minimax_files(
+                    staged_mm, paths.home, os.path.join(stage, REGISTRY_NAME), timeout, minimal_path
+                )
+                if c.status == "FAIL"
+            )
+            # MM has its own adapter, so the shared shell probes above prove nothing for it.  Probe
+            # the staged copy with compatible (Bash) and native (bash) shell payloads, including
+            # secret denials, or a broken decide() shell branch could be swapped in and fail open.
+            for shape in ("claude", "muse"):
+                bad.extend(
+                    c
+                    for c in probe_command(
+                        staged_mm,
+                        target="staged-mm",
+                        fmt="claude",
+                        shape=shape,
+                        home=paths.home,
+                        timeout=timeout,
+                        minimal_path=minimal_path,
+                        secret=True,
+                    )
+                    if c.status == "FAIL"
+                )
             if bad:
                 for c in bad:
                     emit(c.line())
@@ -3213,6 +3264,14 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
             )
         )
     out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(facts)))
+    out.append(
+        _check_shim(
+            t,
+            MINIMAX_HOOK_NAME,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            render_minimax_hook_shim(),
+        )
+    )
     if f"{PACKAGE}/{SECRET_GUARD_MODULE}" in have:
         out.append(
             Check(
@@ -4465,15 +4524,15 @@ def render_minimax_manifest() -> str:
     """.claude-plugin/plugin.json.  MiniMax needs at least a name; the other two keys are the Claude plugin manifest's."""
     doc = {
         "name": MINIMAX_PLUGIN_ID,
-        "version": "1.0.0",
-        "description": "Fleet lane guard and secret guard for shell calls (written by fleet_lanes.install_tools)",
+        "version": "2.0.0",
+        "description": "MiniMax shell and file guards (written by fleet_lanes.install_tools)",
     }
     return json.dumps(doc, indent=2) + "\n"
 
 
 def minimax_hook_command(paths: Paths) -> str:
-    """The command the plugin runs: the fleet hook (lane guard, then secret guard), Claude deny shape, absolute path."""
-    return fleet_hook_command(paths, "claude")
+    """MM-owned adapter, compatible deny shape, absolute stable path."""
+    return shlex.quote(os.path.join(paths.stable, MINIMAX_HOOK_NAME))
 
 
 def render_minimax_hooks(paths: Paths) -> str:
@@ -4482,7 +4541,7 @@ def render_minimax_hooks(paths: Paths) -> str:
         "hooks": {
             "PreToolUse": [
                 {
-                    "matcher": "Bash",
+                    "matcher": "Bash|Read|Write|Edit|bash|read|write|edit",
                     "hooks": [
                         {
                             "type": "command",
@@ -4503,6 +4562,83 @@ def minimax_expected(paths: Paths) -> dict[str, str]:
         MINIMAX_MANIFEST_FILE: render_minimax_manifest(),
         MINIMAX_HOOKS_FILE: render_minimax_hooks(paths),
     }
+
+
+def registry_tree(registry: str) -> str:
+    """The first registered ~/Code folder name.  Probes follow the registry, not a literal.
+
+    The registry is required input to a security probe, so an unreadable, unparseable, or
+    misshapen one is refused by name instead of degrading to no tree: silently returning ""
+    would drop the integration-tree deny probes and let the probe pass without ever running them.
+    """
+    try:
+        payload = json.loads(_read_bytes(registry).decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refused(
+            f"required integration registry is unavailable or invalid: {registry}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise Refused(f"required integration registry {registry}: top level must be an object")
+    apps = payload.get("apps")
+    if not isinstance(apps, list):
+        raise Refused(f"required integration registry {registry}: 'apps' must be a list")
+    for app in apps:
+        if not isinstance(app, dict):
+            raise Refused(f"required integration registry {registry}: app entries must be objects")
+        for candidate in (app.get("codeDir"), app.get("repo")):
+            if candidate is None:
+                continue
+            if not isinstance(candidate, str):
+                raise Refused(
+                    f"required integration registry {registry}: app paths must be strings"
+                )
+            name = candidate.strip()
+            if name:
+                return name
+    raise Refused(f"required integration registry {registry} contains no registered tree")
+
+
+def probe_minimax_files(
+    command: str, home: str, registry: str, timeout: float, minimal_path: bool
+) -> list[Check]:
+    """Run MM's compatible file payloads in its restricted subprocess environment."""
+    env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
+    env.update(HOME=home, PATH=MINIMAL_PATH if minimal_path else os.environ.get("PATH", ""))
+    tree = registry_tree(registry)
+    integration = os.path.join("Code", tree, "probe-placeholder")
+    out = []
+    for tool, path, deny in (
+        ("Read", ".secrets/probe-placeholder", True),
+        ("Read", ".env", True),
+        ("Write", integration, True),
+        ("Edit", ".secrets/probe-placeholder", True),
+        ("Read", "public-placeholder", False),
+        ("Write", "public-placeholder", False),
+        ("read", ".secrets/probe-placeholder", True),
+        ("write", integration, True),
+        ("edit", ".secrets/probe-placeholder", True),
+    ):
+        field = "path" if tool in ("read", "write") else "file_path"
+        payload = {"tool_name": tool, "tool_input": {field: os.path.join(home, path)}, "cwd": home}
+        res = run_shell(command, json.dumps(payload).encode("utf-8"), env, timeout)
+        problem = res.error or ("timed out" if res.timed_out else None)
+        if not problem and res.returncode != 0:
+            problem = f"exit {res.returncode}, expected 0"
+        if not problem:
+            problem = (
+                check_deny_output("claude", res.stdout, "MiniMax")
+                if deny
+                else ("unexpected output" if res.stdout.strip() or res.stderr.strip() else None)
+            )
+        out.append(
+            Check(
+                "minimax",
+                f"{tool}/{'deny' if deny else 'allow'}/hook-env",
+                "FAIL" if problem else "PASS",
+                problem or "compatible file payload checked",
+            )
+        )
+    return out
 
 
 @dataclass
@@ -4647,11 +4783,14 @@ def apply_minimax(
     if mp.state == "refuse":
         return Result("minimax", "refused", mp.reason)
     if not shim_proven:
-        if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
+        if not (
+            os.path.isfile(os.path.join(paths.stable, MINIMAX_HOOK_NAME))
+            and os.access(os.path.join(paths.stable, MINIMAX_HOOK_NAME), os.X_OK)
+        ):
             return Result(
                 "minimax",
                 "refused",
-                f"the fleet hook {paths.fleet_shim} is missing or not executable; run `apply tools` first",
+                f"the MiniMax hook {minimax_hook_command(paths)} is missing or not executable; run `apply tools` first",
             )
         bad = [
             c
@@ -4667,6 +4806,13 @@ def apply_minimax(
             )
             if c.status == "FAIL"
         ]
+        bad.extend(
+            c
+            for c in probe_minimax_files(
+                mp.command, paths.home, paths.registry, timeout, minimal_path
+            )
+            if c.status == "FAIL"
+        )
         if bad:
             return Result(
                 "minimax",
@@ -4734,8 +4880,10 @@ def _minimax_hook_from_file(path: str, paths: Paths) -> tuple[str | None, list[C
                 f"expected exactly 1 PreToolUse group, found {len(groups) if isinstance(groups, list) else type(groups).__name__}"
             )
         group = groups[0]
-        if group.get("matcher") != "Bash":
-            raise ValueError(f"matcher is {group.get('matcher')!r}, expected 'Bash'")
+        if group.get("matcher") != "Bash|Read|Write|Edit|bash|read|write|edit":
+            raise ValueError(
+                f"matcher is {group.get('matcher')!r}, expected 'Bash|Read|Write|Edit|bash|read|write|edit'"
+            )
         hooks = group.get("hooks")
         if not isinstance(hooks, list) or len(hooks) != 1:
             raise ValueError("expected exactly 1 hook in the group")
@@ -4752,7 +4900,10 @@ def _minimax_hook_from_file(path: str, paths: Paths) -> tuple[str | None, list[C
         return None, [Check(t, "hooks.json", "FAIL", f"{path}: {exc}")]
     out = [
         Check(
-            t, "hooks.json", "PASS", f"PreToolUse, matcher Bash, type command, timeout {timeout}s"
+            t,
+            "hooks.json",
+            "PASS",
+            f"PreToolUse, matcher Bash|Read|Write|Edit|bash|read|write|edit, type command, timeout {timeout}s",
         )
     ]
     if raw != render_minimax_hooks(paths).encode("utf-8"):
@@ -4833,9 +4984,9 @@ def verify_minimax(
     out.append(
         _check_shim(
             t,
-            FLEET_HOOK_NAME,
-            paths.fleet_shim,
-            render_fleet_hook_shim(read_guard_facts(paths.stable)),
+            MINIMAX_HOOK_NAME,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            render_minimax_hook_shim(),
         )
     )
     cmd, got = _minimax_hook_from_file(paths.minimax_hooks, paths)
@@ -4888,6 +5039,7 @@ def verify_minimax(
                 + f"exit={res.returncode} stdout={_brief(res.stdout)}",
             )
         )
+    out.extend(probe_minimax_files(cmd, paths.home, paths.registry, timeout, minimal_path))
     switch, _off = guard_switch()
     if _is_off(os.environ.get(switch, "")):
         out.append(
@@ -5647,7 +5799,7 @@ def self_test(
             _fails, checks = run_verify(
                 "with the fleet hook shim allowing everything, expect FAIL on muse", ("FAIL",)
             )
-            for key in ("muse", "minimax"):
+            for key in ("muse",):
                 if not any(
                     c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
                     for c in checks
@@ -5673,7 +5825,7 @@ def self_test(
                 _fails, checks = run_verify(
                     "with the fleet hook prefilter emptied, expect FAIL on muse", ("FAIL",)
                 )
-                for key in ("muse", "minimax"):
+                for key in ("muse",):
                     if not any(
                         c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
                         for c in checks
@@ -5685,11 +5837,44 @@ def self_test(
             finally:
                 with open(paths.fleet_shim, "wb") as fh:
                     fh.write(fleet_bytes)
+
+        # MiniMax owns its shim and adapter.  Damage those paths independently:
+        # changing Muse's shared fleet shim must not be treated as MM coverage.
+        def require_minimax_damage(checks: list[Check], damage: str) -> None:
+            for name in ("deny/login-PATH", "Read/deny/hook-env", "Write/deny/hook-env"):
+                if not any(
+                    c.target == "minimax" and c.name == name and c.status == "FAIL" for c in checks
+                ):
+                    failures.append(f"verify did NOT fail minimax {name} {damage}")
+            if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
+                failures.append(f"verify tools did not notice MiniMax damage {damage}")
+
+        mm_shim = os.path.join(paths.stable, MINIMAX_HOOK_NAME)
+        mm_bytes = _read_bytes(mm_shim)
+        with open(mm_shim, "wb") as fh:
+            fh.write(b"#!/bin/sh\nexit 0\n")
+        try:
+            _fails, checks = run_verify(
+                "with the MiniMax hook shim allowing everything, expect FAIL on minimax", ("FAIL",)
+            )
+            require_minimax_damage(checks, "with an allow-everything MiniMax hook")
+        finally:
+            with open(mm_shim, "wb") as fh:
+                fh.write(mm_bytes)
+        mm_adapter = os.path.join(paths.package_dir, "minimax_guard_hook.py")
+        os.rename(mm_adapter, mm_adapter + ".disabled")
+        try:
+            _fails, checks = run_verify(
+                "with the MiniMax adapter renamed, expect FAIL on minimax", ("FAIL",)
+            )
+            require_minimax_damage(checks, "with the MiniMax adapter missing")
+        finally:
+            os.rename(mm_adapter + ".disabled", mm_adapter)
         secret = os.path.join(paths.package_dir, SECRET_GUARD_MODULE)
         os.rename(secret, secret + ".disabled")
         try:
             _fails, checks = run_verify(
-                "with the secret guard module renamed, expect FAIL on muse", ("FAIL",)
+                "with the secret guard module renamed, expect FAIL on muse and minimax", ("FAIL",)
             )
             for key in ("muse", "minimax"):
                 if not any(
@@ -5710,7 +5895,8 @@ def self_test(
         return EXIT_FAIL
     emit(
         "self-test PASS: the install verifies, a renamed guard module, an emptied prefilter, an allow-everything fleet hook "
-        "and a missing secret guard each make verify FAIL, and each repair verifies again"
+        "and independent MiniMax shim/adapter damage and a missing secret guard each make verify FAIL, "
+        "and each repair verifies again"
     )
     return EXIT_OK
 
