@@ -177,7 +177,17 @@ No session to resume for #<channel> > <topic> (lane AI-Fleet-Coordinator/claude-
 Reply "default" (Claude Code:  <model>, <effort>, <permission mode>), name the settings, or "no".
 ```
 
-**The answer** to either ask counts only if `verify-owner-msg <reply id> --dm-with <seat bot> --after <ask id>` exits 0, within 24 hours.  A number or id picks that candidate, which is checked against the drop rules again before the resume;  `default` or `new` with settings starts a new session;  `default` uses the platform's defaults;  named settings are parsed for model, effort and permission mode only, each checked against that platform's allowed values;  `no`, anything unparseable or no answer within 24 hours starts nothing.  At most one ask of each kind per `(seat, topic)` per 24 hours, and an ask for a peer trigger counts against the peer caps, so peers cannot flood the owner's DMs.
+**Another platform has it (owner messages only).**  Jay often cannot recall which agent he discussed something with.  When an owner trigger finds no candidate for the seat it addressed, the daemon runs the same sources for the other seats' sessions on that topic.  If it finds one, it sends one ask in place of the no-candidate ask:
+
+```text
+[CLAUDE·ask] re=<trigger id>
+No CLAUDE session for #<channel> > <topic>, but CODEX has one:  <session8>, "<title>", last active yesterday in lane AI-Fleet-Coordinator/codex-<slug>.
+Reply "route" to send it there, "new" to start a new CLAUDE session, or "no".
+```
+
+With matches on several other seats it lists each, numbered, as the several-candidates ask does.  "route" (or a number) resumes that seat's session if that seat is in `RESUME_WAKE_SEATS` with a passing pin, and otherwise routes the message to that seat's inbox and tool-less wake, as a `·route` post does today.  "new" goes to the new-session flow for the seat Jay addressed.  A peer trigger never gets this ask:  it stays with the seat it addressed.
+
+**The answer** to any ask counts only if `verify-owner-msg <reply id> --dm-with <seat bot> --after <ask id>` exits 0, within 24 hours.  A number or id picks that candidate, which is checked against the drop rules again before the resume;  `default` or `new` with settings starts a new session;  `default` uses the platform's defaults;  named settings are parsed for model, effort and permission mode only, each checked against that platform's allowed values;  `no`, anything unparseable or no answer within 24 hours starts nothing.  At most one ask of each kind per `(seat, topic)` per 24 hours (the cross-platform ask shares the no-candidate limit of the seat Jay addressed), and an ask for a peer trigger counts against the peer caps, so peers cannot flood the owner's DMs.
 
 **Defaults** live in `~/.agent-sync/resume-defaults.toml`, one table per platform (`model`, `effort`, `permission_mode`), and the knob `RESUME_NEW_SESSION_DEFAULTS_<PLATFORM>` overrides that file when set.  A permission mode that turns off the resume guard or the sandbox (`bypassPermissions`, `--yolo`, `danger-full-access`, `--full-access`) is refused, from the file, the knob or a reply, because the broker and guard depend on it;  Jay can still run that mode in an interactive session.
 
@@ -382,6 +392,7 @@ Then four variants, same topic:
 5. **Owner grant:**  Jay, from a human Zulip app, posts "@**Claude** force-push `claude/resume-canary` back one commit" — the run does it on that branch only, the push is logged and scanned, the breaker does not trip, and the receipt DM arrives.  The same text from the peer bot is declined and DMs the owner.
 6. **No session:**  a mention in a second canary topic whose claim names a lane with no session — the owner gets one `[CLAUDE·ask]` DM, "no" starts nothing, and "default" starts a new session in the lane.
 7. **Two sessions:**  a third canary topic bound to two canary sessions — the owner gets the candidate list, and the pick is the session that resumes.
+8. **Other platform:**  Jay mentions CLAUDE in a topic only a canary CODEX session is bound to — he gets the "CODEX has one" ask, and "route" reaches CODEX, while the same mention from a peer gets no ask.
 
 During the canary, peer triggers are allowed only in the canary topic;  at `on`, `RESUME_WAKE_SENDERS` is `owner+peers`.
 
@@ -390,7 +401,7 @@ During the canary, peer triggers are allowed only in the canary topic;  at `on`,
 1. **Owner authority.**  A message verified as coming from Jay's human Zulip account counts as Jay and may authorize the otherwise-denied actions, through a per-run grant that names them (section 5).  Peers never can.  Precondition P3:  no agent-readable copy of Jay's Zulip key;  he removes it from `~/.secrets` and Infisical `/zulip` and regenerates it.
 2. **Desktop sessions.**  Forked, not resumed in place.  The fork copies the conversation only, never the lane, branch or files (section 6).
 3. **GitHub identity.**  One GitHub App per platform, keys in Infisical, created once, never expiring, tokens minted per run by `fleet-secrets`.  Until they exist, the Mac's current login (`RESUME_GITHUB_IDENTITY = mac-login`).  Not a gate (section 6).
-4. **Session selection.**  Sources in order:  live leases, chat bindings (Grok and Cursor only), the Linear claim's session ids, `Session:` lines in Apple Notes, then lane → catalog.  With several candidates the listener asks Jay to pick one, say "new" or say "no";  with none it asks whether to start one and with which settings (section 4).
+4. **Session selection.**  Sources in order:  live leases, chat bindings (Grok and Cursor only), the Linear claim's session ids, `Session:` lines in Apple Notes, then lane → catalog.  With several candidates the listener asks Jay to pick one, say "new" or say "no";  with none it asks whether to start one and with which settings;  for an owner message, when another platform's seat has a session on the topic, it asks whether he meant that one (section 4.1).
 5. **Rollout.**  Off, a short #sandbox canary, then on for every eligible seat, low-risk peer triggers included (section 11).
 6. **Budgets.**  Approved as proposed, in the project `fleet_knobs` reads (section 7).
 7. **Knobs in Muster.**  Every resume-wake knob is also flippable in Muster through the Infisical API with an owner-only identity;  Infisical stays the single source (section 7.1).
