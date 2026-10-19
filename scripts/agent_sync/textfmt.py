@@ -24,12 +24,13 @@ would corrupt it):
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import re
 from typing import Any
 
-__all__ = ["NBSP", "GAP", "sentence_gap", "single_gaps", "fleet_dates", "fix_outbound"]
+__all__ = ["GAP", "NBSP", "fix_outbound", "fleet_dates", "sentence_gap", "single_gaps"]
 
 NBSP = " "
 GAP = NBSP + " "
@@ -41,7 +42,8 @@ _LIST_MARKER_PREFIX_RE = re.compile(r"[ \t>]*\d{1,9}")
 
 # An opening fence may sit behind indentation, quote markers and list markers ("  - ```", "1. ```").
 _FENCE_OPEN_RE = re.compile(
-    r"(?P<prefix>(?:[ \t]*(?:>|[-+*]|\d{1,9}[.)]))*[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>.*)")
+    r"(?P<prefix>(?:[ \t]*(?:>|[-+*]|\d{1,9}[.)]))*[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>.*)"
+)
 _FENCE_CLOSE_RE = re.compile(r"[ \t]*(?:>[ \t]*)*(?P<fence>`{3,}|~{3,})[ \t\r]*")
 
 # Inline spans, found left to right so the earlier opener wins.  None of them may run across a blank
@@ -71,7 +73,11 @@ def _split_fences(text: str) -> tuple[list[tuple[int, int]], list[tuple[int, int
         end = pos + len(line) + 1  # past the newline (one past the end for the last line)
         if fence_char:
             closer = _FENCE_CLOSE_RE.fullmatch(line)
-            if closer and closer.group("fence")[0] == fence_char and len(closer.group("fence")) >= fence_len:
+            if (
+                closer
+                and closer.group("fence")[0] == fence_char
+                and len(closer.group("fence")) >= fence_len
+            ):
                 fenced.append((fence_start, min(end, len(text))))
                 fence_char = ""
                 prose_start = min(end, len(text))
@@ -117,16 +123,15 @@ def sentence_gap(text: str) -> str:
     for match in _GAP_RE.finditer("".join(masked)):
         if match.group("end") == ".":
             line_start = text.rfind("\n", 0, match.start()) + 1
-            if _LIST_MARKER_PREFIX_RE.fullmatch(text[line_start:match.start()]):
+            if _LIST_MARKER_PREFIX_RE.fullmatch(text[line_start : match.start()]):
                 continue
-        pieces.append(text[last:match.start("spaces")])
+        pieces.append(text[last : match.start("spaces")])
         pieces.append(GAP)
         last = match.end("spaces")
     if not pieces:
         return text
     pieces.append(text[last:])
     return "".join(pieces)
-
 
 
 # ---- Owner 2026-10-19:  enforce the gap and the fleet date format, and say what changed ------------------------------
@@ -145,7 +150,7 @@ def sentence_gap(text: str) -> str:
 # so the CLI can tell the agent and it learns to write it that way.
 
 _ABBREVIATIONS = frozenset(
-    "mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq".split()
+    ["mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "e.g", "i.e", "eg", "ie", "cf", "al", "approx", "dept", "est", "fig", "no", "nos", "vol", "ca", "mt", "ft", "sq"]
 )
 _SINGLE_GAP_RE = re.compile(r"(?P<end>[.!?][\"'”’)\]*_]*)(?P<space>[ ])(?=[A-Z0-9\"“(*#])")
 _WORD_BEFORE_RE = re.compile(r"([A-Za-z][A-Za-z.]*)$")
@@ -182,8 +187,10 @@ def single_gaps(text: str) -> tuple[str, int]:
     for match in _SINGLE_GAP_RE.finditer(masked):
         before = _WORD_BEFORE_RE.search(masked[max(0, match.start() - 40) : match.start()])
         word = before.group(1).casefold().rstrip(".") if before else ""
-        if match.group("end").startswith(".") and before and (
-            word in _ABBREVIATIONS or len(word) == 1 or "." in word
+        if (
+            match.group("end").startswith(".")
+            and before
+            and (word in _ABBREVIATIONS or len(word) == 1 or "." in word)
         ):
             continue
         if match.group("end") == ".":
@@ -216,7 +223,9 @@ def _fleet_date(match: re.Match[str], this_year: int) -> str:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    year, month, day, t_hour, t_minute, t_zone, hour, minute, zone, r_hour, r_minute = match.groups()
+    year, month, day, t_hour, t_minute, t_zone, hour, minute, zone, r_hour, r_minute = (
+        match.groups()
+    )
     if t_hour is not None:
         hour, minute, zone = t_hour, t_minute, t_zone
 
@@ -228,11 +237,17 @@ def _fleet_date(match: re.Match[str], this_year: int) -> str:
             return _fleet_day(datetime(int(year), int(month), int(day)), this_year)
         when = datetime(int(year), int(month), int(day), int(hour), int(minute))
         if zone:
-            offset = "+00:00" if zone == "Z" else (zone if ":" in zone else zone[:3] + ":" + zone[3:])
-            when = datetime.fromisoformat(when.isoformat() + offset).astimezone(ZoneInfo("America/Chicago"))
+            offset = (
+                "+00:00" if zone == "Z" else (zone if ":" in zone else zone[:3] + ":" + zone[3:])
+            )
+            when = datetime.fromisoformat(when.isoformat() + offset).astimezone(
+                ZoneInfo("America/Chicago")
+            )
         out = _fleet_day(when, this_year) + ", " + clock(when)
         if r_hour is not None:
-            out += "-" + clock(datetime(int(year), int(month), int(day), int(r_hour), int(r_minute)))
+            out += "-" + clock(
+                datetime(int(year), int(month), int(day), int(r_hour), int(r_minute))
+            )
         return out
     except ValueError:
         return match.group(0)
@@ -271,7 +286,9 @@ def fix_outbound(text: str, limit: int | None = None, now: Any = None) -> tuple[
         return gapped, []
     report: list[str] = []
     if dates:
-        shown = ", ".join("%s to %s" % pair for pair in dates[:5]) + (" and more" if len(dates) > 5 else "")
+        shown = ", ".join("%s to %s" % pair for pair in dates[:5]) + (
+            " and more" if len(dates) > 5 else ""
+        )
         report.append("dates rewritten in the fleet format (%s);  write dates that way" % shown)
     if singles:
         report.append(

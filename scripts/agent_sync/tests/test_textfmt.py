@@ -1,17 +1,17 @@
 """The outbound sentence-gap safety net:  the pure function, the client hook and the send paths."""
+
 from __future__ import annotations
 
 import json
 import re
 import unittest
-
-from agent_sync import secretscan
-from agent_sync import zulip as Z
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from agent_sync.textfmt import GAP, NBSP, fix_outbound, fleet_dates, sentence_gap, single_gaps
+from agent_sync import secretscan
+from agent_sync import zulip as Z
 from agent_sync.tests.harness import TAG, Harness
+from agent_sync.textfmt import GAP, NBSP, fix_outbound, fleet_dates, sentence_gap, single_gaps
 
 G = GAP  # U+00A0 then an ASCII space
 
@@ -43,12 +43,27 @@ CONVERTED = (
     ("an unmatched code opener protects nothing", "Done.  `unclosed", "Done.%s`unclosed" % G),
     ("a code span cannot run across a blank line", "`a\n\nb.  c`", "`a\n\nb.%sc`" % G),
     ("an unmatched double dollar is literal", "Costs $$5.  Next.", "Costs $$5.%sNext." % G),
-    ("a mention does not shield the rest", "@**Dr.  Foo** hi.  there", "@**Dr.  Foo** hi.%sthere" % G),
-    ("the seat tag and mention stay", "[CLAUDE·%s→CODEX] @**Codex** Hi.  Next." % TAG,
-     "[CLAUDE·%s→CODEX] @**Codex** Hi.%sNext." % (TAG, G)),
+    (
+        "a mention does not shield the rest",
+        "@**Dr.  Foo** hi.  there",
+        "@**Dr.  Foo** hi.%sthere" % G,
+    ),
+    (
+        "the seat tag and mention stay",
+        "[CLAUDE·%s→CODEX] @**Codex** Hi.  Next." % TAG,
+        "[CLAUDE·%s→CODEX] @**Codex** Hi.%sNext." % (TAG, G),
+    ),
     ("after a closed fence", "```\nx.  y\n```\nz.  w", "```\nx.  y\n```\nz.%sw" % G),
-    ("after a fence closed by a longer fence", "```\nx.  y\n`````\nz.  w", "```\nx.  y\n`````\nz.%sw" % G),
-    ("a fence opener with a backtick in its info is a code span", "```a``` b.  c", "```a``` b.%sc" % G),
+    (
+        "after a fence closed by a longer fence",
+        "```\nx.  y\n`````\nz.  w",
+        "```\nx.  y\n`````\nz.%sw" % G,
+    ),
+    (
+        "a fence opener with a backtick in its info is a code span",
+        "```a``` b.  c",
+        "```a``` b.%sc" % G,
+    ),
     ("a mid-line triple backtick is not a fence", "see ```\na.  b", "see ```\na.%sb" % G),
     ("CRLF line endings", "One.  Two.\r\nThree.  \r\nFour.", "One.%sTwo.\r\nThree.  \r\nFour." % G),
 )
@@ -103,7 +118,7 @@ class SentenceGapTests(unittest.TestCase):
                 self.assertEqual(sentence_gap(text), expected)
 
     def test_closers_chain_and_anything_else_ends_the_run(self) -> None:
-        self.assertEqual(sentence_gap("Done.)\"  Next"), "Done.)\"%sNext" % G)
+        self.assertEqual(sentence_gap('Done.)"  Next'), 'Done.)"%sNext' % G)
         self.assertEqual(sentence_gap("Done.\u201d)**  Next"), "Done.\u201d)**%sNext" % G)
         self.assertEqual(sentence_gap("Done.}  Next"), "Done.}  Next", "a brace is not a closer")
 
@@ -135,9 +150,14 @@ class SentenceGapTests(unittest.TestCase):
         self.assertIs(sentence_gap(text), text)
 
     def test_a_gap_in_a_long_message_is_converted_everywhere_outside_code(self) -> None:
-        body = "".join("Sentence %d.  " % n for n in range(500)) + "\n```\nkeep.  this\n```\nEnd.  Done."
+        body = (
+            "".join("Sentence %d.  " % n for n in range(500))
+            + "\n```\nkeep.  this\n```\nEnd.  Done."
+        )
         out = sentence_gap(body)
-        self.assertEqual(out.count(NBSP), 500, "499 gaps between sentences plus the one after the fence")
+        self.assertEqual(
+            out.count(NBSP), 500, "499 gaps between sentences plus the one after the fence"
+        )
         self.assertIn("keep.  this", out)
 
     def test_pathological_backtick_input_finishes(self) -> None:
@@ -151,7 +171,9 @@ class ScannerAndCapAreUnaffectedTests(unittest.TestCase):
 
     @staticmethod
     def samples() -> list[str]:
-        mixed = ("aB3" * 11)[:32]  # Zulip-shaped:  32 letters and digits with upper, lower and a digit
+        mixed = ("aB3" * 11)[
+            :32
+        ]  # Zulip-shaped:  32 letters and digits with upper, lower and a digit
         secrets_ = [
             "AKIA" + "Q" * 16,
             "gh" + "p_" + "a1" * 18,
@@ -164,7 +186,11 @@ class ScannerAndCapAreUnaffectedTests(unittest.TestCase):
         ]
         texts = ["Plain.  Nothing here.", "Done.  Next.  And more.", "A.   B."]
         for secret in secrets_:
-            texts += ["Sorry.  %s  Also.  Done." % secret, "%s.  Then." % secret, "x.  token: %s" % secret]
+            texts += [
+                "Sorry.  %s  Also.  Done." % secret,
+                "%s.  Then." % secret,
+                "x.  token: %s" % secret,
+            ]
         return texts
 
     def test_scan_verdict_is_the_same_before_and_after(self) -> None:
@@ -185,7 +211,9 @@ class ScannerAndCapAreUnaffectedTests(unittest.TestCase):
 
     def test_every_sample_has_both_kinds_of_verdict(self) -> None:
         verdicts = {secretscan.scan(text) is None for text in self.samples()}
-        self.assertEqual(verdicts, {True, False}, "the samples should include flagged and clean text")
+        self.assertEqual(
+            verdicts, {True, False}, "the samples should include flagged and clean text"
+        )
 
 
 class OutboundParamsTests(unittest.TestCase):
@@ -193,21 +221,35 @@ class OutboundParamsTests(unittest.TestCase):
         params = {"type": "stream", "to": "agent-sync", "topic": "A.  B", "content": "One.  Two."}
         out = Z.outbound_params("POST", "messages", params)
         self.assertEqual(out["content"], "One.%sTwo." % G)
-        self.assertEqual({k: v for k, v in out.items() if k != "content"},
-                         {k: v for k, v in params.items() if k != "content"})
+        self.assertEqual(
+            {k: v for k, v in out.items() if k != "content"},
+            {k: v for k, v in params.items() if k != "content"},
+        )
         self.assertEqual(params["content"], "One.  Two.", "the caller's dict is not changed")
 
     def test_other_outbound_text_endpoints(self) -> None:
-        for method, path in (("PATCH", "messages/123"), ("POST", "/messages"), ("POST", "scheduled_messages"),
-                             ("PATCH", "scheduled_messages/9")):
+        for method, path in (
+            ("PATCH", "messages/123"),
+            ("POST", "/messages"),
+            ("POST", "scheduled_messages"),
+            ("PATCH", "scheduled_messages/9"),
+        ):
             with self.subTest(method=method, path=path):
-                self.assertEqual(Z.outbound_params(method, path, {"content": "A.  B"})["content"], "A.%sB" % G)
+                self.assertEqual(
+                    Z.outbound_params(method, path, {"content": "A.  B"})["content"], "A.%sB" % G
+                )
 
     def test_reads_and_other_endpoints_are_left_alone(self) -> None:
         params = {"content": "A.  B", "narrow": "x"}
-        for method, path in (("GET", "messages"), ("GET", "messages/5"), ("DELETE", "messages/5"),
-                             ("POST", "messages/5/reactions"), ("POST", "messages/render"),
-                             ("POST", "users/me/subscriptions"), ("POST", "user_topics")):
+        for method, path in (
+            ("GET", "messages"),
+            ("GET", "messages/5"),
+            ("DELETE", "messages/5"),
+            ("POST", "messages/5/reactions"),
+            ("POST", "messages/render"),
+            ("POST", "users/me/subscriptions"),
+            ("POST", "user_topics"),
+        ):
             with self.subTest(method=method, path=path):
                 self.assertIs(Z.outbound_params(method, path, params), params)
 
@@ -231,8 +273,19 @@ class FleetFormatTests(unittest.TestCase):
             ("4 tests failed. Next.", "4 tests failed.%sNext." % G),
         ):
             self.assertEqual(single_gaps(text)[0], expected, text)
-        for text in ("Ask Dr. Smith.", "The U.S. Army.", "J. Doe.", "e.g. this", "v1.2.3 ok", "1. Item\n2. Next",
-                     "  3. Nested item", "> 4. Quoted item", "`x. Y`", "vs. Apple", "a.b.c Next"):
+        for text in (
+            "Ask Dr. Smith.",
+            "The U.S. Army.",
+            "J. Doe.",
+            "e.g. this",
+            "v1.2.3 ok",
+            "1. Item\n2. Next",
+            "  3. Nested item",
+            "> 4. Quoted item",
+            "`x. Y`",
+            "vs. Apple",
+            "a.b.c Next",
+        ):
             self.assertEqual(single_gaps(text), (text, 0), text)
 
     def test_fleet_dates(self) -> None:
@@ -241,7 +294,8 @@ class FleetFormatTests(unittest.TestCase):
             self.NOW,
         )
         self.assertEqual(
-            text, "Landed Mon, Oct 19, deployed Mon, Oct 19, 9:03pm, filed Fri, Mar 7, 2025 at Mon, Oct 19, 9:05am."
+            text,
+            "Landed Mon, Oct 19, deployed Mon, Oct 19, 9:03pm, filed Fri, Mar 7, 2025 at Mon, Oct 19, 9:05am.",
         )
         self.assertEqual(len(changes), 4)
         self.assertEqual(
@@ -250,8 +304,14 @@ class FleetFormatTests(unittest.TestCase):
             "a time range end is not a UTC offset",
         )
         self.assertEqual(fleet_dates("see ?d=2026-10-19 and v2026-10-19.x", self.NOW)[1], [])
-        for kept in ("backup-2026-10-19.tar", "https://x.test/2026-10-19/", "`2026-10-19`", "2026-13-45",
-                     "```\n2026-10-19\n```", "v2026-10-19"):
+        for kept in (
+            "backup-2026-10-19.tar",
+            "https://x.test/2026-10-19/",
+            "`2026-10-19`",
+            "2026-13-45",
+            "```\n2026-10-19\n```",
+            "v2026-10-19",
+        ):
             self.assertEqual(fleet_dates(kept, self.NOW), (kept, []), kept)
 
     def test_fix_outbound_reports_and_respects_the_length_cap(self) -> None:
@@ -270,7 +330,9 @@ class SendPathTests(Harness):
         return self.fake.requests_to("POST", "messages")[-1].form
 
     def test_post_arrives_with_the_gap_and_the_tag_and_topic_are_untouched(self) -> None:
-        result = self.run_cli("post", "--topic", "AFC 18f61cf4 Gap check", "First.  Second.  Third.")
+        result = self.run_cli(
+            "post", "--topic", "AFC 18f61cf4 Gap check", "First.  Second.  Third."
+        )
         self.assertEqual(result.code, 0, result.err)
         form = self.last_form()
         self.assertEqual(form["content"], "[CLAUDE·%s] First.%sSecond.%sThird." % (TAG, G, G))
@@ -280,14 +342,18 @@ class SendPathTests(Harness):
 
     def test_post_to_a_peer_keeps_the_tag_and_mention(self) -> None:
         self.run_cli("post", "--topic", "t", "--to", "codex", "Please look.  Soon.")
-        self.assertEqual(self.last_form()["content"],
-                         "[CLAUDE·%s→CODEX] @**Codex** Please look.%sSoon." % (TAG, G))
+        self.assertEqual(
+            self.last_form()["content"],
+            "[CLAUDE·%s→CODEX] @**Codex** Please look.%sSoon." % (TAG, G),
+        )
 
     def test_post_leaves_code_and_trailing_spaces_alone(self) -> None:
         text = "Run this.  Then wait.\n```\nx.  y\n```\nEnd.  \nLast.  Line."
         self.run_cli("post", "--topic", "t", "--no-tag", "--", text)
-        self.assertEqual(self.last_form()["content"],
-                         "Run this.%sThen wait.\n```\nx.  y\n```\nEnd.  \nLast.%sLine." % (G, G))
+        self.assertEqual(
+            self.last_form()["content"],
+            "Run this.%sThen wait.\n```\nx.  y\n```\nEnd.  \nLast.%sLine." % (G, G),
+        )
 
     def test_text_from_stdin_is_converted_too(self) -> None:
         self.run_cli("post", "--topic", "t", "--no-tag", "-", stdin="From stdin.  Two.\n")
@@ -305,7 +371,9 @@ class SendPathTests(Harness):
         (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = 12\n")
         result = self.run_cli("dm", "--owner", "--", "Done.  Please review.")
         self.assertEqual(result.code, 0, result.err)
-        self.assertEqual(self.last_form()["content"], "[CLAUDE·%s→OWNER] Done.%sPlease review." % (TAG, G))
+        self.assertEqual(
+            self.last_form()["content"], "[CLAUDE·%s→OWNER] Done.%sPlease review." % (TAG, G)
+        )
 
     def test_read_shows_other_peoples_messages_exactly_as_stored(self) -> None:
         peer = "Peer says.  Two spaces.  And a trailing pair.  "
@@ -323,22 +391,38 @@ class SendPathTests(Harness):
         self.assertEqual(shown.count(NBSP), 1)
 
     def test_one_space_gaps_and_iso_dates_are_fixed_and_reported(self) -> None:
-        result = self.run_cli("post", "--topic", "t", "--no-tag", "--", "Merged 2026-10-19. Next is CI.")
+        result = self.run_cli(
+            "post", "--topic", "t", "--no-tag", "--", "Merged 2026-10-19. Next is CI."
+        )
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(self.last_form()["content"], "Merged Mon, Oct 19.%sNext is CI." % G)
-        self.assertIn("reformatted:  dates rewritten in the fleet format (2026-10-19 to Mon, Oct 19)", result.err)
+        self.assertIn(
+            "reformatted:  dates rewritten in the fleet format (2026-10-19 to Mon, Oct 19)",
+            result.err,
+        )
         self.assertIn("1 sentence gap had one space", result.err)
         as_json = self.run_cli("post", "--topic", "t", "--no-tag", "--json", "--", "One. Two.")
-        self.assertEqual(json.loads(as_json.out)["reformatted"], [
-            "1 sentence gap had one space and was widened;  put two spaces after a sentence"])
+        self.assertEqual(
+            json.loads(as_json.out)["reformatted"],
+            ["1 sentence gap had one space and was widened;  put two spaces after a sentence"],
+        )
         clean = self.run_cli("post", "--topic", "t", "--no-tag", "--json", "--", "One.  Two.")
         self.assertNotIn("reformatted", json.loads(clean.out))
         self.assertNotIn("reformatted", clean.err)
 
     def test_unicode_text_survives(self) -> None:
-        self.run_cli("post", "--topic", "t", "--no-tag", "--", "Caf\u00e9.  \u00dcn\u00ef.  \u65e5\u672c\u8a9e\u3002  \U0001f600.  Done!")
-        self.assertEqual(self.last_form()["content"],
-                         "Caf\u00e9.%s\u00dcn\u00ef.%s\u65e5\u672c\u8a9e\u3002  \U0001f600.%sDone!" % (G, G, G))
+        self.run_cli(
+            "post",
+            "--topic",
+            "t",
+            "--no-tag",
+            "--",
+            "Caf\u00e9.  \u00dcn\u00ef.  \u65e5\u672c\u8a9e\u3002  \U0001f600.  Done!",
+        )
+        self.assertEqual(
+            self.last_form()["content"],
+            "Caf\u00e9.%s\u00dcn\u00ef.%s\u65e5\u672c\u8a9e\u3002  \U0001f600.%sDone!" % (G, G, G),
+        )
 
 
 if __name__ == "__main__":

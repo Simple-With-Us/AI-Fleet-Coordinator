@@ -40,11 +40,19 @@ from pathlib import Path
 from typing import Any, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import __version__, bodyfile, listener_cli, notes_cli, secretscan, zulip_cli, zulip_ops
+from . import (
+    __version__,
+    bodyfile,
+    listener_cli,
+    notes_cli,
+    secretscan,
+    textfmt,
+    zulip_cli,
+    zulip_ops,
+)
 from . import identity as I
 from . import live as LIVE
 from . import router as ROUTER
-from . import textfmt
 from . import zulip as Z
 from .identity import EMAIL_TAG_OVERRIDES, seat_tag_for  # noqa: F401 - re-exported (daemon, listener_cli, tests)
 from .state import State, state_root
