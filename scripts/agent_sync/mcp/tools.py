@@ -58,6 +58,7 @@ from .. import zulip_ops as OPS
 from ..idem import PENDING_FRESH, IdemStore
 from ..state import State
 from ..textfmt import sentence_gap
+from . import fleetlink_tools as FLEETLINK
 from . import guide as GUIDE
 from . import linear_tools as LINEAR
 from . import recall_tools as RECALL
@@ -67,6 +68,7 @@ TOOLS_PATH = os.path.join(HERE, "tools.json")
 LISTENER_TOOLS_PATH = os.path.join(HERE, "listener-tools.json")
 NOTES_TOOLS_PATH = os.path.join(HERE, "notes-tools.json")
 RECALL_TOOLS_PATH = os.path.join(HERE, "recall-tools.json")
+FLEETLINK_TOOLS_PATH = os.path.join(HERE, "fleetlink-tools.json")
 FIXTURES_PATH = os.path.join(HERE, "fixtures.jsonl")
 
 TRANSPORT = "stdio"
@@ -123,6 +125,7 @@ WRITE_TOOLS = (
         }
     )
     | LINEAR.write_names()
+    | FLEETLINK.write_names()
 )
 READ_TOOLS = (
     frozenset(
@@ -158,6 +161,7 @@ READ_TOOLS = (
         }
     )
     | LINEAR.read_names()
+    | FLEETLINK.read_names()
 )
 # Every MCP tool and the CLI command that does the same job (AFC-330:  "keeping the CLI, stdio and
 # hosted in step").  tools.json is the contract;  a test checks that every tool in it and in
@@ -222,10 +226,27 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
 }
 # The tools whose command is not in the agent-sync CLI:  recall_* run the `recall` CLI and linear_* run
 # `board` (`board run NAME`, `board api ...`, `board mcp call ...`, and board's own verbs for the core ones).
+# fleetlink_* are FleetLink's own CLI, `fleet-share` (its MCP_TO_CLI table in the FleetLink repo,
+# test/cli-mcp-parity.test.mjs);  the stdio server runs each one as `fleet-share tool NAME` (fleetlink_tools.py).
 EXTERNAL_CLI: dict[str, str] = {
     "recall_search": "recall search",
     "recall_stats": "recall stats",
     "recall_contribute": "recall contribute",
+    "fleetlink_create_share": "fleet-share upload",
+    "fleetlink_create_link": "fleet-share link",
+    "fleetlink_list_shares": "fleet-share list",
+    "fleetlink_get_share": "fleet-share info",
+    "fleetlink_list_teams": "fleet-share teams",
+    "fleetlink_share_to_team": "fleet-share share",
+    "fleetlink_make_personal": "fleet-share unshare",
+    "fleetlink_update_share": "fleet-share update",
+    "fleetlink_add_file": "fleet-share add",
+    "fleetlink_delete_file": "fleet-share rm-file",
+    "fleetlink_read_file": "fleet-share cat",
+    "fleetlink_upload_url": "fleet-share upload-url",
+    "fleetlink_renew_share": "fleet-share renew",
+    "fleetlink_delete_share": "fleet-share delete",
+    "fleetlink_whoami": "fleet-share whoami",
 }
 UPLOAD_MCP_MAX = 1024 * 1024  # an MCP upload carries the file in its arguments:  at most 1 MB
 UNTRUSTED_NOTE = (
@@ -276,14 +297,16 @@ def _load(path: str) -> dict[str, Any]:
 
 def load_served_tools() -> dict[str, Any]:
     """What stdio tools/list serves:  tools.json, then listener-tools.json, notes-tools.json (the notes_*
-    tools), recall-tools.json (the recall_* tools, generated from the hosted src/recall.js) and the linear_*
-    tools from the board catalogs (linear_tools.py).  The hosted Worker serves the same names."""
+    tools), recall-tools.json (the recall_* tools, generated from the hosted src/recall.js), the linear_*
+    tools from the board catalogs (linear_tools.py) and fleetlink-tools.json (the fleetlink_* tools, generated
+    from the hosted src/fleetlink.js).  The hosted Worker serves the same names."""
     return {
         "tools": load_tools()["tools"]
         + load_listener_tools()["tools"]
         + _load(NOTES_TOOLS_PATH)["tools"]
         + _load(RECALL_TOOLS_PATH)["tools"]
         + LINEAR.tool_specs()
+        + _load(FLEETLINK_TOOLS_PATH)["tools"]
     }
 
 
@@ -692,6 +715,8 @@ class Tools:
                 handler = getattr(self, "_tool_" + name, None)
                 if handler is None and name in self.linear:
                     handler = functools.partial(self._tool_linear, name)
+                if handler is None and name.startswith("fleetlink_"):
+                    handler = functools.partial(self._tool_fleetlink, name)
                 result = handler(with_defaults(spec["inputSchema"], arguments))
                 outcome = "ok"
             except Exception as exc:  # noqa: BLE001 - every failure becomes a tool error
@@ -2355,6 +2380,28 @@ class Tools:
                 return None
             anchor = max(ids)
         return None
+
+    # ---- FleetLink (fleetlink_tools.py) --------------------------------------------------------
+    def _tool_fleetlink(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        """One fleetlink_* tool as this identity's own FleetLink bot, through FleetLink's CLI."""
+        rt = self.agent.rt
+        home = Path(rt.home) if rt.home else Path(rt.env.get("HOME") or Path.home())
+
+        def scan(field: str, value: str, extra: list[str]) -> None:
+            kind = secretscan.scan(value, [*self.known, *extra])
+            if kind:
+                raise ToolError(
+                    "refused_secret",
+                    "refusing to publish:  the %s looks like it contains %s" % (field, kind),
+                )
+
+        try:
+            text, structured = FLEETLINK.run(
+                name, args, self.seat, env=rt.env, home=home, scan=scan
+            )
+        except FLEETLINK.FleetLinkFailure as exc:
+            raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
+        return self.ok(text, structured)
 
     # ---- fleet recall (AFC-331 section 4) -----------------------------------------------------
     def _recall(self, call: Callable[[], tuple[str, dict[str, Any]]]) -> dict[str, Any]:

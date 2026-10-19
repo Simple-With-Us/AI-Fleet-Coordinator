@@ -5,12 +5,6 @@ Continues Antigravity's `~/.secrets & global-api-keys Deprecation & Migration Ca
 
 Names only.  No secret value was read, printed or written by this work.
 
-> **Status:  deferred by the owner, Sun, Oct 18.  Do not act on the recommendation below.**
->
-> The Agent Vault recommendation was not adopted.  The Free plan allows five identities, and brokering is configured per host per folder, so a fleet of about 46 seats needs 46 identities at best and 92 if each seat needs its own agent and proxy pair.  No version of the pilot fits that budget, so neither the paid tier nor a self-hosted deployment makes it fit.  The owner is parking this and will come back to it with a different approach.
->
-> What survives is the classification:  the bucket totals, the fact that a broker cannot be what retires `~/.secrets`, and the fact that attribution is only as good as the credential behind it.  "The first three services" and "Next" do not apply and are kept only as the record of what was proposed.
-
 ## Why this slice
 
 Antigravity's catalog answers *which files touch `~/.secrets`*.  A credential broker is configured the other way round: per host, per scheme.  Nobody had produced that other half, so Phase 2 had no input to start from.  This does that mapping, plus two corrections that change what the pilot should be built on.

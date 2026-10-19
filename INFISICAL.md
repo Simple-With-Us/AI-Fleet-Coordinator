@@ -322,8 +322,9 @@ Canonical location: AI Fleet Coordinator, `prod`, `/fleetlink`.
 | Key | Kind | Status |
 | --- | --- | --- |
 | `FLEETLINK_AGENT_SECRET` | secret | Created and read back 2026-10-15.  Installed as Worker secret `FLEETLINK_AGENT_SECRET` on `agent-sync-mcp` and as `AGENT_SYNC_SECRET` on FleetLink's `fleetlink-api`.  Never copy it to source, chat or a client. |
-
 | `FLEETLINK_TOKEN_<SEAT>` | secret | One per fleet bot (hyphens as underscores, such as `FLEETLINK_TOKEN_GROK_WEB`):  that bot's FleetLink API token, minted to follow Jay's limits as they change.  Read by the Agent-Sync Worker (bundled as `FLEETLINK_SEAT_TOKENS`) and written to `~/.secrets/FleetLink/<SEAT>.env` on hosts where the seat runs `fleet-share`.  No expiry. |
+
+The stdio Agent-Sync server (`agent-sync mcp`, every Mac and server seat) serves the `fleetlink_*` tools too, as each identity's own FleetLink bot and never with `FLEETLINK_AGENT_SECRET`.  It runs `fleet-share` with that seat's token from `FLEETLINK_TOKEN_<SEAT>` in its environment, else `FLEETLINK_TOKEN` (only when no launcher is set and `AGENT_SEAT` is unset or the same seat;  the server sets `AGENT_SEAT` to the seat it resolved from `--as` or `--default-seat` when the environment named none), else the file `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, `FLEETLINK_TOKEN=...`, a regular file the user owns with mode 0600 or 0400), which it hands to the child as `FLEETLINK_AUTH_FILE` without reading it.  With none of them, those tools answer `not_configured` naming the key to set (`docs/protocols/agent-sync-mcp.md` section 2.2).
 
 The Agent-Sync MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
 FleetLink's `/mcp`, which maps each seat to its own FleetLink agent account.

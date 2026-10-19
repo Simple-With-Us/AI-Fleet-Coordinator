@@ -22,7 +22,7 @@ The server carries the same five tools as the Mac, so a Claude or Codex thread t
 - **`lane`.**  The checkout's own bash shim, `scripts/fleet_lanes/bin/lane`, which finds `scripts/` from its location, plus `fleet_lanes/{__init__,lane,doctor,guard,layout}.py` and the already-shipped `fleet-apps.json`.  The canonical source is the repo shim, not the Mac's `~/apps/lane`:  that file is a generated copy (`fleet_lanes.install_tools`) that points at the stable tree `~/apps/lane-tools` and is meant for the Mac only.  `lane` takes every path from `$HOME`, so repositories under `/root/Code/<Repo>` and lanes under `/root/apps/lanes/<Repo>` work.  It needs `git`, and `gh` for `--review --pr`.
 - **`fleet-mode`.**  `scripts/fleet-mode` plus `docs/FLEET-MODE.md`, the canonical copy of the briefing.  The script reads the doc beside itself first and `~/apps/FLEET-MODE.md` second.  The Mac keeps a copy at `~/apps/FLEET-MODE.md`;  `fleet-tools-doctor.py` warns when it differs from the repo.
 
-The wrappers for these three are written only by `--install`.  An ordinary update leaves wrappers alone, so a server that was installed before AFC-331 gets the new code on the next push but not the commands:  run `python3 scripts/fleet-cli-sync.py --install` once from the published managed runtime.  It is idempotent (it rewrites nothing that already matches) and still refuses an unmanaged file at any of the wrapper paths.  `fleet-tools-doctor.py` reports a missing command or missing shipped file until then.
+An ordinary update also writes the wrapper for any command a newer release adds that the host does not have yet (2026-10-19), so a server installed before AFC-331 gets `recall`, `lane` and `fleet-mode` on the next push with no manual step.  It writes only absent paths:  an existing file, managed or not, and a symlink are left alone, and the Codex config is never touched outside `--install`.  `python3 scripts/fleet-cli-sync.py --install` still works for a full reinstall.  `fleet-tools-doctor.py` reports a missing command or missing shipped file.
 
 ## Server layout
 
@@ -43,7 +43,7 @@ The wrappers for these three are written only by `--install`.  An ordinary updat
 | `.codex/config.toml` | Existing configuration with one Agent-Sync MCP entry |
 | `.codex/backups/fleet-cli-*/config.toml` | Initial configuration backup |
 
-Initial installation refuses conflicting unmanaged wrappers or a different existing Agent-Sync MCP entry.  Existing configuration settings and file modes are preserved.  Subsequent code updates leave configuration and wrappers unchanged.
+Initial installation refuses conflicting unmanaged wrappers or a different existing Agent-Sync MCP entry.  Existing configuration settings and file modes are preserved.  Subsequent code updates leave configuration and existing wrappers unchanged, and only add the wrappers for commands that are new to the host.
 
 Each release is checked for allowlisted paths, hashes, regular-file modes, and Python syntax, then exercised with an empty temporary home and no inherited credentials.  Board identity lookup must fail with the expected missing-credentials result, and `recall --help`, `lane --help` and the `fleet-mode` block must each succeed.  A release becomes current only after those checks pass.  Wrappers resolve the selected release once, so an already running process continues using its original code.
 

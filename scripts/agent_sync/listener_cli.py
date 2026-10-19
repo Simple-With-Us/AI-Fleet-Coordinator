@@ -344,12 +344,15 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
     )
     if status:
         lines.append(
-            "status updated %s; instance %s; owner pinned: %s; rewake verified: %s"
+            "status updated %s; instance %s; owner pinned: %s; rewake verified: terminal %s, Desktop %s"
             % (
                 _when(status.get("updated")),
                 status.get("instance") or "mac",
                 "yes" if status.get("owner_user_id") else "NO",
-                "yes" if status.get("rewake_verified") else "no",
+                "yes" if status.get("rewake_verified_cli", status.get("rewake_verified")) else "no",
+                "yes"
+                if status.get("rewake_verified_desktop", status.get("rewake_verified"))
+                else "no",
             )
         )
         bridge = status.get("muse_bridge") or {}
@@ -386,6 +389,10 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             )
         for error in status.get("config_errors") or []:
             lines.append("RED config: %s" % error)
+        for seat, why in sorted((status.get("skipped_seats") or {}).items()):
+            lines.append("%-12s NOT LOADED  nothing is captured for this seat" % seat)
+            for problem in why or []:
+                lines.append("  RED %s" % problem)
         for seat, s in sorted((status.get("seats") or {}).items()):
             routine = s.get("routine") or {}
             if s.get("wake") == "claude":

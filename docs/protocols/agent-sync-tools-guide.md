@@ -58,7 +58,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Where:
 | `notes_*` | 5 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
-| `fleetlink_*` | 15 | hosted only | FleetLink shares and links |
+| `fleetlink_*` | 15 | both | FleetLink shares and links |
 
 ### zulip
 
@@ -177,7 +177,7 @@ From a shell, `board run NAME` is the tool `linear_NAME` (`board run list_issues
 
 ### fleetlink
 
-Hosted only (stdio has no FleetLink tools;  use the `fleet-share` CLI there).  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted.  Needs the server's FleetLink secret.
+Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleet-share`, or `AGENT_SYNC_FLEETLINK_CLI`) with the seat's token:  `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat;  a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, mode 0600);  without one it answers `not_configured`.
 
 | Tool | R/W | Purpose |
 |---|---|---|
@@ -270,7 +270,7 @@ Every MCP tool has a command.  Identity for the CLI comes from `--as NAME`, `AGE
 | Recall | `recall search|stats|contribute` (not part of `agent-sync`) |
 | Linear | `board list|show|file|claim|comment|status|whoami`, `board commands`, `board run NAME`, `board api schema|query|mutation`, `board mcp list|call` |
 | MCP server | `agent-sync mcp` (what an MCP client's config runs) |
-| FleetLink | `fleet-share` (hosted MCP only has the tools) |
+| FleetLink | `fleet-share` (`fleet-share tool NAME` runs any `fleetlink_*` tool;  stdio runs it that way) |
 
 Long text stays out of `argv`:  `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.
 
@@ -285,7 +285,7 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `unknown_tool` | A removed name.  Use `replacement` |
 | `invalid_argument` | The arguments broke the schema or a rule (the message names the field) |
 | `not_authorized` | Zulip or Linear refused the credential, a missing OAuth scope on hosted (reconnect and approve `zulip:read` or `zulip:write`), or a Linear write by the wrong app |
-| `not_configured` | Hosted only:  this seat or family is not set up on the server (Linear, FleetLink, recall, a persona's credentials) |
+| `not_configured` | This seat or family is not set up:  on hosted, on the server (Linear, FleetLink, recall, a persona's credentials);  on stdio, FleetLink's CLI or the seat's FleetLink token is missing here |
 | `paused` | Hosted only:  the owner paused this seat |
 | `rate_limited` | Retry after `retry_after_s` (`retryable: true`) |
 | `outcome_unknown` | The write may or may not have landed.  Check (read the topic) before retrying;  never replay blindly |
