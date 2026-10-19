@@ -70,7 +70,7 @@ A broker attaches a credential to an outbound HTTPS request. That single sentenc
 
 Two shapes need splitting before they can be configured:
 
-- **`/zulip` is 140 keys for about 46 seats** (`<SEAT>_ZULIP_EMAIL`, `_KEY`, `_SITE`). One host can be mapped once per folder, so each seat needs its own folder (`/zulip/mm`, `/zulip/claude`, …) and its own proxied service. That is the whole reason the pilot's first service is Zulip and not something simpler: it is the case that proves the per-seat pattern.
+- **`/zulip` is 140 keys for about 46 seats**, in a per-seat `EMAIL`/`KEY`/`SITE` triple. One host can be mapped once per folder, so each seat needs its own folder and its own proxied service; the proposed folder names are in Fleet-OPS, not here. That is the whole reason the pilot's first service is Zulip and not something simpler: it is the case that proves the per-seat pattern.
 - **`/alphavantage-keys` is six keys called `KEY1`..`KEY6`.**  They are brokerable, and six undifferentiated names in one folder is a rotation hazard. Name them per consumer before configuring.
 
 ### B. Brokerable only after a transform
@@ -118,11 +118,11 @@ And even inside bucket A most of the 32 Backblaze keys are bucket names, endpoin
 
 ## The first three services
 
-Configuration, not yet created. Each needs a folder holding only its own credential and a service bound to one host.
+Configuration, not yet created. Each needs a folder holding only its own credential and a service bound to one host. The proposed folder, host and key names are deliberately not written here; see Fleet-OPS for the shape as it stands.
 
-1. **`/zulip/mm` → `simplewithus.zulipchat.com`, Basic.**  Proves the per-seat pattern. Needs `MM_ZULIP_EMAIL` and `MM_ZULIP_KEY` copied out of `/zulip`, and `/zulip` itself left readable only by the proxy identity.
-2. **`/github-mm` → `api.github.com`, Bearer.**  Proves a plain API token. Needs a **scoped** PAT for the MM seat, not Jay's, or the broker hides a credential that can still do everything Jay can.
-3. **`/fleetlink-auth` → `fleetlink.online`, Bearer.**  Already folder-scoped, so it is the cheapest of the three and can go first while the other two are set up.
+1. **Zulip, per-seat.**  Proves the per-seat pattern. Needs that seat's Zulip credentials copied out of the shared Zulip folder, and the shared folder left readable only by the proxy identity.
+2. **A GitHub API token for the seat.**  Proves a plain API token. Needs a **scoped** PAT for the seat, not Jay's, or the broker hides a credential that can still do everything Jay can.
+3. **The folder-scoped Fleetlink publish credential.**  Already folder-scoped, so it is the cheapest of the three and can go first while the other two are set up.
 
 Proof for each: run the seat through the proxy and confirm the API returns 200 while the agent's environment and context contain no real credential. `--ca-fingerprint` on the Agent Vault side, pinned from the Proxies page.
 
