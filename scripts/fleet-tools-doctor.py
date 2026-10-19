@@ -237,7 +237,9 @@ def find_repo(name: str) -> Path | None:
     return None
 
 
-def check_git_runtime(report: Report, checkout: Path, network: bool, runner: Callable = subprocess.run) -> None:
+def check_git_runtime(
+    report: Report, checkout: Path, network: bool, runner: Callable = subprocess.run
+) -> None:
     """The server runs from a git checkout (fleet-cli-git-update.py, 2026-10-19):  is it at origin/main?"""
     commit = git(checkout, "rev-parse", "HEAD", runner=runner)
     main = remote_main(checkout, network, runner)

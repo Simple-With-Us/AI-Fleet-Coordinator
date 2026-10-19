@@ -63,7 +63,12 @@ def log(message: str) -> None:
 
 def paths(home: Path) -> dict[str, Path]:
     base = home / ".local/share/fleet-cli"
-    return {"base": base, "repo": base / "repo", "state": base / "git-state.json", "lock": base / "update.lock"}
+    return {
+        "base": base,
+        "repo": base / "repo",
+        "state": base / "git-state.json",
+        "lock": base / "update.lock",
+    }
 
 
 def git(repo: Path, *args: str, timeout: int = GIT_TIMEOUT) -> str:
@@ -71,7 +76,12 @@ def git(repo: Path, *args: str, timeout: int = GIT_TIMEOUT) -> str:
     env.update(GIT_TERMINAL_PROMPT="0")
     try:
         result = subprocess.run(
-            [GIT, "-C", str(repo), *args], capture_output=True, text=True, timeout=timeout, env=env, check=False
+            [GIT, "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         raise Failed("git_timeout_" + args[0]) from None
@@ -102,9 +112,15 @@ def smoke(repo: Path) -> None:
             target = repo / script
             if not target.exists():
                 raise Failed("smoke_missing_" + case)
-            argv = ["/bin/bash", str(target), *args] if script in BASH_SCRIPTS else [sys.executable, "-I", "-B", str(target), *args]
+            argv = (
+                ["/bin/bash", str(target), *args]
+                if script in BASH_SCRIPTS
+                else [sys.executable, "-I", "-B", str(target), *args]
+            )
             try:
-                result = subprocess.run(argv, env=env, cwd=home, capture_output=True, timeout=SMOKE_TIMEOUT, check=False)
+                result = subprocess.run(
+                    argv, env=env, cwd=home, capture_output=True, timeout=SMOKE_TIMEOUT, check=False
+                )
             except subprocess.TimeoutExpired:
                 raise Failed("smoke_timeout_" + case) from None
             if result.returncode != expected:
@@ -113,7 +129,9 @@ def smoke(repo: Path) -> None:
 
 def release_module(repo: Path):
     """fleet-cli-release.py from the checkout:  its wrapper writer, so wrappers match what the receiver wrote."""
-    spec = importlib.util.spec_from_file_location("_fleet_cli_release", repo / "scripts/fleet-cli-release.py")
+    spec = importlib.util.spec_from_file_location(
+        "_fleet_cli_release", repo / "scripts/fleet-cli-release.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -154,7 +172,14 @@ def move_to(repo: Path, target: str, state: dict, state_path: Path) -> dict:
         save_state(state_path, state)
         log(f"SMOKE-FAILED  {target[:7]} ({exc});  stayed on {old[:7]}")
         return {"status": "smoke_failed", "commit": old, "bad": target, "reason": str(exc)}
-    state.update(commit=target, previous=old, bad=None, bad_reason=None, updated_at=int(time.time()), checked_at=int(time.time()))
+    state.update(
+        commit=target,
+        previous=old,
+        bad=None,
+        bad_reason=None,
+        updated_at=int(time.time()),
+        checked_at=int(time.time()),
+    )
     save_state(state_path, state)
     log(f"UPDATED  {old[:7]} -> {target[:7]}")
     return {"status": "updated", "commit": target, "previous": old}
@@ -176,7 +201,12 @@ def setup(home: Path) -> dict:
     with locked(p["base"]):
         if not (p["repo"] / ".git").exists():
             try:
-                subprocess.run([GIT, "clone", "-q", "--no-checkout", REMOTE, str(p["repo"])], check=True, timeout=600, capture_output=True)
+                subprocess.run(
+                    [GIT, "clone", "-q", "--no-checkout", REMOTE, str(p["repo"])],
+                    check=True,
+                    timeout=600,
+                    capture_output=True,
+                )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 raise Failed("clone_failed") from None
             git(p["repo"], "checkout", "-q", "--detach", "origin/main")
@@ -207,7 +237,11 @@ def update(home: Path) -> dict:
         if target == state.get("bad"):
             state["checked_at"] = int(time.time())
             save_state(p["state"], state)
-            return {"status": "skipped_bad", "commit": git(p["repo"], "rev-parse", "HEAD"), "bad": target}
+            return {
+                "status": "skipped_bad",
+                "commit": git(p["repo"], "rev-parse", "HEAD"),
+                "bad": target,
+            }
         result = move_to(p["repo"], target, state, p["state"])
         if result["status"] == "updated":
             written = write_new_wrappers(home, p["repo"])
@@ -225,9 +259,17 @@ def rollback(home: Path) -> dict:
         if not previous or previous == current:
             raise Failed("no_previous_commit")
         git(p["repo"], "checkout", "-q", "--detach", previous)
-        state.update(commit=previous, previous=None, bad=current, bad_reason="rolled_back", updated_at=int(time.time()))
+        state.update(
+            commit=previous,
+            previous=None,
+            bad=current,
+            bad_reason="rolled_back",
+            updated_at=int(time.time()),
+        )
         save_state(p["state"], state)
-        log(f"ROLLED-BACK  {current[:7]} -> {previous[:7]}  ({current[:7]} skipped until main moves)")
+        log(
+            f"ROLLED-BACK  {current[:7]} -> {previous[:7]}  ({current[:7]} skipped until main moves)"
+        )
         return {"status": "rolled_back", "commit": previous, "bad": current}
 
 
@@ -248,12 +290,16 @@ def status(home: Path) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("command", choices=["setup", "update", "rollback", "status"])
     parser.add_argument("--home", type=Path, default=Path.home())
     args = parser.parse_args(argv)
     try:
-        result = {"setup": setup, "update": update, "rollback": rollback, "status": status}[args.command](args.home)
+        result = {"setup": setup, "update": update, "rollback": rollback, "status": status}[
+            args.command
+        ](args.home)
     except Failed as exc:
         print(json.dumps({"status": "error", "code": str(exc)}))
         return 2

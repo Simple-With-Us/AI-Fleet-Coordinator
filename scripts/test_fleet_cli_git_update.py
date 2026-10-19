@@ -11,7 +11,9 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("fleet_cli_git_update", HERE / "fleet-cli-git-update.py")
+spec = importlib.util.spec_from_file_location(
+    "fleet_cli_git_update", HERE / "fleet-cli-git-update.py"
+)
 U = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(U)
 
@@ -20,7 +22,7 @@ PY_BROKEN = "#!/usr/bin/python3\nimport sys\nsys.exit(1)\n"
 BOARD = "#!/usr/bin/python3\nimport sys\nsys.exit(4 if sys.argv[1:] == ['whoami'] else 0)\n"
 BASH_OK = "#!/bin/bash\nexit 0\n"
 # A stand-in for fleet-cli-release.py:  only what the updater imports.
-RELEASE = '''from pathlib import Path
+RELEASE = """from pathlib import Path
 def new_wrapper_plan(home):
     path = Path(home) / ".local/bin/recall"
     return {} if path.exists() else {path: (b"#!/bin/sh\\n", 0o755)}
@@ -28,12 +30,20 @@ def atomic_write(path, data, mode=0o600):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     path.chmod(mode)
-'''
+"""
 
 
 def run(cwd: Path, *args: str) -> str:
-    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
-    return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True, text=True).stdout.strip()
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    return subprocess.run(
+        ["git", *args], cwd=cwd, env=env, check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 class GitUpdateTests(unittest.TestCase):
@@ -78,7 +88,9 @@ class GitUpdateTests(unittest.TestCase):
     def base(self) -> Path:
         return self.home / ".local/share/fleet-cli"
 
-    def test_setup_points_current_at_the_checkout_pauses_the_receiver_and_adds_missing_wrappers(self) -> None:
+    def test_setup_points_current_at_the_checkout_pauses_the_receiver_and_adds_missing_wrappers(
+        self,
+    ) -> None:
         result = U.setup(self.home)
         head = run(self.work, "rev-parse", "HEAD")
         self.assertEqual(U.status(self.home)["commit"], head)
@@ -116,7 +128,9 @@ class GitUpdateTests(unittest.TestCase):
         first = run(self.work, "rev-parse", "HEAD")
         second = self.commit(agent_sync=PY_OK)
         U.update(self.home)
-        self.assertEqual(U.rollback(self.home), {"status": "rolled_back", "commit": first, "bad": second})
+        self.assertEqual(
+            U.rollback(self.home), {"status": "rolled_back", "commit": first, "bad": second}
+        )
         self.assertEqual(U.update(self.home)["status"], "skipped_bad")
         with self.assertRaises(U.Failed):
             U.rollback(self.home)
