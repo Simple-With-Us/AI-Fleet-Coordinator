@@ -274,6 +274,17 @@ class SessionIdTests(unittest.TestCase):
         self.assertIn("https://x.test/2026-10-19", p.stdout)
         self.assertIn("backup-2026-10-19.tar", p.stdout)
 
+    def test_a_time_range_end_is_not_read_as_a_utc_offset(self):
+        body = "<p>Standup 2026-10-19 10:30-11:00 Central, and 2026-10-19T10:30-11:00.</p>"
+        p = self.run_script(
+            "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        #  the space form keeps its range end instead of shifting 10:30 to 4:30pm on the -11:00
+        self.assertIn("Standup Mon, Oct 19 10:30-11:00 Central", p.stdout)
+        #  the ISO T form really is an offset, and still converts
+        self.assertIn("and Mon, Oct 19, 4:30pm", p.stdout)
+
     def test_the_body_never_reaches_the_refusal(self):
         p = self.run_script(
             "[AFC, Claude] topic", env={"AGENT_SEAT": "CLAUDE"}, body="TOPSECRETBODY"

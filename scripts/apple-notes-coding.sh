@@ -723,7 +723,12 @@ from zoneinfo import ZoneInfo
 _CENTRAL = ZoneInfo('America/Chicago')
 _ISO = re.compile(
     r'(?<![\w/.:-])(\d{4})-(\d{2})-(\d{2})'
-    r'(?:[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?(?![\w/-])'
+    # A +HH:MM / -HH:MM offset is only an offset on the ISO T form.  On the space form (2026-10-19 10:30) a bare
+    # -11:00 after the minutes is the end of a time range, not a UTC offset, and taking it as one moves the hour
+    # and drops the range end.
+    r'(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?'
+    r'| (\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z))?'
+    r'(?![\w/-])'
 )
 
 def _fleet_day(d):
@@ -731,7 +736,9 @@ def _fleet_day(d):
     return out + (', ' + str(d.year) if d.year != now.year else '')
 
 def _fleet_date(m):
-    y, mo, d, hh, mm, zone = m.groups()
+    y, mo, d, t_hh, t_mm, t_zone, hh, mm, zone = m.groups()
+    if t_hh is not None:
+        hh, mm, zone = t_hh, t_mm, t_zone
     try:
         if hh is None:
             return _fleet_day(datetime(int(y), int(mo), int(d)))
