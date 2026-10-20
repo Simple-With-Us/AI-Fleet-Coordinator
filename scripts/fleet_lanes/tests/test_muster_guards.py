@@ -6,6 +6,10 @@ Everything runs against a fake home inside a TemporaryDirectory; the real home i
 written, and no test passes a real path to apply or verify.  The OpenCode config fixture copies the
 SHAPE of the real file (an mcp block and a plugin array, plus a dummy credential-shaped value that
 must never be printed or copied) with dummy values only.
+
+The generated plugin is TypeScript that OpenCode loads, so the tests that need it to behave run it
+under node:  the plugin is imported and its permission hook is called, and the answer is read back.
+Those tests skip cleanly when node is not on PATH;  every other test runs everywhere.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,6 +48,94 @@ def main(argv=None):
 if __name__ == "__main__":
     sys.exit(main())
 '''
+
+# The names of the permission prompts the harness sends.  The harness and this list have to
+# agree,  so the test compares them.
+MALFORMED_PROMPTS = (
+    "the session id is not a string",
+    "the call id is not a string",
+    "the session id is empty",
+    "the call id is empty",
+    "the pattern is not a string",
+    "the pattern holds a number",
+    "the title is not a string",
+    "the title is empty",
+    "the prompt is not an object",
+    "the prompt is null",
+)
+UNBOUNDED_PROMPTS = (
+    "the prompt is oversized",
+    "the prompt is cyclic",
+    "the prompt is too deep",
+    "the prompt is too wide",
+)
+WELL_FORMED_PROMPT = "the prompt is well formed"
+
+# The harness runs the plugin the way OpenCode does:  it imports the generated file and calls
+# the permission hook with each prompt in turn.  The answer is read back as JSON,  so a deny
+# and a throw are told apart:  a throw is the bug these tests exist for.
+PERMISSION_HARNESS = '''import { server } from "PLUGIN_URL";
+
+const plugin = await server({ directory: process.cwd() });
+const ask = plugin["permission.ask"] as unknown as (
+  input: unknown,
+  output: { status: string },
+) => Promise<void>;
+
+const cyclic: Record<string, unknown> = { sessionID: "session-1", callID: "call-1" };
+cyclic.metadata = cyclic;
+
+const deep: Record<string, unknown> = { sessionID: "session-1", callID: "call-1" };
+let cursor = deep;
+for (let i = 0; i < 40; i += 1) {
+  const next: Record<string, unknown> = {};
+  cursor.metadata = next;
+  cursor = next;
+}
+
+const cases: Array<[string, unknown]> = [
+  ["the session id is not a string", { sessionID: 5, callID: "call-1" }],
+  ["the call id is not a string", { sessionID: "session-1", callID: 7 }],
+  ["the session id is empty", { sessionID: "", callID: "call-1" }],
+  ["the call id is empty", { sessionID: "session-1", callID: "" }],
+  ["the pattern is not a string", { sessionID: "session-1", pattern: 5 }],
+  ["the pattern holds a number", { sessionID: "session-1", pattern: ["git clone", 5] }],
+  ["the title is not a string", { sessionID: "session-1", title: 5 }],
+  ["the title is empty", { sessionID: "session-1", title: "" }],
+  ["the prompt is not an object", "not an object"],
+  ["the prompt is null", null],
+  [
+    "the prompt is oversized",
+    { sessionID: "session-1", callID: "call-1", metadata: { blob: "x".repeat(200000) } },
+  ],
+  ["the prompt is cyclic", cyclic],
+  ["the prompt is too deep", deep],
+  [
+    "the prompt is too wide",
+    { sessionID: "session-1", callID: "call-1", metadata: { command: new Array(2000).fill("x") } },
+  ],
+  ["the prompt is well formed", { sessionID: "session-1", callID: "call-1" }],
+];
+
+const results: unknown[] = [];
+for (const [name, input] of cases) {
+  const output = { status: "ask" };
+  try {
+    await ask(input, output);
+    results.push({ name, threw: false, status: output.status });
+  } catch (error) {
+    results.push({ name, threw: true, status: output.status, message: String(error) });
+  }
+}
+console.log(JSON.stringify(results));
+'''
+
+# node's own type stripper,  used to turn the plugin into the JavaScript node --check parses.
+STRIP_SCRIPT = """const fs = require("node:fs");
+const { stripTypeScriptTypes } = require("node:module");
+const [source, target] = process.argv.slice(1);
+fs.writeFileSync(target, stripTypeScriptTypes(fs.readFileSync(source, "utf8"), { mode: "strip" }));
+"""
 
 
 def snapshot(root: Path) -> dict:
@@ -352,6 +445,47 @@ class OpenCodePluginShapeTests(World):
             target.write_bytes(blob)
         return Path(self.paths.opencode_plugin).read_text(encoding="utf-8")
 
+    def node(self) -> str:
+        """The node binary,  or a skip:  the plugin is TypeScript,  so node parses it."""
+        found = shutil.which("node")
+        if found is None:
+            self.skipTest("no node on PATH to parse the plugin with")
+        return found
+
+    def run_node(self, args: list, cwd: str) -> subprocess.CompletedProcess:
+        """node,  with a skip when this node is too old for the type stripping."""
+        run = subprocess.run(
+            [self.node(), *args],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=cwd,
+        )
+        if run.returncode != 0 and "bad option" in run.stderr:
+            self.skipTest("this node has no --experimental-strip-types")
+        return run
+
+    def permission_results(self) -> dict:
+        """The plugin's answer to each prompt the harness sends,  read back from node."""
+        with tempfile.TemporaryDirectory(prefix="muster-plugin-") as tmp:
+            plugin = Path(tmp) / "fleet-lane-guard.ts"
+            plugin.write_text(self.plugin_text(), encoding="utf-8")
+            harness = Path(tmp) / "harness.ts"
+            harness.write_text(
+                PERMISSION_HARNESS.replace("PLUGIN_URL", plugin.as_uri()), encoding="utf-8"
+            )
+            run = self.run_node(["--experimental-strip-types", str(harness)], cwd=tmp)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            lines = [line for line in run.stdout.splitlines() if line.strip()]
+            self.assertTrue(lines, run.stdout + run.stderr)
+            results = json.loads(lines[-1])
+        by_name = {r["name"]: r for r in results}
+        self.assertEqual(
+            sorted(by_name),
+            sorted(MALFORMED_PROMPTS + UNBOUNDED_PROMPTS + (WELL_FORMED_PROMPT,)),
+        )
+        return by_name
+
     def test_only_command_shaped_values_are_probed(self) -> None:
         # A permission pattern is a glob that names WHAT may be called,  and a title is
         # prose.  Neither is a shell command,  so neither is sent to the guard:  that
@@ -360,8 +494,18 @@ class OpenCodePluginShapeTests(World):
         text = self.plugin_text()
         self.assertIn("isCommandShaped", text)
         self.assertIn("COMMAND_SHAPE", text)
-        # The filter must be applied to every source of candidates.
-        self.assertGreaterEqual(text.count("isCommandShaped("), 3)
+        # The filter must be applied to every source of candidates,  each one on its own:
+        # a count of the call sites would still pass with one of them left unfiltered.
+        body = text.split("function guardCandidates(", 1)[1].split("\n}", 1)[0]
+        for needle in (
+            "isCommandShaped(pattern)",  # the pattern string
+            "isCommandShaped(item)",  # the entries of a pattern array
+            "isCommandShaped(value)",  # the command keys in the metadata
+        ):
+            self.assertIn(needle, body)
+        # The definition is not a call site,  so the calls are counted on their own.
+        calls = text.count("isCommandShaped(") - text.count("function isCommandShaped(")
+        self.assertEqual(calls, 3)
 
     def test_the_permission_input_is_validated_at_runtime(self) -> None:
         # A TypeScript annotation is not a runtime check,  so a malformed hookInput
@@ -371,12 +515,75 @@ class OpenCodePluginShapeTests(World):
         self.assertIn("must be an object", text)
         self.assertIn("must be a string or an array of strings", text)
         self.assertIn("must not be empty", text)
+        # The identifiers are the correlation key,  so they are checked as well:  a null
+        # key would let the call through.
+        self.assertIn("a permission sessionID must be a non-empty string", text)
+        self.assertIn("a permission callID must be a non-empty string", text)
 
-    def test_the_plugin_source_is_valid_typescript(self) -> None:
-        # The plugin is TypeScript that OpenCode loads,  so it has to parse.  A syntax
-        # error in it would break every OpenCode session,  not just the guard.
+    def test_the_command_shape_class_needs_no_backslash_escape(self) -> None:
+        # The COMMAND_SHAPE class is spelled with plain characters,  because the plugin
+        # lives in a Python string,  where a backslash is an escape and would arrive as
+        # the character it names.
         text = self.plugin_text()
         self.assertNotIn("\\s", text.split("const COMMAND_SHAPE")[1].split("\n")[0])
+
+    def test_the_plugin_source_parses_as_typescript(self) -> None:
+        # The plugin is TypeScript that OpenCode loads,  so it has to parse.  A syntax
+        # error in it would break every OpenCode session,  not just the guard.
+        # node --check does not strip the types,  so node's own TypeScript loader parses
+        # the file here.
+        with tempfile.TemporaryDirectory(prefix="muster-plugin-parse-") as tmp:
+            plugin = Path(tmp) / "fleet-lane-guard.ts"
+            plugin.write_text(self.plugin_text(), encoding="utf-8")
+            run = self.run_node(["--experimental-strip-types", str(plugin)], cwd=tmp)
+            self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_the_javascript_the_plugin_becomes_passes_node_check(self) -> None:
+        # The JavaScript the plugin becomes is what OpenCode runs,  so node --check
+        # parses that too.
+        with tempfile.TemporaryDirectory(prefix="muster-plugin-check-") as tmp:
+            plugin = Path(tmp) / "fleet-lane-guard.ts"
+            plugin.write_text(self.plugin_text(), encoding="utf-8")
+            stripped = Path(tmp) / "fleet-lane-guard.mjs"
+            probe = self.run_node(
+                ["--eval", "console.log(typeof require('node:module').stripTypeScriptTypes)"],
+                cwd=tmp,
+            )
+            if probe.returncode != 0 or "function" not in probe.stdout:
+                self.skipTest("this node cannot strip the types itself")
+            strip = self.run_node(
+                [
+                    "--eval",
+                    STRIP_SCRIPT,
+                    str(plugin),
+                    str(stripped),
+                ],
+                cwd=tmp,
+            )
+            self.assertEqual(strip.returncode, 0, strip.stderr)
+            check = self.run_node(["--check", str(stripped)], cwd=tmp)
+            self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_a_malformed_permission_prompt_is_denied_and_never_thrown(self) -> None:
+        # A prompt the plugin cannot rule on is a denial,  not an error the caller sees:
+        # a throw would leave the answer to OpenCode's default handling,  which is to
+        # allow.
+        results = self.permission_results()
+        for name in MALFORMED_PROMPTS:
+            self.assertFalse(results[name]["threw"], results[name])
+            self.assertEqual(results[name]["status"], "deny", results[name])
+        # A prompt the plugin can rule on is left alone:  the deny is specific.
+        self.assertFalse(results[WELL_FORMED_PROMPT]["threw"], results[WELL_FORMED_PROMPT])
+        self.assertEqual(results[WELL_FORMED_PROMPT]["status"], "ask")
+
+    def test_an_oversized_or_cyclic_permission_prompt_is_denied(self) -> None:
+        # The bounds the command boundary already carries apply to the permission
+        # prompt too,  and they are checked before any field is read:  a payload that is
+        # too large,  too deep,  too wide or cyclic is refused,  not walked.
+        results = self.permission_results()
+        for name in UNBOUNDED_PROMPTS:
+            self.assertFalse(results[name]["threw"], results[name])
+            self.assertEqual(results[name]["status"], "deny", results[name])
 
 
 class OpenCodeTests(World):
