@@ -30,11 +30,11 @@ MAX_CACHED_MESSAGE_HASHES = 1024
 _LOADED_CACHE = (0.0, frozenset())
 
 
-def loaded_rollouts():
+def loaded_rollouts(*, fresh=False):
     """One bounded lsof snapshot proves exact rollout ownership by bundled desktop Codex."""
     global _LOADED_CACHE
     now = time.monotonic()
-    if now - _LOADED_CACHE[0] < 5:
+    if not fresh and now - _LOADED_CACHE[0] < 5:
         return _LOADED_CACHE[1]
     paths = set()
     try:
@@ -229,8 +229,9 @@ class CodexChatTransport:
         self.rpc_factory = rpc_factory or (
             lambda: RPC(binary, env={**os.environ, "CODEX_HOME": str(self.home / ".codex")})
         )
-        self.loaded = loaded or (lambda thread: thread.get("path") in loaded_rollouts())
+        self.loaded = loaded
         self._full_queues = {}
+        self._probe_failures = {}
         self._receipts = {}
 
     def _valid(self, binding):
@@ -268,9 +269,14 @@ class CodexChatTransport:
             raise InvalidThread("Thread rollout is outside active local history")
         if not file.is_file() or not os.access(file, os.R_OK):
             raise ThreadUnavailable("Thread rollout is not readable yet")
-        if not self.loaded(thread):
+        if not self._is_loaded(thread):
             raise ThreadUnavailable("Thread is not loaded")
         return thread
+
+    def _is_loaded(self, thread, *, fresh=False):
+        if self.loaded is not None:
+            return self.loaded(thread)
+        return thread.get("path") in loaded_rollouts(fresh=fresh)
 
     @staticmethod
     def _key(binding):
@@ -329,7 +335,7 @@ class CodexChatTransport:
             return "invalid"
         if not self._prerequisites() or not os.path.isdir(binding["cwd"]):
             return "busy"
-        if self._full(binding):
+        if self._full(binding) or time.monotonic() < self._probe_failures.get(self._key(binding), 0):
             return "busy"
         rpc = None
         try:
@@ -342,7 +348,9 @@ class CodexChatTransport:
         except InvalidThread:
             return "invalid"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
-            self._mark_full(binding)
+            self._remember(
+                self._probe_failures, self._key(binding), time.monotonic() + FULL_QUEUE_TTL
+            )
             return "busy"
         finally:
             if rpc:
@@ -447,9 +455,13 @@ class CodexChatTransport:
         sent = False
         try:
             rpc = self.rpc_factory()
-            self._thread(rpc, binding)
+            thread = self._thread(rpc, binding)
             # The native add atomically rejects full queues; avoid repeating preflight's listing.
             if permit is not None and not permit():
+                return "deferred"
+            # Positive discovery proof may already be stale.  Recheck ownership after the policy
+            # permit and immediately before add, without reusing the discovery snapshot.
+            if not self._is_loaded(thread, fresh=True):
                 return "deferred"
             sent = True
             result = rpc.request(

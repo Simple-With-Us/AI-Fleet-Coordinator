@@ -213,8 +213,12 @@ class TransportTests(unittest.TestCase):
         count = len(self.calls)
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
         self.assertEqual(len(self.calls), count)
-        self.adapter._full_queues.clear()
+        self.assertFalse(self.adapter._full(self.binding))
+        self.assertTrue(self.adapter._probe_failures)
         self.failure_method = None
+        # A recovered direct send is not suppressed by a transient probe failure.
+        self.assertEqual(self.adapter.send(self.binding, "recovered"), "accepted")
+        self.calls.clear()
         missing = dict(self.binding, cwd=str(self.home / "not-mounted"))
         self.assertEqual(self.adapter.send(missing, "nudge"), "deferred")
         self.assertNotIn("thread/queue/add", [m for m, _ in self.calls])
@@ -310,8 +314,20 @@ class TransportTests(unittest.TestCase):
         self.adapter.loaded = lambda _: False
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
         self.adapter.loaded = lambda _: True
-        self.adapter._full_queues.clear()  # Simulate expiration of the bounded busy probe cache.
+        self.adapter._probe_failures.clear()  # Simulate expiration of the bounded busy probe cache.
         self.assertEqual(self.adapter.preflight(self.binding), "ready")
+
+    def test_send_refreshes_loaded_proof_after_policy_permit(self):
+        self.adapter.loaded = None
+        path = self.thread["path"]
+        with patch.object(module, "loaded_rollouts", return_value=frozenset([path])) as proof:
+            self.assertEqual(self.adapter.preflight(self.binding), "ready")
+            def close_chat():
+                proof.return_value = frozenset()
+                return True
+            self.assertEqual(self.adapter.send(self.binding, "nudge", permit=close_chat), "deferred")
+            self.assertEqual(proof.call_args.kwargs, {"fresh": True})
+        self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
 
     def test_full_queue_verdict_cached_per_exact_binding_and_expires(self):
         self.queued = [{} for _ in range(module.QUEUE_CAPACITY)]
@@ -641,6 +657,9 @@ class LoadedProofTests(unittest.TestCase):
             self.assertEqual(module.loaded_rollouts(), frozenset([path]))
             self.assertEqual(module.loaded_rollouts(), frozenset([path]))
             self.assertEqual(run.call_count, 1)
+            run.return_value = subprocess.CompletedProcess([], 0, b"")
+            self.assertEqual(module.loaded_rollouts(fresh=True), frozenset())
+            self.assertEqual(run.call_count, 2)
 
     def test_timeout_fails_closed(self):
         with (
