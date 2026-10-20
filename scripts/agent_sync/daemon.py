@@ -1006,9 +1006,9 @@ class Daemon:
             if key[0] != reader.seat:
                 continue
             try:
-                message = reader.client.get(
-                    "messages/%d" % key[1], {"apply_markdown": False}
-                ).get("message")
+                message = reader.client.get("messages/%d" % key[1], {"apply_markdown": False}).get(
+                    "message"
+                )
                 if not isinstance(message, dict) or not NR.refuse_unconsumed(
                     reader, message, self.notes_relay_refusal_reason, self.log.write
                 ):
