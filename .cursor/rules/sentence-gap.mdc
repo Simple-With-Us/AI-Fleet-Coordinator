@@ -35,15 +35,17 @@ acknowledgement.  Getting it right in artifacts while writing plain single space
 chat is still a failure.  **Read your reply back before you send it** and check every
 `.`, `!` and `?` boundary.
 
-In the MiniMax Code pane the gap is a REAL U+00A0 plus a normal space.  Generate it in
-the shell rather than typing it, because a model that emits U+00A0 directly can have it
-normalized to a plain space:
+The MiniMax Code pane is the one pane that needs a real U+00A0 instead of the
+entity:  there the gap is a REAL U+00A0 plus a normal space, generated in the shell
+rather than typed, because a model that emits U+00A0 directly can have it normalized
+to a plain space.  This applies to the MiniMax pane only.  In Cursor chat use the
+`&nbsp;` entity per the table row below, and do not substitute a raw U+00A0 here.
 
 ```sh
 printf 'Sentence one.\302\240 Sentence two.\n'
 ```
 
-`\302\240` is the UTF-8 encoding of U+00A0.  Verify with
+`\302\240` is the UTF-8 encoding of U+00A0.  On the MiniMax pane, verify with
 `grep -o $'[.!?]\xc2\xa0' f | wc -l`, which must not print `0`.
 
 ### Precedence: this is the owner's highest-priority house rule
