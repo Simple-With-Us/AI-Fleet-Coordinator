@@ -154,7 +154,7 @@ Ranked by benefit against risk and effort.  B, R and E are benefit, risk and eff
 |---|---|---|---|---|---|
 | 1 | G1  Hetzner host units, cron and scripts in git, applied by a check-then-apply reconciler | H | L | M | AFC-369 |
 | 2 | G2  Agent configs (skills, rules blocks, hooks, MCP) reconciled on every host from main | H | L | M | AFC-370 |
-| 3 | G3  One source for the operator start page;  nothing web deploys from AFC any more | M | L | L | AFC-371 |
+| 3 | G3  One source for the operator start page;  its redirect stops being hand-deployed | M | L | L | AFC-371 |
 | 4 | G4  Retire hand-deployed leftovers (three Workers, dead plists, server `.bak` files, Slack targets) | M | L | L | AFC-372 |
 | 5 | G5  Workers deploy on merge:  one gate per Worker in `scripts/worker-targets.json`, agent-sync-mcp on Jay's call | H | M | L | AFC-373 |
 | 6 | G6  recall-api built from its Dockerfile, auto-deployed from AFC main | M | M | M | AFC-374 |
@@ -183,9 +183,9 @@ Done:  the Mac and the server report the same skill set, hooks and MCP registrat
 
 ### G3  home.jays.services
 
-The live site deploys from Fleet-OPS, and AFC holds no web deployment of its own:  the Vercel copies (`vercel.json`, `vercel-ignore.sh`, `api/`, `public/`), the `tests/deployment-boundary.test.cjs` guard and the RAG snapshot workflow are all absent from this tree, having gone with #693, and AGENTS.md already names `site/` and `scripts/safari-start/public/` as the repo's only web surfaces.  The one thing left to place is the `start-jays-services` redirect Worker under `scripts/safari-start/`, whose `wrangler.jsonc` still claims a hostname Vercel now serves.  Answer decision 5 for that code and its `visual-tests/` specs - retire it under G4, or move it to the repo that owns the page - and update AGENTS.md to match.
+This item is scoped to the operator start page, not to AFC's web surfaces in general:  `site/` is a separate supported surface that keeps publishing from `fleet-activity-site.yml`, and nothing here touches it.  The live start page deploys from Fleet-OPS, and AFC holds no deployment of the page itself:  the Vercel copies (`vercel.json`, `vercel-ignore.sh`, `api/`, `public/`), the `tests/deployment-boundary.test.cjs` guard and the RAG snapshot workflow are all absent from this tree, having gone with #693, and AGENTS.md already names `site/` and `scripts/safari-start/public/` as the repo's only web surfaces.  The one thing left to place is the `start-jays-services` redirect Worker under `scripts/safari-start/`, whose `wrangler.jsonc` still claims a hostname Vercel now serves.  Answer decision 5 for that code and its `visual-tests/` specs - retire it under G4, or move it to the repo that owns the page - and update AGENTS.md to match.
 
-Done:  one repository holds the site, and its merge is the only way the site changes.
+Done:  one repository holds the operator start page, and its merge is the only way that page changes.
 
 ### G4  Retire leftovers
 
