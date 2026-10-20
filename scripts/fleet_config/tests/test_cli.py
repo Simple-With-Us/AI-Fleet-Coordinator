@@ -252,11 +252,14 @@ class CliTests(FleetTestCase):
             return 0, "installed\n", ""
 
         registry = registry_with({CheckType.HOOK_REGISTERED: failing_check})
-        with mock.patch("fleet_config.apply.default_runner", runner), mock.patch(
-            "fleet_config.apply.touchid.confirm",
-            side_effect=__import__(
-                "fleet_config.touchid", fromlist=["TouchIdError"]
-            ).TouchIdError("Touch ID is not available on this machine", "unavailable"),
+        with (
+            mock.patch("fleet_config.apply.default_runner", runner),
+            mock.patch(
+                "fleet_config.apply.touchid.confirm",
+                side_effect=__import__(
+                    "fleet_config.touchid", fromlist=["TouchIdError"]
+                ).TouchIdError("Touch ID is not available on this machine", "unavailable"),
+            ),
         ):
             code, out, _err = self.run_cli(self.base("apply", "MM", "--yes"), registry)
         self.assertEqual(code, cli.EXIT_REFUSED)

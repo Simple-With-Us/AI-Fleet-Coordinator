@@ -125,11 +125,14 @@ class MacCollectorTests(CollectorCase):
 
     def test_a_missing_check_module_is_a_check_error(self):
         rule = make_rule()
-        with mock.patch.object(
-            collectors,
-            "default_registry",
-            side_effect=ImportError("No module named 'fleet_config.checks_hooks'"),
-        ), self.assertRaises(CheckError) as caught:
+        with (
+            mock.patch.object(
+                collectors,
+                "default_registry",
+                side_effect=ImportError("No module named 'fleet_config.checks_hooks'"),
+            ),
+            self.assertRaises(CheckError) as caught,
+        ):
             collectors.mac_collect(rule, "claude", self.ctx)
         self.assertIn("checks_hooks", str(caught.exception))
 

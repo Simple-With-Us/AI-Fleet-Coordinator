@@ -223,9 +223,7 @@ class CheckRegistry:
 
         return decorate
 
-    def get(
-        self, check_type: CheckType
-    ) -> Callable[[Rule, str, CheckContext], CheckResult] | None:
+    def get(self, check_type: CheckType) -> Callable[[Rule, str, CheckContext], CheckResult] | None:
         """The function for one check type, or None when it is not implemented."""
         return self._checks.get(check_type)
 
