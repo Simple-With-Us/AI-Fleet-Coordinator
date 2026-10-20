@@ -51,12 +51,14 @@ class CodexThreadMetaTests(McpHarness):
         """The id becomes an opaque external identifier a resume-wake reads back to find the
         session.  A blank one is falsy and would silently degrade to no id; a non-string one
         would round-trip into the state file as a type the contract does not allow.  Both are
-        refused here, loudly, and the message names the argument."""
+        refused here, loudly, as `ToolError("invalid_argument", ...)` so the message survives
+        `map_exception` and names the argument the caller must fix."""
         tools = self.direct(session=None, source="none")
         for bad in ("", "   ", 0, 17, True, [], {}):
-            with self.assertRaises(ValueError) as caught:
+            with self.assertRaises(T.ToolError) as caught:
                 tools._use_tag(Z.session_tag("mvs_0123456789abcdef0123456789abcdef"), bad)
-            self.assertIn("session", str(caught.exception))
+            self.assertEqual(caught.exception.code, "invalid_argument")
+            self.assertIn("session", caught.exception.message)
         # None still means "the caller passed none".
         tools._use_tag(Z.session_tag("mvs_0123456789abcdef0123456789abcdef"), None)
         # A real id still passes through (a fresh server:  _use_tag only rebuilds the state when
@@ -67,6 +69,34 @@ class CodexThreadMetaTests(McpHarness):
         fresh.agent.state.record_posted(1)
         self.assertEqual(fresh.agent.state.session_id, full)
         self.assertEqual(json.loads(fresh.agent.state.path.read_text()).get("session"), full)
+
+    def test_a_session_id_no_longer_than_the_tag_is_refused(self):
+        """`ID_PATTERN` accepts ids as short as 4 characters, and an id at `SESSION_TAG_LEN` would
+        equal its own tag (the directory the state file lives in), so writing it would persist
+        the tag AS the session id and a resume-wake could not tell them apart.  Both are
+        refused here as `ToolError("invalid_argument", ...)`, with the length named so the
+        caller sees what to fix.  Covers an exact tag-length id and a shape-valid id one
+        shorter than the tag (id `mvsdf2c` is 7 chars and passes shape;  the tag it derives to
+        is 8)."""
+        tools = self.direct(session=None, source="none")
+        # 8-char shape-valid id (== SESSION_TAG_LEN):  rejected because the id equals its tag.
+        with self.assertRaises(T.ToolError) as caught:
+            tools._use_tag(Z.session_tag("mvs_0123456789abcdef0123456789abcdef"), "mvsdf2c1")
+        self.assertEqual(caught.exception.code, "invalid_argument")
+        self.assertIn("strictly longer than the 8-character tag", caught.exception.message)
+        self.assertIn("length 8", caught.exception.message)
+        # 7-char shape-valid id:  also rejected, with the same code and message, so a future
+        # change to `SESSION_TAG_LEN` cannot silently accept short ids.
+        with self.assertRaises(T.ToolError) as caught:
+            tools._use_tag(Z.session_tag("mvs_0123456789abcdef0123456789abcdef"), "mvsdf2c")
+        self.assertEqual(caught.exception.code, "invalid_argument")
+        self.assertIn("length 7", caught.exception.message)
+        # Shape-bad id:  refused by `session_ids.check` with the same code and the place-named
+        # message, so the two failure modes look the same to the caller.
+        with self.assertRaises(T.ToolError) as caught:
+            tools._use_tag(Z.session_tag("mvs_0123456789abcdef0123456789abcdef"), "no!spaces!")
+        self.assertEqual(caught.exception.code, "invalid_argument")
+        self.assertIn("the session argument", caught.exception.message)
 
     def test_the_servers_own_tag_keeps_the_servers_own_session(self):
         full = "mvs_0123456789abcdef0123456789abcdef"

@@ -388,6 +388,41 @@ class MusePinTest(unittest.TestCase):
         }
         self.assertIn("predates the command fingerprint", A.muse_pin_cause(unverified))
 
+    def test_the_muse_red_entry_labels_unreadable_as_unverifiable_and_omits_run(self) -> None:
+        # A `pin_stale` or `pin_unverified` line ends in the operator running the re-pin
+        # remediation, which begins with the verb "`agent-sync daemon test-wake ...`".  An
+        # unreadable line must say "unverifiable" (re-pinning would refuse again on the same
+        # missing contract) and must not prefix its own "run" before the remediation, which
+        # begins with "restore the wake contract".  Tested as the function the daemon calls,
+        # so the wording is verifiable without standing up a daemon.
+        seat = "MM"
+        stale = {
+            "why": "pin_stale",
+            "muse": "/opt/homebrew/bin/muse",
+            "pinned_muse": "/usr/local/bin/muse",
+        }
+        line = A.muse_pin_red_entry(stale, seat)
+        self.assertIn("wake pin is stale: muse moved", line)
+        self.assertIn("; run `agent-sync daemon test-wake --seat MM --run`", line)
+        self.assertNotIn("unverifiable", line)
+        unreadable = {
+            "why": "pin_unreadable",
+            "muse": "/opt/homebrew/bin/muse",
+            "pinned_muse": "/usr/local/bin/muse",
+        }
+        line = A.muse_pin_red_entry(unreadable, seat)
+        self.assertIn("wake pin is unverifiable", line)
+        self.assertNotIn("wake pin is stale", line)
+        # No "run " prefix when the remediation begins with its own verb.
+        self.assertFalse(
+            line.startswith("run "),
+            "unreadable remediation must not be prefixed by `run`:  %r" % line,
+        )
+        self.assertIn("restore the wake contract", line)
+        # Cause still names the fault:  a folder path would help no one when the contract is
+        # what could not be read.
+        self.assertIn("could not be read", line)
+
 
 class QuotaRefusalTest(unittest.TestCase):
     """A capped provider is not an internal fault, and must not be reported as one.
@@ -665,7 +700,53 @@ class McodeFallbackTest(unittest.TestCase):
             self.assertIn("could not be read", cause)
             # The remediation must fix the read, not hand back the re-pin that cannot succeed.
             self.assertIn("restore the wake contract", A.MCODE_PIN_UNREADABLE_REMEDIATION)
-            self.assertNotIn("--runtime fallback --pin", A.MCODE_PIN_UNREADABLE_REMEDIATION)
+            # And it must name `--runtime fallback` in BOTH halves:  a bare `--pin` would
+            # re-pin the PRIMARY runtime and keep the fallback refused.  Mirrors the
+            # `MCODE_PIN_REMEDIATION` test above.
+            self.assertEqual(
+                A.MCODE_PIN_UNREADABLE_REMEDIATION.count("--runtime fallback"),
+                2,
+                A.MCODE_PIN_UNREADABLE_REMEDIATION,
+            )
+            self.assertIn("--run", A.MCODE_PIN_UNREADABLE_REMEDIATION)
+            self.assertIn("--pin`", A.MCODE_PIN_UNREADABLE_REMEDIATION)
+
+    def test_the_fallback_red_entry_labels_unreadable_as_unverifiable_and_omits_run(self) -> None:
+        # The mcode red entry mirrors the muse one.  `pin_stale` and `pin_unverified` carry the
+        # "run --pin" remediation (the re-pin);  `pin_unreadable` carries the restore remediation
+        # and the line says "unverifiable" instead of "stale".  Tested as the function the daemon
+        # calls so the wording is verifiable without standing up a daemon.
+        seat = "MM"
+        stale = {
+            "why": "pin_stale",
+            "mcode": "/opt/homebrew/bin/mcode",
+            "pinned_mcode": "/usr/local/bin/mcode",
+        }
+        line = A.mcode_pin_red_entry(stale, seat)
+        self.assertIn("fallback pin is stale: mcode moved", line)
+        self.assertIn(
+            "; run `agent-sync daemon test-wake --seat MM --runtime fallback --run`", line
+        )
+        self.assertNotIn("unverifiable", line)
+        unreadable = {
+            "why": "pin_unreadable",
+            "mcode": "/opt/homebrew/bin/mcode",
+            "pinned_mcode": "/usr/local/bin/mcode",
+        }
+        line = A.mcode_pin_red_entry(unreadable, seat)
+        self.assertIn("fallback pin is unverifiable", line)
+        self.assertNotIn("fallback pin is stale", line)
+        # No "run " prefix when the remediation begins with its own verb.
+        self.assertFalse(
+            line.startswith("run "),
+            "unreadable remediation must not be prefixed by `run`:  %r" % line,
+        )
+        # And the remediation must carry `--runtime fallback` in BOTH halves:  mirror of the
+        # remediation string test above, asserted here so the helper alone cannot regress.
+        self.assertIn("--runtime fallback --run", line)
+        self.assertIn("--runtime fallback --pin`", line)
+        self.assertIn("restore the wake contract", line)
+        self.assertIn("could not be read", line)
 
     def test_the_fallback_fingerprint_fails_closed_when_the_contract_is_unreadable(self) -> None:
         # A pin must never vouch for a command whose contract could not be loaded, so an

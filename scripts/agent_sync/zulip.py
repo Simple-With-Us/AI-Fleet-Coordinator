@@ -263,12 +263,18 @@ def seat_from_rc_path(path: str | os.PathLike[str]) -> str | None:
     return None
 
 
+#:  How many characters of the session id make the tag.  It is a name for the id, so an id must
+#:  always be strictly LONGER than this:  an id this long is indistinguishable from its own tag,
+#:  and writing one where the id belongs would make a resume-wake correlate the wrong session.
+SESSION_TAG_LEN = 8
+
+
 def session_tag(session_id: str | None) -> str | None:
     """First 8 characters of the id with hyphens removed, lowercase.  Only [a-z0-9] survive,
     because the tag names a state directory."""
     if not session_id:
         return None
-    cleaned = re.sub(r"[^a-z0-9]", "", session_id.replace("-", "").lower())[:8]
+    cleaned = re.sub(r"[^a-z0-9]", "", session_id.replace("-", "").lower())[:SESSION_TAG_LEN]
     return cleaned or None
 
 

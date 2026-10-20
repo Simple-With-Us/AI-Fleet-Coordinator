@@ -4904,18 +4904,12 @@ class Daemon:
             # nobody configured (the CLAUDE seat at its weekly cap is the case the gate exists for).
             muse_pin = A.muse_pin_state(runner.paths, muse) if muse else None
             if muse_pin and muse_pin["why"] in ("pin_stale", "pin_unverified", "pin_unreadable"):
-                # The cause and the remediation both live in adapters, so the wording is testable
-                # without standing up a daemon.  An unreadable contract is NOT fixed by re-pinning,
-                # so it must not be handed the re-pin remediation, and a wake that did not move
-                # must not be reported as one that did.
-                muse_remediation = (
-                    A.MUSE_PIN_UNREADABLE_REMEDIATION % seat
-                    if muse_pin["why"] == "pin_unreadable"
-                    else A.MUSE_PIN_REMEDIATION % (seat, seat)
-                )
-                red.append(
-                    "wake pin is stale: %s; run %s" % (A.muse_pin_cause(muse_pin), muse_remediation)
-                )
+                # The cause, the label ("stale" vs "unverifiable") and the remediation all live
+                # in adapters, so the wording is testable without standing up a daemon.  An
+                # unreadable contract is NOT fixed by re-pinning, so the entry must say
+                # "unverifiable" and not prefix "run" before a remediation that begins with
+                # "restore the wake contract".
+                red.append(A.muse_pin_red_entry(muse_pin, seat))
             # The fallback pin reports on its own file too.  It gates the fallback on its own, so a
             # stale one holds every fallback wake; without a red entry here a seat whose fallback
             # silently stopped looks exactly as healthy as a seat that never configured one.
@@ -4923,18 +4917,10 @@ class Daemon:
                 A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model) if mcode else None
             )
             if mcode_pin and mcode_pin["why"] in ("pin_stale", "pin_unverified", "pin_unreadable"):
-                # The cause and the remediation both live in adapters, so the wording is testable
-                # without standing up a daemon.  An unreadable contract is NOT fixed by re-pinning,
-                # so it must not be handed the re-pin remediation.
-                remediation = (
-                    A.MCODE_PIN_UNREADABLE_REMEDIATION % seat
-                    if mcode_pin["why"] == "pin_unreadable"
-                    else A.MCODE_PIN_REMEDIATION % (seat, seat)
-                )
-                red.append(
-                    "fallback pin is stale: %s; run %s"
-                    % (A.mcode_pin_cause(mcode_pin), remediation)
-                )
+                # The cause, the label and the remediation all live in adapters.  Mirror of the
+                # muse entry:  no "run " prefix when the remediation begins with its own verb, and
+                # the unreadable remediation carries `--runtime fallback` in BOTH halves.
+                red.append(A.mcode_pin_red_entry(mcode_pin, seat))
             for problem in runner.cfg.config_problems:
                 red.append(
                     "config problem, so wakes are inbox-only (mentions still queue): %s"

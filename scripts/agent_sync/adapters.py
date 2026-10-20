@@ -1594,10 +1594,13 @@ MCODE_PIN_REMEDIATION = (
 
 #:  A pin cannot be verified at all while the contract or the schema is unreadable, so the
 #:  remediation is not a re-pin:  the same re-pin would re-read the same missing file and refuse
-#:  again.  It carries no seat because the seat is not what is broken.
+#:  again.  Both halves carry `--runtime fallback` for the same reason `MCODE_PIN_REMEDIATION`
+#:  does (a bare `--pin` would re-pin the PRIMARY runtime and keep the fallback refused), so the
+#:  string is safe to follow even when only the red line was copied.
 MCODE_PIN_UNREADABLE_REMEDIATION = (
     "restore the wake contract and result schema, then run "
-    "`agent-sync daemon test-wake --seat %s --runtime fallback --run` and `--pin`"
+    "`agent-sync daemon test-wake --seat %s --runtime fallback --run` and "
+    "`agent-sync daemon test-wake --seat %s --runtime fallback --pin`"
 )
 
 
@@ -1627,6 +1630,40 @@ def mcode_pin_cause(pin: Mapping[str, Any]) -> str:
     return "the fallback command, model, contract or schema changed (pinned %s)" % pin.get(
         "pinned_mcode"
     )
+
+
+def muse_pin_red_entry(pin: Mapping[str, Any], seat: str) -> str:
+    """The one-line red entry for a seat whose muse pin no longer matches, in the operator's words.
+
+    An unreadable contract is NOT fixed by re-pinning, so the line must not say "stale" (which
+    reads as "run --pin") and must not prefix "run" before the remediation (which begins with
+    "restore the wake contract").  Cause and remediation both live here so the wording is
+    testable without standing up a daemon.
+    """
+    cause = muse_pin_cause(pin)
+    remediation = (
+        MUSE_PIN_UNREADABLE_REMEDIATION % seat
+        if pin["why"] == "pin_unreadable"
+        else MUSE_PIN_REMEDIATION % (seat, seat)
+    )
+    label = "unverifiable" if pin["why"] == "pin_unreadable" else "stale"
+    verb = "" if pin["why"] == "pin_unreadable" else "run "
+    return "wake pin is %s: %s; %s%s" % (label, cause, verb, remediation)
+
+
+def mcode_pin_red_entry(pin: Mapping[str, Any], seat: str) -> str:
+    """The one-line red entry for a seat whose fallback pin no longer matches, in the operator's
+    words.  The shape mirrors `muse_pin_red_entry`:  unreadable contract is "unverifiable", the
+    remediation starts with its own verb and is not prefixed by "run"."""
+    cause = mcode_pin_cause(pin)
+    remediation = (
+        MCODE_PIN_UNREADABLE_REMEDIATION % (seat, seat)
+        if pin["why"] == "pin_unreadable"
+        else MCODE_PIN_REMEDIATION % (seat, seat)
+    )
+    label = "unverifiable" if pin["why"] == "pin_unreadable" else "stale"
+    verb = "" if pin["why"] == "pin_unreadable" else "run "
+    return "fallback pin is %s: %s; %s%s" % (label, cause, verb, remediation)
 
 
 def record_mcode_pin(
