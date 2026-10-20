@@ -501,26 +501,45 @@ class Bridge:
             log("bridge stopped")
 
 
-def main(argv=None):
+def build_parser():
+    """Build the argument parser.
+
+    The flags are the deployed contract (the launchd plist passes
+    --allow-sender), so every flag names its dest explicitly.  argparse would
+    otherwise derive allow_sender from --allow-sender and silently disagree
+    with the attribute the code reads.
+    """
     parser = argparse.ArgumentParser(description="Bridge a Lark chat to a MiniMax Code seat.")
-    parser.add_argument("--lark-cli", default=DEFAULT_LARK_CLI)
-    parser.add_argument("--mcode", default=DEFAULT_MCODE)
-    parser.add_argument("--cwd", default=DEFAULT_CWD, help="working directory for the seat")
-    parser.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
-    parser.add_argument("--event-log-dir", default=None, help="where lark-cli writes event files")
-    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--lark-cli", dest="lark_cli", default=DEFAULT_LARK_CLI)
+    parser.add_argument("--mcode", dest="mcode", default=DEFAULT_MCODE)
+    parser.add_argument("--cwd", dest="cwd", default=DEFAULT_CWD, help="working directory for the seat")
+    parser.add_argument("--state-dir", dest="state_dir", default=DEFAULT_STATE_DIR)
+    parser.add_argument(
+        "--event-log-dir",
+        dest="event_log_dir",
+        default=None,
+        help="where lark-cli writes event files",
+    )
+    parser.add_argument("--timeout", dest="timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument(
         "--allow-sender",
+        dest="allowed_sender",
         action="append",
         default=[],
         help="only answer this sender open_id; repeatable (default: answer anyone)",
     )
     parser.add_argument(
         "--bot-open-id",
+        dest="bot_open_id",
         default=None,
         help="the bot's own open_id; in a group chat the bot answers only when mentioned",
     )
-    parser.add_argument("--dry-run", action="store_true", help="log messages, do not answer")
+    parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="log messages, do not answer")
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     for tool, path in (("lark-cli", args.lark_cli), ("mcode", args.mcode)):

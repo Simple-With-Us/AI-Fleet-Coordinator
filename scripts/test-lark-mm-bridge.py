@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import unittest
@@ -19,6 +20,20 @@ SCRIPT = Path(__file__).resolve().parent / "lark-mm-bridge.py"
 spec = importlib.util.spec_from_file_location("lark_mm_bridge", SCRIPT)
 bridge_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge_mod)
+
+
+def make_args(argv=None, **overrides):
+    """Build a real Namespace from the bridge's own parser.
+
+    The tests used to hand-build a stand-in class instead, which let the code
+    and the parser drift apart without failing anything: the bridge read
+    args.allowed_sender while argparse produced args.allow_sender.  Building
+    from the real parser keeps the two honest.
+    """
+    args = bridge_mod.build_parser().parse_args(argv or [])
+    for key, value in overrides.items():
+        setattr(args, key, value)
+    return args
 
 
 class FakeProcess:
@@ -133,10 +148,6 @@ class BridgeTests(unittest.TestCase):
     def test_reply_truncates_and_marks(self):
         sent = {}
 
-        class Args:
-            lark_cli = "/bin/true"
-            env = None
-
         def fake_run(command, stdin_text=None, timeout=120, env=None):
             sent["command"] = command
             return ""
@@ -145,7 +156,7 @@ class BridgeTests(unittest.TestCase):
         bridge_mod.run = fake_run
         try:
             bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-            bridge.args = Args()
+            bridge.args = make_args(lark_cli="/bin/true")
             bridge.env = None
             bridge._reply("om_1", "x" * 5000)
         finally:
@@ -157,10 +168,6 @@ class BridgeTests(unittest.TestCase):
     def test_reply_uses_reply_command_and_bot_identity(self):
         sent = {}
 
-        class Args:
-            lark_cli = "/bin/true"
-            env = None
-
         def fake_run(command, stdin_text=None, timeout=120, env=None):
             sent["command"] = command
             return ""
@@ -169,7 +176,7 @@ class BridgeTests(unittest.TestCase):
         bridge_mod.run = fake_run
         try:
             bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-            bridge.args = Args()
+            bridge.args = make_args(lark_cli="/bin/true")
             bridge.env = None
             bridge._reply("om_42", "hello")
         finally:
@@ -183,10 +190,6 @@ class BridgeTests(unittest.TestCase):
     def test_empty_answer_still_replies(self):
         sent = {}
 
-        class Args:
-            lark_cli = "/bin/true"
-            env = None
-
         def fake_run(command, stdin_text=None, timeout=120, env=None):
             sent["command"] = command
             return ""
@@ -195,7 +198,7 @@ class BridgeTests(unittest.TestCase):
         bridge_mod.run = fake_run
         try:
             bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-            bridge.args = Args()
+            bridge.args = make_args(lark_cli="/bin/true")
             bridge.env = None
             bridge._reply("om_9", "   ")
         finally:
@@ -212,12 +215,8 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(bridge._mark_seen("om_b"))
 
     def test_bot_sender_is_ignored(self):
-        class Args:
-            allowed_sender = []
-            dry_run = False
-
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-        bridge.args = Args()
+        bridge.args = make_args()
         bridge.seen = set()
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
@@ -233,12 +232,8 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(bridge.turns.empty())
 
     def test_allowed_sender_filter(self):
-        class Args:
-            allowed_sender = ["ou_ok"]
-            dry_run = False
-
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-        bridge.args = Args()
+        bridge.args = make_args(["--allow-sender", "ou_ok"])
         bridge.seen = set()
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
@@ -264,14 +259,8 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(bridge.turns.qsize(), 1)
 
     def test_one_session_per_chat(self):
-        class Args:
-            mcode = "/bin/true"
-            cwd = "/tmp"
-            timeout = 5
-            env = None
-
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-        bridge.args = Args()
+        bridge.args = make_args(mcode="/bin/true", cwd="/tmp", timeout=5)
         bridge.env = None
         bridge.sessions = {}
         bridge.sessions_lock = threading.Lock()
@@ -317,13 +306,8 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(script.prompts, ["hello there"])
 
     def test_group_requires_mention(self):
-        class Args:
-            allowed_sender = []
-            bot_open_id = "ou_bot"
-            dry_run = False
-
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-        bridge.args = Args()
+        bridge.args = make_args(["--bot-open-id", "ou_bot"])
         bridge.seen = set()
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
@@ -353,13 +337,8 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(bridge.turns.qsize(), 1)
 
     def test_p2p_needs_no_mention(self):
-        class Args:
-            allowed_sender = []
-            bot_open_id = "ou_bot"
-            dry_run = False
-
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-        bridge.args = Args()
+        bridge.args = make_args(["--bot-open-id", "ou_bot"])
         bridge.seen = set()
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
@@ -375,6 +354,26 @@ class BridgeTests(unittest.TestCase):
             }
         )
         self.assertEqual(bridge.turns.qsize(), 1)
+
+    def test_parser_exposes_every_attribute_the_code_reads(self):
+        """Every self.args.<name> in the bridge must exist on a real Namespace.
+
+        The bridge used to crash on its first live message: it read
+        args.allowed_sender while argparse produced args.allow_sender.  The
+        old tests could not catch that because they hand-built the attribute
+        names the code expected instead of using the parser.
+        """
+        source = SCRIPT.read_text()
+        used = sorted(set(re.findall(r"self\.args\.([a-z_]+)", source)))
+        args = bridge_mod.build_parser().parse_args([])
+        missing = [name for name in used if not hasattr(args, name)]
+        self.assertEqual(missing, [], "the bridge reads args the parser never defines: %s" % missing)
+
+    def test_allow_sender_flag_reaches_allowed_sender_attribute(self):
+        args = bridge_mod.build_parser().parse_args(
+            ["--allow-sender", "ou_one", "--allow-sender", "ou_two"]
+        )
+        self.assertEqual(args.allowed_sender, ["ou_one", "ou_two"])
 
     def test_lark_env_prepends_cli_prefix(self):
         env = bridge_mod.lark_env()
