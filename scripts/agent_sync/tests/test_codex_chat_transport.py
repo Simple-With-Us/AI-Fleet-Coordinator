@@ -150,6 +150,18 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(self.adapter.preflight(dict(self.binding, cwd="/not-present")), "busy")
         self.assertEqual(self.calls, [])
 
+    def test_send_rechecks_workspace_availability(self):
+        # The workspace can unmount between preflight and send, and send() is callable directly.
+        self.assertEqual(
+            self.adapter.send(dict(self.binding, cwd="/not-present"), "nudge"), "deferred"
+        )
+        self.assertEqual(self.calls, [])
+        # A relative path never reaches the directory check and stays deferred rather than held.
+        self.assertEqual(
+            self.adapter.send(dict(self.binding, cwd="relative/workspace"), "nudge"), "deferred"
+        )
+        self.assertEqual(self.calls, [])
+
     def test_archived_unreadable_unknown_or_unloaded_refused(self):
         for key, value in [
             ("archived", True),

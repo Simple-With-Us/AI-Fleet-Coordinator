@@ -424,7 +424,14 @@ class CodexChatTransport:
             return False
 
     def send(self, binding, text, *, permit: Callable[[], bool] | None = None):
-        if not self._valid(binding) or not self._prerequisites() or self._full(binding):
+        # Repeat the workspace availability check preflight made: it can disappear between the
+        # two calls, and send() is reachable directly.  Deferred, not held, so the wake retries.
+        if (
+            not self._valid(binding)
+            or not os.path.isdir(binding["cwd"])
+            or not self._prerequisites()
+            or self._full(binding)
+        ):
             return "deferred"
         rpc = None
         sent = False
