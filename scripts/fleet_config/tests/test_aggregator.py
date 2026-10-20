@@ -146,8 +146,7 @@ class DoctorBoundsTests(unittest.TestCase):
 
     def test_a_doctor_that_answers_with_too_many_nodes_is_refused(self):
         notes = self.doctor_notes(
-            "import json\nprint(json.dumps(['x'] * %d))\n"
-            % (aggregator.MAX_DOCTOR_NODES + 10)
+            "import json\nprint(json.dumps(['x'] * %d))\n" % (aggregator.MAX_DOCTOR_NODES + 10)
         )
         self.assertEqual(len(notes), 1)
         self.assertIn("more than", notes[0])

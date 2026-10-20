@@ -381,14 +381,19 @@ class HookResolutionTests(FakeHookCase):
             json.dump(
                 {
                     "permissions": {
-                        "allow": ["Bash(rule %d)" % index for index in range(proof.MAX_CONFIG_ELEMENTS)]
+                        "allow": [
+                            "Bash(rule %d)" % index for index in range(proof.MAX_CONFIG_ELEMENTS)
+                        ]
                     },
                     "hooks": {
                         "PreToolUse": [
                             {
                                 "matcher": "Bash",
                                 "hooks": [
-                                    {"type": "command", "command": "/opt/lane-tools/lane-guard-hook"}
+                                    {
+                                        "type": "command",
+                                        "command": "/opt/lane-tools/lane-guard-hook",
+                                    }
                                 ],
                             }
                         ]
@@ -491,13 +496,7 @@ class SiblingEventTests(FakeHookCase):
             {
                 "hooks": {
                     "PreToolUse": [
-                        {
-                            "hooks": [
-                                {
-                                    "command": "/opt/lane-tools/lane-guard-hook --format claude"
-                                }
-                            ]
-                        }
+                        {"hooks": [{"command": "/opt/lane-tools/lane-guard-hook --format claude"}]}
                     ],
                     "PostToolUse": {"not": "a list"},
                 }
@@ -537,13 +536,7 @@ class SiblingEventTests(FakeHookCase):
                 "env": {"A_VARIABLE": "1"},
                 "hooks": {
                     "PreToolUse": [
-                        {
-                            "hooks": [
-                                {
-                                    "command": "/opt/lane-tools/lane-guard-hook --format claude"
-                                }
-                            ]
-                        }
+                        {"hooks": [{"command": "/opt/lane-tools/lane-guard-hook --format claude"}]}
                     ]
                 },
             },
@@ -563,13 +556,7 @@ class SiblingEventTests(FakeHookCase):
                 "mcpServers": {"one": deep},
                 "hooks": {
                     "PreToolUse": [
-                        {
-                            "hooks": [
-                                {
-                                    "command": "/opt/lane-tools/lane-guard-hook --format claude"
-                                }
-                            ]
-                        }
+                        {"hooks": [{"command": "/opt/lane-tools/lane-guard-hook --format claude"}]}
                     ]
                 },
             },
