@@ -229,10 +229,26 @@ async function refreshStatus(env, channel, topic) {
   return content;
 }
 
+function advanceRevision(previous, next) {
+  const prior = Number.isSafeInteger(previous?.transitionRevision)
+    ? previous.transitionRevision
+    : 0;
+  const changed =
+    previous?.phase !== next.phase || previous?.severity !== next.severity;
+  return { ...next, transitionRevision: prior + (changed ? 1 : 0) };
+}
+
 function transitionIdentity(key, action, previous, next) {
   // Refresh timestamps and descriptive metadata never create another delivery
   // identity for the same incident generation and severity transition.
-  return [key, action, previous?.phase, previous?.since, next.severity];
+  return [
+    key,
+    action,
+    previous?.phase,
+    previous?.since,
+    previous?.transitionRevision || 0,
+    next.severity,
+  ];
 }
 
 async function sendEventOnce(env, identity, args) {
@@ -274,6 +290,7 @@ async function handleEvent(source, payload, env) {
     minOpenMs: Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS,
   });
 
+  result.state = advanceRevision(prev, result.state);
   const inventory = await collectStates(env, channel, topic);
   if (
     !inventory.some((row) => row.key === event.key) &&
@@ -339,6 +356,7 @@ async function runSweep(env) {
     const prev = await env.ALERT_STATE.get(name, "json");
     const s = sweep(prev, now, { minOpenMs });
     if (!s) continue;
+    s.state = advanceRevision(prev, s.state);
     try {
       const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
       await sendEventOnce(
@@ -643,4 +661,5 @@ Object.assign(__testing, {
   handleEvent,
   sendEventOnce,
   transitionIdentity,
+  advanceRevision,
 });

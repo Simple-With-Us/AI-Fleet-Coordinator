@@ -381,3 +381,26 @@ test("incident refresh metadata cannot replay an unknown transition after crash"
     globalThis.fetch = original;
   }
 });
+test("real severity cycles advance delivery revision but ordinary refreshes do not", async () => {
+  const { advanceRevision, transitionIdentity } = __testing;
+  const initial = {
+    phase: "alerting",
+    since: 100,
+    severity: "MODERATE",
+    updated: 101,
+  };
+  const severe = advanceRevision(initial, { ...initial, severity: "SEVERE" });
+  const moderate = advanceRevision(severe, { ...severe, severity: "MODERATE" });
+  const second = advanceRevision(moderate, { ...moderate, severity: "SEVERE" });
+  assert.equal(severe.transitionRevision, 1);
+  assert.equal(second.transitionRevision, 3);
+  assert.notDeepEqual(
+    transitionIdentity("monitor", "update", initial, severe),
+    transitionIdentity("monitor", "update", moderate, second),
+  );
+  assert.equal(
+    advanceRevision(second, { ...second, updated: 999, text: "refresh" })
+      .transitionRevision,
+    3,
+  );
+});
