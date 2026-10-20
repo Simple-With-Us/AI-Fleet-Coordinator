@@ -24,6 +24,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parent
 SCRIPT = SCRIPTS / "muster-guard-live-proof.py"
@@ -119,6 +120,21 @@ class CheckMatcher(unittest.TestCase):
         self.assertEqual(result["shell_missed"], [])
         self.assertEqual(result["file_missed"], [])
 
+    def test_a_shell_only_matcher_passes(self):
+        # A guard that only polices shell tools is a valid configuration, not a failed
+        # check.  This tool's policy stage drives a shell canary, so a matcher that
+        # covers both shell spellings can prove exactly what this tool measures.
+        # Demanding the file spellings here failed a perfectly good plugin.
+        plugin = write_plugin(self.root, "bash|Bash", "/bin/true")
+        report = proof.read_plugin(plugin)
+        result = proof.check_matcher(report)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["shell_missed"], [])
+        # The file coverage is still reported, as information: a guard that also wants
+        # to police file tools needs those names, and the reader should be able to see
+        # whether it has them.
+        self.assertIn("Read", result["file_missed"])
+
     def test_no_pretooluse_handler(self):
         plugin = self.root / "empty"
         (plugin / ".claude-plugin").mkdir(parents=True)
@@ -187,6 +203,56 @@ class CanaryPayload(unittest.TestCase):
             self.assertIn("command", payload["tool_input"])
 
 
+class CheckDispatch(unittest.TestCase):
+    """Stage 3 must not report a runtime failure as a negative proof.
+
+    A check that could not run has proved nothing either way.  Reporting it as "the
+    guard did not fire" is worse than useless: it tells the operator to fix the guard
+    when the guard was never exercised, and it burns the exit code that says "could
+    not run" (2) on a false statement (1).
+    """
+
+    def test_a_missing_mcode_is_an_error_not_a_failure(self):
+        with mock.patch.object(proof.shutil, "which", return_value=None):
+            result = proof.check_dispatch("model", 5)
+        self.assertIsNone(result["ok"])
+        self.assertEqual(result["status"], proof.STATUS_ERROR)
+        self.assertIn("mcode", result["why"])
+
+    def test_a_timed_out_session_is_an_error_not_a_failure(self):
+        with (
+            mock.patch.object(proof.shutil, "which", return_value="/usr/bin/mcode"),
+            mock.patch.object(
+                proof.subprocess, "run", side_effect=proof.subprocess.TimeoutExpired("mcode", 5)
+            ),
+        ):
+            result = proof.check_dispatch("model", 5)
+        self.assertIsNone(result["ok"])
+        self.assertEqual(result["status"], proof.STATUS_ERROR)
+        self.assertIn("timed out", result["why"])
+
+    def test_a_session_that_cannot_start_is_an_error_not_a_failure(self):
+        with (
+            mock.patch.object(proof.shutil, "which", return_value="/usr/bin/mcode"),
+            mock.patch.object(proof.subprocess, "run", side_effect=OSError("no such file")),
+        ):
+            result = proof.check_dispatch("model", 5)
+        self.assertIsNone(result["ok"])
+        self.assertEqual(result["status"], proof.STATUS_ERROR)
+
+    def test_a_session_that_ran_without_denial_is_a_real_failure(self):
+        # The other side of the same coin: when the session really ran and the guard
+        # did not deny, that IS a negative proof and must keep the failure exit code.
+        with (
+            mock.patch.object(proof.shutil, "which", return_value="/usr/bin/mcode"),
+            mock.patch.object(proof.subprocess, "run") as run,
+        ):
+            run.return_value.returncode = 0
+            result = proof.check_dispatch("model", 5)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], proof.STATUS_FAIL)
+
+
 class Main(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -221,6 +287,21 @@ class Main(unittest.TestCase):
         self.assertIn("policy", report["stages"])
         self.assertIn("dispatch", report["stages"])
         self.assertIn("verdict", report)
+
+    def test_an_unreadable_plugin_exits_two_not_one(self):
+        # The tool could not evaluate the plugin, so it says nothing about the guard.
+        # The documented contract is exit 2 for "could not run the check at all", and
+        # exit 1 is a statement that the guard was tested and did not fire.
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = proof.main(["--plugin-dir", str(self.root / "absent"), "--skip-live", "--json"])
+        self.assertEqual(code, 2)
+        report = json.loads(buf.getvalue())
+        self.assertEqual(report["stages"]["dispatch"]["status"], proof.STATUS_ERROR)
+        self.assertTrue(report["verdict"].startswith("INCOMPLETE"))
 
 
 if __name__ == "__main__":
