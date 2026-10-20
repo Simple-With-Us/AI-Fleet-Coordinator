@@ -410,8 +410,99 @@ class BridgeTests(unittest.TestCase):
         session.buffer_lock = threading.Lock()
         self.assertEqual(session._collect_text({}), "snake_case answer and a flat one")
 
+    def test_a_malformed_update_shape_does_not_fail_the_turn(self):
+        """A frame whose params or content is not text is skipped, not fatal.
+
+        extract_agent_text tolerates both, and this parser used to call .get on
+        whatever arrived: a string params or content raised out of prompt(),
+        the turn read it as a dead session and Lark got "MM could not answer"
+        instead of the answer sitting in the same buffer.
+        """
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = [
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": "a bare string chunk",
+                },
+            },
+            {
+                "method": "session/update",
+                "params": "not an object",
+            },
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"text": "no type key"},
+                },
+            },
+            update("agent_message_chunk", " plus the answer"),
+        ]
+        session.buffer_lock = threading.Lock()
+        self.assertEqual(
+            session._collect_text({}), "a bare string chunkno type key plus the answer"
+        )
+
+    def test_a_non_object_acp_frame_does_not_stop_the_pump(self):
+        """A scalar frame is dropped, and the ones after it still land."""
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+        for frame in (7, None, "nope", [1, 2]):
+            session._handle_message(frame)
+        session._handle_message(update("agent_message_chunk", "still here"))
+        self.assertEqual(session._collect_text({}), "still here")
+
+    def test_a_frame_that_raises_does_not_stop_the_pump(self):
+        """One unroutable frame is logged and the stream carries on.
+
+        _pump is the session's only reader, so an exception out of one frame
+        used to end the thread and leave every later _call waiting for a
+        response that could not arrive until the prompt timed out.
+        """
+        lines = [
+            json.dumps(update("agent_message_chunk", "first")),
+            "not json at all",
+            json.dumps({"method": "session/update", "params": "not an object"}),
+            json.dumps(update("agent_message_chunk", "second")),
+        ]
+
+        class FakeStdout:
+            def __iter__(self):
+                return iter(lines)
+
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.process = type("P", (), {"stdout": FakeStdout()})()
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+
+        seen = []
+        original = session._handle_message
+
+        def route(message):
+            seen.append(message)
+            if len(seen) == 1:
+                raise ValueError("unroutable frame")
+            original(message)
+
+        session._handle_message = route
+        session._pump()
+        self.assertEqual(len(seen), 3)
+        # The frame that raised never reached the buffer; the malformed params
+        # one landed there and is dropped by the shape check; the last is the
+        # answer.
+        self.assertEqual(session._collect_text({}), "second")
+
     def test_thought_chunks_are_not_answered_to_lark(self):
-        """Private reasoning never reaches the chat surface."""
+        """Private reasoning never reaches the chat surface.
+
+        The flat params shape is asserted here too: the private-reasoning
+        exclusion must hold on the branch where update is params itself, or a
+        later simplification would stream the seat's thinking into Lark with
+        this suite still green.
+        """
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
         session.buffer = [
             {
@@ -421,6 +512,20 @@ class BridgeTests(unittest.TestCase):
                         "sessionUpdate": "agent_thought_chunk",
                         "content": {"type": "text", "text": "thinking about it"},
                     }
+                },
+            },
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "private reasoning"},
+                },
+            },
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "the owner's own words"},
                 },
             },
             {

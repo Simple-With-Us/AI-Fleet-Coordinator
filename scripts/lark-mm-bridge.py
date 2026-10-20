@@ -366,7 +366,13 @@ class MiniMaxSession:
                 message = json.loads(line)
             except ValueError:
                 continue
-            self._handle_message(message)
+            # This is the session's only reader, so a frame that raises here
+            # would stall every later _call until the prompt timed out.  One
+            # malformed frame is skipped; the stream carries on.
+            try:
+                self._handle_message(message)
+            except Exception as exc:
+                log("ACP frame not handled: %s" % type(exc).__name__)
 
     def _handle_message(self, message):
         """Route one message from the ACP server.
@@ -375,6 +381,11 @@ class MiniMaxSession:
         client.  A message with neither is a notification, and a message with
         an id and no method is the response to one of our calls.
         """
+        # A JSON scalar or a list decodes fine and is not a JSON-RPC message;
+        # reading its fields would raise a TypeError with no frame in it.
+        if not isinstance(message, dict):
+            log("ignoring an ACP frame that is not an object")
+            return
         if "method" in message and "id" in message:
             # Buffering it instead of answering leaves the turn waiting for a
             # reply that never comes until session/prompt times out.
@@ -512,14 +523,26 @@ class MiniMaxSession:
             # always nested, so the strict form turned every deviation into an
             # empty reply instead of a partial answer.  Mirrors
             # extract_agent_text in scripts/grok-acp-runtime/leader-client.py.
+            # Every shape is checked before it is read: a scalar params or a
+            # string content raised AttributeError out of prompt(), which the
+            # turn counted as a failed session and answered with "MM could
+            # not answer" instead of the seat's text.
             params = message.get("params") or {}
+            if not isinstance(params, dict):
+                continue
             update = params.get("update") if isinstance(params.get("update"), dict) else params
             kind = update.get("sessionUpdate") or update.get("session_update") or ""
             if kind != "agent_message_chunk":
                 continue
             content = update.get("content") or {}
-            if content.get("type") == "text" and content.get("text"):
-                text += content["text"]
+            if isinstance(content, str):
+                text += content
+            elif isinstance(content, dict):
+                # The type key is optional in the shapes the seat has shipped,
+                # so a content block that carries text is text.
+                chunk = content.get("text")
+                if chunk and content.get("type", "text") == "text":
+                    text += chunk
         return text
 
     def prompt(self, message):
@@ -828,7 +851,10 @@ class Bridge:
             self._record_delivery(message_id, "refused")
             return True
         except DeliveryError as exc:
-            log("reply failed for %s: outcome=%s detail=%s" % (message_id, exc.outcome, exc.detail))
+            # Only the message id and the normalised outcome: exc.detail is the
+            # raw tail of lark-cli's stderr and can carry a third-party
+            # response body, request fields or headers into the log.
+            log("reply failed for %s: outcome=%s" % (message_id, exc.outcome))
             if exc.outcome == "terminal":
                 self._record_delivery(message_id, "refused")
                 return True
@@ -859,6 +885,10 @@ class Bridge:
             # closes the pipe, which ends the read.
             reader.stop()
 
+        previous = {
+            signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+            signal.SIGINT: signal.getsignal(signal.SIGINT),
+        }
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
 
@@ -868,14 +898,20 @@ class Bridge:
                     break
                 self._handle(event)
         finally:
-            reader.stop()
-            with self.sessions_lock:
-                sessions = list(self.sessions.values())
-                self.sessions.clear()
-            for session in sessions:
-                session.close()
-            self._save_state()
-            log("bridge stopped")
+            try:
+                reader.stop()
+                with self.sessions_lock:
+                    sessions = list(self.sessions.values())
+                    self.sessions.clear()
+                for session in sessions:
+                    session.close()
+                self._save_state()
+                log("bridge stopped")
+            finally:
+                # run() can be called more than once in a test or an embedder,
+                # and the bridge's handlers must not outlive it.
+                for signum, handler in previous.items():
+                    signal.signal(signum, handler)
 
 
 def build_parser():
