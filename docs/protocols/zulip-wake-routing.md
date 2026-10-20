@@ -51,7 +51,7 @@ The chat catalog is not a universal wake transport.  It can list stores that do 
 
 ### Codex Delivery
 
-Codex does not currently have a native Zulip listener.  Its Zulip bot can receive an addressed message through Agent-Sync, but a durable inbox receipt alone does not wake a Codex app conversation.  That last hop requires an explicit, verified adapter that can locate and safely nudge an existing Codex task.  Until that adapter exists and is enabled, Muse may route to another supported existing chat or leave the message in the Codex inbox; it must not invent a task or pretend the Codex conversation was woken.
+Codex receives Zulip through Operator, the existing Agent-Sync listener.  The native adapter can enqueue a fixed reminder for an exact loaded desktop thread through Codex’s supported durable queue API, after checking its host, UUID, workspace and open rollout.  Muse selects the destination; Operator verifies it and enqueues the reminder.  Queue acknowledgment and actual turn pickup are separate receipts.  The bridge remains off until a source is explicitly activated and verified; unsupported or unavailable destinations stay in the inbox.  See [Native Codex Wake Delivery](native-codex-wakes.md) for the transport and activation contract.
 
 ## Related Files
 

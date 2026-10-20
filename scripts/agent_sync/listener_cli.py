@@ -185,12 +185,21 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         if not getattr(args, "target_seat", None) or Z.normalise_seat(args.target_seat) not in (
             "GROK",
             "CURSOR",
+            "CODEX",
         ):
-            raise Z.UsageError("daemon chats requires --target-seat GROK or CURSOR")
+            raise Z.UsageError("daemon chats requires --target-seat GROK, CURSOR or CODEX")
         registry = CN.ChatNudges(root, Z.normalise_seat(args.target_seat), recover=False)
         action = args.chats_action
         if action == "list":
-            if Z.normalise_seat(args.target_seat) == "CURSOR":
+            if Z.normalise_seat(args.target_seat) == "CODEX":
+                from .chat_catalog import ChatCatalog
+
+                rows = [
+                    row
+                    for row in ChatCatalog(home=_home(rt), max_records=120).discover()
+                    if row.get("platform") == "codex"
+                ]
+            elif Z.normalise_seat(args.target_seat) == "CURSOR":
                 from .cursor_chat_transport import CursorCloudTransport
 
                 rows = CursorCloudTransport().discover()
@@ -226,7 +235,7 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         if action == "bind":
             if Z.normalise_seat(args.target_seat) != "GROK":
                 raise Z.UsageError(
-                    "manual binding currently requires GROK; Cursor Cloud uses catalog selection"
+                    "manual binding currently requires GROK; Cursor Cloud and Codex use catalog selection"
                 )
             host = socket.gethostname()
             target = next(
@@ -1385,7 +1394,7 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     c.add_argument("--chat-id", required=True)
     for action in ("list", "status"):
         c = csub.add_parser(action, parents=[common])
-        c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR")
+        c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR|CODEX")
     c = csub.add_parser("bind", parents=[common])
     c.add_argument("--target-seat", required=True, metavar="GROK")
     c.add_argument("--channel", required=True)
@@ -1393,11 +1402,11 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     c.add_argument("--session-id", required=True)
     c.add_argument("--cwd", required=True)
     c = csub.add_parser("unbind", parents=[common])
-    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR")
+    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR|CODEX")
     c.add_argument("--channel", required=True)
     c.add_argument("--topic", required=True)
     c = csub.add_parser("cancel", parents=[common])
-    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR")
+    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR|CODEX")
     c.add_argument("--item-id", required=True)
     q = add("init", "pin owner_user_id and eligible_user_ids in listener.toml (asks first)", dsub)
     q.add_argument(
