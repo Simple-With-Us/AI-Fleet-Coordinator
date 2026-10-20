@@ -314,20 +314,37 @@ class ApplyTests(FleetTestCase):
 class TouchIdGateTests(FleetTestCase):
     """The gate itself:  fail closed,  and the test override is refused in production."""
 
-    def fake_helper(self, body: str, sign: bool = True) -> str:
+    def fake_helper(self, body: str, sign: str = "adhoc") -> str:
         """A fake helper script that exits with the code `body` asks for.
 
-        The helper is signed ad hoc when codesign is available, because the gate
-        refuses an unsigned helper.  codesign is a macOS tool, so on another platform
-        the helper is left unsigned and the signing-dependent test skips;  the gate
-        still refuses it, which is the same outcome.
+        `sign` says how the helper is signed:  "none" leaves it unsigned, "adhoc" gives
+        it an ad-hoc signature.  The gate accepts NEITHER as trusted,  because an
+        ad-hoc signature is something anyone can produce,  so the tests that need a
+        helper the gate accepts stub the trust check itself.
         """
         path = self.root / "fake-gate.sh"
         path.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
         path.chmod(0o755)
-        if sign and os.path.exists("/usr/bin/codesign"):
+        if sign == "adhoc" and os.path.exists("/usr/bin/codesign"):
             subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(path)], check=True)
         return str(path)
+
+    def trusted_helper(self, body: str) -> str:
+        """A fake helper the gate accepts, with the trust check stubbed out.
+
+        The real gate requires a Developer ID or Apple signature,  which a test
+        machine cannot produce,  so the trust decision is replaced and the REST of the
+        gate is exercised for real.
+        """
+        path = self.fake_helper(body, sign="none")
+        original = touchid.helper_is_signed
+
+        def trusted(candidate: str) -> bool:
+            return candidate == path or original(candidate)
+
+        touchid.helper_is_signed = trusted  # type: ignore[assignment]
+        self.addCleanup(setattr, touchid, "helper_is_signed", original)
+        return path
 
     @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_a_missing_helper_refuses(self):
@@ -336,14 +353,34 @@ class TouchIdGateTests(FleetTestCase):
         self.assertEqual(caught.exception.reason, "missing")
 
     def test_an_unsigned_helper_refuses(self):
-        path = self.fake_helper("exit 0", sign=False)
+        path = self.fake_helper("exit 0", sign="none")
         with self.assertRaises(touchid.TouchIdError) as caught:
             touchid.confirm("apply the change", helper=path)
         self.assertEqual(caught.exception.reason, "not-signed")
 
+    def test_an_ad_hoc_signed_helper_refuses(self):
+        # An ad-hoc signature is something anyone can produce,  so accepting it would
+        # make the signature check no check at all.
+        path = self.fake_helper("exit 0", sign="adhoc")
+        with self.assertRaises(touchid.TouchIdError) as caught:
+            touchid.confirm("apply the change", helper=path)
+        self.assertEqual(caught.exception.reason, "not-signed")
+
+    def test_the_environment_cannot_name_the_helper(self):
+        # The gate exists to stop a process that can set the environment for the
+        # command from applying a persistence-class write unattended.  A stand-in
+        # binary that exits 0 would defeat it,  so the helper path is never read from
+        # the environment.
+        path = self.fake_helper("exit 0", sign="adhoc")
+        os.environ["FLEET_CONFIG_TOUCHID_HELPER"] = path
+        self.addCleanup(os.environ.pop, "FLEET_CONFIG_TOUCHID_HELPER", None)
+        self.assertNotIn(path, touchid.helper_candidates())
+        with self.assertRaises(touchid.TouchIdError):
+            touchid.confirm("apply the change")
+
     @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_a_helper_that_fails_refuses(self):
-        path = self.fake_helper("echo 'the owner cancelled' >&2\nexit 3")
+        path = self.trusted_helper("echo 'the owner cancelled' >&2\nexit 3")
         with self.assertRaises(touchid.TouchIdError) as caught:
             touchid.confirm("apply the change", helper=path)
         self.assertEqual(caught.exception.reason, "cancelled")
@@ -351,7 +388,7 @@ class TouchIdGateTests(FleetTestCase):
 
     @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_an_unavailable_touch_id_refuses_with_an_actionable_reason(self):
-        path = self.fake_helper("echo 'Touch ID is not enrolled on this Mac' >&2\nexit 2")
+        path = self.trusted_helper("echo 'Touch ID is not enrolled on this Mac' >&2\nexit 2")
         with self.assertRaises(touchid.TouchIdError) as caught:
             touchid.confirm("apply the change", helper=path)
         self.assertEqual(caught.exception.reason, "unavailable")
@@ -359,19 +396,19 @@ class TouchIdGateTests(FleetTestCase):
 
     @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_a_successful_helper_allows_the_write(self):
-        path = self.fake_helper("exit 0")
+        path = self.trusted_helper("exit 0")
         self.assertIsNone(touchid.confirm("apply the change", helper=path))
 
     @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_the_environment_override_alone_never_bypasses_the_gate(self):
-        path = self.fake_helper("echo 'no' >&2\nexit 3")
+        path = self.trusted_helper("echo 'no' >&2\nexit 3")
         env = {touchid.TEST_BYPASS_ENV: "1"}
         with self.assertRaises(touchid.TouchIdError):
             touchid.confirm("apply the change", helper=path, env=env)
 
     @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_the_test_bypass_works_only_when_the_caller_asks_for_it(self):
-        path = self.fake_helper("echo 'no' >&2\nexit 3")
+        path = self.trusted_helper("echo 'no' >&2\nexit 3")
         env = {touchid.TEST_BYPASS_ENV: "1"}
         self.assertIsNone(
             touchid.confirm("apply the change", helper=path, env=env, test_bypass=True)

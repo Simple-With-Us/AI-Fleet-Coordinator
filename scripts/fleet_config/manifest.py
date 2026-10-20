@@ -164,16 +164,47 @@ def _parse_rule(raw: object, seat: str) -> Rule:
             sha256=expected_raw.get("sha256"),
             names=_str_tuple(expected_raw.get("names"), "rule %s expected names" % rule_id),
             mode=expected_raw.get("mode"),
-            timeout_seconds=expected_raw.get("timeoutSeconds"),
+            timeout_seconds=_int_field(
+                expected_raw.get("timeoutSeconds"),
+                None,
+                "rule %s expected timeoutSeconds" % rule_id,
+            ),
         ),
         proof_level=_enum(ProofLevel, raw.get("proofLevel"), "rule %s proofLevel" % rule_id),
         owner_seat=str(raw.get("ownerSeat") or ""),
         autofix_allowed=bool(raw.get("autofixAllowed")),
         seat=seat,
         collector=_enum(Collector, raw.get("collector") or "mac", "rule %s collector" % rule_id),
-        ttl_seconds=int(raw.get("ttlSeconds") or 900),
+        ttl_seconds=_int_field(raw.get("ttlSeconds"), 900, "rule %s ttlSeconds" % rule_id),
         description=str(raw.get("description") or ""),
     )
+
+
+def _int_field(value: object, default: int | None, what: str) -> int | None:
+    """An integer field from the manifest, or ManifestError naming the field.
+
+    ``int()`` on a non-numeric string raises a bare ``ValueError``, and
+    ``ManifestError`` is a SUBCLASS of ``ValueError``, so a caller that catches
+    ``ManifestError`` never catches it.  The CLI would then die with a traceback on a
+    manifest with ``"ttlSeconds": "abc"``, and a consumer reads the exit code as a
+    failing verdict rather than the refused run a bad manifest is.  Every integer field
+    goes through here.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ManifestError("%s must be a number, not %r" % (what, value))
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return default
+        try:
+            return int(text)
+        except ValueError:
+            raise ManifestError("%s must be a number, not %r" % (what, value)) from None
+    raise ManifestError("%s must be a number, not %r" % (what, value))
 
 
 def _parse_seat(tag: str, raw: object) -> SeatManifest:

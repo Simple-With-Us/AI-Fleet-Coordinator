@@ -568,16 +568,35 @@ def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
 
 
 def default_hook_command(platform: str, ctx: CheckContext) -> str:
-    """The stable-dir fleet hook command, used when the platform's config names none.
+    """The stable-dir fleet hook command, for a platform whose config names none.
 
     The stable dir is ``<home>/apps/lane-tools`` and the hook is ``fleet-guard-hook``,
-    the lane guard and the secret guard in one command.  This is a fallback:  a
-    platform that names its own hook is proved with the command it names.
+    the lane guard and the secret guard in one command.
+
+    This is a fallback for a platform that has NO hook config to read at all.  It is
+    NOT a fallback for a config that exists but names no guard hook:  that means the
+    platform would run something else,  and proving the stable-dir hook would be a
+    false PASS.  The caller distinguishes the two cases,  and a config that cannot be
+    read at all fails closed.
     """
     adapter = PLATFORM_ADAPTERS.get(platform)
     fmt = adapter.hook_format if adapter is not None else "claude"
     shim = os.path.join(os.fspath(ctx.home), "apps", "lane-tools", "fleet-guard-hook")
     return "%s --format %s" % (shlex.quote(shim), fmt)
+
+
+def hook_config_exists(platform: str, ctx: CheckContext) -> bool:
+    """True when the platform HAS a hook config file to read.
+
+    The L1 probe uses this to tell "this platform has no hook surface" (which the
+    stable-dir fallback can prove) from "this platform has a hook config and it does
+    not name the guard" (which the fallback must not paper over).
+    """
+    adapter = PLATFORM_ADAPTERS.get(platform)
+    if adapter is None or not adapter.config_rel:
+        return False
+    path = os.path.join(os.fspath(ctx.home), adapter.config_rel)
+    return os.path.isfile(path)
 
 
 def _probe_env(ctx: CheckContext) -> dict[str, str]:
@@ -922,9 +941,22 @@ def run_l1_probe(
             detail="",
             achieved=None,
         )
-    command = (
-        hook_command or resolve_hook_command(platform, ctx) or default_hook_command(platform, ctx)
-    )
+    if hook_command:
+        command = hook_command
+    else:
+        command = resolve_hook_command(platform, ctx)
+        if not command:
+            # A platform that HAS a hook config but does not name the guard hook would
+            # run something else,  so proving the stable-dir hook would be a false
+            # PASS.  The fallback is only honest for a platform with no hook config at
+            # all,  which is the platform whose hook lives in a plugin or a bundle.
+            if hook_config_exists(platform, ctx):
+                raise CheckError(
+                    "the hook config of the platform %r names no guard hook,  so there is "
+                    "nothing installed to prove" % platform,
+                    ReasonCode.PROOF_FAILED,
+                )
+            command = default_hook_command(platform, ctx)
     fmt = hook_format(command, platform)
     budget = int(timeout) if timeout else int(ctx.timeout or 10)
     env = _probe_env(ctx)

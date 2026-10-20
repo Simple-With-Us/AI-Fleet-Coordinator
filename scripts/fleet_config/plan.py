@@ -180,15 +180,21 @@ def _tools_installer(platform: str) -> Installer | None:
     )
 
 
-def _mcp_installer(platform: str) -> Installer | None:
+def _mcp_installer(platform: str, expected_names: tuple[str, ...] = ()) -> Installer | None:
     """The installer that registers a platform's MCP servers, or None."""
     target = MCP_TARGETS.get(platform)
     if target is None:
         return None
     path = MCP_FILES.get(target)
+    argv = ["python3", "-m", "fleet_lanes.install_mcp", "apply", target]
+    if "agent-sync" in expected_names and target != "opencode":
+        # install_mcp registers fleet-recall only unless --with-agent-sync is given, so
+        # without it a rule that expects agent-sync can never reach PASS.  The
+        # installer's own note forbids the flag for opencode,  which registers its own.
+        argv.append("--with-agent-sync")
     return Installer(
         key="install_mcp",
-        argv=("python3", "-m", "fleet_lanes.install_mcp", "apply", target),
+        argv=tuple(argv),
         files=(path,) if path else (),
         note="registers the fleet MCP servers in the platform's MCP config",
     )
@@ -202,6 +208,11 @@ def installer_for(rule: Rule, platform: str | None = None) -> Installer | None:
     marked as not auto-fixable,  with the reason,  rather than dropped.
     """
     target = platform if platform is not None else (rule.platforms[0] if rule.platforms else "")
+    if rule.expected.present is False:
+        # The desired state is that the target is ABSENT,  so no installer can make this
+        # change:  every installer here creates the thing the rule forbids.  Handing one
+        # of them the rule would let apply write exactly what the manifest forbids.
+        return None
     if rule.kind is ConfigKind.INSTRUCTIONS:
         if rule.check.type is not CheckType.MARKED_BLOCK_HASH:
             return None
@@ -209,7 +220,7 @@ def installer_for(rule: Rule, platform: str | None = None) -> Installer | None:
     if rule.kind is ConfigKind.HOOKS:
         return _tools_installer(target)
     if rule.kind is ConfigKind.MCP:
-        return _mcp_installer(target)
+        return _mcp_installer(target, tuple(rule.expected.names))
     return None
 
 

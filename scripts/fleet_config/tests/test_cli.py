@@ -141,7 +141,7 @@ class CliTests(FleetTestCase):
         self.assertEqual(code, cli.EXIT_FAIL)
         self.assertIn("verdict: FAIL", out)
 
-    def test_an_unknown_verdict_exits_two_and_not_zero(self):
+    def test_an_unknown_verdict_exits_three_and_not_zero(self):
         registry = registry_with({})
         code, out, _err = self.run_cli(self.base("status"), registry)
         self.assertEqual(code, cli.EXIT_UNKNOWN)

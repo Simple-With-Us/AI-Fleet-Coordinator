@@ -583,6 +583,11 @@ def check_hook_registered(rule: Rule, platform: str, ctx: CheckContext) -> Check
         )
 
     if not os.path.exists(path):
+        # A rule that says "no hook is registered" is satisfied by an absent file:
+        # there is no hook there either.  It is NOT the same as a rule that says the
+        # FILE must be absent,  which is what `expected.present is False` means
+        # elsewhere in this package,  so the absence here is always a MISSING unless
+        # the rule names no hook at all.
         return build_result(
             rule,
             platform,

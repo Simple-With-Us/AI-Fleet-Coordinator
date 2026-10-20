@@ -87,19 +87,24 @@ def _package_dir() -> str:
 def helper_candidates() -> tuple[str, ...]:
     """The places the helper may live, most specific first.
 
-    The candidates are fixed paths the package owns,  the repo-local build first and the
-    system path last.  Nothing here comes from the environment,  because a stand-in
-    binary named by an environment variable could confirm the write by exiting 0 and so
-    bypass the gate;  a test passes its own path to ``confirm`` as an argument instead.
+    The paths are FIXED.  The helper is never named by an environment variable, because
+    the gate's whole purpose is to stop a process that can set the environment for the
+    command from applying a persistence-class write unattended.  A stand-in binary that
+    exits 0 would defeat the gate, and an ad-hoc signature satisfies ``codesign
+    --verify --strict``, so a caller-controlled path is a bypass, not a convenience.
+
+    The repo-local build comes first, then the system path.  A caller that needs a
+    different binary passes it as the explicit ``helper`` argument to ``confirm``, which
+    is a code path, not an ambient setting.
     """
-    candidates: list[str] = []
     base = os.path.join(_package_dir(), "touchid_helper")
-    candidates.append(os.path.join(base, "build", "Build", "Products", "Release", "TouchIDGate"))
-    candidates.append(os.path.join(base, "build", "Build", "Products", "Debug", "TouchIDGate"))
-    candidates.append(os.path.join(base, "build", "Release", "TouchIDGate"))
-    candidates.append(os.path.join(base, "build", "Debug", "TouchIDGate"))
-    candidates.append("/usr/local/bin/fleet-touchid-gate")
-    return tuple(candidates)
+    return (
+        os.path.join(base, "build", "Build", "Products", "Release", "TouchIDGate"),
+        os.path.join(base, "build", "Build", "Products", "Debug", "TouchIDGate"),
+        os.path.join(base, "build", "Release", "TouchIDGate"),
+        os.path.join(base, "build", "Debug", "TouchIDGate"),
+        "/usr/local/bin/fleet-touchid-gate",
+    )
 
 
 def helper_path() -> str | None:
@@ -112,6 +117,12 @@ def helper_path() -> str | None:
 
 def helper_is_signed(path: str) -> bool:
     """True when the helper carries a code signature macOS will accept.
+
+    The signature must be a REAL one:  an ad-hoc signature (``codesign --sign -``) passes
+    ``codesign --verify --strict``, and anyone can produce one, so accepting it would
+    make the signature check no check at all.  The gate therefore requires a Developer ID
+    or an Apple signature, and it reads the AUTHORITY rather than trusting the exit code
+    alone.
 
     A missing ``codesign`` counts as unsigned, so the gate fails closed on a machine
     where the check cannot be made.
@@ -129,7 +140,34 @@ def helper_is_signed(path: str) -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+    return _has_trusted_authority(path)
+
+
+def _has_trusted_authority(path: str) -> bool:
+    """True when the helper's signature chains to a Developer ID or an Apple authority.
+
+    ``codesign --verify`` accepts an ad-hoc signature, so the exit code alone cannot
+    answer this question.  ``codesign -dvv`` prints the authority lines, and an ad-hoc
+    signature has none.
+    """
+    codesign = shutil.which("codesign") or "/usr/bin/codesign"
+    try:
+        result = subprocess.run(
+            [codesign, "--display", "--verbose=4", path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    text = (result.stdout or b"") + (result.stderr or b"")
+    decoded = text.decode("utf-8", "replace")
+    if "Signature=adhoc" in decoded:
+        return False
+    return "Authority=" in decoded
 
 
 def _test_bypass_allowed(env: Mapping[str, str], test_bypass: bool) -> bool:

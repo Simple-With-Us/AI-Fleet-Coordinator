@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -139,15 +140,36 @@ class ApplyResult:
         return "\n".join(lines) + "\n"
 
 
+def scripts_dir() -> str:
+    """The directory the installer engines live in.
+
+    The installers are run as ``python3 -m fleet_lanes.install_rules``,  which only
+    resolves when that package's parent directory is on the module path.  The parent
+    directory of this package IS that directory,  so the child runs with it as its
+    working directory.
+    """
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def default_runner(argv: Sequence[str], timeout: int = DEFAULT_TIMEOUT) -> tuple[int, str, str]:
     """Run an installer as a child process and answer (returncode, stdout, stderr).
+
+    The child runs with the scripts directory as its working directory and with the
+    interpreter that is running this process,  the way ``aggregator.run_doctors``
+    already does.  Running it in the caller's directory instead makes
+    ``python3 -m fleet_lanes.install_rules`` fail with "No module named fleet_lanes",
+    and the failure would be attributed to the installer rather than to the invocation.
 
     The child inherits the environment,  so the installer sees the same PATH and HOME the
     caller had.  A timeout is a failure,  not a hang.
     """
+    command = list(argv)
+    if command and command[0] == "python3":
+        command[0] = sys.executable
     try:
         result = subprocess.run(
-            list(argv),
+            command,
+            cwd=scripts_dir(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,

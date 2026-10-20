@@ -18,17 +18,17 @@ Exit codes:
 
     0   the verdict is PASS
     1   the verdict is FAIL
-    2   the verdict is UNKNOWN
-    3   the run was refused (a bad manifest,  or a refused Touch ID confirmation)
+    2   the run was refused (a bad manifest,  or a refused Touch ID confirmation)
+    3   the verdict is UNKNOWN
     64  a usage error
 
 UNKNOWN is not 0 on purpose.  The verdict is the fail-closed summary of the whole run:
 a check that could not produce a trustworthy answer is not a pass,  so a run that holds
 one cannot verdict PASS.  Exiting 0 for an UNKNOWN run would let a caller read "nothing
 is wrong" from a run that proved nothing,  which is the one thing this engine must never
-say.  The design document (section 4) assigns 3 to UNKNOWN and 2 to a refused run;  this
-lane's task pins UNKNOWN to 2,  so the two numbers are swapped against that document.
-They live in the constants below,  so reconciling them is a one-line change.
+say.  The design document (section 4) assigns 3 to UNKNOWN and 2 to a refused run,  and
+those are the numbers below,  following the ``fleet_knobs`` precedent for an unreachable
+source.
 """
 
 from __future__ import annotations
