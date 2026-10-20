@@ -16,6 +16,7 @@ import os
 import re
 import signal
 import socket
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from . import config as C
 from . import heldback as HELD
 from . import identity as I
 from . import launchd
+from . import systemd
 from . import listener_records as LR
 from . import live as L
 from . import wakes as W
@@ -258,12 +260,19 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         return Daemon(env=env, root=root, home=_home(rt), stderr=rt.stderr, stdout=rt.stdout).run(
             wait_lock=bool(getattr(args, "wait_lock", False))
         )
+    if sub in ("install", "uninstall"):
+        if sys.platform == "darwin":
+            service = launchd
+        elif sys.platform.startswith("linux"):
+            service = systemd
+        else:
+            raise Z.UsageError("daemon installation supports only macOS and Linux")
     if sub == "install":
-        return launchd.install(
+        return service.install(
             rt.env, _home(rt), rt.stdout, dry_run=args.dry_run, python=args.python, program=args.bin
         )
     if sub == "uninstall":
-        return launchd.uninstall(_home(rt), rt.stdout, dry_run=args.dry_run)
+        return service.uninstall(_home(rt), rt.stdout, dry_run=args.dry_run)
     if sub == "status":
         return cmd_status(rt, args)
     if sub == "pause":
@@ -325,6 +334,8 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
         "plugin": {"repo": repo_version, "installed": installed_plugin_version(home)},
         "launch_agent": os.path.exists(launchd.plist_path(home)),
     }
+    if sys.platform.startswith("linux"):
+        info["systemd_user_service"] = systemd.status(home)
     probe_result: dict[str, Any] | None = None
     if getattr(args, "probe", False):
         probe_result = run_probe(rt, args, root, bool(pid))
@@ -336,11 +347,17 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
         "listener: %s%s"
         % ("running" if pid else "not running", " (pid %d)" % pid if pid and pid > 0 else "")
     ]
-    lines.append(
-        "LaunchAgent: %s" % ("installed" if info["launch_agent"] else "not installed")
-        + "; plugin: repo %s, installed %s"
-        % (repo_version or "?", info["plugin"]["installed"] or "no")
-    )
+    if "systemd_user_service" in info:
+        service_info = info["systemd_user_service"]
+        lines.append("systemd user service: %s; state: %s" % (
+            "installed" if service_info["installed"] else "not installed",
+            service_info["active_state"]))
+    plugin_line = "plugin: repo %s, installed %s" % (
+        repo_version or "?", info["plugin"]["installed"] or "no")
+    if sys.platform == "darwin":
+        plugin_line = "LaunchAgent: %s; " % (
+            "installed" if info["launch_agent"] else "not installed") + plugin_line
+    lines.append(plugin_line)
     if status:
         lines.append(
             "status updated %s; instance %s; owner pinned: %s; rewake verified: terminal %s, Desktop %s"
@@ -1351,19 +1368,21 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     )
     q = add(
         "install",
-        "write the LaunchAgent plist and a sample listener.toml; prints the launchctl command",
+        "write the platform service and sample listener.toml; prints activation commands",
         dsub,
     )
     q.add_argument("--dry-run", action="store_true", help="only print what would change")
     q.add_argument(
         "--python",
         metavar="PATH",
-        help="python 3.11+ for the plist (default: %s)" % launchd.DEFAULT_PYTHON,
+        default=None,
+        help="python 3.11+ for the service (default: %s)"
+        % (systemd.DEFAULT_PYTHON if sys.platform.startswith("linux") else launchd.DEFAULT_PYTHON),
     )
     q.add_argument(
         "--bin", metavar="PATH", help="the agent-sync program (default: ~/.local/bin/agent-sync)"
     )
-    q = add("uninstall", "remove the LaunchAgent plist; prints the launchctl bootout command", dsub)
+    q = add("uninstall", "remove the platform service; prints stop commands", dsub)
     q.add_argument("--dry-run", action="store_true", help="only print what would change")
     q = add(
         "status",
