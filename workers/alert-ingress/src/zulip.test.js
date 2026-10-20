@@ -9,7 +9,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { writeStatus } from "./zulip.js";
 
-const ARGS = { email: "bot@example.com", apiKey: "k", channel: "alerts", topic: "svc", content: "status" };
+const ARGS = {
+  email: "bot@example.com",
+  apiKey: "k",
+  channel: "alerts",
+  topic: "svc",
+  content: "status",
+};
 
 test("writeStatus keeps the standing message when the edit succeeds", async () => {
   const calls = [];
@@ -29,21 +35,19 @@ test("writeStatus keeps the standing message when the edit succeeds", async () =
   }
 });
 
-test("writeStatus posts a fresh message when the edit fails", async () => {
-  const calls = [];
+test("writeStatus never creates after a definitive rejected edit", async () => {
   const orig = globalThis.fetch;
+  const calls = [];
   globalThis.fetch = async (url, opts) => {
-    calls.push({ url, method: opts.method });
-    if (opts.method === "PATCH") return { ok: false, json: async () => ({}) };
-    return { ok: true, json: async () => ({ result: "success", id: 99 }) };
+    calls.push(opts.method);
+    return { ok: false, status: 403 };
   };
   try {
-    const id = await writeStatus({ ...ARGS, statusId: 42 });
-    assert.equal(id, 99);
-    assert.deepEqual(
-      calls.map((c) => c.method),
-      ["PATCH", "POST"],
+    await assert.rejects(
+      writeStatus({ ...ARGS, statusId: 42 }),
+      (error) => error.outcome === "refused",
     );
+    assert.deepEqual(calls, ["PATCH"]);
   } finally {
     globalThis.fetch = orig;
   }

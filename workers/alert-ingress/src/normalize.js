@@ -41,14 +41,23 @@ export function fromDatadog(payload) {
   const alertType = strip(payload.alert_type).toLowerCase(); // "triggered" | "recovered" | "warning"
   const tag = first(
     payload.host,
-    payload.monitor_tags && Array.isArray(payload.monitor_tags) ? payload.monitor_tags[0] : "",
+    payload.monitor_tags && Array.isArray(payload.monitor_tags)
+      ? payload.monitor_tags[0]
+      : "",
     payload.scope,
   );
-  const title = oneLine(first(payload.alert_title, payload.event_title, payload.title));
+  const title = oneLine(
+    first(payload.alert_title, payload.event_title, payload.title),
+  );
   // "error" is an active alert state too; without it an erroring monitor reads as recovered.
-  const firing = alertType === "triggered" || alertType === "warning" || alertType === "error";
+  const transition = strip(payload.alert_transition_type).toLowerCase();
+  const firing = transition
+    ? !/^(recovered|recover|resolved|clear|ok)$/.test(transition)
+    : ["triggered", "warning", "error"].includes(alertType);
 
-  const key = monitorId ? `datadog:${monitorId}` : `datadog:${title.toLowerCase()}`;
+  const key = monitorId
+    ? `datadog:${monitorId}`
+    : `datadog:${title.toLowerCase()}`;
   const service = tag || title || `datadog-${monitorId || "monitor"}`;
 
   return {
@@ -66,16 +75,25 @@ export function fromDatadog(payload) {
 
 /** BetterStack outgoing webhook (`{"text": ...}` shaped). */
 export function fromBetterStack(payload) {
-  const data = payload && typeof payload.data === "object" && payload.data ? payload.data : payload || {};
+  const data =
+    payload && typeof payload.data === "object" && payload.data
+      ? payload.data
+      : payload || {};
   const url = first(data.url, data.check_url, payload.url);
   const status = strip(first(data.status, payload.status)).toLowerCase();
-  const name = oneLine(first(data.check_name, data.name, payload.name, "betterstack check"));
+  const name = oneLine(
+    first(data.check_name, data.name, payload.name, "betterstack check"),
+  );
 
   // BetterStack reports up/down rather than fired/recovered.
   const down = /down|failed|failing/.test(status);
   const firing = status ? down : payload.alert_type === "ALERT";
 
-  const id = first(data.check_id, data.monitor_id, (url.match(/\/([a-f0-9]{16,})/i) || [])[1]);
+  const id = first(
+    data.check_id,
+    data.monitor_id,
+    (url.match(/\/([a-f0-9]{16,})/i) || [])[1],
+  );
   const key = id ? `betterstack:${id}` : `betterstack:${name.toLowerCase()}`;
 
   return {
@@ -96,13 +114,19 @@ export function fromBetterStack(payload) {
  */
 export function fromGeneric(payload) {
   const alert = payload && payload.alert ? payload.alert : payload || {};
-  const service = oneLine(first(alert.service, alert.monitor, alert.name, alert.source, "alert"));
-  const status = strip(first(alert.status, alert.state, alert.alert_type)).toLowerCase();
+  const service = oneLine(
+    first(alert.service, alert.monitor, alert.name, alert.source, "alert"),
+  );
+  const status = strip(
+    first(alert.status, alert.state, alert.alert_type),
+  ).toLowerCase();
   // Anchor the recovery words: an unanchored /ok|up|.../ reads "broken" or
   // "disrupted" as recovered and closes a live incident.  Unknown statuses stay
   // firing, which is the safe direction.
   const firing = status
-    ? !/^(ok|up|recover(?:ed|ing)?|resolv(?:ed|es)|clear(?:ed)?)$/.test(status)
+    ? !/^(ok(?:ay)?|up|recover(?:ed|ing|s|y)?|resolv(?:ed|es|ing)|clear(?:ed|s)?)$/.test(
+        status,
+      )
     : alert.firing === true;
   return {
     source: strip(payload.source) || "generic",
@@ -110,7 +134,10 @@ export function fromGeneric(payload) {
     service,
     firing,
     severity: first(alert.severity, alert.priority),
-    text: oneLine(first(alert.summary, alert.message, alert.description, alert.title)) || service,
+    text:
+      oneLine(
+        first(alert.summary, alert.message, alert.description, alert.title),
+      ) || service,
     link: first(alert.link, alert.url, alert.dashboard_url),
     prodDown: alert.prod_down === true,
   };
@@ -132,7 +159,9 @@ export function normalize(source, payload) {
   // namespace.  A payload claiming source:"datadog" on /webhook/<other> must
   // not overwrite a real datadog incident's state.
   if (!PARSERS[hint] && hint) {
-    const tail = event.key.includes(":") ? event.key.split(":").slice(1).join(":") : event.key;
+    const tail = event.key.includes(":")
+      ? event.key.split(":").slice(1).join(":")
+      : event.key;
     return { ...event, source: hint, key: `${hint}:${tail}` };
   }
   return event;

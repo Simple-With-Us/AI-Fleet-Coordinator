@@ -127,3 +127,19 @@ Pure functions, no Workers runtime needed.  The suite includes the real Oct 18 f
 - Not a pager.  `zulip-fleet-guide.md` keeps PagerDuty as the pager; this is a readable record.
 - Not a host-metrics collector.  It routes and coalesces what vendors already send.
 - No vendor credential ever enters a request; all signing material is a Worker secret.
+
+## Durable Writer Deployment Gate
+
+Source review does not activate this ingress.  The shipped configuration intentionally has no live KV namespace and no `ALERT_WRITER` binding; every nonhealth route fails closed with HTTP 503 until an approved deployment supplies both.  No resource, credential, webhook or cron was activated by this change.
+
+`AlertWriter` is a single named Durable Object (`alerts-v1`) that serializes complete state reads, transitions, inventory rendering and Zulip writes.  Its durable storage overlays the existing KV records; historical KV records remain readable and are never deleted or migrated destructively.  All status readers route through the same object, avoiding stale KV reads after mutation.  A KV get/put lock is not used.
+
+An approved deployment must bind `ALERT_WRITER` to exported class `AlertWriter` and declare its SQLite class migration in its private Wrangler deployment configuration, in addition to the existing `ALERT_STATE` binding.  This repository does not provision those resources.  The existing deployment-boundary decision remains explicit in the PR; a merge does not establish a production runtime.
+
+Before any standing-message write the object persists an `unknown` delivery outcome keyed by channel/topic.  Only a validated successful response records `ok` with a positive integer message ID.  Timeout, malformed success, crash and ambiguous network failure retain `unknown`, and subsequent refreshes do not replay it.  Explicit provider refusal records `refused` and also requires operator reconciliation; no automatic create follows a failed edit.  An operator must inspect the actual Zulip message before repairing a held outcome.
+
+Inventory walks drain at most 20 pages and 2,000 keys, reject missing/cyclic cursors and never publish a partial inventory as complete.  The writer returns HTTP 503 with `stale: true` when inventory fails.  Reads use bounded batches of four; independent sweep status-refresh failures emit only a fixed event name and leave other topics eligible for processing.
+
+Webhook JSON must be an object with bounded scalar fields, bounded string tags and object-shaped `alert`/`data` envelopes.  Invalid field shapes, control bytes and bodies over 64 KiB fail before normalization or side effects.  These dependency-free boundary validators match the worker's existing stdlib-only packaging; no unchecked object is passed into normalization.  Zulip response fields are also validated before an ID can be accepted.
+
+The concrete manifest is `wrangler.durable-writer.example.toml`.  Before deployment, copy it to an owner-controlled configuration beside the template, set its KV ID to the verified existing historical namespace, confirm the Cloudflare account and Worker name, and review the `alert-writer-v1` migration that creates only `AlertWriter`.  Inject the existing named secrets through the approved secret workflow; never put values in this manifest.  Deploy using `wrangler deploy --config <private-config-path>` only after those scope checks.  Verify health, authenticated status, existing historical records and a synthetic no-send fixture before moving webhook routes; no existing listener or model session needs restarting.  Keep the old Worker version and KV namespace available for rollback, and preserve the new durable outcome records when rolling back so unknown sends cannot replay.

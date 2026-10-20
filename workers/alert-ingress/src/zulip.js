@@ -20,15 +20,31 @@ async function zulip(path, { email, apiKey, method = "GET", form } = {}) {
   const auth = btoa(`${email}:${apiKey}`);
   const res = await fetch(`${API}${path}`, {
     method,
+    signal: AbortSignal.timeout(10000),
     headers: {
       Authorization: `Basic ${auth}`,
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: form ? new URLSearchParams(form).toString() : undefined,
   });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    const error = new Error("Zulip rejected request");
+    error.outcome =
+      res.status >= 400 && res.status < 500 ? "refused" : "unknown";
+    throw error;
+  }
   try {
-    return await res.json();
+    const data = await res.json();
+    if (
+      !data ||
+      typeof data !== "object" ||
+      Array.isArray(data) ||
+      data.result !== "success"
+    )
+      return null;
+    if (method === "POST" && (!Number.isSafeInteger(data.id) || data.id <= 0))
+      return null;
+    return data;
   } catch {
     return null;
   }
@@ -38,7 +54,16 @@ async function zulip(path, { email, apiKey, method = "GET", form } = {}) {
  * Post a single alert line.  Topic = service, per the fleet alerts format.
  * @returns {Promise<number|null>} the new message id
  */
-export async function postEvent({ email, apiKey, channel, topic, severity, service, what, link }) {
+export async function postEvent({
+  email,
+  apiKey,
+  channel,
+  topic,
+  severity,
+  service,
+  what,
+  link,
+}) {
   const parts = [severity, service, what];
   if (link) parts.push(link);
   const data = await zulip("/messages", {
@@ -61,12 +86,19 @@ export async function postEvent({ email, apiKey, channel, topic, severity, servi
  *
  * Creates it the first time, then PATCHes it forever after.  `statusId` is the
  * message id cached by the caller; passing a stale or wrong one would edit the
- * wrong message, so a failed PATCH falls back to posting a fresh one and
- * returning the new id.
+ * wrong message.  Failed or ambiguous PATCHes never create another message;
+ * durable caller outcomes hold the destination for explicit reconciliation.
  *
  * @returns {Promise<number|null>} the message id that now holds the status
  */
-export async function writeStatus({ email, apiKey, channel, topic, content, statusId }) {
+export async function writeStatus({
+  email,
+  apiKey,
+  channel,
+  topic,
+  content,
+  statusId,
+}) {
   if (statusId) {
     const patched = await zulip(`/messages/${statusId}`, {
       email,
@@ -78,6 +110,7 @@ export async function writeStatus({ email, apiKey, channel, topic, content, stat
     // so a truthy response alone is not proof; without this check every
     // refresh fell through and posted a duplicate message.
     if (patched && patched.result === "success") return statusId;
+    return null; // An ambiguous PATCH must never turn into a new POST.
   }
   const created = await zulip("/messages", {
     email,
@@ -92,7 +125,12 @@ export async function writeStatus({ email, apiKey, channel, topic, content, stat
 export function renderStatus({ topic, states, updatedAt }) {
   const rows = states
     .map((s) => {
-      const mark = s.phase === "alerting" ? "\u25CF" : s.phase === "pending" ? "\u25CB" : "\u25CB";
+      const mark =
+        s.phase === "alerting"
+          ? "\u25CF"
+          : s.phase === "pending"
+            ? "\u25CB"
+            : "\u25CB";
       const sev = s.phase === "alerting" ? s.severity : "INFO";
       return `${mark} \`${sev}\`  \u2022  ${s.service}  \u2022  ${s.text}${s.link ? `  \u2022  ${s.link}` : ""}`;
     })

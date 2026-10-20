@@ -26,7 +26,13 @@
 //   svc:<key>          service name, so a topic stays stable across events
 
 import { normalize } from "./normalize.js";
-import { decide, sweep, initialState, DEFAULT_MIN_OPEN_MS, PROD_DOWN_MIN_OPEN_MS } from "./state.js";
+import {
+  decide,
+  sweep,
+  initialState,
+  DEFAULT_MIN_OPEN_MS,
+  PROD_DOWN_MIN_OPEN_MS,
+} from "./state.js";
 import { postEvent, writeStatus, renderStatus } from "./zulip.js";
 
 const DEFAULT_CHANNEL = "alerts";
@@ -56,7 +62,9 @@ async function hmacHex(secret, body, algo = "SHA-256") {
     ["sign"],
   );
   const mac = await crypto.subtle.sign("HMAC", key, body);
-  return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return [...new Uint8Array(mac)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 /**
@@ -81,7 +89,9 @@ async function verify(request, raw, env, source) {
   }
   // Unknown source: require a shared bearer secret in the path/query.
   const token = new URL(request.url).searchParams.get("token") || "";
-  return !!env.INGRESS_SHARED_TOKEN && safeEqual(token, env.INGRESS_SHARED_TOKEN);
+  return (
+    !!env.INGRESS_SHARED_TOKEN && safeEqual(token, env.INGRESS_SHARED_TOKEN)
+  );
 }
 
 /** Shared-token gate for operator routes.  `token` query param or Bearer <redacted> */
@@ -90,23 +100,23 @@ function authorized(request, env) {
     new URL(request.url).searchParams.get("token") ||
     request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ||
     "";
-  return !!env.INGRESS_SHARED_TOKEN && safeEqual(token, env.INGRESS_SHARED_TOKEN);
+  return (
+    !!env.INGRESS_SHARED_TOKEN && safeEqual(token, env.INGRESS_SHARED_TOKEN)
+  );
 }
 
 /** All tracked states for one topic, with their service labels resolved. */
 async function collectStates(env, channel, topic) {
   const prefix = `idx:${channel}:${topic}:`;
-  const keys = await env.ALERT_STATE.list({ prefix });
+  const keys = { keys: await listAll(env.ALERT_STATE, prefix) };
   // Parallel reads: serial get pairs cost 2N KV round-trips per call.
-  const fetched = await Promise.all(
-    keys.keys.map(async ({ name }) => {
-      const key = name.slice(prefix.length);
-      const raw = await env.ALERT_STATE.get(stateKey(key), "json");
-      if (!raw) return null;
-      const svc = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
-      return { key, ...raw, service: svc };
-    }),
-  );
+  const fetched = await mapBounded(keys.keys, async ({ name }) => {
+    const key = name.slice(prefix.length);
+    const raw = await env.ALERT_STATE.get(stateKey(key), "json");
+    if (!raw) return null;
+    const svc = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
+    return { key, ...raw, service: svc };
+  });
   return fetched.filter(Boolean);
 }
 
@@ -114,7 +124,7 @@ async function collectStates(env, channel, topic) {
 async function collectTopics(env) {
   const prefix = `topic:${DEFAULT_CHANNEL}:`;
   const seen = new Set();
-  const keys = await env.ALERT_STATE.list({ prefix });
+  const keys = { keys: await listAll(env.ALERT_STATE, prefix) };
   for (const { name } of keys.keys) {
     const topic = name.slice(prefix.length);
     if (topic) seen.add(topic);
@@ -123,9 +133,10 @@ async function collectTopics(env) {
   let firing = 0;
   let total = 0;
   // Parallel across topics: serial collectStates made /status cost ~1 + T*(1+2A) KV calls.
-  const perTopic = await Promise.all(
-    [...seen].sort().map(async (topic) => [topic, await collectStates(env, DEFAULT_CHANNEL, topic)]),
-  );
+  const perTopic = await mapBounded([...seen].sort(), async (topic) => [
+    topic,
+    await collectStates(env, DEFAULT_CHANNEL, topic),
+  ]);
   for (const [topic, states] of perTopic) {
     // A topic whose states have all been cleared is dropped rather than
     // rendered as an empty card, so the view self-cleans as incidents resolve.
@@ -150,7 +161,9 @@ async function collectTopics(env) {
         }))
         .sort((a, b) => {
           const rank = { alerting: 0, pending: 1, ok: 2 };
-          return rank[a.phase] - rank[b.phase] || a.service.localeCompare(b.service);
+          return (
+            rank[a.phase] - rank[b.phase] || a.service.localeCompare(b.service)
+          );
         }),
     };
   }
@@ -177,14 +190,21 @@ function ctStamp() {
 async function refreshStatus(env, channel, topic) {
   const states = await collectStates(env, channel, topic);
   const content = renderStatus({ topic, states, updatedAt: ctStamp() });
-  // KV gives no cross-request atomicity for the read-then-write inside
-  // writeStatus, so two concurrent webhooks for a fresh topic could both POST
-  // a new standing message and orphan the first.  A short-lived per-topic lock
-  // serializes the create-or-patch decision; a skipped refresh self-heals on
-  // the next event or sweep.
-  const lockKey = `lock:${channel}:${topic}`;
-  if (await env.ALERT_STATE.get(lockKey)) return content;
-  await env.ALERT_STATE.put(lockKey, "1", { expirationTtl: 60 });
+  if (!env.WRITER_STORAGE) throw new Error("durable writer required");
+  const outcomeKey = `delivery:${JSON.stringify([channel, topic])}`;
+  const prior = await env.WRITER_STORAGE.get(outcomeKey);
+  if (prior?.outcome === "unknown" || prior?.outcome === "refused")
+    return content;
+  const statusId =
+    prior?.id ||
+    Number(await env.ALERT_STATE.get(statusKey(channel, topic), "json")) ||
+    null;
+  // Commit uncertainty before crossing the network.  A crash or ambiguous reply
+  // cannot turn a possibly accepted create into another automatic POST.
+  await env.WRITER_STORAGE.put(outcomeKey, {
+    outcome: "unknown",
+    id: statusId,
+  });
   try {
     const id = await writeStatus({
       email: env.ZULIP_BOT_EMAIL,
@@ -192,11 +212,19 @@ async function refreshStatus(env, channel, topic) {
       channel,
       topic,
       content,
-      statusId: Number(await env.ALERT_STATE.get(statusKey(channel, topic), "json")) || null,
+      statusId,
     });
-    if (id) await env.ALERT_STATE.put(statusKey(channel, topic), JSON.stringify(id));
-  } finally {
-    await env.ALERT_STATE.delete(lockKey);
+    if (id) {
+      await env.WRITER_STORAGE.put(outcomeKey, { outcome: "ok", id });
+      await env.ALERT_STATE.put(statusKey(channel, topic), JSON.stringify(id));
+    }
+  } catch (error) {
+    if (error?.outcome === "refused") {
+      await env.WRITER_STORAGE.put(outcomeKey, {
+        outcome: "refused",
+        id: statusId,
+      });
+    }
   }
   return content;
 }
@@ -208,15 +236,20 @@ async function handleEvent(source, payload, env) {
 
   const prev = await env.ALERT_STATE.get(stateKey(event.key), "json");
   const now = Date.now();
-  const result = decide(prev, event, now, { minOpenMs: Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS });
+  const result = decide(prev, event, now, {
+    minOpenMs: Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS,
+  });
 
   await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
   await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
   await env.ALERT_STATE.put(`idx:${channel}:${topic}:${event.key}`, "1");
   await env.ALERT_STATE.put(topicKey(channel, topic), "1");
 
+  // Refuse side effects when the destination inventory cannot be completed.
+  await collectStates(env, channel, topic);
   let posted = null;
-  const sev = result.state.phase === "alerting" ? result.state.severity : "INFO";
+  const sev =
+    result.state.phase === "alerting" ? result.state.severity : "INFO";
   if (result.action === "announce" || result.action === "update") {
     posted = await postEvent({
       email: env.ZULIP_BOT_EMAIL,
@@ -251,7 +284,8 @@ async function handleEvent(source, payload, env) {
 async function runSweep(env) {
   const now = Date.now();
   const minOpenMs = Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS;
-  const all = await env.ALERT_STATE.list({ prefix: "state:" });
+  const all = { keys: await listAll(env.ALERT_STATE, "state:") };
+  await collectTopics(env); // Complete every dependent inventory before the first send.
   let promoted = 0;
   const dirtyTopics = new Set();
   for (const { name } of all.keys) {
@@ -276,14 +310,23 @@ async function runSweep(env) {
   }
   // One status refresh per topic, however many incidents promoted in it, and
   // all in parallel instead of one rebuild per incident.
-  await Promise.all([...dirtyTopics].map((topic) => refreshStatus(env, DEFAULT_CHANNEL, topic)));
+  await mapBounded([...dirtyTopics], async (topic) => {
+    try {
+      await refreshStatus(env, DEFAULT_CHANNEL, topic);
+    } catch {
+      console.error(JSON.stringify({ event: "alert.status_refresh_failed" }));
+    }
+  });
   return { promoted, checked: all.keys.length };
 }
 
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 
-export default {
+const handler = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
@@ -326,7 +369,11 @@ export default {
         return json({ error: "unauthorized" }, 401);
       }
       const [, channel, topic] = statusMatch;
-      const content = await refreshStatus(env, decodeURIComponent(channel), decodeURIComponent(topic));
+      const content = await refreshStatus(
+        env,
+        decodeURIComponent(channel),
+        decodeURIComponent(topic),
+      );
       return json({ channel, topic, content });
     }
 
@@ -340,6 +387,7 @@ export default {
       return json({ error: "bad signature" }, 401);
     }
 
+    if (raw.length > 65536) return json({ error: "payload too large" }, 413);
     let payload;
     try {
       payload = JSON.parse(raw);
@@ -347,9 +395,12 @@ export default {
       return json({ error: "invalid json" }, 400);
     }
 
-    ctx.waitUntil(handleEvent(source, payload, env).catch(() => {}));
-    // Acknowledge fast; webhooks retry on slow responses.
-    return json({ accepted: true });
+    try {
+      validatePayload(payload);
+    } catch {
+      return json({ error: "invalid payload" }, 400);
+    }
+    return json(await handleEvent(source, payload, env));
   },
 
   // The sweep that promotes aged incidents to real messages.
@@ -371,3 +422,163 @@ export const __testing = {
   ctStamp,
   indexPrefix: (c, t) => `idx:${c}:${t}:`,
 };
+
+const MAX_KEYS = 2000;
+async function listAll(kv, prefix) {
+  const keys = [],
+    cursors = new Set();
+  let cursor;
+  for (let page = 0; page < 20; page++) {
+    const result = await kv.list({
+      prefix,
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+    });
+    if (!Array.isArray(result.keys)) throw new Error("invalid inventory");
+    keys.push(...result.keys);
+    if (keys.length > MAX_KEYS) throw new Error("inventory bound exceeded");
+    if (result.list_complete === true || result.listComplete === true)
+      return keys;
+    if (
+      typeof result.cursor !== "string" ||
+      !result.cursor ||
+      cursors.has(result.cursor)
+    )
+      throw new Error("incomplete inventory");
+    cursor = result.cursor;
+    cursors.add(cursor);
+  }
+  throw new Error("inventory page bound exceeded");
+}
+async function mapBounded(items, fn) {
+  const result = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(4, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        result[i] = await fn(items[i]);
+      }
+    }),
+  );
+  return result;
+}
+function validatePayload(payload) {
+  const object = (value) =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!object(payload)) throw new Error("invalid payload");
+  if (Object.keys(payload).length > 100) throw new Error("too many fields");
+  const booleans = new Set(["firing", "prod_down"]);
+  const identifiers = new Set(["id", "monitor_id", "alert_id", "check_id"]);
+  for (const [key, value] of Object.entries(payload)) {
+    if (booleans.has(key) && typeof value !== "boolean")
+      throw new Error("invalid boolean");
+    if (
+      !booleans.has(key) &&
+      !identifiers.has(key) &&
+      !["alert", "data", "monitor_tags"].includes(key) &&
+      value !== null &&
+      typeof value !== "string"
+    )
+      throw new Error("invalid text field");
+    if (["alert", "data"].includes(key)) {
+      if (!object(value)) throw new Error("invalid nested payload");
+      validatePayload(value);
+    } else if (key === "monitor_tags") {
+      if (
+        !Array.isArray(value) ||
+        value.length > 100 ||
+        value.some((v) => typeof v !== "string")
+      )
+        throw new Error("invalid tags");
+    } else if (
+      value !== null &&
+      !["string", "number", "boolean"].includes(typeof value)
+    ) {
+      throw new Error("invalid field");
+    }
+    if (
+      typeof value === "string" &&
+      (value.length > 4096 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))
+    )
+      throw new Error("invalid text");
+  }
+}
+
+// One named object owns every read/render/write transaction.  Durable storage
+// overlays legacy KV without deleting historical records or trusting KV locks.
+export class AlertWriter {
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+    this.tail = Promise.resolve();
+  }
+  fetch(request) {
+    const task = this.tail.then(() => this.dispatch(request));
+    this.tail = task.catch(() => {});
+    return task;
+  }
+  async dispatch(request) {
+    const storage = this.ctx.storage,
+      legacy = this.env.ALERT_STATE;
+    const overlay = {
+      async get(key, type) {
+        let value = await storage.get(`kv:${key}`);
+        if (value === undefined) value = await legacy.get(key);
+        return value == null
+          ? null
+          : type === "json"
+            ? JSON.parse(value)
+            : value;
+      },
+      async put(key, value) {
+        await storage.put(`kv:${key}`, value);
+      },
+      async list({ prefix }) {
+        const previous = await listAll(legacy, prefix);
+        const local = await storage.list({
+          prefix: `kv:${prefix}`,
+          limit: MAX_KEYS + 1,
+        });
+        const names = new Set(previous.map((k) => k.name));
+        for (const key of local.keys()) names.add(key.slice(3));
+        if (names.size > MAX_KEYS) throw new Error("inventory bound exceeded");
+        return {
+          keys: [...names].map((name) => ({ name })),
+          list_complete: true,
+        };
+      },
+    };
+    try {
+      return await handler.fetch(
+        request,
+        { ...this.env, ALERT_STATE: overlay, WRITER_STORAGE: storage },
+        {},
+      );
+    } catch {
+      return json({ error: "writer unavailable", stale: true }, 503);
+    }
+  }
+}
+export default {
+  async fetch(request, env) {
+    if (new URL(request.url).pathname === "/health")
+      return handler.fetch(request, env, {});
+    if (!env.ALERT_WRITER)
+      return json({ error: "durable writer unavailable", stale: true }, 503);
+    return env.ALERT_WRITER.get(env.ALERT_WRITER.idFromName("alerts-v1")).fetch(
+      request,
+    );
+  },
+  async scheduled(event, env, ctx) {
+    if (!env.ALERT_WRITER || !env.INGRESS_SHARED_TOKEN) return;
+    ctx.waitUntil(
+      env.ALERT_WRITER.get(env.ALERT_WRITER.idFromName("alerts-v1")).fetch(
+        new Request("https://internal/sweep", {
+          headers: { authorization: `Bearer ${env.INGRESS_SHARED_TOKEN}` },
+        }),
+      ),
+    );
+  },
+};
+Object.assign(__testing, { listAll, mapBounded, validatePayload, handler });
