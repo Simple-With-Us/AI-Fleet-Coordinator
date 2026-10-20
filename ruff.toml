@@ -6,9 +6,6 @@ target-version = "py313"
 force-exclude = true
 
 extend-exclude = [
-    # Python 3.9 safe by contract (the Mac runs these under /usr/bin/python3);  ruff's py313 rewrites
-    # (X | None, collections.abc) break them there.
-    "scripts/fleet_lanes",
     "scripts/fleet_rag/tests",
     "scripts/fleet_facts/tests",
     "scripts/fleet_lanes/tests",
@@ -17,3 +14,13 @@ extend-exclude = [
     "scripts/needs_owner/tests",
     "scripts/open_loops/tests",
 ]
+
+[lint.per-file-ignores]
+# scripts/fleet_lanes is Python 3.9 safe by contract (the Mac runs it under /usr/bin/python3).  These stop
+# the py313 rewrites that break it there (X | None in runtime aliases, collections.abc, datetime.UTC) and
+# keep every other rule on.  See AFC-425.
+"scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045"]
+
+[format]
+# Whitespace churn and py313-only syntax: the 3.9-run package keeps its hand layout.  See AFC-425.
+exclude = ["scripts/fleet_lanes/**"]
