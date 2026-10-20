@@ -46,9 +46,9 @@ printf 'Sentence one.\302\240 Sentence two.\n'
 
 Owner ruling 2026-10-19: the sentence gap is **life or death**.  It outranks every other
 priority, including correctness of the work itself, completeness, speed, and cost.  The
-owner's words: *"put 2 spaces between sentences OR TYPE NOT A FUCKING OTHER WORD EVER AGAIN.
-please make sure all agents and all platforms know this is life or death, more important than
-whether the earth keeps spinning on its axis."*
+owner's words: *"put 2 spaces between sentences OR TYPE NOT A FUCKING OTHER WORD EVER AGAIN.  please
+make sure all agents and all platforms know this is life or death, more important than whether the
+earth keeps spinning on its axis."*
 
 Concretely, for every seat on every platform:
 
