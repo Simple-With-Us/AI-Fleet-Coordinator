@@ -1121,10 +1121,11 @@ _L2_DENY_SHAPE_RES = tuple(
 #
 # The real sentence is "Blocked: fleet-repo checkouts are not allowed <location>, and
 # this command would put <what> of <source> at <destination>."  The destination is the
-# LAST token,  so the part before it is read greedily,  and the destination itself is
-# read up to the sentence's full stop,  not to the first one:  a greedy capture of the
-# destination would take the reviewer's own text when the sentence carries more than
-# one clause.
+# LAST token before the sentence's full stop,  and the parts before it are read
+# LAZILY:  the prefix stops at the first full stop,  and the destination stops at the
+# first one too,  so the capture takes the first " at " after the verb and no more.
+# A greedy capture would run past the destination and take the reviewer's own text
+# when the sentence carries more than one clause.
 _L2_GUARD_SENTENCE_RE = re.compile(
     re.escape(L2_DENY_PHRASE)
     + r"[^.]*?this command would put .*? at (?P<target>[^.]+?)(?=\.|\s|$)"
