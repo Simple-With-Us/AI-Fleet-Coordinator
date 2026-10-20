@@ -5834,6 +5834,26 @@ class KimiBlockTests(World):
 # --------------------------------------------------------------------------- minimax: a plugin bundle under ~/.minimax/plugins
 
 
+class MinimaxProbeBytesTests(unittest.TestCase):
+    def test_configuration_refusal_is_not_a_successful_policy_probe(self):
+        def run(command, payload, env, timeout):
+            doc = json.loads(payload)
+            path = next(iter(doc["tool_input"].values()))
+            reason = "MiniMax SECRET_FILE_PATTERNS is unavailable"
+            output = json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny", "permissionDecisionReason": reason
+            }}).encode() if ".env" in path else b""
+            return T.RunResult(0, output, b"")
+
+        with mock.patch.object(T, "registry_tree", return_value="ExampleRepo"):
+            with mock.patch.object(T, "run_shell", side_effect=run):
+                checks = T.probe_minimax_files("hook", "/synthetic-home", "registry", 1, True)
+        env_check = next(check for check in checks if check.name == "Read/.env/deny/hook-env")
+        self.assertEqual(env_check.status, "FAIL")
+        self.assertIn("required file policy", env_check.detail)
+
+
 class MinimaxBundleTests(World):
     """MiniMax Code takes hooks from a local plugin: a real directory with .claude-plugin/plugin.json and hooks/hooks.json."""
 
