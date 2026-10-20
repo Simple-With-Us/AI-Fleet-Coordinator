@@ -920,6 +920,10 @@ set titlePath to POSIX file (system attribute "TITLE_FILE")
 set noteTitle to read titlePath as «class utf8»
 set htmlPath to POSIX file (system attribute "TMP")
 set htmlBody to read htmlPath as «class utf8»
+--- A large body takes longer than the default two-minute AppleEvent timeout:
+--- the master list is a quarter of a megabyte of markdown, and the write timed
+--- out with "AppleEvent timed out. (-1712)" before this.
+with timeout of 900 seconds
 tell application "Notes"
   set codingFolder to missing value
   try
@@ -947,6 +951,7 @@ tell application "Notes"
   end if
   return id of targetNote
 end tell
+end timeout
 EOF
 )
   echo "updated note id=$NOTE_ID in folder Coding title=$TITLE"
@@ -955,6 +960,7 @@ else
 set htmlPath to POSIX file "$TMP"
 set htmlBody to read htmlPath as «class utf8»
 
+with timeout of 900 seconds
 tell application "Notes"
   set codingFolder to missing value
   try
@@ -973,6 +979,7 @@ tell application "Notes"
   end if
   return id of newNote
 end tell
+end timeout
 EOF
 )
   echo "created note id=$NOTE_ID in folder Coding"
