@@ -25,18 +25,23 @@ jobs:
     # alternative is the separator git writes between the two halves of a conflict.
     - name: No conflict markers
       run: |
-        out="$(grep -rlE '^(<<<<<<<|>>>>>>>|\|\|\|\|\|\||=======$)' \
+        # The substitution is in an `if` condition on purpose.  A standalone
+        # assignment takes the status of the command it holds,  and grep exits 1 when
+        # it finds nothing,  so under `bash -e` a CLEAN tree would abort the step
+        # before any check ran.  In the `else` branch the status is available as $?.
+        if out="$(grep -rlE '^(<<<<<<<|>>>>>>>|\|\|\|\|\|\||=======$)' \
           --exclude-dir=.git --exclude-dir=node_modules \
           --include='*.py' --include='*.sh' --include='*.yml' --include='*.yaml' \
           --include='*.json' --include='*.js' --include='*.cjs' --include='*.mjs' \
-          --include='*.ts' . 2>&1)"; st=$?
-        if [ "$st" -gt 1 ]; then
-          echo "$out"
-          echo "conflict-marker scan failed:  cannot read the tree"; exit 1
-        fi
-        if [ -n "$out" ]; then
+          --include='*.ts' . 2>&1)"; then
           echo "$out"
           echo "conflict markers found:  resolve them before merging"; exit 1
+        else
+          st=$?
+          if [ "$st" -gt 1 ]; then
+            echo "$out"
+            echo "conflict-marker scan failed:  cannot read the tree"; exit 1
+          fi
         fi
     - name: Set up Python
       uses: actions/setup-python@v7
