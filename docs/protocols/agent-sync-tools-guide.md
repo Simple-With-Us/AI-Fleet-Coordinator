@@ -252,7 +252,7 @@ Apple Notes live in the Mac's iCloud `Coding` folder and only a Mac can write th
 - **Check on it.**  `notes_status` with the `request_id` returns `queued` (no answer yet), `done` or `refused` with the reason.
 - **Rotating the consumer.**  `notes_status` trusts only the marks and replies of the current relay consumer (the fleet knob `NOTES_RELAY_CONSUMER`), on purpose, so a former consumer cannot forge a result.  The owner rotates it only with an empty spool, and a request sent before a rotation reads as `queued` afterwards, whatever the old consumer did with it.
 
-Title rule:  `[TEAM_KEY, SEAT_TAG] Topic`.  Use one or more uppercase team keys and the exact uppercase tag of the call identity, followed by a nonempty topic.  The title holds no double quote, backslash or control character and is at most 200 characters.  Display names and case variants are refused; role tags such as `GB-FIXER` and `BF-DEPLOYER` also require their exact uppercase spelling.  A relay request naming another seat is refused.
+Title rule:  `[TEAM_KEY, Agent] Topic`, such as `[AFC, Codex] Topic`.  Use uppercase team keys and the verified calling seat’s canonical Title Case `notesName`; its exact uppercase seat tag remains accepted for compatibility.  The title holds no double quote, backslash or control character and is at most 200 characters.  The listener and direct runner refuse another seat’s name and arbitrary case variants.
 
 Owner setup (once):  create the public channel `#notes-relay`, make sure the relaying bots are subscribed to it, add `[notes_relay] enabled = true` and `seat = "CLAUDE"` to the Mac's `listener.toml`, then `agent-sync daemon reload`.  A missing channel is a logged warning, never created.
 

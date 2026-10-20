@@ -4,7 +4,7 @@
     {
       "name": "notes_create",
       "title": "Notes Create",
-      "description": "Create an Apple Note in the owner's Coding folder, pinned by default.  On a Mac it is written directly (status done);  anywhere else a request is posted to #notes-relay and the Mac listener writes it (status queued, then notes_status).  The title must read \"[TEAM_KEY, SEAT_TAG] Topic\" and SEAT_TAG must be the exact uppercase tag of the identity you act as, or the relay refuses it.  A session id is required (see the session argument) unless the identity is a single-thread one.",
+      "description": "Create an Apple Note in the owner's Coding folder, pinned by default.  On a Mac it is written directly (status done);  anywhere else a request is posted to #notes-relay and the Mac listener writes it (status queued, then notes_status).  The title must read \"[TEAM_KEY, Agent] Topic\" and Agent must be the canonical Title Case display name of the verified identity you act as (its exact uppercase tag is also accepted), or the relay refuses it.  A session id is required (see the session argument) unless the identity is a single-thread one.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -16,8 +16,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "pattern": "^\\[[A-Z0-9]+(?:, [A-Z0-9]+)*, [A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*\\] [^\\s\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029][^\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029]*$",
-            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\", such as \"[AFC, CLAUDE] Relay Rollout\".  Use one or more uppercase team keys and the exact uppercase seat tag of the identity the call acts as, then a nonempty topic.  Display names, double quotes, backslashes and control characters are refused."
+            "pattern": "^\\[[A-Z0-9]+(?:, [A-Z0-9]+)*, [A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*\\] [^\\s\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029][^\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029]*$",
+            "description": "The note title, \"[TEAM_KEY, Agent] Topic\", such as \"[AFC, Claude] Relay Rollout\".  Use one or more uppercase team keys and the canonical Title Case agent display name (or compatible uppercase seat tag) of the identity the call acts as, then a nonempty topic.  Double quotes, backslashes and control characters are refused."
           },
           "markdown": {
             "type": "string",
@@ -140,8 +140,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "pattern": "^\\[[A-Z0-9]+(?:, [A-Z0-9]+)*, [A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*\\] [^\\s\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029][^\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029]*$",
-            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\", such as \"[AFC, CLAUDE] Relay Rollout\".  Use one or more uppercase team keys and the exact uppercase seat tag of the identity the call acts as, then a nonempty topic.  Display names, double quotes, backslashes and control characters are refused."
+            "pattern": "^\\[[A-Z0-9]+(?:, [A-Z0-9]+)*, [A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*\\] [^\\s\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029][^\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029]*$",
+            "description": "The note title, \"[TEAM_KEY, Agent] Topic\", such as \"[AFC, Claude] Relay Rollout\".  Use one or more uppercase team keys and the canonical Title Case agent display name (or compatible uppercase seat tag) of the identity the call acts as, then a nonempty topic.  Double quotes, backslashes and control characters are refused."
           },
           "markdown": {
             "type": "string",
@@ -264,8 +264,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "pattern": "^\\[[A-Z0-9]+(?:, [A-Z0-9]+)*, [A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*\\] [^\\s\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029][^\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029]*$",
-            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\", such as \"[AFC, CLAUDE] Relay Rollout\".  Use one or more uppercase team keys and the exact uppercase seat tag of the identity the call acts as, then a nonempty topic.  Display names, double quotes, backslashes and control characters are refused."
+            "pattern": "^\\[[A-Z0-9]+(?:, [A-Z0-9]+)*, [A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*\\] [^\\s\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029][^\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029]*$",
+            "description": "The note title, \"[TEAM_KEY, Agent] Topic\", such as \"[AFC, Claude] Relay Rollout\".  Use one or more uppercase team keys and the canonical Title Case agent display name (or compatible uppercase seat tag) of the identity the call acts as, then a nonempty topic.  Double quotes, backslashes and control characters are refused."
           },
           "request_id": {
             "type": "string",
@@ -347,8 +347,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
-            "pattern": "^\\[[A-Z0-9]+(?:, [A-Z0-9]+)*, [A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*\\] [^\\s\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029][^\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029]*$",
-            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\", such as \"[AFC, CLAUDE] Relay Rollout\".  Use one or more uppercase team keys and the exact uppercase seat tag of the identity the call acts as, then a nonempty topic.  Display names, double quotes, backslashes and control characters are refused."
+            "pattern": "^\\[[A-Z0-9]+(?:, [A-Z0-9]+)*, [A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*\\] [^\\s\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029][^\"\\\\\\x00-\\x1f\\x7f\\u0085\\u2028\\u2029]*$",
+            "description": "The note title, \"[TEAM_KEY, Agent] Topic\", such as \"[AFC, Claude] Relay Rollout\".  Use one or more uppercase team keys and the canonical Title Case agent display name (or compatible uppercase seat tag) of the identity the call acts as, then a nonempty topic.  Double quotes, backslashes and control characters are refused."
           },
           "request_id": {
             "type": "string",

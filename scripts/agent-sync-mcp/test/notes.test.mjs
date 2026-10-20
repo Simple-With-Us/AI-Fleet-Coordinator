@@ -463,9 +463,11 @@ test("notes_status answers not_configured, and trusts nobody, when the consumer 
 });
 
 
-test("note title grammar rejects display names and case variants", () => {
-  for (const title of ["[AFC, Claude] Topic", "[AFC, claude] Topic", "[AFC, Grok Web] Topic", "[AFC, gb-fixer] Topic", "[AFC,  CLAUDE] Topic", "[AFC, CLAUDE] "])
+test("note title grammar accepts canonical display names and compatible tags", () => {
+  for (const title of ["[AFC,  CLAUDE] Topic", "[AFC, CLAUDE] "])
     assert.throws(() => checkTitle(title), /must read/);
+  assert.equal(checkTitle("[AFC, Codex] Topic"), "[AFC, Codex] Topic");
+  assert.equal(checkTitle("[AFC, Grok Web] Topic"), "[AFC, Grok Web] Topic");
   assert.equal(checkTitle("[AFC, CT, GB-FIXER] Topic"), "[AFC, CT, GB-FIXER] Topic");
 });
 

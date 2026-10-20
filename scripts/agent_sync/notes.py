@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from . import identity as I
 from . import session_ids as SID
 
 RELAY_CHANNEL = "notes-relay"
@@ -73,7 +74,7 @@ UPLOAD_PATH_RE = re.compile(r"^/user_uploads/[A-Za-z0-9_./-]{1,200}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
 _TITLE_BAD_RE = re.compile(r'["\\\x00-\x1f\x7f\x85\u2028\u2029]')
 _PR_RE = re.compile(r"^[0-9#, ]{1,40}$")
-_BRACKET_RE = re.compile(r"\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\] \S.*")
+_BRACKET_RE = re.compile(r"\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*)\] \S.*")
 _FENCE_OPEN = "```json\n"
 _FENCE_CLOSE = "\n```"
 
@@ -321,8 +322,31 @@ def relay_consumer(
 # --------------------------------------------------------------------------------------------
 
 
+def _notes_names(
+    identity: str, registry_path: str | None, env: Mapping[str, str] | None
+) -> set[str]:
+    """Exact canonical display names from the registry, plus the compatible uppercase tag."""
+    names = {identity}
+    if identity in {"CODEX", "CLAUDE"}:
+        names.add(identity.title())
+    path = registry_path or I.seat_registry_path(env)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return names
+    for row in data.get("seats") or []:
+        if (
+            isinstance(row, dict)
+            and str(row.get("tag") or "").upper() == identity
+            and isinstance(row.get("notesName"), str)
+        ):
+            names.add(row["notesName"].strip())
+    return names
+
+
 def title_agent(title: str) -> tuple[str, str] | None:
-    """Return uppercase scope keys and exact seat tag from the closed title grammar."""
+    """Return uppercase scope keys and the agent name from the closed title grammar."""
     if _TITLE_BAD_RE.search(title):
         return None
     match = _BRACKET_RE.fullmatch(title)
@@ -336,11 +360,11 @@ def title_problem(
     registry_path: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> str | None:
-    """None only when the title carries the sender's exact uppercase seat tag."""
+    """None only when the title carries the sender's canonical display name or compatible uppercase seat tag."""
     parts = title_agent(title)
     if parts is None:
-        return 'the title must read "[TEAM_KEY, SEAT_TAG] Topic" with the team key and seat tag in capitals'
-    if parts[1] != identity:
+        return 'the title must read "[TEAM_KEY, SEAT_TAG] Topic" with uppercase team keys and the canonical agent display name'
+    if parts[1] not in _notes_names(identity, registry_path, env):
         return 'the title names agent "%s", which is not %s' % (parts[1][:40], identity)
     return None
 

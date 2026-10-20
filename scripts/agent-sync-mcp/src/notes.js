@@ -42,7 +42,7 @@ const CHECK_NAMES = Object.freeze({
 const REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const UPLOAD_PATH_RE = /^\/user_uploads\/[A-Za-z0-9_./-]{1,200}$/;
 const TITLE_BAD_RE = /["\\\u0000-\u001f\u007f\u0085\u2028\u2029]/;
-const TITLE_SCOPE_RE = /^\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\] \S.*$/;
+const TITLE_SCOPE_RE = /^\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*)\] \S.*$/;
 
 // The title shape `[TEAM_KEY, SEAT_TAG] Topic`:  one or more capitalised team keys, then the
 // seat tag, then a non-empty topic.  A leading-bracket test alone lets `[AFC` and `[]` reach
@@ -149,9 +149,9 @@ export function checkTitle(raw) {
   const title = raw.trim();
   if (!title) throw invalid("argument 'title' must not be empty");
   if (points(title).length > TITLE_MAX) throw invalid(`argument 'title' is ${points(title).length} characters; at most ${TITLE_MAX}`);
-  if (!title.startsWith("[")) throw invalid('argument \'title\' must start with [TEAM_KEY, SEAT_TAG], such as "[AFC, MM] Topic"');
+  if (!title.startsWith("[")) throw invalid('argument \'title\' must start with [TEAM_KEY, SEAT_TAG], such as "[AFC, Codex] Topic"');
   if (TITLE_BAD_RE.test(title)) throw invalid("argument 'title' must not hold a double quote, a backslash or a control character");
-  if (!titleScope(title)) throw invalid('argument \'title\' must read "[TEAM_KEY, SEAT_TAG] Topic", such as "[AFC, MM] Topic"');
+  if (!titleScope(title)) throw invalid('argument \'title\' must read "[TEAM_KEY, SEAT_TAG] Topic", such as "[AFC, Codex] Topic"');
   return title;
 }
 

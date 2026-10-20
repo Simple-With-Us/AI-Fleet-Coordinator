@@ -1,7 +1,7 @@
 ---
 name: apple-notes
 description: >-
-  Write owner-facing Apple Notes in the `Coding` folder (local on this Mac) — plans, designs, reviews, handoffs, rollouts, living Completion notes. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Title [TEAM_KEY, SEAT_TAG] Topic (Title Case) with a refreshed timestamp.
+  Write owner-facing Apple Notes in the `Coding` folder (local on this Mac) — plans, designs, reviews, handoffs, rollouts, living Completion notes. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Title [TEAM_KEY, Agent] Topic (Title Case) with a refreshed timestamp.
 ---
 
 # Apple Notes (Universal)
@@ -33,11 +33,12 @@ Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do
 ## Title
 
 ```
-[TEAM_KEY, SEAT_TAG] Topic
+[TEAM_KEY, Agent] Topic
 ```
 
 - Team key first, then your seat tag, both capitals, then the topic in Title Case (owner 2026-10-19:  never the app's long name, never the seat's long name).
-- Multi-app: `[ST, CT, SEAT_TAG] …` (impact order).
+- Agent is your verified seat’s canonical Title Case `notesName`, such as `Codex` or `Claude`; the exact uppercase seat tag is compatible.
+- Multi-app: `[ST, CT, Agent] …` (impact order).
 - No date in the title.  No word "session".  Do not repeat the title as an H1 in the body.
 
 | Acronym | App |
@@ -98,7 +99,7 @@ Background-jobs inventory note is `⭐️ Background Jobs Master List` — refre
 
 ### Handoff Reports (Immediate & Living)
 When generating a handoff report for a peer agent to take over (e.g. before hitting quota or upon owner stop request):
-- **Title Format:** `⭐️ [TEAM_KEY, SEAT_TAG] HANDOFF REPORT: Short topic` (or `*** [TEAM_KEY, SEAT_TAG] HANDOFF REPORT: Short topic`)
+- **Title Format:** `⭐️ [TEAM_KEY, Agent] HANDOFF REPORT: Short topic` (or `*** [TEAM_KEY, Agent] HANDOFF REPORT: Short topic`)
 - **6-Section Body:**
   1. Executive Summary & Objective
   2. Current Work State & Artifacts (worktree path, branch, commit SHA, PR status, dirty/stashed files)

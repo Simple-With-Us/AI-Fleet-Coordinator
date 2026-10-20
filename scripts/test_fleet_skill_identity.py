@@ -116,18 +116,18 @@ class SpecializeTests(unittest.TestCase):
         self.assertNotIn("trading-monet", out)
 
     def test_ag_notes_name_is_antigravity(self) -> None:
-        # The canonical apple-notes text is seat-neutral (`[TEAM_KEY, SEAT_TAG]`), so the
+        # The canonical apple-notes text is seat-neutral (`[TEAM_KEY, Agent]`), so the
         # seat's Notes name comes from the install banner, never from Monet.
         out = specialize_from_monet(_notes(), SEATS["ag"], skill_name="apple-notes")
         self.assertIn("Notes `Antigravity`", out)
         self.assertNotIn("Notes `AG`", out)
-        self.assertNotRegex(out, r"\[(?:APP|ST, CT|TEAM_KEY), [A-Z][a-z][A-Za-z ]*\]")
+        self.assertNotRegex(out, r"\[(?:APP|ST, CT|TEAM_KEY), (?!Agent\])[A-Z][a-z][A-Za-z ]*\]")
 
     def test_cursor_and_grok_notes_names(self) -> None:
         for key, notes in (("cursor", "Cursor"), ("grok", "Grok"), ("codex", "Codex")):
             out = specialize_from_monet(_notes(), SEATS[key], skill_name="apple-notes")
             self.assertIn(f"Notes `{notes}`", out, key)
-            self.assertNotRegex(out, r"\[(?:APP|ST, CT|TEAM_KEY), [A-Z][a-z][A-Za-z ]*\]", key)
+            self.assertNotRegex(out, r"\[(?:APP|ST, CT|TEAM_KEY), (?!Agent\])[A-Z][a-z][A-Za-z ]*\]", key)
 
     def test_fleet_coordination_seats_table_preserved(self) -> None:
         out = specialize_from_monet(_coord(), SEATS["ag"], skill_name="fleet-coordination")
@@ -147,8 +147,8 @@ class SpecializeTests(unittest.TestCase):
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
 
         out_not = specialize_universal(_notes(), skill_name="apple-notes")
-        self.assertIn("[TEAM_KEY, SEAT_TAG]", out_not)
-        self.assertNotRegex(out_not, r"\[(?:APP|ST, CT|TEAM_KEY), [A-Z][a-z][A-Za-z ]*\]")
+        self.assertIn("[TEAM_KEY, Agent]", out_not)
+        self.assertNotRegex(out_not, r"\[(?:APP|ST, CT|TEAM_KEY), (?!Agent\])[A-Z][a-z][A-Za-z ]*\]")
 
     def test_codex_grok_renoir_deepseek_tags(self) -> None:
         mapping = {
@@ -1577,8 +1577,8 @@ class NotesTitleArchiveTests(unittest.TestCase):
         with zipfile.ZipFile(Path(ROOT, "docs", "fleet-skills", "apple-notes.zip")) as archive:
             packed = archive.read("apple-notes/SKILL.md")
         self.assertEqual(packed, source)
-        self.assertIn(b"[TEAM_KEY, SEAT_TAG]", packed)
-        self.assertIn(b"[ST, CT, SEAT_TAG]", packed)
+        self.assertIn(b"[TEAM_KEY, Agent]", packed)
+        self.assertIn(b"[ST, CT, Agent]", packed)
         self.assertNotIn(b"[APP, Agent]", packed)
 
 

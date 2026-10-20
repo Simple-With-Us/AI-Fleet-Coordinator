@@ -173,13 +173,16 @@ class AgentNameTests(unittest.TestCase):
             )
         )
 
-    def test_display_names_and_case_variants_are_not_seat_tags(self):
-        for title in ("[AFC, Claude] Topic", "[AFC, claude] Topic", "[AFC, Grok Web] Topic", "[AFC, gb-fixer] Topic", "[AFC,  CLAUDE] Topic"):
-            self.assertIsNotNone(N.title_problem(title, "CLAUDE"))
-            with self.assertRaises(N.NotesError):
-                N.check_title(title)
+    def test_canonical_display_name_and_tag_match_verified_identity(self):
+        for name in ("Claude", "CLAUDE"):
+            self.assertIsNone(N.title_problem("[AFC, " + name + "] Topic", "CLAUDE"))
+        for name in ("Codex", "CODEX", "claude", "Grok Web"):
+            self.assertIsNotNone(N.title_problem("[AFC, " + name + "] Topic", "CLAUDE"))
+        self.assertIsNone(N.title_problem("[AFC, Codex] Topic", "CODEX"))
+        with self.assertRaises(N.NotesError):
+            N.check_title("[AFC,  CLAUDE] Topic")
 
-    def test_mcp_descriptions_and_patterns_require_uppercase_seat_tags(self):
+    def test_mcp_descriptions_default_to_canonical_display_names(self):
         import re
         tools = json.loads((Path(__file__).resolve().parents[1] / "mcp" / "notes-tools.json").read_text())["tools"]
         count = 0
@@ -188,10 +191,9 @@ class AgentNameTests(unittest.TestCase):
             if title is None:
                 continue
             count += 1
-            self.assertIn("[AFC, CLAUDE]", title["description"])
-            self.assertNotIn("[AFC, Claude]", title["description"])
-            self.assertIsNotNone(re.fullmatch(title["pattern"], "[AFC, CT, CLAUDE] Topic"))
-            self.assertIsNone(re.fullmatch(title["pattern"], "[AFC, Claude] Topic"))
+            self.assertIn("[AFC, Claude]", title["description"])
+            for value in ("[AFC, CT, CLAUDE] Topic", "[AFC, Claude] Topic", "[AFC, Grok Web] Topic"):
+                self.assertIsNotNone(re.fullmatch(title["pattern"], value))
         self.assertEqual(count, 4)
 
 
