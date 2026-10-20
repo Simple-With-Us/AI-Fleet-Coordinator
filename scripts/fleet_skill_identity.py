@@ -159,6 +159,10 @@ class Seat:
     extra_banner: str = ""
     write_home: bool = True
     seat_key: str = ""
+    # The banner's lane clause.  Empty means the Mac default
+    # `~/apps/lanes/<Repo>/<suffix>-<slug>`; a cloud seat whose checkout is its
+    # lane says so here instead (MA).
+    lane_clause: str = ""
     # Zulip identity (owner 2026-10-07).  `zulip_bot` is the
     # bot's email local part; the realm is simplewithus.zulipchat.com for all of
     # them.  `zulip_rc` is the credential code the Infisical `<BOT>_ZULIP_*` names derive from (AFC-359).
@@ -196,14 +200,18 @@ def zulip_identity_sentence(seat: Seat) -> str:
     )
 
 
-def _banner(tag: str, notes: str, prefix: str, suffix: str, zulip: str = "") -> str:
+def _banner(
+    tag: str, notes: str, prefix: str, suffix: str, zulip: str = "", lanes: str = ""
+) -> str:
     inherit = "a shared template"
     if tag == "MONET":
         inherit = "another seat's upload pack"
+    if not lanes:
+        lanes = f"Lanes `~/apps/lanes/<Repo>/{suffix}-<slug>`."
     return (
         f"> **This install is for `{tag}`.**  Chat tag `[{tag}·session8]`.  "
         f"Notes `{notes}`.  "
-        f"Branches `{prefix}/`.  Lanes `~/apps/lanes/<Repo>/{suffix}-<slug>`.  Do not inherit "
+        f"Branches `{prefix}/`.  {lanes}  Do not inherit "
         f"another seat's tag from {inherit}."
         f"{zulip}\n\n"
     )
@@ -687,7 +695,9 @@ SEATS: dict[str, Seat] = {
         "exclusive",
         "This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  "
         "Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` "
-        "(historical `muse/<slug>`).  No lane on the Mac (cloud VM).  "
+        "(historical `muse/<slug>`).  No Mac lane (cloud VM):  the lane is your VM checkout, "
+        "one per repo named `muse-assist-<repo>`, so never create `~/apps/lanes` or run "
+        "`~/apps/lane`.  "
         "Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly "
         "distinguish from Muse Code (`[MC]`).  Pin `AGENT_SEAT=MA` / `AGENT_TAG=MA`.",
         extra_banner=MUSE_ASSIST_BANNER,
@@ -695,6 +705,10 @@ SEATS: dict[str, Seat] = {
         seat_key="muse-assist",
         zulip_bot="muse-assist-bot",
         zulip_rc="MA",
+        lane_clause=(
+            "No Mac lane (cloud VM):  your lane is the durable VM checkout "
+            "`muse-assist-<repo>`, one per repo."
+        ),
     ),
     # The shared Claude Code skill home.  CLAUDE is the only Claude seat, so it
     # renders as CLAUDE.  It is a second home for the `claude` pack, not a
@@ -1240,6 +1254,54 @@ def _launcher_aware_prose(text: str) -> str:
     )
 
 
+def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
+    """Replace Mac lane operations while retaining identity and safety sections."""
+    vm = (
+        "Use the existing durable muse-assist-<repo> checkout on the VM, outside scratch directories.  "
+        "Require a clean checkout before switching branches.  For a new task, run git fetch origin "
+        "and git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main, then publish with "
+        "git push -u origin HEAD.  For a follow-up, switch to the existing task branch instead; "
+        "never reset it or discard previous work.  This VM checkout is the lane; do not invoke "
+        "the Mac lane tool or create Mac lane directories.\n\n"
+    )
+    for command in (
+        "muse-assist-<repo>",
+        "git fetch origin",
+        "git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main",
+        "git push -u origin HEAD",
+    ):
+        vm = vm.replace(command, chr(96) + command + chr(96))
+    if skill_name == "session-start":
+        text = re.sub(
+            r"^## 3\..*?(?=^## 4\.)",
+            "## 3. Use The Durable VM Checkout\n\n" + vm,
+            text,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+    elif skill_name == "fleet-coordination":
+        text = re.sub(
+            r"^## 2\. Lanes.*?(?=^## 3\.)",
+            "## 2. VM Lanes\n\n" + vm + "---\n\n",
+            text,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+    elif skill_name == "land-lane":
+        text = re.sub(
+            r"^1\. You are in your lane.*$",
+            "1. You are on the intended task branch in your durable VM checkout; see session-start.",
+            text,
+            flags=re.MULTILINE,
+        )
+    elif skill_name == "closeout":
+        text = re.sub(
+            r"^## 7\. Retire.*?(?=^## 8\.)",
+            "## 7. Retain The Durable VM Checkout\n\nAfter merge, verify the remote result and keep the per-repo VM checkout for the next task.  Do not run Mac lane retirement or delete local work.\n\n",
+            text,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+    return text
+
+
 def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     if seat.mode == "grok_bot":
         return _specialize_grok_bot(text, seat, skill_name)
@@ -1327,12 +1389,19 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     text = _unprotect(text)
     text = _rewrite_reader_voice(text, seat)
     text = _launcher_aware_prose(text)
+    if seat.tag == "MA":
+        text = _muse_assist_vm_steps(text, skill_name)
 
     banners = ""
     if skill_name in IDENTITY_SKILL_NAMES and not seat.retired:
         zulip = zulip_identity_sentence(seat)
         banners += _banner(
-            seat.tag, seat.notes, seat.prefix, seat.suffix, f"  {zulip}" if zulip else ""
+            seat.tag,
+            seat.notes,
+            seat.prefix,
+            seat.suffix,
+            f"  {zulip}" if zulip else "",
+            seat.lane_clause,
         )
     banners += seat.extra_banner
     if banners:
