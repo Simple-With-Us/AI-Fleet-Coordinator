@@ -387,7 +387,11 @@ SCAN_PROGRESS_KEEP = 256
 
 def _scan_progress(runner, key, anchor=None, *, state_root=None):
     """Bounded durable cursors shared by active and disabled relay refusal scans."""
-    path = os.path.join(state_root if state_root is not None else runner.paths.root, RELAY_DIR, "refusal-scan-progress.json")
+    path = os.path.join(
+        state_root if state_root is not None else runner.paths.root,
+        RELAY_DIR,
+        "refusal-scan-progress.json",
+    )
     with LIVE.locked(path):
         rows = LIVE.read_json(path)
         if anchor is None:
@@ -397,14 +401,20 @@ def _scan_progress(runner, key, anchor=None, *, state_root=None):
             rows.pop(key, None)
         else:
             rows[key] = {"anchor": anchor, "updated": time.time()}
-        rows = dict(sorted(rows.items(), key=lambda item: item[1].get("updated", 0))[-SCAN_PROGRESS_KEEP:])
+        rows = dict(
+            sorted(rows.items(), key=lambda item: item[1].get("updated", 0))[-SCAN_PROGRESS_KEEP:]
+        )
         LIVE.write_json(path, rows, durable=True)
 
 
 def _prune_refusals(directory):
     """Keep recent terminal receipts, preserve all ambiguous outcomes, and cap new admissions."""
     try:
-        paths = [os.path.join(directory, name) for name in os.listdir(directory) if name.endswith(".json")]
+        paths = [
+            os.path.join(directory, name)
+            for name in os.listdir(directory)
+            if name.endswith(".json")
+        ]
     except FileNotFoundError:
         return 0
     terminal = []
@@ -449,7 +459,11 @@ def already_replied(
         ]
         + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else [])
     )
-    scan_key = hashlib.sha256(json.dumps([me, original.get("stream_id"), Z.message_topic(original), message_id, prefix]).encode()).hexdigest()
+    scan_key = hashlib.sha256(
+        json.dumps(
+            [me, original.get("stream_id"), Z.message_topic(original), message_id, prefix]
+        ).encode()
+    ).hexdigest()
     anchor = max(message_id, _scan_progress(runner, scan_key, state_root=state_root) or message_id)
     deadline = (
         min(deadline, time.monotonic() + 10.0) if deadline is not None else time.monotonic() + 10.0
@@ -633,7 +647,11 @@ def _refuse_unconsumed_locked(
         # A reaction or lookup failure says nothing about the non-idempotent reply outcome.
         # Preserve a pre-existing reply ambiguity, but never create one before its POST.
         if reply_attempted:
-            LIVE.write_json(row, {"state": "refused" if definite_rejection or definitely_unsent else "unknown"}, durable=True)
+            LIVE.write_json(
+                row,
+                {"state": "refused" if definite_rejection or definitely_unsent else "unknown"},
+                durable=True,
+            )
         elif not unknown:
             LIVE.write_json(row, {"state": "refused"}, durable=True)
         if isinstance(exc, Z.NetworkError) or retryable(exc):
@@ -662,8 +680,11 @@ def refuse_unconsumed(
         return False
     # Known unauthorized realm users never allocate state or a lock entry.
     try:
-        validate(message, runner.users.get(message.get("sender_id")),
-                 owner_user_id=int(runner.daemon.config.owner_user_id or 0))
+        validate(
+            message,
+            runner.users.get(message.get("sender_id")),
+            owner_user_id=int(runner.daemon.config.owner_user_id or 0),
+        )
     except Refusal as exc:
         if exc.code in ("sender_not_bot", "sender_owner", "sender_identity", "identity_mismatch"):
             return False
@@ -1055,7 +1076,14 @@ class Consumer:
         """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
         forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
         after a long backlog is still seen.  The scan is bounded;  past the bound it raises and keeps the request held."""
-        return already_replied(runner, original, message_id, prefix, self.log, state_root=os.path.dirname(os.path.dirname(self.processed.path)))
+        return already_replied(
+            runner,
+            original,
+            message_id,
+            prefix,
+            self.log,
+            state_root=os.path.dirname(os.path.dirname(self.processed.path)),
+        )
 
     def _download(self, runner: Any, path: str) -> bytes:
         """The uploaded .md at /user_uploads/..., through the reading bot's own credential:  Zulip hands back a

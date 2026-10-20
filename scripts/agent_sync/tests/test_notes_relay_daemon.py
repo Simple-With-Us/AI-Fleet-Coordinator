@@ -1369,6 +1369,28 @@ class RefusalBoundaryTests(unittest.TestCase):
                 NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
             self.assertFalse(any(call.args[0] == "messages" for call in runner.client.post.call_args_list))
 
+    def test_a_failed_reaction_is_not_recorded_as_an_ambiguous_reply(self):
+        """The reaction POST is idempotent, so a 5xx on it sent nothing:  recording the refusal `unknown`
+        would wedge every retry at the reconcile guard and drop the actionable reason for ever."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            sends = []
+            attempts = []
+            def post(path, params):
+                attempts.append(path)
+                if path == "messages":
+                    sends.append(params)
+                elif len(attempts) == 1:
+                    raise Z.ApiError("reaction unavailable", status=503)
+                return {}
+            runner.client.post.side_effect = post
+            with self.assertRaises(Z.ApiError):
+                NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertEqual(sends, [])
+            self.assertTrue(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+            self.assertEqual(len(sends), 1, "the retry must publish the reason the reaction failed to cover")
+
 
 class OverflowRefusalBoundaryTests(unittest.TestCase):
     def daemon(self, rows):
