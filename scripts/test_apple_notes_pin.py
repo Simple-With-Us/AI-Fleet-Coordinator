@@ -1,15 +1,20 @@
 """AFC-431:  apple-notes-coding.sh must not leave a coding note unpinned because a Shortcut run raced the
-note index, and it must not report a failed run as a missing Shortcut.
+note index, and it must not report one failure as another.
 
-The pin block has three distinct outcomes and one that is not an outcome at all:
+The pin block has four distinct outcomes and one that is not an outcome at all:
 
   rc 0  the note is pinned
   rc 1  the Shortcut ran but did not complete
   rc 2  the Shortcut is not installed
-  rc 3  pinning was disabled by APPLE_NOTES_PIN=0, so no run was attempted
+  rc 3  the Shortcut list could not be read, so it is unknown whether the Shortcut exists
+  rc 4  pinning was disabled by APPLE_NOTES_PIN=0, so no run was attempted
 
 The script used to collapse rc 1 and rc 2 into one message that always named the Shortcut as unavailable,
-and it ran the Shortcut exactly once, so a timing race left the note unpinned.
+it ran the Shortcut exactly once, so a timing race left the note unpinned, and a failed `shortcuts list`
+looked exactly like a Shortcut that was never installed.
+
+The retry is gated on APPLE_NOTES_PIN_RETRY, because a miss can pop a note picker on the owner's screen
+and a caller may want a single attempt.
 
 These tests drive the real source:  the `_run_note_shortcut` function and the pin decision block are cut out
 of scripts/apple-notes-coding.sh and run in a harness with a stub `shortcuts` on PATH, so the assertions
@@ -33,6 +38,7 @@ SCRIPT = Path(__file__).resolve().parent / "apple-notes-coding.sh"
 #  the stub records every `shortcuts run` in this file, so a test can count the attempts
 STUB = """#!/bin/bash
 if [ "${1:-}" = "list" ]; then
+  if [ "${STUB_LIST_FAILS:-0}" = "1" ]; then exit 1; fi
   if [ "${STUB_INSTALLED:-1}" = "1" ]; then printf '%s\\n' "Pin Coding Note"; fi
   exit 0
 fi
@@ -140,6 +146,22 @@ class PinDecisionTests(unittest.TestCase):
         self.assertNotIn("run failed", p.stdout)
         self.assertNotIn("is not installed", p.stdout)
         self.assertEqual(runs, 0, "the Shortcut ran even though pinning was disabled")
+
+    def test_a_list_that_cannot_be_read_is_not_reported_as_a_missing_shortcut(self):
+        """A failed list lookup proves nothing about the Shortcut, so it must not send an operator to rebuild one."""
+        p, runs = self.run_block(STUB_LIST_FAILS="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("could not be read", p.stdout)
+        self.assertNotIn("is not installed", p.stdout)
+        self.assertIn("could not be read", p.stderr)
+        self.assertEqual(runs, 0, "the Shortcut ran even though the list could not be read")
+
+    def test_the_retry_can_be_switched_off(self):
+        """APPLE_NOTES_PIN_RETRY=0 keeps the single attempt, for a caller that will not risk a second run."""
+        p, runs = self.run_block(STUB_FAIL_FIRST="99", APPLE_NOTES_PIN_RETRY="0")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("shortcut run failed", p.stdout)
+        self.assertEqual(runs, 1, "the retry ran even though it was switched off")
 
     def test_the_gui_fallback_is_still_reachable_after_a_failed_run(self):
         """--pin still has to reach the GUI path when the Shortcut fails, so the skip line must not fire."""
