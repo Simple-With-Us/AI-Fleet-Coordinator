@@ -8,21 +8,37 @@ settings, marketing HTML, App Store fields.
 
 
 
-## Theme default = light (owner ruling 2026-08-10 — ALL apps, ALL agents)
+## Theme default = system (owner ruling 2026-09-19 — supersedes 2026-08-10 — ALL apps, ALL agents)
 
-Owner: default UI theme is **light**. Agents keep inventing dark-first or
-"system" defaults that land on dark because the Mac is dark — stop that.
+Owner: default UI theme is **system** — the app follows the OS appearance.
+A Mac in light boots light; a Mac in dark boots dark; an iPhone in dark
+boots dark.  This supersedes the 2026-08-10 ruling that pinned the default
+to light and warned against system/dark-first defaults.  That ruling
+existed because most fleet agents develop on a Mac that is dark, and a
+system-default would land them on dark every time.  The owner has decided
+that is no longer the trade-off they want — the OS preference is the
+right default for first-time visitors, and it eliminates the dev-Mac
+optical illusion in both directions.
 
-- **Default for first visit / no stored preference:** always **light**.
-- **Do not** boot into dark from `prefers-color-scheme` unless the user has
-  explicitly chosen **System** (or Dark).
-- Dark remains an **optional** user choice via Light | Dark | System (or
-  equivalent) — never the product default.
-- **Screenshots / ASC / marketing / design previews:** capture in **light**
-  mode unless the owner explicitly asks for dark. Existing ASC packs that
-  are already light do not need a redo for this rule alone.
-- Applies to every fleet app (web + iOS + Android + BotFleet chrome).
-- Do not "make it look cool" with dark chrome by default. Light is correct.
+- **Default for first visit / no stored preference:** **system** (follow the OS).
+- **Stored preferences are never rewritten** by this rule.  A returning user
+  who chose Light or Dark stays on it; only first paint with no record
+  defaults to system.
+- Light, Dark, and System remain available choices everywhere a picker
+  ships; System is just the new default.
+- **Screenshots / ASC / marketing / design previews:** capture on a
+  **light** Mac unless the owner explicitly asks for dark.  The product
+  default is system, the capture default is still light, because marketing
+  assets need a deterministic palette regardless of who happens to be
+  developing them.  Existing ASC packs that are already light do not need
+  a redo for this rule alone.
+- Applies to every fleet app (web + iOS + Android + BotFleet chrome +
+  CodeCaps).  Each seat lands the default flip in their own app; the
+  FLEET-UI-COPY change here is the canonical signal, not the per-app
+  code change.
+- The dev-Mac-dark-footgun still applies to any *picked* dark theme — a
+  light capture is still the right answer for marketing.  The reversal is
+  only about the *default*, not about choice.
 
 ## Proper nouns
 
