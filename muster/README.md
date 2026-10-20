@@ -31,7 +31,7 @@ From the repository root:
 
 The default Release configuration builds `services.jays.Muster` with Developer ID signing and hardened runtime enabled.  App Sandbox is disabled to leave room for the separately owned CLI integration; the app currently has no capabilities or custom entitlements.
 
-The script installs the sole normal app copy at `~/Applications/Muster.app`, launches that bundle, and verifies its exact executable path with `--verify`.  Its `dist/` staging directory is removed when the script exits, including on failure.  Incremental build data stays under ignored `muster/.build/`.
+The script installs the sole normal app copy at `~/Applications/Muster.app`, launches that bundle, and verifies its exact executable path with `--verify`.  Its `dist/` staging directory is removed when the script exits, including on failure.  Installation prepares and verifies a copy on the destination filesystem before replacing the installed bundle, and restores the previous bundle if replacement or verification fails.  Incremental build data stays under ignored `muster/.build/`.
 
 If Muster is already running, the script stops before building.  Quit it manually, or explicitly authorize this invocation to terminate only the installed copy:
 
@@ -41,7 +41,7 @@ If Muster is already running, the script stops before building.  Quit it manuall
 
 The script never force-kills a process.  A second concurrent invocation fails against a local lock; after an interrupted process, inspect whether a build is still active before removing `muster/.build/run.lock`.
 
-Optional modes are `--logs`, `--telemetry`, and `--debug`.  Log modes stream unified logs after launch; the scaffold has no custom telemetry events yet.  Debug mode attaches LLDB to the installed process and is subject to macOS Developer Tools permissions and hardened-runtime debugger restrictions.
+Optional modes are `--logs`, `--telemetry`, and `--debug`.  Log modes stream unified logs after launch; the scaffold has no custom telemetry events yet.  The build lock and staging are released before a log stream or debugger blocks.  Debug mode attaches LLDB to the installed process and is subject to macOS Developer Tools permissions and hardened-runtime debugger restrictions.
 
 Fleet agents must acquire the shared `#builds` gate before a full local build.  The script is an on-demand developer helper, not an always-on service.
 

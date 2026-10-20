@@ -52,16 +52,30 @@ refuse_running_replacement() {
 
 refuse_running_replacement
 mkdir -p "$BUILD_DIR"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    echo "Another Muster build is active, or $LOCK_DIR needs review after an interrupted build." >&2
-    exit 1
-fi
-
+python3 - "$LOCK_DIR" "$ROOT_DIR/script" <<'PYLOCK'
+import sys
+sys.path.insert(0, sys.argv[2])
+from build_support import acquire_lock
+try:
+    acquire_lock(sys.argv[1])
+except RuntimeError as exc:
+    print(str(exc), file=sys.stderr)
+    sys.exit(75)
+except OSError as exc:
+    print("Cannot acquire the Muster build lock: " + str(exc), file=sys.stderr)
+    sys.exit(exc.errno or 1)
+PYLOCK
+LOCK_HELD=1
 cleanup() {
-    rm -rf "$DIST_DIR"
-    rmdir "$LOCK_DIR"
+    if [ "$LOCK_HELD" -eq 1 ]; then
+        rm -rf "$DIST_DIR"
+        rmdir "$LOCK_DIR"
+        LOCK_HELD=0
+    fi
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Selection uses public certificate metadata; no private key material is exported.
 SIGNING_SELECTION="$(python3 - <<'PY'
@@ -70,10 +84,15 @@ import re
 import subprocess
 import sys
 
-result = subprocess.run(
-    ["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"],
-    check=True, capture_output=True, text=True,
-)
+try:
+    result = subprocess.run(
+        ["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+except FileNotFoundError:
+    sys.exit(127)
 identities = re.findall(
     r'\b([A-Fa-f0-9]{40}) "(Developer ID Application: [^"\n]+ \(([A-Z0-9]{10})\))"',
     result.stdout,
@@ -120,24 +139,6 @@ if ! /usr/bin/grep -q 'flags=.*runtime' <<< "$SIGNATURE_DETAILS"; then
     exit 1
 fi
 
-refuse_running_replacement
-if [ "$RELAUNCH" -eq 1 ]; then
-    PIDS="$(installed_pids)"
-    if [ -n "$PIDS" ]; then
-        while IFS= read -r pid; do
-            /bin/kill -TERM "$pid"
-        done <<< "$PIDS"
-        for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            [ -z "$(installed_pids)" ] && break
-            sleep 0.5
-        done
-        if [ -n "$(installed_pids)" ]; then
-            echo "Muster has not exited; refusing to replace the running app." >&2
-            exit 1
-        fi
-    fi
-fi
-
 mkdir -p "$INSTALL_DIR"
 if [ -L "$INSTALLED_APP" ]; then
     echo "Refusing to replace a symlink at $INSTALLED_APP." >&2
@@ -174,10 +175,15 @@ def bundle_id(path):
 
 if bundle_id(staged) != expected_id:
     sys.exit("The staged app bundle identifier does not match the selected configuration.")
-entitlements = subprocess.run(
-    ["/usr/bin/codesign", "-d", "--entitlements", "-", str(staged)],
-    check=True, capture_output=True,
-).stdout
+try:
+    entitlements = subprocess.run(
+        ["/usr/bin/codesign", "-d", "--entitlements", ":-", "--xml", str(staged)],
+        check=True, capture_output=True, timeout=30,
+    ).stdout
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+except FileNotFoundError:
+    sys.exit(127)
 try:
     signed = plistlib.loads(entitlements) if entitlements.strip() else {}
 except (plistlib.InvalidFileException, ValueError):
@@ -190,9 +196,40 @@ if sandbox is not None and sandbox is not False:
 if os.path.lexists(installed) and bundle_id(installed) not in allowed_ids:
     sys.exit("Refusing to replace an existing app with a different bundle identifier.")
 PY
-rm -rf "$INSTALLED_APP"
-mv "$STAGED_APP" "$INSTALLED_APP"
-/usr/bin/codesign --verify --strict --deep "$INSTALLED_APP"
+refuse_running_replacement
+if [ "$RELAUNCH" -eq 1 ]; then
+    PIDS="$(installed_pids)"
+    if [ -n "$PIDS" ]; then
+        while IFS= read -r pid; do
+            /bin/kill -TERM "$pid" 2>/dev/null || true
+        done <<< "$PIDS"
+        for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            [ -z "$(installed_pids)" ] && break
+            sleep 0.5
+        done
+        if [ -n "$(installed_pids)" ]; then
+            echo "Muster has not exited; refusing to replace the running app." >&2
+            exit 1
+        fi
+    fi
+fi
+
+python3 - "$STAGED_APP" "$INSTALLED_APP" "$ROOT_DIR/script" <<'PYINSTALL'
+import subprocess
+import sys
+sys.path.insert(0, sys.argv[3])
+from build_support import install_bundle
+
+def verify(path):
+    subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "--deep", str(path)],
+                   check=True, timeout=30)
+try:
+    install_bundle(sys.argv[1], sys.argv[2], verify)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+except FileNotFoundError:
+    sys.exit(127)
+PYINSTALL
 /usr/bin/open "$INSTALLED_APP"
 
 case "$MODE" in
@@ -208,10 +245,12 @@ case "$MODE" in
         fi
         echo "Verified Muster is running from $INSTALLED_APP."
         if [ "$MODE" = "--debug" ]; then
+            cleanup
             xcrun lldb -p "${PIDS%%$'\n'*}"
         fi
         ;;
     --logs)
+        cleanup
         /usr/bin/log stream --info --style compact --predicate 'process == "Muster"'
         ;;
     --telemetry)
@@ -220,6 +259,7 @@ case "$MODE" in
         else
             BUNDLE_ID="services.jays.Muster"
         fi
+        cleanup
         /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
         ;;
 esac
