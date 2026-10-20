@@ -1,7 +1,8 @@
 ---
 name: sentence-gap
 description: >-
-  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows Monet's portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
+  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows the canonical portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08); in the MiniMax Code chat pane use a real U+00A0 plus a space (owner-verified 2026-10-20 — the entity renders there as the six literal characters); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
+---
 ---
 
 # Sentence gap (portable — always on)
@@ -42,11 +43,17 @@ the shell rather than typing it, because a model that emits U+00A0 directly can 
 normalized to a plain space:
 
 ```sh
-printf 'Sentence one.\302\240 Sentence two.\n'
+printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
 ```
 
-`\302\240` is the UTF-8 encoding of U+00A0.  Verify with
-`grep -o $'[.!?]\xc2\xa0' f | wc -l`, which must not print `0`.
+`\302\240` is the UTF-8 encoding of U+00A0.  Send the generated text to a file, then
+verify that same file, so the check reads the bytes you just produced and never a stale
+copy of the same name:
+
+```sh
+grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l    # must be above 0
+grep -cE '[^0-9][.!?] +[A-Z"]' reply.txt      # must print 0: no gap left unconverted
+```
 
 ### Precedence: this is the owner's highest-priority house rule
 

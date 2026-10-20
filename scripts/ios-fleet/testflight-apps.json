@@ -149,21 +149,8 @@
       "bundleId": "com.simplewithus.codecaps.macos",
       "platform": "MAC_OS",
       "repo": "CodeCaps",
-      "paths": [
-        "ios/CodeCapsCompanion",
-        "Sources/QuotaCore/CompanionReadTokenStore.swift",
-        "Sources/QuotaCore/FleetSourceDisagreement.swift",
-        "Sources/QuotaCore/QuotaWindowVocabulary.swift",
-        "Sources/QuotaCore/ResetAlarmCadence.swift",
-        "Sources/QuotaCore/ResetAlarmMessage.swift",
-        "Sources/QuotaCore/ResetAlarmTracker.swift",
-        "Sources/QuotaCore/WidgetPlatformDisplay.swift",
-        "Sources/QuotaCore/WidgetSnapshotFetcher.swift"
-      ],
-      "ship": { "workflow": "macos-ship.yml", "inputs": {} },
-      "sourceWorkflows": ["macos-ship.yml"],
-      "compileCheck": "iOS companion compile",
-      "autoRemedy": true
+      "paths": ["ios/CodeCapsCompanion"],
+      "skip": "retired from TestFlight and the Mac App Store (CC-169, owner 2026-10-19);  the Mac app ships through GitHub release DMGs (mac-release.yml)"
     },
     "hoghunter": {
       "displayName": "Hog Hunter",
