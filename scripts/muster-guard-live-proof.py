@@ -470,44 +470,46 @@ def _validate_tool_call_shape(call: dict) -> None:
         if value is None:
             continue
         if expected is int and isinstance(value, bool):
-            raise ValueError(f"session toolCall {field!r} must be an integer")
+            raise TypeError(f"session toolCall {field!r} must be an integer")
         if not isinstance(value, expected):
-            raise ValueError(f"session toolCall {field!r} must be a {expected.__name__}")
+            raise TypeError(f"session toolCall {field!r} must be a {expected.__name__}")
     tool_input = call.get("input")
     if isinstance(tool_input, dict):
         command = tool_input.get("command")
         if command is not None and not isinstance(command, str):
-            raise ValueError("session toolCall input 'command' must be a string")
+            raise TypeError("session toolCall input 'command' must be a string")
     output = call.get("output")
     if not isinstance(output, dict):
         return
     content = output.get("content")
     if content is not None:
         if not isinstance(content, list):
-            raise ValueError("session toolCall output 'content' must be an array")
+            raise TypeError("session toolCall output 'content' must be an array")
         for block in content:
             if not isinstance(block, dict):
-                raise ValueError("session toolCall output content entries must be objects")
+                raise TypeError("session toolCall output content entries must be objects")
             if "text" in block and not isinstance(block["text"], str):
-                raise ValueError("session toolCall output content 'text' must be a string")
+                raise TypeError("session toolCall output content 'text' must be a string")
     details = output.get("details")
     if not isinstance(details, dict):
         return
     execution = details.get("execution")
     if execution is not None and not isinstance(execution, dict):
-        raise ValueError("session toolCall details 'execution' must be an object")
+        raise TypeError("session toolCall details 'execution' must be an object")
     process_output = details.get("processOutput")
     if process_output is not None:
         if not isinstance(process_output, dict):
-            raise ValueError("session toolCall details 'processOutput' must be an object")
+            raise TypeError("session toolCall details 'processOutput' must be an object")
         exit_code = process_output.get("exitCode")
-        if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
-            raise ValueError("session toolCall processOutput 'exitCode' must be an integer")
+        if exit_code is not None and (
+            isinstance(exit_code, bool) or not isinstance(exit_code, int)
+        ):
+            raise TypeError("session toolCall processOutput 'exitCode' must be an integer")
     for source in (details, execution or {}):
         for field in ("reason", "message", "error"):
             value = source.get(field)
             if value is not None and not isinstance(value, str):
-                raise ValueError(f"session toolCall {field!r} must be a string")
+                raise TypeError(f"session toolCall {field!r} must be a string")
 
 
 def _completed_tool_calls(text: str) -> list[dict]:
@@ -517,9 +519,10 @@ def _completed_tool_calls(text: str) -> list[dict]:
     is not: the fleet's deny reason recommends `pgrep`, so a model that merely declines the
     command can put that word in its prose.
 
-    Raises `ValueError` when the stream is not a usable record.  A stream that cannot be
-    read proves nothing, and the caller turns that into an unrunnable check rather than
-    into a verdict about the guard.
+    Raises `ValueError` when the stream is not a usable record, and `TypeError` when a
+    field has the wrong type.  A stream that cannot be read proves nothing, and the
+    caller turns that into an unrunnable check rather than into a verdict about the
+    guard.
     """
     if len(text.encode("utf-8")) > MAX_SESSION_BYTES:
         raise ValueError("the live session output exceeds the byte limit")
@@ -537,20 +540,20 @@ def _completed_tool_calls(text: str) -> list[dict]:
         except ValueError:
             continue
         if not isinstance(event, dict):
-            raise ValueError("a session event must be a JSON object")
+            raise TypeError("a session event must be a JSON object")
         _validate_json_limits(event)
         if event.get("type") != "item.completed":
             continue
         item = event.get("item")
         if not isinstance(item, dict):
-            raise ValueError("a session item.completed event must carry an object 'item'")
+            raise TypeError("a session item.completed event must carry an object 'item'")
         if item.get("type") != "tool_call":
             continue
         call = item.get("toolCall")
         if call is None:
             continue
         if not isinstance(call, dict):
-            raise ValueError("a session tool_call item must carry an object 'toolCall'")
+            raise TypeError("a session tool_call item must carry an object 'toolCall'")
         if not call:
             continue
         _validate_tool_call_shape(call)
@@ -643,7 +646,7 @@ def _dispatch_verdict(text: str, returncode: int, fingerprint: str) -> dict:
     """Decide what the live run proved."""
     try:
         calls = _completed_tool_calls(text)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         # An unreadable event stream is not a statement about the guard.  The session
         # could not be read as a record, so the hook was never judged here.
         return _stage_error(f"the live session output could not be read: {exc}")
