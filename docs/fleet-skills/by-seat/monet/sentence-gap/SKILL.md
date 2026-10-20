@@ -86,48 +86,8 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-umask 077   # both body copies hold message content; never leave them world-readable
-perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.gap.txt
+perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
 ```
-
-**A second pass is required, and the first pass alone is what ships the wrong gap.**  The
-conversion above only touches a run of spaces that follows `.` `!` `?`.  Every OTHER run of two
-or more spaces survives it, so a colon or a semicolon in prose keeps two spaces:
-`They are now published:  <id>` and `already decided;  PR #<n>` both come out of the first
-pass unchanged.  The owner ruling is that a colon, a semicolon, a comma or a dash gets **one
-ordinary space**;  a gap after a semicolon is "very weird" and is not what was asked for.  So
-collapse every remaining run, on every line except the house closeout header and any fenced code
-block:
-
-```sh
-perl -CSDA -ne '
-  if (/^\s*```/) { $fence = !$fence; print; next }
-  if (!$fence && !/^\s*repo:/) { s/(?<=\S) {2,}/ /g }
-  print
-' body.gap.txt > body.nbsp.txt
-rm -f body.gap.txt   # the scratch copy of the body is not needed afterwards
-```
-
-The header line is exempt on purpose.  `repo:  <Project>  |  DONE` is a template, not prose:
-the handbook's own examples write it with two spaces (`handbook/appendix/examples.md`), and the
-fleet tooling parses it as `re.match(r"^\s*repo:\s*\S", line)`, so one space would also work
-but two is the house form.  Leave that line exactly as the template has it.
-
-The fenced code block is exempt for a different reason:  **code is not prose.**  A line of shell
-in a PR body often carries aligned spacing, and collapsing it silently rewrites the code.  A
-one-line version of this pass, `s/(?<=\S) {2,}/ /g`, turns `wc -l     # must be > 0` into
-`wc -l # must be > 0` and turns `repo:  <Project>  |  DONE` inside a quoted example into
-`repo: <Project> | DONE`.  Both changes are invisible to every assertion, because the assertion
-runs after the damage.  The fence-aware version above leaves a ```` ``` ````-fenced block exactly
-as the author wrote it, and it leaves the house header alone on the same pass.
-
-Run the two passes in order, first into a scratch file and then into the file you post.  The
-second pass never touches the U+00A0 the first pass produced, because a U+00A0 plus one space
-is a run of one space.  The scratch file is a second on-disk copy of the body, so the
-`umask 077` above has to come first and the `rm -f` after the second pass is not optional:  a
-leftover world-readable body copy in the working tree exposes message content to other local
-users and risks a stray `git add`.  This is the same rule `scripts/agent_sync/bodyfile.py`
-enforces on the file you post.
 
 Matching one *or more* is the whole fix.  The old pattern requiring exactly two spaces — written
 here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
@@ -137,7 +97,7 @@ numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tol
 lookahead class skips a lowercase follower, so `e.g. this` and lower-case domains keep their plain
 space.
 
-**Known limitations — the pattern is a heuristic, not a dictionary.**  Four deliberate costs:
+**Known limitations — the pattern is a heuristic, not a dictionary.**  Two deliberate costs:
 
 - It gaps a *capitalised* abbreviation:  `Dr. Smith` and `e.g. Acme` both come out with a U+00A0,
   against the rule above about non-terminal abbreviations.
@@ -146,31 +106,17 @@ space.
   parsing as a list, and a body with steps in it renders as one run-on paragraph.  The lookbehind
   skips any period preceded by a digit, which fixes the marker and also protects `v1.2.3`, but it
   costs the gap on a sentence that ends in a digit:  `The answer is 42. Next thing.` gets none.
-- The first pass does not know about fenced code blocks, so a line of code that reads like a
-  sentence picks up a U+00A0 inside the code:  `echo "Done. Next"` gains a U+00A0 where the plain
-  space was, and the code no longer says exactly what it said.  The second pass skips fences, so it
-  cannot make this worse, but it cannot undo it either.  When a body quotes code with a
-  sentence-like line in it, keep that one line out of the conversion.
-- The second pass only recognises a ```` ``` ```` fence that starts a line, so a `~~~` fence, a
-  fence behind a `>` quote marker, a four-space indented code block, and any inline code span all
-  get their runs collapsed.  `s/(?<=\S) {2,}/ /g` has no notion of a backtick span at all.  The
-  third check carries the same fence filter, so it reports clean on the damage it did not see.
-  `scripts/agent_sync/textfmt.py` already implements the wider contract (`_FENCE_OPEN_RE`,
-  `_INLINE_RE`, `_split_fences` cover `~~~`, indented, list- and quote-nested fences and inline
-  spans), so prefer it over this recipe when a body quotes code;  otherwise fix the affected code
-  by hand after the run.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
 it, and do not widen the pattern to chase it.
 
-**Assert before you post — all three checks, every time.**  A conversion that matches nothing still
+**Assert before you post — both checks, every time.**  A conversion that matches nothing still
 exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
 partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
 
 ```sh
 grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
 grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
-perl -CSDA -ne 'if (/^\s*```/) { $fence = !$fence; next } print if !$fence && !/^\s*repo:/ && /(?<=\S) {2,}/' body.nbsp.txt | wc -l   # must be 0 — a double space left in prose
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -179,19 +125,6 @@ and still ships a wrong gap.  `[^0-9]` in front is deliberate, so a legitimate n
 marker (`1. Item`) is not mistaken for an unconverted gap — the same reason the conversion
 carries `(?<![0-9])`.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
 read them and confirm they are abbreviations rather than real sentences.
-
-**The third check is the one that catches a whole class of wrong body.**  The first two checks
-only look at sentence-ending marks, so a body can pass both of them and still carry a double
-space after a colon or a semicolon — `published:  <id>`, `already decided;  PR #<n>`.  That
-is a gap where the owner asked for one ordinary space, and it is invisible to the first two
-checks, which is exactly why it ships.  The `^repo:` filter drops the house closeout header,
-whose two spaces are the template's own, and the fence filter drops fenced code blocks, whose
-spacing is the author's.
-
-The third check has to be fence-aware for the same reason the second pass is:  a plain
-`grep -cE '[^[:space:]] {2,}'` flags the aligned spacing inside a code block and reads as a
-failure that is not there, which trains people to ignore it.  The filter has to match the pass
-exactly, or the assertion measures something the conversion never touched.
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or

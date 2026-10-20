@@ -1111,6 +1111,11 @@ class CatalogMatchesFreshRenderTests(unittest.TestCase):
         for seat in catalog_seats():
             key = seat.seat_key or seat.tag.lower()
             expected_dirs.add(key)
+            if seat.retired:
+                #  A retired seat's catalog copy is history, and the installer no longer
+                #  re-renders it, so it is held at its retirement text rather than
+                #  compared against a fresh render.
+                continue
             for name in catalog_skill_names(DOCS):
                 if name in FROZEN_RENDERS:
                     continue
