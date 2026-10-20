@@ -66,7 +66,9 @@ export function fromDatadog(payload) {
     service,
     firing,
     // A recovered event carries no severity; INFO keeps the close quiet.
-    severity: firing ? undefined : "INFO",
+    // A firing one must keep its own: dropping it here pinned every Datadog
+    // alert to INFO, so an erroring monitor could never escalate.
+    severity: firing ? first(alertType, payload.priority) : "INFO",
     text: oneLine(first(payload.alert_transition, title, alertType)) || service,
     link: first(payload.event_url, payload.url),
     prodDown: /production|prod down|site down/i.test(title),
@@ -112,12 +114,17 @@ export function fromBetterStack(payload) {
   // An unrecognized non-empty status stays firing: the safe direction.
   const firing = status ? down || !recovered : payload.alert_type === "ALERT";
 
+  // The key must name the monitor, not the incident: `data.id` is per-outage,
+  // so a default delivery without `relationships.monitor` would mint a new key
+  // every time and never resolve the previous one.  Prefer the monitor identity
+  // the URL carries, and only fall back to the incident id when nothing else
+  // identifies the check.
   const id = first(
     monitor.id,
     data.check_id,
     data.monitor_id,
-    data.id,
     (url.match(/\/([a-f0-9]{16,})/i) || [])[1],
+    data.id,
   );
   const key = id ? `betterstack:${id}` : `betterstack:${name.toLowerCase()}`;
 
@@ -152,7 +159,10 @@ export function fromGeneric(payload) {
     ? !/^(ok(?:ay)?|up|recover(?:ed|ing|ies|y|s)?|resolv(?:ed|es|ing)|clear(?:ed|ing|s)?)$/.test(
         status,
       )
-    : alert.firing === true;
+    : // No status signal at all is unknown, not a recovery: a payload carrying
+      // only a summary must not close a live incident.  An explicit false is
+      // still honoured as a recovery.
+      alert.firing !== false;
   return {
     source: strip(payload.source) || "generic",
     key: `${strip(payload.source) || "generic"}:${oneLine(first(alert.id, alert.fingerprint, service)).toLowerCase()}`,

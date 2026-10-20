@@ -3,6 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { normalize, fromDatadog, fromBetterStack, fromGeneric } from "./normalize.js";
+import { normalizeSeverity, decide, initialState } from "./state.js";
 
 test("datadog triggered and recovered are distinguishable", () => {
   const triggered = fromDatadog({
@@ -129,6 +130,33 @@ test("generic never reads a non-recovery word as recovered", () => {
   }
 });
 
+test("a firing Datadog alert keeps its severity", () => {
+  // Dropping severity here pinned every alert to INFO, so an erroring monitor
+  // could never escalate and was mislabelled in the Zulip announcement.
+  assert.equal(fromDatadog({ alert_type: "Error", monitor_id: 1 }).severity, "error");
+  assert.equal(fromDatadog({ alert_type: "Warning", monitor_id: 1 }).severity, "warning");
+  assert.equal(
+    normalizeSeverity(fromDatadog({ alert_type: "Error", monitor_id: 1 }).severity),
+    "SEVERE",
+    "a Datadog error is SEVERE, not the INFO fallback",
+  );
+  assert.equal(
+    normalizeSeverity(fromDatadog({ alert_type: "Warning", monitor_id: 1 }).severity),
+    "MODERATE",
+  );
+  // A recovered event stays quiet.
+  assert.equal(fromDatadog({ alert_type: "Recovered", monitor_id: 1 }).severity, "INFO");
+});
+
+test("a status-less generic payload does not resolve an open incident", () => {
+  // No recovery signal is unknown, not a recovery: this must not let decide()
+  // discard or resolve a pending or alerting incident.
+  const bare = fromGeneric({ alert: { id: "a1", summary: "no status field here" } });
+  assert.equal(bare.firing, true);
+  // An explicit false is still honoured.
+  assert.equal(fromGeneric({ alert: { id: "a1", firing: false } }).firing, false);
+});
+
 test("anchoring the recovery words kept the real inflections", () => {
   // The anchored form must not cost the inflections the unanchored one
   // accepted -- an unrecognized recovery leaves the incident firing forever.
@@ -177,4 +205,33 @@ test("Better Stack keeps reading the flat custom-template body", () => {
     assert.equal(fromBetterStack({ data: { check_name: "x", status } }).firing, true, status);
   for (const status of ["up", "passing", "ok", "resolved"])
     assert.equal(fromBetterStack({ data: { check_name: "x", status } }).firing, false, status);
+});
+
+test("a default Better Stack incident keys on the monitor, not the incident", () => {
+  // The documented default template carries no relationships.monitor, so the
+  // per-incident data.id must not become the key -- every outage would mint a
+  // fresh alert that never resolves the last one.
+  const monitorId = "99887766554433221100aabb";
+  const url = `https://uptime.betterstack.com/team/1/monitors/${monitorId}`;
+  const outage = normalize("betterstack", {
+    data: { type: "incident", id: "77001", attributes: { status: "triggered", url } },
+  });
+  assert.equal(outage.key, `betterstack:${monitorId}`);
+  const recovery = normalize("betterstack", {
+    data: { type: "incident", id: "77002", attributes: { status: "resolved", url } },
+  });
+  assert.equal(recovery.key, outage.key, "the recovery must address the outage's key");
+
+  // The state machine then closes that incident rather than opening a new one.
+  const open = decide(initialState(), outage, 0);
+  assert.equal(open.state.phase, "pending");
+  assert.equal(decide(open.state, recovery, 1000).action, "discard");
+  assert.equal(decide({ ...open.state, phase: "alerting" }, recovery, 2000).action, "resolve");
+});
+
+test("a Better Stack payload with no monitor identity still falls back to data.id", () => {
+  const e = normalize("betterstack", {
+    data: { type: "incident", id: "77001", attributes: { status: "triggered" } },
+  });
+  assert.equal(e.key, "betterstack:77001");
 });
