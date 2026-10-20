@@ -32,8 +32,7 @@ jobs:
           umask 077
           dir="$(mktemp -d)"
           trap 'rm -rf "$dir"' EXIT
-          printf '%s\n' "$SSH_KEY" > "$dir/key"
-          printf '%s\n' "$KNOWN_HOSTS" > "$dir/known_hosts"
+          python3 -c 'import os, pathlib, sys; root = pathlib.Path(sys.argv[1]); (root / "key").write_text(os.environ["SSH_KEY"] + "\n"); (root / "known_hosts").write_text(os.environ["KNOWN_HOSTS"] + "\n")' "$dir"
           # The forced command ignores what is asked for;  "update" is only a label in the server's log.
           ssh -i "$dir/key" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$dir/known_hosts" -o ConnectTimeout=15 "root@$SSH_HOST" update
