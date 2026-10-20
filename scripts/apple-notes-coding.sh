@@ -253,17 +253,25 @@ fi
 # "Allow ... to share with Notes?" dialog — choose Always Allow.
 #
 # Whether a failed pin or unpin Shortcut is retried is the APPLE_NOTES_PIN_RETRY fleet knob (Infisical,
-# through scripts/fleet_knobs), resolved once per process through the package that sits next to this
-# script.  APPLE_NOTES_PIN_RETRY in the environment is only a narrowing override:  it can turn the
-# retry off, never on.  With no fleet_knobs on this host, or an unreachable Infisical with no
-# last-known-good copy, the registered default (on) applies, narrowed by that override.
+# through scripts/fleet_knobs), resolved once per process through the package next to this script
+# (a source checkout) or the managed stable copy at ~/apps/needs-owner (the live helper).  APPLE_NOTES_PIN_RETRY
+# in the environment is only a narrowing override:  it can turn the retry off, never on.  With no fleet_knobs
+# on this host, or an unreachable Infisical with no last-known-good copy, the registered default (on) applies,
+# narrowed by that override.
 _PIN_RETRY=""
 _pin_retry_on() {
   if [[ -z "${_PIN_RETRY:-}" ]]; then
-    local knob="" here
+    local knob="" here dir
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-    if [[ -n "$here" && -d "$here/fleet_knobs" ]] && command -v python3 >/dev/null 2>&1; then
-      knob="$(cd "$here" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
+    if command -v python3 >/dev/null 2>&1; then
+      #  the package sits next to this script in a source checkout, and in the managed stable copy
+      #  the needs_owner installer writes, which is where the live helper at ~/apps reads it from
+      for dir in "$here" "${HOME:-}/apps/needs-owner"; do
+        if [[ -n "$dir" && -d "$dir/fleet_knobs" ]]; then
+          knob="$(cd "$dir" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
+          [[ -n "$knob" ]] && break
+        fi
+      done
     fi
     case "$knob" in
       true|1|yes|on) _PIN_RETRY=1 ;;
