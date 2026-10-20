@@ -6,12 +6,11 @@ import json
 import re
 import unittest
 import zoneinfo
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from agent_sync import secretscan
-from agent_sync import textfmt
+from agent_sync import secretscan, textfmt
 from agent_sync import zulip as Z
 from agent_sync.tests.harness import TAG, Harness
 from agent_sync.textfmt import GAP, NBSP, fix_outbound, fleet_dates, sentence_gap, single_gaps
@@ -265,7 +264,7 @@ class OutboundParamsTests(unittest.TestCase):
 # The fixed "now" the fleet-format tables are written against.  test/textfmt.test.mjs reads NOW_ISO so the JS port
 # runs the same tables against the same instant.
 NOW = datetime(2026, 10, 19, 12, tzinfo=ZoneInfo("America/Chicago"))
-NOW_ISO = NOW.astimezone(timezone.utc).isoformat()
+NOW_ISO = NOW.astimezone(UTC).isoformat()
 
 # (text, expected) for single_gaps:  a one-space sentence gap becomes the gap, an abbreviation or a list marker
 # does not.
@@ -361,10 +360,12 @@ class FleetFormatTests(unittest.TestCase):
         stamps = []
         for year in range(2024, 2031):
             for month, day in ((1, 15), (3, 20), (7, 4), (11, 20)):
-                stamp = datetime(year, month, day, 18, 0, tzinfo=timezone.utc)
+                stamp = datetime(year, month, day, 18, 0, tzinfo=UTC)
                 # both the T form and the space form, so the Z path inside _fleet_date is covered too
                 stamps.append(
-                    stamp.strftime("%Y-%m-%dT%H:%M:%SZ") + " and " + stamp.strftime("%Y-%m-%d %H:%M:%SZ")
+                    stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    + " and "
+                    + stamp.strftime("%Y-%m-%d %H:%M:%SZ")
                 )
         expected = [fleet_dates(text, self.NOW) for text in stamps]
         with mock.patch.object(

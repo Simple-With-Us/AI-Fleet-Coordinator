@@ -28,6 +28,7 @@ Python 3.11+, standard library only.
 from __future__ import annotations
 
 import re
+from datetime import UTC
 from typing import Any
 
 __all__ = ["GAP", "NBSP", "fix_outbound", "fleet_dates", "sentence_gap", "single_gaps"]
@@ -243,7 +244,7 @@ def _central(value: Any) -> Any:
     from datetime import datetime, timedelta, timezone
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-    utc = value.astimezone(timezone.utc)
+    utc = value.astimezone(UTC)
     try:
         return utc.astimezone(ZoneInfo("America/Chicago"))
     except (ZoneInfoNotFoundError, ValueError, OSError):
@@ -253,15 +254,15 @@ def _central(value: Any) -> Any:
         first = datetime(year, month, 1)
         return 1 + (6 - first.weekday()) % 7 + 7 * (n - 1)
 
-    start = datetime(utc.year, 3, nth_sunday(utc.year, 3, 2), 8, tzinfo=timezone.utc)
-    end = datetime(utc.year, 11, nth_sunday(utc.year, 11, 1), 7, tzinfo=timezone.utc)
+    start = datetime(utc.year, 3, nth_sunday(utc.year, 3, 2), 8, tzinfo=UTC)
+    end = datetime(utc.year, 11, nth_sunday(utc.year, 11, 1), 7, tzinfo=UTC)
     return utc.astimezone(timezone(timedelta(hours=-5 if start <= utc < end else -6)))
 
 
 def _central_now() -> Any:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return _central(datetime.now(timezone.utc))
+    return _central(datetime.now(UTC))
 
 
 def _fleet_day(when: Any, this_year: int) -> str:
@@ -272,9 +273,21 @@ def _fleet_day(when: Any, this_year: int) -> str:
 def _fleet_date(match: re.Match[str], this_year: int) -> str:
     from datetime import datetime
 
-    year, month, day, t_hour, t_minute, t_zone, hour, minute, s_secs, r_hour, r_minute, r_secs, zone = (
-        match.groups()
-    )
+    (
+        year,
+        month,
+        day,
+        t_hour,
+        t_minute,
+        t_zone,
+        hour,
+        minute,
+        s_secs,
+        r_hour,
+        r_minute,
+        r_secs,
+        zone,
+    ) = match.groups()
     if t_hour is not None:
         hour, minute, zone = t_hour, t_minute, t_zone
     elif r_hour is not None and s_secs is not None and r_secs is None:
@@ -291,7 +304,9 @@ def _fleet_date(match: re.Match[str], this_year: int) -> str:
         when = datetime(int(year), int(month), int(day), int(hour), int(minute))
         offset = ""
         if zone:
-            offset = "+00:00" if zone == "Z" else (zone if ":" in zone else zone[:3] + ":" + zone[3:])
+            offset = (
+                "+00:00" if zone == "Z" else (zone if ":" in zone else zone[:3] + ":" + zone[3:])
+            )
             when = _central(datetime.fromisoformat(when.isoformat() + offset))
         out = _fleet_day(when, this_year) + ", " + clock(when)
         if r_hour is not None:
