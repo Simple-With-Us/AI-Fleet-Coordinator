@@ -262,3 +262,18 @@ jobs:
     # open-loops routines depend on.  A stub curl and a stub node stand in for the real ones.
     - name: BotFleet start wrapper tests
       run: bash scripts/test-botfleet-server-start.sh
+
+  muster-macos-build:
+    name: Muster macOS build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate and compile unsigned scaffold
+        working-directory: muster
+        run: |
+          xcodegen generate --spec project.yml
+          xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
+            -destination 'platform=macOS' -derivedDataPath .build/CI \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
