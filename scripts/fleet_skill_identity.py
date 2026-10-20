@@ -1175,7 +1175,15 @@ def fold_yaml_description(text: str) -> str:
                     inner = inner.replace('\\"', '"')
                 value = inner
             i += 1
-        if '"' in value or "'" in value or "${" in value:
+        #  A plain YAML scalar also breaks on ": " (parsed as a nested mapping) and on
+        #  a leading quote char, so fold those too — the rendered copy must parse.
+        if (
+            '"' in value
+            or "'" in value
+            or "${" in value
+            or ": " in value
+            or value.endswith(":")
+        ):
             out.append("description: >-")
             out.append("  " + value)
         else:

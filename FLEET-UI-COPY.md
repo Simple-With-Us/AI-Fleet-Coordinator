@@ -199,7 +199,9 @@ destination:
   a real gap.  Two ASCII spaces collapse, and a raw U+00A0 typed by the model arrives as a
   plain space (the verified reply held 0 NBSPs).
 - **Chat reply in the MiniMax Code chat pane** (owner-verified 2026-10-20):  a REAL U+00A0, the
-  nbsp character, right after the period, then a normal space, outside code spans.  Jay:  "I
+  nbsp character, right after the period, then a normal space, outside code spans — emitted by
+  the shell, never typed, because a raw U+00A0 typed into a message is normalized away (see
+  "What does NOT work" below).  Jay:  "I
   think you need to do nbsp for chats or something", and "I have confirmed this before with
   agents and knew you needed nbsp already".  Two ASCII spaces collapse in that pane, and the
   `&nbsp;` ENTITY renders as the six literal characters, which is worse than no gap at all.
