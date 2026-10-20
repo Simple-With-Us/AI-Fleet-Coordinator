@@ -24,6 +24,7 @@ Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -97,24 +98,6 @@ def _ensure_dir() -> None:
         raise OSError("the fleet-config state directory is not ours")
     if info.st_mode & 0o077:
         os.chmod(target, 0o700)
-
-
-def _fsync_dir(path: str) -> None:
-    """Flush a directory's own entries to disk, so a rename into it survives a crash.
-
-    A filesystem that cannot fsync a directory is not a reason to lose the write,  so
-    the error is swallowed:  the bytes are already on disk either way.
-    """
-    try:
-        handle = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    except OSError:
-        return
-    try:
-        os.fsync(handle)
-    except OSError:
-        pass
-    finally:
-        os.close(handle)
 
 
 def _dir_is_private() -> bool:
@@ -250,10 +233,19 @@ def _fsync_dir(path: str) -> None:
     Renaming a file into a directory does not persist the new directory entry until the
     directory itself is flushed,  so a crash right after the rename could lose the
     copy.  The descriptor is closed in a ``finally`` block,  so it is never leaked.
+
+    A filesystem that cannot fsync a directory at all is not a reason to lose the write,
+    so only the "this operation is not supported here" errors are best effort.  Every
+    other failure is a real I/O error:  the rename is then not durable, and a caller told
+    nothing went wrong would be trusting a last-known-good report that a crash can lose.
     """
     fd = os.open(path, os.O_RDONLY)
     try:
-        os.fsync(fd)
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            if exc.errno not in (errno.EINVAL, errno.ENOTSUP, errno.EBADF, errno.EOPNOTSUPP):
+                raise
     finally:
         os.close(fd)
 

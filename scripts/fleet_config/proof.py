@@ -740,13 +740,17 @@ def _kill_group(proc: subprocess.Popen) -> None:
     The child is started in its own session,  so an interruption of the runner does
     not reach it:  without this it would outlive the probe.
     """
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except OSError:
+    if proc.poll() is None:
+        # The child is still running, so its pid is still its own process group and the
+        # group signal cannot land on a pid the OS has already recycled.  Once the child
+        # is reaped, ``killpg`` would signal whatever group inherited the number.
         try:
-            proc.kill()
+            os.killpg(proc.pid, signal.SIGKILL)
         except OSError:
-            pass
+            try:
+                proc.kill()
+            except OSError:
+                pass
     try:
         proc.communicate()
     except BaseException:
