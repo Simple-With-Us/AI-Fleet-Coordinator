@@ -41,7 +41,6 @@ import shutil
 import signal
 import subprocess
 import tempfile
-from collections.abc import Iterator
 from dataclasses import dataclass, replace
 
 from .checks import CheckContext, CheckError, build_result
@@ -55,12 +54,14 @@ from .types import (
 )
 
 __all__ = [
+    "HOOK_CONFIG_SCHEMAS",
     "L2_DENY_PHRASE",
     "L2_PLATFORMS",
     "L2_TIMEOUT_SECONDS",
     "PLATFORM_ADAPTERS",
     "SENTINEL_PREFIX",
     "SENTINEL_SOURCE_NAME",
+    "HookConfigSchema",
     "L1Outcome",
     "L2Outcome",
     "L2Platform",
@@ -76,6 +77,7 @@ __all__ = [
     "resolve_hook_command",
     "run_l1_probe",
     "run_l2_canary",
+    "schema_commands",
 ]
 
 # --------------------------------------------------------------------------- pinned facts
@@ -301,24 +303,219 @@ def hook_format(command: str, platform: str) -> str:
     return adapter.hook_format if adapter is not None else "claude"
 
 
-def _iter_commands(node: object) -> Iterator[str]:
-    """Every string under a "command" key in a hook config document.
+# --------------------------------------------------------------------------- the hook config schema
 
-    The walk is generic on purpose:  the platforms keep their hooks in nested groups
-    (Claude, Codex, Grok), in named groups (Antigravity) or in a flat list (Cursor),
-    and the shape is not this package's to pin.
+# A platform's hook config file is another program's file, so it is read as untrusted
+# input:  a file bigger than this, a document nested deeper than this, one holding more
+# nodes than this, or one naming more commands than this is refused before any command
+# is taken from it.
+MAX_CONFIG_BYTES = 262144
+MAX_CONFIG_DEPTH = 8
+MAX_CONFIG_ELEMENTS = 2048
+MAX_CONFIG_COMMANDS = 64
+
+# One command is a command line;  a longer one is not a hook this package will run.
+MAX_COMMAND_CHARS = 4096
+
+# The events the harnesses name their hooks under.  A config that keeps hooks in named
+# groups is read only where one of these is the key, so a sibling section is never
+# mistaken for a hook list.
+HOOK_EVENTS = (
+    "PreToolUse",
+    "PostToolUse",
+    "UserPromptSubmit",
+    "Notification",
+    "PreCompact",
+    "SessionStart",
+    "SessionEnd",
+    "Stop",
+    "SubagentStop",
+)
+
+
+def _event_key(name: str) -> str:
+    """A comparable key for an event name:  case, underscores and dashes do not matter."""
+    return name.lower().replace("_", "").replace("-", "")
+
+
+_HOOK_EVENT_KEYS = frozenset(_event_key(name) for name in HOOK_EVENTS)
+
+
+@dataclass(frozen=True)
+class HookConfigSchema:
+    """Where one platform keeps the commands its hooks run.
+
+    ``event-map`` reads the platform's hook section:  a mapping of event name to a list
+    of hook entries.  ``named-groups`` reads one level down under every top-level group,
+    and only where the key is a known event.  A key the schema does not name is never
+    read, so a ``command`` string anywhere else in the file cannot become a command to
+    run.
     """
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "command" and isinstance(value, str) and value.strip():
-                yield value
+
+    shape: str
+    section: str = "hooks"
+
+
+HOOK_CONFIG_SCHEMAS: dict[str, HookConfigSchema] = {
+    # Claude, Codex and Grok keep ``hooks.<event>`` as a list of groups, each with its
+    # own ``hooks`` list;  Cursor keeps ``hooks.<event>`` as a flat list of hook objects.
+    "claude": HookConfigSchema("event-map"),
+    "cursor": HookConfigSchema("event-map"),
+    # Antigravity keeps one group per hook name at the top level.
+    "antigravity": HookConfigSchema("named-groups"),
+}
+
+
+def _assert_bounded(document: object, platform: str, path: str) -> None:
+    """Refuse a hook config document that nests too deep or holds too many nodes.
+
+    The whole document is counted before any command is read from it, so the bound
+    holds no matter where in the file the hooks are.
+    """
+    seen = 0
+    stack: list[tuple[object, int]] = [(document, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > MAX_CONFIG_DEPTH:
+            raise CheckError(
+                "the hook config %s for the platform %s nests deeper than %d levels"
+                % (path, platform, MAX_CONFIG_DEPTH),
+                ReasonCode.UNPARSEABLE,
+            )
+        seen += 1
+        if seen > MAX_CONFIG_ELEMENTS:
+            raise CheckError(
+                "the hook config %s for the platform %s holds more than %d values"
+                % (path, platform, MAX_CONFIG_ELEMENTS),
+                ReasonCode.UNPARSEABLE,
+            )
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if not isinstance(key, str):
+                    raise CheckError(
+                        "the hook config %s for the platform %s has a key that is not text"
+                        % (path, platform),
+                        ReasonCode.UNPARSEABLE,
+                    )
+                stack.append((value, depth + 1))
+        elif isinstance(node, list):
+            for item in node:
+                stack.append((item, depth + 1))
+
+
+def _commands_from_entries(
+    entries: object, what: str, platform: str, path: str, found: list[str]
+) -> None:
+    """Append the command strings of one event's entries, checking each entry's shape.
+
+    An entry is a group whose own ``hooks`` list holds the hook objects, or a hook
+    object itself;  in both cases only a hook object's ``command`` is read, so no other
+    key of the config can reach the probe as a command.
+    """
+    if not isinstance(entries, list):
+        raise CheckError(
+            "the hook list for %s in the hook config %s for the platform %s is not a list"
+            % (what, path, platform),
+            ReasonCode.UNPARSEABLE,
+        )
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise CheckError(
+                "a hook entry for %s in the hook config %s for the platform %s is not an object"
+                % (what, path, platform),
+                ReasonCode.UNPARSEABLE,
+            )
+        inner = entry.get("hooks")
+        if inner is None:
+            hooks: list[object] = [entry]
+        elif isinstance(inner, list):
+            hooks = inner
+        else:
+            raise CheckError(
+                "the hooks of an entry for %s in the hook config %s for the platform %s "
+                "are not a list" % (what, path, platform),
+                ReasonCode.UNPARSEABLE,
+            )
+        for hook in hooks:
+            if not isinstance(hook, dict):
+                raise CheckError(
+                    "a hook entry for %s in the hook config %s for the platform %s "
+                    "is not an object" % (what, path, platform),
+                    ReasonCode.UNPARSEABLE,
+                )
+            command = hook.get("command")
+            if command is None:
                 continue
-            for found in _iter_commands(value):
-                yield found
-    elif isinstance(node, list):
-        for item in node:
-            for found in _iter_commands(item):
-                yield found
+            if not isinstance(command, str) or len(command) > MAX_COMMAND_CHARS:
+                raise CheckError(
+                    "a command for %s in the hook config %s for the platform %s is not a "
+                    "short piece of text" % (what, path, platform),
+                    ReasonCode.UNPARSEABLE,
+                )
+            if command.strip():
+                found.append(command)
+            if len(found) > MAX_CONFIG_COMMANDS:
+                raise CheckError(
+                    "the hook config %s for the platform %s names more than %d commands"
+                    % (path, platform, MAX_CONFIG_COMMANDS),
+                    ReasonCode.UNPARSEABLE,
+                )
+
+
+def _commands_from_event_map(
+    document: dict[str, object], schema: HookConfigSchema, platform: str, path: str
+) -> list[str]:
+    """The commands under ``<section>.<event>``, the shape Claude, Codex, Grok and Cursor use."""
+    section = document.get(schema.section)
+    if section is None:
+        return []
+    if not isinstance(section, dict):
+        raise CheckError(
+            "the %s section of the hook config %s for the platform %s is not an object"
+            % (schema.section, path, platform),
+            ReasonCode.UNPARSEABLE,
+        )
+    found: list[str] = []
+    for event, entries in section.items():
+        if _event_key(event) not in _HOOK_EVENT_KEYS:
+            continue
+        _commands_from_entries(entries, "the event %r" % event, platform, path, found)
+    return found
+
+
+def _commands_from_named_groups(document: dict[str, object], platform: str, path: str) -> list[str]:
+    """The commands under each named group, the shape Antigravity uses."""
+    found: list[str] = []
+    for name, group in document.items():
+        if not isinstance(group, dict):
+            continue
+        for event, entries in group.items():
+            if _event_key(event) not in _HOOK_EVENT_KEYS:
+                continue
+            _commands_from_entries(
+                entries, "the group %r event %r" % (name, event), platform, path, found
+            )
+    return found
+
+
+def schema_commands(
+    document: object, schema: HookConfigSchema, platform: str, path: str
+) -> list[str]:
+    """Every command string the schema pins, after the document is checked whole.
+
+    Raises ``CheckError`` naming the platform and the config path when the document
+    does not hold the shape the schema pins, so a command this package cannot vouch for
+    is never taken from it.
+    """
+    if not isinstance(document, dict):
+        raise CheckError(
+            "the hook config %s for the platform %s is not a JSON object" % (path, platform),
+            ReasonCode.UNPARSEABLE,
+        )
+    _assert_bounded(document, platform, path)
+    if schema.shape == "named-groups":
+        return _commands_from_named_groups(document, platform, path)
+    return _commands_from_event_map(document, schema, platform, path)
 
 
 def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
@@ -328,6 +525,14 @@ def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
     installed hook and never a copy from the repo.  None when the platform has no
     config file to read, when the file cannot be parsed, or when it names no guard
     hook.
+
+    A file this reads is bounded before it is parsed (byte limit), and the parsed
+    document is checked against the platform's own schema before any command is taken
+    from it, so an unfamiliar section, a ``command`` key outside a hook entry, an
+    over-nested document or an oversized one cannot reach the probe.  A file that fails
+    one of those checks aborts with a ``CheckError`` naming the platform and the config
+    path, which the aggregator reads as a failing ``UNKNOWN``;  it never falls back to a
+    command read from a document this package cannot vouch for.
     """
     adapter = PLATFORM_ADAPTERS.get(platform)
     if adapter is None or not adapter.config_rel:
@@ -335,14 +540,27 @@ def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
     path = os.path.join(os.fspath(ctx.home), adapter.config_rel)
     try:
         with open(path, "rb") as handle:
-            raw = handle.read()
+            raw = handle.read(MAX_CONFIG_BYTES + 1)
     except OSError:
         return None
+    if len(raw) > MAX_CONFIG_BYTES:
+        raise CheckError(
+            "the hook config %s for the platform %s is larger than %d bytes, so no "
+            "command is read from it" % (path, platform, MAX_CONFIG_BYTES),
+            ReasonCode.UNPARSEABLE,
+        )
     try:
         document = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return None
-    for command in _iter_commands(document):
+    schema = HOOK_CONFIG_SCHEMAS.get(adapter.payload_shape)
+    if schema is None:
+        raise CheckError(
+            "there is no hook config schema for the platform %s, so %s is not read"
+            % (platform, path),
+            ReasonCode.UNSUPPORTED,
+        )
+    for command in schema_commands(document, schema, platform, path):
         if any(name in command for name in GUARD_HOOK_NAMES):
             return command
     return None

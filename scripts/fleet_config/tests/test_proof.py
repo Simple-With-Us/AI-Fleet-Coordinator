@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from unittest import mock
 
 from fleet_config import proof
-from fleet_config.checks import CheckContext
+from fleet_config.checks import CheckContext, CheckError
 from fleet_config.types import (
     CheckSpec,
     CheckState,
@@ -331,6 +331,73 @@ class HookResolutionTests(FakeHookCase):
 
     def test_resolve_returns_none_when_there_is_no_config(self):
         self.assertIsNone(proof.resolve_hook_command("claude", self.ctx))
+
+    def test_a_command_outside_a_hook_entry_is_not_a_command(self):
+        os.makedirs(os.path.join(self.home, ".claude"))
+        path = os.path.join(self.home, ".claude", "settings.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "sandbox": {
+                        "commands": [{"command": "/opt/lane-tools/lane-guard-hook --format claude"}]
+                    },
+                    "hooks": {"PreToolUse": []},
+                },
+                handle,
+            )
+        self.assertIsNone(proof.resolve_hook_command("claude", self.ctx))
+
+    def test_an_oversized_config_aborts_naming_the_platform_and_the_path(self):
+        os.makedirs(os.path.join(self.home, ".claude"))
+        path = os.path.join(self.home, ".claude", "settings.json")
+        with open(path, "wb") as handle:
+            handle.write(b"{" + b" " * proof.MAX_CONFIG_BYTES + b"}")
+        with self.assertRaises(CheckError) as caught:
+            proof.resolve_hook_command("claude", self.ctx)
+        message = str(caught.exception)
+        self.assertIn("claude", message)
+        self.assertIn(path, message)
+
+    def test_a_document_nested_past_the_depth_limit_aborts(self):
+        os.makedirs(os.path.join(self.home, ".claude"))
+        path = os.path.join(self.home, ".claude", "settings.json")
+        node: dict[str, object] = {"command": "/opt/lane-tools/lane-guard-hook"}
+        for _ in range(proof.MAX_CONFIG_DEPTH + 1):
+            node = {"hooks": node}
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(node, handle)
+        with self.assertRaises(CheckError):
+            proof.resolve_hook_command("claude", self.ctx)
+
+    def test_a_hook_list_that_is_not_a_list_aborts(self):
+        os.makedirs(os.path.join(self.home, ".claude"))
+        path = os.path.join(self.home, ".claude", "settings.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {"hooks": {"PreToolUse": {"command": "/opt/lane-tools/lane-guard-hook"}}},
+                handle,
+            )
+        with self.assertRaises(CheckError):
+            proof.resolve_hook_command("claude", self.ctx)
+
+    def test_a_named_group_config_still_resolves(self):
+        os.makedirs(os.path.join(self.home, ".gemini", "config"))
+        path = os.path.join(self.home, ".gemini", "config", "hooks.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "fleet-lane-guard": {
+                        "PreToolUse": [
+                            {"command": "/opt/lane-tools/fleet-guard-hook --format antigravity"}
+                        ]
+                    }
+                },
+                handle,
+            )
+        self.assertEqual(
+            proof.resolve_hook_command("antigravity", self.ctx),
+            "/opt/lane-tools/fleet-guard-hook --format antigravity",
+        )
 
     def test_the_default_command_names_the_stable_dir_fleet_hook(self):
         command = proof.default_hook_command("claude", self.ctx)
