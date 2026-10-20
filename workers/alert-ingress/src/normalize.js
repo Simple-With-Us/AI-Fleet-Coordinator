@@ -75,10 +75,6 @@ export function fromBetterStack(payload) {
   const down = /down|failed|failing/.test(status);
   const firing = status ? down : payload.alert_type === "ALERT";
 
-  let m;
-  if ((m = url.match(/betterstack\.com\/uptime\/(?:checker|monitor)\/([A-Za-z0-9]+)/))) {
-    // keep the id stable so the same check always maps to one state key
-  }
   const id = first(data.check_id, data.monitor_id, (url.match(/\/([a-f0-9]{16,})/i) || [])[1]);
   const key = id ? `betterstack:${id}` : `betterstack:${name.toLowerCase()}`;
 
