@@ -554,9 +554,7 @@ def result_expires_at(result: CheckResult) -> datetime | None:
     as "fresh".
     """
     try:
-        return datetime.strptime(result.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=UTC
-        )
+        return datetime.strptime(result.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except (TypeError, ValueError):
         return None
 
