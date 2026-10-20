@@ -267,7 +267,7 @@ jobs:
     name: Muster macOS build
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Generate and compile unsigned scaffold
