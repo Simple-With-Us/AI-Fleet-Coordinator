@@ -928,8 +928,8 @@ These bind every message, bot-to-bot included.
 
   ```
   perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
-  grep -o $'[.!?][]*_`)\"]*\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
-  grep -cE '[^0-9][.!?][]*_`)\"]* +[A-Z"]' body.nbsp.txt          # must be 0 — a leftover gap
+  grep -o $'[.!?][]*_`)"]*\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
+  grep -cE '[^0-9][.!?][]*_`)"]* +[A-Z"]' body.nbsp.txt          # must be 0 — a leftover gap
   chmod 600 body.nbsp.txt                       # agent-sync post --body-file refuses other modes
   agent-sync post --topic "<ID> <subject>" --body-file body.nbsp.txt
   ```

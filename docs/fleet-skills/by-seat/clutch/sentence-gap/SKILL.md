@@ -94,8 +94,8 @@ exits 0, so a failed run is silent.  And a count above zero is *not* on its own 
 partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
 
 ```sh
-grep -o $'[.!?][]*_`)\"]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE '[^0-9][.!?][]*_`)\"]* +[A-Z"]' body.nbsp.txt         # must be 0 — a leftover gap
+grep -o $'[.!?][]*_`)"]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE '[^0-9][.!?][]*_`)"]* +[A-Z"]' body.nbsp.txt         # must be 0 — a leftover gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -110,8 +110,11 @@ after a markup span is emitted as `<punctuation><markup><U+00A0><space>`, so a c
 for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a
 space straight after the punctuation cannot see the one that was missed.  The `]` is written
 first in the class because a POSIX bracket expression ends at the first unquoted `]`, and there
-is no backslash escape inside one:  ``[]*_`)\"]`` is the set {`]`, `*`, `_`, `` ` ``, `)`, `"`}.
+is no backslash escape inside one:  ``[]*_`)"]`` is the set {`]`, `*`, `_`, `` ` ``, `)`, `"`}.
 In the perl pattern the same set is written ``([*_`)\]"]*)``, where `\]` does escape.
+A backslash inside a POSIX bracket expression is a literal member and not an escape, so one
+written there widens the set and makes the leftover check fire on a body that is clean.
+
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
