@@ -335,7 +335,9 @@ class CodexChatTransport:
             return "invalid"
         if not self._prerequisites() or not os.path.isdir(binding["cwd"]):
             return "busy"
-        if self._full(binding) or time.monotonic() < self._probe_failures.get(self._key(binding), 0):
+        if self._full(binding) or time.monotonic() < self._probe_failures.get(
+            self._key(binding), 0
+        ):
             return "busy"
         rpc = None
         try:
@@ -445,11 +447,7 @@ class CodexChatTransport:
             return "held"
         # Repeat the workspace availability check preflight made: it can disappear between the
         # two calls, and send() is reachable directly.  Deferred, not held, so the wake retries.
-        if (
-            not os.path.isdir(binding["cwd"])
-            or not self._prerequisites()
-            or self._full(binding)
-        ):
+        if not os.path.isdir(binding["cwd"]) or not self._prerequisites() or self._full(binding):
             return "deferred"
         rpc = None
         sent = False
