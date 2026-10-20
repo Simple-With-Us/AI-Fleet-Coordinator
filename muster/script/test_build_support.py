@@ -1,6 +1,8 @@
 """Synthetic transaction tests; no keychain, application or process is touched."""
 
 import errno
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,6 +94,18 @@ class BuildSupportTests(unittest.TestCase):
             with self.assertRaises(type(error)):
                 support.install_bundle(self.staged, self.installed, verify)
             self.assertEqual((self.installed / "version").read_text(), "old")
+
+    def test_failed_first_install_leaves_no_bundle(self):
+        shutil.rmtree(self.installed)
+
+        def verify(path):
+            if path == self.installed:
+                raise ValueError("bad signature")
+
+        with self.assertRaises(ValueError):
+            support.install_bundle(self.staged, self.installed, verify)
+        self.assertFalse(os.path.lexists(self.installed))
+        self.assertEqual(list(self.installed.parent.glob(".muster-install-*")), [])
 
     def test_failed_rollback_preserves_recovery_copy(self):
         replace = support.os.replace
