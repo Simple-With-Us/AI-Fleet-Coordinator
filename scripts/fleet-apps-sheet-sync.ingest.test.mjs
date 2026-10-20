@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import {
   registryIngestArgs, summarizeIngest, summarizeIngestFailure, ingestFailureDetail, buildMarkdownMirror,
   MIRROR_MD_PATH, FLEET_HOME, REGISTRY_INGEST_SOURCE,
-  fleetKnob, ingestEnabled, ingestTimeoutMs, INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB
+  readIngestKnobs, ingestFailureOutcome, fleetKnob, ingestEnabled, ingestTimeoutMs, INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB
 } from "./fleet-apps-sheet-sync.mjs";
 
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
@@ -96,7 +96,7 @@ test("the ingest's skip flag and timeout are fleet knobs, not ambient env vars",
   const source = read("scripts/fleet-apps-sheet-sync.mjs");
   assert.doesNotMatch(source, /process\.env\.FLEET_SHEET_INGEST/,
     "neither ingest control is read from the environment");
-  assert.match(source, /\["-m", "fleet_knobs", "get", name\]/,
+  assert.match(source, /from fleet_knobs import knobs/,
     "the knobs are read through the fleet_knobs CLI");
 
   const registry = read("scripts/fleet_knobs/registry.py");
@@ -108,13 +108,14 @@ test("the ingest's skip flag and timeout are fleet knobs, not ambient env vars",
 
   // A non-secret read never fails the job:  with no `infisical` CLI on PATH (as in CI) the
   // registry default answers rather than the sync dying.
-  assert.equal(fleetKnob(INGEST_ENABLED_KNOB), "true");
-  assert.equal(ingestEnabled(), true);
-  assert.equal(ingestTimeoutMs(), 90 * 60 * 1000);
-  // A value the CLI could not produce (empty or unparsable) never becomes a zero or NaN timeout,
-  // which execFileSync would read as "no timeout" or "kill immediately".
+  const settings = readIngestKnobs((_bin, args, options) => {
+    assert.equal(options.env.HOME, FLEET_HOME);
+    assert.ok(args.includes(INGEST_ENABLED_KNOB) && args.includes(INGEST_TIMEOUT_KNOB));
+    return JSON.stringify({ [INGEST_ENABLED_KNOB]: false, [INGEST_TIMEOUT_KNOB]: 60000 });
+  });
+  assert.equal(settings[INGEST_ENABLED_KNOB], "false");
+  assert.equal(settings[INGEST_TIMEOUT_KNOB], "60000");
   assert.equal(fleetKnob("NOT_A_KNOB"), undefined);
-  assert.ok(ingestTimeoutMs() > 0);
 });
 
 test("summarizeIngest reads the ingest report and never fakes a success", () => {
@@ -178,4 +179,24 @@ test("failed JSON reports retain source stderr alongside counts", () => {
   const detail = summarizeIngestFailure({ stdout: JSON.stringify({ per_source: { doc: { docs_seen: 3 } } }), stderr: "[doc] ERROR synthetic source failure" });
   assert.match(detail, /3 docs/);
   assert.match(detail, /synthetic source failure/);
+});
+
+
+test("ingest process timeouts have an unknown side-effect outcome", () => {
+  assert.equal(ingestFailureOutcome({ code: "ETIMEDOUT" }), "outcome_unknown");
+  assert.equal(ingestFailureOutcome({ status: 1 }), "failed");
+  assert.equal(ingestFailureOutcome({ signal: "SIGTERM" }), "outcome_unknown");
+});
+
+
+test("unavailable knob reader reports registered-default fallback", () => {
+  const saved = console.warn;
+  const warnings = [];
+  console.warn = (message) => warnings.push(message);
+  try {
+    const settings = readIngestKnobs(() => { throw new Error("synthetic"); });
+    assert.equal(settings[INGEST_ENABLED_KNOB], "true");
+    assert.equal(settings[INGEST_TIMEOUT_KNOB], "5400000");
+    assert.match(warnings.join(" "), /registered defaults/);
+  } finally { console.warn = saved; }
 });

@@ -813,8 +813,7 @@ export const REGISTRY_INGEST_SOURCE = "doc";
 // The ingest's two controls are fleet knobs, so Infisical -- not an ambient environment variable --
 // is their source of truth:  one fetch per process, the last-known-good copy when Infisical cannot
 // be reached, and the registry default when there is no usable copy.  fleet_knobs is stdlib-only
-// Python, so this script reads it through its own CLI, `python3 -m fleet_knobs get NAME`, run from
-// scripts/ (the same call AGENTS.md and INFISICAL.md § Fleet knobs document).
+// Python, so one scripts-local subprocess resolves both controls in a shared cache.
 export const INGEST_ENABLED_KNOB = "FLEET_SHEET_INGEST_ENABLED";
 export const INGEST_TIMEOUT_KNOB = "FLEET_SHEET_INGEST_TIMEOUT_MS";
 // The registry defaults (scripts/fleet_knobs/registry.py), mirrored so a missing or broken
@@ -823,23 +822,27 @@ const KNOB_DEFAULTS = {
   [INGEST_ENABLED_KNOB]: "true",
   [INGEST_TIMEOUT_KNOB]: "5400000",
 };
-const KNOB_CACHE = new Map();
-
-export function fleetKnob(name) {
-  if (KNOB_CACHE.has(name)) return KNOB_CACHE.get(name);
-  let value = KNOB_DEFAULTS[name];
+let KNOB_CACHE;
+export function readIngestKnobs(run = execFileSync) {
+  const values = { ...KNOB_DEFAULTS };
   try {
-    const out = execFileSync("python3", ["-m", "fleet_knobs", "get", name], {
-      cwd: repoPath("scripts"), encoding: "utf8", timeout: 20000,
-      stdio: ["ignore", "pipe", "pipe"],
+    const code = "import json,sys; from fleet_knobs import knobs; print(json.dumps({name: knobs.get(name) for name in sys.argv[1:]}))";
+    const out = run("python3", ["-c", code, ...Object.keys(KNOB_DEFAULTS)], {
+      cwd: repoPath("scripts"), env: { ...process.env, HOME: FLEET_HOME },
+      encoding: "utf8", timeout: 20000, stdio: ["ignore", "pipe", "pipe"],
     });
-    const raw = String(out).trim();
-    if (raw) value = raw;
+    const report = JSON.parse(String(out));
+    if (typeof report[INGEST_ENABLED_KNOB] !== "boolean" || !Number.isInteger(report[INGEST_TIMEOUT_KNOB]) || report[INGEST_TIMEOUT_KNOB] <= 0) throw new Error("invalid knob response");
+    for (const name of Object.keys(values)) values[name] = String(report[name]);
   } catch {
-    // A non-secret knob read never fails the job:  the registry default stands in.
+    console.warn("Fleet sheet ingest controls unavailable; using registered defaults.");
   }
-  KNOB_CACHE.set(name, value);
-  return value;
+  return values;
+}
+export function fleetKnob(name) {
+  if (!Object.hasOwn(KNOB_DEFAULTS, name)) return undefined;
+  KNOB_CACHE ??= readIngestKnobs();
+  return KNOB_CACHE[name];
 }
 
 export function ingestEnabled() {
@@ -890,6 +893,9 @@ export function ingestFailureDetail(err) {
   return lines.length ? lines.slice(-3).join(" | ") : "no output";
 }
 
+export function ingestFailureOutcome(err) {
+  return err.signal || ["ETIMEDOUT", "ECONNRESET", "EPIPE"].includes(err.code) || Number(err.status) >= 500 ? "outcome_unknown" : "failed";
+}
 export function summarizeIngestFailure(err) {
   const report = String(err.stdout || "");
   return [report ? summarizeIngest(report) : "", ingestFailureDetail(err)].filter(Boolean).join("; ");
@@ -920,7 +926,7 @@ function exportMarkdownMirror(markdown) {
     // skipped, because a skip is a choice and a failure is not.  The sheet itself was already
     // written and verified by this point, so this warns loudly instead of failing the job.
     const why = summarizeIngestFailure(err);
-    console.warn(`   Note: Fleet RAG ingest FAILED (${why})`);
+    console.warn(`   Note: Fleet RAG ingest ${ingestFailureOutcome(err).toUpperCase()} (${why})`);
   }
 }
 

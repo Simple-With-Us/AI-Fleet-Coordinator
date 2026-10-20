@@ -131,8 +131,16 @@ class IngestTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _run(self, **kw):  # noqa: ANN001
+        kw.setdefault("prune", not (kw.get("limit") or kw.get("since")))
         return ingest.run("doc", cfg={"x": "y"}, qd=self.qd, state_path=self.state, last_run_path=self.last,
                           log_path=self.logf, log=lambda *a: None, **kw)
+
+    def test_full_nonpruning_ingest_cannot_attest_nightly_health(self) -> None:
+        with mock.patch.object(ingest, "_heartbeat") as heartbeat:
+            self._run(prune=False)
+        self.assertFalse(self.last.exists())
+        self.assertEqual(self.sentinels, [])
+        heartbeat.assert_not_called()
 
     def test_partial_ingest_preserves_global_nightly_health(self) -> None:
         self.last.write_text('{"ok": false, "started_at": 1}')

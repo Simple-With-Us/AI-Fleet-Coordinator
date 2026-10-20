@@ -662,7 +662,7 @@ def _run_locked(
     if not dry_run:
         # Only an untruncated full nightly-source pass can attest global health.
         # Partial/manual refreshes keep their log and state without hiding a stale night.
-        nightly = set(names) == set(sources.NIGHTLY_SOURCES) and since_ms is None and limit is None
+        nightly = prune and set(names) == set(sources.NIGHTLY_SOURCES) and since_ms is None and limit is None
         if nightly:
             _write_sentinel_safely(cfg, qd, report, log)
             _write_json(last_run_path, report)
