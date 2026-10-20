@@ -696,6 +696,37 @@ class DocumentationExecutionTests(unittest.TestCase):
                     )
             self.assertGreater(checked, 0, rel + " has no executable assertion block")
 
+    def test_each_documented_grep_pair_detects_link_boundaries(self):
+        canonical = one_home_patterns()[0]
+        raw = "[Sentence.](https://example.com) Next sentence.\n"
+        for rel in ("FLEET-UI-COPY.md",) + PROTOCOL_FILES:
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            blocks = re.findall(r"(?m)^([ ]{0,3})```sh\n(.*?)^\1```", text, re.S)
+            for _, block in blocks:
+                commands = [line.strip().split(" #", 1)[0].rstrip()
+                            for line in block.splitlines() if line.strip().startswith("grep ")]
+                if not commands:
+                    continue
+                self.assertEqual(len(commands), 2, rel)
+                with tempfile.TemporaryDirectory() as tmp:
+                    for fixed in (False, True):
+                        body = convert(canonical, raw) if fixed else raw
+                        for name in ("reply.txt", "body.nbsp.txt"):
+                            (Path(tmp) / name).write_text(body, encoding="utf-8")
+                        values = []
+                        for command in commands:
+                            proc = subprocess.run(["bash", "-c", command], cwd=tmp,
+                                                  capture_output=True, text=True, timeout=30)
+                            self.assertIn(proc.returncode, (0, 1), rel + proc.stderr)
+                            self.assertEqual(proc.stderr, "", rel)
+                            values.append(int(proc.stdout.strip()))
+                        if fixed:
+                            self.assertGreater(values[0], 0, rel)
+                            self.assertEqual(values[1], 0, rel)
+                        else:
+                            self.assertEqual(values[0], 0, rel)
+                            self.assertGreater(values[1], 0, rel)
+
     def test_link_conversion_and_both_assertions_agree(self):
         text = ONE_HOME.read_text(encoding="utf-8")
         count, leftover = assertion_patterns(text)
