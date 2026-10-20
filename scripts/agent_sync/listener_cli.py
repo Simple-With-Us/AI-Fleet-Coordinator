@@ -226,7 +226,11 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             return 0
         if action == "retry":
             released = registry.retry(args.item_id, time.time())
-            rt.out("hold released; delivery gates will be rechecked\n" if released else "not retryable (requires a pending held item)\n")
+            rt.out(
+                "hold released; delivery gates will be rechecked\n"
+                if released
+                else "not retryable (requires a pending held item)\n"
+            )
             return 0 if released else 1
         if action == "cancel":
             cancelled = registry.cancel(args.item_id, time.time())
