@@ -8,12 +8,12 @@ This tool separates the three things that are usually confused:
   2. policy    - does the installed hook script deny the canary when it is run directly?
   3. dispatch  - does the MiniMax runtime actually call the hook in a live session?
 
-Only the third is the proof. The first two can both be green while the seat runs with no
+Only the third is the proof.  The first two can both be green while the seat runs with no
 protection at all, which is exactly the failure this was written for: the MiniMax Code
 runtime delivers its shell tool as `bash`, and a plugin whose matcher read `Bash` never
 fires, silently.
 
-The canary is `ps > /dev/null`. The sensitive guard denies it, so when the guard works the
+The canary is `ps > /dev/null`.  The sensitive guard denies it, so when the guard works the
 command never runs; when the guard is inert the command runs and prints nothing, so the
 canary is harmless either way and leaks no process list into a report.
 
@@ -29,6 +29,8 @@ Exit code is 0 when the live dispatch denies the canary, 1 when it ran and did n
 when the check could not be run at all - a missing mcode, a timeout, an unreadable plugin.
 The third case proves nothing about the guard: reporting it as a failure would point the
 operator at the installer when the guard was never exercised.
+
+Sentence spacing in this file is two spaces after a period, per the fleet house rule.
 """
 
 from __future__ import annotations
@@ -104,6 +106,36 @@ MAX_SESSION_BYTES = 16 * 1024 * 1024
 MAX_SESSION_EVENTS = 100_000
 MAX_JSON_DEPTH = 64
 MAX_JSON_NODES = 1_000_000
+
+# What MiniMax gives a hook process: a small allowlist, and none of the caller's shell.
+# The installer's own probes run the hook the same way, because MiniMax gives a hook no
+# AGENT_SEAT and no kill switch.
+MINIMAX_HOOK_ENV_KEYS = ("HOME", "LANG", "TERM", "SHELL", "USER", "TMPDIR")
+
+# The PATH a GUI-launched app typically has, which is the PATH the hook gets.
+MINIMAL_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def _hook_env() -> dict:
+    """The environment the installed hook runs under in a live MiniMax session.
+
+    The policy stage measures the hook, so it has to measure it the way the runtime runs
+    it.  Handing the hook the operator's whole environment measures something else: the
+    lane guard's own kill switch (`FLEET_LANE_GUARD=off`, and 0/false/no/disabled) turns
+    that half of the hook off entirely, and the switch is documented as owner-only
+    precisely because it changes the hook's answer.  The installer scrubs the same
+    variables for the same reason, and `verify minimax` warns when the switch is set in
+    the environment the command runs in.
+
+    The kill switch cannot change the answer for the canary this tool uses - the secret
+    guard's `ps` rule is unconditional, so the canary is denied either way - but the hook
+    is two guards, and the other one does read the switch.  A policy stage that inherits
+    the operator's environment measures a configuration the seat never runs in.
+    """
+    env = {k: os.environ[k] for k in MINIMAX_HOOK_ENV_KEYS if k in os.environ}
+    env.setdefault("HOME", str(Path.home()))
+    env["PATH"] = MINIMAL_PATH
+    return env
 
 
 def _matcher_gates(matcher: object, tool: str) -> bool:
@@ -398,6 +430,7 @@ def check_policy(plugin: dict) -> dict:
                     text=True,
                     timeout=30,
                     check=False,
+                    env=_hook_env(),
                 )
             except subprocess.TimeoutExpired:
                 return _stage_error("the hook command timed out after 30s")
@@ -517,6 +550,30 @@ def _validate_tool_call_shape(call: dict) -> None:
                 raise TypeError(f"session toolCall {field!r} must be a string")
 
 
+def _iter_session_lines(text: str):
+    """The transcript's lines, one at a time.
+
+    The transcript is written by the model runtime, so its shape is not this tool's to
+    assume.  Splitting the whole thing first would materialise every line before the
+    event cap could stop the scan: a 16MB transcript of one-character lines becomes
+    millions of separate string objects, so the cap that exists to bound the work would
+    only run after the memory was already spent.  The scan is therefore incremental, and
+    the cap aborts it before the next line is built.
+    """
+    event_count = 0
+    start = 0
+    length = len(text)
+    while start < length:
+        end = text.find("\n", start)
+        if end == -1:
+            end = length
+        event_count += 1
+        if event_count > MAX_SESSION_EVENTS:
+            raise ValueError("the live session output exceeds the event limit")
+        yield text[start:end].strip()
+        start = end + 1
+
+
 def _completed_tool_calls(text: str) -> list[dict]:
     """Every completed tool call in a `stream-json` run.
 
@@ -532,9 +589,7 @@ def _completed_tool_calls(text: str) -> list[dict]:
     if len(text.encode("utf-8")) > MAX_SESSION_BYTES:
         raise ValueError("the live session output exceeds the byte limit")
     calls = []
-    for event_count, line in enumerate(text.splitlines(), start=1):
-        if event_count > MAX_SESSION_EVENTS:
-            raise ValueError("the live session output exceeds the event limit")
+    for line in _iter_session_lines(text):
         line = line.strip()
         if not line.startswith("{"):
             continue

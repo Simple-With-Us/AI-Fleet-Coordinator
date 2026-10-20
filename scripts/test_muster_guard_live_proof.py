@@ -23,7 +23,9 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -516,6 +518,105 @@ class CanaryPayload(unittest.TestCase):
             self.assertEqual(payload["tool_name"], tool_name)
             self.assertEqual(payload["hook_event_name"], "PreToolUse")
             self.assertIn("command", payload["tool_input"])
+
+
+class HookEnvironment(unittest.TestCase):
+    """The policy stage must measure the hook the way the runtime runs it."""
+
+    def test_the_kill_switch_cannot_reach_the_hook(self):
+        # The lane guard's own kill switch turns that half of the hook off entirely, and
+        # it is owner-only precisely because it changes the hook's answer.  MiniMax gives
+        # a hook no such variable, so the policy stage must not either.
+        with mock.patch.dict(os.environ, {"FLEET_LANE_GUARD": "off"}, clear=False):
+            env = proof._hook_env()
+        self.assertNotIn("FLEET_LANE_GUARD", env)
+
+    def test_the_operators_shell_is_not_handed_to_the_hook(self):
+        with mock.patch.dict(os.environ, {"AGENT_SEAT": "MM", "SOME_OTHER": "x"}, clear=False):
+            env = proof._hook_env()
+        self.assertNotIn("AGENT_SEAT", env)
+        self.assertNotIn("SOME_OTHER", env)
+
+    def test_the_allowlist_and_the_minimal_path_are_kept(self):
+        with mock.patch.dict(os.environ, {"LANG": "en_US.UTF-8"}, clear=False):
+            env = proof._hook_env()
+        self.assertEqual(env["LANG"], "en_US.UTF-8")
+        self.assertEqual(env["PATH"], proof.MINIMAL_PATH)
+        self.assertTrue(env["HOME"])
+
+    def test_the_policy_stage_runs_the_hook_with_that_environment(self):
+        # The finding is about the call, not about a helper: the subprocess that runs the
+        # hook has to carry the scrubbed environment.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            command = write_fake_hook(root / "deny.sh", deny_all_body())
+            plugin = write_plugin(root, "Bash|bash", command)
+            seen = {}
+            real_run = subprocess.run
+
+            def spy(cmd, **kwargs):
+                seen.update(kwargs)
+                return real_run(cmd, **kwargs)
+
+            with mock.patch.object(proof.subprocess, "run", spy):
+                result = proof.check_policy(proof.read_plugin(plugin))
+            self.assertTrue(result["ok"])
+        self.assertIn("env", seen)
+        self.assertNotIn("FLEET_LANE_GUARD", seen["env"])
+        self.assertEqual(seen["env"]["PATH"], proof.MINIMAL_PATH)
+
+
+class CountingText(str):
+    """A str that counts the line scans made against it."""
+
+    def __new__(cls, value):
+        obj = super().__new__(cls, value)
+        obj.finds = 0
+        return obj
+
+    def find(self, *args, **kwargs):
+        self.finds += 1
+        return super().find(*args, **kwargs)
+
+
+class SessionLineScan(unittest.TestCase):
+    """The transcript is the runtime's, so the scan has to be bounded while it reads it."""
+
+    def test_the_transcript_is_read_one_line_at_a_time(self):
+        # The event cap has to bound the work, so the scan may not materialise every
+        # line before it counts them: a 16MB transcript of one-character lines would
+        # become millions of string objects, and the cap would only run afterwards.
+        text = CountingText("\n".join("x" for _ in range(1000)))
+        stream = proof._iter_session_lines(text)
+        self.assertEqual(next(stream), "x")
+        self.assertEqual(next(stream), "x")
+        self.assertEqual(text.finds, 2)
+
+    def test_the_event_cap_aborts_the_scan(self):
+        with mock.patch.object(proof, "MAX_SESSION_EVENTS", 3):
+            text = "\n".join("x" for _ in range(10))
+            with self.assertRaises(ValueError) as ctx:
+                list(proof._iter_session_lines(text))
+        self.assertIn("event limit", str(ctx.exception))
+
+    def test_a_transcript_over_the_event_cap_is_an_error_not_a_crash(self):
+        with (
+            mock.patch.object(proof, "MAX_SESSION_EVENTS", 2),
+            self.assertRaises(ValueError) as ctx,
+        ):
+            proof._completed_tool_calls("\n".join("x" for _ in range(10)))
+        self.assertIn("event limit", str(ctx.exception))
+
+    def test_a_transcript_over_the_byte_cap_is_an_error(self):
+        with (
+            mock.patch.object(proof, "MAX_SESSION_BYTES", 10),
+            self.assertRaises(ValueError) as ctx,
+        ):
+            proof._completed_tool_calls("x" * 100)
+        self.assertIn("byte limit", str(ctx.exception))
+
+    def test_a_trailing_newline_is_not_an_extra_event(self):
+        self.assertEqual(list(proof._iter_session_lines("a\nb\n")), ["a", "b"])
 
 
 class CompletedToolCalls(unittest.TestCase):
