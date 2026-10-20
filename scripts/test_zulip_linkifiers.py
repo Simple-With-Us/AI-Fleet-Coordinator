@@ -234,8 +234,8 @@ class CredentialTests(unittest.TestCase):
 
     def test_admin_reads_env_first_and_ignores_member_env(self):
         env = {
-            "REALM_ADMIN_ZULIP_EMAIL": "admin-bot@example.test",
-            "REALM_ADMIN_ZULIP_KEY": "k",
+            "ZULIP_OPERATOR_EMAIL": "admin-bot@example.test",
+            "ZULIP_OPERATOR_API_KEY": "k",
             "ZULIP_EMAIL": "member@example.test",
             "ZULIP_API_KEY": "m",
         }
@@ -246,7 +246,7 @@ class CredentialTests(unittest.TestCase):
             email, key, site = L.credentials(None, admin=True)
         self.assertEqual((email, key), ("admin-bot@example.test", "k"))
         self.assertEqual(site, L.REALM)
-        fs.assert_called_once_with("REALM_ADMIN_ZULIP_SITE")
+        fs.assert_called_once_with("ZULIP_OPERATOR_SITE")
 
     def test_admin_falls_back_to_zulipadmin_folder_first(self):
         calls = []
@@ -256,18 +256,16 @@ class CredentialTests(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="v\n")
 
         env = {
-            k: ""
-            for k in ("REALM_ADMIN_ZULIP_EMAIL", "REALM_ADMIN_ZULIP_KEY", "REALM_ADMIN_ZULIP_SITE")
+            k: "" for k in ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_SITE")
         }
         with mock.patch.dict("os.environ", env), mock.patch("subprocess.run", fake_run):
             L.credentials(None, admin=True)
         self.assertTrue(calls)
-        self.assertTrue(all(c[3:5] == ["--path", "/zulipadmin"] for c in calls))
+        self.assertTrue(all(c[3:5] == ["--path", "/zulip_operator"] for c in calls))
 
     def test_admin_without_credentials_exits_naming_the_folder(self):
         env = {
-            k: ""
-            for k in ("REALM_ADMIN_ZULIP_EMAIL", "REALM_ADMIN_ZULIP_KEY", "REALM_ADMIN_ZULIP_SITE")
+            k: "" for k in ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY", "ZULIP_OPERATOR_SITE")
         }
         with (
             mock.patch.dict("os.environ", env),
@@ -275,7 +273,7 @@ class CredentialTests(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit) as cm:
                 L.credentials(None, admin=True)
-        self.assertIn("/zulipadmin, /zulip, or the root", str(cm.exception.code))
+        self.assertIn("/zulip_operator", str(cm.exception.code))
 
 
 if __name__ == "__main__":
