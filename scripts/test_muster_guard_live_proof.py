@@ -458,6 +458,32 @@ class CheckPolicy(unittest.TestCase):
         self.assertTrue(result["denial_fingerprint"])
         self.assertIn(result["denial_fingerprint"], result["denial_reason"])
 
+    def test_a_denial_longer_than_the_detail_limit_still_yields_a_fingerprint(self):
+        # The fleet guard's real denial is a JSON object of about 670 characters.  If the
+        # policy stage truncates the hook's output before parsing it, the JSON is cut in
+        # half, the reason comes back empty, the fingerprint is empty, and the dispatch
+        # stage can never attribute a refusal to this hook - it would report "refused,
+        # but not attributable" for a guard that had just refused.
+        long_reason = "the guard refuses this command because " + ("x" * 500)
+        payload = json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": long_reason,
+                }
+            }
+        )
+        command = write_fake_hook(self.root / "long.sh", "printf '%s' '" + payload + "'")
+        plugin = write_plugin(self.root, "Bash|bash", command)
+        result = proof.check_policy(proof.read_plugin(plugin))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["denial_reason"], long_reason)
+        self.assertTrue(result["denial_fingerprint"])
+        self.assertIn(result["denial_fingerprint"], result["denial_reason"])
+        # The reported detail stays short even though the parsed reason is long.
+        self.assertLessEqual(len(result["detail"]), 400)
+
     def test_a_hook_command_that_is_not_parseable_argv_fails(self):
         plugin = write_plugin(self.root, "Bash|bash", "/bin/true 'unclosed")
         result = proof.check_policy(proof.read_plugin(plugin))
@@ -550,6 +576,31 @@ class DispatchVerdict(unittest.TestCase):
         result = proof._dispatch_verdict(stream, 0, "fingerprint")
         self.assertIsNone(result["ok"])
         self.assertEqual(result["status"], proof.STATUS_ERROR)
+
+    def test_a_command_that_only_mentions_the_canary_is_not_the_canary(self):
+        # A model asked to run `ps > /dev/null` will sometimes run
+        # `command -v ps; echo hi > /dev/null` instead.  That command ran, so counting
+        # it as the canary reports a guard that had just refused the canary as a guard
+        # that let it run.  The refusal of the real canary is the proof.
+        stream = "\n".join(
+            [
+                tool_call_event(refused_call("ps > /dev/null", "the guard refuses this")),
+                tool_call_event(ran_call('command -v ps; echo hi > /dev/null; echo "x=$?"')),
+            ]
+        )
+        result = proof._dispatch_verdict(stream, 0, "the guard refuses this")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], proof.STATUS_OK)
+
+    def test_the_canary_is_recognised_with_a_wrapped_exit_code_echo(self):
+        stream = tool_call_event(refused_call('ps > /dev/null; echo "exit=$?"', "refused"))
+        result = proof._dispatch_verdict(stream, 0, "refused")
+        self.assertTrue(result["ok"])
+
+    def test_the_canary_is_recognised_without_spaces_around_the_redirect(self):
+        stream = tool_call_event(refused_call("ps>/dev/null", "refused"))
+        result = proof._dispatch_verdict(stream, 0, "refused")
+        self.assertTrue(result["ok"])
 
     def test_the_tool_names_the_runtime_used_are_reported(self):
         stream = "\n".join(

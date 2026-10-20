@@ -51,6 +51,12 @@ DEFAULT_MODEL = "minimax/MiniMax-M3.1-Flash"
 # The canary, and the command that must be handed to the hook.
 CANARY = "ps > /dev/null"
 
+# The canary as a shape: `ps`, any arguments, a redirect of its output to /dev/null.
+# A trailing `; ...` or `&& ...` is the model echoing the exit code, which is still the
+# canary.  Nothing may come between `ps` and the redirect but arguments, so a command
+# that only mentions `ps` is not the canary.
+CANARY_PATTERN = re.compile(r"^ps\b[^;|&]*>\s*/dev/null\b")
+
 # The tool names the MiniMax runtime has been observed to deliver.  The Mac 3.1.1 runtime
 # delivers lowercase `bash`; the 0.6.12 server runtime adapts a native shell call to `Bash`
 # for a compatible plugin.  A matcher has to cover both shell spellings to prove anything
@@ -386,13 +392,18 @@ def check_policy(plugin: dict) -> dict:
             out = (proc.stdout or "") + (proc.stderr or "")
             if DENY_SHAPE.search(out):
                 denied = True
-                denied_for[tool_name] = out.strip()[:400]
+                denied_for[tool_name] = out.strip()
                 break
         if not denied:
             missed.append(tool_name)
     ok = not missed
+    # The whole output is parsed for the reason.  A denial is a JSON object, and the
+    # fleet guard's reason is long, so truncating before the parse cuts the JSON in
+    # half: the parse fails, the reason comes back empty, the fingerprint is empty,
+    # and the dispatch stage can never attribute a refusal to this hook - it would
+    # report "refused, but not attributable" for a guard that had just refused.
     reason = _denial_reason(next(iter(denied_for.values()), ""))
-    detail = next(iter(denied_for.values()), "")
+    detail = next(iter(denied_for.values()), "")[:400]
     why = (
         "the hook denied the canary when run directly"
         if ok
@@ -470,11 +481,18 @@ def _call_executed(call: dict) -> bool:
 
 
 def _is_canary_call(call: dict) -> bool:
-    """True when the call is the canary command."""
+    """True when the call is the canary command.
+
+    The shape is matched, not the words: a command that merely mentions `ps` and
+    `/dev/null` is not the canary.  A model asked to run `ps > /dev/null` will
+    sometimes run `command -v ps; echo hi > /dev/null` instead, and counting that as
+    the canary would report a guard that had just refused it as a guard that let the
+    canary run.
+    """
     command = (call.get("input") or {}).get("command")
     if not isinstance(command, str):
         return False
-    return "ps" in command and "/dev/null" in command
+    return CANARY_PATTERN.match(command) is not None
 
 
 def _call_was_denied(call: dict, fingerprint: str) -> bool:
