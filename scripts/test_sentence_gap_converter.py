@@ -72,7 +72,7 @@ CHECKER_FILES = ("scripts/test_sentence_gap_converter.py",)
 # that can ship a body with no gap, and it is not a target for new work.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import fleet_skill_identity as _identity  # noqa: E402  (the path is set just above)
+import fleet_skill_identity as _identity
 
 
 def _active_by_seat_copies() -> tuple[str, ...]:
@@ -94,11 +94,15 @@ def _platform_copies() -> tuple[str, ...]:
 
 
 RENDERED_COPIES = (
-    # The universal copy, and the Cursor rules file, which is a hand-written paste of
-    # the same protocol.
-    "skills/sentence-gap/SKILL.md",
-    ".cursor/rules/sentence-gap.mdc",
-) + _active_by_seat_copies() + _platform_copies()
+    (
+        # The universal copy, and the Cursor rules file, which is a hand-written paste of
+        # the same protocol.
+        "skills/sentence-gap/SKILL.md",
+        ".cursor/rules/sentence-gap.mdc",
+    )
+    + _active_by_seat_copies()
+    + _platform_copies()
+)
 
 # The live guidance that quotes the pattern for a reader to copy.
 GUIDANCE = (
