@@ -214,7 +214,10 @@ class RegistryTest(unittest.TestCase):
         stamp = "2026-10-20T00:00:00.000Z"
         conn = sqlite3.connect(self.db)
         # Same instant, inserted in commit order 1 then 2;  the ULIDs sort the other way round.
-        for outbox_id, tag in (("zzz-ulid-first-committed", "a"), ("aaa-ulid-second-committed", "b")):
+        for outbox_id, tag in (
+            ("zzz-ulid-first-committed", "a"),
+            ("aaa-ulid-second-committed", "b"),
+        ):
             conn.execute(
                 "INSERT INTO export_outbox(outbox_id, kind, payload, created_at)"
                 " VALUES (?, 'session_upsert', ?, ?)",
