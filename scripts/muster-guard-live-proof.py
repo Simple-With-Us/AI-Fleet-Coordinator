@@ -222,7 +222,12 @@ def check_policy(plugin: dict) -> dict:
     )
     if handler is None:
         return _stage_fail("no PreToolUse command to run")
-    command = shlex.split(handler["command"])
+    try:
+        command = shlex.split(handler["command"])
+    except ValueError as exc:
+        return _stage_fail("the hook command is not a parseable argv: %s" % exc)
+    if not command:
+        return _stage_fail("the hook command is empty")
     denied = False
     detail = ""
     for tool_name in SHELL_NAMES:
