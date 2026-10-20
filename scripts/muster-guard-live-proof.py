@@ -75,10 +75,9 @@ STATUS_SKIPPED = "skipped"
 # nothing stopped the call.
 DENY_SHAPE = re.compile(r'"permissionDecision"\s*:\s*"deny"')
 
-# The runtime's own tool-call status vocabulary.  A call that ran is `completed` (2); a call
-# the runtime refused is `failed` (3) with no execution record at all, because the command
-# never started.
-TOOL_STATUS_COMPLETED = 2
+# The runtime's own tool-call status vocabulary.  A call that ran is `completed` (2) and is
+# recognised from its execution record; a call the runtime refused is `failed` (3) with no
+# execution record at all, because the command never started.
 TOOL_STATUS_FAILED = 3
 
 # How much of the hook's denial reason is used to recognise that reason in a live session.
