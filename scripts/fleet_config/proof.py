@@ -1120,10 +1120,10 @@ _L2_DENY_SHAPE_RES = tuple(
 # puts on stderr,  and it is what a transcript carries when the answer is not JSON.
 #
 # The real sentence is "Blocked: fleet-repo checkouts are not allowed <location>, and
-# this command would put <what> of <source> at <destination>."  The destination is the
-# LAST token before the sentence's full stop,  and the parts before it are read
-# LAZILY:  the prefix stops at the first full stop,  and the destination stops at the
-# first one too,  so the capture takes the first " at " after the verb and no more.
+# this command would put <what> of <source> at <destination>."  The parts before the
+# destination are read LAZILY:  the prefix stops at the first full stop,  and the
+# destination stops at the first whitespace or full stop,  whichever comes first,  so
+# the capture takes the first " at " after the verb and no more.
 # A greedy capture would run past the destination and take the reviewer's own text
 # when the sentence carries more than one clause.
 _L2_GUARD_SENTENCE_RE = re.compile(

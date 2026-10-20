@@ -1278,6 +1278,11 @@ function cwdFrom(value: unknown, fallback: string): string {
 // except a guard that answered and did not deny.
 const GUARD_TIMEOUT_MS = 5000;
 
+// A child that ignores SIGTERM must not outlive the runner:  after the grace period the
+// child is SIGKILLed,  and the runner waits for its close so the child is reaped on the
+// interruption paths as well as on the timeout path.
+const GUARD_KILL_GRACE_MS = 500;
+
 class GuardFailure extends Error {
   readonly exitCode: number;
   constructor(message: string, exitCode: number) {
@@ -1295,14 +1300,35 @@ function runGuard(command: string, cwd: string): Promise<string | null> {
       let out = "";
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const terminate = () => {
-        if (!child.killed) child.kill("SIGTERM");
-      };
-      terminateChild = terminate;
-      const onParentExit = () => terminate();
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      // `child.killed` only says a signal was SENT,  not that the child died,  so liveness
+      //  is read off the exit state:  a child still running has neither code nor signal.
+      const alive = () => child.exitCode === null && child.signalCode === null;
       const cleanup = () => {
         if (timer !== undefined) clearTimeout(timer);
         process.off("exit", onParentExit);
+        process.off("SIGINT", onParentSignal as () => void);
+        process.off("SIGTERM", onParentSignal as () => void);
+      };
+      // SIGTERM first,  then SIGKILL if the child is still there after the grace period,
+      //  so a guard that ignores SIGTERM cannot outlive the runner.
+      const terminate = () => {
+        if (alive()) child.kill("SIGTERM");
+        if (killTimer === undefined) {
+          killTimer = setTimeout(() => {
+            killTimer = undefined;
+            if (alive()) child.kill("SIGKILL");
+          }, GUARD_KILL_GRACE_MS);
+        }
+      };
+      terminateChild = terminate;
+      const onParentExit = () => terminate();
+      // An interruption is not a reason to leave the guard running:  terminate the child
+      //  first,  drop our own handlers so the signal takes its normal course,  then re-raise.
+      const onParentSignal = (signal: NodeJS.Signals) => {
+        terminate();
+        cleanup();
+        process.kill(process.pid, signal);
       };
       const fail = (error: GuardFailure) => {
         if (settled) return;
@@ -1314,10 +1340,14 @@ function runGuard(command: string, cwd: string): Promise<string | null> {
       const succeed = (reason: string | null) => {
         if (settled) return;
         settled = true;
+        if (killTimer !== undefined) clearTimeout(killTimer);
+        killTimer = undefined;
         cleanup();
         resolve(reason);
       };
       process.once("exit", onParentExit);
+      process.once("SIGINT", onParentSignal as () => void);
+      process.once("SIGTERM", onParentSignal as () => void);
       timer = setTimeout(() => {
         fail(new GuardFailure(`fleet guard at ${guardCommand} timed out after ${GUARD_TIMEOUT_MS}ms`, 124));
       }, GUARD_TIMEOUT_MS);
@@ -3581,6 +3611,19 @@ def _reread_matches(real: str, raw: bytes, existed: bool) -> bool:
     return now == raw if existed else now is None
 
 
+def _makedirs_private(dirpath: str) -> None:
+    """Create `dirpath` (and parents) owner-only, refusing a symlinked final component.
+
+    A config directory the fleet writes credentials into must not be created with the
+    process umask's permissions,  and `os.makedirs` follows a symlink at the target,  so
+    the link is refused here rather than written through.  `exist_ok=True` keeps an
+    existing directory's own permissions:  only a directory this call creates is 0o700.
+    """
+    if os.path.islink(dirpath):
+        raise OSError(f"{dirpath} is a symlink; not creating a directory through it")
+    os.makedirs(dirpath, mode=0o700, exist_ok=True)
+
+
 def _make_backup(real: str, raw: bytes, mode: int | None, stamp: str) -> str:
     for n in range(1000):
         name = f"{real}.{BACKUP_TAG}-{stamp}" + (f"-{n}" if n else "")
@@ -5132,8 +5175,8 @@ def apply_block(
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
         backups: list[str] = []
         try:
-            os.makedirs(os.path.dirname(bp.path), exist_ok=True)
-            os.makedirs(os.path.dirname(bp.gate_path), exist_ok=True)
+            _makedirs_private(os.path.dirname(bp.path))
+            _makedirs_private(os.path.dirname(bp.gate_path))
             if bp.gate_exists and bp.gate_action != "none":
                 assert bp.gate_raw is not None
                 backups.append(_make_backup(bp.gate_path, bp.gate_raw, bp.gate_mode, stamp))
@@ -6125,7 +6168,7 @@ def apply_copilot(
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     backup: str | None = None
     try:
-        os.makedirs(os.path.dirname(cp.path), exist_ok=True)
+        _makedirs_private(os.path.dirname(cp.path))
         if cp.exists:
             assert cp.raw is not None
             backup = _make_backup(cp.path, cp.raw, cp.mode, stamp)
@@ -6442,7 +6485,7 @@ def apply_opencode(
     backup: str | None = None
     real = cfg.real
     try:
-        os.makedirs(os.path.dirname(real), exist_ok=True)
+        _makedirs_private(os.path.dirname(real))
         if cfg.exists:
             backup = _make_backup(real, cfg.raw, cfg.mode, stamp)
         if not _reread_matches(real, cfg.raw, cfg.exists):

@@ -726,7 +726,7 @@ class OpenCodeTests(World):
         self.config = self.home / ".config" / "opencode" / "opencode.json"
         doc = {
             "mcp": {
-                "verde": {
+                "fixture-mcp": {
                     "type": "remote",
                     "headers": {"Authorization": "Bearer " + DUMMY_TOKEN},
                 }
