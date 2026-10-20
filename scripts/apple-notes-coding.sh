@@ -714,7 +714,7 @@ _SESSION_ROW = (
     r'[A-Za-z0-9][A-Za-z0-9._:-]{3,127}'
     # A row from before Oct 19 carried a second date after the id (' - Mon, Oct 19, 9:40pm').  Only that exact
     # shape is taken, so prose that merely begins with 'Session:' ('Session: claude-code resumed') stays.
-    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{1,2}:\d{2}[ap]m)?)?'
+    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{4})?(?:, \d{1,2}:\d{2}[ap]m)?)?'
     r'\s*(?:</span>\s*)?</p>'
 )
 _SPACER = r'(?:<div><br\s*/?></div>\s*)*'

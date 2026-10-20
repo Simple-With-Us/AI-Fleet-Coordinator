@@ -399,6 +399,18 @@ class SessionIdTests(unittest.TestCase):
         self.assertIn(f"Window {OCT_19}, 10:30am-11:00am for the deploy.", p.stdout)
         self.assertIn("Session: claude-code resumed after the restart.", p.stdout)
 
+    def test_an_old_session_row_with_a_year_is_replaced_not_kept(self):
+        old = (
+            "<p>Mon, Oct 19, 9:40pm</p><p>Session: old-id-0001 - Mon, Oct 19, 2026, 9:40pm</p>"
+            "<div><br></div><p>Body.</p>"
+        )
+        p = self.run_script(
+            "--update", "--session", "new-id-0002", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=old
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
+        self.assertNotIn("old-id-0001", p.stdout)
+
     def test_the_body_never_reaches_the_refusal(self):
         p = self.run_script(
             "[AFC, Claude] topic", env={"AGENT_SEAT": "CLAUDE"}, body="TOPSECRETBODY"
