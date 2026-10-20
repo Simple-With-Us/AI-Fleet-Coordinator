@@ -120,6 +120,11 @@ class CheckType(str, Enum):
 
     ``credential_stat`` is the only check that touches a credential file, and it reads
     ``stat`` data only (existence, mode, size, mtime).  It never opens the file.
+
+    ``credential_key_present`` never touches a file at all:  it asks the fleet's
+    ``fleet-secrets`` CLI for the KEY NAMES in one secret-store folder and reports which
+    of the rule's names are there.  A key name is an identifier,  never a value,  so the
+    check cannot carry a secret into a result even by accident.
     """
 
     MARKED_BLOCK_HASH = "marked_block_hash"
@@ -130,6 +135,7 @@ class CheckType(str, Enum):
     SUBAGENTS_INSTALLED = "subagents_installed"
     PERMISSIONS_MATCH = "permissions_match"
     CREDENTIAL_STAT = "credential_stat"
+    CREDENTIAL_KEY_PRESENT = "credential_key_present"
 
 
 class ReasonCode(str, Enum):
@@ -167,9 +173,9 @@ class OverallVerdict(str, Enum):
 class ExpectedState:
     """What a rule wants to find.  It never holds a secret value.
 
-    ``names`` carries identifiers only (MCP server names, skill names, hook ids), and a
-    credential expectation is a mode and a presence flag, never contents or a hash of
-    contents.
+    ``names`` carries identifiers only (MCP server names, skill names, hook ids, secret
+    store key names), and a credential expectation is a mode and a presence flag, never
+    contents or a hash of contents.
     """
 
     description: str
@@ -202,9 +208,10 @@ class ObservedState:
 class CheckSpec:
     """The check to run:  a type, a target and an optional detail.
 
-    ``target`` is a path for file checks and a name (never a value) for a credential
-    reference.  ``detail`` names the part inside the target, such as a marked block name
-    or a hook event.  Per-kind meanings are pinned in the design doc, section 5.
+    ``target`` is a path for file checks, a name (never a value) for a credential
+    reference, and a secret-store folder path for a credential key check.  ``detail``
+    names the part inside the target, such as a marked block name or a hook event.
+    Per-kind meanings are pinned in the design doc, section 5.
     """
 
     type: CheckType
@@ -282,7 +289,7 @@ class Manifest:
 class CheckResult:
     """One checked rule on one platform, ready for the JSON envelope.
 
-    ``checked_at`` and ``expires_at`` are ISO 8601 UTC stamps with a ``Z`` suffix.
+    ``checked_at`` and ``expires_at`` are ISO 8601 timezone.utc stamps with a ``Z`` suffix.
     ``stale`` is true when the result is past ``ttl_seconds`` at read time;  a stale
     result is re-labelled ``UNKNOWN`` with reason code ``STALE`` by the aggregator
     before it reaches the envelope, so this field is evidence, not the verdict.

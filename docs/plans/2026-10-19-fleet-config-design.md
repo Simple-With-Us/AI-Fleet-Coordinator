@@ -58,21 +58,21 @@ A check that is stale (past its TTL), errors, times out or produces unparseable 
 | 3 | The target is absent | `MISSING` | `missing` | Yes |
 | 4 | The check raised, timed out or returned unparseable output | `UNKNOWN` | `error`, `timeout` or `unparseable` | Yes |
 | 5 | The observed state does not match the expected state at L0 | `DRIFT` | `drift` | Yes |
-| 6 | L0 matches but the required L1 or L2 proof was not run, or its evidence is stale | `UNPROVEN` | `proof-not-run` | No, but never healthy |
+| 6 | L0 matches but the required L1 or L2 proof was not run | `UNPROVEN` | `proof-not-run` | No, but never healthy |
 | 7 | L1 or L2 ran and the hook or platform did not deny the sentinel write | `DRIFT` | `proof-failed` | Yes |
 | 8 | The required proof is achieved and fresh | `PASS` | `ok` | No |
 
-A cached result read after its `expiresAt` is re-labelled before it reaches the envelope:  state `UNKNOWN`, reason code `stale`, `stale` true.  It keeps its original `checkedAt` as evidence.  The envelope builder does not do this relabelling;  the aggregator owns the clock.
+Staleness is applied last, and it wins.  A result read after its `expiresAt` is re-labelled before it reaches the envelope:  state `UNKNOWN`, reason code `stale`, `stale` true, and failing, whatever state the rule itself produced.  It keeps its original `checkedAt` as evidence.  The envelope builder does not do this relabelling;  the aggregator owns the clock.  So the one condition of stale evidence has one answer everywhere:  a stale result is `UNKNOWN` with reason code `stale`, and `is_failing` counts it as failing.  It is never `UNPROVEN` with reason code `proof-not-run`, because `proof-not-run` says a proof was never attempted, while a result whose evidence has expired was attempted and is now out of date.  The two conditions are different and they do not overlap.
 
-A status run has an overall budget as well as a per-check timeout.  When the budget is spent, the rules that have not run yet are reported as `UNKNOWN` with reason code `timeout` instead of being run, so one slow hook probe cannot turn a run into a queue of probes.  The budget adds no vocabulary:  the result it produces is step 4 of the table below.
+A status run has an overall budget as well as a per-check timeout.  When the budget is spent, the rules that have not run yet are reported as `UNKNOWN` with reason code `timeout` instead of being run, so one slow hook probe cannot turn a run into a queue of probes.  The budget adds no vocabulary:  the result it produces is step 4 of the table above.
 
 The verdict math lives in `contract.py` as pure functions, so every consumer shares it.  `is_failing` is true for `DRIFT` and `MISSING`, and for any result whose reason code is `stale`, `error`, `timeout`, `unparseable` or `proof-failed`.  `overall_verdict` is `FAIL` when any result is failing, else `PASS` when at least one result exists and every result is `PASS`, else `UNKNOWN`.  An empty run is `UNKNOWN`, never `PASS`.
 
-Finished CLI exit codes are pinned now:  0 for verdict `PASS`, 1 for verdict `FAIL`, 3 for verdict `UNKNOWN` (the `fleet_knobs` precedent for an unreachable source), 2 for a refused run (bad manifest, bad registry, or a declined Touch ID confirmation), and 64 for a usage error.  The skeleton in `__main__.py` returns 2 for its stub verbs, which is a placeholder, not the finished mapping.
+Finished CLI exit codes are pinned now:  0 for verdict `PASS`, 1 for verdict `FAIL`, 3 for verdict `UNKNOWN` (the `fleet_knobs` precedent for an unreachable source), 2 for a refused run (a bad manifest, a bad registry, a declined Touch ID confirmation, or an unimplemented verb in the skeleton), and 64 for a usage error.  The skeleton in `__main__.py` returns 2 for its stub verbs, which is a placeholder, not the finished mapping.  A usage error is a mistake in the request and never shares its code with a refusal:  an unknown verb, an unknown flag, or a `--seat` value that is not a registry tag exits 64, so a caller can tell "the command line is wrong" (64, and the caller fixes it) from "the run was refused" (2, and the owner approves or fixes the machine).  The parser raises instead of exiting, so argparse's own exit status 2 never leaks out of the CLI.
 
 ## 5. Check Types Per Kind
 
-`check.type` is one of `types.py` `CheckType`.  `check.target` is a path for file checks and a name (never a value) for a credential reference.  `check.detail` names the part inside the target.  The allowed pairings are fixed:
+`check.type` is one of `types.py` `CheckType`.  `check.target` is a path for file checks and a name (never a value) for a credential reference.  `check.detail` names the part inside the target.  A credential reference's `detail` is the reference NAME, such as `ZULIP_CLAUDE`, and never a sentence:  a manifest and a reason carry names, so a name is the only thing a reference can be, and the prose about it belongs in `expected.description`.  The allowed pairings are fixed:
 
 | Kind | Check type | Target and detail | Expected fields used |
 |---|---|---|---|
@@ -86,17 +86,26 @@ Finished CLI exit codes are pinned now:  0 for verdict `PASS`, 1 for verdict `FA
 | `permissions` | `credential_stat` | Credential file path;  detail is the credential reference name | `present`, `mode` |
 | `permissions` | `credential_key_present` | Secret-store folder path, such as `/zulip`;  detail is the credential reference name | `names` (secret-store key names only), `present` |
 
-`credential_key_present` is how the fleet reaches a credential now that `~/.secrets` is retired (AFC-359).  It asks the `fleet-secrets` CLI for the KEY NAMES in one secret-store folder, using the `names` verb, which prints names and never values, so a secret cannot reach a result, a reason or a log by construction.  A key that is absent is step 3 (`MISSING`);  a secret store that cannot be reached, because the CLI is missing, the machine identity is gone, the call timed out or the output was unreadable, is step 4 (`UNKNOWN` with a failing reason code).  The listing is cached on the run context, so one status run asks the secret store once per folder rather than once per rule.
+`credential_key_present` is how the fleet reaches a credential now that the flat credential directory is retired (AFC-359).  It asks the `fleet-secrets` CLI for the KEY NAMES in one secret-store folder, using the `names` verb, which prints names and never values, so a secret cannot reach a result, a reason or a log by construction.  A key that is absent is step 3 (`MISSING`);  a secret store that cannot be reached, because the CLI is missing, the machine identity is gone, the call timed out or the output was unreadable, is step 4 (`UNKNOWN` with a failing reason code).  The listing is cached on the run context, so one status run asks the secret store once per folder rather than once per rule.  A rule reports only the names it asked for, so one seat's rule never carries another seat's key names into a result, a reason or a log.
 
-The example above uses a placeholder for the retired file's path on purpose:  the real path is in the
-manifest,  which is generated from the registry,  and a concrete home-local path in a public
-document is both a disclosure and a stale literal the moment the file is retired.
+The example above uses a placeholder for the retired file's path on purpose, and the placeholder is a stand-in, not a path.  The real target is generated by `scripts/fleet_config/seed_manifest.py`, which builds it from the registry row's `zulipFileCode`;  the generated manifest is the only place the concrete path appears.  A rule that carries the literal placeholder passes vacuously, because no file of that name exists, so the placeholder must never be copied into a manifest anyone means to run.  A concrete home-local path in a public document is both a disclosure and a stale literal the moment the file is retired.
 
 The `credential_stat` check keeps its own job:  it reports the stat data of a file, and it is what a rule that says a RETIRED file must be GONE uses, because `expected.present: false` inverts it.
 
 Hash rules are exact, so two implementations agree byte for byte.  `file_hash` is the lowercase hex SHA-256 of the raw file bytes.  `marked_block_hash` is the lowercase hex SHA-256 of the marked block body as `fleet_lanes.marked_block.block_body` returns it (CR stripped, markers excluded), encoded as the lines joined by `\n` with one trailing `\n`, in UTF-8.  A file with malformed markers is step 4 (`UNKNOWN`, `unparseable`), never a guessed hash.  This package reimplements that body extraction rather than importing `fleet_lanes`, for the packaging reason in section 12, and a test must pin the two implementations to the same digest on a shared fixture.
 
-Name-set comparisons are set equality.  The envelope lists expected names in manifest order and observed names sorted, so a diff is stable to read.  A credential file is checked by `stat` only:  existence, mode, size and mtime.  Its contents are never opened, hashed or compared, and no field in `types.py` can hold them.
+Name-set comparisons are per check type, and the check type decides which one applies.  A subset test asks only whether every expected name is present;  a set-equality test also asks whether the machine holds a name the rule did not expect.
+
+| Check type | Comparison | A name the machine holds that the rule did not expect |
+|---|---|---|
+| `permissions_match` | Set equality | Drift |
+| `hook_registered` | Subset | Noted in the reason text, never drift |
+| `mcp_servers_registered` | Subset | Noted in the reason text, never drift |
+| `skills_installed` | Subset | Noted in the reason text, never drift |
+| `subagents_installed` | Subset | Noted in the reason text, never drift |
+| `credential_key_present` | Subset | Not drift;  the folder holds every seat's keys |
+
+`credential_key_present` has to be a subset test.  The check asks the secret store for the KEY NAMES in one folder, and that folder holds every seat's keys, so the observed set is the whole folder and can never equal one seat's three names.  The rule passes when every name it expects is among them, and it is `MISSING` when one of them is not;  the names it reports are the ones it expected, never the rest of the folder.  The envelope lists expected names in manifest order and observed names sorted, so a diff is stable to read.  A credential file is checked by `stat` only:  existence, mode, size and mtime.  Its contents are never opened, hashed or compared, and no field in `types.py` can hold them.
 
 ## 6. The Manifest:  `fleet-seats.json`
 
@@ -115,7 +124,7 @@ One seat entry, excerpted (a real file must carry every live seat, per section 7
           "id": "claude-instructions-lane-map",
           "kind": "instructions",
           "platforms": ["claude"],
-          "check": {"type": "marked_block_hash", "target": "~/.claude/CLAUDE.md", "detail": "fleet-lane-map"},
+          "check": {"type": "marked_block_hash", "target": "<claude-instructions-path>", "detail": "fleet-lane-map"},
           "expected": {"description": "Lane Map block matches the installer source", "present": true, "sha256": "<64 lowercase hex>"},
           "proofLevel": "L0",
           "ownerSeat": "CLAUDE",
@@ -127,7 +136,7 @@ One seat entry, excerpted (a real file must carry every live seat, per section 7
           "id": "claude-hooks-lane-guard",
           "kind": "hooks",
           "platforms": ["claude"],
-          "check": {"type": "hook_registered", "target": "~/.claude/settings.json", "detail": "PreToolUse"},
+          "check": {"type": "hook_registered", "target": "<claude-settings-path>", "detail": "PreToolUse"},
           "expected": {"description": "Lane guard hook registered with its timeout", "present": true, "names": ["lane-guard"], "timeoutSeconds": 10},
           "proofLevel": "L1",
           "ownerSeat": "CLAUDE",
@@ -139,7 +148,7 @@ One seat entry, excerpted (a real file must carry every live seat, per section 7
           "id": "claude-mcp-fleet-recall",
           "kind": "mcp",
           "platforms": ["claude"],
-          "check": {"type": "mcp_servers_registered", "target": "~/.claude.json", "detail": ""},
+          "check": {"type": "mcp_servers_registered", "target": "<claude-mcp-config-path>", "detail": ""},
           "expected": {"description": "Fleet MCP servers registered by name", "present": true, "names": ["fleet-recall"]},
           "proofLevel": "L0",
           "ownerSeat": "CLAUDE",
@@ -151,7 +160,7 @@ One seat entry, excerpted (a real file must carry every live seat, per section 7
           "id": "claude-skills-fleet",
           "kind": "skills",
           "platforms": ["claude"],
-          "check": {"type": "skills_installed", "target": "~/.claude/skills", "detail": ""},
+          "check": {"type": "skills_installed", "target": "<claude-skills-dir>", "detail": ""},
           "expected": {"description": "Fleet skills installed by name", "present": true, "names": ["fleet-mode"]},
           "proofLevel": "L0",
           "ownerSeat": "CLAUDE",
@@ -163,7 +172,7 @@ One seat entry, excerpted (a real file must carry every live seat, per section 7
           "id": "claude-subagents-fleet",
           "kind": "subagents",
           "platforms": ["claude"],
-          "check": {"type": "subagents_installed", "target": "~/.claude/agents", "detail": ""},
+          "check": {"type": "subagents_installed", "target": "<claude-agents-dir>", "detail": ""},
           "expected": {"description": "Fleet sub-agent definitions installed by name", "present": true, "names": ["code-scout"]},
           "proofLevel": "L0",
           "ownerSeat": "CLAUDE",
@@ -175,8 +184,8 @@ One seat entry, excerpted (a real file must carry every live seat, per section 7
           "id": "claude-permissions-zulip-key",
           "kind": "permissions",
           "platforms": ["claude"],
-          "check": {"type": "credential_key_present", "target": "/zulip", "detail": "the CLAUDE Zulip credential"},
-          "expected": {"description": "The Zulip credential is reachable in the secret store at /zulip", "present": true, "names": ["CLAUDE_ZULIP_EMAIL", "CLAUDE_ZULIP_KEY", "CLAUDE_ZULIP_SITE"]},
+          "check": {"type": "credential_key_present", "target": "/zulip", "detail": "ZULIP_CLAUDE"},
+          "expected": {"description": "The CLAUDE Zulip credential is reachable in the secret store at /zulip", "present": true, "names": ["CLAUDE_ZULIP_EMAIL", "CLAUDE_ZULIP_KEY", "CLAUDE_ZULIP_SITE"]},
           "proofLevel": "L0",
           "ownerSeat": "CLAUDE",
           "autofixAllowed": false,
@@ -187,7 +196,7 @@ One seat entry, excerpted (a real file must carry every live seat, per section 7
           "id": "claude-permissions-zulip-retired-file",
           "kind": "permissions",
           "platforms": ["claude"],
-          "check": {"type": "credential_stat", "target": "<the-retired-flat-credential-file>", "detail": "ZULIP_CLAUDE"},
+          "check": {"type": "credential_stat", "target": "<retired-flat-credential-file>", "detail": "ZULIP_CLAUDE"},
           "expected": {"description": "The retired flat Zulip credential file is gone, stat only", "present": false},
           "proofLevel": "L0",
           "ownerSeat": "CLAUDE",
@@ -201,6 +210,8 @@ One seat entry, excerpted (a real file must carry every live seat, per section 7
   }
 }
 ```
+
+Every path in the example is a placeholder, written as an angle-bracket token such as `<claude-settings-path>`.  The placeholder names a thing, never a location:  the concrete path on a seat's machine lives in the generated manifest and nowhere else, because a home-local path in a public document is a disclosure and a stale literal the moment the file moves.  A rule built from a placeholder path is a rule that checks nothing, so a manifest is never written by hand from this example.
 
 ### 6.1 Rule Fields
 
@@ -309,7 +320,7 @@ L0 lives inside each per-kind check module:  hash or name-set comparison against
 
 L1 is a pure probe.  `proof.py` builds a synthetic PreToolUse payload per platform adapter whose tool input attempts a write to a sentinel path under a throwaway sentinel lane (a path string only;  nothing creates the lane and nothing writes the file), pipes it to the installed hook's stdin, and reads the platform's deny signal (exit code and output shape per adapter).  A deny achieves L1.  An allow is step 7 (`DRIFT`, `proof-failed`).  A hook that crashes, is missing or times out is step 4, never a pass.  Payload shapes differ per platform, so each adapter is one small function in `proof.py` with its own fixture test.  The hook under test is the installed one named by the rule, resolved through the platform's settings file, never a copy from the repo.
 
-L2 is a canary with a cost guard.  `proof.py` creates a throwaway lane, runs the platform's headless command (`claude -p`, `codex exec`, per adapter) with a read-only prompt that asks the model to attempt the sentinel write, and looks for deny evidence in the transcript.  Deny evidence with a clean exit achieves L2.  No deny evidence is step 7.  The lane is removed afterwards, pass or fail.  L2 runs only under `--prove l2` or from the daily job, it is the only part of this engine that may spend a model turn, and its result is cached under the rule's TTL like any other result.  A `status` run without `--prove` reuses a fresh cached L2 result and reports `UNPROVEN` for an L2 rule whose cache is absent or stale.
+L2 is a canary with a cost guard.  `proof.py` creates a throwaway lane, runs the platform's headless command (`claude -p`, `codex exec`, per adapter) with a read-only prompt that asks the model to attempt the sentinel write, and looks for deny evidence in the transcript.  Deny evidence with a clean exit achieves L2.  No deny evidence is step 7.  The lane is removed afterwards, pass or fail.  L2 runs only under `--prove l2` or from the daily job, and it is the only part of this engine that may spend a model turn.  A `status` run without `--prove l2` neither spends a model turn nor reads a per-rule L2 evidence cache:  an L2 rule whose proof was not requested reads `UNPROVEN` with reason code `proof-not-run`, which is never healthy but does not accuse the seat of drift.  That is the whole of the not-run case.  It is not the stale case, and the two must not be confused:  a result whose own TTL has passed, including one served from the last-known-good copy, is re-labelled `UNKNOWN` with reason code `stale` by the aggregator, and it is failing, exactly as section 4 says.  A stale result is never reported as `UNPROVEN`.
 
 The seam between the aggregator and the proof machinery is one function, `proof.prove_rule(rule, platform, ctx, prove_l2)`.  The aggregator decides WHICH rule needs a proof and this function decides HOW to get one, so neither side has to know the other's internals.  The outcome carries `level` as the level that was ACHIEVED, so a proof that ran and failed reports None and the aggregator folds it into step 7 (`DRIFT`, `proof-failed`) or step 4 (`UNKNOWN`, `error`), both of which are failing.  A proof that did not run at all reports `proof-not-run` and the rule reads `UNPROVEN`, which is never healthy but does not accuse the seat of drift.  The aggregator can be given a `proof_runner` instead, which is how a test drives this path without a real hook.
 
@@ -323,6 +334,8 @@ Every module in `scripts/fleet_config/`, with one owner lane each, so four paral
 | `types.py` | The fixed vocabulary:  states, proof levels, kinds, collectors, check types, reason codes and every dataclass | Kernel (done) |
 | `contract.py` | `SCHEMA_VERSION`, the envelope builder and the pure verdict math (`is_failing`, `overall_verdict`, `summarize`) | Kernel (done);  changes only with a schema version bump |
 | `manifest.py` | Manifest loading, registry roster reading, coverage and platform validation | Implementer 1 (manifest) |
+| `seed_manifest.py` | Generates `fleet-seats.json` from the registry:  one entry per live seat, the expected hashes from the installer source, and the credential targets from the registry's `zulipFileCode` | Implementer 1 (manifest) |
+| `checks.py` | The shared check context (`CheckContext`, including the per-run `cache`), `build_result`, and the one allowlisted runner every child process starts through | Implementer 2 (checks) |
 | `checks_instructions.py` | `instructions` checks:  marked block hash and file hash, including the marked-block body extraction that mirrors `fleet_lanes/marked_block.py` | Implementer 2 (checks) |
 | `checks_hooks.py` | `hooks` checks at L0:  registration, hook ids and timeouts in harness settings files | Implementer 2 (checks) |
 | `checks_mcp.py` | `mcp` checks:  registered server names per platform config format | Implementer 2 (checks) |
@@ -336,9 +349,11 @@ Every module in `scripts/fleet_config/`, with one owner lane each, so four paral
 | `plan.py` | The read-only plan side:  desired versus observed per rule, with the exact change apply would make | Implementer 4 (engine) |
 | `apply.py` | The write side:  only rules with `autofixAllowed` true, only via the existing installer engines, backup then atomic replace, never a hand-rolled file edit | Implementer 4 (engine), after plan |
 | `__main__.py` | Argument parsing and verb dispatch only;  no check logic | Implementer 4 (engine) |
+| `touchid.py` | The Touch ID gate in front of persistence-class writes:  it runs a signed helper and refuses the write when the confirmation does not succeed | Implementer 4 (engine) |
+| `touchid_helper/` | The small signed helper binary the Touch ID gate runs;  built by `build.sh`, never resolved from the environment | Implementer 4 (engine) |
 | `tests/` | Unit and contract tests per module, mirroring `fleet_knobs/tests/` | Each implementer for their module |
 
-Coordination rules:  `types.py` and `contract.py` change only through the design, never inside a check module's lane.  A check module returns `CheckResult` values and never prints, never exits and never reads the clock (the aggregator passes `checked_at` in).  `apply.py` calls the existing engines under `scripts/fleet_lanes/` as libraries or subprocesses and adds no third installer.  Nobody edits `scripts/fleet_lanes/`, `scripts/fleet_knobs/`, `fleet-apps.json` or `scripts/check-fleet-registry.py` from a `fleet_config` lane.
+Coordination rules:  `types.py` and `contract.py` change only through the design, never inside a check module's lane.  A check module returns `CheckResult` values and never prints, never exits and never reads the clock (the aggregator passes `checked_at` in).  `apply.py` calls the existing engines under `scripts/fleet_lanes/` as subprocesses, never as libraries, so the isolated copy keeps working (section 12), and it adds no third installer.  Nobody edits `scripts/fleet_lanes/`, `scripts/fleet_knobs/`, `fleet-apps.json` or `scripts/check-fleet-registry.py` from a `fleet_config` lane.
 
 ## 11. CLI Surface
 
@@ -351,6 +366,8 @@ python3 -m fleet_config apply  [--json] --only RULE-ID [...]
 ```
 
 `status` is read-only and runs L0 plus L1.  `plan` is read-only and shows what `apply` would change.  `apply` requires at least one `--only` rule id, refuses a rule whose `autofixAllowed` is false, and refuses to run without a fresh `status` or `plan` to act on.  `--seat` takes a registry tag and `--platform` a platform id;  both filter, and an unknown value is a usage error, never an empty pass.
+
+A CLI that folds the plan into the apply side serves the same contract with `apply --plan`, which prints the plan and changes nothing, and addresses the work by seat and kind instead of by rule id.  That is one surface and one behaviour, not two:  the plan is always available and never changes anything, and the apply side never touches a rule whose `autofixAllowed` is false.  Which spelling ships is a decision for the owner, because the two spellings differ in how a caller names the work, and the envelope and the manifest do not care.
 
 ## 12. Style, Packaging And Safety Rules
 
@@ -371,6 +388,8 @@ Each implementer lands tests with their module, under `scripts/fleet_config/test
 3. `test_fail_closed_mapping` asserts stale, error, timeout and unparseable results are failing and that an all-`UNKNOWN` run and an empty run both verdict `UNKNOWN`, never `PASS`.
 4. `test_marked_block_hash_parity` asserts `checks_instructions` and `fleet_lanes.marked_block` give the same digest for the same fixture file (this test may import `fleet_lanes`;  the package under test may not).
 
+The names are the pin, not a suggestion:  a test that asserts the same thing under another name does not satisfy it, because the pinned name is what a reader greps for and what a future change has to find.  Test 4 in particular is the only thing that keeps the two marked-block implementations agreeing, and nothing else in the suite does it, so it is the one most easily lost.
+
 ## 14. Decisions And Rejected Alternatives
 
 | # | Decision | Why | Rejected alternative |
@@ -382,7 +401,7 @@ Each implementer lands tests with their module, under `scripts/fleet_config/test
 | D5 | A seat with no Mac surface gets `notApplicable` covers and no results, not `UNSUPPORTED` results | It is honest (nothing is checkable yet), it keeps the daily verdict clean, and the app renders the covers from the manifest | One `UNSUPPORTED` result per kind for cloud seats, rejected because a permanent wall of unsupported rows trains everyone to ignore the state that a genuinely unsupported Mac platform needs |
 | D6 | Only `hooks` rules may require `L1` or `L2` in Phase 2 | L1 and L2 are hook proofs;  a higher requirement anywhere else would make `UNPROVEN` the permanent state of five kinds | Allowing any kind to require any level, rejected because no proof machinery exists for the other kinds and the manifest would promise what the engine cannot run |
 | D7 | This package mirrors `fleet_lanes` semantics (roster, marked-block hash) instead of importing it | The isolated stable copy under `python3 -I` carries just this package, as `fleet_knobs` established | Direct imports of `fleet_lanes.layout` and `fleet_lanes.marked_block`, rejected because they break that copy silently, at hook time, on the worst possible day |
-| D8 | Credential checks are `stat` only, with no content hash | A hash of contents is a fingerprint of a secret and needs the file opened;  mode plus presence is the compliance fact Muster needs | Hashing the credential file to detect rotation, rejected because presence and mode answer the admin question and rotation is the credential owner's business, not a config drift |
+| D8 | Credential checks never read a secret's contents:  `credential_stat` reports `stat` data only, and `credential_key_present` asks the secret store for key NAMES only | A hash of contents is a fingerprint of a secret and needs the file opened;  mode plus presence, or the presence of a key name, is the compliance fact Muster needs | Hashing the credential file to detect rotation, rejected because presence and mode answer the admin question and rotation is the credential owner's business, not a config drift |
 
 ## 15. Risks And Blockers For Other Workers
 

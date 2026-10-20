@@ -8,9 +8,10 @@ rule's check type without knowing which module implements what.  Every function 
     def check(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult
 
 ``CheckContext`` carries the home directory the checks read, the clock they stamp
-results with, the per-check timeout, and the environment they may pass to a child
-process.  ``build_result`` builds a ``CheckResult`` with consistent timestamps and
-expiry, so no check module invents its own time handling.
+results with, the per-check timeout, the environment they may pass to a child
+process, and the per-run ``cache`` a check uses to remember one slow answer for the
+rest of the run.  ``build_result`` builds a ``CheckResult`` with consistent timestamps
+and expiry, so no check module invents its own time handling.
 
 This module is the one piece of the package that every implementer imports, so it is
 written once and shared rather than being re-derived per module.  It holds no check
@@ -25,9 +26,10 @@ from __future__ import annotations
 import hashlib
 import importlib
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from .types import (
     CheckResult,
@@ -80,13 +82,16 @@ class CheckContext:
     result is stamped from, so one status run has one consistent time.  ``timeout``
     bounds a child process a check spawns.  ``env`` is the environment passed to such a
     child;  it is a mapping of names to values and never carries a credential the
-    caller did not put there.
+    caller did not put there.  ``cache`` is the scratch space of one run:  a check that
+    asks the same slow question for several rules asks it once and keeps the answer
+    there,  so one run never repeats one slow call.
     """
 
     home: os.PathLike[str]
     now: datetime
     timeout: int = 10
     env: Mapping[str, str] = field(default_factory=dict)
+    cache: MutableMapping[str, Any] = field(default_factory=dict)
 
     def child_env(self) -> dict[str, str]:
         """The environment for a child process:  the caller's plus the given overrides.
@@ -119,14 +124,14 @@ def resolve_home(home: os.PathLike[str] | None = None) -> os.PathLike[str]:
 
 def utc_now() -> datetime:
     """The current time, timezone-aware and in UTC."""
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def iso_utc(moment: datetime) -> str:
     """A timestamp in the pinned format:  ISO 8601 UTC with a ``Z`` suffix."""
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def sha256_text(text: str) -> str:
