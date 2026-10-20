@@ -68,7 +68,6 @@ RULES_FILES: dict[str, str] = {
     "clutch": ".clutch/dsh/AGENTS.md",
     "kimi": ".kimi-code/AGENTS.md",
     "vibe": ".vibe/AGENTS.md",
-    "copilot": ".copilot/copilot-instructions.md",
     "opencode": ".config/opencode/AGENTS.md",
 }
 
@@ -95,7 +94,6 @@ TOOLS_FILES: dict[str, str] = {
 MCP_TARGETS: dict[str, str] = {
     "opencode": "opencode",
     "kimi": "kimi",
-    "copilot": "copilot",
     "muse": "muse",
     "muse-code": "muse",
     "minimax": "minimax",
@@ -107,7 +105,6 @@ MCP_TARGETS: dict[str, str] = {
 MCP_FILES: dict[str, str] = {
     "opencode": ".config/opencode/opencode.json",
     "kimi": ".kimi-code/mcp.json",
-    "copilot": ".copilot/mcp-config.json",
     "muse": ".config/muse/settings.json",
     "minimax": ".minimax/mcp.json",
     "fx": ".fx/mcp.json",
