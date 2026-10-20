@@ -1,8 +1,9 @@
 """Shared plumbing for the check modules:  the context they run in and the registry.
 
-Every ``checks_<kind>.py`` module in this package exposes one function with one
-signature, so the aggregator can dispatch on the rule's check type without knowing which
-module implements what:
+Every ``checks_<kind>.py`` module in this package exposes a ``CHECKS`` mapping from
+``CheckType`` to the function that implements it, so the aggregator can dispatch on the
+rule's check type without knowing which module implements what.  Every function in a
+``CHECKS`` mapping has one signature:
 
     def check(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult
 
@@ -241,9 +242,13 @@ def default_registry() -> CheckRegistry:
     order out of the aggregator's own body, and gives one place to see what exists.
     A module that has not landed yet is not an error:  it registers nothing, and the
     check types it would have carried are left unregistered, which the aggregator's
-    fail-closed rule turns into ``UNSUPPORTED`` rather than an exception.
+    fail-closed rule turns into ``UNSUPPORTED`` rather than an exception.  A module
+    that did land but cannot import its own dependency is a different thing:  it is
+    re-raised, because silently skipping it would report every rule of that kind
+    UNSUPPORTED and hide the real error.
     """
     registry = CheckRegistry()
+    package = __package__ or __name__
     for name in (
         "checks_instructions",
         "checks_hooks",
@@ -252,9 +257,17 @@ def default_registry() -> CheckRegistry:
         "checks_subagents",
         "checks_permissions",
     ):
+        qualified = package + "." + name
         try:
-            module = importlib.import_module("." + name, __package__ or __name__)
-        except ImportError:
+            module = importlib.import_module("." + name, package)
+        except ModuleNotFoundError as exc:
+            # exc.name is the fully qualified missing module, so it distinguishes this
+            # module not landing yet from one that landed with a broken import of its own.
+            if exc.name != qualified:
+                raise
             continue  # not implemented yet
-        registry._checks.update(module.CHECKS)
+        checks = getattr(module, "CHECKS", None)
+        if not isinstance(checks, dict):
+            raise CheckError("the check module %s exposes no CHECKS mapping" % name)
+        registry._checks.update(checks)
     return registry

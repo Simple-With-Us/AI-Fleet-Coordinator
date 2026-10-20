@@ -1191,22 +1191,53 @@ const deniedCalls = new Map<string, string>();
 
 type AnyRecord = Record<string, unknown>;
 
+// Tool-call data is untrusted and walked recursively, so the walk carries bounds:  a payload
+// that is too large, too deep, too wide, or cyclic is refused before it can exhaust the
+// stack or the CPU ahead of the guard.
+const MAX_COMMAND_INPUT_BYTES = 64 * 1024;
+const MAX_COMMAND_INPUT_DEPTH = 16;
+const MAX_COMMAND_INPUT_NODES = 1000;
+
 function commandFrom(value: unknown): string | null {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    return value.every((v) => typeof v === "string") ? value.join(" ") : null;
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new Error("OpenCode command input is not serializable");
   }
-  if (!value || typeof value !== "object") return null;
-  const record = value as AnyRecord;
-  for (const key of ["command", "cmd", "CommandLine", "commandLine", "script"]) {
-    const found = commandFrom(record[key]);
-    if (found) return found;
+  if (serialized !== undefined && Buffer.byteLength(serialized, "utf8") > MAX_COMMAND_INPUT_BYTES) {
+    throw new Error("OpenCode command input exceeds 64 KiB");
   }
-  for (const key of ["tool_input", "toolInput", "input", "args"]) {
-    const found = commandFrom(record[key]);
-    if (found) return found;
-  }
-  return null;
+  const seen = new WeakSet<object>();
+  let nodes = 0;
+  const walk = (current: unknown, depth: number): string | null => {
+    if (depth > MAX_COMMAND_INPUT_DEPTH) {
+      throw new Error("OpenCode command input exceeds the maximum depth");
+    }
+    if (++nodes > MAX_COMMAND_INPUT_NODES) {
+      throw new Error("OpenCode command input exceeds the maximum element count");
+    }
+    if (typeof current === "string") return current;
+    if (Array.isArray(current)) {
+      return current.every((v) => typeof v === "string") ? current.join(" ") : null;
+    }
+    if (!current || typeof current !== "object") return null;
+    if (seen.has(current)) {
+      throw new Error("OpenCode command input contains a cycle");
+    }
+    seen.add(current);
+    const record = current as AnyRecord;
+    for (const key of ["command", "cmd", "CommandLine", "commandLine", "script"]) {
+      const found = walk(record[key], depth + 1);
+      if (found) return found;
+    }
+    for (const key of ["tool_input", "toolInput", "input", "args"]) {
+      const found = walk(record[key], depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+  return walk(value, 0);
 }
 
 function cwdFrom(value: unknown, fallback: string): string {
@@ -1218,50 +1249,128 @@ function cwdFrom(value: unknown, fallback: string): string {
   return fallback;
 }
 
-function textsFrom(value: unknown, out: string[]): void {
-  if (typeof value === "string") {
-    out.push(value);
-  } else if (Array.isArray(value)) {
-    for (const item of value) textsFrom(item, out);
-  } else if (value && typeof value === "object") {
-    for (const item of Object.values(value as AnyRecord)) textsFrom(item, out);
+// The guard is the authorization source, so a guard that cannot answer is a denial, not an
+// allow:  a timeout, a guard that will not start, and output we cannot read all reject, so a
+// hung or missing fleet-guard-hook never reads as authorization.  Nothing here resolves null
+// except a guard that answered and did not deny.
+const GUARD_TIMEOUT_MS = 5000;
+
+class GuardFailure extends Error {
+  constructor(message: string, readonly exitCode: number) {
+    super(message);
+    this.name = "GuardFailure";
   }
 }
 
 function runGuard(command: string, cwd: string): Promise<string | null> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    let terminateChild = () => {};
     try {
       const child = spawn(guardCommand, ["--format", "claude"], { stdio: ["pipe", "pipe", "ignore"] });
       let out = "";
-      const timer = setTimeout(() => {
-        child.kill();
-        resolve(null);
-      }, 5000);
-      child.on("error", () => {
-        clearTimeout(timer);
-        resolve(null);
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const terminate = () => {
+        if (!child.killed) child.kill("SIGTERM");
+      };
+      terminateChild = terminate;
+      const onParentExit = () => terminate();
+      const cleanup = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        process.off("exit", onParentExit);
+      };
+      const fail = (error: GuardFailure) => {
+        if (settled) return;
+        settled = true;
+        terminate();
+        cleanup();
+        reject(error);
+      };
+      const succeed = (reason: string | null) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(reason);
+      };
+      process.once("exit", onParentExit);
+      timer = setTimeout(() => {
+        fail(new GuardFailure(`fleet guard at ${guardCommand} timed out after ${GUARD_TIMEOUT_MS}ms`, 124));
+      }, GUARD_TIMEOUT_MS);
+      child.on("error", (error: Error) => {
+        const code = (error as NodeJS.ErrnoException).code === "ENOENT" ? 127 : 1;
+        fail(new GuardFailure(`fleet guard at ${guardCommand} failed to start: ${error.message}`, code));
       });
       child.stdout.on("data", (chunk: Buffer) => {
         out += chunk.toString();
       });
+      child.stdin.on("error", (error: Error) => {
+        fail(new GuardFailure(`fleet guard at ${guardCommand} input failed: ${error.message}`, 1));
+      });
       child.on("close", () => {
-        clearTimeout(timer);
+        if (settled) return;
         try {
           const body = JSON.parse(out) as AnyRecord;
+          if (!body || typeof body !== "object" || Array.isArray(body)) {
+            throw new Error("response is not an object");
+          }
           const hook = body.hookSpecificOutput as AnyRecord | undefined;
           const reason = hook?.permissionDecisionReason;
-          resolve(hook?.permissionDecision === "deny" && typeof reason === "string" ? reason : null);
-        } catch {
-          resolve(null);
+          succeed(
+            hook?.permissionDecision === "deny" && typeof reason === "string" ? reason : null,
+          );
+        } catch (error) {
+          fail(
+            new GuardFailure(
+              `fleet guard at ${guardCommand} returned invalid output: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              1,
+            ),
+          );
         }
       });
-      child.stdin.end(
-        JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd }),
+      child.stdin.end(JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd }));
+    } catch (error) {
+      terminateChild();
+      reject(
+        new GuardFailure(
+          `fleet guard at ${guardCommand} failed to start: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          127,
+        ),
       );
-    } catch {
-      resolve(null);
     }
   });
+}
+
+// Only command-shaped values are probed.  Free text carried in permission metadata (a title,
+// a path, an ID) is not a shell command, and sending it to the guard both risks denying a
+// call that is not a fleet clone and costs one child process per string.
+const MAX_GUARD_CANDIDATES = 8;
+
+function guardCandidates(hook: AnyRecord): string[] {
+  const candidates: string[] = [];
+  const pattern = hook.pattern;
+  if (typeof pattern === "string") {
+    candidates.push(pattern);
+  } else if (Array.isArray(pattern)) {
+    for (const item of pattern) if (typeof item === "string") candidates.push(item);
+  }
+  const metadata = hook.metadata;
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    for (const key of ["command", "cmd", "script"]) {
+      const value = (metadata as AnyRecord)[key];
+      if (typeof value === "string") candidates.push(value);
+    }
+  }
+  return candidates;
+}
+
+function denialKey(sessionID: unknown, callID: unknown): string | null {
+  if (typeof sessionID !== "string" || !sessionID) return null;
+  if (typeof callID !== "string" || !callID) return null;
+  return JSON.stringify([sessionID, callID]);
 }
 
 export const server = async (input: { directory?: string; worktree?: string }) => {
@@ -1271,11 +1380,30 @@ export const server = async (input: { directory?: string; worktree?: string }) =
       hookInput: { tool: string; sessionID: string; callID: string },
       output: { args: unknown },
     ) => {
-      const command = commandFrom(output.args);
+      let command: string | null;
+      try {
+        command = commandFrom(output.args);
+      } catch {
+        // Malformed or oversized tool input is not something the guard can rule on, and it
+        // is not something to allow either:  no command means no call proceeds.
+        const key = denialKey(hookInput.sessionID, hookInput.callID);
+        if (key) deniedCalls.set(key, "OpenCode command input could not be read");
+        throw new Error("OpenCode command input could not be read");
+      }
       if (!command) return;
-      const reason = await runGuard(command, cwdFrom(output.args, fallbackCwd));
+      let reason: string | null;
+      try {
+        reason = await runGuard(command, cwdFrom(output.args, fallbackCwd));
+      } catch (error) {
+        // The guard could not answer.  Deny: an unavailable guard is not authorization.
+        const message = error instanceof Error ? error.message : String(error);
+        const key = denialKey(hookInput.sessionID, hookInput.callID);
+        if (key) deniedCalls.set(key, message);
+        throw new Error(message);
+      }
       if (reason) {
-        deniedCalls.set(`${hookInput.sessionID}:${hookInput.callID}`, reason);
+        const key = denialKey(hookInput.sessionID, hookInput.callID);
+        if (key) deniedCalls.set(key, reason);
         throw new Error(reason);
       }
     },
@@ -1290,16 +1418,24 @@ export const server = async (input: { directory?: string; worktree?: string }) =
       },
       output: { status: "ask" | "deny" | "allow" },
     ) => {
-      if (hookInput.callID && deniedCalls.has(`${hookInput.sessionID}:${hookInput.callID}`)) {
+      const key = denialKey(hookInput.sessionID, hookInput.callID);
+      if (key && deniedCalls.has(key)) {
+        // Answering a denial consumes it, so a long-lived server does not retain one
+        // entry per denied call forever.
+        deniedCalls.delete(key);
         output.status = "deny";
         return;
       }
-      const candidates: string[] = [];
-      textsFrom(hookInput.pattern, candidates);
-      textsFrom(hookInput.metadata, candidates);
-      if (hookInput.title) candidates.push(hookInput.title);
-      for (const candidate of candidates) {
-        if (candidate && (await runGuard(candidate, fallbackCwd))) {
+      const hook = (hookInput ?? {}) as AnyRecord;
+      for (const candidate of guardCandidates(hook).slice(0, MAX_GUARD_CANDIDATES)) {
+        let reason: string | null;
+        try {
+          reason = await runGuard(candidate, fallbackCwd);
+        } catch (error) {
+          output.status = "deny";
+          return;
+        }
+        if (reason) {
           output.status = "deny";
           return;
         }
@@ -2267,7 +2403,7 @@ PLATFORMS: dict[str, Platform] = {
             "claude",
             "claude",
             "before_tool",
-            "*",
+            VIBE_SHELL_TOOL,
             ".vibe",
             VIBE_HOOKS_REL,
             supported=False,

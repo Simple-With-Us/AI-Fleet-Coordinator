@@ -54,6 +54,9 @@ __all__ = [
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = "fleet-seats.json"
 REGISTRY_FILENAME = "fleet-apps.json"
+# The largest second count datetime.timedelta can hold, so a ttlSeconds that loads is one
+# build_result can add to its clock without raising OverflowError.
+_MAX_TIMEDELTA_SECONDS = 86_399_999_913_599
 
 
 class ManifestError(ValueError):
@@ -113,11 +116,14 @@ def _enum(enum_type, value: object, what: str):
 def _int(value: object, what: str) -> int:
     """One integer from the manifest, or ManifestError naming the field.  A value the
     manifest cannot carry as an integer (a string, a list) is a malformed manifest, not a
-    crash out of the loader's documented ManifestError contract."""
-    try:
-        return int(value)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
+    crash out of the loader's documented ManifestError contract.  A bool is not an integer
+    here even though Python says so, and the value is bounded by the largest second count
+    ``datetime.timedelta`` can hold, so a rule cannot load and then crash ``build_result``."""
+    if isinstance(value, bool) or not isinstance(value, int):
         raise ManifestError("%s must be an integer, not %r" % (what, value)) from None
+    if not -_MAX_TIMEDELTA_SECONDS <= value <= _MAX_TIMEDELTA_SECONDS:
+        raise ManifestError("%s is out of range: %r" % (what, value))
+    return value
 
 
 def _str_tuple(value: object, what: str) -> tuple[str, ...]:
