@@ -14,6 +14,34 @@ from . import live as L
 
 UNIT = "agent-sync-listener.service"
 DEFAULT_PYTHON = "/usr/bin/python3"
+MIN_PYTHON = (3, 11)
+
+
+def interpreter_version(python: str) -> tuple[int, int] | None:
+    """The candidate interpreter's major.minor, or None when it cannot be probed."""
+    try:
+        result = subprocess.run(
+            [python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        major, minor = result.stdout.strip().split(".")
+        return int(major), int(minor)
+    except ValueError:
+        return None
+
+
+def too_old(python: str) -> bool:
+    """True only when the interpreter is confirmed older than MIN_PYTHON; an unprobeable one is left alone."""
+    version = interpreter_version(python)
+    return version is not None and version < MIN_PYTHON
 
 
 def unit_path(home: str) -> str:
@@ -93,9 +121,15 @@ def install(
         os.path.expanduser(env.get(L.ENV_STATE_DIR) or os.path.join(home, ".agent-sync"))
     )
     config = os.path.abspath(L.config_path(root, env))
-    python = python or (DEFAULT_PYTHON if os.access(DEFAULT_PYTHON, os.X_OK) else sys.executable)
+    python = python or (
+        DEFAULT_PYTHON
+        if os.access(DEFAULT_PYTHON, os.X_OK) and not too_old(DEFAULT_PYTHON)
+        else sys.executable
+    )
     if not os.access(python, os.X_OK):
         out.write(f"note: {python} is not executable; pass --python PATH (3.11 or newer)\n")
+    elif too_old(python):
+        out.write(f"note: {python} is older than Python 3.11; pass --python PATH (3.11 or newer)\n")
     data = unit_text(home, python, program or launchd.program_path(home), root=root, config=config)
     unit_dir = os.path.dirname(target)
     probe = unit_dir

@@ -30,7 +30,7 @@ class UnitTests(unittest.TestCase):
             out = io.StringIO()
             with patch.object(systemd.subprocess, "run") as run:
                 systemd.install({}, home, out)
-                run.assert_not_called()
+                self.assertFalse([c for c in run.call_args_list if "systemctl" in str(c)])
             config = Path(home, ".agent-sync/listener.toml")
             self.assertIn('instance = "mac"', config.read_text())
             self.assertNotIn("[seat.", config.read_text())
@@ -85,6 +85,25 @@ class UnitTests(unittest.TestCase):
             self.assertIn("is not executable", out.getvalue())
         with self.assertRaises(ValueError):
             systemd.unit_text("/home/bad\nRestart=no", "/usr/bin/python3", "/tool")
+
+    def test_old_interpreter_falls_back_or_is_noted(self):
+        with tempfile.TemporaryDirectory() as home:
+            with patch.object(systemd, "too_old", return_value=True):
+                systemd.install({}, home, io.StringIO())
+            self.assertIn(systemd.quote(sys.executable), Path(systemd.unit_path(home)).read_text())
+            out = io.StringIO()
+            with patch.object(systemd, "too_old", return_value=True):
+                systemd.install({}, home, out, python="/usr/bin/python3")
+            self.assertIn("older than Python 3.11", out.getvalue())
+        with patch.object(
+            systemd.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "3.9\n", "")
+        ):
+            self.assertEqual(systemd.interpreter_version("/usr/bin/python3"), (3, 9))
+            self.assertTrue(systemd.too_old("/usr/bin/python3"))
+        for error in (OSError("private"), subprocess.TimeoutExpired("python3", 10)):
+            with patch.object(systemd.subprocess, "run", side_effect=error):
+                self.assertIsNone(systemd.interpreter_version("/usr/bin/python3"))
+                self.assertFalse(systemd.too_old("/usr/bin/python3"))
 
     def test_dry_run_writes_nothing(self):
         with tempfile.TemporaryDirectory() as home:
