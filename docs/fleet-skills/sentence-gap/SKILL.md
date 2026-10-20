@@ -67,8 +67,9 @@ here as `\s{2}` so this sentence survives its own advice — matched nothing on 
 single-space pattern `([.!?]) (?=...)` is no better, because it matches nothing on text that kept
 its two spaces.  Both exit `0` and post with no gap.  The `(?<![0-9])` lookbehind protects a
 numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tolerates a tab.  The
-lookahead class skips a lowercase follower, so `e.g. this` and lower-case domains keep their plain
-space.
+lookahead admits only `[A-Z0-9"*`#@]`, so it skips *every* follower outside that class and not
+only a lowercase one:  `e.g. this` and lower-case domains keep their plain space, and so does a
+follower that is a quote, which is the limitation recorded below.
 
 **Known limitations — the pattern is a heuristic, not a dictionary.**  Three deliberate costs:
 
@@ -83,9 +84,14 @@ space.
   sentence end inside a *single*-quoted or curly-quoted span, as in
   `'Quoted sentence.'  Next sentence.`, is not one of them:  the perl run's group cannot consume
   the quote, so no gap is made, and neither check below sees it either, because both carry the
-  same group.  A body with that shape passes both checks and reaches GitHub with no gap, so fix
-  that one by hand before `gh pr create` or `gh pr comment`.  The Zulip path needs no hand fix:
-  `agent-sync` runs its own outbound converter on the way out, whose closing class carries `'`
+  same group.  The neighbouring shape is missed for the other reason and is just as silent:  in
+  `First.  Second.  'Quoted sentence.'` the follower is a quote, which the perl run's lookahead
+  does not admit and the leftover check's `[A-Z"]` follower class does not either, so only the
+  first gap is made, the count check still prints 1 (> 0, so it passes) and the leftover check
+  still prints 0 (so it passes), and the second gap reaches GitHub missing.  A body with either
+  shape passes both checks and reaches GitHub with no gap, so fix those gaps by hand before
+  `gh pr create` or `gh pr comment`.  The Zulip path needs no hand fix:  `agent-sync` runs its own
+  outbound converter on the way out, whose closing class carries `'`
   and the curly quotes, and that makes the gap.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
