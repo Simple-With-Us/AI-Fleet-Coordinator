@@ -56,6 +56,12 @@ PR_NUMBERS="${PR_NUMBERS:-${APPLE_NOTES_PR:-}}"
 HTML_PATH=""
 TITLE=""
 SESSION_ARG=""
+# How long an AppleEvent to Notes may run.  AppleScript's own default is two minutes, and a
+# body the size of the Background Jobs Master List needs longer, so every "tell application
+# \"Notes\"" below is wrapped in "with timeout of NOTES_APPLE_EVENT_TIMEOUT_S seconds".  A
+# caller that runs this script must allow more than this, or it kills the write while
+# osascript is still working and the later completion creates a duplicate note (AFC-436).
+NOTES_APPLE_EVENT_TIMEOUT_S="${NOTES_APPLE_EVENT_TIMEOUT_S:-900}"
 
 # Env overrides (agents may set these explicitly).
 [[ "${APPLE_NOTES_PIN:-0}" == "1" || "${APPLE_NOTES_PIN:-}" == "true" ]] && WANT_PIN=1
@@ -944,7 +950,7 @@ set htmlBody to read htmlPath as «class utf8»
 --- A large body takes longer than the default two-minute AppleEvent timeout:
 --- the master list is a quarter of a megabyte of markdown, and the write timed
 --- out with "AppleEvent timed out. (-1712)" before this.
-with timeout of 900 seconds
+with timeout of ${NOTES_APPLE_EVENT_TIMEOUT_S} seconds
 tell application "Notes"
   set codingFolder to missing value
   try
@@ -981,7 +987,7 @@ else
 set htmlPath to POSIX file "$TMP"
 set htmlBody to read htmlPath as «class utf8»
 
-with timeout of 900 seconds
+with timeout of ${NOTES_APPLE_EVENT_TIMEOUT_S} seconds
 tell application "Notes"
   set codingFolder to missing value
   try

@@ -68,7 +68,12 @@ UPLOAD_MAX = 1024 * 1024
 INLINE_JSON_MAX = 8500  # an envelope longer than this (as JSON) travels as an uploaded .md file
 ENVELOPE_PARSE_MAX = 20_000  # the longest message body the parser looks at
 SCRIPT_NAME = "apple-notes-coding.sh"
-SCRIPT_TIMEOUT_S = 120.0
+#  The helper wraps its Notes calls in a 900 s AppleEvent timeout (NOTES_APPLE_EVENT_TIMEOUT_S in
+#  scripts/apple-notes-coding.sh),  because a body the size of the master list takes longer than
+#  AppleScript's two-minute default.  This cap has to sit above that timeout:  a cap below it
+#  kills the write while osascript is still working,  and the later completion creates a second
+#  note.  scripts/test_apple_notes_timeout.py holds the two together (AFC-436).
+SCRIPT_TIMEOUT_S = 960.0
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 UPLOAD_PATH_RE = re.compile(r"^/user_uploads/[A-Za-z0-9_./-]{1,200}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
