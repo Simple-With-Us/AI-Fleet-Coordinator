@@ -88,6 +88,10 @@ Finished CLI exit codes are pinned now:  0 for verdict `PASS`, 1 for verdict `FA
 
 `credential_key_present` is how the fleet reaches a credential now that `~/.secrets` is retired (AFC-359).  It asks the `fleet-secrets` CLI for the KEY NAMES in one secret-store folder, using the `names` verb, which prints names and never values, so a secret cannot reach a result, a reason or a log by construction.  A key that is absent is step 3 (`MISSING`);  a secret store that cannot be reached, because the CLI is missing, the machine identity is gone, the call timed out or the output was unreadable, is step 4 (`UNKNOWN` with a failing reason code).  The listing is cached on the run context, so one status run asks the secret store once per folder rather than once per rule.
 
+The example above uses a placeholder for the retired file's path on purpose:  the real path is in the
+manifest,  which is generated from the registry,  and a concrete home-local path in a public
+document is both a disclosure and a stale literal the moment the file is retired.
+
 The `credential_stat` check keeps its own job:  it reports the stat data of a file, and it is what a rule that says a RETIRED file must be GONE uses, because `expected.present: false` inverts it.
 
 Hash rules are exact, so two implementations agree byte for byte.  `file_hash` is the lowercase hex SHA-256 of the raw file bytes.  `marked_block_hash` is the lowercase hex SHA-256 of the marked block body as `fleet_lanes.marked_block.block_body` returns it (CR stripped, markers excluded), encoded as the lines joined by `\n` with one trailing `\n`, in UTF-8.  A file with malformed markers is step 4 (`UNKNOWN`, `unparseable`), never a guessed hash.  This package reimplements that body extraction rather than importing `fleet_lanes`, for the packaging reason in section 12, and a test must pin the two implementations to the same digest on a shared fixture.
@@ -183,7 +187,7 @@ One seat entry, excerpted (a real file must carry every live seat, per section 7
           "id": "claude-permissions-zulip-retired-file",
           "kind": "permissions",
           "platforms": ["claude"],
-          "check": {"type": "credential_stat", "target": "~/.secrets/Zulip/Claude-zuliprc", "detail": "ZULIP_CLAUDE"},
+          "check": {"type": "credential_stat", "target": "<the-retired-flat-credential-file>", "detail": "ZULIP_CLAUDE"},
           "expected": {"description": "The retired flat Zulip credential file is gone, stat only", "present": false},
           "proofLevel": "L0",
           "ownerSeat": "CLAUDE",
