@@ -61,8 +61,13 @@ Project generation and shell validation do not compile the app:
 
 ```sh
 bash -n muster/script/build_and_run.sh
-python3 -m unittest discover -s muster/script -t muster/script -v
 xcodegen generate --spec muster/project.yml
+```
+
+The install transaction's synthetic tests touch no keychain, app or process, so they run anywhere:
+
+```sh
+python3 -m unittest discover -s muster/script -t muster/script -v
 ```
 
 After a successful `--verify` run, independently inspect the installed signature and bundle metadata:
