@@ -1266,5 +1266,14 @@ class BridgeTests(unittest.TestCase):
         session._answer_request.assert_not_called()
 
 
+    def test_restored_jobs_do_not_cross_working_directory_binding(self):
+        args = make_args(["--allow-sender", "ou_ok"], state_dir=self.state_dir.name)
+        bridge = bridge_mod.Bridge(args)
+        bridge._handle({"message_id": "bound", "chat_id": "chat", "sender_id": "ou_ok", "content": "queued task"})
+        args.cwd = args.cwd + "/different"
+        restored = bridge_mod.Bridge(args)
+        self.assertTrue(restored.turns.empty())
+        self.assertFalse(restored._claim("bound"))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

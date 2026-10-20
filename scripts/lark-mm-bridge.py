@@ -715,6 +715,7 @@ class Bridge:
                 not in ("queued", "reply")
                 or getattr(self, "jobs", {}).get(message_id, {}).get("attempt", 0)
                 >= MAX_REPLY_ATTEMPTS
+                or getattr(self, "jobs", {}).get(message_id, {}).get("cwd") != self.args.cwd
             ):
                 return False
             if state == "unknown":
