@@ -58,7 +58,7 @@ from .. import zulip_cli as ZCLI
 from .. import zulip_ops as OPS
 from ..idem import PENDING_FRESH, IdemStore
 from ..state import State
-from ..textfmt import sentence_gap
+from ..textfmt import fix_outbound
 from . import fleetlink_tools as FLEETLINK
 from . import guide as GUIDE
 from . import linear_tools as LINEAR
@@ -654,6 +654,7 @@ class Tools:
         owner_clients: Iterable[str] = (),
         notes_consumer: str = "CLAUDE",
         notes_consumer_label: str = "",
+        notes_consumer_resolver: Callable[[], tuple[str, str]] | None = None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda text: None,
@@ -673,12 +674,13 @@ class Tools:
         self._call_state_key: str | None = None
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
-        self.notes_consumer = (
-            notes_consumer  # [notes_relay] seat:  the only bot whose reactions and replies count
-        )
-        self.notes_consumer_label = (
-            notes_consumer_label  # where the knob's answer came from (notes.relay_consumer)
-        )
+        # [notes_relay] seat:  the only bot whose reactions and replies count, and where the knob's answer came from
+        # (notes.relay_consumer).  With a resolver both are read on first use, not at start:  the knob fetch can take
+        # seconds (Infisical through the CLI), and most sessions never call a Notes tool.
+        self._notes_consumer = notes_consumer
+        self._notes_consumer_label = notes_consumer_label
+        self._notes_consumer_resolver = notes_consumer_resolver
+        self._notes_consumer_lock = threading.Lock()
         self.clock = clock
         self.sleep = sleep
         self.log = log
@@ -1045,7 +1047,7 @@ class Tools:
         # The hash is of the text Zulip stores:  the client converts sentence gaps to U+00A0 plus a
         # space on the way out (textfmt, AFC #392), and the reconcile read compares stored content.
         fields = {
-            "body_sha": _sha(sentence_gap(body).strip()),
+            "body_sha": _sha(fix_outbound(body, limit=10000)[0].strip()),
             "channel": channel,
             "topic": topic,
             "channel_id": channel_id,
@@ -1115,7 +1117,12 @@ class Tools:
             raise error from None
         self._idem_set(row_key, state="sent", id=message_id, channel_id=channel_id)
         self._remember_posted(message_id)
-        return {"id": message_id, "channel_id": channel_id, "duplicate": False}
+        result: dict[str, Any] = {"id": message_id, "channel_id": channel_id, "duplicate": False}
+        # Owner 2026-10-19:  say what the outbound fixes changed, so the agent learns the fleet format.
+        reformatted = fix_outbound(body, limit=10000)[1]
+        if reformatted:
+            result["reformatted"] = reformatted
+        return result
 
     def _write_result(self, result: Mapping[str, Any]) -> dict[str, Any]:
         return self.ok(json.dumps(dict(result)), result)
@@ -1532,6 +1539,7 @@ class Tools:
         )
         return self._write_result(
             {"id": result["id"], "user_ids": ids, "duplicate": result["duplicate"]}
+            | ({"reformatted": result["reformatted"]} if result.get("reformatted") else {})
         )
 
     # ---- messages -------------------------------------------------------------------------
@@ -2242,6 +2250,36 @@ class Tools:
 
     def _tool_notes_unpin(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._notes_write("unpin", args)
+
+    def _resolve_notes_consumer(self) -> None:
+        if self._notes_consumer_resolver is None:
+            return
+        with self._notes_consumer_lock:
+            resolver, self._notes_consumer_resolver = self._notes_consumer_resolver, None
+            if resolver is None:
+                return
+            try:
+                self._notes_consumer, self._notes_consumer_label = resolver()
+            except Exception:  # noqa: BLE001 - notes.relay_consumer never raises;  keep the default if it ever does
+                self._notes_consumer_label = "default %s (resolver failed)" % self._notes_consumer
+
+    @property
+    def notes_consumer(self) -> str:
+        self._resolve_notes_consumer()
+        return self._notes_consumer
+
+    @notes_consumer.setter
+    def notes_consumer(self, value: str) -> None:
+        self._notes_consumer, self._notes_consumer_resolver = value, None
+
+    @property
+    def notes_consumer_label(self) -> str:
+        self._resolve_notes_consumer()
+        return self._notes_consumer_label
+
+    @notes_consumer_label.setter
+    def notes_consumer_label(self, value: str) -> None:
+        self._notes_consumer_label, self._notes_consumer_resolver = value, None
 
     def _relay_consumer(self, user_id: Any) -> bool:
         """Is this Zulip user the configured relay consumer's bot?  #notes-relay is public and every fleet bot can

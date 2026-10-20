@@ -8,8 +8,8 @@
 // Pure module:  the caller hands in `fetch` and `sleep`, so node tests run it
 // against a fake Zulip.
 
-import { ApiError, NetworkError } from "./contract.js";
-import { sentenceGap } from "./textfmt.js";
+import { ApiError, MAX_CONTENT_LENGTH, NetworkError } from "./contract.js";
+import { fixOutbound } from "./textfmt.js";
 
 export const REALM = "https://simplewithus.zulipchat.com";
 export const TIMEOUT_MS = 15_000;
@@ -109,7 +109,7 @@ export class ZulipClient {
     if (!pathAllowed(method, path)) throw new ApiError("bad API path", { status: 0, code: "BAD_PATH" });
     let sendParams = params ?? {};
     if ((method === "POST" || method === "PATCH") && typeof sendParams.content === "string" && OUTBOUND_TEXT_PATH.test(path)) {
-      sendParams = { ...sendParams, content: sentenceGap(sendParams.content) };
+      sendParams = { ...sendParams, content: fixOutbound(sendParams.content, { limit: MAX_CONTENT_LENGTH })[0] };
     }
     const encoded = encodeParams(sendParams);
     // GET carries its parameters in the query;  DELETE in the body and the query too (zulip.py does the

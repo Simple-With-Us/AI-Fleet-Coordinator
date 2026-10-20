@@ -10,6 +10,8 @@ What a job can rely on:
     the same process (``refresh()`` forces it for a long-running one).  An export that holds
     none of the registered names counts as a failed fetch (reason ``empty``) while a usable
     copy still has knobs, so a blank answer cannot erase a pause.
+  * A failed fetch leaves a 60 second marker beside the copy (lkg.py), and other processes
+    skip their own fetch inside that window, so a broken auth path is paid for once.
   * Non-secret knobs fall back, in order, to the on-disk last-known-good copy (marked
     stale) and then to the registry default.  A read never raises for a non-secret knob.
   * A secret has no default and no disk copy:  if it cannot be fetched, ``get()`` raises
@@ -19,12 +21,13 @@ What a job can rely on:
     answer.  A local value that would widen it is ignored and the report says so.
   * Only names in the registry can be read.  Logs carry key names and short reasons only.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import threading
-from typing import Any, Dict, Optional
+from typing import Any
 
 from . import lkg, source, values
 from .registry import BY_NAME, REGISTRY, Spec
@@ -50,24 +53,31 @@ class SecretUnavailable(KnobError):
 class Knob:
     """The answer for one knob.  ``repr()`` never shows the value."""
 
-    __slots__ = ("name", "value", "source", "stale", "reason", "narrowed", "local_ignored")
+    __slots__ = ("local_ignored", "name", "narrowed", "reason", "source", "stale", "value")
 
-    def __init__(self, name: str, value: Any, source_: str, stale: bool = False,
-                 reason: Optional[str] = None, narrowed: bool = False,
-                 local_ignored: bool = False) -> None:
+    def __init__(
+        self,
+        name: str,
+        value: Any,
+        source_: str,
+        stale: bool = False,
+        reason: str | None = None,
+        narrowed: bool = False,
+        local_ignored: bool = False,
+    ) -> None:
         self.name = name
         self.value = value
-        self.source = source_          # infisical, lkg or default
+        self.source = source_  # infisical, lkg or default
         self.stale = stale
-        self.reason = reason           # unset, invalid, unreachable:<token>, lkg-<note>
+        self.reason = reason  # unset, invalid, unreachable:<token>, lkg-<note>
         self.narrowed = narrowed
         self.local_ignored = local_ignored
 
     def __repr__(self) -> str:
         return f"Knob({self.name}, source={self.source}, stale={self.stale})"
 
-    def describe(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"source": self.source, "stale": self.stale}
+    def describe(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"source": self.source, "stale": self.stale}
         if self.reason:
             out["reason"] = self.reason
         if self.narrowed:
@@ -81,12 +91,13 @@ class _State:
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.loaded = False
-        self.fetch = "not-attempted"          # ok, failed or not-attempted
-        self.reason: Optional[str] = None
-        self.live: Dict[str, str] = {}
-        self.lkg: Optional[dict] = None
+        self.fetch = "not-attempted"  # ok, failed or not-attempted
+        self.reason: str | None = None
+        self.live: dict[str, str] = {}
+        self.lkg: dict | None = None
         self.lkg_note = "not-read"
-        self.answers: Dict[str, Knob] = {}
+        self.answers: dict[str, Knob] = {}
+        self.force = False  # refresh():  fetch even inside the negative cache
 
 
 _state = _State()
@@ -98,15 +109,19 @@ def reset_for_tests() -> None:
 
 
 def refresh() -> None:
-    """Forget the fetch so the next read fetches again (for a long-running process)."""
+    """Forget the fetch so the next read fetches again (for a long-running process).
+
+    A deliberate retry, so it also ignores a sibling's recent-failure marker."""
     reset_for_tests()
+    _state.force = True
 
 
-def _spec(name: str, kind: Optional[str]) -> Spec:
+def _spec(name: str, kind: str | None) -> Spec:
     spec = BY_NAME.get(name)
     if spec is None:
-        raise KnobError(f"unknown knob {name!r}:  add it to fleet_knobs/registry.py "
-                        "and INFISICAL.md first")
+        raise KnobError(
+            f"unknown knob {name!r}:  add it to fleet_knobs/registry.py and INFISICAL.md first"
+        )
     if kind is not None and kind != spec.kind:
         raise KnobError(f"knob {name} is kind {spec.kind}, not {kind}")
     return spec
@@ -123,28 +138,61 @@ def _load() -> None:
             st.loaded = False
             raise KnobError(refusal)
         previous, previous_note = lkg.read()
+        recent = None if st.force else _recent_failure()
+        if recent is not None:
+            # A sibling process failed moments ago:  skip the fetch (fail fast) and use the copy.
+            st.fetch = "failed"
+            st.reason = "recent-" + recent
+            st.lkg, st.lkg_note = previous, previous_note
+            log.info(
+                "fleet_knobs: skipping the Infisical fetch, which failed %s seconds ago or "
+                "less (%s)",
+                int(lkg.FAILURE_TTL_SECONDS),
+                recent,
+            )
+            return
         try:
             live = source.fetch([s.name for s in REGISTRY])
             _refuse_empty_export(live, previous)
             st.live = live
             st.fetch = "ok"
             st.lkg, st.lkg_note = previous, previous_note
-        except Exception as exc:                      # noqa: BLE001 - a read must not crash a job
+        except Exception as exc:  # noqa: BLE001 - a read must not crash a job
             st.fetch = "failed"
-            st.reason = (exc.reason if isinstance(exc, source.FetchFailed)
-                         else "error-" + type(exc).__name__)
-            log.warning("fleet_knobs: Infisical fetch failed (%s);  using the last-known-good "
-                        "copy where there is one", st.reason)
+            st.reason = (
+                exc.reason if isinstance(exc, source.FetchFailed) else "error-" + type(exc).__name__
+            )
+            log.warning(
+                "fleet_knobs: Infisical fetch failed (%s);  using the last-known-good "
+                "copy where there is one",
+                st.reason,
+            )
             st.lkg, st.lkg_note = previous, previous_note
+            try:
+                lkg.record_failure(st.reason)
+            except Exception:  # noqa: BLE001 - the marker is a convenience
+                pass
             return
         try:
+            lkg.clear_failure()
+        except Exception:  # noqa: BLE001 - the marker is a convenience
+            pass
+        try:
             _save_lkg(st)
-        except Exception as exc:                      # noqa: BLE001 - the copy is a convenience
-            log.warning("fleet_knobs: could not update the last-known-good copy (%s)",
-                        type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 - the copy is a convenience
+            log.warning(
+                "fleet_knobs: could not update the last-known-good copy (%s)", type(exc).__name__
+            )
 
 
-def _refuse_empty_export(live: Dict[str, str], previous: Optional[dict]) -> None:
+def _recent_failure() -> str | None:
+    try:
+        return lkg.recent_failure()
+    except Exception:  # noqa: BLE001 - an unreadable marker is ignored
+        return None
+
+
+def _refuse_empty_export(live: dict[str, str], previous: dict | None) -> None:
     """An export with none of our names in it is not proof that every knob was deleted.
 
     An empty body with exit 0 is also what a wrong path, a project with nothing in it or a
@@ -164,13 +212,13 @@ def _refuse_empty_export(live: Dict[str, str], previous: Optional[dict]) -> None
 def _save_lkg(st: _State) -> None:
     """After a good fetch, refresh the on-disk copy with the non-secret knobs."""
     previous, _note = lkg.read()
-    fresh: Dict[str, str] = {}
+    fresh: dict[str, str] = {}
     for spec in REGISTRY:
         if spec.secret:
             continue
         raw = st.live.get(spec.name)
         if raw is None or not raw.strip():
-            continue                                  # unset in Infisical:  drop it
+            continue  # unset in Infisical:  drop it
         ok, _typed = values.lenient(spec, raw)
         if ok:
             fresh[spec.name] = raw
@@ -185,13 +233,19 @@ def _save_lkg(st: _State) -> None:
         lkg.write(fresh, secrets)
     except (OSError, ValueError) as exc:
         offender = next(
-            (k for k, v in fresh.items()
-             for s in secrets if s and len(s) >= 8
-             and s.encode("utf-8") in json.dumps({k: v}).encode("utf-8")),
-            None)
-        log.warning("fleet_knobs: could not write the last-known-good copy (%s)%s",
-                    type(exc).__name__,
-                    f"; a secret value is a substring of {offender}" if offender else "")
+            (
+                k
+                for k, v in fresh.items()
+                for s in secrets
+                if s and len(s) >= 8 and s.encode("utf-8") in json.dumps({k: v}).encode("utf-8")
+            ),
+            None,
+        )
+        log.warning(
+            "fleet_knobs: could not write the last-known-good copy (%s)%s",
+            type(exc).__name__,
+            f"; a secret value is a substring of {offender}" if offender else "",
+        )
 
 
 def _coerce_default(spec: Spec, default: Any) -> Any:
@@ -200,16 +254,25 @@ def _coerce_default(spec: Spec, default: Any) -> Any:
     if default is _UNSET or default is None:
         return base
     try:
-        typed = (default if spec.kind == "str" and isinstance(default, str)
-                 else values.parse(spec, default))
+        typed = (
+            default
+            if spec.kind == "str" and isinstance(default, str)
+            else values.parse(spec, default)
+        )
     except ValueError:
         raise KnobError(f"the default given for {spec.name} is not a valid {spec.kind}") from None
     narrowed, _n, _i = values.narrow(spec, base, typed)
     return narrowed
 
 
-def resolve(name: str, default: Any = _UNSET, kind: Optional[str] = None, *,
-            local: Any = None, stop: bool = False) -> Knob:
+def resolve(
+    name: str,
+    default: Any = _UNSET,
+    kind: str | None = None,
+    *,
+    local: Any = None,
+    stop: bool = False,
+) -> Knob:
     """The full answer for `name`.  `get()` returns just ``.value``."""
     spec = _spec(name, kind)
     if spec.secret:
@@ -246,8 +309,9 @@ def _from_sources(spec: Spec, base_default: Any) -> Knob:
         if ok:
             return Knob(spec.name, typed, "lkg", stale=True, reason=reason)
         return Knob(spec.name, base_default, "default", stale=True, reason=reason)
-    return Knob(spec.name, base_default, "default", stale=True,
-                reason=f"{reason},lkg-{st.lkg_note}")
+    return Knob(
+        spec.name, base_default, "default", stale=True, reason=f"{reason},lkg-{st.lkg_note}"
+    )
 
 
 def _apply_local(spec: Spec, knob: Knob, local: Any, stop: bool) -> Knob:
@@ -287,8 +351,14 @@ def _resolve_secret(spec: Spec) -> Knob:
         return knob
 
 
-def get(name: str, default: Any = _UNSET, kind: Optional[str] = None, *,
-        local: Any = None, stop: bool = False) -> Any:
+def get(
+    name: str,
+    default: Any = _UNSET,
+    kind: str | None = None,
+    *,
+    local: Any = None,
+    stop: bool = False,
+) -> Any:
     """The value of knob `name`.
 
     `default` may only narrow the registry default, `kind` is checked against the registry,
@@ -298,14 +368,14 @@ def get(name: str, default: Any = _UNSET, kind: Optional[str] = None, *,
     return resolve(name, default, kind, local=local, stop=stop).value
 
 
-def report() -> Dict[str, Any]:
+def report() -> dict[str, Any]:
     """What this process learned, for a job's report:  names, sources and the stale flag.
 
     ``stale`` is true when any answer came from the last-known-good copy.  It carries no
     values, so it is safe to write into a report, a log or a digest."""
     st = _state
     with st.lock:
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "schema": 1,
             "fetch": st.fetch,
             "stale": any(k.stale for k in st.answers.values()),

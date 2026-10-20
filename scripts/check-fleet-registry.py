@@ -18,6 +18,7 @@ archived (Linear is the tracker), so nothing checks a live effort log or
 EFFORT-LOG-PROTOCOL.md any more; `liveBoard` in the registry is an optional
 record of where an app's archived log lives.
 """
+
 from __future__ import annotations
 
 import json
@@ -28,9 +29,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from public_activity_repos import PUBLIC_REPOS  # noqa: E402
-from agent_sync.identity import GROK_ALIAS_PATTERN, SeatRegistryError, parse_seat_registry  # noqa: E402
-from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name  # noqa: E402
+from agent_sync.identity import GROK_ALIAS_PATTERN, SeatRegistryError, parse_seat_registry
+from agent_sync.zulip import DEFAULT_CHANNEL, REALM, credential_file_name
+from public_activity_repos import PUBLIC_REPOS
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "fleet-apps.json"
@@ -66,7 +67,9 @@ def zulip_errors(data: dict) -> list[str]:
     """
     errors: list[str] = []
     if data.get("zulipRealm") != REALM:
-        errors.append(f"zulipRealm {data.get('zulipRealm')!r} must be {REALM!r} (scripts/agent_sync/zulip.py REALM)")
+        errors.append(
+            f"zulipRealm {data.get('zulipRealm')!r} must be {REALM!r} (scripts/agent_sync/zulip.py REALM)"
+        )
     if data.get("zulipChannel") != DEFAULT_CHANNEL:
         errors.append(
             f"zulipChannel {data.get('zulipChannel')!r} must be {DEFAULT_CHANNEL!r} "
@@ -86,13 +89,21 @@ def zulip_errors(data: dict) -> list[str]:
         alias = seat.get("aliasOf")
         if alias is not None:
             if not seat.get("retired"):
-                errors.append(f"seat {tag} has aliasOf {alias!r} but is not retired; an alias is always retired")
+                errors.append(
+                    f"seat {tag} has aliasOf {alias!r} but is not retired; an alias is always retired"
+                )
             if alias not in live:
-                errors.append(f"seat {tag} is an alias of {alias!r}, which is not a live seat in fleet-apps.json")
+                errors.append(
+                    f"seat {tag} is an alias of {alias!r}, which is not a live seat in fleet-apps.json"
+                )
         if seat.get("retired") and (email or code):
-            errors.append(f"seat {tag} is retired and must not carry a Zulip bot (retired seats have none)")
+            errors.append(
+                f"seat {tag} is retired and must not carry a Zulip bot (retired seats have none)"
+            )
         if bool(email) != bool(code):
-            errors.append(f"seat {tag} must carry zulipBotEmail and zulipFileCode together, or neither")
+            errors.append(
+                f"seat {tag} must carry zulipBotEmail and zulipFileCode together, or neither"
+            )
         if code and seat.get("tag") and code != credential_file_name(tag).removesuffix("-zuliprc"):
             errors.append(
                 f"seat {tag} zulipFileCode {code!r} disagrees with the agent-sync file-name rule "
@@ -101,10 +112,14 @@ def zulip_errors(data: dict) -> list[str]:
         if email:
             match = BOT_EMAIL_RE.match(email)
             if not match or match.group("host") != host:
-                errors.append(f"seat {tag} zulipBotEmail {email!r} must look like <short-name>-bot@{host}")
+                errors.append(
+                    f"seat {tag} zulipBotEmail {email!r} must look like <short-name>-bot@{host}"
+                )
             elif email.split("@", 1)[0].endswith("-bot-bot"):
                 # Zulip appends -bot itself; a short name typed as "codex-bot" made codex-bot-bot@ (2026-10-07).
-                errors.append(f"seat {tag} zulipBotEmail {email!r} ends in -bot-bot; the short name must not end in -bot")
+                errors.append(
+                    f"seat {tag} zulipBotEmail {email!r} ends in -bot-bot; the short name must not end in -bot"
+                )
             elif email in emails:
                 errors.append(f"seat {tag} and seat {emails[email]} share the Zulip bot {email}")
             else:
@@ -135,34 +150,50 @@ def seat_apps_errors(data: dict) -> list[str]:
     for key in ("bySeat", "extraSeats"):
         for tag in apps[key]:
             if tag != tag.upper():
-                errors.append(f"seatApps.{key} key {tag!r} must be written upper case ({tag.upper()!r})")
+                errors.append(
+                    f"seatApps.{key} key {tag!r} must be written upper case ({tag.upper()!r})"
+                )
     for tag in sorted(live - set(parsed.by_seat)):
-        errors.append(f"live seat {tag} has no app in seatApps.bySeat (every non-retired seat needs one;  "
-                      "scripts/onboard-new-agent.sh --app adds it)")
+        errors.append(
+            f"live seat {tag} has no app in seatApps.bySeat (every non-retired seat needs one;  "
+            "scripts/onboard-new-agent.sh --app adds it)"
+        )
     for tag in sorted(set(parsed.by_seat) - live):
         reason = "is retired" if tag in rows else "is not a row of seats"
-        errors.append(f"seatApps.bySeat lists {tag}, which {reason};  bySeat covers live seats only")
+        errors.append(
+            f"seatApps.bySeat lists {tag}, which {reason};  bySeat covers live seats only"
+        )
     for tag in sorted(set(parsed.extra) & rows):
-        errors.append(f"seatApps.extraSeats lists {tag}, which has a row in seats;  a seat is in bySeat or "
-                      "extraSeats, never both")
+        errors.append(
+            f"seatApps.extraSeats lists {tag}, which has a row in seats;  a seat is in bySeat or "
+            "extraSeats, never both"
+        )
     for tag in sorted(set(parsed.by_seat) & set(parsed.extra)):
         errors.append(f"seat {tag} is in both seatApps.bySeat and seatApps.extraSeats")
     for tag in sorted(rows):
         for pattern in parsed.patterns:
             if pattern.regex.fullmatch(tag.upper()):
-                errors.append(f"seat {tag} has a row in seats but also matches seatApps.patterns {pattern.match};  "
-                              "a pattern is for tags that have no row")
+                errors.append(
+                    f"seat {tag} has a row in seats but also matches seatApps.patterns {pattern.match};  "
+                    "a pattern is for tags that have no row"
+                )
     host = urlparse(REALM).hostname or ""
     for item in apps["patterns"]:
         email = item.get("zulipEmail")
         match = item["match"]
         if email is None:
             continue
-        probe = email.replace("<role>", "x") if isinstance(email, str) and email.count("<role>") == 1 else ""
+        probe = (
+            email.replace("<role>", "x")
+            if isinstance(email, str) and email.count("<role>") == 1
+            else ""
+        )
         found = BOT_EMAIL_RE.match(probe)
         if not found or found.group("host") != host:
-            errors.append(f"seatApps.patterns {match} zulipEmail {email!r} must be a <role>-bot@{host} address "
-                          "with exactly one <role>")
+            errors.append(
+                f"seatApps.patterns {match} zulipEmail {email!r} must be a <role>-bot@{host} address "
+                "with exactly one <role>"
+            )
     return errors
 
 
@@ -182,7 +213,9 @@ def alias_pattern_errors(seats: list[dict]) -> list[str]:
             errors.append(f"seat {tag} aliasPattern must be a string")
             continue
         if seat.get("retired"):
-            errors.append(f"seat {tag} is retired and cannot carry an aliasPattern; the live seat it aliases carries it")
+            errors.append(
+                f"seat {tag} is retired and cannot carry an aliasPattern; the live seat it aliases carries it"
+            )
         try:
             compiled = re.compile(raw, re.IGNORECASE | re.ASCII)
         except re.error as exc:
@@ -191,16 +224,25 @@ def alias_pattern_errors(seats: list[dict]) -> list[str]:
         if raw != GROK_ALIAS_PATTERN:
             errors.append(
                 f"seat {tag} aliasPattern {raw!r} disagrees with scripts/agent_sync/identity.py GROK_ALIAS_PATTERN "
-                f"({GROK_ALIAS_PATTERN!r}); change both")
-        aliases = [s.get("tag") or "" for s in seats if s.get("aliasOf") == tag and s.get("retired")]
+                f"({GROK_ALIAS_PATTERN!r}); change both"
+            )
+        aliases = [
+            s.get("tag") or "" for s in seats if s.get("aliasOf") == tag and s.get("retired")
+        ]
         if not aliases:
-            errors.append(f"seat {tag} aliasPattern aliases nothing: no retired seat has aliasOf {tag!r}")
+            errors.append(
+                f"seat {tag} aliasPattern aliases nothing: no retired seat has aliasOf {tag!r}"
+            )
         for alias in aliases:
             if not compiled.match(alias):
-                errors.append(f"seat {tag} aliasPattern {raw!r} does not match the retired tag {alias}")
+                errors.append(
+                    f"seat {tag} aliasPattern {raw!r} does not match the retired tag {alias}"
+                )
         for other in tags:
             if other and other not in aliases and compiled.match(other):
-                errors.append(f"seat {tag} aliasPattern {raw!r} matches the tag {other}, which is not an alias of {tag}")
+                errors.append(
+                    f"seat {tag} aliasPattern {raw!r} matches the tag {other}, which is not an alias of {tag}"
+                )
     return errors
 
 
@@ -238,7 +280,9 @@ def strip_generated_header(text: str) -> str:
     return _GENERATED_HEADER.sub("", text, count=1)
 
 
-def agent_sync_errors(apps: list[dict], text: str, where: str, *, fold_repo: bool = False) -> list[str]:
+def agent_sync_errors(
+    apps: list[dict], text: str, where: str, *, fold_repo: bool = False
+) -> list[str]:
     """Every registry repo and acronym must appear in the body of an AGENT-SYNC.md copy.  `fold_repo` ignores case in
     the repo name (the live copy has always been matched that way)."""
     body = strip_generated_header(text)
@@ -277,7 +321,7 @@ def main() -> int:
         color = app.get("digestColor") or ""
         badge = app.get("badgeClass") or ""
         if repo in public_repos and color and badge.startswith("repo-"):
-            css_var = badge[len("repo-"):]
+            css_var = badge[len("repo-") :]
             needle = f"--{css_var}: {color}"
             if needle not in digest:
                 errors.append(
@@ -285,12 +329,17 @@ def main() -> int:
                 )
         icon = app.get("iconFile")
         if app.get("hasAppIcon") and icon:
-            if not (ROOT / icon).is_file() and not (ROOT / "agent-logos" / Path(icon).name).is_file():
+            if (
+                not (ROOT / icon).is_file()
+                and not (ROOT / "agent-logos" / Path(icon).name).is_file()
+            ):
                 errors.append(f"missing app icon {icon}")
 
     errors.extend(agent_sync_errors(apps, agent_sync, "coordinator AGENT-SYNC.md"))
     if live_sync.is_file():
-        errors.extend(agent_sync_errors(apps, live_sync.read_text(), "~/apps/AGENT-SYNC.md", fold_repo=True))
+        errors.extend(
+            agent_sync_errors(apps, live_sync.read_text(), "~/apps/AGENT-SYNC.md", fold_repo=True)
+        )
 
     errors.extend(zulip_errors(data))
     errors.extend(seat_apps_errors(data))
@@ -307,28 +356,6 @@ def main() -> int:
             errors.append(f"digestColor {color} reused by {prev} and {repo}")
         else:
             colors[color] = repo
-
-    # The admin panel inlines its own copy of the registry because the Worker has
-    # no filesystem, and nothing else compared the two.  That drift is invisible
-    # until the panel goes red: a renamed repo answers GitHub with a 301, the
-    # Worker refuses to follow redirects (correctly — it must not leak auth
-    # headers cross-origin), and the row silently loses its CI status forever.
-    # Socratic-Trade shipped as `Socratic.Trade` and did exactly that.
-    panel = ROOT / "scripts" / "admin-panel" / "src" / "index.js"
-    if panel.is_file():
-        panel_src = panel.read_text(errors="replace")
-        block = re.search(r"const APPS = \[(.*?)\n\];", panel_src, re.S)
-        if not block:
-            errors.append("admin-panel src/index.js has no `const APPS = [ ... ];` block")
-        else:
-            panel_repos = set(re.findall(r"repo:\s*'([^']+)'", block.group(1)))
-            registry_repos = {a["repo"] for a in apps}
-            for repo in sorted(registry_repos - panel_repos):
-                errors.append(f"admin-panel APPS missing repo {repo}")
-            for repo in sorted(panel_repos - registry_repos):
-                errors.append(f"admin-panel APPS has repo {repo}, which is not in fleet-apps.json")
-    else:
-        errors.append("missing scripts/admin-panel/src/index.js")
 
     for wf_name in ("fleet-activity-site.yml", "agent-calendar.yml"):
         wf = ROOT / ".github" / "workflows" / wf_name
@@ -348,7 +375,9 @@ def main() -> int:
     if backup_py.is_file():
         backup_src = backup_py.read_text()
         if "fleet-apps.json" not in backup_src:
-            errors.append("scripts/backup-fleet-to-gdrive.py must read fleet-apps.json so new apps are included")
+            errors.append(
+                "scripts/backup-fleet-to-gdrive.py must read fleet-apps.json so new apps are included"
+            )
         gha = ROOT / ".github" / "workflows" / "backup-repos.yml"
         if not gha.is_file():
             errors.append("missing .github/workflows/backup-repos.yml (GitHub artifact backup)")

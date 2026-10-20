@@ -19,7 +19,7 @@ jobs:
       max-parallel: 1
       fail-fast: false
       matrix:
-        worker: ["agent-sync-mcp", "admin-jays-services"]
+        worker: ["agent-sync-mcp"]
     steps:
       - uses: actions/checkout@v7
         with:

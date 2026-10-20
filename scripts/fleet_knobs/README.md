@@ -21,6 +21,14 @@ key = knobs.get("FLEET_FACTS_SIGNING_KEY")         # raises SecretUnavailable:  
 - **One fetch per process**, on the first read, through the installed `infisical` CLI with
   `--env=prod` (prod is the only environment).  A failed fetch is not retried;
   `knobs.refresh()` forgets it for a long-running process.
+- **Auth like fleet-secrets.**  `INFISICAL_TOKEN` if set, else the keychain machine identity
+  (login, then System keychain) through fleet-secrets' helper when it can be found, else the
+  CLI session.  Needed under pm2 (a system LaunchDaemon, no login Keychain).  The token is
+  only ever in the CLI child's environment.  The whole fetch (keychain
+  lookups, login and export) shares one 8 second budget;  running out is `timeout`.
+- **Negative cache.**  A failed fetch writes `fetch-failed.json` (0600, timestamp and reason
+  token) beside the copy;  for 60 seconds other processes skip the fetch and read the copy
+  (`fetch_reason` `recent-<token>`).  A good fetch clears it;  `refresh()` ignores it.
 - **Last-known-good.**  A good fetch refreshes `~/.local/state/fleet-knobs/lkg.json`
   (dir 0700, file 0600) with the registered non-secret knobs.  If Infisical cannot be reached
   the job reads it, `knobs.report()["stale"]` is true, and a copy older than 48 hours (or any
