@@ -16,7 +16,7 @@
 // current truth, plus a sparse timeline of events that actually mattered.
 //
 // Routes:
-//   POST /webhook/:source     receive an authenticated vendor event
+//   POST /webhook/:source     receive a vendor event (signature-verified)
 //   GET  /status/:channel/:topic   rebuild the standing status (operator token required)
 //   GET  /sweep               promote incidents that aged past the window
 //
@@ -53,15 +53,43 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
+async function hmacHex(secret, body, algo = "SHA-256") {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: algo },
+    false,
+    ["sign"],
+  );
+  // sign() takes a BufferSource, not a string: passing the raw request text
+  // straight through throws and every signed webhook fails before comparison.
+  const bytes =
+    typeof body === "string" ? new TextEncoder().encode(body) : body;
+  const mac = await crypto.subtle.sign("HMAC", key, bytes);
+  return [...new Uint8Array(mac)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 /**
- * Verify provider-supported header credentials.  An unconfigured verifier
- * rejects the request; vendor tokens never travel in URLs.
+ * Verify a vendor signature.  Each vendor signs differently; a vendor with no
+ * verifier configured is REJECTED rather than trusted, so an unsigned POST can
+ * never inject a fake alert.
  */
 async function verify(request, raw, env, source) {
   if (source === "datadog") {
     const secret = env.DATADOG_WEBHOOK_SECRET;
     if (!secret) return false;
-    return safeEqual(request.headers.get("x-datadog-token") || "", secret);
+    // Datadog's webhook integration sends static custom headers; it has no
+    // facility to compute a per-body HMAC, so an HMAC-only gate could never be
+    // satisfied by a real Datadog delivery.  Accept the configured static
+    // header, matching how Better Stack is authenticated.
+    const token = request.headers.get("x-datadog-token") || "";
+    if (token) return safeEqual(token, secret);
+    // Still honour a genuine body signature for senders that can produce one.
+    const sig = request.headers.get("x-datadog-signature") || "";
+    const expected = await hmacHex(secret, raw);
+    return safeEqual(sig, expected);
   }
   if (source === "betterstack") {
     const secret = env.BETTERSTACK_WEBHOOK_SECRET;
@@ -478,6 +506,9 @@ export const __testing = {
 };
 
 const MAX_KEYS = 2000;
+// Object-envelope nesting bound.  A JSON:API vendor body reaches four levels
+// (data.relationships.monitor.data); anything deeper is rejected, not walked.
+const MAX_PAYLOAD_DEPTH = 6;
 async function listAll(kv, prefix) {
   const keys = [],
     cursors = new Set();
@@ -518,25 +549,38 @@ async function mapBounded(items, fn) {
   return result;
 }
 function validatePayload(payload, depth = 0) {
-  if (depth > 6) throw new Error("payload nesting exceeded");
   const object = (value) =>
     value !== null && typeof value === "object" && !Array.isArray(value);
   if (!object(payload)) throw new Error("invalid payload");
+  // Bounded depth: object envelopes nest (JSON:API reaches four levels), but a
+  // hostile body must not be able to recurse without end.
+  if (depth > MAX_PAYLOAD_DEPTH) throw new Error("payload nested too deep");
   if (Object.keys(payload).length > 100) throw new Error("too many fields");
   const booleans = new Set(["firing", "prod_down"]);
   const identifiers = new Set(["id", "monitor_id", "alert_id", "check_id"]);
+  // JSON:API vendors nest the fields under data.attributes and the monitor
+  // identity under data.relationships.monitor.data, so those are object
+  // envelopes too -- not oversized text fields.
+  const envelopes = new Set([
+    "alert",
+    "data",
+    "attributes",
+    "relationships",
+    "monitor",
+  ]);
   for (const [key, value] of Object.entries(payload)) {
     if (booleans.has(key) && typeof value !== "boolean")
       throw new Error("invalid boolean");
     if (
       !booleans.has(key) &&
       !identifiers.has(key) &&
-      !["alert", "data", "attributes", "relationships", "monitor", "monitor_tags"].includes(key) &&
+      !envelopes.has(key) &&
+      key !== "monitor_tags" &&
       value !== null &&
       typeof value !== "string"
     )
       throw new Error("invalid text field");
-    if (["alert", "data", "attributes", "relationships", "monitor"].includes(key)) {
+    if (envelopes.has(key)) {
       if (!object(value)) throw new Error("invalid nested payload");
       validatePayload(value, depth + 1);
     } else if (key === "monitor_tags") {

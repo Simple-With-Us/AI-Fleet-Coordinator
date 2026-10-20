@@ -73,26 +73,49 @@ export function fromDatadog(payload) {
   };
 }
 
-/** BetterStack outgoing webhook (`{"text": ...}` shaped). */
+/**
+ * BetterStack outgoing webhook.
+ *
+ * The documented uptime incident body is JSON:API shaped -- the fields live in
+ * `data.attributes` and the monitor identity in
+ * `data.relationships.monitor.data`.  A flat `data` body is also accepted so a
+ * custom payload template keeps working.
+ */
 export function fromBetterStack(payload) {
-  const envelope = payload && typeof payload.data === "object" && payload.data ? payload.data : payload || {};
-  const data = envelope.attributes && typeof envelope.attributes === "object"
-    ? { ...envelope, ...envelope.attributes } : envelope;
+  const envelope =
+    payload && typeof payload.data === "object" && payload.data
+      ? payload.data
+      : payload || {};
+  const data =
+    envelope && typeof envelope.attributes === "object" && envelope.attributes
+      ? { ...envelope, ...envelope.attributes }
+      : envelope;
+  const monitor =
+    (envelope &&
+      envelope.relationships &&
+      envelope.relationships.monitor &&
+      envelope.relationships.monitor.data) ||
+    {};
   const url = first(data.url, data.check_url, payload.url);
-  const status = strip(first(data.status, payload.status,
-    Object.hasOwn(data, "resolved_at") ? (data.resolved_at ? "up" : "down") : "")).toLowerCase();
+  const status = strip(first(data.status, payload.status, Object.hasOwn(data, "resolved_at") ? (data.resolved_at ? "up" : "down") : "")).toLowerCase();
   const name = oneLine(
     first(data.check_name, data.name, payload.name, "betterstack check"),
   );
 
-  // BetterStack reports up/down rather than fired/recovered.
-  const down = /down|failed|failing/.test(status);
-  const firing = status ? down : payload.alert_type === "ALERT";
+  // BetterStack reports either the check state (up/down) or, on the default
+  // incident webhook, the incident state (triggered/resolved).  Both are
+  // active-alert or recovery, never neither.
+  const down = /down|failed|failing|triggered|alerting/.test(status);
+  const recovered = /^(up|ok|passing|resolved|recovered|maintenance|paused)$/.test(
+    status,
+  );
+  // An unrecognized non-empty status stays firing: the safe direction.
+  const firing = status ? down || !recovered : payload.alert_type === "ALERT";
 
   const id = first(
+    monitor.id,
     data.check_id,
     data.monitor_id,
-    envelope.relationships?.monitor?.data?.id,
     data.id,
     (url.match(/\/([a-f0-9]{16,})/i) || [])[1],
   );
