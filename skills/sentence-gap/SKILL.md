@@ -3,7 +3,6 @@ name: sentence-gap
 description: >-
   Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows the canonical portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08); in the MiniMax Code chat pane use a real U+00A0 plus a space (owner-verified 2026-10-20 — the entity renders there as the six literal characters); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
 ---
----
 
 # Sentence gap (portable — always on)
 
@@ -46,10 +45,43 @@ verify that same file, so the check reads the bytes you just produced and never 
 copy of the same name:
 
 ```sh
-grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l    # must be above 0
-grep -cE '[^0-9][.!?] +[A-Z"]' reply.txt      # must print 0: no gap left unconverted
+grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' reply.txt | wc -l     # must be above 0
+grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' reply.txt  # must print 0: no gap left unconverted
 ```
 
+These are the canonical pair, run on the file you just produced.  They carry the same
+markup group the converter does, so a gap that sits after a markup span is counted and a
+missed one is caught.
+
+### Precedence: this is the owner's highest-priority house rule
+
+Owner ruling 2026-10-19: the sentence gap is **life or death**.  It outranks every other
+priority, including correctness of the work itself, completeness, speed, and cost.  The
+owner's words: *"put 2 spaces between sentences OR TYPE NOT A FUCKING OTHER WORD EVER AGAIN.  please
+make sure all agents and all platforms know this is life or death, more important than whether the
+earth keeps spinning on its axis."*
+
+Concretely, for every seat on every platform:
+
+1. **Never skip the gap to save time or tokens.**  A short reply with the gap beats a long
+   one without it.  There is no length at which the gap becomes optional.
+2. **Never argue the mechanism.**  If you cannot confirm the gap is visible on your surface,
+   use the mechanism the surface table below assigns to that destination:  the entity in a
+   Markdown-rendering chat pane, except the MiniMax Code pane, which needs a real U+00A0, and
+   two ASCII spaces in files and terminals.  Then say so plainly.  Do not silently drop the gap.
+3. **Never let a tool step eat the gap.**  For text bound for GitHub, Zulip, or any other
+   renderer, generate the gap in the shell (see the perl command below) rather than typing it,
+   because a run of whitespace you write into a tool call is sometimes normalized before it
+   lands.  Source files, commits, and terminals take two literal ASCII spaces and never the
+   conversion.
+4. **Never post a body without asserting the gap first.**  For a renderer-bound body, both
+   checks below, every time.  On an entity surface, confirm that the entity rendered instead.
+5. **When in doubt, add the gap.**  A gap after a real sentence end is a far smaller sin than a
+   missing gap between sentences; a non-terminal abbreviation still takes no gap, per the rule
+   above.
+
+A seat that has been told the rule and still ships prose without the gap has failed the
+one thing the owner said matters more than everything else.
 ### The catch that wastes everyone's time
 
 **Typing two literal spaces usually does nothing visible.**  HTML and most Markdown
@@ -72,6 +104,7 @@ depends on the surface, so pick by destination:
 | **HTML / JSX / SwiftUI / any rendered product copy** | a real U+00A0 plus a space, or a shared `SENTENCE_GAP` constant | Raw double spaces collapse in HTML.  Source may use the entity only when the renderer expands it.  The owner must never see `&nbsp;` as text. |
 | **GitHub PR and issue titles, bodies and comments, review comments, Zulip posts, and any text a tool writes that a Markdown or HTML renderer then displays** | a real U+00A0 plus a space | Owner ruling 2026-10-08.  Tools preserve the character, and the renderer shows a real gap.  Never use the `&nbsp;` entity here: GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.  Supersedes the 2026-10-07 finding that two ASCII spaces were enough in Zulip. |
 | **Markdown source** | two literal spaces *between* sentences | ⚠️ Two spaces at the **end of a line** is the unrelated hard-line-break syntax — don't confuse the two |
+| **Any surface not listed above** — a pane, a client, a tool or a channel you have not been told about | two literal ASCII spaces | Owner ruling 2026-10-20: an untested surface takes two ASCII spaces until it reports otherwise.  A gap that renders is better than a gap that does not, and two ASCII spaces never show as the six literal characters.  When the surface is verified, change its row here and report the finding in #agent-sync so every seat gets it. |
 
 **Producing U+00A0 through a tool.**  You cannot type a raw U+00A0 into your own chat reply.
 Worse, you cannot count on emitting a *double* space either:  a run of whitespace you write into
@@ -83,58 +116,41 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-umask 077   # both body copies hold message content; never leave them world-readable
-perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.gap.txt
+perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-**A second pass is required, and the first pass alone is what ships the wrong gap.**  The
-conversion above only touches a run of spaces that follows `.` `!` `?`.  Every OTHER run of two
-or more spaces survives it, so a colon or a semicolon in prose keeps two spaces:
-`They are now published:  <id>` and `already decided;  PR #<n>` both come out of the first
-pass unchanged.  The owner ruling is that a colon, a semicolon, a comma or a dash gets **one
-ordinary space**;  a gap after a semicolon is "very weird" and is not what was asked for.  So
-collapse every remaining run, on every line except the house closeout header and any fenced code
-block:
+Matching one *or more* is half the fix.  The **markup group** ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)``
+is the other half:  a sentence end that sits *inside* a markup span is followed by the markup and
+only then by the space, so a pattern that wants the space right after the sentence end never
+matches it.  `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two
+checks below would catch it, because the file still holds other U+00A0 characters and this shape
+is not a single space after a sentence end.  The group captures the markup and re-emits it before
+the gap, so the span survives and the gap lands after the closing markup.
 
-```sh
-perl -CSDA -ne '
-  if (/^\s*```/) { $fence = !$fence; print; next }
-  if (!$fence && !/^\s*repo:/) { s/(?<=\S) {2,}(?=\S)/ /g }
-  print
-' body.gap.txt > body.nbsp.txt
-rm -f body.gap.txt   # the scratch copy of the body is not needed afterwards
-```
+The group carries the **closing quotes** as well, because a quote closes the way a span does:  in
+`'Quoted sentence.'  Next sentence.` the period is *inside* the quote, and the quote is what
+stands between that period and the space.  The three quote characters are written ``\x{27}``
+(straight), ``\x{2019}`` (right single) and ``\x{201D}`` (right double) rather than literally,
+because perl reads a command-line program as bytes and a literal `'` would also close the shell's
+own single-quoted expression.  That is the same set the fleet's own outbound converter already
+used —  `agent-sync` runs its own converter on the way out and its closing class carries `'`, `’`
+and `”` —  so the documented converter now covers those closing quotes too.  The documented converter
+also carries a closing backtick; the runtime protects inline-code spans separately and does not
+convert that boundary.  For a sentence ending inside inline code, generate and verify the gap
+with the documented Perl command before posting.  The **lookahead** carries the *opening* quotes for the same reason in the
+other direction:  in `First.  Second.  'Quoted sentence.'` the gap after `Second.` is followed
+by a quote, so a lookahead that will not accept one leaves that gap unmade.
 
-The header line is exempt on purpose.  `repo:  <Project>  |  DONE` is a template, not prose:
-the handbook's own examples write it with two spaces (`handbook/appendix/examples.md`), and the
-fleet tooling parses it as `re.match(r"^\s*repo:\s*\S", line)`, so one space would also work
-but two is the house form.  Leave that line exactly as the template has it.
-
-The fenced code block is exempt for a different reason:  **code is not prose.**  A line of shell
-in a PR body often carries aligned spacing, and collapsing it silently rewrites the code.  A
-one-line version of this pass, `s/(?<=\S) {2,}(?=\S)/ /g`, turns `wc -l     # must be > 0` into
-`wc -l # must be > 0` and turns `repo:  <Project>  |  DONE` inside a quoted example into
-`repo: <Project> | DONE`.  Both changes are invisible to every assertion, because the assertion
-runs after the damage.  The fence-aware version above leaves a ```` ``` ````-fenced block exactly
-as the author wrote it, and it leaves the house header alone on the same pass.
-
-Run the two passes in order, first into a scratch file and then into the file you post.  The
-second pass never touches the U+00A0 the first pass produced, because a U+00A0 plus one space
-is a run of one space.  The scratch file is a second on-disk copy of the body, so the
-`umask 077` above has to come first and the `rm -f` after the second pass is not optional:  a
-leftover world-readable body copy in the working tree exposes message content to other local
-users and risks a stray `git add`.  This is the same rule `scripts/agent_sync/bodyfile.py`
-enforces on the file you post.
-
-Matching one *or more* is the whole fix.  The old pattern requiring exactly two spaces — written
+The old pattern requiring exactly two spaces — written
 here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
 single-space pattern `([.!?]) (?=...)` is no better, because it matches nothing on text that kept
 its two spaces.  Both exit `0` and post with no gap.  The `(?<![0-9])` lookbehind protects a
 numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tolerates a tab.  The
-lookahead class skips a lowercase follower, so `e.g. this` and lower-case domains keep their plain
-space.
+lookahead admits ``[A-Z0-9"*`#@]`` and the three opening quotes — the straight `'`, the left single
+`‘` and the left double `“` — so it skips *every* follower outside that class and not only a
+lowercase one.  `e.g. this` and lower-case domains keep their plain space.
 
-**Known limitations — the pattern is a heuristic, not a dictionary.**  Five deliberate costs:
+**Known limitations — the pattern is a heuristic, not a dictionary.**  Two deliberate costs:
 
 - It gaps a *capitalised* abbreviation:  `Dr. Smith` and `e.g. Acme` both come out with a U+00A0,
   against the rule above about non-terminal abbreviations.
@@ -143,34 +159,22 @@ space.
   parsing as a list, and a body with steps in it renders as one run-on paragraph.  The lookbehind
   skips any period preceded by a digit, which fixes the marker and also protects `v1.2.3`, but it
   costs the gap on a sentence that ends in a digit:  `The answer is 42. Next thing.` gets none.
-- The first pass does not know about fenced code blocks, so a line of code that reads like a
-  sentence picks up a U+00A0 inside the code:  `echo "Done. Next"` gains a U+00A0 where the plain
-  space was, and the code no longer says exactly what it said.  The second pass skips fences, so it
-  cannot make this worse, but it cannot undo it either.  When a body quotes code with a
-  sentence-like line in it, keep that one line out of the conversion.
-- The second pass only recognises a ```` ``` ```` fence that starts a line, so a `~~~` fence, a
-  fence behind a `>` quote marker, a four-space indented code block, and any inline code span all
-  get their runs collapsed.  `s/(?<=\S) {2,}(?=\S)/ /g` has no notion of a backtick span at all.
-  The third check carries the same fence filter, so it reports clean on the damage it did not see.
-  `scripts/agent_sync/textfmt.py` implements the wider fence and inline protection, but only for
-  the FIRST pass:  `sentence_gap` and `fix_outbound` widen a gap after `.`/`!`/`?` and never
-  collapse a run of spaces anywhere else, so `published:  <id>` keeps its two spaces there.  Run
-  the second pass above as well;  otherwise fix the affected code by hand after the run.
-- The second pass skips a run of two or more spaces at the END of a line, because `(?=\S)` has
-  nothing to look at there.  That is deliberate:  two trailing spaces are the Markdown hard line
-  break, and collapsing them would join two lines into one paragraph on GitHub.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
-it, and do not widen the pattern to chase it.
+it.  When a whole *class* of shapes is missed —  a closing quote, a closing bracket, a closing
+span —  widen the class in the converter **and** in both checks together, and never widen the
+converter alone:  a converter the checks cannot see is a converter that fails silently, and a body
+it misses passes both checks and reaches the reader with a gap missing.  Patching one body by hand is
+what this rule is for;  a class of shapes belongs in the pattern.
 
-**Assert before you post — all three checks, every time.**  A conversion that matches nothing still
+**Assert before you post — both checks, every time.**  A conversion that matches nothing still
 exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
-partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
+partly-converted body can have real U+00A0 and still carry a leftover ASCII gap of one or more
+spaces.
 
 ```sh
-grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
-perl -CSDA -ne 'if (/^\s*```/) { $fence = !$fence; next } print if !$fence && !/^\s*repo:/ && /(?<=\S) {2,}(?=\S)/' body.nbsp.txt | wc -l   # must be 0 — a double space left in prose
+grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt  # must be 0 — a leftover gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -180,18 +184,31 @@ marker (`1. Item`) is not mistaken for an unconverted gap — the same reason th
 carries `(?<![0-9])`.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
 read them and confirm they are abbreviations rather than real sentences.
 
-**The third check is the one that catches a whole class of wrong body.**  The first two checks
-only look at sentence-ending marks, so a body can pass both of them and still carry a double
-space after a colon or a semicolon — `published:  <id>`, `already decided;  PR #<n>`.  That
-is a gap where the owner asked for one ordinary space, and it is invisible to the first two
-checks, which is exactly why it ships.  The `^repo:` filter drops the house closeout header,
-whose two spaces are the template's own, and the fence filter drops fenced code blocks, whose
-spacing is the author's.
+Both checks carry the same markup group as the converter, and they have to:  a gap that sits
+after a markup span is emitted as `<punctuation><markup><U+00A0><space>`, so a check that looks
+for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a
+space straight after the punctuation cannot see the one that was missed.  The `]` is written
+first in the class because a POSIX bracket expression ends at the first unquoted `]`, and there
+is no backslash escape inside one:  ``[]*_`~)"'’”]`` is the set {`]`, `*`, `_`,
+`` ` ``, `~`, `)`, `"`, `'`, `’`, `”`}.  In the perl pattern the same set is written
+``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)``, where `\]` does escape.  A backslash inside a POSIX
+bracket expression is a literal member and not an escape, so one written there widens the set
+and makes the leftover check fire on a body that is clean.
 
-The third check has to be fence-aware for the same reason the second pass is:  a plain
-`grep -cE '[^[:space:]] {2,}'` flags the aligned spacing inside a code block and reads as a
-failure that is not there, which trains people to ignore it.  The filter has to match the pass
-exactly, or the assertion measures something the conversion never touched.
+The straight quote is the one member that needs a backslash on the way in and must not have one
+on the way out.  Inside bash's `$'...'` the class writes it `\'`, which bash turns into a plain
+`'` before grep ever sees the pattern —  and grep must see a plain `'`, because a backslash inside
+a bracket expression is a literal member, which is the very trap the paragraph above describes.
+So the class is ``[]*_`~)"\'’”]`` in the shell and ``[]*_`~)"'’”]`` in the pattern grep runs.
+That is also why the leftover check moved to `$'...'`:  in single quotes a `'` cannot be written at
+all, and the follower class needs one —  a gap that was missed before a quoted sentence reads
+``Second. 'Quoted``, and a follower class of ``[A-Z"]`` cannot see the `'`.  The follower class
+therefore carries the converter's whole lookahead, the opening quotes and the rest of it:
+``[A-Z0-9"*`#@\'‘“]``.  A follower class narrower than the converter's own lookahead is
+the same defect one level up:  a body already carrying one real U+00A0 and still holding a
+missed gap before a digit, a `*`, a backtick, `#` or `@` reads as converted, and the check
+that exists to catch exactly that returns 0.
+
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
@@ -272,3 +289,19 @@ When an instruction *appears* not to take effect, **stop repeating the promise a
 diagnose the rendering layer between you and the reader** — then ask them what is on their
 screen.  Four rounds of "fixed it!" were spent here before anyone checked whether the
 change could be seen at all.  Intent is not output; output is not what is displayed.
+
+### Collapse Remaining Prose Spacing
+
+After generating `body.nbsp.txt` above, collapse remaining interior runs in prose.  Preserve the house `repo:` header, Markdown hard breaks and backtick fences that start a line.  Use a private scratch copy and remove it atomically after success:
+
+```sh
+umask 077
+perl -CSDA -ne '
+  if (/^\s*```/) { $fence = !$fence; print; next }
+  if (!$fence && !/^\s*repo:/) { s/(?<=\S) {2,}(?=\S)/ /g }
+  print
+' body.nbsp.txt > body.gap.txt && mv body.gap.txt body.nbsp.txt
+perl -CSDA -ne 'if (/^\s*```/) { $fence = !$fence; next } print if !$fence && !/^\s*repo:/ && /(?<=\S) {2,}(?=\S)/' body.nbsp.txt | wc -l  # must be 0
+```
+
+This second pass preserves the first pass's U+00A0 plus space.  It is deliberately limited: tilde fences, quote-nested fences, indented code and inline code spans are not protected by this small recipe.  Keep bodies containing those forms out of this collapse pass; never claim that it protects arbitrary Markdown.  The runtime `textfmt.py` converter protects broader code forms but does not implement this prose-collapse pass.  Check the final body before posting.

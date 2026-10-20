@@ -97,9 +97,18 @@ export function noConnectionPage() {
  * One-or-more on purpose: a double space can arrive collapsed to a single space by the
  * time it reaches us, and that collapse is intermittent, so a two-space-only pattern
  * silently matched nothing and rendered with no gap at all (verified 2026-10-18).
+ * The lookahead and the (?<![0-9]) lookbehind are the same as every other sentence-gap
+ * surface (perl, SKILL.md): only a gap that opens a sentence counts, so "e.g. tools" and
+ * the "1. Item" list marker are left alone.
+ *
+ * Gap first, escape second, and the order matters: `escapeHtml` rewrites `"` and the
+ * backtick to `&#34;`/`&#96;`, so escaping first left the lookahead unable to see either
+ * admitted opener and `Done. "Next"` rendered with an ordinary space (Codex P2, fixed
+ * 2026-10-20).  Gapping on the raw text is what the peer surfaces do anyway.  SENTENCE_GAP
+ * is a literal U+00A0 rather than an entity, so it passes through escapeHtml unchanged.
  */
 export function gapped(text) {
-  return escapeHtml(text).replace(/(?<![0-9])([.!?])[ \t]+(?=\S)/g, `$1${SENTENCE_GAP}`);
+  return escapeHtml(String(text ?? "").replace(/(?<![0-9])([.!?])[ \t]+(?=[A-Z0-9"*`#@])/g, `$1${SENTENCE_GAP}`));
 }
 
 export function errorPage(title, message, status = 400) {

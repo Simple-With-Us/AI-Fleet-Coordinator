@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import {
   EXIT_BEHIND, EXIT_CURRENT, EXIT_FAILED, SENTENCE_GAP,
   acquireLockDir, buildCutTime, oldestRun, correlateRun, dispatchCommand, evaluateApp, exitCodeFor, loadRegistry,
-  main, makeContext, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
+  ascFailureText, ascRequest, main, makeAscGuard, makeContext, makeGate, matchCheckName, ownerTime, parseArgs, planAlerts, runRemedies, sentences,
 } from "./ios_testflight_freshness.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -611,4 +611,57 @@ test("testflight-apps.json is complete and carries no gate override", () => {
     if (a.autoRemedy !== false) assert.ok(a.compileCheck, `${key}: autoRemedy needs a compile check`);
     assert.ok(["IOS", "MAC_OS"].includes(a.platform), `${key}: platform`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// App Store Connect calls under a thrashing host (2026-10-20:  "asc-api.mjs exit ?")
+// ---------------------------------------------------------------------------
+
+const killedErr = () => Object.assign(new Error("Command failed"), { killed: true, signal: "SIGTERM", code: null, stdout: "", stderr: "" });
+
+test("a killed asc-api call names the signal, the timeout and the host load, not exit ?", () => {
+  const msg = ascFailureText(killedErr(), "/v1/builds?filter[app]=1", { timeoutMs: 120_000, load: 151.4 });
+  assert.match(msg, /^App Store Connect \/v1\/builds: asc-api\.mjs killed by SIGTERM after the 120s timeout, host load 151$/);
+  assert.doesNotMatch(msg, /exit \?/);
+  assert.equal(ascFailureText(Object.assign(new Error("x"), { code: 1, stderr: "HTTP 401", stdout: "" }), "/v1/apps"), "App Store Connect /v1/apps: HTTP 401");
+  assert.equal(ascFailureText(Object.assign(new Error("x"), { code: 1, stderr: "", stdout: "" }), "/v1/apps"), "App Store Connect /v1/apps: asc-api.mjs exit 1");
+});
+
+test("a killed asc-api call is retried once and the retry's answer is used", async () => {
+  let calls = 0;
+  const out = await ascRequest(async () => { calls++; if (calls === 1) throw killedErr(); return 'HTTP 200\n{"data":[1]}'; }, "/v1/apps", makeAscGuard());
+  assert.deepEqual(out, { data: [1] });
+  assert.equal(calls, 2);
+});
+
+test("an HTTP failure is not retried", async () => {
+  let calls = 0;
+  await assert.rejects(
+    ascRequest(async () => { calls++; throw Object.assign(new Error("x"), { code: 1, stderr: "HTTP 403", stdout: "" }); }, "/v1/apps", makeAscGuard()),
+    /HTTP 403/,
+  );
+  assert.equal(calls, 1);
+});
+
+test("repeated kills trip the guard so a thrashing host fails fast instead of waiting out every call", async () => {
+  const guard = makeAscGuard({ tripAfter: 3, load: () => 160 });
+  let spawned = 0;
+  const run = async () => { spawned++; throw killedErr(); };
+  await assert.rejects(ascRequest(run, "/v1/apps", guard), /killed by SIGTERM/);
+  await assert.rejects(ascRequest(run, "/v1/builds", guard), /skipped after \d+ asc-api\.mjs calls were killed.*host load 160/);
+  assert.ok(spawned <= 4, `spawned ${spawned}`);
+});
+
+test("the gate runs at most `limit` calls at once and lets the rest through in order", async () => {
+  const gate = makeGate(2);
+  let live = 0;
+  let peak = 0;
+  const order = [];
+  await Promise.all([1, 2, 3, 4, 5].map((n) => gate(async () => {
+    live++; peak = Math.max(peak, live); order.push(n);
+    await new Promise((r) => setTimeout(r, 5));
+    live--;
+  })));
+  assert.equal(peak, 2);
+  assert.deepEqual(order, [1, 2, 3, 4, 5]);
 });
