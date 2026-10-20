@@ -24,6 +24,7 @@
 //   state:<key>        AlertState per alertable thing
 //   status:<chan>:<topic>  message id of that topic's standing status
 //   svc:<key>          service name, so a topic stays stable across events
+//   svcname:<service>  alert key, so a renamed vendor label re-joins its incident
 
 import { normalize } from "./normalize.js";
 import {
@@ -40,6 +41,22 @@ const DEFAULT_CHANNEL = "alerts";
 const stateKey = (k) => `state:${k}`;
 const statusKey = (c, t) => `status:${c}:${t}`;
 const svcKey = (k) => `svc:${k}`;
+// Reverse map for the generic path, whose key derives from the service label:
+// a vendor rename mints a new key, and this finds the incident it belongs to.
+const svcNameKey = (service) =>
+  `svcname:${String(service || "").toLowerCase().slice(0, 120)}`;
+// Zulip refuses topics over 60 characters (scripts/agent-sync-mcp contract).
+const MAX_TOPIC_LENGTH = 60;
+function boundedTopic(service) {
+  if (service.length <= MAX_TOPIC_LENGTH) return service;
+  let h = 0;
+  for (let i = 0; i < service.length; i++)
+    h = (h * 31 + service.charCodeAt(i)) >>> 0;
+  // Deterministic prefix + hash: a long vendor label cannot strand an
+  // incident as pending on a refused write, and distinct long names still
+  // land in distinct topics.
+  return `${service.slice(0, MAX_TOPIC_LENGTH - 6)}~${h.toString(36).padStart(5, "0").slice(0, 5)}`;
+}
 // Topic membership is its own key.  Deriving the topic by splitting the `idx:`
 // key on ":" would mis-parse any service name containing a colon, so the topic
 // list is tracked explicitly instead of inferred.
@@ -85,7 +102,9 @@ async function verify(request, raw, env, source) {
     // satisfied by a real Datadog delivery.  Accept the configured static
     // header, matching how Better Stack is authenticated.
     const token = request.headers.get("x-datadog-token") || "";
-    if (token) return safeEqual(token, secret);
+    // A present-but-wrong static header must not veto a valid body signature:
+    // a sender mid-rotation can carry a stale static token with a genuine HMAC.
+    if (token && safeEqual(token, secret)) return true;
     // Still honour a genuine body signature for senders that can produce one.
     const sig = request.headers.get("x-datadog-signature") || "";
     const expected = await hmacHex(secret, raw);
@@ -285,12 +304,29 @@ async function sendEventOnce(env, identity, args) {
 async function handleEvent(source, payload, env) {
   const event = normalize(source, payload);
   const channel = DEFAULT_CHANNEL;
-  // Keep the original topic for a stable key when vendor labels change.
-  const priorService = await env.ALERT_STATE.get(svcKey(event.key), "json");
-  if (typeof priorService === "string" && priorService) event.service = priorService;
-  const topic = event.service;
-
-  const prev = await env.ALERT_STATE.get(stateKey(event.key), "json");
+  // Keep the original topic for a stable key when vendor labels change.  The
+  // svc: pin and the state read are independent, so they run in parallel.
+  let [priorService, prev] = await Promise.all([
+    env.ALERT_STATE.get(svcKey(event.key), "json"),
+    env.ALERT_STATE.get(stateKey(event.key), "json"),
+  ]);
+  if (typeof priorService === "string" && priorService) {
+    event.service = priorService;
+  } else {
+    // A generic key derives from the service label itself, so a vendor rename
+    // mints a NEW key before the pin can engage.  The reverse service -> key
+    // map catches that rename and re-joins the existing incident.
+    const priorKey = await env.ALERT_STATE.get(svcNameKey(event.service), "json");
+    if (typeof priorKey === "string" && priorKey && priorKey !== event.key) {
+      event.key = priorKey;
+      [priorService, prev] = await Promise.all([
+        env.ALERT_STATE.get(svcKey(event.key), "json"),
+        env.ALERT_STATE.get(stateKey(event.key), "json"),
+      ]);
+      if (typeof priorService === "string" && priorService) event.service = priorService;
+    }
+  }
+  const topic = boundedTopic(event.service);
   const now = Date.now();
   const result = decide(prev, event, now, {
     minOpenMs: Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS,
@@ -340,6 +376,7 @@ async function handleEvent(source, payload, env) {
 
   await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
   await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
+  await env.ALERT_STATE.put(svcNameKey(event.service), JSON.stringify(event.key));
   await env.ALERT_STATE.put(`idx:${channel}:${topic}:${event.key}`, "1");
   await env.ALERT_STATE.put(topicKey(channel, topic), "1");
 
@@ -466,7 +503,9 @@ const handler = {
       return json({ error: "bad signature" }, 401);
     }
 
-    if (raw.length > 65536) return json({ error: "payload too large" }, 413);
+    // Bytes, not UTF-16 code units: a non-ASCII body can be far larger in
+    // UTF-8 than its .length suggests, and the documented limit is 64 KiB.
+    if (new TextEncoder().encode(raw).length > 65536) return json({ error: "payload too large" }, 413);
     let payload;
     try {
       payload = JSON.parse(raw);
@@ -560,13 +599,14 @@ function validatePayload(payload, depth = 0) {
   const identifiers = new Set(["id", "monitor_id", "alert_id", "check_id"]);
   // JSON:API vendors nest the fields under data.attributes and the monitor
   // identity under data.relationships.monitor.data, so those are object
-  // envelopes too -- not oversized text fields.
+  // envelopes too -- not oversized text fields.  `monitor` is both that
+  // envelope (object) and a conventional service label for generic vendors
+  // (string), so it is handled separately in the loop below.
   const envelopes = new Set([
     "alert",
     "data",
     "attributes",
     "relationships",
-    "monitor",
   ]);
   for (const [key, value] of Object.entries(payload)) {
     if (booleans.has(key) && typeof value !== "boolean")
@@ -575,12 +615,13 @@ function validatePayload(payload, depth = 0) {
       !booleans.has(key) &&
       !identifiers.has(key) &&
       !envelopes.has(key) &&
+      !(key === "monitor" && object(value)) &&
       key !== "monitor_tags" &&
       value !== null &&
       typeof value !== "string"
     )
       throw new Error("invalid text field");
-    if (envelopes.has(key)) {
+    if (envelopes.has(key) || (key === "monitor" && object(value))) {
       if (!object(value)) throw new Error("invalid nested payload");
       validatePayload(value, depth + 1);
     } else if (key === "monitor_tags") {
