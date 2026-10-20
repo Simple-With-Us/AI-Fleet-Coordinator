@@ -1503,7 +1503,7 @@ def mcode_pinned(paths: L.SeatPaths, mcode: str | None, model: str = MCODE_DEFAU
 #:  fallback` is not decoration:  `test-wake` resolves the default "auto" to `seat_cfg.wake`, so
 #:  without it a seat with wake = claude/muse and fallback = "mcode" would re-test and re-pin the
 #:  PRIMARY runtime, leave this pin stale, and keep the fallback refused.
-MCDE_PIN_REMEDIATION = (
+MCODE_PIN_REMEDIATION = (
     "`agent-sync daemon test-wake --seat %s --runtime fallback --run`, then `--pin`"
 )
 

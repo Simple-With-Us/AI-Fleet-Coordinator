@@ -565,8 +565,8 @@ class McodeFallbackTest(unittest.TestCase):
     def test_the_fallback_remediation_selects_the_fallback_runtime(self) -> None:
         # Without `--runtime fallback`, `test-wake` resolves the default "auto" to seat_cfg.wake and
         # re-pins the PRIMARY runtime, which leaves this pin stale and the fallback still refused.
-        self.assertIn("--runtime fallback", A.MCDE_PIN_REMEDIATION)
-        self.assertIn("--run", A.MCDE_PIN_REMEDIATION)
+        self.assertIn("--runtime fallback", A.MCODE_PIN_REMEDIATION)
+        self.assertIn("--run", A.MCODE_PIN_REMEDIATION)
 
     def test_the_fallback_fingerprint_covers_the_contract_and_the_schema(self) -> None:
         # The fallback is validated against the same wake contract and result schema the muse

@@ -4922,7 +4922,7 @@ class Daemon:
                     "fallback pin is stale: %s; run %s"
                     % (
                         A.mcode_pin_cause(mcode_pin),
-                        A.MCDE_PIN_REMEDIATION % seat,
+                        A.MCODE_PIN_REMEDIATION % seat,
                     )
                 )
             for problem in runner.cfg.config_problems:
