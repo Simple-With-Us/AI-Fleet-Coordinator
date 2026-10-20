@@ -87,9 +87,12 @@ space.
   costs the gap on a sentence that ends in a digit:  `The answer is 42. Next thing.` gets none.
 - The markup group carries the closing characters it names —  `*`, `_`, `` ` ``, `)`, `]`, `"`.  A
   sentence end inside a *single*-quoted or curly-quoted span, as in
-  `'Quoted sentence.'  Next sentence.`, is not one of them:  the group cannot consume the quote, so
-  no gap is made, and neither check below sees it either, because both carry the same group.  A
-  body with that shape passes both checks and ships with no gap, so fix it by hand like any other.
+  `'Quoted sentence.'  Next sentence.`, is not one of them:  the perl run's group cannot consume
+  the quote, so no gap is made, and neither check below sees it either, because both carry the
+  same group.  A body with that shape passes both checks and reaches GitHub with no gap, so fix
+  that one by hand before `gh pr create` or `gh pr comment`.  The Zulip path needs no hand fix:
+  `agent-sync` runs its own outbound converter on the way out, whose closing class carries `'`
+  and the curly quotes, and that makes the gap.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
 it, and do not widen the pattern to chase it.
