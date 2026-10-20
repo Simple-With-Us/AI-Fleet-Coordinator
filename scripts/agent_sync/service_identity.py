@@ -1,6 +1,7 @@
 """Explicit deterministic service identities, never general agent roster entries."""
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 OPERATOR = "OPERATOR"
@@ -37,7 +38,7 @@ def operator_credentials(env, home=None, fetch=None):
             child = dict(env)
             child["INFISICAL_FLEET_OPS_PROJECT_ID"] = AFC_PROJECT  # the Notes-service store, pinned
             try:
-                values = Z._fetch_from_fleet_secrets(
+                values = Z._default_infisical_fetch(
                     names,
                     child,
                     home if home is not None else Path(env.get("HOME") or os.path.expanduser("~")),
@@ -49,6 +50,8 @@ def operator_credentials(env, home=None, fetch=None):
         creds = Z.env_credentials(
             selected, email_env=names[0], key_env=names[1], site_env="OPERATOR_SITE", label=OPERATOR
         )
+        # The values came from fleet-secrets, not the ambient environment:  report that provenance.
+        creds = replace(creds, source="infisical AFC prod %s %s" % (Z.INFISICAL_PATH, names[1]))
         if creds.email.casefold() != OPERATOR_EMAIL:
             raise Z.CredentialError("%s: not the pinned service bot" % where)
         return creds

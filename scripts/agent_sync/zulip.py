@@ -487,11 +487,25 @@ _PRINT_NAMED_ENV = (
 )
 
 _cache_lock = threading.Lock()
-_value_cache: dict[tuple[str, str], tuple[float, str]] = {}  # (bin, name) -> (fetched at, value)
-_names_cache: dict[str, tuple[float, frozenset[str]]] = {}  # bin -> (fetched at, names)
+_value_cache: dict[tuple[str, str, str], tuple[float, str]] = {}  # (bin, project, name)
+_names_cache: dict[tuple[str, str], tuple[float, frozenset[str]]] = {}  # (bin, project) -> names
 _failures: dict[
     tuple[str, ...], tuple[float, str]
-] = {}  # (bin, what...) -> (failed at, reason), memory only
+] = {}  # (bin, project, what...) -> (failed at, reason), memory only
+
+
+def _project_scope(env: Mapping[str, str], home: Path) -> str:
+    """The Infisical project this read targets, for cache keying only (never echoed).  One binary can
+    serve several projects (the AFC /zulip the Notes service reads, the Fleet-OPS /zulip the seats
+    read), so values, names and outages are kept apart per project:  an outage in one store must not
+    refuse a fetch from a healthy one."""
+    value = (env.get(ENV_INFISICAL_PROJECT) or "").strip()
+    if value:
+        return value
+    try:
+        return (home / INFISICAL_PROJECT_FILE).read_text(encoding="utf-8").strip().splitlines()[0].strip()
+    except (OSError, UnicodeDecodeError, IndexError):
+        return ""
 
 
 def _recent_failure(key: tuple[str, ...], now: float) -> str | None:
@@ -543,14 +557,16 @@ def _fetch_from_fleet_secrets(
         raise CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
     now = time.monotonic()
     with _cache_lock:
-        held = {n: _value_cache.get((binary, n)) for n in wanted}
+        project = _project_scope(env, home)
+        held = {n: _value_cache.get((binary, project, n)) for n in wanted}
         if all(v is not None and now - v[0] < INFISICAL_CACHE_TTL for v in held.values()):
             return {n: v[1] for n, v in held.items() if v is not None}
-        failure_key = (binary, "values", *wanted)
+        failure_key = (binary, project, "values", *wanted)
         # A timeout or an auth or fetch failure is about Infisical, not about these names:  it is remembered
-        # per binary, so the seats after a failed prefetch fail at once instead of each waiting out the cap.
+        # per binary and project, so the seats after a failed prefetch fail at once instead of each
+        # waiting out the cap, without one store's outage refusing another store's fetch.
         # A missing key stays a failure of this request only.
-        outage_key = (binary, "outage")
+        outage_key = (binary, project, "outage")
         recent = _recent_failure(failure_key, now) or _recent_failure(outage_key, now)
         if recent is not None and not all(v is not None for v in held.values()):
             raise CredentialError(
@@ -593,7 +609,7 @@ def _fetch_from_fleet_secrets(
         _failures.pop(failure_key, None)
         _failures.pop(outage_key, None)
         for n, v in got.items():
-            _value_cache[(binary, n)] = (now, v)
+            _value_cache[(binary, project, n)] = (now, v)
         return got
 
 
@@ -604,10 +620,11 @@ def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[st
         raise CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
     now = time.monotonic()
     with _cache_lock:
-        held = _names_cache.get(binary)
+        project = _project_scope(env, home)
+        held = _names_cache.get((binary, project))
         if held is not None and now - held[0] < INFISICAL_CACHE_TTL:
             return held[1]
-        failure_key = (binary, "names")
+        failure_key = (binary, project, "names")
         recent = _recent_failure(failure_key, now)
         if recent is not None and held is None:
             raise CredentialError(
@@ -630,7 +647,7 @@ def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[st
             for line in text.splitlines()
             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", line.strip())
         )
-        _names_cache[binary] = (now, names)
+        _names_cache[(binary, project)] = (now, names)
         return names
 
 
