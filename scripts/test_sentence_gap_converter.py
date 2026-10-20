@@ -132,6 +132,7 @@ NBSP = " "
 # The converter runs through perl, because that is how the fleet produces the gap.
 HAVE_PERL = shutil.which("perl") is not None
 HAVE_BASH = shutil.which("bash") is not None
+HAVE_GIT = shutil.which("git") is not None
 
 
 def assertion_patterns(text: str) -> tuple[str, str]:
@@ -171,8 +172,14 @@ def one_home_patterns() -> list[str]:
 
 
 def convert(pattern: str, body: str) -> str:
-    """Run one converter pattern over a body, the way the skill says to.  A hung perl
-    exits 124 and a missing perl exits 127, so neither leaves the runner waiting."""
+    """Run one converter pattern over a body, the way the skill says to.
+
+    A hung perl and a missing perl are both a test failure with the reason in the
+    message.  They are not a SystemExit:  SystemExit derives from BaseException, and
+    unittest's bare except swallows it, so the run would report a plain test error and
+    lose which of the two happened.  The timeout is what keeps a hung perl from
+    holding the build.
+    """
     try:
         proc = subprocess.run(
             ["perl", "-CSDA", "-pe", pattern],
@@ -183,9 +190,9 @@ def convert(pattern: str, body: str) -> str:
             timeout=30,
         )
     except subprocess.TimeoutExpired as exc:
-        raise SystemExit(124) from exc
+        raise AssertionError("perl did not finish within 30 seconds") from exc
     except FileNotFoundError as exc:
-        raise SystemExit(127) from exc
+        raise AssertionError("perl is not on PATH") from exc
     if proc.returncode != 0:
         raise AssertionError("perl failed: %s" % proc.stderr.strip())
     return proc.stdout
@@ -193,14 +200,19 @@ def convert(pattern: str, body: str) -> str:
 
 def tracked_files() -> list[Path]:
     """Every tracked file in the checkout that can hold guidance."""
-    out = subprocess.run(
-        ["git", "ls-files"],
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
+    try:
+        out = subprocess.run(
+            ["git", "ls-files"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError("git ls-files did not finish within 30 seconds") from exc
+    except FileNotFoundError as exc:
+        raise AssertionError("git is not on PATH") from exc
     files = []
     for line in out.stdout.splitlines():
         path = ROOT / line
@@ -278,6 +290,7 @@ class ConverterBehaviourTests(unittest.TestCase):
         self.assertEqual(out.count(NBSP), 2)
 
 
+@unittest.skipUnless(HAVE_GIT, "git is not on PATH")
 class OneSourceOfTruthTests(unittest.TestCase):
     """The one home is the source, and every copy carries the same pattern."""
 
@@ -307,6 +320,27 @@ class OneSourceOfTruthTests(unittest.TestCase):
                     pattern,
                     "%s holds a converter without the markup group:  %s" % (rel, pattern),
                 )
+
+    def test_every_dated_record_ends_with_the_one_home_pattern(self) -> None:
+        """A dated record keeps the form its ruling was written in, but the live notice
+        it ends with must carry the one home's converter.
+
+        The record file is exempt from the sweep, because its dated parts are history.
+        Its live notice is not history:  it repeats the converter for a reader, and a
+        notice that repeats a stale one is the one copy that no gate compares, so it
+        would serve the stale converter after the one home changed.
+        """
+        canonical = one_home_patterns()[0]
+        for rel in DATED_RECORDS:
+            path = ROOT / rel
+            with open(path, encoding="utf-8") as fh:
+                found = patterns_in(fh.read())
+            self.assertTrue(found, "%s holds no converter pattern" % rel)
+            self.assertEqual(
+                found[-1],
+                canonical,
+                "%s does not end with the one home's converter:  %s" % (rel, found[-1]),
+            )
 
     def test_no_live_file_holds_a_converter_without_the_markup_group(self) -> None:
         """A copy that drifts is a body that ships with no gap, so every converter in the

@@ -70,7 +70,10 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 > ``grep -o $'[.!?][]*_`)\"]*\xc2\xa0' body.nbsp.txt | wc -l`` must be `> 0`, and
 > ``grep -cE '[^0-9][.!?][]*_`)\"]* +[A-Z"]' body.nbsp.txt`` must be `0`.
 > The 2026-10-08 and 2026-10-18 commands are left as they were written;  the one home is
-> `docs/fleet-skills/sentence-gap/SKILL.md`.
+> `docs/fleet-skills/sentence-gap/SKILL.md`.  `AGENT-SYNC.md` is a generated mirror:  it is
+> built from the Fleet-OPS handbook and rewritten by the handbook sync, so it carries the
+> command as of its last sync and not necessarily this one.  Take the command from the one
+> home, not from the mirror.
 
 ## What landed (docs, in this PR)
 
