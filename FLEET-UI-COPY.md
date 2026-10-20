@@ -8,21 +8,37 @@ settings, marketing HTML, App Store fields.
 
 
 
-## Theme default = light (owner ruling 2026-08-10 — ALL apps, ALL agents)
+## Theme default = system (owner ruling 2026-09-19 — supersedes 2026-08-10 — ALL apps, ALL agents)
 
-Owner: default UI theme is **light**. Agents keep inventing dark-first or
-"system" defaults that land on dark because the Mac is dark — stop that.
+Owner: default UI theme is **system** — the app follows the OS appearance.
+A Mac in light boots light; a Mac in dark boots dark; an iPhone in dark
+boots dark.  This supersedes the 2026-08-10 ruling that pinned the default
+to light and warned against system/dark-first defaults.  That ruling
+existed because most fleet agents develop on a Mac that is dark, and a
+system-default would land them on dark every time.  The owner has decided
+that is no longer the trade-off they want — the OS preference is the
+right default for first-time visitors, and it eliminates the dev-Mac
+optical illusion in both directions.
 
-- **Default for first visit / no stored preference:** always **light**.
-- **Do not** boot into dark from `prefers-color-scheme` unless the user has
-  explicitly chosen **System** (or Dark).
-- Dark remains an **optional** user choice via Light | Dark | System (or
-  equivalent) — never the product default.
-- **Screenshots / ASC / marketing / design previews:** capture in **light**
-  mode unless the owner explicitly asks for dark. Existing ASC packs that
-  are already light do not need a redo for this rule alone.
-- Applies to every fleet app (web + iOS + Android + BotFleet chrome).
-- Do not "make it look cool" with dark chrome by default. Light is correct.
+- **Default for first visit / no stored preference:** **system** (follow the OS).
+- **Stored preferences are never rewritten** by this rule.  A returning user
+  who chose Light or Dark stays on it; only first paint with no record
+  defaults to system.
+- Light, Dark, and System remain available choices everywhere a picker
+  ships; System is just the new default.
+- **Screenshots / ASC / marketing / design previews:** capture on a
+  **light** Mac unless the owner explicitly asks for dark.  The product
+  default is system, the capture default is still light, because marketing
+  assets need a deterministic palette regardless of who happens to be
+  developing them.  Existing ASC packs that are already light do not need
+  a redo for this rule alone.
+- Applies to every fleet app (web + iOS + Android + BotFleet chrome +
+  CodeCaps).  Each seat lands the default flip in their own app; the
+  FLEET-UI-COPY change here is the canonical signal, not the per-app
+  code change.
+- The dev-Mac-dark-footgun still applies to any *picked* dark theme — a
+  light capture is still the right answer for marketing.  The reversal is
+  only about the *default*, not about choice.
 
 ## Proper nouns
 
@@ -81,8 +97,8 @@ when the string is not a full sentence — not Title Case:
   bot-to-bot) is the owner's clock: **12-hour, with am or pm**, on every agent, bot,
   and platform.  That clock is Central.  Do not type CDT, CST, or CT.  Write `3:15am`,
   not `3:15am CDT` and not `08:15Z`.  When the day matters, write
-  `Sun, Oct 5, 2026 at 3:15am`.  Give only the Central time:  convert UTC and every
-  other zone first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00pm the previous
+  `Sun, Oct 5, 2026 at 3:15am`.  Name a zone only when the time is not that clock.
+  The usual case is UTC, after the local time.  `00:00 UTC` is 7:00pm the previous
   calendar day during daylight saving, and 6:00pm the previous calendar day after
   the fall-back.  See `/Users/jay/apps/AGENT-SYNC.md` § Timestamps: Central Time.
 
@@ -198,12 +214,34 @@ destination:
   outside code spans, as in `Sentence one.&nbsp; Sentence two.`  The renderer decodes it into
   a real gap.  Two ASCII spaces collapse, and a raw U+00A0 typed by the model arrives as a
   plain space (the verified reply held 0 NBSPs).
+- **MiniMax Code chat pane (owner-verified 2026-10-20):**  a REAL U+00A0, the nbsp
+  character, followed by a normal space.  Jay:  "I think you need to do nbsp for chats or
+  something", and "I have confirmed this before with agents and knew you needed nbsp
+  already".  Two ASCII spaces collapse in that pane, and the `&nbsp;` ENTITY renders as
+  the six literal characters, which is worse than no gap at all.  The earlier 2026-10-18
+  note for this pane, entity plus a space, was wrong, and it is corrected here.
 - **Chat reply in any other Markdown-rendering agent chat pane** (Codex, Cursor,
-  Antigravity, Grok, Kimi, MiniMax, DeepSeek, Fx, Muse): the same entity plus a space, by
-  owner ruling 2026-10-08.  Not individually verified.  If the owner ever sees the six
-  characters, stop using the entity on that surface, report it in #agent-sync, and treat
-  that surface's mechanism as unknown until tested.  Using a working mechanism needs no
-  confirmation.
+  Antigravity, Grok, Kimi, DeepSeek, Fx, Muse):  the same entity plus a space, by
+  owner ruling 2026-10-08, unless that surface has been individually verified otherwise.
+  If the owner ever sees the six characters, stop using the entity on that surface, report
+  it in #agent-sync, and treat that surface's mechanism as unknown until tested.  Using a
+  working mechanism needs no confirmation.
+- **The gap covers your CHAT PROSE, not only your artifacts.**  Owner ruling 2026-10-20:
+  every message you write to Jay, including one-line progress notes and
+  acknowledgements.  Getting it right in files, commits, PRs, board rows and Zulip posts
+  while writing plain single spaces in the chat is still a failure.  Read the reply back
+  before sending it.
+- **The mechanism is per platform, and this table is incomplete.**  Owner, 2026-10-20:
+  "this is fleet sync related issue since different platforms have different backend
+  requirements for that.  some can't do nbsp and should not put that since it would show
+  that and some should just have 2 normal spaces.  but minimax and claude and more than
+  half do or at least about half".  Two surfaces are owner-verified so far and they are
+  NOT the same mechanism:  the Claude Code desktop Code tab uses the `&nbsp;` entity, the
+  MiniMax Code pane uses a real U+00A0 followed by a normal space.  Never assume one
+  surface's mechanism from another's.  If your surface is not listed as verified, ask in
+  #agent-sync and report what you actually see; until then use two literal ASCII spaces,
+  because that is the safe default and the failure mode of the entity is that the six
+  characters appear on screen, which is worse than no gap at all.
 - **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode):
   two literal ASCII spaces, unverified.  A terminal would print the entity as literal text.
 - **Cloud / BotFleet / OpenMausBot chat:** two literal ASCII spaces.  The backend maps them
@@ -212,17 +250,21 @@ destination:
   (anything a tool writes that a Markdown or HTML renderer then shows): a real U+00A0 plus a
   space (owner ruling 2026-10-08).  Never the entity there, because GitHub can copy a PR body
   into a plain-text squash commit, where it would show literally.  You cannot type U+00A0 in
-  chat, and a double space you emit into a tool call *sometimes* arrives collapsed to a single
-  space — intermittently, not deterministically, so never diagnose it and always verify.  So
-  generate the gap in the shell, matching one *or more* spaces so it works in both states:
-  `perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g'`.  Then run both checks before posting:
-  `grep -o $'\xc2\xa0' body.nbsp.txt | wc -l` must be `> 0`, and `grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt`
-  must be `0`, because a partly converted body can hold real U+00A0 and still carry one leftover
-  single-space gap.  A conversion that matched nothing still exits 0, so a failed run is silent.
-  `agent-sync post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
-  so `chmod 600` it first.  Source files (Swift, TypeScript, shell, and markdown read as source)
-  are not affected and keep two literal ASCII spaces; never put a U+00A0 into a committed source
-  file, which is a real defect rather than a fix.
+  chat, so write the text and convert with a pattern that matches **one or more** spaces:
+  `perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt`
+  The one-or-more match is the whole fix.  An exactly-two pattern (`([.!?])  (?=\S)`) matches
+  nothing on text that arrived with single spaces, exits 0, and posts with no gap at all.
+  The `(?<![0-9])` lookbehind protects a numbered-list marker and `v1.2.3`; the lookahead skips
+  a lowercase follower so `e.g. this` keeps its plain space.
+  The `-CSDA` matters: it emits the two UTF-8 bytes `c2 a0`, not a raw `a0`.
+  **Assert before posting — both checks, every time.**  A conversion that matches nothing still
+  exits 0, so a failed run is silent; and a count above zero is not sufficient on its own,
+  because a partly-converted body can hold real U+00A0 and still carry one leftover single-space
+  gap.  `grep -o $'[.!?]\xc2\xa0' body.nbsp.txt | wc -l` must not print `0`, and
+  `grep -cE '[^0-9][.!?] +[A-Z"]' body.nbsp.txt` must print `0`.  A `0` from the first check means
+  the run changed nothing: fix it before posting, never after.  Verify with Python rather than
+  `grep -P`, which BSD grep lacks:
+  `python3 -c "print(open('f.txt','rb').read().decode('utf-8').count('\u00a0'))"`
 - **Files read as source and other plain text** (repo markdown and text, commit messages,
   code comments, config, Linear issue text, terminal output): two LITERAL ASCII
   spaces.  An entity would appear as literal text.
@@ -274,7 +316,7 @@ not.
 - **App Store Connect — all of it:** description, promotional text, What’s New,
   **App Review notes**, **subscription / IAP review notes**, subscription
   localization descriptions, support/marketing blurbs
-- Push / email / Zulip-to-owner product copy / help / privacy / terms prose
+- Push / email / Slack-to-owner product copy / help / privacy / terms prose
 - Apple Notes completion notes, rollouts meant for the owner, README user prose
 - Marketing, screenshot captions, TestFlight “What to Test”
 
