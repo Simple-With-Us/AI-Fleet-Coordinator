@@ -18,7 +18,7 @@ non-zero, times out, or prints nothing is a FAIL.
     python3 -m fleet_lanes.install_tools verify [--home H] [tools | PLATFORM ... | all]
     python3 -m fleet_lanes.install_tools --self-test
 
-PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch, kimi, copilot, vibe, opencode
+PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch, kimi, copilot, opencode
 or fx.  The first five get a hook entry in their config file.  minimax is a plugin DIRECTORY that this tool owns:
 MiniMax Code reads no settings
 file for hooks, it loads them from a real directory under ~/.minimax/plugins/<name>/ (a symlink is skipped), so `apply
@@ -34,17 +34,13 @@ found on PATH, with HOME, the XDG dirs, TMPDIR and Muse's credential path inside
 caller's XDG_ or MUSE_ variables except the plugin switch, and MUSE_NO_AUTO_UPDATE=1 and MUSE_LOGIN=0 (see
 muse_validate_env).  That is confined, not proven read-only: the launcher still runs from its own install dir.
 `all` is `tools` plus the five config platforms plus minimax (an own directory, no owner step afterwards), plus
-copilot, vibe, opencode and fx.  `apply` needs a target; `plan` defaults to all plus muse, clutch
+copilot, opencode and fx.  `apply` needs a target; `plan` defaults to all plus muse, clutch
 and kimi, and `verify` the same.
 
-copilot, vibe, opencode and fx (AFC-387).  copilot is a fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json
+copilot, opencode and fx (AFC-387).  copilot is a fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json
 (version 1, hooks.PreToolUse, matcher Bash, the fleet hook with --format claude and timeoutSec 5); this tool never
 edits ~/.copilot/settings.json, and whether Copilot fires a preToolUse hook at all is UNVERIFIED on this Mac, so the
-first install is owner-gated and `verify copilot` ends with a SKIP for the live proof.  vibe is a marked [[hooks]]
-block in ~/.vibe/hooks.toml (name fleet-lane-guard, type before_tool, match bash, the fleet hook with --format vibe,
-timeout 5, strict true) plus the gate `enable_experimental_hooks = true` in ~/.vibe/config.toml, without which Vibe
-loads no hooks at all; `match` is bash because that is Vibe's shell tool name, and a wrong exact name would
-silently never fire.  Vibe is an engine-only CLI with no fleet seat, so no seat is claimed for it.  opencode is a
+first install is owner-gated and `verify copilot` ends with a SKIP for the live proof.  opencode is a
 local TypeScript plugin in the stable dir (opencode-plugin/fleet-lane-guard.ts) listed by absolute path in the
 plugin array of ~/.config/opencode/opencode.json; it inspects tool.execute.before and denies through
 permission.ask, and whether permission.ask is reached for a denied call is UNVERIFIED.  fx has NO hook surface at
@@ -288,9 +284,6 @@ MINIMAX_HOOK_TIMEOUT_S = (
 )
 PLATFORM_ALIASES = {"mm": "minimax"}  # the seat tag works as a target
 COPILOT_HOOKS_REL = ".copilot/hooks/fleet-lane-guard.json"  # a fleet-owned file; ~/.copilot/settings.json is not ours
-VIBE_CONFIG_REL = ".vibe/config.toml"  # holds only the enable_experimental_hooks gate for this tool
-VIBE_HOOKS_REL = ".vibe/hooks.toml"
-VIBE_SHELL_TOOL = "bash"  # Vibe's shell tool name; a wrong exact name silently never fires
 OPENCODE_CONFIG_REL = ".config/opencode/opencode.json"
 OPENCODE_PLUGIN_FILE = "opencode-plugin/fleet-lane-guard.ts"  # relative to the stable dir
 OPENCODE_PLUGIN_ID = "fleet-lane-guard"
@@ -459,14 +452,6 @@ class Paths:
     @property
     def copilot_hooks(self) -> str:
         return os.path.join(self.home, *COPILOT_HOOKS_REL.split("/"))
-
-    @property
-    def vibe_config(self) -> str:
-        return os.path.join(self.home, *VIBE_CONFIG_REL.split("/"))
-
-    @property
-    def vibe_hooks(self) -> str:
-        return os.path.join(self.home, *VIBE_HOOKS_REL.split("/"))
 
     @property
     def opencode_config(self) -> str:
@@ -2082,7 +2067,7 @@ def check_deny_output(fmt: str, out: bytes, marker: str = DENY_MARKER) -> str | 
         if hso.get("hookEventName") != "PreToolUse" or hso.get("permissionDecision") != "deny":
             return "hookSpecificOutput is not a PreToolUse deny"
         reason = hso.get("permissionDecisionReason")
-    elif fmt in ("grok", "antigravity", "vibe"):
+    elif fmt in ("grok", "antigravity"):
         if set(body) != {"decision", "reason"} or body.get("decision") != "deny":
             return 'expected exactly {"decision": "deny", "reason": ...}'
         reason = body.get("reason")
@@ -2502,47 +2487,6 @@ PLATFORMS: dict[str, Platform] = {
             ),
         ),
         Platform(
-            "vibe",
-            "Mistral Vibe (hooks.toml plus the experimental-hooks gate)",
-            "vibe",
-            "claude",
-            "claude",
-            "before_tool",
-            VIBE_SHELL_TOOL,
-            ".vibe",
-            VIBE_HOOKS_REL,
-            supported=False,
-            kind="block",
-            in_all=True,
-            notes=(
-                "ONE marked [[hooks]] block in ~/.vibe/hooks.toml: name fleet-lane-guard, type before_tool, match "
-                "bash, the fleet hook with --format vibe (Vibe's deny contract is {decision: deny, reason: ...}), "
-                "timeout 5, strict true, so a hook failure denies too (fail-closed).  Plus `enable_experimental_hooks "
-                "= true` at the top level of ~/.vibe/config.toml: Vibe's hook loader returns no hooks at all while that "
-                "gate is false or absent, which is the only reason Vibe was unguarded.",
-                "match is bash because that is Vibe's shell tool name: the tool's class is `Bash`, `get_name()` "
-                "snake-cases the class name, the live config.toml keys its tool tables by that same name, and a tool "
-                "call only resolves when the name the model sent is the registered one, so the name the hook sees is "
-                "bash.  A wrong exact name silently never fires, so the name is pinned here rather than left as a "
-                "wildcard, and a Vibe that renames the tool would silently stop the hook (the same risk the Kimi "
-                "entry records).",
-                "bash and not * on purpose: strict true turns a hook FAILURE into a deny, so a wildcard would make "
-                "every harmless tool call (read, grep, web_fetch, todo) fail closed whenever the guard process "
-                "misbehaves.  bash keeps that blast radius on the one tool that can run a fleet clone, and the guard "
-                "reads the command from the same payload keys Vibe sends (tool_name, tool_input.command, cwd).",
-                "Vibe is an engine-only CLI with no fleet identity and no seat, so nothing here claims a seat for it; "
-                "this tool only makes the installer able to write the guard and records the state.",
-            ),
-            unverified=(
-                "That Vibe loads a user-level ~/.vibe/hooks.toml and fires a before_tool hook in a live session (the "
-                "mechanism is read from the installed package source, not run): the live proof is a new Vibe session "
-                "asked to run a fleet clone into /tmp, which must be refused.",
-                "That Vibe keeps naming its shell tool `bash`: the name is read from the installed package source and "
-                "the live config.toml, never seen in a live hook firing.  A rename would silently stop the hook.",
-                "That a running Vibe session picks up the new hooks.toml and gate: start a new session.",
-            ),
-        ),
-        Platform(
             "opencode",
             "OpenCode (local plugin in the stable dir)",
             "claude",
@@ -2626,7 +2570,6 @@ NEXT_STEPS: dict[str, str] = {
     "copilot": "OWNER STEP (first install): start a new Copilot CLI session, ask it to run a process listing, and "
     "expect a refusal.  No live preToolUse firing is recorded on this Mac, so until that proof exists the guard is "
     "written but UNVERIFIED",
-    "vibe": "start a new Vibe session, ask it to clone a fleet repo into /tmp, and expect a refusal",
     "opencode": "OWNER STEP: start a new OpenCode session, ask it to run a process listing, and expect a refusal.  "
     "Whether permission.ask denies live is UNVERIFIED until that proof exists",
     "fx": "no installer step exists: fx stays RED (UNSUPPORTED) until Jay merges the prepared compensating control "
@@ -4567,8 +4510,6 @@ def verify_muse(
 def block_path(plat: Platform, paths: Paths) -> str:
     if plat.key == "clutch":
         return paths.clutch_patch
-    if plat.key == "vibe":
-        return paths.vibe_hooks
     return paths.kimi_config
 
 
@@ -4586,16 +4527,6 @@ def block_body(plat: Platform, paths: Paths) -> list[str]:
             "      name: '@deepseek-ai/dsh-hooks-claude-code'",
             "      config:",
             f"        configPath: {json.dumps(paths.clutch_hooks)}",
-        ]
-    if plat.key == "vibe":
-        return [
-            "[[hooks]]",
-            'name = "fleet-lane-guard"',
-            'type = "before_tool"',
-            'match = "%s"' % VIBE_SHELL_TOOL,
-            f"command = {json.dumps(block_command(plat, paths))}",
-            f"timeout = {HOOK_TIMEOUT_S}",
-            "strict = true",
         ]
     return [
         "[[hooks]]",
@@ -4616,33 +4547,12 @@ def kimi_fields(plat: Platform, paths: Paths) -> dict:
     }
 
 
-def vibe_fields(plat: Platform, paths: Paths) -> dict:
-    """The fields of the Vibe `[[hooks]]` entry this tool writes, as values (what a parse of the file gives).  The
-    match is Vibe's shell tool name, `bash`:  the tool's class is `Bash`, `get_name()` snake-cases the class name, the
-    live config.toml keys its tables by that same name, and a tool call only resolves when the name the model sent is
-    the registered one, so the name the hook sees is `bash`.  A wrong exact name silently never fires, so it is
-    pinned here and a rename is called out as UNVERIFIED."""
-    return {
-        "name": "fleet-lane-guard",
-        "type": "before_tool",
-        "match": VIBE_SHELL_TOOL,
-        "command": block_command(plat, paths),
-        "timeout": HOOK_TIMEOUT_S,
-        "strict": True,
-    }
-
-
 def block_fields(plat: Platform, paths: Paths) -> dict:
-    """The `[[hooks]]` fields this tool writes for a TOML block platform (Kimi or Vibe)."""
-    return vibe_fields(plat, paths) if plat.key == "vibe" else kimi_fields(plat, paths)
+    """The `[[hooks]]` fields this tool writes for the TOML block platform (Kimi)."""
+    return kimi_fields(plat, paths)
 
 
-_VIBE_GATE_KEY = "enable_experimental_hooks"
-_VIBE_GATE_RE = re.compile(
-    r"^[ \t]*enable_experimental_hooks[ \t]*=[ \t]*([^#\n]*?)[ \t]*(?:#.*)?$"
-)
-_VIBE_TABLE_RE = re.compile(r"^[ \t]*\[")
-_VIBE_KV_RE = re.compile(r"^[ \t]*([A-Za-z0-9_.-]+)[ \t]*=")
+_TOML_TABLE_RE = re.compile(r"^[ \t]*\[")
 
 # A top-level TOML key, as the structural check sees it:  a bare name, a quoted name or
 # a single-quoted name, then an equals sign.  It is the line shape a well-formed
@@ -4653,7 +4563,7 @@ _TOML_KEY_RE = re.compile(
 )
 
 
-def _vibe_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | None]:
+def _toml_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | None]:
     """The bracket depth and the open string delimiter after reading `line`, both carried across lines.  A value may
     span lines, so `depth` and `quote` are the whole state of a TOML value: inside them the lines are the value's
     text and not keys or tables of their own."""
@@ -4689,68 +4599,18 @@ def _vibe_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | Non
     return depth, quote
 
 
-def _vibe_value_end(lines: list[str], start: int) -> int:
+def _toml_value_end(lines: list[str], start: int) -> int:
     """The index just past the value that begins on `lines[start]`: a multi-line array, inline table or
     triple-quoted string ends on the line that closes it, not on the line its key is on."""
     depth = 0
     quote: str | None = None
     for i in range(start, len(lines)):
-        depth, quote = _vibe_scan(lines[i], depth, quote)
+        depth, quote = _toml_scan(lines[i], depth, quote)
         if quote is None and depth <= 0:
             return i + 1
     return len(lines)
 
 
-def vibe_gate(text: str | None) -> bool | None:
-    """The top-level `enable_experimental_hooks` value in a Vibe config.toml (True, False or None when absent).
-    Only the top level counts: the key under a table belongs to that table, and a line inside a value that spans
-    lines is that value's text rather than a key."""
-    if text is None:
-        return None
-    depth = 0
-    quote: str | None = None
-    for line in text.splitlines():
-        at_top = quote is None and depth <= 0
-        depth, quote = _vibe_scan(line, depth, quote)
-        if not at_top:
-            continue
-        if _VIBE_TABLE_RE.match(line):
-            break
-        m = _VIBE_GATE_RE.match(line)
-        if m:
-            return True if m.group(1) == "true" else (False if m.group(1) == "false" else None)
-    return None
-
-
-def vibe_set_gate(text: str) -> str:
-    """`text` with the top-level gate set to true.  An existing top-level key is replaced in place; a missing one is
-    inserted after the last top-level key, or at the top when there is none.  A key whose value spans lines ends
-    where that value ends, so the gate never lands inside it.  Nothing else is changed."""
-    lines = text.split("\n")
-    depth = 0
-    quote: str | None = None
-    insert_at = 0
-    for i, line in enumerate(lines):
-        at_top = quote is None and depth <= 0
-        depth, quote = _vibe_scan(line, depth, quote)
-        if not at_top:
-            continue
-        if _VIBE_TABLE_RE.match(line):
-            break
-        if _VIBE_GATE_RE.match(line):
-            # The value of the key may span lines,  and replacing only its first line
-            # leaves the rest of it behind as orphan text,  which is not valid TOML.
-            # The value ends where the scan says it ends,  so the whole value goes.
-            # For a single-line value the end is the next line,  so the result is
-            # byte-identical to replacing the line alone.
-            end = _vibe_value_end(lines, i)
-            lines[i:end] = [_VIBE_GATE_KEY + " = true"]
-            return "\n".join(lines)
-        if _VIBE_KV_RE.match(line):
-            insert_at = _vibe_value_end(lines, i)
-    lines.insert(insert_at, _VIBE_GATE_KEY + " = true")
-    out = "\n".join(lines)
-    return out if out.endswith("\n") or not out else out + "\n"
 
 
 @dataclass
@@ -4767,12 +4627,6 @@ class BlockPlan:
     command: str = ""
     body: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    gate_path: str = ""  # vibe: ~/.vibe/config.toml, which holds enable_experimental_hooks
-    gate_action: str = "none"  # vibe: replace when the gate is not already true
-    gate_new_text: str | None = None
-    gate_raw: bytes | None = None
-    gate_mode: int | None = None
-    gate_exists: bool = False
 
 
 def _toml_structure_problem(text: str) -> str | None:
@@ -4783,20 +4637,20 @@ def _toml_structure_problem(text: str) -> str | None:
     writer like this one can do:  a value or a string that is never closed,  and a line
     left over from a value that was replaced.
 
-    It reuses ``_vibe_scan``,  which already carries the bracket depth and the open
+    It reuses ``_toml_scan``,  which already carries the bracket depth and the open
     string across lines,  so a line inside a value is that value's text and not a key.
     """
     depth = 0
     quote: str | None = None
     for lineno, line in enumerate(text.splitlines(), 1):
         at_top = quote is None and depth <= 0
-        depth, quote = _vibe_scan(line, depth, quote)
+        depth, quote = _toml_scan(line, depth, quote)
         if not at_top:
             continue
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if _VIBE_TABLE_RE.match(line):
+        if _TOML_TABLE_RE.match(line):
             continue
         if not _TOML_KEY_RE.match(line):
             return "config.toml line %d is neither a table header nor a key" % lineno
@@ -4821,8 +4675,8 @@ def _has_top_level_key(text: str, name: str) -> bool:
     pattern = re.compile(r"^[ \t]*%s[ \t]*=" % re.escape(name))
     for line in text.splitlines():
         at_top = quote is None and depth <= 0
-        depth, quote = _vibe_scan(line, depth, quote)
-        if at_top and _VIBE_TABLE_RE.match(line):
+        depth, quote = _toml_scan(line, depth, quote)
+        if at_top and _TOML_TABLE_RE.match(line):
             # A table header ends the top level:  the keys under it are that table's.
             in_table = True
             continue
@@ -4889,46 +4743,6 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
                 f"{path} is read-only (mode {bp.mode:04o}); not overriding the owner's choice",
             )
             return bp
-    if plat.key == "vibe":
-        bp.gate_path = paths.vibe_config
-        if os.path.islink(bp.gate_path):
-            bp.state, bp.reason = "refuse", f"{bp.gate_path} is a symlink; not writing through it"
-            return bp
-        if not os.path.lexists(bp.gate_path):
-            bp.state, bp.reason = (
-                "refuse",
-                f"{bp.gate_path} does not exist, so the enable_experimental_hooks gate cannot be set; "
-                "Vibe looks installed (~/.vibe exists) but not configured",
-            )
-            return bp
-        try:
-            gst = os.stat(bp.gate_path)
-            if not stat.S_ISREG(gst.st_mode):
-                bp.state, bp.reason = "refuse", f"{bp.gate_path} is not a regular file"
-                return bp
-            bp.gate_raw = _read_bytes(bp.gate_path)
-            bp.gate_mode, bp.gate_exists = stat.S_IMODE(gst.st_mode), True
-            gate_text = bp.gate_raw.decode("utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            bp.state, bp.reason = "refuse", f"{bp.gate_path} cannot be read as UTF-8 text ({exc})"
-            return bp
-        gate = vibe_gate(gate_text)
-        bp.gate_action = "none" if gate is True else "replace"
-        bp.gate_new_text = gate_text if gate is True else vibe_set_gate(gate_text)
-        if bp.gate_action != "none" and bp.gate_mode is not None and not bp.gate_mode & 0o200:
-            bp.state, bp.reason = (
-                "refuse",
-                f"{bp.gate_path} is read-only (mode {bp.gate_mode:04o}); not overriding the owner's choice",
-            )
-            return bp
-        bp.notes.append(
-            f"{bp.gate_path}: enable_experimental_hooks is "
-            + (
-                "already true"
-                if gate is True
-                else "not true, so Vibe loads no hooks; apply sets it to true"
-            )
-        )
     try:
         if plat.key == "clutch":
             if text is not None and text.strip() and not CP.is_list_patch(text):
@@ -4948,16 +4762,10 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
         bp.state, bp.reason = "refuse", f"{path}: {exc}"
         return bp
     bp.new_text = new
-    if plat.key == "vibe" and bp.gate_action != "none" and bp.action == "none":
-        bp.action = "replace"  # the hooks entry is current, but the gate still has to be set
-    if plat.key in ("kimi", "vibe"):
+    if plat.key == "kimi":
         problem = _toml_problem(new)
         if problem:
             bp.state, bp.reason = "refuse", problem
-    if plat.key == "vibe" and bp.gate_new_text is not None:
-        problem = _toml_problem(bp.gate_new_text)
-        if problem:
-            bp.state, bp.reason = "refuse", f"{bp.gate_path}: {problem}"
     if bp.state == "ok" and bp.exists and not os.access(os.path.dirname(path), os.W_OK | os.X_OK):
         bp.state, bp.reason = "refuse", f"the directory {os.path.dirname(path)} is not writable"
     return bp
@@ -5109,10 +4917,6 @@ def apply_block(
             notes.append(detail)
         else:
             notes.append("the patch was NOT checked with the engine (--no-dsh-check)")
-    elif plat.key == "vibe":
-        notes.append(
-            "both TOML files parse (when tomllib is available); no Vibe binary check is run"
-        )
     else:
         if check_kimi:
             status, detail = _kimi_doctor(bp.new_text, timeout, paths.home)
@@ -5127,82 +4931,6 @@ def apply_block(
             notes.append(detail)
         else:
             notes.append("config.toml was NOT checked with `kimi doctor` (--no-kimi-check)")
-    if plat.key == "vibe":
-        assert bp.gate_new_text is not None
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
-        backups: list[str] = []
-        try:
-            os.makedirs(os.path.dirname(bp.path), exist_ok=True)
-            os.makedirs(os.path.dirname(bp.gate_path), exist_ok=True)
-            if bp.gate_exists and bp.gate_action != "none":
-                assert bp.gate_raw is not None
-                backups.append(_make_backup(bp.gate_path, bp.gate_raw, bp.gate_mode, stamp))
-            if bp.exists:
-                assert bp.raw is not None
-                backups.append(_make_backup(bp.path, bp.raw, bp.mode, stamp))
-            changed = _reread_matches(bp.path, bp.raw or b"", bp.exists) and _reread_matches(
-                bp.gate_path, bp.gate_raw or b"", bp.gate_exists
-            )
-            if not changed:
-                for b in backups:
-                    os.unlink(b)
-                return Result(
-                    plat.key,
-                    "failed",
-                    f"{bp.path} or {bp.gate_path} changed while it was being edited; nothing written, retry",
-                )
-            if bp.gate_action != "none":
-                atomic_write(
-                    bp.gate_path,
-                    bp.gate_new_text.encode("utf-8"),
-                    bp.gate_mode if bp.gate_mode is not None else 0o644,
-                )
-            if bp.new_text.encode("utf-8") != (bp.raw or b""):
-                atomic_write(
-                    bp.path, bp.new_text.encode("utf-8"), bp.mode if bp.mode is not None else 0o644
-                )
-        except OSError as exc:
-            return Result(
-                plat.key,
-                "failed",
-                f"{bp.path} not changed: {type(exc).__name__}: {exc}",
-                backups[0] if backups else None,
-            )
-        again = plan_block(plat, paths)
-        if again.state != "ok" or again.action != "none" or again.gate_action != "none":
-            try:
-                if bp.gate_exists and bp.gate_raw is not None:
-                    atomic_write(
-                        bp.gate_path,
-                        bp.gate_raw,
-                        bp.gate_mode if bp.gate_mode is not None else 0o644,
-                    )
-                elif os.path.lexists(bp.gate_path):
-                    os.unlink(bp.gate_path)
-                if bp.exists and bp.raw is not None:
-                    atomic_write(bp.path, bp.raw, bp.mode if bp.mode is not None else 0o644)
-                elif os.path.lexists(bp.path):
-                    os.unlink(bp.path)
-            except OSError:
-                pass
-            return Result(
-                plat.key,
-                "failed",
-                f"{bp.path} failed validation after the write; the originals were restored",
-                backups[0] if backups else None,
-            )
-        detail = f"{bp.path} and the gate in {bp.gate_path}"
-        if backups:
-            detail += " (backups " + ", ".join(backups) + ")"
-        all_notes = bp.notes + notes
-        if all_notes:
-            detail += "; " + "; ".join(all_notes)
-        return Result(
-            plat.key,
-            "added" if bp.action in ("create", "append") else "updated",
-            detail,
-            backups[0] if backups else None,
-        )
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     backup: str | None = None
     try:
@@ -5316,7 +5044,7 @@ def verify_block(
         ]
     info: TH.Inspection | None = None
     try:
-        if plat.key in ("kimi", "vibe"):
+        if plat.key == "kimi":
             # Kimi rewrites config.toml without comments, so the markers can be gone while the hook is still wired:
             # the entry is found by what it says (see toml_hooks)
             info = TH.inspect(text, BLOCK_NAME, block_fields(plat, paths), is_ours)
@@ -5434,52 +5162,6 @@ def verify_block(
                 "SKIP",
                 DC.reload_note(os.path.join(paths.home, ".clutch", "dsh", "profiles"))
                 + "; whether the running engine has loaded the plugin is not visible from here",
-            )
-        )
-    elif plat.key == "vibe":
-        problem = _toml_problem(text)
-        out.append(
-            Check(
-                t,
-                "hooks.toml",
-                "FAIL" if problem else "PASS",
-                problem or "parses (or no tomllib to ask)",
-            )
-        )
-        try:
-            gate_text = _read_bytes(paths.vibe_config).decode("utf-8")
-            gate = vibe_gate(gate_text)
-            gate_problem = _toml_problem(gate_text)
-        except (OSError, UnicodeDecodeError) as exc:
-            gate, gate_problem = None, f"{paths.vibe_config} cannot be read ({exc})"
-        if gate_problem:
-            out.append(Check(t, "hooks gate", "FAIL", gate_problem))
-        elif gate is True:
-            out.append(
-                Check(
-                    t,
-                    "hooks gate",
-                    "PASS",
-                    f"{paths.vibe_config} has enable_experimental_hooks = true, so Vibe loads hooks",
-                )
-            )
-        else:
-            out.append(
-                Check(
-                    t,
-                    "hooks gate",
-                    "FAIL",
-                    f"{paths.vibe_config} does not set enable_experimental_hooks = true, so Vibe loads "
-                    "no hooks at all and the block above is inert; re-run `apply vibe`",
-                )
-            )
-        out.append(
-            Check(
-                t,
-                "fires",
-                "SKIP",
-                "whether Vibe fires a before_tool hook is not visible from here (UNVERIFIED); ask a new "
-                "Vibe session to clone a fleet repo into /tmp and expect a refusal",
             )
         )
     else:
@@ -7045,11 +6727,6 @@ def _emit_block_plan(
             emit(f"   hooks file {paths.clutch_hooks} (written by `apply tools`):")
             for ln in render_clutch_hooks(paths.stable).splitlines():
                 emit(f"     | {ln}")
-        if plat.key == "vibe":
-            emit(
-                f"   gate {bp.gate_path} [{bp.gate_action}]: enable_experimental_hooks = true "
-                "(only that one top-level key is changed; the rest of config.toml is never printed)"
-            )
     for n in plat.notes:
         emit(f"   note: {n}")
     for u in plat.unverified:

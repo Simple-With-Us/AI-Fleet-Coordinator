@@ -1,4 +1,4 @@
-"""AFC-387 tests: the Copilot, Vibe, OpenCode and fx guards, and the --format vibe deny shape.
+"""AFC-387 tests: the Copilot, OpenCode and fx guards.
 
     cd scripts && python3 -m unittest fleet_lanes.tests.test_muster_guards -v
 
@@ -224,23 +224,6 @@ class World(unittest.TestCase):
         self.assertEqual(bad, [], "\n".join(bad))
 
 
-class VibeFormatTests(unittest.TestCase):
-    def test_vibe_is_a_format_and_renders_the_vibe_deny_shape(self) -> None:
-        self.assertIn("vibe", H.FORMATS)
-        fmt, exit2 = H._parse_args(["--format", "vibe"])
-        self.assertEqual((fmt, exit2), ("vibe", False))
-        body = json.loads(H.render("no clone at /tmp/x please", "vibe", "/tmp/x"))
-        self.assertEqual(body, {"decision": "deny", "reason": "no clone at /tmp/x please"})
-
-    def test_vibe_deny_output_is_checked_as_decision_and_reason(self) -> None:
-        good = json.dumps({"decision": "deny", "reason": "no /tmp/hh-verify"}).encode()
-        self.assertIsNone(T.check_deny_output("vibe", good))
-        claude = json.dumps(
-            {"hookSpecificOutput": {"permissionDecisionReason": "x /tmp/hh-verify"}}
-        ).encode()
-        self.assertIsNotNone(T.check_deny_output("vibe", claude))
-
-
 class CopilotTests(World):
     def setUp(self) -> None:
         super().setUp()
@@ -362,197 +345,6 @@ class CopilotTests(World):
         )
         self.assertEqual(rc, 1, out)
         self.assertRegex(out, r"FAIL\s+copilot\s+hooks file.*named explicitly")
-
-
-class VibeTomlSafetyTests(World):
-    """The Vibe gate is written safely, and the file stays loadable on every Python."""
-
-    def test_the_gate_replaces_the_whole_value_when_it_spans_lines(self) -> None:
-        # A value may span lines,  and replacing only its first line leaves the rest of
-        # it behind as orphan text,  which is not valid TOML:  Vibe's config would stop
-        # loading.  The whole value goes.
-        source = 'enable_experimental_hooks = [\n  "x",\n]\nother = 1\n'
-        out = T.vibe_set_gate(source)
-        self.assertIn("enable_experimental_hooks = true", out)
-        self.assertNotIn('"x"', out)
-        self.assertNotIn("]", out)
-        self.assertIn("other = 1", out)
-        self.assertTrue(T.vibe_gate(out))
-        self.assertIsNone(T._toml_problem(out))
-
-    def test_a_single_line_gate_is_replaced_in_place(self) -> None:
-        # The ordinary case must not change:  the key is replaced and nothing else moves.
-        source = "enable_experimental_hooks = false\nx = 1\n"
-        out = T.vibe_set_gate(source)
-        self.assertEqual(out, "enable_experimental_hooks = true\nx = 1\n")
-
-    def test_the_toml_check_catches_a_value_that_was_replaced_in_the_middle(self) -> None:
-        # The corruption a replace leaves behind,  which is what the check has to see.
-        broken = 'enable_experimental_hooks = true\n  "x",\n]\nother = 1\n'
-        self.assertIsNotNone(T._toml_problem(broken))
-
-    def test_the_structural_check_catches_what_tomllib_catches(self) -> None:
-        # On 3.11+ tomllib catches the corruption,  but the installer runs on the
-        # minimum Python,  where there is no tomllib and the single regex it used to
-        # fall back to found nothing.  The structural check is what stands in for
-        # tomllib there,  so it has to catch the same corruption.
-        broken = 'enable_experimental_hooks = true\n  "x",\n]\nother = 1\n'
-        self.assertIsNotNone(T._toml_structure_problem(broken))
-        self.assertIsNotNone(T._toml_structure_problem('models = [\n  "a",\n'))
-        self.assertIsNotNone(T._toml_structure_problem('s = """\nhello\n'))
-        self.assertIsNone(T._toml_structure_problem('models = [\n  "a",\n]\nx = 1\n'))
-        self.assertIsNone(T._toml_structure_problem("[section]\nhooks = 1\n"))
-
-    def test_the_toml_check_accepts_a_valid_file(self) -> None:
-        for text in (
-            'models = [\n  "a",\n]\nother = 1\n',
-            "[section]\nhooks = 1\n",
-            '[tools.bash]\nname = "x"\n',
-            "# a comment\nkey = 1\n",
-            # A dotted key is valid TOML,  and Vibe's own config uses them,  so a
-            # scanner that rejects one would refuse a good file and block the install.
-            "models.openai = 1\n",
-            "a.b.c = 2\n",
-            'quoted."with.dots" = 1\n',
-        ):
-            with self.subTest(text=text):
-                self.assertIsNone(T._toml_problem(text))
-
-    def test_the_toml_check_still_catches_a_corrupt_line(self) -> None:
-        # The dotted-key allowance must not weaken the check:  a line that is not a
-        # key at all is still reported.
-        self.assertIsNotNone(T._toml_problem('enable_experimental_hooks = true\n  "x",\n]\nother = 1\n'))
-
-    def test_the_toml_check_reports_an_unclosed_value(self) -> None:
-        self.assertIsNotNone(T._toml_problem('models = [\n  "a",\n'))
-        self.assertIsNotNone(T._toml_problem('s = """\nhello\n'))
-
-    def test_a_top_level_hooks_key_is_reported_but_a_table_scoped_one_is_not(self) -> None:
-        # A top-level `hooks` key would be redefined by the [[hooks]] table this tool
-        # writes,  and that is a problem.  A key under a table belongs to that table,
-        # and refusing it would refuse a good file.
-        self.assertIsNotNone(T._toml_problem("hooks = 1\nother = 2\n"))
-        self.assertIsNone(T._toml_problem("[section]\nhooks = 1\n"))
-
-
-class VibeTests(World):
-    CONFIG = (
-        'active_model = "mistral-medium-3.5"\nvim_keybindings = false\n\n[experiment_overrides]\n'
-    )
-
-    def setUp(self) -> None:
-        super().setUp()
-        (self.home / ".vibe").mkdir(parents=True)
-        (self.home / ".vibe" / "config.toml").write_text(self.CONFIG, encoding="utf-8")
-        self.install_tools()
-        self.hooks = self.home / ".vibe" / "hooks.toml"
-        self.config = self.home / ".vibe" / "config.toml"
-
-    def test_the_gate_is_read_and_set_at_the_top_level_only(self) -> None:
-        self.assertIsNone(T.vibe_gate(self.CONFIG))
-        self.assertIs(
-            T.vibe_gate("[experiment_overrides]\nenable_experimental_hooks = true\n"), None
-        )
-        new = T.vibe_set_gate(self.CONFIG)
-        self.assertIs(T.vibe_gate(new), True)
-        self.assertIn("[experiment_overrides]", new)
-        self.assertLess(new.index("enable_experimental_hooks"), new.index("[experiment_overrides]"))
-        off = T.vibe_set_gate("enable_experimental_hooks = false\nx = 1\n")
-        self.assertTrue(off.startswith("enable_experimental_hooks = true\nx = 1\n"))
-
-    def test_the_gate_is_not_inserted_inside_a_value_that_spans_lines(self) -> None:
-        # The gate goes after the last top-level key, and a value that spans lines ends where it ends: inserting
-        # into the middle of one writes a config.toml that will not parse (and nothing catches it without tomllib).
-        for src in (
-            'mcp_servers = [\n  "alpha",\n  "beta",\n]\n',
-            'system_prompt = """one\ntwo\nthree"""\n',
-            'mcp_servers = [\n  "alpha",\n]\n\n[experiment_overrides]\nx = 1\n',
-        ):
-            with self.subTest(src=src):
-                new = T.vibe_set_gate(src)
-                self.assertIs(T.vibe_gate(new), True)
-                try:
-                    import tomllib
-
-                    tomllib.loads(new)
-                except ImportError:
-                    self.skipTest("no tomllib to validate with")
-                except tomllib.TOMLDecodeError as exc:
-                    self.fail(f"the new config.toml would not parse ({exc}):\n{new}")
-
-    def test_the_match_is_vibes_shell_tool_name(self) -> None:
-        # Vibe matches the hook against the tool name it sends, and a wrong exact name silently never fires, so the
-        # name is pinned to the one the installed package and the live config agree on.
-        self.assertEqual(T.VIBE_SHELL_TOOL, "bash")
-        self.assertEqual(T.vibe_fields(T.PLATFORMS["vibe"], self.paths)["match"], "bash")
-        self.assertIn('match = "bash"', T.block_body(T.PLATFORMS["vibe"], self.paths))
-
-    def test_apply_writes_the_block_and_the_gate_and_is_idempotent(self) -> None:
-        r = self.apply("vibe")
-        self.assertEqual(r.status, "added", r)
-        text = self.hooks.read_text(encoding="utf-8")
-        for needle in (
-            "[[hooks]]",
-            'name = "fleet-lane-guard"',
-            'type = "before_tool"',
-            'match = "bash"',
-            "--format vibe",
-            "strict = true",
-        ):
-            self.assertIn(needle, text)
-        self.assertIs(T.vibe_gate(self.config.read_text(encoding="utf-8")), True)
-        self.assertIn(
-            'active_model = "mistral-medium-3.5"', self.config.read_text(encoding="utf-8")
-        )
-        fields = T.vibe_fields(T.PLATFORMS["vibe"], self.paths)
-        self.assertEqual(fields["match"], "bash")
-        after = snapshot(self.home)
-        self.assertEqual(self.apply("vibe").status, "unchanged")
-        self.assertEqual(snapshot(self.home), after)
-
-    def test_plan_is_read_only_and_names_the_match_choice(self) -> None:
-        before = snapshot(self.tmp)
-        rc, out, err = run_main("plan", *self.base(), "vibe")
-        self.assertEqual((rc, err), (0, ""), out)
-        self.assertEqual(snapshot(self.tmp), before)
-        self.assertIn('match = "bash"', out)
-        self.assertIn("enable_experimental_hooks = true", out)
-        self.assertIn("UNVERIFIED", out)
-        self.assertNotIn("mistral-medium-3.5", out)
-
-    def test_verify_proves_the_deny_and_the_gate(self) -> None:
-        self.apply("vibe")
-        checks = T.verify_block(
-            T.PLATFORMS["vibe"], self.paths, timeout=TIMEOUT, minimal_path=False
-        )
-        self.assertPassOrSkip(checks)
-        by = {c.name: c for c in checks}
-        for name in (
-            "block",
-            "hooks gate",
-            "deny/login-PATH",
-            "allow/login-PATH",
-            "secret/login-PATH",
-        ):
-            self.assertEqual(by[name].status, "PASS", by[name].line())
-        self.assertEqual(by["fires"].status, "SKIP")
-
-    def test_verify_fails_when_the_gate_is_off(self) -> None:
-        self.apply("vibe")
-        self.config.write_text(self.CONFIG, encoding="utf-8")
-        checks = T.verify_block(
-            T.PLATFORMS["vibe"], self.paths, timeout=TIMEOUT, minimal_path=False
-        )
-        gate = [c for c in checks if c.name == "hooks gate"]
-        self.assertEqual(gate[0].status, "FAIL", gate[0].line())
-        self.assertIn("loads no hooks", gate[0].detail)
-
-    def test_a_missing_config_is_refused_not_created(self) -> None:
-        self.config.unlink()
-        r = self.apply("vibe")
-        self.assertEqual(r.status, "refused", r)
-        self.assertFalse(self.config.exists())
-        self.assertFalse(self.hooks.exists())
 
 
 class OpenCodePluginShapeTests(World):
@@ -864,8 +656,6 @@ class CliRoundTripTests(World):
     def setUp(self) -> None:
         super().setUp()
         (self.home / ".copilot" / "hooks").mkdir(parents=True)
-        (self.home / ".vibe").mkdir(parents=True)
-        (self.home / ".vibe" / "config.toml").write_text('active_model = "x"\n', encoding="utf-8")
         (self.home / ".config" / "opencode").mkdir(parents=True)
         (self.home / ".config" / "opencode" / "opencode.json").write_text(
             json.dumps({"plugin": ["opencode-mobile@latest"]}, indent=2) + "\n", encoding="utf-8"
@@ -873,7 +663,7 @@ class CliRoundTripTests(World):
         self.install_tools()
 
     def test_apply_then_verify_through_the_cli_for_each_new_platform(self) -> None:
-        for key in ("copilot", "vibe", "opencode"):
+        for key in ("copilot", "opencode"):
             rc, out, err = run_main("apply", *self.base(), "--no-verify", key)
             self.assertEqual((rc, err), (0, ""), out)
             self.assertIn(key, out)
@@ -895,7 +685,6 @@ class CliRoundTripTests(World):
         rc, out, err = run_main("apply", *self.base(), "--no-verify", "all")
         self.assertEqual((rc, err), (0, ""), out)
         self.assertTrue((self.home / ".copilot" / "hooks" / "fleet-lane-guard.json").is_file())
-        self.assertTrue((self.home / ".vibe" / "hooks.toml").is_file())
         self.assertTrue((self.home / ".config" / "opencode" / "opencode.json").is_file())
         self.assertFalse(fx_settings.exists())
 
@@ -904,7 +693,7 @@ class CliRoundTripTests(World):
         (self.home / ".fx" / "settings.json").write_text(
             json.dumps({"provider": "gateway", "permission_mode": "yolo"}) + "\n", encoding="utf-8"
         )
-        run_main("apply", *self.base(), "--no-verify", "copilot", "vibe", "opencode")
+        run_main("apply", *self.base(), "--no-verify", "copilot", "opencode")
         rc, out, _ = run_main(
             "verify",
             "--home",
@@ -916,7 +705,7 @@ class CliRoundTripTests(World):
         )
         self.assertEqual(rc, 1, out)
         self.assertRegex(out, r"FAIL\s+fx\s+platform")
-        for key in ("copilot", "vibe", "opencode"):
+        for key in ("copilot", "opencode"):
             self.assertNotRegex(out, r"FAIL\s+%s\s" % key, out)
 
 
