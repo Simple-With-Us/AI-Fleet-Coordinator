@@ -15,10 +15,16 @@ extend-exclude = [
     "scripts/open_loops/tests",
 ]
 
+# The 3.9 contract is enforced by the target version, not by a list of rule codes:  with py39 every
+# version-gated rule (UP007/UP045/UP017/UP040/UP041/UP046/B905/...) stays off for the package that the
+# Mac runs under /usr/bin/python3, including ones added by a future ruff upgrade.  See AFC-425.
+[per-file-target-version]
+"scripts/fleet_lanes/**" = "py39"
+
 [lint.per-file-ignores]
-# scripts/fleet_lanes is Python 3.9 safe by contract (the Mac runs it under /usr/bin/python3).  These stop
-# the py313 rewrites that break it there (X | None in runtime aliases, collections.abc, datetime.UTC) and
-# keep every other rule on.  See AFC-425.
+# py39 does not turn these off:  UP006/UP035 still fire at py39 (collections.abc / builtin generics in
+# runtime positions break on 3.9).  The rest are listed as well so the package stays 3.9 safe even if the
+# target version above is dropped.  Keep every other rule on.  See AFC-425.
 "scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045"]
 
 [format]
