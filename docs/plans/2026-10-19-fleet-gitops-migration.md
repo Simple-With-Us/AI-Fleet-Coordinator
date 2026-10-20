@@ -195,7 +195,7 @@ Done:  nothing deployed is without a source, and nothing points at Slack.
 
 ### G5  Workers deploy on merge
 
-`worker-deploy.yml` is ready and skipped.  Set `WORKER_DEPLOY_ENABLED` for the admin panel first and prove one merge-driven deploy with its health probe.  Keep the gate per Worker:  agent-sync-mcp stays excluded from any global toggle — `DEPLOY.md` forbids its CI deploys because a deploy credential can act as every hosted seat — until Jay's owner gate in D8 is met.  A Cloudflare token scoped to that one Worker, held in Infisical and read only by the deploy job, plus a required review on its paths, would answer D8.
+`worker-deploy.yml` is ready and skipped, and its gate is not safe to flip as built:  the single repo-wide `WORKER_DEPLOY_ENABLED` variable gates a matrix that today lists only `agent-sync-mcp`, whose CI deploys `DEPLOY.md` forbids because a deploy credential can act as every hosted seat.  Before any variable is set, make the gate per Worker - one variable per Worker (for example `WORKER_DEPLOY_ENABLED_ADMIN_PANEL`) - with `agent-sync-mcp` out of the matrix until Jay's owner gate in D8 is met;  then enable the admin panel first and prove one merge-driven deploy with its health probe.  A Cloudflare token scoped to that one Worker, held in Infisical and read only by the deploy job, plus a required review on its paths, would answer D8.
 
 Done:  a merge that touches a Worker's paths deploys it, and the deployed SHA matches main.
 
