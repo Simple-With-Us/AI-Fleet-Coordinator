@@ -179,14 +179,13 @@ class ChatCatalog:
         self._cursor = cursor_transport
         self._clock = clock
         self._records: dict[str, dict[str, Any]] = {}
-        # The daemon's fanout thread and its event thread share one catalog, and `discover`
-        # mutates `_records` in place while reading it, so every record-touching entry point
-        # takes this lock.
-        self._lock = threading.RLock()
         self._expires = 0.0
         self._last_scan = 0.0
         self._availability: dict[str, str] = {}
         self._missing_since: dict[str, float] = {}
+        # A scan rewrites `_records` wholesale, so one at a time:  the fanout thread and the wake path
+        # share this instance and must not merge two generations of rows.
+        self._scan_lock = threading.RLock()
 
     def _row(
         self,
@@ -216,8 +215,6 @@ class ChatCatalog:
         safe_title = self.scrub(title or "Untitled chat")[:180]
         stable_host = host or self.host
         readable = status not in {"unavailable", "stale", "metadata-only"}
-        # A stale row is never wakeable, so it never advertises an available wake.
-        wake_ok = bool(wake) and status != "stale"
         return {
             "id": _stable_id(stable_host, platform, session_id),
             "platform": platform,
@@ -232,10 +229,8 @@ class ChatCatalog:
             "stale": status == "stale",
             "capabilities": {
                 "read": readable,
-                "wake": wake_ok,
-                "wake_status": (
-                    "available" if wake_ok else "stale" if status == "stale" else "unsupported"
-                ),
+                "wake": bool(wake),
+                "wake_status": "available" if wake else "unsupported",
             },
             "_source": source,
             "_internal_path": internal_path,
@@ -475,7 +470,7 @@ class ChatCatalog:
             if not isinstance(cwd, str) or not cwd.startswith("/"):
                 cwd = None
             wake = (
-                item.get("wake") is True
+                item.get("wake") == 1  # JSON true, or a 1 from an older writer
                 and state == "idle"
                 and bool(item.get("turn_ended_at"))
                 and bool(cwd)
@@ -886,7 +881,8 @@ class ChatCatalog:
     def discover(
         self, force: bool = False, *, wait_grok: bool = False, grok_timeout: float | None = None
     ) -> list[dict[str, Any]]:
-        with self._lock:
+        # Every caller shares this instance across threads, so a rescan is one guarded step.
+        with self._scan_lock:
             return self._discover(force, wait_grok=wait_grok, grok_timeout=grok_timeout)
 
     def _discover(
@@ -963,16 +959,11 @@ class ChatCatalog:
         """Resolve only an exact ID in this catalog's bounded in-memory cache."""
         if not isinstance(record_id, str):
             return None
-        with self._lock:
-            self.discover()
-            row = self._records.get(record_id)
-            return dict(row) if row is not None else None
+        self.discover()
+        row = self._records.get(record_id)
+        return dict(row) if row is not None else None
 
     def excerpt(self, record_id: str, limit: int = 4) -> list[dict[str, str]]:
-        with self._lock:
-            return self._excerpt(record_id, limit)
-
-    def _excerpt(self, record_id: str, limit: int = 4) -> list[dict[str, str]]:
         row = self.resolve(record_id)
         if row is None:
             return []
@@ -1004,7 +995,11 @@ class ChatCatalog:
                     break
             excerpts.reverse()
             row["_excerpts"] = excerpts
-            self._records[record_id]["_excerpts"] = row["_excerpts"]
+            # A rescan can drop the record between resolve() and here, so publish onto whatever is
+            # live now rather than subscripting a key the fanout thread may already have replaced.
+            live = self._records.get(record_id)
+            if live is not None:
+                live["_excerpts"] = row["_excerpts"]
             return list(row["_excerpts"])
         if row.get("_source") == "cursor-cloud" and self._cursor is not None:
             try:
@@ -1018,7 +1013,9 @@ class ChatCatalog:
                     if text:
                         safe_rows.append({"role": item["role"], "text": text})
             row["_excerpts"] = safe_rows[-count:]
-            self._records[record_id]["_excerpts"] = row["_excerpts"]
+            live = self._records.get(record_id)
+            if live is not None:
+                live["_excerpts"] = row["_excerpts"]
         return (
             [
                 {"role": item["role"], "text": item["text"]}
