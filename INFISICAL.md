@@ -165,6 +165,7 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `LANE_SWEEP_CAPS` | C5 | caps | `lane_retires_per_run=10,report_posts_per_run=12` | no | only lower a number | sweep action caps |
 | `LANE_SWEEP_OPTIN_REPOS` | C5 | list | empty | no | only remove entries | money-path repos the sweep may act on;  empty means none |
 | `NOTES_RELAY_CONSUMER` | N1 | str | `CLAUDE` | no | nothing | seat whose bot is the Apple Notes relay consumer (the Mac listener's [notes_relay] seat);  notes_status trusts a mark or a refusal reply only from it;  a local [notes_relay] seat that differs is ignored and the listener does not consume;  the Worker gets the same value as a binding at deploy |
+| `APPLE_NOTES_PIN_RETRY` | N1 | bool | `true` | no | only set it to `false` | true lets apple-notes-coding.sh run the pin or unpin Shortcut a second time when the first run misses the note index;  false keeps the single attempt;  the APPLE_NOTES_PIN_RETRY environment variable is only a local narrowing override and can turn the retry off, never on |
 | `CONSULT_ENABLED` | C7 | bool | `false` | no | only set it to `false` | false refuses every consult verb |
 
 <!-- fleet-knobs:end -->

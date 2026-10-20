@@ -92,6 +92,12 @@ CHILD_ENV_KEYS = (
     "USER",
     "LOGNAME",
     "SHELL",
+    #  Not a credential:  a local narrowing override for the APPLE_NOTES_PIN_RETRY fleet
+    #  knob (whether the script may run the pin Shortcut twice;  a miss can pop a note
+    #  picker).  It can only turn the retry off, never on.  Listed here because the
+    #  allow-list is otherwise the only thing that decides reachability, and this
+    #  caller drives the script under a lock and a 120 s timeout (AFC-431).
+    "APPLE_NOTES_PIN_RETRY",
 )
 
 # Reactions the listener sets and `notes_status` reads (Zulip unicode codes and the names tried to set them).
