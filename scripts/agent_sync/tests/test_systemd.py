@@ -141,6 +141,21 @@ class UnitTests(unittest.TestCase):
                 self.assertFalse(Path(systemd.unit_path(home)).exists())
                 self.assertFalse(Path(home, ".agent-sync", "listener.toml").exists())
 
+    def test_default_interpreter_is_probed_once(self):
+        # A second spawn could fail transiently and abort an install whose runtime was just confirmed.
+        for explicit in (None, sys.executable):
+            probes = []
+
+            def record(argv, **kwargs):
+                probes.append(argv[0])
+                return subprocess.CompletedProcess([], 0, "3.12\n", "")
+
+            with tempfile.TemporaryDirectory() as home:
+                with patch.object(systemd.os, "access", return_value=True):
+                    with patch.object(systemd.subprocess, "run", side_effect=record):
+                        systemd.install({}, home, io.StringIO(), python=explicit)
+            self.assertEqual(probes, [systemd.DEFAULT_PYTHON if explicit is None else explicit])
+
     def test_dry_run_writes_nothing(self):
         with tempfile.TemporaryDirectory() as home:
             systemd.install({}, home, io.StringIO(), dry_run=True)

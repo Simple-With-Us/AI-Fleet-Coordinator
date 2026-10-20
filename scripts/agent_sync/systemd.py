@@ -158,9 +158,13 @@ def install(
         os.path.expanduser(env.get(L.ENV_STATE_DIR) or os.path.join(home, ".agent-sync"))
     )
     config = os.path.abspath(L.config_path(root, env))
+    probed = False
     if python is None:
         if os.access(DEFAULT_PYTHON, os.X_OK) and not _confirmed_too_old(DEFAULT_PYTHON, out):
             python = DEFAULT_PYTHON
+            # The default path already probed this interpreter; a second spawn can fail transiently and
+            # would abort an install whose runtime was just confirmed.
+            probed = True
         else:
             # The unit would fail to start under an interpreter the operator never chose, and may name a
             # virtual-environment or /usr/local Python the user manager cannot reach.  Say so, never silently.
@@ -170,7 +174,7 @@ def install(
                 f"{python} instead (inspect it before enabling, or pass --python PATH)\n"
             )
     if os.access(python, os.X_OK):
-        if _confirmed_too_old(python, out):
+        if not probed and _confirmed_too_old(python, out):
             out.write(f"note: {python} is older than Python 3.11; pass --python PATH (3.11 or newer)\n")
     else:
         out.write(f"note: {python} is not executable; pass --python PATH (3.11 or newer)\n")
