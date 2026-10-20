@@ -55,9 +55,13 @@ export function fromDatadog(payload) {
     ? !/^(recovered|recover|resolved|clear|ok)$/.test(transition)
     : ["triggered", "warning", "error"].includes(alertType);
 
+  // A multi-alert monitor fires once per group; ALERT_SCOPE identifies the
+  // triggering group, so it belongs in the state key -- otherwise one group's
+  // recovery resolves every other group still down on the same monitor.
+  const scope = oneLine(first(payload.scope)).toLowerCase().slice(0, 128);
   const key = monitorId
-    ? `datadog:${monitorId}`
-    : `datadog:${title.toLowerCase()}`;
+    ? `datadog:${monitorId}${scope ? `:${scope}` : ""}`
+    : `datadog:${title.toLowerCase()}${scope ? `:${scope}` : ""}`;
   const service = tag || title || `datadog-${monitorId || "monitor"}`;
 
   return {
@@ -112,7 +116,13 @@ export function fromBetterStack(payload) {
     status,
   );
   // An unrecognized non-empty status stays firing: the safe direction.
-  const firing = status ? down || !recovered : payload.alert_type === "ALERT";
+  // No status signal at all is unknown, not a recovery -- a status-less
+  // delivery must not close a live incident (same rule as the generic path).
+  const firing = status
+    ? down || !recovered
+    : payload.alert_type
+      ? payload.alert_type === "ALERT"
+      : true;
 
   // The key must name the monitor, not the incident: `data.id` is per-outage,
   // so a default delivery without `relationships.monitor` would mint a new key
