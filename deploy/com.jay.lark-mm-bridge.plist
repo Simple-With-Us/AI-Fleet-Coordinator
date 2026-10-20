@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/jay/.local/bin:/Users/jay/.local/npm-global/bin</string>
+		<key>HOME</key>
+		<string>/Users/jay</string>
+	</dict>
+	<key>Label</key>
+	<string>com.jay.lark-mm-bridge</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/jay/apps/lark-mm-bridge.py</string>
+		<string>--cwd</string>
+		<string>/Users/jay/apps</string>
+		<string>--allow-sender</string>
+		<string>ou_2de79228451679d8d98107bef4ee48bb</string>
+		<string>--bot-open-id</string>
+		<string>ou_eecfb9e4064ee1bd3e903b265360e217</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/jay/Library/Logs/lark-mm-bridge/bridge.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/jay/Library/Logs/lark-mm-bridge/bridge.out.log</string>
+</dict>
+</plist>
