@@ -2281,14 +2281,19 @@ class Tools:
     def notes_consumer_label(self, value: str) -> None:
         self._notes_consumer_label, self._notes_consumer_resolver = value, None
 
+    def _relay_consumer_user(self, user: Mapping[str, Any]) -> bool:
+        if self.notes_consumer == "OPERATOR":
+            from ..service_identity import operator_bot
+
+            return operator_bot(user, self.agent.rt.env, self.owner_user_id)
+        return bool(user.get("is_bot")) and IDENT.seat_tag_for(user) == self.notes_consumer
+
     def _relay_consumer(self, user_id: Any) -> bool:
-        """Is this Zulip user the configured relay consumer's bot?  #notes-relay is public and every fleet bot can
-        react or reply in it, so a check mark, cross mark or refusal reply counts only from the one bot the
-        listener's [notes_relay] seat names (default CLAUDE), resolved to its user id from the realm's users."""
-        for user in self.agent.users():
-            if user.get("user_id") == user_id:
-                return bool(user.get("is_bot")) and IDENT.seat_tag_for(user) == self.notes_consumer
-        return False
+        """Only the configured consumer's authenticated bot may settle a Notes request."""
+        return any(
+            user.get("user_id") == user_id and self._relay_consumer_user(user)
+            for user in self.agent.users()
+        )
 
     def _tool_notes_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
         try:
@@ -2407,11 +2412,7 @@ class Tools:
 
     def _relay_consumer_id(self) -> int | None:
         for user in self.agent.users():
-            if (
-                user.get("is_bot")
-                and IDENT.seat_tag_for(user) == self.notes_consumer
-                and _int(user.get("user_id")) is not None
-            ):
+            if self._relay_consumer_user(user) and _int(user.get("user_id")) is not None:
                 return int(user["user_id"])
         return None
 
