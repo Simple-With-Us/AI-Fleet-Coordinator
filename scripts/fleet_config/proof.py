@@ -367,10 +367,10 @@ HOOK_CONFIG_SCHEMAS: dict[str, HookConfigSchema] = {
 
 
 def _assert_bounded(document: object, platform: str, path: str) -> None:
-    """Refuse a hook config document that nests too deep or holds too many nodes.
+    """Refuse a hook config section that nests too deep or holds too many nodes.
 
-    The whole document is counted before any command is read from it, so the bound
-    holds no matter where in the file the hooks are.
+    Only the section this schema reads is counted, so a large or deeply nested
+    unrelated part of the settings file cannot make an otherwise healthy seat fail.
     """
     seen = 0
     stack: list[tuple[object, int]] = [(document, 1)]
@@ -475,6 +475,7 @@ def _commands_from_event_map(
             % (schema.section, path, platform),
             ReasonCode.UNPARSEABLE,
         )
+    _assert_bounded(section, platform, path)
     found: list[str] = []
     for event, entries in section.items():
         if _event_key(event) not in _HOOK_EVENT_KEYS:
@@ -489,6 +490,7 @@ def _commands_from_named_groups(document: dict[str, object], platform: str, path
     for name, group in document.items():
         if not isinstance(group, dict):
             continue
+        _assert_bounded(group, platform, path)
         for event, entries in group.items():
             if _event_key(event) not in _HOOK_EVENT_KEYS:
                 continue
@@ -501,7 +503,7 @@ def _commands_from_named_groups(document: dict[str, object], platform: str, path
 def schema_commands(
     document: object, schema: HookConfigSchema, platform: str, path: str
 ) -> list[str]:
-    """Every command string the schema pins, after the document is checked whole.
+    """Every command string the schema pins, after the section it reads is checked.
 
     Raises ``CheckError`` naming the platform and the config path when the document
     does not hold the shape the schema pins, so a command this package cannot vouch for
@@ -512,7 +514,6 @@ def schema_commands(
             "the hook config %s for the platform %s is not a JSON object" % (path, platform),
             ReasonCode.UNPARSEABLE,
         )
-    _assert_bounded(document, platform, path)
     if schema.shape == "named-groups":
         return _commands_from_named_groups(document, platform, path)
     return _commands_from_event_map(document, schema, platform, path)
@@ -526,10 +527,10 @@ def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
     config file to read, when the file cannot be parsed, or when it names no guard
     hook.
 
-    A file this reads is bounded before it is parsed (byte limit), and the parsed
-    document is checked against the platform's own schema before any command is taken
-    from it, so an unfamiliar section, a ``command`` key outside a hook entry, an
-    over-nested document or an oversized one cannot reach the probe.  A file that fails
+    A file this reads is bounded before it is parsed (byte limit), and the section the
+    platform's own schema names is checked before any command is taken from it, so an
+    unfamiliar section, a ``command`` key outside a hook entry, an over-nested hook
+    section or an oversized file cannot reach the probe.  A file that fails
     one of those checks aborts with a ``CheckError`` naming the platform and the config
     path, which the aggregator reads as a failing ``UNKNOWN``;  it never falls back to a
     command read from a document this package cannot vouch for.
