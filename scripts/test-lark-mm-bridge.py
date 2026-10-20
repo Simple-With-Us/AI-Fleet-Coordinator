@@ -1281,6 +1281,58 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(restored.turns.empty())
         self.assertFalse(restored._claim("bound"))
 
+    def test_restart_resets_only_safe_pending_reply_budget(self):
+        args = make_args(["--allow-sender", "ou_ok"], state_dir=self.state_dir.name)
+        bridge = bridge_mod.Bridge(args)
+        bridge._handle(
+            {"message_id": "retry", "chat_id": "chat", "sender_id": "ou_ok", "content": "one task"}
+        )
+        bridge.jobs["retry"].update(
+            stage="reply", reply="Already generated.", attempt=bridge_mod.MAX_REPLY_ATTEMPTS
+        )
+        self.assertTrue(bridge._save_state())
+        restored = bridge_mod.Bridge(args)
+        self.assertEqual(restored.turns.get()[-1], 0)
+        restored._session_for = mock.Mock(side_effect=AssertionError("model rerun"))
+        restored._reply = mock.Mock()
+        self.assertTrue(restored._turn("retry", "chat", "one task", 0))
+        restored._reply.assert_called_once_with("retry", "Already generated.")
+
+    def test_dry_run_never_loads_or_changes_delivery_state_or_starts_model(self):
+        state = Path(self.state_dir.name) / "state.json"
+        state.write_text('{"messages":{"existing":"pending"}}')
+        before = state.read_bytes()
+        reader = mock.Mock()
+        reader.events.return_value = iter(
+            [{"message_id": "preview", "sender_id": "ou_ok", "content": "one task"}]
+        )
+        with (
+            mock.patch.object(bridge_mod, "LarkEventReader", return_value=reader),
+            mock.patch.object(
+                bridge_mod, "Bridge", side_effect=AssertionError("dry run loaded bridge")
+            ),
+            mock.patch.object(
+                bridge_mod, "MiniMaxSession", side_effect=AssertionError("model started")
+            ),
+        ):
+            self.assertEqual(
+                bridge_mod.main(
+                    [
+                        "--dry-run",
+                        "--allow-sender",
+                        "ou_ok",
+                        "--lark-cli",
+                        sys.executable,
+                        "--mcode",
+                        sys.executable,
+                        "--state-dir",
+                        self.state_dir.name,
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(state.read_bytes(), before)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

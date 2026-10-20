@@ -16,3 +16,6 @@ The bridge imports the canonical `agent_sync.secretscan` module.  Deploy the scr
 Safe queued jobs and generated replies are persisted in the private state file before execution or delivery.  Reply retries reuse the generated answer and never call the model again.  HTTP 429 and provably unsent failures use bounded backoff and a persisted attempt budget; unknown delivery outcomes never replay.  During shutdown the active worker gets a bounded join before sessions close; unstarted queued jobs and cached replies remain durable for restart.  A crash during model execution leaves a running job held for explicit reconciliation, because automatically repeating that model turn could repeat tool side effects.  Legacy pending rows without a safe durable job are also held rather than rerun.
 
 No live bridge, launchd job or model session was started or restarted to validate these changes; synthetic tests are the evidence available before activation.
+
+
+The retry budget is bounded within each process.  Restart restores a safe pending cached reply with a fresh bounded delivery budget, never another model turn; unknown and running jobs remain held.  Dry run uses an event-only preview path that neither constructs a Bridge nor loads or writes its delivery ledger, starts a model, or sends a reply.

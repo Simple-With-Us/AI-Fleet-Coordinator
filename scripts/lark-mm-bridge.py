@@ -636,10 +636,10 @@ class Bridge:
             if (
                 self.rows.get(message_id) == "pending"
                 and job["stage"] in ("queued", "reply")
-                and job.get("attempt", 0) < MAX_REPLY_ATTEMPTS
                 and job["sender_id"] in self.args.allowed_sender
                 and job.get("cwd") == self.args.cwd
             ):
+                job["attempt"] = 0  # A new process gets a bounded reply-only retry budget.
                 self.active_ids.add(message_id)
                 self.turns.put(
                     (
@@ -1070,6 +1070,36 @@ def build_parser():
     return parser
 
 
+def preview_events(args):
+    """Observe events without loading a ledger, starting a model or recording delivery."""
+    reader = LarkEventReader(args.lark_cli, lark_env(), args.event_log_dir)
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+
+    def stop(signum, frame):
+        reader.stop()
+
+    try:
+        for sig in previous:
+            signal.signal(sig, stop)
+        for event in reader.events():
+            if not isinstance(event, dict) or event.get("sender_id") not in args.allowed_sender:
+                continue
+            content = event.get("content")
+            if isinstance(content, str):
+                log(
+                    "dry run: secret-shaped message withheld"
+                    if scan_secret(content)
+                    else "dry run: owner event observed; no model or delivery"
+                )
+    finally:
+        try:
+            reader.stop()
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+    return 0
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1084,19 +1114,9 @@ def main(argv=None):
     if not args.allowed_sender:
         parser.error("--allow-sender is required: name the open_id that may drive the seat")
 
-    bridge = Bridge(args)
     if args.dry_run:
-        original = bridge._reply
-
-        def no_reply(message_id, text):
-            # The reply text is still the seat's output, so the same scan the
-            # send path uses applies before it reaches the log.
-            if scan_secret(text or ""):
-                log("dry run: would refuse reply to %s: code=secret field=text" % message_id)
-                return
-            log("dry run: would reply to %s: %s" % (message_id, text[:200]))
-
-        bridge._reply = no_reply
+        return preview_events(args)
+    bridge = Bridge(args)
     log("bridge starting (cwd=%s, timeout=%ss)" % (args.cwd, args.timeout))
     bridge.run()
     return 0
