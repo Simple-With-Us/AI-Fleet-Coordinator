@@ -85,17 +85,9 @@ Every agent session must start with systematic orientation before touching code:
 
 ---
 
-## 2. Lanes (Where You Work)
+## 2. VM Lanes
 
-**Strict Rule:** NEVER work directly in `/Users/jay/Code/<Repo>` root checkouts.  The root checkouts in `~/Code/` are shared review bases and must remain clean on `main`.
-
-Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.
-
-Always work in your own lane.  Make it with `lane new` (owner 2026-10-07, `docs/protocols/lane-map.md`; `AGENT_SEAT` must be set to your seat tag):
-```bash
-~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<Repo>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
-```
-Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they retire; do not create new ones.
+Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  This VM checkout is the lane; do not invoke the Mac lane tool or create Mac lane directories.
 
 ---
 

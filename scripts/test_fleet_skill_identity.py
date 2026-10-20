@@ -1535,5 +1535,20 @@ class AgentSyncRosterTests(unittest.TestCase):
             self.assertNotRegex(text, rf"(?m)^\| {tag} \|", tag)
 
 
+class VMSeatLaneTests(unittest.TestCase):
+    def test_vm_steps_replace_mac_lane_commands_and_keep_identity(self):
+        for name in ("session-start", "fleet-coordination", "land-lane", "closeout"):
+            source = Path(ROOT, "docs", "fleet-skills", name, "SKILL.md").read_text()
+            rendered = specialize_from_monet(source, SEATS["muse-assist"], skill_name=name)
+            self.assertIn(
+                "durable VM checkout" if name in ("land-lane", "closeout") else "durable", rendered
+            )
+            self.assertNotRegex(rendered, r"(?m)^\s*~/apps/lane (?:new|retire|prune)")
+            self.assertNotIn("Make one lane per task", rendered)
+            self.assertIn("MA", rendered)
+        ordinary = specialize_from_monet(_session(), SEATS["codex"], skill_name="session-start")
+        self.assertIn("~/apps/lane new", ordinary)
+
+
 if __name__ == "__main__":
     unittest.main()

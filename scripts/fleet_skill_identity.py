@@ -1230,6 +1230,54 @@ def _launcher_aware_prose(text: str) -> str:
     )
 
 
+def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
+    """Replace Mac lane operations while retaining identity and safety sections."""
+    vm = (
+        "Use the existing durable muse-assist-<repo> checkout on the VM, outside scratch directories.  "
+        "Require a clean checkout before switching branches.  For a new task, run git fetch origin "
+        "and git switch --no-track -c muse-assist/<new-task-slug> origin/main, then publish with "
+        "git push -u origin HEAD.  For a follow-up, switch to the existing task branch instead; "
+        "never reset it or discard previous work.  This VM checkout is the lane; do not invoke "
+        "the Mac lane tool or create Mac lane directories.\n\n"
+    )
+    for command in (
+        "muse-assist-<repo>",
+        "git fetch origin",
+        "git switch --no-track -c muse-assist/<new-task-slug> origin/main",
+        "git push -u origin HEAD",
+    ):
+        vm = vm.replace(command, chr(96) + command + chr(96))
+    if skill_name == "session-start":
+        text = re.sub(
+            r"^## 3\..*?(?=^## 4\.)",
+            "## 3. Use The Durable VM Checkout\n\n" + vm,
+            text,
+            flags=re.M | re.S,
+        )
+    elif skill_name == "fleet-coordination":
+        text = re.sub(
+            r"^## 2\. Lanes.*?(?=^## 3\.)",
+            "## 2. VM Lanes\n\n" + vm + "---\n\n",
+            text,
+            flags=re.M | re.S,
+        )
+    elif skill_name == "land-lane":
+        text = re.sub(
+            r"^1\. You are in your lane.*$",
+            "1. You are on the intended task branch in your durable VM checkout; see session-start.",
+            text,
+            flags=re.M,
+        )
+    elif skill_name == "closeout":
+        text = re.sub(
+            r"^## 7\. Retire.*?(?=^## 8\.)",
+            "## 7. Retain The Durable VM Checkout\n\nAfter merge, verify the remote result and keep the per-repo VM checkout for the next task.  Do not run Mac lane retirement or delete local work.\n\n",
+            text,
+            flags=re.M | re.S,
+        )
+    return text
+
+
 def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     if seat.mode == "grok_bot":
         return _specialize_grok_bot(text, seat, skill_name)
@@ -1317,6 +1365,8 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     text = _unprotect(text)
     text = _rewrite_reader_voice(text, seat)
     text = _launcher_aware_prose(text)
+    if seat.tag == "MA":
+        text = _muse_assist_vm_steps(text, skill_name)
 
     banners = ""
     if skill_name in IDENTITY_SKILL_NAMES and not seat.retired:

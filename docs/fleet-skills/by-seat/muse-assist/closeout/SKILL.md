@@ -70,16 +70,9 @@ If this unit created, loaded, bootout, or retired a LaunchAgent, cron, login ite
 
 Do not SIGKILL `com.jay.claude-remote-control`.
 
-## 7. Retire the lane
+## 7. Retain The Durable VM Checkout
 
-Once the PR is merged (or closed on purpose) and nothing is left in the lane, remove it from OUTSIDE the lane, so your own shell does not count as a process using it:
-
-```bash
-cd ~ && ~/apps/lane retire <slug>    # or the lane's path; --repo <app> if the slug is in two repos
-~/apps/lane prune                    # a table of all your lanes; add --apply to remove the removable ones
-```
-
-`lane retire` refuses (exit 64, with the reason) a lane that is dirty, has unpushed commits no merged or closed PR holds, has an open PR, or is in use; fix that or leave the lane.  It uses `git worktree remove` without `--force` and `git branch -d`, never `rm -rf` or `-D`.  A parked lane stays.  Rules: `docs/protocols/lane-map.md` (Retiring A Lane).
+After merge, verify the remote result and keep the per-repo VM checkout for the next task.  Do not run Mac lane retirement or delete local work.
 
 ## 8. Default-off features
 
