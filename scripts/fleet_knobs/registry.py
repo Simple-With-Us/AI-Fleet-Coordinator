@@ -141,6 +141,14 @@ REGISTRY: Tuple[Spec, ...] = (
     # C7 consult
     _S("CONSULT_ENABLED", "bool", "C7", default=False, safe=False,
        note="false refuses every consult verb"),
+    # S1 Fleet Reference Sheet sync's Fleet RAG ingest (fleet-apps-sheet-sync.mjs)
+    _S("FLEET_SHEET_INGEST_ENABLED", "bool", "S1", default=True, safe=False,
+       note="false writes the registry mirror and skips the `recall ingest --source doc` that carries it;  "
+            "the sheet itself is still written"),
+    _S("FLEET_SHEET_INGEST_TIMEOUT_MS", "int", "S1", default=5400000, narrower="min",
+       minimum=60000, maximum=21600000,
+       note="milliseconds the Fleet RAG ingest may run before fleet-apps-sheet-sync.mjs gives up on it;  "
+            "a full corpus walk took about 43 minutes, so the default is 90;  a local file may only lower it"),
 )
 
 BY_NAME: Dict[str, Spec] = {s.name: s for s in REGISTRY}

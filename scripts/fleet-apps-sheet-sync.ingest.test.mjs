@@ -4,7 +4,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import {
   registryIngestArgs, summarizeIngest, ingestFailureDetail, buildMarkdownMirror,
-  MIRROR_MD_PATH, FLEET_HOME, REGISTRY_INGEST_SOURCE
+  MIRROR_MD_PATH, FLEET_HOME, REGISTRY_INGEST_SOURCE,
+  fleetKnob, ingestEnabled, ingestTimeoutMs, INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB
 } from "./fleet-apps-sheet-sync.mjs";
 
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
@@ -86,6 +87,34 @@ test("the ingest child's home is the one the mirror is written into", () => {
   const source = read("scripts/fleet-apps-sheet-sync.mjs");
   assert.match(source, /env: \{ \.\.\.process\.env, HOME: FLEET_HOME \}/,
     "the ingest child inherits the pinned fleet home");
+});
+
+test("the ingest's skip flag and timeout are fleet knobs, not ambient env vars", () => {
+  // AGENTS.md:  Infisical is the sole source of truth for the Mac's tunable knobs, and a CLI's
+  // caps and flags come through scripts/fleet_knobs (one fetch, last-known-good, never a plain
+  // environment read).  So both controls are registered there and read through its CLI.
+  const source = read("scripts/fleet-apps-sheet-sync.mjs");
+  assert.doesNotMatch(source, /process\.env\.FLEET_SHEET_INGEST/,
+    "neither ingest control is read from the environment");
+  assert.match(source, /\["-m", "fleet_knobs", "get", name\]/,
+    "the knobs are read through the fleet_knobs CLI");
+
+  const registry = read("scripts/fleet_knobs/registry.py");
+  for (const name of [INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB]) {
+    assert.ok(registry.includes(`"${name}"`), `${name} is registered in fleet_knobs`);
+    assert.ok(read("INFISICAL.md").includes(`| \`${name}\` |`),
+      `${name} is in the INFISICAL.md inventory`);
+  }
+
+  // A non-secret read never fails the job:  with no `infisical` CLI on PATH (as in CI) the
+  // registry default answers rather than the sync dying.
+  assert.equal(fleetKnob(INGEST_ENABLED_KNOB), "true");
+  assert.equal(ingestEnabled(), true);
+  assert.equal(ingestTimeoutMs(), 90 * 60 * 1000);
+  // A value the CLI could not produce (empty or unparsable) never becomes a zero or NaN timeout,
+  // which execFileSync would read as "no timeout" or "kill immediately".
+  assert.equal(fleetKnob("NOT_A_KNOB"), undefined);
+  assert.ok(ingestTimeoutMs() > 0);
 });
 
 test("summarizeIngest reads the ingest report and never fakes a success", () => {

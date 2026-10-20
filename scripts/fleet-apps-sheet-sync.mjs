@@ -810,10 +810,50 @@ export function buildMarkdownMirror(rules, tabs) {
 // timestamp changes the content hash on every run and the skip never matches.
 export const REGISTRY_INGEST_SOURCE = "doc";
 
+// The ingest's two controls are fleet knobs, so Infisical -- not an ambient environment variable --
+// is their source of truth:  one fetch per process, the last-known-good copy when Infisical cannot
+// be reached, and the registry default when there is no usable copy.  fleet_knobs is stdlib-only
+// Python, so this script reads it through its own CLI, `python3 -m fleet_knobs get NAME`, run from
+// scripts/ (the same call AGENTS.md and INFISICAL.md § Fleet knobs document).
+export const INGEST_ENABLED_KNOB = "FLEET_SHEET_INGEST_ENABLED";
+export const INGEST_TIMEOUT_KNOB = "FLEET_SHEET_INGEST_TIMEOUT_MS";
+// The registry defaults (scripts/fleet_knobs/registry.py), mirrored so a missing or broken
+// fleet_knobs still runs the step instead of failing the sheet sync.
+const KNOB_DEFAULTS = {
+  [INGEST_ENABLED_KNOB]: "true",
+  [INGEST_TIMEOUT_KNOB]: "5400000",
+};
+const KNOB_CACHE = new Map();
+
+export function fleetKnob(name) {
+  if (KNOB_CACHE.has(name)) return KNOB_CACHE.get(name);
+  let value = KNOB_DEFAULTS[name];
+  try {
+    const out = execFileSync("python3", ["-m", "fleet_knobs", "get", name], {
+      cwd: repoPath("scripts"), encoding: "utf8", timeout: 20000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const raw = String(out).trim();
+    if (raw) value = raw;
+  } catch {
+    // A non-secret knob read never fails the job:  the registry default stands in.
+  }
+  KNOB_CACHE.set(name, value);
+  return value;
+}
+
+export function ingestEnabled() {
+  return fleetKnob(INGEST_ENABLED_KNOB) !== "false";
+}
+
 // The doc source covers every document the fleet owns, so a hung embedder or a Qdrant call would
 // otherwise block the sheet sync with no bound at all.  A full corpus walk took about 43 minutes
-// the last time it ran, so the default is generous; lower it when a run must be bounded tighter.
-export const INGEST_TIMEOUT_MS = Number(process.env.FLEET_SHEET_INGEST_TIMEOUT_MS || 90 * 60 * 1000);
+// the last time it ran, so the default is generous; Infisical can lower it when a run must be
+// bounded tighter.
+export function ingestTimeoutMs() {
+  const ms = Number(fleetKnob(INGEST_TIMEOUT_KNOB));
+  return Number.isFinite(ms) && ms > 0 ? ms : Number(KNOB_DEFAULTS[INGEST_TIMEOUT_KNOB]);
+}
 
 export function registryIngestArgs() {
   return ["ingest", "--source", REGISTRY_INGEST_SOURCE];
@@ -854,8 +894,8 @@ function exportMarkdownMirror(markdown) {
   mkdirSync(dirname(MIRROR_MD_PATH), { recursive: true });
   writeFileSync(MIRROR_MD_PATH, markdown, "utf8");
   console.log(`   Exported Markdown mirror: ${MIRROR_MD_PATH}`);
-  if (process.env.FLEET_SHEET_INGEST === "0") {
-    console.log("   Fleet RAG ingest skipped (FLEET_SHEET_INGEST=0)");
+  if (!ingestEnabled()) {
+    console.log(`   Fleet RAG ingest skipped (${INGEST_ENABLED_KNOB}=false)`);
     return;
   }
   try {
@@ -863,7 +903,7 @@ function exportMarkdownMirror(markdown) {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 8 * 1024 * 1024,
-      timeout: INGEST_TIMEOUT_MS,
+      timeout: ingestTimeoutMs(),
       // Pin the child's home to the fleet account's, so the doc source globs the same apps dir
       // this mirror was just written into no matter what $HOME the sync inherited.
       env: { ...process.env, HOME: FLEET_HOME },
