@@ -26,10 +26,17 @@ extend-exclude = [
 # Every other rule stays on.  See AFC-425.
 [per-file-target-version]
 "scripts/fleet_lanes/**" = "py39"
+"scripts/fleet_config/**" = "py39"
 
 [lint.per-file-ignores]
 "scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
 
+# The fleet_config package has the same 3.9 contract:  it runs on the fleet's Macs
+# under /usr/bin/python3,  so it cannot use the 3.11+ spelling of UTC (UP017) or the
+# other newer-Python spellings.  Without this an automated fix rewrites the package
+# into something that no longer imports on the interpreter the fleet runs.  See AFC-425.
+"scripts/fleet_config/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
+
 [format]
 # Whitespace churn and py313-only syntax: the 3.9-run package keeps its hand layout.  See AFC-425.
-exclude = ["scripts/fleet_lanes/**"]
+exclude = ["scripts/fleet_lanes/**", "scripts/fleet_config/**"]
