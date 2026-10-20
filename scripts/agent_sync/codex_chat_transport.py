@@ -86,6 +86,7 @@ class RPCError(ValueError):
             isinstance(error, dict)
             and type(self.code) is int
             and isinstance(error.get("message"), str)
+            and self.code in {-32600, -32601, -32602}
         )
         self.queue_full = (
             isinstance(error, dict)
@@ -488,6 +489,8 @@ class CodexChatTransport:
             # A correlated well-formed rejection is held for explicit retry, not left
             # uncertain where it would block every other wake to this destination.
             return "failed" if sent and exc.rejected else "unknown" if sent else "deferred"
+        except InvalidThread:
+            return "held"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
             # Nothing reached thread/queue/add, so the wake is still safe to retry: only a
             # failure after the add is uncertain.

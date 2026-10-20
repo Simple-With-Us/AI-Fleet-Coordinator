@@ -368,9 +368,9 @@ class TransportTests(unittest.TestCase):
             "queue cannot", str(module.RPCError({"code": -32600, "message": "private"}))
         )
 
-    def test_other_valid_error_is_held_and_malformed_error_stays_unknown(self):
+    def test_only_definite_request_refusals_are_held(self):
         original = self.adapter.rpc_factory
-        for code in (-32603, True, "-32600", None):
+        for code in (-32600, -32601, -32602, -32603, -32000, -32099, 42, True, "-32600", None):
 
             def factory():
                 rpc = original()
@@ -381,7 +381,7 @@ class TransportTests(unittest.TestCase):
                         raise module.RPCError(
                             {
                                 "code": code,
-                                "message": "queue cannot contain more than 100 submissions",
+                                "message": "synthetic rejection",
                             }
                         )
                     return request(method, params)
@@ -391,8 +391,19 @@ class TransportTests(unittest.TestCase):
 
             self.adapter.rpc_factory = factory
             self.assertEqual(self.adapter.send(self.binding, "nudge"),
-                             "failed" if type(code) is int else "unknown")
+                             "failed" if type(code) is int and code in {-32600, -32601, -32602} else "unknown")
             self.assertFalse(self.adapter._full(self.binding))
+
+    def test_send_holds_terminal_thread_failure_without_queue_add(self):
+        for key, value in (("archived", True), ("readOnly", True), ("id", "different-thread")):
+            original = self.thread.get(key)
+            self.thread[key] = value
+            self.assertEqual(self.adapter.send(self.binding, "nudge"), "held")
+            if original is None:
+                self.thread.pop(key)
+            else:
+                self.thread[key] = original
+        self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
 
     def test_receipt_snapshot_shared_for_different_items_then_refreshes(self):
         self.queued = [
