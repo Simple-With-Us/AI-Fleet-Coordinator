@@ -420,6 +420,23 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertEqual(self.queue.dispatch_one(transport, 12)["status"], "idle")
         self.assertEqual(len(transport.deliveries), 1)
 
+    def test_explicit_retry_releases_only_definitely_unsent_pending_holds(self):
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        transport = FakeTransport(outcome="failed")
+        self.queue.dispatch_one(transport, 11)
+        item_id = self._item()["id"]
+        self.assertTrue(self.queue.retry(item_id, 12))
+        self.assertFalse(self.queue.retry(item_id, 12))
+        transport.outcome = "accepted"
+        self.assertEqual(self.queue.dispatch_one(transport, 13)["status"], "accepted")
+        self.assertFalse(self.queue.retry(item_id, 14))
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 15)
+        transport.outcome = "unknown"
+        self.queue.dispatch_one(transport, 16)
+        unknown_id = self.queue.snapshot()["items"][1]["id"]
+        self.assertFalse(self.queue.retry(unknown_id, 17))
+        self.assertEqual(len(transport.deliveries), 3)
+
     def test_held_outcome_records_cause_and_never_blocks_other_wakes(self) -> None:
         # A "held" outcome must stay pending without a permanent retry, and it must not block a
         # later wake to the same destination.

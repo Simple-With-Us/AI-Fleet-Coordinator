@@ -224,6 +224,10 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             removed = registry.unbind(args.channel, args.topic)
             rt.out("unbound\n" if removed else "no binding\n")
             return 0
+        if action == "retry":
+            released = registry.retry(args.item_id, time.time())
+            rt.out("hold released; delivery gates will be rechecked\n" if released else "not retryable (requires a pending held item)\n")
+            return 0 if released else 1
         if action == "cancel":
             cancelled = registry.cancel(args.item_id, time.time())
             rt.out(
@@ -1405,6 +1409,9 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR|CODEX")
     c.add_argument("--channel", required=True)
     c.add_argument("--topic", required=True)
+    c = csub.add_parser("retry", parents=[common])
+    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR|CODEX")
+    c.add_argument("--item-id", required=True)
     c = csub.add_parser("cancel", parents=[common])
     c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR|CODEX")
     c.add_argument("--item-id", required=True)

@@ -255,6 +255,20 @@ class ChatNudges:
         data = self._read()
         return json.loads(json.dumps(data, ensure_ascii=False))
 
+    def retry(self, item_id: str, now: float) -> bool:
+        """Explicitly release a pending hold; uncertain or completed sends cannot be retried."""
+        if not isinstance(item_id, str) or not item_id:
+            return False
+        with L.locked(self.path):
+            data = self._read()
+            item = next((row for row in data["items"] if row.get("id") == item_id), None)
+            if not item or item.get("status") != "pending" or not item.get("hold_reason"):
+                return False
+            item["hold_reason"] = None
+            item["updated_at"] = float(now)
+            L.write_json(self.path, data)
+            return True
+
     def cancel(self, item_id: str, now: float) -> bool:
         """Cancel a held/pending item.  An in-flight or accepted delivery cannot be recalled."""
         if not isinstance(item_id, str) or not item_id:

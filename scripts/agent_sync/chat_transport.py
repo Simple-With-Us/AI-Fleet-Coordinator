@@ -425,6 +425,15 @@ class ChatTransport:
 
     def __init__(self):
         self.adapters = {}
+        self._delivery_context = threading.local()
+
+    @property
+    def hold_reason(self):
+        return getattr(self._delivery_context, "hold_reason", None)
+
+    @hold_reason.setter
+    def hold_reason(self, reason):
+        self._delivery_context.hold_reason = reason
 
     def adapter(self, binding):
         platform = binding.get("platform")
@@ -450,7 +459,7 @@ class ChatTransport:
         self.hold_reason = None
         adapter = self.adapter(binding)
         outcome = adapter.send(binding, text, permit=permit)
-        if outcome == "held":
+        if outcome in ("held", "deferred", "failed"):
             self.hold_reason = getattr(adapter, "hold_reason", None)
         return outcome
 

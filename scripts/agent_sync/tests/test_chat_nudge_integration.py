@@ -121,20 +121,22 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         self.assertEqual(queue.snapshot()["items"][0]["status"], "pending")
 
     def test_codex_permanent_hold_reason_survives_guarded_dispatch(self):
-        daemon = self.daemon()
-        runner = self._grok_runner(daemon)
-        runner.seat = "CODEX"
-        queue = daemon.chat_queue("CODEX")
-        binding = dict(channel="agent-sync", topic="AFC-305", platform="codex",
-                       host="host", session_id="existing-1", cwd="/repo")
-        queue.enqueue_target(binding, 42, self.clock.time(), source_seat="CODEX", owner=False)
-        daemon._chat_transport = SimpleNamespace(
-            preflight=lambda target: "ready",
-            send=lambda target, text, **kwargs: "held",
-            hold_reason="Thread is not writable",
-        )
-        daemon.dispatch_chat_nudge(runner)
-        self.assertEqual(queue.snapshot()["items"][0]["hold_reason"], "Thread is not writable")
+        for outcome in ("held", "deferred"):
+            with self.subTest(outcome=outcome):
+                daemon = self.daemon()
+                runner = self._grok_runner(daemon)
+                runner.seat = "CODEX"
+                queue = daemon.chat_queue("CODEX")
+                binding = dict(channel="agent-sync", topic="AFC-305", platform="codex",
+                               host="host", session_id="existing-1", cwd="/repo")
+                queue.enqueue_target(binding, 42, self.clock.time(), source_seat="CODEX", owner=False)
+                daemon._chat_transport = SimpleNamespace(
+                    preflight=lambda target: "ready",
+                    send=lambda target, text, **kwargs: outcome,
+                    hold_reason="Thread is not writable",
+                )
+                daemon.dispatch_chat_nudge(runner)
+                self.assertEqual(queue.snapshot()["items"][0]["hold_reason"], "Thread is not writable")
 
     def test_stale_owner_backlog_surfaces_once_but_fresh_owner_still_wakes(self):
         daemon = self.daemon()
@@ -202,6 +204,9 @@ class ChatNudgeIntegrationTests(DaemonHarness):
             ["daemon", "chats", "cancel", "--target-seat", "GROK", "--item-id", "a" * 64]
         )
         self.assertEqual(cancel.item_id, "a" * 64)
+        retry = parser.parse_args(["daemon", "chats", "retry", "--target-seat", "CODEX", "--item-id", "b" * 64])
+        self.assertEqual(retry.item_id, "b" * 64)
+
         with self.assertRaises(SystemExit):
             parser.parse_args(["daemon", "chats", "status"])
 

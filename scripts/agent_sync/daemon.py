@@ -5261,7 +5261,7 @@ class Daemon:
                     )
                 except Exception:
                     outcome = "unknown"
-                if outcome == "held":
+                if outcome in ("held", "deferred", "failed"):
                     inner.hold_reason = (
                         getattr(daemon._chat_transport, "hold_reason", None) or inner.hold_reason
                     )

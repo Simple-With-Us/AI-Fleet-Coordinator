@@ -30,6 +30,30 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(transport.send(binding, "nudge"), "accepted")
         self.assertIsNone(transport.hold_reason)
 
+    def test_hold_reason_is_local_to_the_dispatching_thread(self):
+        transport = CT.ChatTransport()
+        transport.adapters["codex"] = SimpleNamespace(send=Mock(return_value="held"), hold_reason="Not writable")
+        transport.adapters["grok-leader"] = SimpleNamespace(send=Mock(return_value="accepted"))
+        held = threading.Event()
+        other_done = threading.Event()
+        reasons = []
+        def codex():
+            transport.send({"platform": "codex"}, "nudge")
+            held.set()
+            self.assertTrue(other_done.wait(2))
+            reasons.append(transport.hold_reason)
+        thread = threading.Thread(target=codex)
+        thread.start()
+        try:
+            self.assertTrue(held.wait(2))
+            transport.send({"platform": "grok-leader"}, "nudge")
+            self.assertIsNone(transport.hold_reason)
+        finally:
+            other_done.set()
+            thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(reasons, ["Not writable"])
+
     def setUp(self):
         self.reset_discovery()
 
