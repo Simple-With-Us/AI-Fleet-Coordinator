@@ -17,11 +17,14 @@ Full protocol (always follow, do not weaken): skill `sentence-gap`
 
 Binding for every paragraph a human reads — in-app UI, ASC description / promotional text / What’s New / review notes, push, email, help, Apple Notes, Linear issues and comments, **chat replies**, PR titles/bodies, commit messages, Zulip.
 
+Every message to Jay needs the gap, including a one-line progress note and an acknowledgement:  getting it right in artifacts while writing plain single spaces in the chat is still a failure (owner ruling 2026-10-20).  **Read the reply back before sending it** and check every `.`, `!` and `?` boundary.
+
 - **Files** (repo docs, commit messages, code comments, config, terminal output): two literal ASCII spaces after `.` / `!` / `?` before the next sentence.  Do not write `&nbsp;` into files.
 - **GitHub PR and issue titles, bodies and comments, and Zulip posts:** a real U+00A0 plus a space after each sentence (owner ruling 2026-10-08).  Never the `&nbsp;` entity there: GitHub can copy a PR body into a plain-text squash commit, where it would show literally.
 - **BotFleet / OpenMausBot / cloud chat:** two ASCII spaces.  Never display the six characters `&nbsp;` (owner 2026-09-03).  Backend inserts a real U+00A0 if the renderer would collapse the gap.
 - **Claude Code desktop app (Code tab) chat replies:** type the `&nbsp;` entity plus a normal space after each sentence, outside code spans (owner-verified 2026-10-08; the renderer decodes it, a raw U+00A0 from the model arrives as a plain space, and ASCII doubles collapse).  The 2026-09-04 ASCII ruling is withdrawn.
-- **Any other Markdown-rendering agent chat pane** (Codex, Cursor, Antigravity, Grok, Kimi, MiniMax, DeepSeek, Fx, Muse): the same entity plus a space (owner ruling 2026-10-08), not individually verified.  If the six literal characters ever show, stop and report it in #agent-sync.  **Terminal TUIs** (Claude Code CLI, Grok TUI, Codex CLI): two ASCII spaces, unverified.
+- **MiniMax Code chat pane chat replies:** a REAL U+00A0, the nbsp character, then a normal space after each sentence, outside code spans (owner-verified 2026-10-20).  Two ASCII spaces collapse in that pane, and the `&nbsp;` entity renders as the six literal characters, which is worse than no gap.
+- **Any other Markdown-rendering agent chat pane** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse): the same entity plus a space (owner ruling 2026-10-08), not individually verified.  Only the Claude Code Code tab and the MiniMax Code pane are verified, and they differ.  If the six literal characters ever show, stop and report it in #agent-sync.  **Terminal TUIs** (Claude Code CLI, Grok TUI, Codex CLI): two ASCII spaces, unverified.
 
 Headings / titles / buttons: **Title Case**.  Body: sentence case.  Values that are not a full sentence: lowercase or sentence case.
 
