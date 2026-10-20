@@ -1500,6 +1500,12 @@ export const server = async (input: { directory?: string; worktree?: string }) =
       hookInput: { tool: string; sessionID: string; callID: string },
       output: { args: unknown },
     ) => {
+      // The guard rules on shell commands only, and OpenCode's shell tool is `bash`.  Every
+      // other tool returns here:  a file write or edit can carry a payload over the
+      // command-input ceilings, and bounds-checking it would deny a call the guard never
+      // ruled on (sentry #757).  A missing tool name cannot be checked, so it falls through
+      // to the generic path below and still fails closed there.
+      if (hookInput.tool && hookInput.tool !== "bash") return;
       let command: string | null;
       try {
         command = commandFrom(output.args);
