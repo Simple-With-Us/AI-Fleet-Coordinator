@@ -42,7 +42,7 @@ import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync } from
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 const SPREADSHEET_ID = "1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY";
@@ -826,6 +826,7 @@ export function summarizeIngest(stdout) {
 }
 
 function exportMarkdownMirror(markdown) {
+  mkdirSync(dirname(MIRROR_MD_PATH), { recursive: true });
   writeFileSync(MIRROR_MD_PATH, markdown, "utf8");
   console.log(`   Exported Markdown mirror: ${MIRROR_MD_PATH}`);
   if (process.env.FLEET_SHEET_INGEST === "0") {
