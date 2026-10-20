@@ -54,7 +54,8 @@ class TransportTests(unittest.TestCase):
                 if method == "thread/read":
                     return {"thread": outer.thread}
                 if method == "thread/queue/list":
-                    return {"data": outer.queued}
+                    limit = params.get("limit")
+                    return {"data": outer.queued if limit is None else outer.queued[:limit]}
                 if method == "thread/queue/add":
                     return (
                         outer.ack
@@ -167,6 +168,10 @@ class TransportTests(unittest.TestCase):
     def test_full_native_queue_is_busy_before_send(self):
         self.queued = [{"clientUserMessageId": str(i)} for i in range(module.QUEUE_CAPACITY)]
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
+        self.assertEqual(
+            [p["limit"] for m, p in self.calls if m == "thread/queue/list"],
+            [module.QUEUE_CAPACITY],
+        )
         self.calls.clear()
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
         self.assertNotIn("thread/queue/add", [x[0] for x in self.calls])
