@@ -1295,6 +1295,20 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
             text,
             flags=re.MULTILINE | re.DOTALL,
         )
+        # Keep app/repo/acronym metadata, but omit the Mac-only lane column.
+        rows = []
+        in_apps = False
+        for line in text.splitlines(keepends=True):
+            if line.startswith("| App |") and "Lane folder" in line:
+                in_apps = True
+            if in_apps and line.startswith("|"):
+                cells = line.rstrip("\n").split("|")
+                if len(cells) == 6:
+                    line = "|".join(cells[:4] + [""]) + "\n"
+            elif in_apps:
+                in_apps = False
+            rows.append(line)
+        text = "".join(rows)
         # The retained paragraph explains the Mac lane tool as the fallback when
         # it is missing; on the VM that tool is what MA must never run.  The
         # fallback runs to the end of its line: the command it names

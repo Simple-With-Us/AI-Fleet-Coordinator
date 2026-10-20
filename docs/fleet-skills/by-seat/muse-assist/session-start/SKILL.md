@@ -59,15 +59,15 @@ The shared checkout is the human/fleet review base.  Mid-task branch flips there
 
 Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  Reuse this durable VM checkout across tasks; do not invoke the Mac lane tool or create Mac lane directories.
 
-| App | Zulip `repo:` | Acronym (Linear team) | Lane folder |
-|-----|---------------|-----------------------|-------------|
-| Socratic.Trade | `Socratic.Trade` | ST | `~/apps/lanes/Socratic-Trade/<seat>-<slug>` |
-| Congress.Trade | `Congress.Trade` | CT | `~/apps/lanes/Congress.Trade/<seat>-<slug>` |
-| Usage Monitor | `API-usage-monitor` | UM | `~/apps/lanes/Usage-Monitor/<seat>-<slug>` |
-| congress-trading-shared | `congress-trading-shared` | CTS | `~/apps/lanes/congress-trading-shared/<seat>-<slug>` |
-| DealDex | `DealDex` | DD | `~/apps/lanes/DealDex/<seat>-<slug>` |
-| Personal-Site | `Personal-Site` | PS | `~/apps/lanes/Personal-Site/<seat>-<slug>` |
-| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/lanes/AI-Fleet-Coordinator/<seat>-<slug>` |
+| App | Zulip `repo:` | Acronym (Linear team) |
+|-----|---------------|-----------------------|
+| Socratic.Trade | `Socratic.Trade` | ST |
+| Congress.Trade | `Congress.Trade` | CT |
+| Usage Monitor | `API-usage-monitor` | UM |
+| congress-trading-shared | `congress-trading-shared` | CTS |
+| DealDex | `DealDex` | DD |
+| Personal-Site | `Personal-Site` | PS |
+| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC |
 
 Machine-infra issues file to the `OPS` team (`board file --app fleet-infra` routes there).  Use the actual durable VM checkout path and task branch in every cloud claim; never report a Mac lane path.
 

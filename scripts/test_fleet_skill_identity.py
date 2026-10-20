@@ -1588,6 +1588,13 @@ class VMSeatLaneTests(unittest.TestCase):
         ordinary = specialize_from_monet(_session(), SEATS["codex"], skill_name="session-start")
         self.assertIn("~/apps/lane new", ordinary)
 
+    def test_ma_app_table_keeps_repository_metadata_without_mac_paths(self):
+        rendered = specialize_from_monet(_load_skill("session-start"), SEATS["muse-assist"], skill_name="session-start")
+        table = [line for line in rendered.splitlines() if line.startswith("|")]
+        self.assertTrue(any("AI-Fleet-Coordinator" in row and "AFC" in row for row in table))
+        self.assertFalse(any("~/apps/lanes/" in row for row in table))
+        self.assertFalse(any("Lane folder" in row for row in table))
+
     def test_ma_claims_use_cloud_and_actual_durable_checkout(self):
         for name in ("session-start", "fleet-coordination", "board-ops"):
             rendered = specialize_from_monet(
