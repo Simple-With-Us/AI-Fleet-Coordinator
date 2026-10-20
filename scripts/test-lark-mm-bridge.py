@@ -8,18 +8,18 @@ Run: python3 scripts/test-lark-mm-bridge.py
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import re
 import signal
 import sys
-import io
-from contextlib import redirect_stderr
 import tempfile
 import threading
 import unittest
-from unittest import mock
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parent / "lark-mm-bridge.py"
 spec = importlib.util.spec_from_file_location("lark_mm_bridge", SCRIPT)
