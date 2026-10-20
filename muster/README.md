@@ -1,6 +1,6 @@
 # Muster
 
-Muster is a native SwiftUI macOS 14+ scaffold inside AI-Fleet-Coordinator.  Its initial window explicitly reports unavailable fleet status because no data source is connected.
+Muster is a native SwiftUI macOS 14+ scaffold.  Its initial window explicitly reports unavailable fleet status because no data source is connected.
 
 ## Scope
 
@@ -9,7 +9,7 @@ Muster is a native SwiftUI macOS 14+ scaffold inside AI-Fleet-Coordinator.  Its 
 - `script/build_and_run.sh` owns local project generation, signing, installation, and launch.
 - The repository's `.codex/environments/environment.toml` exposes the same script through the Codex **Run** action.
 
-The app makes no network calls, invokes no CLI, and reads no credentials.  It has no sample fleet records or inferred health state.  Collector, schema, and CLI integration remain separate work under AFC-384 through AFC-387; this scaffold is partial AFC-388 work.  It does not integrate BotFleet, CompanionCore, or a local port 8799 service.
+The app makes no network calls, invokes no CLI, and reads no credentials.  It has no sample fleet records or inferred health state.  Collector, schema, and CLI integration remain separate work.
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ The script never force-kills a process.  A second concurrent invocation fails ag
 
 Optional modes are `--logs`, `--telemetry`, and `--debug`.  Log modes stream unified logs after launch; the scaffold has no custom telemetry events yet.  The build lock and staging are released before a log stream or debugger blocks.  Debug mode attaches LLDB to the installed process and is subject to macOS Developer Tools permissions and hardened-runtime debugger restrictions.
 
-Fleet agents must acquire the shared `#builds` gate before a full local build.  The script is an on-demand developer helper, not an always-on service.
+Full local builds follow the repository build coordination protocol.  The script is an on-demand developer helper, not an always-on service.
 
 ## Development Identity
 
@@ -79,4 +79,4 @@ Expect a Developer ID Application authority and the `runtime` signing flag.  Ins
 
 Local Developer ID signing is established from the first build.  This scaffold does not implement notarization, stapling, release packaging, an updater, hosted CI signing, or a public release.  A locally verified signature is not evidence of notarization or completed product onboarding.
 
-Muster currently lives inside the existing AFC repository.  The fleet's repository-oriented `onboard-new-app.sh` flow does not directly fit this nested product; do not create a duplicate AFC registry row or a new repo, Linear team, or bot account to work around it.  Product identity, fleet registration applicability, and any future bot onboarding remain pending under AFC-388.  Only Jay creates bot accounts.
+Muster currently lives inside an existing application repository.  The current onboarding flow does not directly fit this nested product; use the existing product registry rather than creating duplicate infrastructure.  Product identity, registration applicability, and future onboarding remain pending.  Only authorized maintainers may perform that setup.
