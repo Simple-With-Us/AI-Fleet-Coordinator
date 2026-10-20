@@ -271,6 +271,25 @@ test("fixtures:  a channel the seat may not use is refused, on every channel too
   assert.equal(fake.requests.filter((r) => /reactions$/.test(r.path)).length, 0);
 });
 
+// ---------------------------------------------------------------- outbound format
+
+// The hosted transport is a primary transport, so it says what the outbound fixes changed, exactly as
+// the stdio path does (mcp/tools.py):  the field is the one tools.json puts in the output schema.
+test("a rewritten post, reply and DM report what the outbound fixes changed;  clean text reports nothing", async () => {
+  const { tools } = harness();
+  const rewritten = "Deploy on 2026-10-09 at 10:30:00Z is out. Next step is the rollout.";
+  const clean = "Deploy is out.  Next step is the rollout.";
+  const posted = structured(await tools.call("zulip_post", { channel: "sandbox", topic: "fmt", text: rewritten }), "zulip_post");
+  assert.ok(posted.reformatted.some((line) => /dates rewritten/.test(line)), JSON.stringify(posted));
+  const theirMessage = (await tools.call("zulip_read_topic", { channel: "sandbox", topic: "fmt", include_self: true })).structuredContent.ids[0];
+  const replied = structured(await tools.call("zulip_reply", { message_id: theirMessage, text: rewritten }), "zulip_reply");
+  assert.ok(replied.reformatted.some((line) => /dates rewritten/.test(line)), JSON.stringify(replied));
+  const sent = structured(await tools.call("zulip_dm_send", { emails: ["codex-bot@simplewithus.zulipchat.com"], text: rewritten }), "zulip_dm_send");
+  assert.ok(sent.reformatted.some((line) => /dates rewritten/.test(line)), JSON.stringify(sent));
+  const untouched = structured(await tools.call("zulip_post", { channel: "sandbox", topic: "fmt2", text: clean }), "zulip_post");
+  assert.equal(untouched.reformatted, undefined, "nothing changed, so the field is absent");
+});
+
 // ---------------------------------------------------------------- channels (any public channel the bot is in)
 
 test("channels:  any public channel the bot is subscribed to works, by name (any case) to its stream id", async () => {
