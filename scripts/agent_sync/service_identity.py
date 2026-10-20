@@ -26,6 +26,7 @@ def operator_credentials(env, home=None, fetch=None):
             child = dict(env)
             child["INFISICAL_FLEET_OPS_PROJECT_ID"] = AFC_PROJECT
             values = core.fetch_all("/zulip", child)
+            core.reject_unresolved(values, names)
         else:
             values = fetch(names)
         selected = {n: values.get(n, "") for n in names}
