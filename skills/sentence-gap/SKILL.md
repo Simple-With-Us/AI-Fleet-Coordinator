@@ -46,7 +46,7 @@ copy of the same name:
 
 ```sh
 grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l    # must be above 0
-grep -cE '[^0-9][.!?] +[A-Z"]' reply.txt      # must print 0: no gap left unconverted
+grep -cE '[^0-9][.!?] +[A-Z0-9"*`#@]' reply.txt      # must print 0: no gap left unconverted
 ```
 
 ### Precedence: this is the owner's highest-priority house rule
@@ -70,8 +70,9 @@ Concretely, for every seat on every platform:
    because a run of whitespace you write into a tool call is sometimes normalized before it
    lands.  Source files, commits, and terminals take two literal ASCII spaces and never the
    conversion.
-4. **Never post a body without asserting the gap first.**  For a renderer-bound body, both
-   checks below, every time.  On an entity surface, confirm that the entity rendered instead.
+4. **Never post a body without asserting the gap first.**  For GitHub, Zulip, and other destinations whose selected mechanism is a real U+00A0, run both
+   checks below every time.  Validate ASCII destinations by checking the literal double spaces;
+   on an entity surface, confirm that the entity rendered instead.
 5. **When in doubt, add the gap.**  A gap after a real sentence end is a far smaller sin than a
    missing gap between sentences; a non-terminal abbreviation still takes no gap, per the rule
    above.

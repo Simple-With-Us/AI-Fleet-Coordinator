@@ -213,7 +213,7 @@ destination:
   ```sh
   printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
   grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l    # must be above 0
-  grep -cE '[^0-9][.!?] +[A-Z"]' reply.txt      # must print 0: no gap left unconverted
+  grep -cE '[^0-9][.!?] +[A-Z0-9"*`#@]' reply.txt      # must print 0: no gap left unconverted
   ```
 
   A normal one-space gap is the failure this bullet exists to prevent, so treat a
