@@ -10,6 +10,7 @@ from __future__ import annotations
 import builtins
 import json
 import os
+import sys
 import tempfile
 import unittest
 from dataclasses import replace
@@ -976,6 +977,56 @@ class DocumentReaderTests(TempHome):
         path = self.write("config.conf", "- insert:\n  - package: nope\n")
         with self.assertRaises(ValueError):
             read_config_document(path)
+
+
+class PackagingTests(unittest.TestCase):
+    """The packaging rule:  a copy of just this package runs under isolated Python."""
+
+    def test_a_copy_of_just_this_package_runs_under_isolated_python(self):
+        """A stable copy run with ``python3 -I`` carries every package it imports.
+
+        Copy only ``fleet_config`` (no tests, no ``fleet_lanes``) and import it.  This
+        is what keeps the package free of a runtime import of the installer engines,
+        and it also catches a spelling that only the newest interpreter has, such as
+        ``datetime.UTC``, which breaks on the fleet's 3.9 Macs and nowhere else.
+        """
+        import pathlib
+        import shutil
+        import subprocess
+        import tempfile
+
+        scripts = pathlib.Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temp:
+            dest = pathlib.Path(temp) / "stable"
+            shutil.copytree(
+                scripts / "fleet_config",
+                dest / "fleet_config",
+                ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"),
+            )
+            env = dict(os.environ)
+            for var in ("PYTHONPATH", "PYTHONHOME"):
+                env.pop(var, None)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    "import sys; sys.path.insert(0, sys.argv[1]);"
+                    "import fleet_config;"
+                    "from fleet_config import checks, contract, types;"
+                    "assert fleet_config.__file__.startswith(sys.argv[1]), fleet_config.__file__;"
+                    "print(types.CHECK_STATE_NAMES if hasattr(types, 'CHECK_STATE_NAMES') else len(types.CHECK_STATES))",
+                    str(dest),
+                ],
+                capture_output=True,
+                env=env,
+                check=False,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                "the isolated import failed: %s" % completed.stderr.decode("utf-8", "replace"),
+            )
 
 
 if __name__ == "__main__":
