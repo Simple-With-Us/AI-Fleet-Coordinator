@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 
 from agent_sync import attach
+from agent_sync import wakes as W
 from agent_sync.tests.test_daemon import MENTION, DaemonHarness
 
 
@@ -60,3 +61,30 @@ class ServerSessionRoutingTests(DaemonHarness):
 
     def test_sibling_inbox_read_after_routing_cannot_ack_live_delivery(self):
         self.exercise(False)
+
+    def test_newer_sibling_is_not_a_candidate_for_an_owned_topic(self):
+        """Recency only ranks topic owners; a newer sibling outside the topic never consumes."""
+        daemon = self.started()
+        self.write_lease(
+            "session-A",
+            topics=[("agent-sync", "owned")],
+            session_id="aaaa1111",
+            posted=[400],
+            last_prompt=1,
+        )
+        self.write_lease("session-B", session_id="bbbb2222", last_prompt=100)
+        now = self.clock.time()
+        pending = W.Pending(
+            "wake-1",
+            "CLAUDE",
+            {"type": "stream", "channel": "agent-sync", "topic": "owned"},
+            owner=False,
+            now=now,
+            due=now,
+        )
+        self.assertEqual(daemon.takeover(daemon.seats["CLAUDE"], pending), "session-A")
+        mid = self.fake.add_message("Codex", "agent-sync", "owned", MENTION)
+        self.pump_until(daemon, lambda: len(self.live_items("session-A")) == 1)
+        self.assertEqual(self.live_items("session-A")[0]["id"], mid)
+        self.assertEqual(self.live_items("session-B"), [])
+        self.assertEqual(self.ledger(), [])
