@@ -156,6 +156,13 @@ class ArmStep(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn("Failed to enable auto-merge", out)
 
+    def test_external_failure_details_are_not_logged(self):
+        code, out, calls = run_arm("fail", "true")
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("gh: some other failure", out)
+        self.assertIn("status=failed", out)
+
     def test_the_queue_refusal_is_matched_with_its_backticks(self):
         # gh prints the flag in backticks, so a pattern that looks for the bare flag
         # followed by a space would not match the message that is actually out there.
