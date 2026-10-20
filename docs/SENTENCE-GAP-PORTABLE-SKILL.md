@@ -48,8 +48,8 @@ verify that same file, so the check reads the bytes you just produced and never 
 copy of the same name:
 
 ```sh
-grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' reply.txt | wc -l     # must be above 0
-grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' reply.txt  # must print 0: no gap left unconverted
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' reply.txt | wc -l     # must be above 0
+grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' reply.txt  # must print 0: no gap left unconverted
 ```
 
 These are the canonical pair, run on the file you just produced.  They carry the same
@@ -100,7 +100,7 @@ depends on the surface, so pick by destination:
 | **Cloud / BotFleet / OpenMausBot chat** | two literal ASCII spaces | Owner 2026-09-03: never display the six characters `&nbsp;` in cloud text.  The backend maps doubles (or the entity) to a real U+00A0 before paint. |
 | **Claude Code — desktop app (Code tab)** | the literal entity text `&nbsp;` then a normal space after each sentence, outside code spans → `End.&nbsp; Next.` | Owner-verified 2026-10-08 with a screenshot.  The renderer decodes the entity into a real gap.  A raw U+00A0 from the model arrives as a plain space, and two ASCII spaces collapse.  Supersedes the 2026-09-04 ASCII ruling and the 2026-08-19 finding below for this surface — see History. |
 | **MiniMax Code chat pane** (owner-verified 2026-10-20) | a REAL U+00A0, the nbsp character, then a normal space, outside code spans | Jay:  "I think you need to do nbsp for chats or something" and "I have confirmed this before with agents and knew you needed nbsp already".  Two ASCII spaces collapse in this pane, and the `&nbsp;` entity renders as the six literal characters, which is worse than no gap.  The 2026-10-18 entry for this pane was wrong and is corrected here. |
-| **Any other agent chat pane that renders Markdown** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse, and similar) | the same: `&nbsp;` then a normal space, outside code spans | Owner ruling 2026-10-08: Markdown chat collapses ASCII doubles everywhere, so use the entity by default and do not ask first.  Only the Code tab and the MiniMax Code pane are verified, and they differ: MiniMax needs a real U+00A0, the Code tab needs the entity.  If the owner ever sees the six literal characters, stop using the entity on that surface and report it in the approved private coordination channel — that surface then needs a different mechanism, and it is unknown until tested. |
+| **Any other agent chat pane that renders Markdown** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse, and similar) | the same: `&nbsp;` then a normal space, outside code spans | Owner ruling 2026-10-08: Markdown chat collapses ASCII doubles everywhere, so use the entity by default and do not ask first.  Only the Code tab and the MiniMax Code pane are verified, and they differ: MiniMax needs a real U+00A0, the Code tab needs the entity.  If the owner ever sees the six literal characters, stop using the entity on that surface and report it in #agent-sync — that surface then needs a different mechanism, and it is unknown until tested. |
 | **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode) | two literal ASCII spaces | Unverified.  A terminal prints the entity as the literal text `&nbsp;`, which the owner must never see.  Do not use the entity here. |
 | **Plain-text chat (no Markdown rendering)** | two literal ASCII spaces | Nothing collapses them; an entity would show as the ugly text `&nbsp;` |
 | **Files read as source** — repo docs, commit messages, code comments, config, diffs, terminal output | two literal ASCII spaces | Read in an editor/terminal/`git diff`, which preserve them verbatim; an entity would appear literally |
@@ -119,10 +119,10 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
+perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Matching one *or more* is half the fix.  The **markup group** ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)``
+Matching one *or more* is half the fix.  The **markup group** ``((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*)``
 is the other half:  a sentence end that sits *inside* a markup span is followed by the markup and
 only then by the space, so a pattern that wants the space right after the sentence end never
 matches it.  `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two
@@ -176,8 +176,8 @@ partly-converted body can have real U+00A0 and still carry a leftover ASCII gap 
 spaces.
 
 ```sh
-grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt  # must be 0 — a leftover gap
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt  # must be 0 — a leftover gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -187,6 +187,11 @@ marker (`1. Item`) is not mistaken for an unconverted gap — the same reason th
 carries `(?<![0-9])`.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
 read them and confirm they are abbreviations rather than real sentences.
 
+The shared suffix also accepts a Markdown inline link destination:  `](...)` with 1–255
+non-whitespace characters and no nested parentheses.  Both assertions use extended regular
+expressions (`grep -oE` and `grep -cE`) so the same bounded link alternative is recognized.
+Complex link destinations beyond that subset require inspection before posting.
+
 Both checks carry the same markup group as the converter, and they have to:  a gap that sits
 after a markup span is emitted as `<punctuation><markup><U+00A0><space>`, so a check that looks
 for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a
@@ -194,7 +199,7 @@ space straight after the punctuation cannot see the one that was missed.  The `]
 first in the class because a POSIX bracket expression ends at the first unquoted `]`, and there
 is no backslash escape inside one:  ``[]*_`~)"'’”]`` is the set {`]`, `*`, `_`,
 `` ` ``, `~`, `)`, `"`, `'`, `’`, `”`}.  In the perl pattern the same set is written
-``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)``, where `\]` does escape.  A backslash inside a POSIX
+``((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*)``, where `\]` does escape.  A backslash inside a POSIX
 bracket expression is a literal member and not an escape, so one written there widens the set
 and makes the leftover check fire on a body that is clean.
 
