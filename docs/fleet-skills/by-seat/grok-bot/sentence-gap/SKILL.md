@@ -48,13 +48,13 @@ verify that same file, so the check reads the bytes you just produced and never 
 copy of the same name:
 
 ```sh
-grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' reply.txt | wc -l     # must be above 0
-grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' reply.txt  # must print 0: no gap left unconverted
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' reply.txt | wc -l     # must be above 0
+grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' reply.txt  # must print 0: no gap left unconverted
+```
 
 These are the canonical pair, run on the file you just produced.  They carry the same
 markup group the converter does, so a gap that sits after a markup span is counted and a
 missed one is caught.
-```
 
 ### Precedence: this is the owner's highest-priority house rule
 
@@ -119,10 +119,10 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
+perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Matching one *or more* is half the fix.  The **markup group** ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)``
+Matching one *or more* is half the fix.  The **markup group** ``((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*)``
 is the other half:  a sentence end that sits *inside* a markup span is followed by the markup and
 only then by the space, so a pattern that wants the space right after the sentence end never
 matches it.  `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two
@@ -176,8 +176,8 @@ partly-converted body can have real U+00A0 and still carry a leftover ASCII gap 
 spaces.
 
 ```sh
-grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt  # must be 0 — a leftover gap
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt  # must be 0 — a leftover gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -187,6 +187,11 @@ marker (`1. Item`) is not mistaken for an unconverted gap — the same reason th
 carries `(?<![0-9])`.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
 read them and confirm they are abbreviations rather than real sentences.
 
+The shared suffix also accepts a Markdown inline link destination:  `](...)` with 1–255
+non-whitespace characters and no nested parentheses.  Both assertions use extended regular
+expressions (`grep -oE` and `grep -cE`) so the same bounded link alternative is recognized.
+Complex link destinations beyond that subset require inspection before posting.
+
 Both checks carry the same markup group as the converter, and they have to:  a gap that sits
 after a markup span is emitted as `<punctuation><markup><U+00A0><space>`, so a check that looks
 for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a
@@ -194,7 +199,7 @@ space straight after the punctuation cannot see the one that was missed.  The `]
 first in the class because a POSIX bracket expression ends at the first unquoted `]`, and there
 is no backslash escape inside one:  ``[]*_`~)"'’”]`` is the set {`]`, `*`, `_`,
 `` ` ``, `~`, `)`, `"`, `'`, `’`, `”`}.  In the perl pattern the same set is written
-``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)``, where `\]` does escape.  A backslash inside a POSIX
+``((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*)``, where `\]` does escape.  A backslash inside a POSIX
 bracket expression is a literal member and not an escape, so one written there widens the set
 and makes the leftover check fire on a body that is clean.
 
