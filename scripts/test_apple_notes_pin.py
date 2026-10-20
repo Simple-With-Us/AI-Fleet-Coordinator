@@ -199,7 +199,9 @@ class PinDecisionTests(unittest.TestCase):
 
     def test_the_knob_turns_the_retry_off(self):
         """The fleet knob (Infisical) owns the switch;  false keeps the single attempt."""
-        p, runs = self.run_block(STUB_FAIL_FIRST="99", HARNESS_APPLE_NOTES_PIN_RETRY="", STUB_KNOB="false")
+        p, runs = self.run_block(
+            STUB_FAIL_FIRST="99", HARNESS_APPLE_NOTES_PIN_RETRY="", STUB_KNOB="false"
+        )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(runs, 1, "the retry ran even though the knob turned it off")
 
@@ -213,7 +215,9 @@ class PinDecisionTests(unittest.TestCase):
 
     def test_the_knob_turns_the_retry_on(self):
         """The knob alone decides when the caller names no override."""
-        p, runs = self.run_block(STUB_FAIL_FIRST="99", HARNESS_APPLE_NOTES_PIN_RETRY="", STUB_KNOB="true")
+        p, runs = self.run_block(
+            STUB_FAIL_FIRST="99", HARNESS_APPLE_NOTES_PIN_RETRY="", STUB_KNOB="true"
+        )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(runs, 2, "the retry did not run even though the knob turned it on")
 
