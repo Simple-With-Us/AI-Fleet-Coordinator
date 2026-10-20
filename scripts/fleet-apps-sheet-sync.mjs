@@ -60,7 +60,11 @@ const SERVER_LISTENER_PATH = repoPath("scripts/agent_sync/server/listener.toml")
 const BOARD_CLI_PATH = repoPath("scripts/linear-board/board");
 const BACKUP_DIR = "/Users/jay/apps/fleet-ops-sheet/backups";
 const LAST_RUN_PATH = "/Users/jay/apps/fleet-ops-sheet/last-run-registry.json";
-export const MIRROR_MD_PATH = "/Users/jay/apps/FLEET-APPS-REGISTRY.md";
+// The registry mirror is a top-level ~/apps markdown file, because that is the
+// directory the `doc` source owns (fleet_rag/sources.py:  APPS_DIR = HOME / "apps").
+// Build it from the home directory rather than hard-coding one account's path,
+// so the mirror and the source that ingests it always agree on where it lives.
+export const MIRROR_MD_PATH = join(homedir(), "apps", "FLEET-APPS-REGISTRY.md");
 
 const TAB_RULES = "RULES & STANDARDS";
 const TAB_REGISTRY = "App Store Registry";
