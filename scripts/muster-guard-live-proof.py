@@ -448,6 +448,16 @@ def check_policy(plugin: dict) -> dict:
                 # the JSON, so it is searched for the deny shape but never parsed.
                 denied_for[tool_name] = (proc.stdout or "").strip()
                 break
+            if proc.returncode != 0:
+                # The hook never reached its policy.  The installed command runs the guard
+                # through `/usr/bin/env python3` and `_hook_env`'s PATH carries no Homebrew,
+                # pyenv or conda interpreter, so on such a seat the command exits 127 with
+                # no deny JSON at all.  Reporting that as a guard that let the canary
+                # through sends the operator to fix a guard that was never exercised.
+                return _stage_error(
+                    f"the hook command exited {proc.returncode}: "
+                    f"{(proc.stderr or '').strip()[:200]}"
+                )
         if not denied:
             missed.append(tool_name)
     ok = not missed
@@ -586,7 +596,12 @@ def _completed_tool_calls(text: str) -> list[dict]:
     caller turns that into an unrunnable check rather than into a verdict about the
     guard.
     """
-    if len(text.encode("utf-8")) > MAX_SESSION_BYTES:
+    # The cheap character count first: UTF-8 spends at least one byte per character, so a
+    # string this long is already over the byte limit, and the runtime-controlled
+    # transcript is never encoded into a second whole-blob copy just to be measured.  The
+    # encode still runs whenever the cheap check passes, to catch the multibyte streams
+    # that are under the character count and over the byte limit.
+    if len(text) > MAX_SESSION_BYTES or len(text.encode("utf-8")) > MAX_SESSION_BYTES:
         raise ValueError("the live session output exceeds the byte limit")
     calls = []
     for line in _iter_session_lines(text):
