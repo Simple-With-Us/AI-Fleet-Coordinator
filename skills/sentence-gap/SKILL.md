@@ -89,7 +89,7 @@ perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > b
 **A second pass is required, and the first pass alone is what ships the wrong gap.**  The
 conversion above only touches a run of spaces that follows `.` `!` `?`.  Every OTHER run of two
 or more spaces survives it, so a colon or a semicolon in prose keeps two spaces:
-`They are now published:  1BfhJbWX` and `already decided;  PR #714` both come out of the first
+`They are now published:  <id>` and `already decided;  PR #<n>` both come out of the first
 pass unchanged.  The owner ruling is that a colon, a semicolon, a comma or a dash gets **one
 ordinary space**;  a gap after a semicolon is "very weird" and is not what was asked for.  So
 collapse every remaining run, on every line except the house closeout header and any fenced code
@@ -165,7 +165,7 @@ read them and confirm they are abbreviations rather than real sentences.
 
 **The third check is the one that catches a whole class of wrong body.**  The first two checks
 only look at sentence-ending marks, so a body can pass both of them and still carry a double
-space after a colon or a semicolon — `published:  1BfhJbWX`, `already decided;  PR #714`.  That
+space after a colon or a semicolon — `published:  <id>`, `already decided;  PR #<n>`.  That
 is a gap where the owner asked for one ordinary space, and it is invisible to the first two
 checks, which is exactly why it ships.  The `^repo:` filter drops the house closeout header,
 whose two spaces are the template's own, and the fence filter drops fenced code blocks, whose
