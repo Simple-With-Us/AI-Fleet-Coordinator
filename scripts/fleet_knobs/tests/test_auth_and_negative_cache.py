@@ -119,6 +119,17 @@ class AuthTests(KnobTestCase):
         # Stripped from the child, but the login itself must still have seen the pair.
         self.assertEqual(helper.seen_id, "idSentinel0123456789")
         self.assertEqual(helper.seen_secret, "secretSentinel0123456789")
+        # And the real subprocess must see it too:  asserting on child_env() alone would stay
+        # green if _run ever built the child's env from os.environ plus a token.
+        knobs.reset_for_tests()
+        self.fake.set(secrets=GOOD)
+        self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "snapshot")
+        self.assertEqual(self.fake.tokens(), [FAKE_TOKEN])
+        seen = self.fake.automation_seen()
+        self.assertTrue(seen, "the fake CLI recorded the call")
+        for pair in seen:
+            self.assertIsNone(pair["id"], "the export subprocess never sees the client id")
+            self.assertIsNone(pair["secret"], "the export subprocess never sees the client secret")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "the automation pair is Linux only")
     def test_a_half_set_automation_pair_is_reported_as_such_not_as_a_keychain(self):
