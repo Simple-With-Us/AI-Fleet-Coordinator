@@ -4,9 +4,10 @@
     python3 scripts/test_auto_merge_reusable.py
 
 The armer runs `gh pr merge --auto --squash --delete-branch`.  GitHub refuses
-`--delete-branch` when the repository has a merge queue enabled: the flag flips the
-repository's delete-branch-on-merge setting, and a queue cannot have both.  GitHub
-answers "X Cannot use `-d` or `--delete-branch` when merge queue enabled".
+`--delete-branch` when the repository has a merge queue enabled: the flag asks
+GitHub to delete the head branch when the pull request merges, and a merge queue
+cannot accept that request on the auto-merge.  GitHub answers "X Cannot use `-d`
+or `--delete-branch` when merge queue enabled".
 
 Before AFC-413 that refusal failed the arm step, so the "Auto-merge PRs" check was
 red on every PR in a repo with a queue, and a PR that was not already armed never got
