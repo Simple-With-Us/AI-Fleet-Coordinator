@@ -398,9 +398,20 @@ def already_replied(
             for m in page
         ):
             return True
-        ids = [m["id"] for m in page if isinstance(m.get("id"), int) and m["id"] > anchor]
-        if found.get("found_newest") is not False or not ids:
-            return False  # the topic's newest message has been read (or there is nothing newer):  no reply yet
+        ids: list[int] = []
+        for m in page:
+            candidate_id = m.get("id")
+            if not isinstance(candidate_id, int) or isinstance(candidate_id, bool):
+                raise ValueError("Zulip message id must be an integer")
+            if candidate_id > anchor:
+                ids.append(candidate_id)
+        found_newest = found.get("found_newest")
+        if not isinstance(found_newest, bool):
+            raise ValueError("Zulip messages response must include a boolean found_newest")
+        if found_newest:
+            return False  # the topic's newest message has been read:  no reply yet
+        if not ids:
+            raise ValueError("Zulip messages response omitted a valid next anchor")
         anchor = max(ids)
     log("notes-relay-reply-scan-capped", id=message_id, pages=REPLY_SCAN_PAGES)
     return False
