@@ -22,6 +22,7 @@ Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -131,9 +132,10 @@ def sha256_text(text: str) -> str:
     """The lowercase hex SHA-256 of some text.
 
     This is the hash the manifest's ``expected.sha256`` and the observed value both
-    use.  It is computed over the UTF-8 bytes of the text, and the text is the
-    canonical block body with its trailing newline removed, so the hash is stable
-    across platforms.
+    use.  It is computed over the UTF-8 bytes of ``text`` exactly as given, so the
+    caller owns the canonical form.  For ``marked_block_hash`` that form is pinned in
+    design section 5:  the block body lines (CR stripped, markers excluded) joined by
+    ``\\n`` with one trailing ``\\n``.
     """
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -237,21 +239,22 @@ def default_registry() -> CheckRegistry:
 
     Importing the check modules here rather than in the aggregator keeps the import
     order out of the aggregator's own body, and gives one place to see what exists.
+    A module that has not landed yet is not an error:  it registers nothing, and the
+    check types it would have carried are left unregistered, which the aggregator's
+    fail-closed rule turns into ``UNSUPPORTED`` rather than an exception.
     """
-    from . import (
-        checks_hooks,
-        checks_instructions,
-        checks_mcp,
-        checks_permissions,
-        checks_skills,
-        checks_subagents,
-    )
-
     registry = CheckRegistry()
-    registry._checks.update(checks_instructions.CHECKS)
-    registry._checks.update(checks_hooks.CHECKS)
-    registry._checks.update(checks_mcp.CHECKS)
-    registry._checks.update(checks_skills.CHECKS)
-    registry._checks.update(checks_subagents.CHECKS)
-    registry._checks.update(checks_permissions.CHECKS)
+    for name in (
+        "checks_instructions",
+        "checks_hooks",
+        "checks_mcp",
+        "checks_skills",
+        "checks_subagents",
+        "checks_permissions",
+    ):
+        try:
+            module = importlib.import_module("." + name, __package__ or __name__)
+        except ImportError:
+            continue  # not implemented yet
+        registry._checks.update(module.CHECKS)
     return registry

@@ -110,6 +110,16 @@ def _enum(enum_type, value: object, what: str):
         raise ManifestError("%s has an unknown value %r" % (what, value)) from None
 
 
+def _int(value: object, what: str) -> int:
+    """One integer from the manifest, or ManifestError naming the field.  A value the
+    manifest cannot carry as an integer (a string, a list) is a malformed manifest, not a
+    crash out of the loader's documented ManifestError contract."""
+    try:
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        raise ManifestError("%s must be an integer, not %r" % (what, value)) from None
+
+
 def _str_tuple(value: object, what: str) -> tuple[str, ...]:
     """A list of strings from the manifest, or ManifestError naming the field."""
     if value is None:
@@ -149,10 +159,10 @@ def _parse_rule(raw: object, seat: str) -> Rule:
         ),
         proof_level=_enum(ProofLevel, raw.get("proofLevel"), "rule %s proofLevel" % rule_id),
         owner_seat=str(raw.get("ownerSeat") or ""),
-        autofix_allowed=bool(raw.get("autofixAllowed")),
+        autofix_allowed=raw.get("autofixAllowed") is True,
         seat=seat,
         collector=_enum(Collector, raw.get("collector") or "mac", "rule %s collector" % rule_id),
-        ttl_seconds=int(raw.get("ttlSeconds") or 900),
+        ttl_seconds=_int(raw.get("ttlSeconds") or 900, "rule %s ttlSeconds" % rule_id),
         description=str(raw.get("description") or ""),
     )
 
