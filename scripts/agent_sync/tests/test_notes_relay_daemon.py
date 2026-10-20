@@ -21,6 +21,7 @@ from unittest import mock
 from agent_sync import config as C
 from agent_sync import notes as N
 from agent_sync import notes_relay as NR
+from agent_sync import zulip as Z
 from agent_sync.tests.harness import write_rc
 from agent_sync.tests.test_daemon import DaemonHarness
 
@@ -293,6 +294,66 @@ class DaemonRelayTests(DaemonHarness):
         )
         log = (self.state_dir / "logs" / "listener.log").read_text()
         self.assertIn("notes-relay-unclaimed", log)
+
+    def test_a_refusal_that_failed_is_held_and_published_on_the_next_tick(self):
+        """AFC-407:  the reply is part of the result, so a refusal that failed on a retryable error is not a lost
+        request.  The cursor is held below it (a later message must not carry it past) and the tick publishes the
+        refusal, after which the hold falls and the requester has heard back."""
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        self.assertIsNone(daemon.notes_relay)
+        real = NR.refuse_unconsumed
+        attempts = []
+
+        def flaky(r, message, reason, log):
+            attempts.append(message.get("id"))
+            if len(attempts) == 1:
+                raise Z.ApiError("zulip is busy", code="RATE_LIMIT_HIT", status=429)
+            return real(r, message, reason, log)
+
+        mid = self.envelope_message()
+        before = runner.cursor
+        with mock.patch.object(NR, "refuse_unconsumed", flaky):
+            daemon.route_message(runner, self.fake.messages[-1])
+            self.assertEqual(attempts, [mid], "the refusal was tried and failed")
+            self.assertEqual(runner.cursor, before, "a failed refusal must not move the cursor")
+            self.assertEqual(runner.hold_below, mid, "the cursor is held below the request")
+            later = self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+            daemon.route_message(runner, self.fake.messages[-1])
+            self.assertEqual(
+                runner.cursor, mid - 1, "a later message must not carry the cursor past the request"
+            )
+            self.assertGreater(later, mid)
+            daemon.retry_held_notes_relay()
+        self.assertTrue(
+            (mid, 10, "cross_mark") in self.fake.reactions or (mid, 10, "x") in self.fake.reactions,
+            "the retry publishes the cross mark",
+        )
+        self.assertTrue(
+            any("notes-relay refused" in str(m.get("content") or "") for m in self.fake.messages),
+            "the retry tells the requester that nothing was written",
+        )
+        self.assertIsNone(runner.hold_below, "the hold falls once the refusal is published")
+        self.assertGreaterEqual(runner.cursor, later, "the cursor catches up past the request")
+        self.assertGreaterEqual(self.persisted_cursor(runner), mid)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("notes-relay-refusal-held", log)
+        self.assertIn("notes-relay-refusal-retried", log)
+
+    def test_a_restart_backfills_the_relay_channel_for_the_refusing_seat(self):
+        """A refusal held below the cursor survives a restart only if the backfill can reach the channel:  with no
+        consumer running the relay narrow is otherwise never added, and the request would be stranded."""
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNone(daemon.notes_relay)
+        runner = daemon.seats["CLAUDE"]
+        mid = self.envelope_message()
+        self.assertIn(
+            mid,
+            [m["id"] for m in runner.backfill()],
+            "the refusing seat reads the relay channel so a held request comes back",
+        )
 
     def two_seats(self):
         codex_key = secrets.token_hex(16)

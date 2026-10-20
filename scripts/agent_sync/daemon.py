@@ -407,6 +407,10 @@ class SeatRunner:
             # A relay request has no mention and its topic is never followed or leased, so without this a later
             # message that moves the cursor would carry it past a request that arrived while this seat was down.
             narrows.append([{"operator": "channel", "operand": relay.channel}])
+        elif self.daemon.notes_relay_refuser == self.seat:
+            # The relay is off, so this seat refuses what nobody will write.  A refusal that failed holds the cursor
+            # below the request, and only a fetch of this channel can bring it back to be refused.
+            narrows.append([{"operator": "channel", "operand": NOTES.RELAY_CHANNEL}])
         for narrow in narrows:
             anchor = floor
             for _ in range(MAX_PAGES):
@@ -989,6 +993,40 @@ class Daemon:
                 "lowest one has run",
             )
 
+    def _retry_failed_refusals(self) -> None:
+        """Publish again a refusal that failed on a retryable error, for the requests the hold is keeping the
+        cursor below.  With no consumer running there is nothing to spool, so the reply itself is the retry:  a
+        refusal that lands frees the hold it was holding, and one that keeps failing waits for the next tick."""
+        seat = self.notes_relay_refuser
+        reader = self.seats.get(seat) if seat else None
+        if reader is None or not reader.connected or reader.client is None:
+            return
+        refused: list[tuple[str, int]] = []
+        for key in sorted(self.notes_relay_retry, key=lambda item: item[1]):
+            if key[0] != reader.seat:
+                continue
+            try:
+                message = reader.client.get(
+                    "messages/%d" % key[1], {"apply_markdown": False}
+                ).get("message")
+                if not isinstance(message, dict) or not NR.refuse_unconsumed(
+                    reader, message, self.notes_relay_refusal_reason, self.log.write
+                ):
+                    continue
+            except Exception:  # noqa: BLE001 - the next tick tries again
+                continue
+            del self.notes_relay_retry[key]
+            refused.append(key)
+        if not refused:
+            return
+        self.log.write(
+            "notes-relay-refusal-retried",
+            seat=reader.seat,
+            ids=[mid for _, mid in refused],
+        )
+        self._release_relay_hold(reader)
+        reader.advance(max(mid for _, mid in refused))
+
     def _abandon_relay_holds(self, why: str) -> None:
         """This listener has stopped consuming on purpose, so nothing will spool the requests it was holding the
         cursors for.  Drop the retry map and the overflow markers and release every hold (set_hold), so the cursors
@@ -1033,6 +1071,7 @@ class Daemon:
         with self.notes_relay_lock:
             relay = self.notes_relay
             if relay is None or relay.stopped.is_set():
+                self._retry_failed_refusals()
                 return
             reader = self.seats.get(relay.seat)
             if reader is None or not reader.connected or reader.client is None:
@@ -1776,8 +1815,20 @@ class Daemon:
                     self.log.write(
                         "notes-relay-refusal-failed", id=message_id, error=type(exc).__name__
                     )
+                    # The reply is part of the result, so a refusal that failed is not a lost request:  take the id
+                    # back out of the ring, hold the cursor below it and keep it for the retry, or the next message
+                    # would carry the cursor past a request nobody was ever told about.
                     runner.ring.discard(message_id)
-                    return  # the cursor stays below it:  the refusal is published on the next pass
+                    hold = runner.hold_at_or_below(message_id)
+                    self.log.write(
+                        "notes-relay-refusal-held",
+                        seat=runner.seat,
+                        id=message_id,
+                        hold_below=hold,
+                        warning="could not refuse the request;  the cursor is held below it until the retry lands",
+                    )
+                    self._keep_for_relay_retry(runner, message)
+                    return
             else:
                 # This host is not the consumer and cannot say who is:  the knob names another seat, or it could
                 # not be read.  It says so in the log rather than letting the request pass in silence, because a
