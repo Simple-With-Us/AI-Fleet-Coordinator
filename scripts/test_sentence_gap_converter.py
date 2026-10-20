@@ -66,10 +66,10 @@ CHECKER_FILES = ("scripts/test_sentence_gap_converter.py",)
 # pattern.  The one home is the source;  the rest are checked against it.
 #
 # The list is derived from the seat registry rather than named by hand, so a new seat
-# cannot be forgotten and a retired one cannot be kept.  A retired seat (MONET, RENOIR,
-# DSH, KIMI) keeps its catalog copy as history and gets no new tracked tree -- the
-# registry says so, and the installer already skips retired seats -- so it is not a copy
-# that can ship a body with no gap, and it is not a target for new work.
+# cannot be forgotten and a retired one cannot be kept.  A retired seat keeps its catalog
+# copy as history and gets no new tracked tree -- the registry says so, and the installer
+# already skips retired seats -- so it is not a copy that can ship a body with no gap, and
+# it is not a target for new work.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fleet_skill_identity as _identity
