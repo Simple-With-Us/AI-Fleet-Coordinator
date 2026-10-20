@@ -96,6 +96,7 @@ export async function drainOutbox({
     } catch (err) {
       failed += 1;
       log(`outbox ${row.outbox_id}: ${err.message}`);
+      break; // stop the drain: later snapshots must not overtake an unexported earlier one
     }
   }
   return { exported, failed };
