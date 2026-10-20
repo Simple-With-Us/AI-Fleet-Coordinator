@@ -685,7 +685,7 @@ class GeneratedHandbookParityTests(unittest.TestCase):
             text = (ROOT / rel).read_text(encoding="utf-8")
             actual = (patterns_in(text), assertion_patterns(text))
             message = (rel + " sentence-gap procedure differs from the one home; update "
-                       "Fleet-OPS handbook/pages/writing.md, build with scripts/handbook/build.mjs, "
+                       "Fleet-OPS handbook/owner/writing-for-owner.md, build with scripts/handbook/build.mjs, "
                        "and let handbook-sync/mirror publish the generated mirror.  Do not hand-edit AGENT-SYNC.md.")
             self.assertIn(expected[0], actual[0], message)
             self.assertEqual(actual[1], expected[1], message)
