@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from agent_sync import adapters as A
@@ -396,6 +397,19 @@ class McodeFallbackTest(unittest.TestCase):
     Gate 0 passed on the real runtime:  the wake schema round-tripped through `mcode exec` with zero
     coercion and a populated `board` object.  What did not pass is the lockdown, and that is why the
     order is fixed:  muse then mcode, never the reverse."""
+
+    def test_fallback_fingerprint_covers_contract_and_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            contract = Path(tmp) / "contract.md"
+            contract.write_text("Contract one.")
+            with mock.patch.object(A, "CONTRACT_PATH", str(contract)):
+                first = A.mcode_wake_fingerprint("fixture-mcode")
+                contract.write_text("Contract two.")
+                self.assertNotEqual(first, A.mcode_wake_fingerprint("fixture-mcode"))
+                with mock.patch.object(A, "schema_text", return_value="fixture-schema"):
+                    self.assertNotEqual(first, A.mcode_wake_fingerprint("fixture-mcode"))
+                contract.unlink()
+                self.assertEqual(A.mcode_wake_fingerprint("fixture-mcode"), "")
 
     def test_the_argv_states_what_mcode_can_state(self) -> None:
         argv = A.mcode_argv("/usr/local/bin/mcode")

@@ -11,7 +11,7 @@ from agent_sync.tests.test_daemon import DaemonHarness
 
 NOW = 1_800_000_000.0
 HOUR = 3600.0
-ST_URL = "https://github.com/Simple-With-Us/Socratic-Trade"
+ST_URL = "https://github.com/example-org/Socratic-Trade"
 
 
 def chat(n, minutes_ago, platform="grok-leader", cwd=None, title="chat", repo=None):
@@ -78,6 +78,10 @@ class ScopeTests(unittest.TestCase):
         self.assertIsNone(
             F.scope("@**all** CT broke, please look", "misc").repos, "the body is never scanned"
         )
+        self.assertIsNone(
+            F.scope("@**all** for the record: deploy is out", "misc").repos,
+            "a `for X:` that names no app is prose, so the alert keeps its everyone reach",
+        )
         self.assertEqual(
             F.scope("@**all** for CT, UM: x", "misc").repos,
             frozenset({"congress.trade", "usage-monitor"}),
@@ -120,7 +124,7 @@ class ScopeTests(unittest.TestCase):
     def test_repo_scope_takes_every_recent_chat_on_that_repo(self):
         rows = [cloud(i, i, ST_URL) for i in range(1, 7)]
         rows += [
-            cloud(8, 1, "https://github.com/Simple-With-Us/Congress.Trade"),
+            cloud(8, 1, "https://github.com/example-org/Congress.Trade"),
             cloud(9, 400, ST_URL),
         ]
         picked = F.select(rows, NOW, F.Scope(frozenset({"socratic-trade"})))

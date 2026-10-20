@@ -1423,17 +1423,21 @@ def mcode_wake_fingerprint(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> str:
     carried separately because it is a per-seat value that lands on the command line, and a pin
     made under one model must not read as verified under another.
     """
-    return hashlib.sha256(
-        json.dumps(
-            {
-                "policy_version": MCODE_WAKE_POLICY_VERSION,
-                "argv": mcode_argv("<mcode>", "<model>"),
-                "model": model,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    try:
+        with open(CONTRACT_PATH, "rb") as fh:
+            contract = fh.read()
+        contract.decode("utf-8")
+        schema = schema_text()
+    except (OSError, UnicodeError, ValueError):
+        return ""
+    digest = hashlib.sha256(json.dumps(
+        {"policy_version": MCODE_WAKE_POLICY_VERSION,
+         "argv": mcode_argv("<mcode>", "<model>"), "model": model, "schema": schema},
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(contract)
+    return digest.hexdigest()
 
 
 def mcode_pin_state(
@@ -1452,7 +1456,8 @@ def mcode_pin_state(
         return {"pinned": False, "why": "pin_stale", "pinned_mcode": recorded, "mcode": current}
     # A pin made before the model was named on the command, or under a different model, verified a
     # command this seat no longer runs:  report it stale so a person re-pins.
-    if pin.get("fingerprint") != mcode_wake_fingerprint(mcode, model):
+    current_fingerprint = mcode_wake_fingerprint(mcode, model)
+    if not current_fingerprint or pin.get("fingerprint") != current_fingerprint:
         return {"pinned": False, "why": "pin_stale", "pinned_mcode": recorded, "mcode": current}
     return {"pinned": True, "why": None, "pinned_mcode": recorded, "mcode": current}
 
@@ -1505,7 +1510,8 @@ def mcode_pin_candidate(
             "the mcode binary changed since the test (%s, tested %s); run test-wake --run again"
             % (binary_pin(mcode), cand.get("mcode"))
         )
-    if cand.get("fingerprint") != mcode_wake_fingerprint(mcode, model):
+    current_fingerprint = mcode_wake_fingerprint(mcode, model)
+    if not current_fingerprint or cand.get("fingerprint") != current_fingerprint:
         return (
             "the mcode command changed since the test (model or flags); run test-wake --run again"
         )

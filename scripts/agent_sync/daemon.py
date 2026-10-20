@@ -631,7 +631,8 @@ class Daemon:
         self.chat_nudges = CN.ChatNudges(self.root, "GROK", recover=False)
         self._chat_queues = {"GROK": self.chat_nudges}
         self._fanout_lock = threading.Lock()
-        self._fanout_seen: set[int] = set()
+        # Bounded:  the ids only have to outlive one message's routing, so the daemon never grows without limit.
+        self._fanout_seen: collections.deque[int] = collections.deque(maxlen=RING_LIMIT)
         self.coalescer = W.Coalescer(
             window=self.config.coalesce_seconds,
             max_window=self.config.coalesce_max_seconds,
@@ -3184,7 +3185,7 @@ class Daemon:
         with self._fanout_lock:
             if message_id in self._fanout_seen:
                 return
-            self._fanout_seen.add(message_id)
+            self._fanout_seen.append(message_id)
         where = FAN.scope(R.outside_code(str(message.get("content") or "")), c.topic)
         threading.Thread(
             target=self.fanout,
@@ -3199,8 +3200,10 @@ class Daemon:
         """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform."""
         result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}}
         try:
+            # The catalog's own TTL decides when a rescan is due:  a burst of alerts reuses one walk instead of each
+            # forcing one, and never holds the scan lock longer than an ordinary wake's refresh would.
             rows = self.chat_catalog().discover(
-                force=True, wait_grok=True, grok_timeout=CT.discovery_wait_budget()
+                wait_grok=True, grok_timeout=CT.discovery_wait_budget()
             )
             chosen = FAN.select(rows, self.clock.time(), where, places or FAN.ChatPlaces())
         except Exception as exc:
@@ -3222,8 +3225,16 @@ class Daemon:
                 added = self.chat_queue(runner.seat).enqueue_target(
                     binding, message_id, self.clock.time(), owner=True
                 )
-            except ValueError:
-                result["no_transport"][platform] = result["no_transport"].get(platform, 0) + 1
+            except ValueError as exc:
+                # The transport was vetted above, so a refusal here is a bad binding or an unreadable state
+                # file:  an error to log and count, not a platform with nowhere to send.
+                result["failed"] = result.get("failed", 0) + 1
+                self.log.write(
+                    "fanout-chat-error",
+                    id=message_id,
+                    platform=platform,
+                    error=self.scrub(str(exc))[:200],
+                )
                 continue
             except Exception as exc:  # one chat's failure never stops the rest of the alert
                 result["failed"] = result.get("failed", 0) + 1
@@ -3246,16 +3257,21 @@ class Daemon:
         return result
 
     def chat_catalog(self) -> Any:
-        if not hasattr(self, "_chat_catalog"):
-            from .chat_catalog import ChatCatalog
+        # Fanout threads race here, so the check and the construction are one guarded step.
+        with self._fanout_lock:
+            if not hasattr(self, "_chat_catalog"):
+                from .chat_catalog import ChatCatalog
 
-            self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
-        return self._chat_catalog
+                self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
+            return self._chat_catalog
 
     def chat_queue(self, seat: str) -> CN.ChatNudges:
-        if seat not in self._chat_queues:
-            self._chat_queues[seat] = CN.ChatNudges(self.root, seat, recover=False)
-        return self._chat_queues[seat]
+        # Fanout threads reach this from a background thread, so the check and the construction are
+        # one guarded step, exactly like chat_catalog() above.
+        with self._fanout_lock:
+            if seat not in self._chat_queues:
+                self._chat_queues[seat] = CN.ChatNudges(self.root, seat, recover=False)
+            return self._chat_queues[seat]
 
     def chat_context(
         self, runner: SeatRunner, pending: W.Pending, history: list[dict[str, Any]] | None = None
@@ -3264,13 +3280,9 @@ class Daemon:
         if runner.cfg.wake != "muse" or not pending.trigger_ids or pending.route_tagged:
             return []
         try:
-            if not hasattr(self, "_chat_catalog"):
-                from .chat_catalog import ChatCatalog
-
-                self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
             # One leader walk, not one timeout per page.  A still-pending leader is an
             # unavailable catalog row, so this wake continues instead of stalling intake.
-            rows = self._chat_catalog.discover(
+            rows = self.chat_catalog().discover(
                 wait_grok=True, grok_timeout=CT.discovery_wait_budget()
             )
             # Every direct message or explicit bot mention may wake Muse.  Its trigger is
@@ -4918,7 +4930,8 @@ class Daemon:
                 )
                 red.append(
                     "fallback pin is stale: %s; run "
-                    "`agent-sync daemon test-wake --seat %s --run`, then `--pin`" % (_cause, seat)
+                    "`agent-sync daemon test-wake --seat %s --runtime fallback --run`, then "
+                    "`agent-sync daemon test-wake --seat %s --runtime fallback --pin`" % (_cause, seat, seat)
                 )
             for problem in runner.cfg.config_problems:
                 red.append(

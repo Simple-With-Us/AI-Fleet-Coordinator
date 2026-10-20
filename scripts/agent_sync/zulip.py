@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from .identity import canonical_seat
-from .textfmt import sentence_gap
+from .textfmt import fix_outbound
 
 __all__ = [
     "DEFAULT_CHANNEL",
@@ -858,7 +858,7 @@ def outbound_params(
         and isinstance(params.get("content"), str)
         and _OUTBOUND_TEXT_PATH.fullmatch(path.strip("/"))
     ):
-        return {**params, "content": sentence_gap(params["content"])}
+        return {**params, "content": fix_outbound(params["content"], limit=10000)[0]}
     return params
 
 
