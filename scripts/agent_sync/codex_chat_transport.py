@@ -28,14 +28,19 @@ CACHE_LIMIT = 64
 RECEIPT_CACHE_LIMIT = 8
 MAX_CACHED_MESSAGE_HASHES = 1024
 _LOADED_CACHE = (0.0, frozenset())
+_LOADED_PROBE_FAILED_AT = 0.0
 
 
 def loaded_rollouts(*, fresh=False):
     """One bounded lsof snapshot proves exact rollout ownership by bundled desktop Codex."""
-    global _LOADED_CACHE
+    global _LOADED_CACHE, _LOADED_PROBE_FAILED_AT
     now = time.monotonic()
     if not fresh and now - _LOADED_CACHE[0] < 5:
         return _LOADED_CACHE[1]
+    if not fresh and now - _LOADED_PROBE_FAILED_AT < 5:
+        # The probe already failed inside this TTL.  Answer repeat callers without spawning lsof,
+        # so one hung probe is paid once per window rather than once per pending dispatch.
+        return frozenset()
     paths = set()
     try:
         result = subprocess.run(
@@ -46,6 +51,7 @@ def loaded_rollouts(*, fresh=False):
             check=False,
         )
         if result.returncode not in (0, 1) or len(result.stdout) > MAX_RESPONSE:
+            _LOADED_PROBE_FAILED_AT = now
             return frozenset()
         processes = {}
         pid = None
@@ -65,6 +71,8 @@ def loaded_rollouts(*, fresh=False):
     except (OSError, subprocess.TimeoutExpired):
         # A failed fresh probe cannot authorize delivery or overwrite the last successful
         # discovery snapshot used by other bindings.  Never fall back to positive proof here.
+        # The failure is remembered separately so repeat probes inside the TTL cost no lsof.
+        _LOADED_PROBE_FAILED_AT = now
         return frozenset()
     _LOADED_CACHE = (now, frozenset(paths))
     return _LOADED_CACHE[1]

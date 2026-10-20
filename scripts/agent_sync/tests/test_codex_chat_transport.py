@@ -696,6 +696,7 @@ class LoadedProofTests(unittest.TestCase):
         output = ("p1\nn" + module.DESKTOP_EXECUTABLE + "\np2\nn" + path + "\n").encode()
         with (
             patch.object(module, "_LOADED_CACHE", (0, frozenset())),
+            patch.object(module, "_LOADED_PROBE_FAILED_AT", 0),
             patch.object(
                 module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output)
             ),
@@ -704,6 +705,7 @@ class LoadedProofTests(unittest.TestCase):
         output = ("p1\nn" + module.DESKTOP_EXECUTABLE + "\nn" + path + "\n").encode()
         with (
             patch.object(module, "_LOADED_CACHE", (0, frozenset())),
+            patch.object(module, "_LOADED_PROBE_FAILED_AT", 0),
             patch.object(
                 module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output)
             ) as run,
@@ -718,6 +720,7 @@ class LoadedProofTests(unittest.TestCase):
     def test_timeout_fails_closed(self):
         with (
             patch.object(module, "_LOADED_CACHE", (0, frozenset())),
+            patch.object(module, "_LOADED_PROBE_FAILED_AT", 0),
             patch.object(
                 module.subprocess, "run", side_effect=subprocess.TimeoutExpired("lsof", 3)
             ),
@@ -728,10 +731,45 @@ class LoadedProofTests(unittest.TestCase):
         snapshot = (module.time.monotonic(), frozenset(["/old/rollout.jsonl"]))
         with (
             patch.object(module, "_LOADED_CACHE", snapshot),
+            patch.object(module, "_LOADED_PROBE_FAILED_AT", 0),
             patch.object(module.subprocess, "run", side_effect=subprocess.TimeoutExpired("lsof", 3)),
         ):
             self.assertEqual(module.loaded_rollouts(fresh=True), frozenset())
             self.assertEqual(module._LOADED_CACHE, snapshot)
+
+    def test_failed_probe_is_rate_limited_but_a_fresh_probe_still_runs(self):
+        with (
+            patch.object(module, "_LOADED_CACHE", (0, frozenset())),
+            patch.object(module, "_LOADED_PROBE_FAILED_AT", 0),
+            patch.object(
+                module.subprocess, "run", side_effect=subprocess.TimeoutExpired("lsof", 3)
+            ) as run,
+        ):
+            for _ in range(5):
+                self.assertEqual(module.loaded_rollouts(), frozenset())
+            # One hung probe is paid once per TTL, not once per pending dispatch.
+            self.assertEqual(run.call_count, 1)
+            # The last good snapshot is never replaced by the failure.
+            self.assertEqual(module._LOADED_CACHE, (0, frozenset()))
+            # A forced recheck before enqueue still pays for its own probe.
+            self.assertEqual(module.loaded_rollouts(fresh=True), frozenset())
+            self.assertEqual(run.call_count, 2)
+
+    def test_failed_probe_rate_limit_expires(self):
+        with (
+            patch.object(module, "_LOADED_CACHE", (0, frozenset())),
+            patch.object(module, "_LOADED_PROBE_FAILED_AT", 0),
+            patch.object(module.time, "monotonic", return_value=100) as clock,
+            patch.object(
+                module.subprocess, "run", side_effect=subprocess.TimeoutExpired("lsof", 3)
+            ) as run,
+        ):
+            self.assertEqual(module.loaded_rollouts(), frozenset())
+            self.assertEqual(module.loaded_rollouts(), frozenset())
+            self.assertEqual(run.call_count, 1)
+            clock.return_value = 106
+            self.assertEqual(module.loaded_rollouts(), frozenset())
+            self.assertEqual(run.call_count, 2)
 
     def test_rpc_explicit_codex_home(self):
         with tempfile.TemporaryDirectory() as home, patch.object(module, "RPC") as rpc:
