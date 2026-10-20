@@ -61,6 +61,7 @@ Project generation and shell validation do not compile the app:
 
 ```sh
 bash -n muster/script/build_and_run.sh
+python3 -m unittest discover -s muster/script -t muster/script -v
 xcodegen generate --spec muster/project.yml
 ```
 

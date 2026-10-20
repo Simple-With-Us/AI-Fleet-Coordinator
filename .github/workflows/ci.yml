@@ -119,6 +119,8 @@ jobs:
     # policy and the live dispatch, so an installed-but-never-fired guard cannot read as
     # protected.  The test builds a temporary plugin directory and a fake hook command, so
     # it starts no MiniMax session and reads no installed plugin.
+    - name: Muster install transaction tests
+      run: python3 -m unittest discover -s muster/script -t muster/script -v
     - name: Muster guard live proof tests
       run: python3 scripts/test_muster_guard_live_proof.py
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
