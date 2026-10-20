@@ -350,9 +350,7 @@ class MiniMaxSession:
                                 )
                             return message.get("result")
                     self.buffer = [
-                        m
-                        for m in self.buffer
-                        if m.get("id") != request_id or "method" in m
+                        m for m in self.buffer if m.get("id") != request_id or "method" in m
                     ]
                 time.sleep(0.15)
             raise CommandError("%s timed out after %ss" % (method, timeout))
