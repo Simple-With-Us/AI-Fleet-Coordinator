@@ -16,6 +16,7 @@ Claude, Codex and other CLIs as engines for its own bots, and those engines load
 Exit 0 clean, 1 on any finding.  It reads files only and prints paths and line numbers, never contents.
 Fix a repo finding by re-rendering (`python3 scripts/install-fleet-skills.py --repo-only`).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,24 +36,46 @@ REPO_TREES = ("skills", "docs/fleet-skills/by-seat") + tuple(
 )
 # The owner's rules files and skill homes (design section 2).  Missing ones are skipped.
 HOME_FILES = (
-    "~/.claude/CLAUDE.md", "~/AGENTS.md", "~/.codex/AGENTS.md", "~/.cursor/rules/agent-sync-zulip.mdc",
-    "~/.gemini/config/AGENTS.md", "~/.grok/GROK.md", "~/.fx/AGENTS.md", "~/.minimax/AGENTS.md",
-    "~/.minimax/memory/user.md", "~/.clutch/dsh/AGENTS.md", "~/.kimi-code/AGENTS.md", "~/.vibe/AGENTS.md",
+    "~/.claude/CLAUDE.md",
+    "~/AGENTS.md",
+    "~/.codex/AGENTS.md",
+    "~/.cursor/rules/agent-sync-zulip.mdc",
+    "~/.gemini/config/AGENTS.md",
+    "~/.grok/GROK.md",
+    "~/.fx/AGENTS.md",
+    "~/.minimax/AGENTS.md",
+    "~/.minimax/memory/user.md",
+    "~/.clutch/dsh/AGENTS.md",
+    "~/.kimi-code/AGENTS.md",
+    "~/.vibe/AGENTS.md",
     "~/.config/opencode/AGENTS.md",
 )
 HOME_TREES = (
-    "~/.claude/skills", "~/.codex/skills", "~/.cursor/skills", "~/.gemini/skills", "~/.grok/skills",
-    "~/.fx/skills", "~/.minimax/skills", "~/.config/muse/skills", "~/.clutch/dsh/skills",
+    "~/.claude/skills",
+    "~/.codex/skills",
+    "~/.cursor/skills",
+    "~/.gemini/skills",
+    "~/.grok/skills",
+    "~/.fx/skills",
+    "~/.minimax/skills",
+    "~/.config/muse/skills",
+    "~/.clutch/dsh/skills",
 )
 # Catalog copies of retired seats are history, not anyone's working pack.
 RETIRED_CATALOG = {"monet", "renoir", "deepseek", "kimi", "grok-build"}
 RETIRED_SEATS = ("MONET", "RENOIR", "HARNESS", "DSH", "KIMI", "GROK-BUILD")
 
 BARE_EXPORT = re.compile(r"(?m)^\s*export\s+AGENT_SEAT=(?![\"']?\$)[A-Za-z0-9<]")
-LAUNCHER_WRITE = re.compile(r"(?m)(?:^|[;&|(]\s*|\bexport\s+|\benv\s+)(AGENT_LAUNCH_SEAT|AGENT_LAUNCHER)=")
+LAUNCHER_WRITE = re.compile(
+    r"(?m)(?:^|[;&|(]\s*|\bexport\s+|\benv\s+)(AGENT_LAUNCH_SEAT|AGENT_LAUNCHER)="
+)
 # The launcher clause:  the rendered sentence, or the design's seat block (which reads AGENT_LAUNCH_SEAT).
-CLAUSE = re.compile(r"Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`|\$\{AGENT_LAUNCH_SEAT:-\}")
-RETIRED_PIN = re.compile(r"(?m)^\s*export\s+AGENT_SEAT=[\"']?(%s)\b" % "|".join(re.escape(s) for s in RETIRED_SEATS))
+CLAUSE = re.compile(
+    r"Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`|\$\{AGENT_LAUNCH_SEAT:-\}"
+)
+RETIRED_PIN = re.compile(
+    r"(?m)^\s*export\s+AGENT_SEAT=[\"']?(%s)\b" % "|".join(re.escape(s) for s in RETIRED_SEATS)
+)
 
 
 def _line(text: str, offset: int) -> int:
@@ -62,15 +85,21 @@ def _line(text: str, offset: int) -> int:
 def check_text(path: str, text: str, *, needs_clause: bool, retired_ok: bool = False) -> list[str]:
     found: list[str] = []
     for match in BARE_EXPORT.finditer(text):
-        found.append("%s:%d: bare-export (a bare `export AGENT_SEAT=<TAG>` overwrites a launcher's seat)"
-                     % (path, _line(text, match.start())))
+        found.append(
+            "%s:%d: bare-export (a bare `export AGENT_SEAT=<TAG>` overwrites a launcher's seat)"
+            % (path, _line(text, match.start()))
+        )
     for match in LAUNCHER_WRITE.finditer(text):
-        found.append("%s:%d: launcher-write (%s is written only by a launcher)"
-                     % (path, _line(text, match.start()), match.group(1)))
+        found.append(
+            "%s:%d: launcher-write (%s is written only by a launcher)"
+            % (path, _line(text, match.start()), match.group(1))
+        )
     if not retired_ok:
         for match in RETIRED_PIN.finditer(text):
-            found.append("%s:%d: retired-seat (%s is retired and is no one's seat)"
-                         % (path, _line(text, match.start()), match.group(1)))
+            found.append(
+                "%s:%d: retired-seat (%s is retired and is no one's seat)"
+                % (path, _line(text, match.start()), match.group(1))
+            )
     if needs_clause and "AGENT_SEAT" in text and not CLAUSE.search(text):
         found.append("%s: no-clause (names AGENT_SEAT but has no launcher clause)" % path)
     return found
@@ -102,8 +131,12 @@ def check_path(path: Path, *, rules_file: bool = False) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("paths", nargs="*", help="files or directories (default: the repo's rendered trees)")
-    parser.add_argument("--home", action="store_true", help="also check the owner's rules files and skill homes")
+    parser.add_argument(
+        "paths", nargs="*", help="files or directories (default: the repo's rendered trees)"
+    )
+    parser.add_argument(
+        "--home", action="store_true", help="also check the owner's rules files and skill homes"
+    )
     args = parser.parse_args(argv)
     found: list[str] = []
     if args.paths:
@@ -124,8 +157,11 @@ def main(argv: list[str] | None = None) -> int:
     for line in found:
         print(line)
     if found:
-        print("check-seat-blocks: %d finding%s.  Repo trees:  python3 scripts/install-fleet-skills.py --repo-only"
-              % (len(found), "" if len(found) == 1 else "s"), file=sys.stderr)
+        print(
+            "check-seat-blocks: %d finding%s.  Repo trees:  python3 scripts/install-fleet-skills.py --repo-only"
+            % (len(found), "" if len(found) == 1 else "s"),
+            file=sys.stderr,
+        )
         return 1
     print("check-seat-blocks: clean")
     return 0

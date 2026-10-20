@@ -6,6 +6,7 @@ Every test works in a throwaway fake home and never touches the real one.  The s
 written by the tools' own `mcp add` commands (OpenCode 2.0.21) or copied from an entry the
 tool already holds (Muse Code, MiniMax, fx), on a throwaway home, on 2026-10-10.
 """
+
 from __future__ import annotations
 
 import io
@@ -27,7 +28,7 @@ class HomeCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.home = os.path.realpath(self._tmp.name)
-        self.env = {"FLEET_RAG_HOME": ""}               # force the default <home>/apps/fleet-rag
+        self.env = {"FLEET_RAG_HOME": ""}  # force the default <home>/apps/fleet-rag
 
     def path(self, rel: str) -> str:
         return os.path.join(self.home, rel)
@@ -68,8 +69,14 @@ class HomeCase(unittest.TestCase):
         return os.path.join(self.home, ".local", "bin", "agent-sync")
 
 
-TOOL_DIRS = {"opencode": ".config/opencode", "kimi": ".kimi-code", "muse": ".config/muse",
-             "minimax": ".minimax", "fx": ".fx", "clutch": ".clutch/dsh"}
+TOOL_DIRS = {
+    "opencode": ".config/opencode",
+    "kimi": ".kimi-code",
+    "muse": ".config/muse",
+    "minimax": ".minimax",
+    "fx": ".fx",
+    "clutch": ".clutch/dsh",
+}
 
 
 class ShapeTests(HomeCase):
@@ -78,14 +85,46 @@ class ShapeTests(HomeCase):
     def expect(self) -> dict:
         r = self.recall
         return {
-            ".config/opencode/opencode.json": {"mcp": {"servers": {"fleet-recall": {"type": "local", "command": ["python3", r]}}}},
-            ".kimi-code/mcp.json": {"mcpServers": {"fleet-recall": {"command": "python3", "args": [r]}}},
-            ".config/muse/settings.json": {"mcpServers": {"fleet-recall": {"type": "stdio", "command": "python3", "args": [r], "mode": "optional"}}},
-            ".minimax/mcp.json": {"mcpServers": {"fleet-recall": {"type": "stdio", "enabled": True, "configured": True,
-                                                                 "builtin": False, "command": "python3", "args": [r]}}},
-            ".fx/mcp.json": {"mcp": {"fleet-recall": {"type": "local", "command": ["python3", r], "enabled": True,
-                                                      "startup_timeout_ms": 30000, "operation_timeout_ms": 60000,
-                                                      "restart_limit": 1}}},
+            ".config/opencode/opencode.json": {
+                "mcp": {"servers": {"fleet-recall": {"type": "local", "command": ["python3", r]}}}
+            },
+            ".kimi-code/mcp.json": {
+                "mcpServers": {"fleet-recall": {"command": "python3", "args": [r]}}
+            },
+            ".config/muse/settings.json": {
+                "mcpServers": {
+                    "fleet-recall": {
+                        "type": "stdio",
+                        "command": "python3",
+                        "args": [r],
+                        "mode": "optional",
+                    }
+                }
+            },
+            ".minimax/mcp.json": {
+                "mcpServers": {
+                    "fleet-recall": {
+                        "type": "stdio",
+                        "enabled": True,
+                        "configured": True,
+                        "builtin": False,
+                        "command": "python3",
+                        "args": [r],
+                    }
+                }
+            },
+            ".fx/mcp.json": {
+                "mcp": {
+                    "fleet-recall": {
+                        "type": "local",
+                        "command": ["python3", r],
+                        "enabled": True,
+                        "startup_timeout_ms": 30000,
+                        "operation_timeout_ms": 60000,
+                        "restart_limit": 1,
+                    }
+                }
+            },
         }
 
     def test_apply_writes_each_native_shape_once(self) -> None:
@@ -96,7 +135,11 @@ class ShapeTests(HomeCase):
         for rel, want in self.expect().items():
             with self.subTest(rel=rel):
                 self.assertEqual(self.load(rel), want)
-                self.assertEqual(stat.S_IMODE(os.stat(self.path(rel)).st_mode), 0o600, "a new config is owner-only")
+                self.assertEqual(
+                    stat.S_IMODE(os.stat(self.path(rel)).st_mode),
+                    0o600,
+                    "a new config is owner-only",
+                )
         self.assertIn("Summary: 5 files changed.", out)
         # a second apply changes nothing and writes no backup
         before = {rel: self.read(rel) for rel in self.expect()}
@@ -115,8 +158,10 @@ class ShapeTests(HomeCase):
         self.assertFalse(any(a.startswith("~") for a in argv))
 
     def test_fleet_rag_home_is_honoured(self) -> None:
-        self.assertEqual(M.server_argv("fleet-recall", self.home, None, {"FLEET_RAG_HOME": "/opt/rag"}),
-                         ["python3", "/opt/rag/fleet-recall-mcp.py"])
+        self.assertEqual(
+            M.server_argv("fleet-recall", self.home, None, {"FLEET_RAG_HOME": "/opt/rag"}),
+            ["python3", "/opt/rag/fleet-recall-mcp.py"],
+        )
 
 
 class NotInstalledTests(HomeCase):
@@ -147,8 +192,17 @@ class NotInstalledTests(HomeCase):
 
 class ExistingConfigTests(HomeCase):
     def test_other_servers_and_settings_survive_with_a_backup(self) -> None:
-        original = json.dumps({"model": "x", "mcpServers": {"coolify": {"type": "stdio", "command": "sh"}},
-                               "zeta": [1, 2]}, indent=2) + "\n"
+        original = (
+            json.dumps(
+                {
+                    "model": "x",
+                    "mcpServers": {"coolify": {"type": "stdio", "command": "sh"}},
+                    "zeta": [1, 2],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
         self.write(".config/muse/settings.json", original, mode=0o640)
         code, out, _ = self.run_cli("apply", "muse")
         self.assertEqual(code, M.EXIT_OK, out)
@@ -159,24 +213,44 @@ class ExistingConfigTests(HomeCase):
         names = self.backups(".config/muse")
         self.assertEqual(len(names), 1)
         self.assertEqual(self.read(".config/muse/" + names[0]), original)
-        self.assertEqual(stat.S_IMODE(os.stat(self.path(".config/muse/settings.json")).st_mode), 0o640)
-        self.assertEqual(stat.S_IMODE(os.stat(self.path(".config/muse/" + names[0])).st_mode), 0o600,
-                         "a backup is owner-only whatever the original's mode")
+        self.assertEqual(
+            stat.S_IMODE(os.stat(self.path(".config/muse/settings.json")).st_mode), 0o640
+        )
+        self.assertEqual(
+            stat.S_IMODE(os.stat(self.path(".config/muse/" + names[0])).st_mode),
+            0o600,
+            "a backup is owner-only whatever the original's mode",
+        )
 
     def test_a_backup_of_a_world_readable_file_is_never_world_readable(self) -> None:
         original = '{"mcpServers": {"x": {"command": "sh"}}}\n'
-        for rel, key, mode in ((".config/muse/settings.json", "muse", 0o644), (".kimi-code/mcp.json", "kimi", 0o666)):
+        for rel, key, mode in (
+            (".config/muse/settings.json", "muse", 0o644),
+            (".kimi-code/mcp.json", "kimi", 0o666),
+        ):
             with self.subTest(rel=rel):
                 self.write(rel, original, mode=mode)
                 code, out, _ = self.run_cli("apply", key)
                 self.assertEqual(code, M.EXIT_OK, out)
                 (name,) = self.backups(os.path.dirname(rel))
-                self.assertEqual(stat.S_IMODE(os.stat(self.path(os.path.join(os.path.dirname(rel), name))).st_mode), 0o600)
+                self.assertEqual(
+                    stat.S_IMODE(
+                        os.stat(self.path(os.path.join(os.path.dirname(rel), name))).st_mode
+                    ),
+                    0o600,
+                )
 
     def test_a_literal_credential_in_the_file_is_warned_about_without_printing_it(self) -> None:
         secret = "ghp_" + "a1B2c3D4e5F6g7H8"
-        doc = {"mcpServers": {"github": {"type": "http", "url": "https://example.invalid/mcp",
-                                         "headers": {"Authorization": "Bearer " + secret}}}}
+        doc = {
+            "mcpServers": {
+                "github": {
+                    "type": "http",
+                    "url": "https://example.invalid/mcp",
+                    "headers": {"Authorization": "Bearer " + secret},
+                }
+            }
+        }
         self.write(".config/muse/settings.json", json.dumps(doc, indent=2) + "\n", mode=0o644)
         code, out, _ = self.run_cli("plan", "muse")
         self.assertEqual(code, M.EXIT_OK, out)
@@ -189,9 +263,11 @@ class ExistingConfigTests(HomeCase):
         self.assertNotIn(secret, out)
 
     def test_a_whole_value_variable_or_a_clean_file_is_not_warned_about(self) -> None:
-        for text in ('{"mcpServers": {"github": {"headers": {"Authorization": "Bearer ${GITHUB_TOKEN}"}}}}\n',
-                     '{"mcpServers": {"x": {"env": {"API_TOKEN": "${API_TOKEN}"}}}}\n',
-                     '{"mcpServers": {"x": {"command": "sh"}}}\n'):
+        for text in (
+            '{"mcpServers": {"github": {"headers": {"Authorization": "Bearer ${GITHUB_TOKEN}"}}}}\n',
+            '{"mcpServers": {"x": {"env": {"API_TOKEN": "${API_TOKEN}"}}}}\n',
+            '{"mcpServers": {"x": {"command": "sh"}}}\n',
+        ):
             with self.subTest(text=text):
                 self.write(".config/muse/settings.json", text)
                 code, out, _ = self.run_cli("plan", "muse")
@@ -199,23 +275,42 @@ class ExistingConfigTests(HomeCase):
                 self.assertNotIn("literal credential", out)
 
     def test_credential_shapes(self) -> None:
-        for raw in (b'{"token": "abcdefghijklmnop"}', b'{"my_api_key": "abcdefghijklmnop"}', b'{"password": "correct horse battery"}',
-                    b'{"a": "Authorization: Bearer abcdefghijklmnop"}', b'{"Authorization": "abcdefghijklmnop"}'):
+        for raw in (
+            b'{"token": "abcdefghijklmnop"}',
+            b'{"my_api_key": "abcdefghijklmnop"}',
+            b'{"password": "correct horse battery"}',
+            b'{"a": "Authorization: Bearer abcdefghijklmnop"}',
+            b'{"Authorization": "abcdefghijklmnop"}',
+        ):
             with self.subTest(raw=raw):
                 self.assertIsNotNone(M.credential_hint(raw))
-        for raw in (b"", None, b'{"token": "short"}', b'{"command": "python3"}', b'{"token": "${TOKEN_VALUE}"}',
-                    b'{"token": "$TOKEN_VALUE"}', b'{"note": "Bearer ${X}"}'):
+        for raw in (
+            b"",
+            None,
+            b'{"token": "short"}',
+            b'{"command": "python3"}',
+            b'{"token": "${TOKEN_VALUE}"}',
+            b'{"token": "$TOKEN_VALUE"}',
+            b'{"note": "Bearer ${X}"}',
+        ):
             with self.subTest(raw=raw):
                 self.assertIsNone(M.credential_hint(raw))
 
     def test_four_space_indent_is_kept(self) -> None:
         self.write(".minimax/mcp.json", json.dumps({"mcpServers": {}}, indent=4) + "\n")
         self.run_cli("apply", "minimax")
-        self.assertIn('\n    "mcpServers": {\n        "fleet-recall": {', self.read(".minimax/mcp.json"))
+        self.assertIn(
+            '\n    "mcpServers": {\n        "fleet-recall": {', self.read(".minimax/mcp.json")
+        )
 
     def test_same_command_with_other_keys_is_present_and_untouched(self) -> None:
-        entry = {"type": "stdio", "command": "python3", "args": [os.path.join(self.home, "apps/fleet-rag/fleet-recall-mcp.py")],
-                 "mode": "required", "env": {"X": "1"}}
+        entry = {
+            "type": "stdio",
+            "command": "python3",
+            "args": [os.path.join(self.home, "apps/fleet-rag/fleet-recall-mcp.py")],
+            "mode": "required",
+            "env": {"X": "1"},
+        }
         text = json.dumps({"mcpServers": {"fleet-recall": entry}}) + "\n"
         self.write(".config/muse/settings.json", text)
         code, out, _ = self.run_cli("apply", "muse")
@@ -225,7 +320,13 @@ class ExistingConfigTests(HomeCase):
         self.assertEqual(self.backups(".config/muse"), [])
 
     def test_a_pinned_agent_seat_is_reported_never_edited(self) -> None:
-        entry = {"type": "stdio", "command": "python3", "args": [self.recall], "mode": "optional", "env": {"AGENT_SEAT": "MC"}}
+        entry = {
+            "type": "stdio",
+            "command": "python3",
+            "args": [self.recall],
+            "mode": "optional",
+            "env": {"AGENT_SEAT": "MC"},
+        }
         text = json.dumps({"mcpServers": {"fleet-recall": entry}}) + "\n"
         self.write(".config/muse/settings.json", text)
         code, out, _ = self.run_cli("apply", "muse")
@@ -236,7 +337,10 @@ class ExistingConfigTests(HomeCase):
         self.assertEqual(code, M.EXIT_OK, "a pin is a warning, not a failure")
 
     def test_a_different_command_is_foreign_and_left_alone(self) -> None:
-        text = json.dumps({"mcpServers": {"fleet-recall": {"command": "node", "args": ["other.js"]}}}) + "\n"
+        text = (
+            json.dumps({"mcpServers": {"fleet-recall": {"command": "node", "args": ["other.js"]}}})
+            + "\n"
+        )
         self.write(".kimi-code/mcp.json", text)
         code, out, _ = self.run_cli("apply", "kimi")
         self.assertEqual(code, M.EXIT_OK)
@@ -294,10 +398,12 @@ class AgentSyncTests(HomeCase):
         keys = [k for k in M.TARGET_KEYS if k != "clutch"]
         code, out, _ = self.run_cli("apply", *keys, "--with-agent-sync")
         self.assertEqual(code, M.EXIT_OK, out)
-        seats = {"opencode": ("OPENCODE", ".config/opencode/opencode.json", ("mcp", "servers")),
-                 "muse": ("MC", ".config/muse/settings.json", ("mcpServers",)),
-                 "minimax": ("MM", ".minimax/mcp.json", ("mcpServers",)),
-                 "fx": ("FX", ".fx/mcp.json", ("mcp",))}
+        seats = {
+            "opencode": ("OPENCODE", ".config/opencode/opencode.json", ("mcp", "servers")),
+            "muse": ("MC", ".config/muse/settings.json", ("mcpServers",)),
+            "minimax": ("MM", ".minimax/mcp.json", ("mcpServers",)),
+            "fx": ("FX", ".fx/mcp.json", ("mcp",)),
+        }
         for key, (seat, rel, path) in seats.items():
             doc = self.load(rel)
             for k in path:
@@ -305,12 +411,20 @@ class AgentSyncTests(HomeCase):
             with self.subTest(key=key):
                 self.assertIn("agent-sync", doc)
                 entry = doc["agent-sync"]
-                argv = ([entry["command"]] + entry["args"]) if isinstance(entry["command"], str) else entry["command"]
+                argv = (
+                    ([entry["command"]] + entry["args"])
+                    if isinstance(entry["command"], str)
+                    else entry["command"]
+                )
                 self.assertEqual(argv, [self.agent_sync, "mcp", "--default-seat", seat])
                 self.assertNotIn("env", entry, "never a pinned AGENT_SEAT")
         for key, rel in (("kimi", ".kimi-code/mcp.json"),):
             with self.subTest(key=key):
-                self.assertNotIn("agent-sync", self.read(rel), "a tool with no default seat has no seat to register")
+                self.assertNotIn(
+                    "agent-sync",
+                    self.read(rel),
+                    "a tool with no default seat has no seat to register",
+                )
 
     def test_without_the_flag_agent_sync_is_never_written(self) -> None:
         self.mkdir(*TOOL_DIRS.values())
@@ -320,13 +434,24 @@ class AgentSyncTests(HomeCase):
 
     def test_remove_takes_out_only_what_apply_wrote(self) -> None:
         self.mkdir(".minimax", ".fx")
-        hand = {"mcpServers": {"sentry": {"command": "npx"}, "fleet-recall": {"command": "python3", "args": [self.recall],
-                                                                                 "type": "stdio", "extra": True}}}
+        hand = {
+            "mcpServers": {
+                "sentry": {"command": "npx"},
+                "fleet-recall": {
+                    "command": "python3",
+                    "args": [self.recall],
+                    "type": "stdio",
+                    "extra": True,
+                },
+            }
+        }
         self.write(".minimax/mcp.json", json.dumps(hand) + "\n")
         self.run_cli("apply", "fx", "--with-agent-sync")
         code, out, _ = self.run_cli("remove", "minimax", "fx", "--with-agent-sync")
         self.assertEqual(code, M.EXIT_OK, out)
-        self.assertEqual(self.load(".minimax/mcp.json"), hand, "a hand-registered entry is not ours")
+        self.assertEqual(
+            self.load(".minimax/mcp.json"), hand, "a hand-registered entry is not ours"
+        )
         self.assertIn("skipped-not-ours", out)
         self.assertEqual(self.load(".fx/mcp.json"), {"mcp": {}})
 
@@ -338,7 +463,7 @@ class AgentSyncTests(HomeCase):
         self.assertEqual(os.listdir(self.path(".fx")), [])
 
 
-FAKE_DSH = '''#!{python}
+FAKE_DSH = """#!{python}
 import os, sys
 home = os.environ["DSH_HOME"]
 path = os.path.join(home, "cordis.patch.yml")
@@ -349,7 +474,7 @@ if os.path.exists({flag!r}) or not any(line.startswith("- ") for line in text.sp
 print("@deepseek-ai/dsh-base")
 if "dsh-mcp-client" in text:
     print("@deepseek-ai/dsh-mcp-client")
-'''
+"""
 
 
 class ClutchTests(HomeCase):
@@ -366,7 +491,8 @@ class ClutchTests(HomeCase):
         os.makedirs(self.path(".clutch/dsh/profiles/web"))
         Path(self.path(".clutch/dsh/profiles/web/cordis.yml")).write_text("plugins: []\n")
         Path(self.path(".clutch/dsh/profiles/web/package.json")).write_text(
-            '{"dsh": {"profile": {"bundles": [], "patchReload": "live"}}}')
+            '{"dsh": {"profile": {"bundles": [], "patchReload": "live"}}}'
+        )
         os.makedirs(self.path(".clutch/dsh/profiles/node_modules/@deepseek-ai/dsh-mcp-client"))
         return flag
 
@@ -374,7 +500,10 @@ class ClutchTests(HomeCase):
         flag = self.with_engine()
         code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
         self.assertEqual(code, M.EXIT_OK, out)
-        self.assertIn("engine check: web: the patch merges and the dump names @deepseek-ai/dsh-mcp-client", out)
+        self.assertIn(
+            "engine check: web: the patch merges and the dump names @deepseek-ai/dsh-mcp-client",
+            out,
+        )
         self.assertTrue(os.path.exists(self.path(self.patch())))
         os.unlink(self.path(self.patch()))
         Path(flag).write_text("x")
@@ -448,11 +577,15 @@ class ClutchTests(HomeCase):
         self.assertEqual(code, M.EXIT_OK, out)
         text = self.read(self.patch())
         self.assertTrue(text.startswith("# Home-level cordis patch"))
-        self.assertIn("# fleet:begin mcp-agent-sync (managed by fleet_lanes.install_mcp)\n- insert:\n", text)
+        self.assertIn(
+            "# fleet:begin mcp-agent-sync (managed by fleet_lanes.install_mcp)\n- insert:\n", text
+        )
         self.assertIn("      name: '@deepseek-ai/dsh-mcp-client'\n", text)
-        self.assertIn('        serverName: agent-sync\n        transport: stdio\n', text)
+        self.assertIn("        serverName: agent-sync\n        transport: stdio\n", text)
         self.assertIn('        command: "%s"\n' % self.agent_sync, text)
-        self.assertIn('          - "mcp"\n          - "--default-seat"\n          - "CLUTCH"\n', text)
+        self.assertIn(
+            '          - "mcp"\n          - "--default-seat"\n          - "CLUTCH"\n', text
+        )
         self.assertIn("        failOnStartupError: false\n# fleet:end mcp-agent-sync\n", text)
         self.assertNotIn("env:", text, "no env, so no pinned seat")
         self.assertEqual(M.MB.block_body(text, "mcp-agent-sync")[0], "- insert:")
@@ -463,7 +596,9 @@ class ClutchTests(HomeCase):
         self.assertEqual(self.backups(".clutch/dsh"), [])
 
     def test_the_owners_patch_entries_survive_and_are_backed_up(self) -> None:
-        mine = "# my layer\n- id: typert-gateway\n  config:\n    websocketHeartbeatIntervalMs: 15000\n"
+        mine = (
+            "# my layer\n- id: typert-gateway\n  config:\n    websocketHeartbeatIntervalMs: 15000\n"
+        )
         self.write(self.patch(), mine)
         self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         text = self.read(self.patch())
@@ -491,7 +626,9 @@ class ClutchTests(HomeCase):
         self.assertIn("removed", out)
         self.assertEqual(self.read(self.patch()), mine)
 
-    def test_removing_the_last_block_deletes_the_file_because_a_comment_only_patch_crashes_the_engine(self) -> None:
+    def test_removing_the_last_block_deletes_the_file_because_a_comment_only_patch_crashes_the_engine(
+        self,
+    ) -> None:
         self.mkdir(".clutch/dsh")
         self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
         code, out, _ = self.run_cli("remove", "clutch", "--with-agent-sync")
@@ -504,9 +641,12 @@ class ClutchTests(HomeCase):
 
     def test_another_installers_block_in_the_same_patch_is_untouched(self) -> None:
         from fleet_lanes import cordis_patch as CP
+
         self.mkdir(".clutch/dsh")
         self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
-        text, _ = CP.upsert(self.read(self.patch()), "hooks-fleet-guards", "other", ["- id: fleet-hooks-guards"])
+        text, _ = CP.upsert(
+            self.read(self.patch()), "hooks-fleet-guards", "other", ["- id: fleet-hooks-guards"]
+        )
         self.write(self.patch(), text)
         self.run_cli("remove", "clutch", "--with-agent-sync")
         left = self.read(self.patch())
@@ -531,7 +671,9 @@ class ClutchTests(HomeCase):
         self.assertEqual(self.read(self.patch()), text)
 
     def test_odd_paths_are_quoted_as_yaml_strings(self) -> None:
-        body = M.clutch_block_body(['/Users/o\'brien/a b/agent-sync', "mcp", "--default-seat", "CLUTCH"])
+        body = M.clutch_block_body(
+            ["/Users/o'brien/a b/agent-sync", "mcp", "--default-seat", "CLUTCH"]
+        )
         self.assertIn('        command: "/Users/o\'brien/a b/agent-sync"', body)
 
 
@@ -605,7 +747,9 @@ class ProbeTests(unittest.TestCase):
         Path(rag, "fleet-recall-mcp.py").write_text(textwrap.dedent(self.GOOD))
         env = {"FLEET_RAG_HOME": rag}
         out, err = io.StringIO(), io.StringIO()
-        self.assertEqual(M.main(["apply", "fx", "--home", home], out=out, err=err, env=env), M.EXIT_OK)
+        self.assertEqual(
+            M.main(["apply", "fx", "--home", home], out=out, err=err, env=env), M.EXIT_OK
+        )
         out = io.StringIO()
         code = M.main(["verify", "fx", "--probe", "--home", home], out=out, err=err, env=env)
         self.assertEqual(code, M.EXIT_OK, out.getvalue())
@@ -639,13 +783,23 @@ class ProbeSeatTests(HomeCase):
         self.assertEqual(code, M.EXIT_OK, out)
 
     def calls(self) -> list:
-        return [json.loads(ln) for ln in Path(self.log).read_text().splitlines()] if os.path.exists(self.log) else []
+        return (
+            [json.loads(ln) for ln in Path(self.log).read_text().splitlines()]
+            if os.path.exists(self.log)
+            else []
+        )
 
     def verify(self, environ: dict):
         from unittest import mock
+
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, environ, clear=False):
-            code = M.main(["verify", "minimax", "--with-agent-sync", "--probe", "--home", self.home], out=out, err=err, env=self.env)
+            code = M.main(
+                ["verify", "minimax", "--with-agent-sync", "--probe", "--home", self.home],
+                out=out,
+                err=err,
+                env=self.env,
+            )
         return code, out.getvalue()
 
     def test_from_another_seat_the_agent_sync_probe_is_skipped_and_never_started(self) -> None:
@@ -659,31 +813,65 @@ class ProbeSeatTests(HomeCase):
 
     def test_from_no_seat_at_all_it_is_skipped_too(self) -> None:
         from unittest import mock
+
         out, err = io.StringIO(), io.StringIO()
         clean = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_")}
         with mock.patch.dict(os.environ, clean, clear=True):
-            code = M.main(["verify", "minimax", "--with-agent-sync", "--probe", "--home", self.home], out=out, err=err, env=self.env)
+            code = M.main(
+                ["verify", "minimax", "--with-agent-sync", "--probe", "--home", self.home],
+                out=out,
+                err=err,
+                env=self.env,
+            )
         self.assertEqual(code, M.EXIT_OK, out.getvalue())
         self.assertIn("this session is no seat", out.getvalue())
 
-    def test_from_the_seat_itself_it_runs_with_that_seat_and_no_credential_or_launcher_variables(self) -> None:
-        code, out = self.verify({"AGENT_SEAT": "mm", "AGENT_TAG": "OTHER", "ZULIP_RC": "/x/zuliprc", "ZULIP_EMAIL": "a@b",
-                                 "ZULIP_API_KEY": "k", "AGENT_SESSION": "s", "KEEP_ME": "yes"})
+    def test_from_the_seat_itself_it_runs_with_that_seat_and_no_credential_or_launcher_variables(
+        self,
+    ) -> None:
+        code, out = self.verify(
+            {
+                "AGENT_SEAT": "mm",
+                "AGENT_TAG": "OTHER",
+                "ZULIP_RC": "/x/zuliprc",
+                "ZULIP_EMAIL": "a@b",
+                "ZULIP_API_KEY": "k",
+                "AGENT_SESSION": "s",
+                "KEEP_ME": "yes",
+            }
+        )
         self.assertEqual(code, M.EXIT_OK, out)
         probes = [ln for ln in out.splitlines() if "probe: initialize ok" in ln]
         self.assertEqual(len(probes), 2, out)
         sync = [c for c in self.calls() if c["seat"] == "MM"]
         self.assertEqual(len(sync), 1)
         for call in self.calls():
-            for name in ("ZULIP_RC", "ZULIP_EMAIL", "ZULIP_API_KEY", "AGENT_TAG", "AGENT_SESSION", "AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT"):
+            for name in (
+                "ZULIP_RC",
+                "ZULIP_EMAIL",
+                "ZULIP_API_KEY",
+                "AGENT_TAG",
+                "AGENT_SESSION",
+                "AGENT_LAUNCHER",
+                "AGENT_LAUNCH_SEAT",
+            ):
                 self.assertNotIn(name, call["names"])
             self.assertIn("KEEP_ME", call["names"], "the rest of the environment is kept")
         recall = [c for c in self.calls() if c["seat"] is None]
         self.assertEqual(len(recall), 1, "fleet-recall is not given a seat")
 
     def test_a_launcher_seat_counts_as_the_session_seat(self) -> None:
-        self.assertEqual(M.caller_seat({"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "mm", "AGENT_SEAT": "CLAUDE"}), "MM")
-        self.assertEqual(M.caller_seat({"AGENT_LAUNCH_SEAT": "MM", "AGENT_SEAT": "CLAUDE"}), "CLAUDE", "a launch seat without a launcher is ignored")
+        self.assertEqual(
+            M.caller_seat(
+                {"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": "mm", "AGENT_SEAT": "CLAUDE"}
+            ),
+            "MM",
+        )
+        self.assertEqual(
+            M.caller_seat({"AGENT_LAUNCH_SEAT": "MM", "AGENT_SEAT": "CLAUDE"}),
+            "CLAUDE",
+            "a launch seat without a launcher is ignored",
+        )
         self.assertEqual(M.caller_seat({"AGENT_TAG": " fx "}), "FX")
         self.assertIsNone(M.caller_seat({}))
         self.assertNotIn("AGENT_SEAT", M.probe_environment({"AGENT_SEAT": "X", "PATH": "/bin"}))
@@ -693,13 +881,34 @@ class ProbeSeatTests(HomeCase):
 class CallerSeatAliasTests(unittest.TestCase):
     """Owner ruling 2026-10-10: any spelling of GROK followed by BUILD is the seat GROK."""
 
-    MUST = ("GROK-BUILD", "Grok-Build", "grok-build", "grok_build", "Grok Build", "GROK.BUILD", "Grok (Build)",
-            "grok/build/", "GrokBuild", "GROK--BUILD!!", "  grok-build\n")
-    MUST_NOT = ("GROKBUILDER", "grok-build-bot", "grok2build", "GROK-WEB", "GROK-BOT", "GB-COMPILER", "BF-BUILDER",
-                "Grok (Web/iOS)")
+    MUST = (
+        "GROK-BUILD",
+        "Grok-Build",
+        "grok-build",
+        "grok_build",
+        "Grok Build",
+        "GROK.BUILD",
+        "Grok (Build)",
+        "grok/build/",
+        "GrokBuild",
+        "GROK--BUILD!!",
+        "  grok-build\n",
+    )
+    MUST_NOT = (
+        "GROKBUILDER",
+        "grok-build-bot",
+        "grok2build",
+        "GROK-WEB",
+        "GROK-BOT",
+        "GB-COMPILER",
+        "BF-BUILDER",
+        "Grok (Web/iOS)",
+    )
 
     def test_the_constant_equals_the_registry_pattern(self) -> None:
-        registry = json.loads((Path(__file__).resolve().parents[3] / "fleet-apps.json").read_text(encoding="utf-8"))
+        registry = json.loads(
+            (Path(__file__).resolve().parents[3] / "fleet-apps.json").read_text(encoding="utf-8")
+        )
         row = next(r for r in registry["seats"] if r["tag"] == "GROK")
         self.assertEqual(M.GROK_ALIAS_PATTERN, row["aliasPattern"])
 
@@ -708,7 +917,9 @@ class CallerSeatAliasTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(M.caller_seat({"AGENT_SEAT": raw}), "GROK")
                 self.assertEqual(M.caller_seat({"AGENT_TAG": raw}), "GROK")
-                self.assertEqual(M.caller_seat({"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": raw}), "GROK")
+                self.assertEqual(
+                    M.caller_seat({"AGENT_LAUNCHER": "botfleet", "AGENT_LAUNCH_SEAT": raw}), "GROK"
+                )
 
     def test_other_values_come_back_exactly_as_before(self) -> None:
         for raw in self.MUST_NOT + ("GROK", " grok ", "mm", "Claude"):
@@ -737,11 +948,15 @@ class CliTests(HomeCase):
         out, err = io.StringIO(), io.StringIO()
         self.assertEqual(M.main(["plan", "--home", ""], out=out, err=err), M.EXIT_USAGE)
         self.assertIn("--home must not be empty", err.getvalue())
-        self.assertEqual(M.main(["plan", "--home", "/nonexistent-dir-xyz"], out=out, err=err), M.EXIT_USAGE)
+        self.assertEqual(
+            M.main(["plan", "--home", "/nonexistent-dir-xyz"], out=out, err=err), M.EXIT_USAGE
+        )
 
     def test_aliases(self) -> None:
-        self.assertEqual(M._resolve_targets(["muse-code", "mm", "kimi-code", "dsh"], True),
-                         ["muse", "minimax", "kimi", "clutch"])
+        self.assertEqual(
+            M._resolve_targets(["muse-code", "mm", "kimi-code", "dsh"], True),
+            ["muse", "minimax", "kimi", "clutch"],
+        )
 
 
 class MarkedBlockTests(unittest.TestCase):
@@ -760,8 +975,12 @@ class MarkedBlockTests(unittest.TestCase):
     def test_other_names_are_ignored_and_malformed_raise(self) -> None:
         text = "# fleet:begin a (managed by t)\n1\n# fleet:end a\n"
         self.assertIsNone(MB.find_block(text, "b"))
-        for bad in ("# fleet:begin a\n", "# fleet:end a\n", "# fleet:end a\n# fleet:begin a\n",
-                    "# fleet:begin a\n# fleet:end a\n# fleet:begin a\n# fleet:end a\n"):
+        for bad in (
+            "# fleet:begin a\n",
+            "# fleet:end a\n",
+            "# fleet:end a\n# fleet:begin a\n",
+            "# fleet:begin a\n# fleet:end a\n# fleet:begin a\n# fleet:end a\n",
+        ):
             with self.subTest(bad=bad), self.assertRaises(MB.BlockError):
                 MB.find_block(bad, "a")
 
@@ -772,5 +991,5 @@ class MarkedBlockTests(unittest.TestCase):
         self.assertNotIn("\n", t2.replace("\r\n", ""))
 
 
-if __name__ == "__main__":      # pragma: no cover
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()
