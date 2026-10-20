@@ -366,7 +366,16 @@ class SessionRegistry:
             return
         with self._write_txn() as conn:
             now = _utcnow()
-            self._get(record_id)
+            row = self._get(record_id)
+            if "state" in attrs:
+                # The lifecycle value is not free-form:  it is derived from closed_at, which only
+                # close() sets.  Accepting it here would let a closed row be marked active again,
+                # or an open row claim 'closed' with no closed_at and a still-live alias.
+                want_closed = attrs["state"] == "closed"
+                if want_closed != bool(row["closed_at"]):
+                    raise ValueError(
+                        f"state 'closed' is set by close(), not update_attrs (record {record_id})"
+                    )
             sets = ", ".join(f"{k} = ?" for k in attrs)
             conn.execute(
                 f"UPDATE sessions SET {sets} WHERE record_id = ?", (*attrs.values(), record_id)
@@ -419,12 +428,14 @@ def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        # rowid is the commit order (one writer, appended under the write lock), so it breaks
-        # ties between rows sharing a created_at within a single transaction.  outbox_id alone
-        # cannot: it is a ULID whose random suffix does not sort with the event it accompanies.
+        # rowid is the commit order (one writer, appended under the write lock), and it is the only
+        # correct key here:  created_at can be caller-supplied (close(at=...), mark_seen(at=...)),
+        # so a transaction with a historical timestamp would export before the state it supersedes
+        # and leave the sheet stale.  outbox_id cannot either:  it is a ULID whose random suffix
+        # does not sort with the event it accompanies.
         rows = conn.execute(
             "SELECT outbox_id, kind, payload, created_at FROM export_outbox"
-            " WHERE exported_at IS NULL ORDER BY created_at, rowid LIMIT ?",
+            " WHERE exported_at IS NULL ORDER BY rowid LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]

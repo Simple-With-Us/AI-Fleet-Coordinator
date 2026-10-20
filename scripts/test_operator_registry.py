@@ -131,6 +131,23 @@ class RegistryTest(unittest.TestCase):
         row = self.reg._get(a["record_id"])
         self.assertEqual((row["title"], row["state"]), ("New", "paused"))
 
+    def test_update_attrs_cannot_forge_the_lifecycle_state(self):
+        a = self.reg.resolve_or_register(ident())
+        with self.assertRaises(ValueError):  # 'closed' without closed_at and alias retirement
+            self.reg.update_attrs(a["record_id"], state="closed")
+        self.reg.close(a["record_id"], actor="MM", source="test")
+        with self.assertRaises(ValueError):  # a closed row cannot be marked active again
+            self.reg.update_attrs(a["record_id"], state="active")
+        self.assertEqual(self.reg._get(a["record_id"])["state"], "closed")
+
+    def test_outbox_follows_commit_order_not_caller_timestamps(self):
+        """A historical close(at=...) must not export before the registration it supersedes."""
+        a = self.reg.resolve_or_register(ident())
+        self.reg.close(a["record_id"], at="1999-01-01T00:00:00.000Z", actor="MM", source="test")
+        upserts = [p for p in R.pending_outbox(self.db) if p["kind"] == "session_upsert"]
+        self.assertEqual(json.loads(upserts[0]["payload"])["cells"][10], "active")
+        self.assertEqual(json.loads(upserts[1]["payload"])["cells"][10], "closed")
+
     def test_display_title_format(self):
         self.assertEqual(R.display_title("H", "Thread Title"), "H: Thread Title")
 
