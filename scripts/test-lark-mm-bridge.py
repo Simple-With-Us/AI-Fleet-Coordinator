@@ -414,8 +414,65 @@ class BridgeTests(unittest.TestCase):
         session.buffer_lock = threading.Lock()
         self.assertEqual(session._collect_text({}), "snake_case answer and a flat one")
 
+    def test_a_non_object_acp_frame_does_not_stop_the_pump(self):
+        """A scalar frame is dropped, and the ones after it still land."""
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+        for frame in (7, None, "nope", [1, 2]):
+            session._handle_message(frame)
+        session._handle_message(update("agent_message_chunk", "still here"))
+        self.assertEqual(session._collect_text({}), "still here")
+
+    def test_a_frame_that_raises_does_not_stop_the_pump(self):
+        """One unroutable frame is logged and the stream carries on.
+
+        _pump is the session's only reader, so an exception out of one frame
+        used to end the thread and leave every later _call waiting for a
+        response that could not arrive until the prompt timed out.
+        """
+        lines = [
+            json.dumps(update("agent_message_chunk", "first")),
+            "not json at all",
+            json.dumps({"method": "session/update", "params": "not an object"}),
+            json.dumps(update("agent_message_chunk", "second")),
+        ]
+
+        class FakeStdout:
+            def __iter__(self):
+                return iter(lines)
+
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.process = type("P", (), {"stdout": FakeStdout()})()
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+
+        seen = []
+        original = session._handle_message
+
+        def route(message):
+            seen.append(message)
+            if len(seen) == 1:
+                raise ValueError("unroutable frame")
+            original(message)
+
+        session._handle_message = route
+        session._pump()
+        self.assertEqual(len(seen), 3)
+        # The reader survives routing errors.  The collector rejects the malformed
+        # update explicitly instead of silently treating a damaged turn as complete.
+        with self.assertRaisesRegex(ValueError, "params must be an object"):
+            session._collect_text({})
+        self.assertEqual(session._collect_text({}), "")
+
     def test_thought_chunks_are_not_answered_to_lark(self):
-        """Private reasoning never reaches the chat surface."""
+        """Private reasoning never reaches the chat surface.
+
+        The flat params shape is asserted here too: the private-reasoning
+        exclusion must hold on the branch where update is params itself, or a
+        later simplification would stream the seat's thinking into Lark with
+        this suite still green.
+        """
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
         session.buffer = [
             {
@@ -425,6 +482,20 @@ class BridgeTests(unittest.TestCase):
                         "sessionUpdate": "agent_thought_chunk",
                         "content": {"type": "text", "text": "thinking about it"},
                     }
+                },
+            },
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "private reasoning"},
+                },
+            },
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "the owner's own words"},
                 },
             },
             {
@@ -711,6 +782,78 @@ class BridgeTests(unittest.TestCase):
             bridge_mod.sentence_gap("Dr. Smith is here. Next."), "Dr. Smith is here.  Next."
         )
         self.assertEqual(bridge_mod.sentence_gap("Version 3.14 ships."), "Version 3.14 ships.")
+
+    def test_answer_request_answers_a_permission_request_with_allow(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.process = FakeProcess(FakeSessionScript())
+        session.stdin_lock = threading.Lock()
+        session._answer_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "session/request_permission",
+                "params": {
+                    "options": [
+                        {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
+                        {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                    ]
+                },
+            }
+        )
+        payload = json.loads(session.process.stdin.written[0])
+        self.assertEqual(payload["id"], 7)
+        self.assertEqual(payload["result"]["outcome"]["optionId"], "allow_once")
+
+    def test_answer_request_prefers_allow_once_over_allow_always(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.process = FakeProcess(FakeSessionScript())
+        session.stdin_lock = threading.Lock()
+        session._answer_request(
+            {
+                "id": 9,
+                "method": "session/request_permission",
+                "params": {
+                    "options": [
+                        {"optionId": "allow_once", "kind": "allow_once"},
+                        {"optionId": "allow_always", "kind": "allow_always"},
+                    ]
+                },
+            }
+        )
+        payload = json.loads(session.process.stdin.written[0])
+        self.assertEqual(payload["result"]["outcome"]["optionId"], "allow_once")
+
+    def test_answer_request_answers_an_unknown_request_so_the_turn_does_not_hang(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.process = FakeProcess(FakeSessionScript())
+        session.stdin_lock = threading.Lock()
+        session._answer_request({"id": 3, "method": "session/some_other_request"})
+        payload = json.loads(session.process.stdin.written[0])
+        self.assertEqual(payload["id"], 3)
+        self.assertIn("error", payload)
+
+    def test_pump_routes_a_server_request_to_the_responder(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        answered = []
+        session._answer_request = lambda message: answered.append(message)
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+        session._handle_message({"jsonrpc": "2.0", "method": "session/request_permission", "id": 4})
+        session._handle_message({"jsonrpc": "2.0", "id": 11, "result": {"ok": True}})
+        self.assertEqual(len(answered), 1)
+        self.assertEqual(answered[0]["method"], "session/request_permission")
+        self.assertEqual(len(session.buffer), 1)
+        self.assertEqual(session.buffer[0]["id"], 11)
+
+    def test_pump_keeps_a_notification_out_of_the_responder(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        answered = []
+        session._answer_request = lambda message: answered.append(message)
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+        session._handle_message({"jsonrpc": "2.0", "method": "session/update", "params": {}})
+        self.assertEqual(answered, [])
+        self.assertEqual(len(session.buffer), 1)
 
     def test_lark_env_prepends_cli_prefix(self):
         env = bridge_mod.lark_env()
