@@ -199,17 +199,25 @@ destination:
   a real gap.  Two ASCII spaces collapse, and a raw U+00A0 typed by the model arrives as a
   plain space (the verified reply held 0 NBSPs).
 - **Chat reply in the MiniMax Code chat pane** (owner-verified 2026-10-20):  a REAL U+00A0, the
-  nbsp character, right after the period, then a normal space, outside code spans.  Emit that
-  character in the shell, never type it, because a U+00A0 written into a message is normalized
-  away the same way a double space is:
-  `printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt`, where `\302\240` is the UTF-8
-  encoding of U+00A0 (the redirect is what puts the text the check reads in the file), then check
-  those same bytes with `grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l`, which must not print `0`.  Jay:  "I think you need to do nbsp for chats or something", and "I have
-  confirmed this before with agents and knew you needed nbsp already".  Two ASCII spaces
-  collapse in that pane, and the
+  nbsp character, right after the period, then a normal space, outside code spans.  Jay:  "I
+  think you need to do nbsp for chats or something", and "I have confirmed this before with
+  agents and knew you needed nbsp already".  Two ASCII spaces collapse in that pane, and the
   `&nbsp;` ENTITY renders as the six literal characters, which is worse than no gap at all.
   The earlier 2026-10-18 note for this pane, entity plus a space, was wrong, and it is
   corrected here.
+  **Generate the character in the shell; do not type it.**  A model that emits U+00A0
+  directly can have it normalized back to a plain space, which is the same invisible
+  failure the entity causes.  Write the reply to a file and verify that file, never one
+  left over from an earlier turn:
+
+  ```sh
+  printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
+  grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l    # must be above 0
+  grep -cE '[^0-9][.!?] +[A-Z"]' reply.txt      # must print 0: no gap left unconverted
+  ```
+
+  A normal one-space gap is the failure this bullet exists to prevent, so treat a
+  collapsed reply as a bug in the emitting step rather than as a rendering quirk.
 - **Chat reply in any other Markdown-rendering agent chat pane** (Codex, Cursor,
   Antigravity, Grok, Kimi, DeepSeek, Fx, Muse): the same entity plus a space, by
   owner ruling 2026-10-08, unless that surface has been individually verified otherwise.
@@ -244,20 +252,19 @@ destination:
   Native SwiftUI `Text` does not decode HTML entities; use two literal spaces or Unicode
   `\u{00A0}` in Swift strings.
 
-**Rendering trap — history (chat advice reversed three times):** the 2026-08-19 entity advice for
+**Rendering trap — history (chat advice reversed twice):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was
-superseded on 2026-10-08 by the entity again.  The MiniMax Code chat pane went the other way:
-the 2026-10-18 entity entry for that pane was wrong and is superseded on 2026-10-20 by a real
-U+00A0 plus a space (owner-verified).  Do not re-run these tests.  Owner ruling 2026-10-08: when
-a surface is known to collapse two typed spaces (any Markdown or HTML renderer), use its working
-mechanism without asking; confirmation is no longer needed per surface.
+superseded on 2026-10-08 by the entity again.  Do not re-run these tests.  Owner ruling
+2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or HTML
+renderer), use its working mechanism without asking; confirmation is no longer needed per
+surface.
 
-**What does NOT work, tested in front of the owner:** a raw U+00A0 character typed into a Claude
-Code Code-tab chat message
-(normalized away in the view, even though copy-paste showed two spaces -- do not be fooled by
-copy-paste; in the MiniMax Code pane a real U+00A0 does render, but only when the shell emits
-it -- see "HOW to emit it" above); app settings (none exist -- `outputStyle` changes tone only,
-`--output-format` is
+**What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
+in the **Claude Code Code tab** (normalized away in the view, even though copy-paste showed
+two spaces -- do not be fooled by copy-paste).  That measurement is surface-specific and is
+NOT the MiniMax ruling: in the MiniMax Code pane the working mechanism IS a real U+00A0,
+generated in the shell as shown above, because the entity fails there instead.  Also not
+worth trying: app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
 headless `claude -p` only, `axScreenReader` only drops borders); patching the client (the CLI is
 a ~277MB compiled Mach-O binary, the desktop app is a signed native bundle -- patching breaks
 code signing and is wiped by auto-update; do not attempt).  (Two literal ASCII spaces in chat

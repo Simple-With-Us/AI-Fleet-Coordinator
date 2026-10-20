@@ -40,11 +40,17 @@ the shell rather than typing it, because a model that emits U+00A0 directly can 
 normalized to a plain space:
 
 ```sh
-printf 'Sentence one.\302\240 Sentence two.\n'
+printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
 ```
 
-`\302\240` is the UTF-8 encoding of U+00A0.  Verify with
-`grep -o $'[.!?]\xc2\xa0' f | wc -l`, which must not print `0`.
+`\302\240` is the UTF-8 encoding of U+00A0.  Send the generated text to a file, then
+verify that same file, so the check reads the bytes you just produced and never a stale
+copy of the same name:
+
+```sh
+grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l    # must be above 0
+grep -cE '[^0-9][.!?] +[A-Z"]' reply.txt      # must print 0: no gap left unconverted
+```
 
 ### The catch that wastes everyone's time
 

@@ -1133,11 +1133,35 @@ def _unstash_identity(text: str, seat: Seat) -> str:
     return text
 
 
+def _plain_scalar_is_safe(value: str) -> bool:
+    """True when `value` is safe to emit as an inline YAML plain scalar.
+
+    A plain scalar cannot carry a mapping indicator or start a comment, so any
+    value holding ": " or " #" (or ending in a bare ":") makes the whole block
+    fail to parse with "mapping values are not allowed in this context".  That
+    silently took out the sentence-gap skill in every rendered tree when its
+    description grew a "Mechanism by surface:" clause, because the fold below
+    only ever looked for quotes.
+    """
+    if not value:
+        return False
+    if value[0] in "-?:,[]{}#&*!|>'\"%@`":
+        return False
+    if ": " in value or value.endswith(":"):
+        return False
+    if " #" in value:
+        return False
+    return True
+
+
 def fold_yaml_description(text: str) -> str:
     """Rewrite SKILL.md `description` to a `>-` block when quotes would break fx.
 
     fx's skill metadata parser rejects inline `"` / `'` in YAML descriptions
     (`malformed_quote`).  A folded `>-` block is the documented fix.
+
+    It also folds when the inline value would not parse as a plain scalar at
+    all, so a description that merely contains a colon stays loadable.
     """
     if not text.startswith("---\n"):
         return text
@@ -1175,9 +1199,7 @@ def fold_yaml_description(text: str) -> str:
                     inner = inner.replace('\\"', '"')
                 value = inner
             i += 1
-        #  A plain YAML scalar also breaks on ": " (parsed as a nested mapping) and on
-        #  a leading quote char, so fold those too — the rendered copy must parse.
-        if '"' in value or "'" in value or "${" in value or ": " in value or value.endswith(":"):
+        if '"' in value or "'" in value or "${" in value or not _plain_scalar_is_safe(value):
             out.append("description: >-")
             out.append("  " + value)
         else:

@@ -3,6 +3,7 @@ name: sentence-gap
 description: >-
   Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows the canonical portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08); in the MiniMax Code chat pane use a real U+00A0 plus a space (owner-verified 2026-10-20 — the entity renders there as the six literal characters); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
 ---
+---
 
 # Sentence gap (portable — always on)
 
@@ -42,11 +43,17 @@ the shell rather than typing it, because a model that emits U+00A0 directly can 
 normalized to a plain space:
 
 ```sh
-printf 'Sentence one.\302\240 Sentence two.\n'
+printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
 ```
 
-`\302\240` is the UTF-8 encoding of U+00A0.  Verify with
-`grep -o $'[.!?]\xc2\xa0' f | wc -l`, which must not print `0`.
+`\302\240` is the UTF-8 encoding of U+00A0.  Send the generated text to a file, then
+verify that same file, so the check reads the bytes you just produced and never a stale
+copy of the same name:
+
+```sh
+grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l    # must be above 0
+grep -cE '[^0-9][.!?] +[A-Z"]' reply.txt      # must print 0: no gap left unconverted
+```
 
 ### The catch that wastes everyone's time
 
@@ -172,15 +179,6 @@ entity plus a space after each sentence (outside code spans); the renderer decod
 U+00A0 from the model arrives as a plain space (0 NBSPs in the verified reply), and two
 ASCII spaces collapse.  Owner-verified 2026-10-08 with a screenshot.  The 2026-09-04 ASCII
 ruling is withdrawn.
-
-**2026-10-20 update — MiniMax Code chat pane superseded.**  Chat advice has now reversed
-three times (2026-08-19 entity → 2026-09-04 ASCII for the Code tab → 2026-10-08 entity for
-the Code tab).  The MiniMax Code chat pane went the other way: the 2026-10-18 entity entry for
-that pane was wrong and is superseded by a real U+00A0 plus a space (owner-verified 2026-10-20),
-because the entity renders there as the six literal characters.  Do not re-run these tests.
-Owner ruling 2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or
-HTML renderer), use its working mechanism without asking; confirmation is no longer needed per
-surface.
 
 **Terminal CLI — no newer ruling.**  Last checked 2026-08-19/20; not re-verified since.
 Default to two literal ASCII spaces there, and do not use the `&nbsp;` entity on a terminal

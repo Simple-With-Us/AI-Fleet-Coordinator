@@ -257,6 +257,45 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn('Guides Cloudflare One "Zero Trust" work.', out)
         self.assertNotIn('description: "', out)
 
+    def test_fold_quotes_description_containing_a_colon(self) -> None:
+        """A plain scalar holding ': ' cannot parse, so it must be folded.
+
+        The sentence-gap description grew a "Mechanism by surface:" clause and
+        the fold only ever looked for quotes, so every rendered tree shipped
+        front matter that yaml.safe_load rejected outright.
+        """
+        from fleet_skill_identity import fold_yaml_description
+
+        src = (
+            "---\n"
+            "name: sentence-gap\n"
+            "description: Always use a gap. Mechanism by surface: two spaces here.\n"
+            "---\n\n"
+            "# Sentence gap\n"
+        )
+        out = fold_yaml_description(src)
+        self.assertIn("description: >-", out)
+        import yaml
+
+        parsed = yaml.safe_load(out.split("---", 2)[1])
+        self.assertIsInstance(parsed, dict)
+        self.assertEqual(parsed["name"], "sentence-gap")
+        self.assertIn("Mechanism by surface:", parsed["description"])
+
+    def test_fold_leaves_a_plain_safe_description_alone(self) -> None:
+        from fleet_skill_identity import fold_yaml_description
+
+        src = (
+            "---\n"
+            "name: cloudflare-one\n"
+            "description: Guides Cloudflare One Zero Trust work.\n"
+            "---\n\n"
+            "# Cloudflare One\n"
+        )
+        out = fold_yaml_description(src)
+        self.assertIn("description: Guides Cloudflare One Zero Trust work.", out)
+        self.assertNotIn("description: >-", out)
+
 
 DOCS = os.path.join(ROOT, "docs", "fleet-skills")
 
