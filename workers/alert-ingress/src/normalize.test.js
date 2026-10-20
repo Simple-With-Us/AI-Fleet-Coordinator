@@ -243,3 +243,9 @@ test("default Better Stack monitored URLs stay stable across incident IDs", () =
     assert.notEqual(event("one").key, "betterstack:one");
   }
 });
+
+test("Datadog triggered notifications preserve explicit monitor priority", () => {
+  const event = fromDatadog({monitor_id: 1, alert_type: "Triggered", priority: "P1"});
+  assert.equal(event.firing, true);
+  assert.equal(normalizeSeverity(event.severity), "SEVERE");
+});

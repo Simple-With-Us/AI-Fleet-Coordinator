@@ -68,7 +68,7 @@ export function fromDatadog(payload) {
     // A recovered event carries no severity; INFO keeps the close quiet.
     // A firing one must keep its own: dropping it here pinned every Datadog
     // alert to INFO, so an erroring monitor could never escalate.
-    severity: firing ? first(alertType, payload.priority) : "INFO",
+    severity: firing ? first(payload.priority, alertType) : "INFO",
     text: oneLine(first(payload.alert_transition, title, alertType)) || service,
     link: first(payload.event_url, payload.url),
     prodDown: /production|prod down|site down/i.test(title),
