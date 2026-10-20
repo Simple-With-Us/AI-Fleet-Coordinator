@@ -82,6 +82,11 @@ class RPCError(ValueError):
     def __init__(self, error):
         super().__init__("Codex RPC request rejected")
         self.code = error.get("code") if isinstance(error, dict) else None
+        self.rejected = (
+            isinstance(error, dict)
+            and type(self.code) is int
+            and isinstance(error.get("message"), str)
+        )
         self.queue_full = (
             isinstance(error, dict)
             and type(self.code) is int
@@ -337,6 +342,7 @@ class CodexChatTransport:
         except InvalidThread:
             return "invalid"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
+            self._mark_full(binding)
             return "busy"
         finally:
             if rpc:
@@ -424,7 +430,12 @@ class CodexChatTransport:
             return False
 
     def send(self, binding, text, *, permit: Callable[[], bool] | None = None):
-        if not self._valid(binding) or not self._prerequisites() or self._full(binding):
+        if (
+            not self._valid(binding)
+            or not self._prerequisites()
+            or not os.path.isdir(binding["cwd"])
+            or self._full(binding)
+        ):
             return "deferred"
         rpc = None
         sent = False
@@ -458,7 +469,9 @@ class CodexChatTransport:
             if sent and exc.queue_full:
                 self._mark_full(binding)
                 return "deferred"
-            return "unknown" if sent else "deferred"
+            # A correlated well-formed rejection is held for explicit retry, not left
+            # uncertain where it would block every other wake to this destination.
+            return "failed" if sent and exc.rejected else "unknown" if sent else "deferred"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
             # Nothing reached thread/queue/add, so the wake is still safe to retry: only a
             # failure after the add is uncertain.

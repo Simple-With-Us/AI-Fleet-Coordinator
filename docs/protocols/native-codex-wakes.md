@@ -8,7 +8,7 @@ The desktop Codex backend watches its durable queue for loaded threads.  The ada
 
 Before offering a destination, the catalog requires the desktop Codex process to have the exact rollout file open.  Before sending, the adapter verifies the local host, UUID, original workspace, active local history path, loaded-thread proof and queue availability.  Archived, read-only, unloaded and mismatched destinations remain unavailable.
 
-A correlated queue-add response must contain a submission ID and the requested client message ID.  This proves durable queue acceptance; it does not prove the chat consumed the message.  A timed-out or malformed acknowledgment is unknown and is never automatically replayed.  Recovery checks the exact client ID and message in the queue or the exact user message in the rollout; an assistant quoting the reminder is not a receipt.
+A correlated queue-add response must contain a submission ID and the requested client message ID.  This proves durable queue acceptance; it does not prove the chat consumed the message.  A timed-out or malformed acknowledgment is unknown and is never automatically replayed.  A well-formed correlated server rejection is held for explicit retry without blocking later destination traffic; the known capacity rejection is deferred automatically.  Recovery checks the exact client ID and message in the queue or the exact user message in the rollout; an assistant quoting the reminder is not a receipt.
 
 The standard queue API supports shared storage across app-server processes.  The on-demand client does not need the desktop app-tools private pipe or a separate managed app-server daemon.
 

@@ -43,14 +43,14 @@ class TransportTests(unittest.TestCase):
         }
         self.calls = []
         self.queued = []
-        self.fail = None
+        self.failure_method = None
         self.ack = None
         outer = self
 
         class FakeRPC:
             def request(self, method, params, **kwargs):
                 outer.calls.append((method, params))
-                if method == outer.fail:
+                if method == outer.failure_method:
                     raise TimeoutError("private error")
                 if method == "thread/read":
                     return {"thread": outer.thread}
@@ -194,6 +194,32 @@ class TransportTests(unittest.TestCase):
             with self.assertRaisesRegex(TimeoutError, "pagination deadline exceeded"):
                 self.adapter._queue(SmallPages(), self.binding)
 
+    def test_busy_rpc_probe_is_shared_and_missing_workspace_send_is_deferred(self):
+        self.failure_method = "thread/read"
+        self.assertEqual(self.adapter.preflight(self.binding), "busy")
+        count = len(self.calls)
+        self.assertEqual(self.adapter.preflight(self.binding), "busy")
+        self.assertEqual(len(self.calls), count)
+        self.adapter._full_queues.clear()
+        self.failure_method = None
+        missing = dict(self.binding, cwd=str(self.home / "not-mounted"))
+        self.assertEqual(self.adapter.send(missing, "nudge"), "deferred")
+        self.assertNotIn("thread/queue/add", [m for m, _ in self.calls])
+
+    def test_correlated_rejection_is_held_not_uncertain(self):
+        original = self.adapter.rpc_factory
+        def factory():
+            rpc = original()
+            request = rpc.request
+            def rejected(method, params, **kwargs):
+                if method == "thread/queue/add":
+                    raise module.RPCError({"code": -32602, "message": "invalid input"})
+                return request(method, params, **kwargs)
+            rpc.request = rejected
+            return rpc
+        self.adapter.rpc_factory = factory
+        self.assertEqual(self.adapter.send(self.binding, "nudge"), "failed")
+
     def test_full_native_queue_is_busy_before_send(self):
         self.queued = [{"clientUserMessageId": str(i)} for i in range(module.QUEUE_CAPACITY)]
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
@@ -219,9 +245,9 @@ class TransportTests(unittest.TestCase):
         )
 
     def test_timeout_before_send_deferred_after_add_unknown(self):
-        self.fail = "thread/read"
+        self.failure_method = "thread/read"
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
-        self.fail = "thread/queue/add"
+        self.failure_method = "thread/queue/add"
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "unknown")
         self.assertEqual(sum(method == "thread/queue/add" for method, _ in self.calls), 1)
 
@@ -271,6 +297,7 @@ class TransportTests(unittest.TestCase):
         self.adapter.loaded = lambda _: False
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
         self.adapter.loaded = lambda _: True
+        self.adapter._full_queues.clear()  # Simulate expiration of the bounded busy probe cache.
         self.assertEqual(self.adapter.preflight(self.binding), "ready")
 
     def test_full_queue_verdict_cached_per_exact_binding_and_expires(self):
@@ -312,7 +339,7 @@ class TransportTests(unittest.TestCase):
             "queue cannot", str(module.RPCError({"code": -32600, "message": "private"}))
         )
 
-    def test_wrong_or_boolean_capacity_error_code_remains_unknown_after_add(self):
+    def test_other_valid_error_is_held_and_malformed_error_stays_unknown(self):
         original = self.adapter.rpc_factory
         for code in (-32603, True, "-32600", None):
 
@@ -334,7 +361,8 @@ class TransportTests(unittest.TestCase):
                 return rpc
 
             self.adapter.rpc_factory = factory
-            self.assertEqual(self.adapter.send(self.binding, "nudge"), "unknown")
+            self.assertEqual(self.adapter.send(self.binding, "nudge"),
+                             "failed" if type(code) is int else "unknown")
             self.assertFalse(self.adapter._full(self.binding))
 
     def test_receipt_snapshot_shared_for_different_items_then_refreshes(self):
@@ -395,10 +423,10 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(self.adapter._receipts, {})
 
     def test_failed_receipt_does_not_cache_false_and_hide_new_evidence(self):
-        self.fail = "thread/read"
+        self.failure_method = "thread/read"
         self.assertFalse(self.adapter.receipt(self.binding, "nudge"))
         self.assertEqual(self.adapter._receipts, {})
-        self.fail = None
+        self.failure_method = None
         self.queued = [
             {
                 "clientUserMessageId": message_id(self.binding, "nudge"),
