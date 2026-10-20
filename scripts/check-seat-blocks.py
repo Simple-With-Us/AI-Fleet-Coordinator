@@ -47,7 +47,6 @@ HOME_FILES = (
     "~/.minimax/memory/user.md",
     "~/.clutch/dsh/AGENTS.md",
     "~/.kimi-code/AGENTS.md",
-    "~/.vibe/AGENTS.md",
     "~/.config/opencode/AGENTS.md",
 )
 HOME_TREES = (
