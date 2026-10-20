@@ -4915,15 +4915,18 @@ class Daemon:
             mcode_pin = (
                 A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model) if mcode else None
             )
-            if mcode_pin and mcode_pin["why"] in ("pin_stale", "pin_unverified"):
+            if mcode_pin and mcode_pin["why"] in ("pin_stale", "pin_unverified", "pin_unreadable"):
                 # The cause and the remediation both live in adapters, so the wording is testable
-                # without standing up a daemon.
+                # without standing up a daemon.  An unreadable contract is NOT fixed by re-pinning,
+                # so it must not be handed the re-pin remediation.
+                remediation = (
+                    A.MCODE_PIN_UNREADABLE_REMEDIATION % seat
+                    if mcode_pin["why"] == "pin_unreadable"
+                    else A.MCODE_PIN_REMEDIATION % (seat, seat)
+                )
                 red.append(
                     "fallback pin is stale: %s; run %s"
-                    % (
-                        A.mcode_pin_cause(mcode_pin),
-                        A.MCODE_PIN_REMEDIATION % (seat, seat),
-                    )
+                    % (A.mcode_pin_cause(mcode_pin), remediation)
                 )
             for problem in runner.cfg.config_problems:
                 red.append(

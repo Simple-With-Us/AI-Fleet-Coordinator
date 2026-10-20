@@ -777,7 +777,19 @@ class Tools:
         `session_id` is the FULL id the caller passed as `session`, when it passed one.  Without
         it the tag is all that survives into the state file, and the session behind the tag is
         unrecoverable.
+
+        The id is validated before use.  It becomes an opaque external identifier inside the
+        state file, and a resume-wake reads that value back to find the session, so a blank or
+        non-string one would be written through and later fail to match anything:  `""` is
+        falsy and silently degrades to no id, while a number would round-trip into the file as
+        a type the contract does not allow.  Both are refused here, loudly, naming the argument
+        so the caller knows which one to fix.
         """
+        if session_id is not None and (not isinstance(session_id, str) or not session_id.strip()):
+            raise ValueError(
+                "session must be a non-empty string when given, not %r"
+                % (session_id.__class__.__name__,)
+            )
         state_key = self._call_state_key if tag == self._call_tag else None
         key = state_key or tag
         if tag != self.agent.tag or self.agent.state.tag != key:

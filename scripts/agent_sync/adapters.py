@@ -1462,10 +1462,11 @@ def mcode_pin_state(
 
     `why` is None when pinned, else `no_mcode` (no binary to pin), `not_pinned` (nothing recorded),
     `pin_unverified` (a pin from before the fingerprint existed, so it vouches for nothing about
-    this command) or `pin_stale` (the binary moved, or the command, model, contract or schema
-    changed under it).  The two stale causes are reported apart from the binary move, because the
-    remediation differs:  a moved binary and a changed model both end in re-pinning, but only one
-    of them is a moved binary."""
+    this command), `pin_stale` (the binary moved, or the command or model changed under it), or
+    `pin_unreadable` (the contract or schema could not be read, so nothing can be verified).
+    These are reported apart because the remediation differs:  a moved binary and a changed model
+    both end in re-pinning, an unreadable contract does not, and only one of them is a moved
+    binary."""
     if not mcode:
         return {"pinned": False, "why": "no_mcode", "pinned_mcode": None, "mcode": None}
     current = binary_pin(mcode)
@@ -1486,7 +1487,19 @@ def mcode_pin_state(
             "mcode": current,
         }
     current_fingerprint = mcode_wake_fingerprint(mcode, model)
-    if current_fingerprint is None or recorded_fingerprint != current_fingerprint:
+    if current_fingerprint is None:
+        # The contract or the schema could not be read at all.  That is NOT a changed pin, and
+        # the two need opposite advice:  a changed pin is fixed by re-pinning, whereas re-pinning
+        # here re-reads the same unreadable file and produces the same refusal forever.  Folding
+        # it into `pin_stale` points the operator at a command that is probably identical and at
+        # a remediation that cannot succeed.
+        return {
+            "pinned": False,
+            "why": "pin_unreadable",
+            "pinned_mcode": recorded,
+            "mcode": current,
+        }
+    if recorded_fingerprint != current_fingerprint:
         # A pin made before the model was named on the command, or under a different model, or
         # before the contract or schema changed, verified a command this seat no longer runs.
         return {"pinned": False, "why": "pin_stale", "pinned_mcode": recorded, "mcode": current}
@@ -1508,20 +1521,35 @@ MCODE_PIN_REMEDIATION = (
     "`agent-sync daemon test-wake --seat %s --runtime fallback --pin`"
 )
 
+#:  A pin cannot be verified at all while the contract or the schema is unreadable, so the
+#:  remediation is not a re-pin:  the same re-pin would re-read the same missing file and refuse
+#:  again.  It carries no seat because the seat is not what is broken.
+MCODE_PIN_UNREADABLE_REMEDIATION = (
+    "restore the wake contract and result schema, then run "
+    "`agent-sync daemon test-wake --seat %s --runtime fallback --run` and `--pin`"
+)
+
 
 def mcode_pin_cause(pin: Mapping[str, Any]) -> str:
     """Why a fallback pin no longer matches, in the operator's words.
 
-    `mcode_pin_state` returns `pin_stale` for two different causes and `pin_unverified` for a
-    third, quieter one.  They are named apart here because the first two read the same at a glance
-    but are not the same fault:  a moved binary is a path that changed, while a changed model,
-    contract or schema leaves the path alone.  Reporting the wrong one points the operator at a
-    path that never moved, and shows the same path twice.
+    `mcode_pin_state` returns `pin_stale` for two different causes, `pin_unverified` for a
+    third, quieter one, and `pin_unreadable` when the contract or schema cannot be read at all.
+    They are named apart here because they read the same at a glance but are not the same fault:
+    a moved binary is a path that changed, while a changed model, contract or schema leaves the
+    path alone, and an unreadable contract means the command was probably never wrong at all.
+    Reporting the wrong one points the operator at a path that never moved, shows the same path
+    twice, or sends them to re-pin something that cannot be re-pinned.
     """
     if pin.get("why") == "pin_unverified":
         return (
             "the pin predates the command fingerprint, so it verified nothing about the current "
             "fallback"
+        )
+    if pin.get("why") == "pin_unreadable":
+        return (
+            "the wake contract or result schema could not be read, so the current fallback "
+            "cannot be verified at all (pinned %s)" % pin.get("pinned_mcode")
         )
     if pin.get("mcode") != pin.get("pinned_mcode"):
         return "mcode moved to %s (pinned %s)" % (pin.get("mcode"), pin.get("pinned_mcode"))

@@ -47,6 +47,27 @@ class CodexThreadMetaTests(McpHarness):
         data = json.loads(tools.agent.state.path.read_text())
         self.assertNotIn("session", data)
 
+    def test_a_blank_or_non_string_session_is_refused(self):
+        """The id becomes an opaque external identifier a resume-wake reads back to find the
+        session.  A blank one is falsy and would silently degrade to no id; a non-string one
+        would round-trip into the state file as a type the contract does not allow.  Both are
+        refused here, loudly, and the message names the argument."""
+        tools = self.direct(session=None, source="none")
+        for bad in ("", "   ", 0, 17, True, [], {}):
+            with self.assertRaises(ValueError) as caught:
+                tools._use_tag(Z.session_tag("mvs_0123456789abcdef0123456789abcdef"), bad)
+            self.assertIn("session", str(caught.exception))
+        # None still means "the caller passed none".
+        tools._use_tag(Z.session_tag("mvs_0123456789abcdef0123456789abcdef"), None)
+        # A real id still passes through (a fresh server:  _use_tag only rebuilds the state when
+        # the tag changes, so the same instance would keep the id it already holds).
+        fresh = self.direct(session=None, source="none")
+        full = "mvs_0123456789abcdef0123456789abcdef"
+        fresh._use_tag(Z.session_tag(full), full)
+        fresh.agent.state.record_posted(1)
+        self.assertEqual(fresh.agent.state.session_id, full)
+        self.assertEqual(json.loads(fresh.agent.state.path.read_text()).get("session"), full)
+
     def test_the_servers_own_tag_keeps_the_servers_own_session(self):
         full = "mvs_0123456789abcdef0123456789abcdef"
         tools = self.direct(session=full, source="process_env")

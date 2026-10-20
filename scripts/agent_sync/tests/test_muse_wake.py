@@ -606,6 +606,32 @@ class McodeFallbackTest(unittest.TestCase):
             A.MCODE_WAKE_POLICY_VERSION = original
         self.assertEqual(A.mcode_wake_fingerprint("<mcode>", "minimax/MiniMax-M3"), base)
 
+    def test_an_unreadable_contract_is_not_reported_as_a_changed_pin(self) -> None:
+        # A changed pin is fixed by re-pinning.  An unreadable contract is not:  the same re-pin
+        # re-reads the same missing file and refuses again, so folding it into `pin_stale` hands
+        # the operator a remediation that cannot succeed.
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = L.SeatPaths(tmp, "MM")
+            L.private_dir(paths.seat_dir)
+            exe = os.path.join(tmp, "mcode")
+            with open(exe, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            A.record_mcode_pin(paths, exe, time.time(), model="minimax/MiniMax-M3")
+            missing = os.path.join(tmp, "no-such-contract.md")
+            original = A.CONTRACT_PATH
+            try:
+                A.CONTRACT_PATH = missing
+                state = A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3")
+            finally:
+                A.CONTRACT_PATH = original
+            self.assertEqual(state["why"], "pin_unreadable")
+            self.assertNotEqual(state["why"], "pin_stale")
+            cause = A.mcode_pin_cause(state)
+            self.assertIn("could not be read", cause)
+            # The remediation must fix the read, not hand back the re-pin that cannot succeed.
+            self.assertIn("restore the wake contract", A.MCODE_PIN_UNREADABLE_REMEDIATION)
+            self.assertNotIn("--runtime fallback --pin", A.MCODE_PIN_UNREADABLE_REMEDIATION)
+
     def test_the_fallback_fingerprint_fails_closed_when_the_contract_is_unreadable(self) -> None:
         # A pin must never vouch for a command whose contract could not be loaded, so an
         # unreadable contract returns None and every pin reads stale rather than pinned.
