@@ -4,8 +4,10 @@ import contextlib
 import importlib.util
 import io
 import os
+import shutil
 import signal
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -28,6 +30,16 @@ class BootstrapTests(unittest.TestCase):
         proc.communicate.return_value = (stdout, "synthetic-private-output")
         proc.poll.return_value = returncode
         return proc
+
+    def delegate(self, tmpdir="delegate"):
+        """A real, executable stand-in for the plain CLI, so the delegate check passes and the
+        test reaches the login it is actually about."""
+        path = Path(tempfile.mkdtemp()) / tmpdir / "fleet-secrets"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(0o755)
+        self.addCleanup(shutil.rmtree, path.parent, True)
+        return path
 
     def test_environment_login_uses_resolved_cli_and_confines_credentials(self):
         proc = self.process()
@@ -68,7 +80,11 @@ class BootstrapTests(unittest.TestCase):
     def test_failed_login_suppresses_private_child_output(self):
         stderr = io.StringIO()
         with (
-            mock.patch.dict(os.environ, PAIR, clear=True),
+            mock.patch.dict(
+                os.environ,
+                dict(PAIR, FLEET_SECRETS_CLI=str(self.delegate())),
+                clear=True,
+            ),
             mock.patch.object(entry.core, "find_cli", return_value="/synthetic/infisical"),
             mock.patch.object(
                 entry.subprocess, "Popen", return_value=self.process("PRIVATE_CHILD", 1)
@@ -99,9 +115,49 @@ class BootstrapTests(unittest.TestCase):
                 entry._login("/synthetic/infisical", {})
         proc.terminate.assert_called_once()
 
-    def test_missing_cli_has_a_distinct_exit_status(self):
+    def test_delegating_to_the_entry_point_itself_is_refused(self):
+        # FLEET_SECRETS_BIN names the fleet-secrets command, which on the server is this
+        # script:  exec'ing it would re-authenticate and exec again, forever.
+        self_file = Path(entry.__file__)
+        with tempfile.TemporaryDirectory() as home:
+            install = Path(home) / "share"
+            install.mkdir()
+            (install / "fleet-secrets").symlink_to(self_file)
+            for env in (
+                {"FLEET_SECRETS_CLI": str(self_file), "HOME": "/nonexistent"},
+                {"FLEET_SECRETS_HOME": str(install), "HOME": "/nonexistent"},
+            ):
+                with self.subTest(env=sorted(env)):
+                    with (
+                        mock.patch.dict(os.environ, dict(PAIR, **env), clear=True),
+                        mock.patch.object(entry, "authenticated_env") as auth,
+                        contextlib.redirect_stderr(io.StringIO()),
+                    ):
+                        self.assertEqual(entry.main(), 127)
+                    auth.assert_not_called()
+
+    def test_a_missing_cli_is_reported_before_the_login(self):
+        # The delegate is checked first, so a mis-pathed CLI costs no login and is named.
+        stderr = io.StringIO()
         with (
-            mock.patch.dict(os.environ, PAIR, clear=True),
+            mock.patch.dict(
+                os.environ, dict(PAIR, FLEET_SECRETS_CLI="/nonexistent/fleet-secrets"), clear=True
+            ),
+            mock.patch.object(entry, "authenticated_env") as auth,
+            contextlib.redirect_stderr(stderr),
+        ):
+            self.assertEqual(entry.main(), 127)
+        auth.assert_not_called()
+        self.assertIn("FLEET_SECRETS_CLI", stderr.getvalue())
+
+    def test_missing_cli_has_a_distinct_exit_status(self):
+        # The delegate is present, so this is the infisical CLI that is missing.
+        with (
+            mock.patch.dict(
+                os.environ,
+                dict(PAIR, FLEET_SECRETS_CLI=str(self.delegate())),
+                clear=True,
+            ),
             mock.patch.object(entry.core, "find_cli", return_value=None),
             contextlib.redirect_stderr(io.StringIO()),
         ):

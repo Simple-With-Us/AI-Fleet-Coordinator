@@ -106,8 +106,12 @@ def authenticated_env():
 
 
 def cli_path(env):
-    """Explicit executable, then explicit install home, then the installer's default."""
-    explicit = (env.get("FLEET_SECRETS_BIN") or "").strip()
+    """The plain CLI to delegate to: an explicit CLI path, then the install home, then the default.
+
+    `FLEET_SECRETS_BIN` is not read here:  fleet-wide it names the *fleet-secrets command*
+    (`scripts/agent_sync/zulip.py`), which on the server is this entry point itself.
+    """
+    explicit = (env.get("FLEET_SECRETS_CLI") or "").strip()
     if explicit:
         return Path(os.path.expanduser(explicit))
     return (
@@ -116,12 +120,24 @@ def cli_path(env):
     )
 
 
+def _is_self(target):
+    """True when the delegate would be this entry point, which would exec itself forever."""
+    try:
+        return target.resolve() == Path(__file__).resolve()
+    except OSError:
+        return False
+
+
 def main():
     try:
-        env = authenticated_env()
-        target = cli_path(env)
+        # Resolve and check the delegate before authenticating:  a missing or mis-pathed CLI
+        # must not cost a login, and the operator must be told about the real fault.
+        target = cli_path(dict(os.environ))
+        if _is_self(target):
+            raise EntryError("fleet-secrets CLI is this entry point (set FLEET_SECRETS_CLI)", 127)
         if not target.is_file() or not os.access(target, os.X_OK):
-            raise EntryError("fleet-secrets CLI is unavailable (set FLEET_SECRETS_BIN)", 127)
+            raise EntryError("fleet-secrets CLI is unavailable (set FLEET_SECRETS_CLI)", 127)
+        env = authenticated_env()
         os.execve(str(target), [str(target), *sys.argv[1:]], env)
     except EntryError as exc:
         print("fleet-secrets: " + str(exc), file=sys.stderr)

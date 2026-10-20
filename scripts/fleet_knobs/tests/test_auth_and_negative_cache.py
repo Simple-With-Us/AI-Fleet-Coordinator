@@ -366,10 +366,16 @@ class NegativeCacheTests(KnobTestCase):
         self.new_process(keep_failure_marker=True)
         self.assertIsNone(lkg.recent_failure())
 
+    def test_the_automation_reason_survives_the_marker_whole(self):
+        # The token is 68 characters:  a shorter cap cut the missing variable's name off.
+        token = "automation-env-incomplete:missing-INFISICAL_AUTOMATION_CLIENT_SECRET"
+        lkg.record_failure(token)
+        self.assertEqual(lkg.recent_failure(), token.lower())
+
     def test_a_reason_is_reduced_to_a_token(self):
         lkg.record_failure("exit-1 with " + "spaces/and\nnewlines" * 10)
         reason = lkg.recent_failure()
-        self.assertLessEqual(len(reason), 64)
+        self.assertLessEqual(len(reason), 128)
         self.assertTrue(set(reason) <= set("abcdefghijklmnopqrstuvwxyz0123456789-_:"))
 
     def test_a_timeout_is_paid_once_across_siblings(self):
