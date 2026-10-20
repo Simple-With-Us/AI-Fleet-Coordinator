@@ -1196,8 +1196,9 @@ const deniedCalls = new Map<string, string>();
 type AnyRecord = Record<string, unknown>;
 
 // Tool-call data and permission prompts are untrusted and walked recursively, so the walk
-// carries bounds:  a payload that is too large, too deep, too wide, or cyclic is refused
-// before it can exhaust the stack or the CPU ahead of the guard.
+// carries bounds:  the depth, width and cycle ceilings apply to every payload, and the byte
+// ceiling applies to the extracted command and to the whole permission prompt.  Anything
+// over a ceiling is refused before it can exhaust the stack or the CPU ahead of the guard.
 const MAX_COMMAND_INPUT_BYTES = 64 * 1024;
 const MAX_COMMAND_INPUT_DEPTH = 16;
 const MAX_COMMAND_INPUT_NODES = 1000;
