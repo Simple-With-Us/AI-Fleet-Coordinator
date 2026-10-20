@@ -25,7 +25,7 @@
 # CODEX_THREAD_ID, Cursor CURSOR_CONVERSATION_ID, Grok GROK_SESSION_ID, OpenCode OPENCODE_SESSION_ID, MiniMax
 # __MAVIS_RUNTIME_SESSION_ID).  With none the script exits 2 before it touches Notes.  A seat with one thread with the
 # owner (Grok bots, MA/Rob, JET, WISE, ECHO) needs none.  The seat is $AGENT_LAUNCH_SEAT (with $AGENT_LAUNCHER),
-# else $AGENT_SEAT, else the Agent named in the title ("[APP, Wise] topic", how Instinct's bots call this over ssh);
+# else $AGENT_SEAT, else the SEAT_TAG named in the title ("[TEAM_KEY, WISE] topic", how Instinct's bots call this over ssh);
 # it is never a flag.  Data copy of fleet-apps.json `sessionIds`;  scripts/test_session_ids_parity.py keeps it equal.
 # APPLE_NOTES_PRINT_HTML=1 prints the note HTML and exits before Notes is touched (the tests use it).
 #

@@ -362,9 +362,9 @@ other document the owner needs to read/review**, also put it in **Apple Notes**
 
 1. **Folder:** always iCloud **`Coding`** (create if missing) — never only the default Notes inbox.
 2. **Pin:** pin so it sits at the top under Pinned.
-3. **Title:** `[APP, Agent] short topic` — apps + agent **first**. Multi-app:
-   `[APP1, APP2, Grok] …`. Acronyms: `CT` `ST` `UM` `CTS` `FLEET`. Agent Title Case
-   (`Grok` / `Monet` / `Claude` / `Codex` / `AG` / `Cursor` / …). **No "session"** in title; **no date** in title.
+3. **Title:** `[TEAM_KEY, SEAT_TAG] short topic` — team key + seat **first**. Multi-team:
+   `[CT1, CT2, Grok] …`. Acronyms: `CT` `ST` `UM` `CTS` `FLEET`. Seat Title Case
+   (`Grok` / `Claude` / `Codex` / `AG` / `Cursor` / `MM` / `Wise` / …). **No "session"** in title; **no date** in title.
 4. **Second body line:** local create/update stamp + optional PR #, e.g. `Sun, Aug 9, 3:52pm · PR #18`
    (refresh on every material update; pass `--pr "18"` to helper). Helper auto-injects/preserves this.
 5. **Helper:** `/Users/jay/apps/apple-notes-coding.sh "Title" "body"`  
