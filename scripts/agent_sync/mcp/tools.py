@@ -782,9 +782,17 @@ class Tools:
                 self.seat,
                 key,
                 retain_posted=bool(state_key),
-                # The rebuilt state must keep the full session id, or a post written under the new
-                # tag records only the 8-character tag and the id is unrecoverable.
-                session_id=self.agent.session_id,
+                # The id must be the one BEHIND the tag this file is written under:  a native
+                # codex-thread state belongs to the thread id, the server's own tag belongs to the
+                # server's own session id, and a client-supplied tag carries no full id at all --
+                # writing the server's id under it would point a foreign tag at this process's
+                # session.  Without an id here a post records only the 8-character tag, and the
+                # session behind it is unrecoverable.
+                session_id=(
+                    self.thread_id
+                    if state_key
+                    else (self.agent.session_id if key == self.process_tag else None)
+                ),
             )
 
     def _prefix(self) -> str:

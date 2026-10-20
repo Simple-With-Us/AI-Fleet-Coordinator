@@ -714,8 +714,18 @@ _ROW = (
     r'(?:\s*(?:</p>|<div><br\s*/?></div>))*'
 )
 # The markdown converter leaves a spacer after the LAST paragraph, so the row is not literally last:
-# drop trailing spacers, then take the row off the end.
-inner = re.sub(r'(?:\s|<div><br\s*/?></div>)+$', '', inner)
+# drop trailing spacers, then take the row off the end.  The trailing run is cut by walking the
+# spacer/whitespace matches back from the end, NOT by a `(...)+$` strip:  that repeated group is
+# anchored at `$`, so it backtracks once per candidate start and is quadratic in the number of
+# trailing spacers -- the converter emits one per paragraph, and MARKDOWN_MAX is 500_000 characters,
+# so one update could hold the notes lock for minutes.
+_trailing = list(re.finditer(r'(?:\s|<div><br\s*/?></div>)', inner))
+_cut = len(inner)
+for _match in reversed(_trailing):
+    if _match.end() != _cut:
+        break
+    _cut = _match.start()
+inner = inner[:_cut]
 inner = re.sub(r'^(?:<p>)?\s*' + _ROW + r'\s*', '', inner, flags=re.I)
 inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*(?:<div><br\s*/?></div>)?\s*(?:<p>)?\s*' + _ROW + r'\s*$', '', inner, flags=re.I)
 session_p = ''

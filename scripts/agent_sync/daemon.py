@@ -4837,6 +4837,13 @@ class Daemon:
                 if runner.cfg.wake == "muse"
                 else None
             )
+            # The fallback is opt-in (`fallback = "mcode"`), so its pin is only read for a seat that
+            # actually configured one -- the same gate `_pinned_fallback` uses.
+            mcode = (
+                A.resolve_mcode(runner.cfg.mcode, self.wake_path)
+                if runner.cfg.fallback == "mcode"
+                else None
+            )
             routine = None
             if runner.cfg.wake == "http":
                 target, why, detail = self.routine(runner)
@@ -4889,6 +4896,18 @@ class Daemon:
                     "wake pin is stale: muse moved to %s (pinned %s); run "
                     "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
                     % (muse_pin["muse"], muse_pin["pinned_muse"], seat)
+                )
+            # The fallback pin reports on its own file too.  It gates the fallback on its own, so a
+            # stale one holds every fallback wake; without a red entry here a seat whose fallback
+            # silently stopped looks exactly as healthy as a seat that never configured one.
+            mcode_pin = (
+                A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model) if mcode else None
+            )
+            if mcode_pin and mcode_pin["why"] == "pin_stale":
+                red.append(
+                    "fallback pin is stale: mcode moved to %s (pinned %s); run "
+                    "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
+                    % (mcode_pin["mcode"], mcode_pin["pinned_mcode"], seat)
                 )
             for problem in runner.cfg.config_problems:
                 red.append(
