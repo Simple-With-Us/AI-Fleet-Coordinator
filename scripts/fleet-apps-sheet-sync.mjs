@@ -825,6 +825,14 @@ export function summarizeIngest(stdout) {
   return lines.length ? lines[lines.length - 1] : "done";
 }
 
+// The CLI's own stderr is the only thing that says WHY an ingest failed, so keep it and show
+// the tail of it.  Discarding it leaves the operator with a note and nothing to act on.
+export function ingestFailureDetail(err) {
+  const raw = String((err && err.stderr) || (err && err.message) || "").trim();
+  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines.length ? lines.slice(-3).join(" | ") : "no output";
+}
+
 function exportMarkdownMirror(markdown) {
   mkdirSync(dirname(MIRROR_MD_PATH), { recursive: true });
   writeFileSync(MIRROR_MD_PATH, markdown, "utf8");
@@ -836,12 +844,12 @@ function exportMarkdownMirror(markdown) {
   try {
     const out = execFileSync("recall", registryIngestArgs(), {
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 8 * 1024 * 1024,
     });
     console.log(`   Fleet RAG ingested: ${summarizeIngest(out)}`);
   } catch (err) {
-    console.warn(`   Note: Fleet RAG ingest skipped (${err.message.split("\n")[0]})`);
+    console.warn(`   Note: Fleet RAG ingest skipped (${ingestFailureDetail(err)})`);
   }
 }
 

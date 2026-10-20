@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import {
-  registryIngestArgs, summarizeIngest, MIRROR_MD_PATH, REGISTRY_INGEST_SOURCE
+  registryIngestArgs, summarizeIngest, ingestFailureDetail, MIRROR_MD_PATH, REGISTRY_INGEST_SOURCE
 } from "./fleet-apps-sheet-sync.mjs";
 
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
@@ -47,6 +47,24 @@ test("summarizeIngest reads the ingest report and degrades safely", () => {
   // Garbage or empty stdout must not throw.
   assert.equal(summarizeIngest(""), "done");
   assert.equal(summarizeIngest("not json at all"), "not json at all");
+});
+
+test("a failed ingest reports the tool's own stderr, not just the exit", () => {
+  // The CLI's stderr is the only thing that says WHY an ingest failed.  A note that carries only
+  // "Command failed" leaves the operator with nothing to act on, which is what a reviewer on this
+  // PR caught:  the old code discarded stderr and printed a generic message.
+  const err = Object.assign(new Error("Command failed: recall ingest --source doc"), {
+    stderr: "ingest lock is held by pid 69239\nwaiting for the ingest lock\n",
+  });
+  const detail = ingestFailureDetail(err);
+  assert.match(detail, /ingest lock is held by pid 69239/);
+  assert.match(detail, /waiting for the ingest lock/);
+  // A failure with no stderr still says something rather than nothing.
+  assert.equal(ingestFailureDetail(Object.assign(new Error("boom"), { stderr: "" })), "boom");
+  assert.equal(ingestFailureDetail({}), "no output");
+  // Only the tail is kept, so a chatty tool cannot flood the operator's log.
+  const chatty = Object.assign(new Error("boom"), { stderr: "a\nb\nc\nd\n" });
+  assert.equal(ingestFailureDetail(chatty), "b | c | d");
 });
 
 test("the real recall CLI rejects a file path and accepts a source", { skip: !RECALL }, () => {
