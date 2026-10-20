@@ -3220,7 +3220,9 @@ class Daemon:
             fields = ("platform", "host", "session_id", "cwd")
             if any(not isinstance(row.get(key), str) or not row[key].strip() for key in fields):
                 result["failed"] = result.get("failed", 0) + 1
-                self.log.write("fanout-chat-error", id=message_id, error="invalid chat binding fields")
+                self.log.write(
+                    "fanout-chat-error", id=message_id, error="invalid chat binding fields"
+                )
                 continue
             binding = {key: row[key] for key in fields}
             binding.update(channel=channel, topic=topic)
