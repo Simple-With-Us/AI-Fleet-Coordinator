@@ -1,12 +1,13 @@
 """Environment-only Linux authentication; no real credentials or network."""
+
 import contextlib
 import importlib.util
 import io
 import os
-from pathlib import Path
 import signal
 import subprocess
 import unittest
+from pathlib import Path
 from unittest import mock
 
 spec = importlib.util.spec_from_file_location(
@@ -69,7 +70,9 @@ class BootstrapTests(unittest.TestCase):
         with (
             mock.patch.dict(os.environ, PAIR, clear=True),
             mock.patch.object(entry.core, "find_cli", return_value="/synthetic/infisical"),
-            mock.patch.object(entry.subprocess, "Popen", return_value=self.process("PRIVATE_CHILD", 1)),
+            mock.patch.object(
+                entry.subprocess, "Popen", return_value=self.process("PRIVATE_CHILD", 1)
+            ),
             contextlib.redirect_stderr(stderr),
         ):
             self.assertEqual(entry.main(), 4)

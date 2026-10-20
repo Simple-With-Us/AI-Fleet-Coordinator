@@ -137,7 +137,10 @@ class AuthTests(KnobTestCase):
         os.environ["INFISICAL_AUTOMATION_CLIENT_ID"] = "idSentinel0123456789"
         self.fake.set(secrets=GOOD)
         knobs.get("FLEET_AUTOPUSH_MODE")
-        self.assertEqual(knobs.report()["fetch_reason"], "automation-env-incomplete:missing-INFISICAL_AUTOMATION_CLIENT_SECRET")
+        self.assertEqual(
+            knobs.report()["fetch_reason"],
+            "automation-env-incomplete:missing-INFISICAL_AUTOMATION_CLIENT_SECRET",
+        )
         self.assertEqual(self.fake.calls(), [])
 
     def test_linux_incomplete_reason_names_only_the_missing_variable(self):

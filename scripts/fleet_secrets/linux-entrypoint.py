@@ -110,7 +110,10 @@ def cli_path(env):
     explicit = (env.get("FLEET_SECRETS_BIN") or "").strip()
     if explicit:
         return Path(os.path.expanduser(explicit))
-    return Path(env.get("FLEET_SECRETS_HOME") or Path.home() / ".local/share/fleet-secrets") / "fleet-secrets"
+    return (
+        Path(env.get("FLEET_SECRETS_HOME") or Path.home() / ".local/share/fleet-secrets")
+        / "fleet-secrets"
+    )
 
 
 def main():

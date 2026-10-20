@@ -254,7 +254,11 @@ def _incomplete_reason(env: Mapping[str, str]) -> str:
         bool((env.get(ENV_AUTOMATION_ID) or "").strip())
         != bool((env.get(ENV_AUTOMATION_SECRET) or "").strip())
     ):
-        missing = ENV_AUTOMATION_SECRET if (env.get(ENV_AUTOMATION_ID) or "").strip() else ENV_AUTOMATION_ID
+        missing = (
+            ENV_AUTOMATION_SECRET
+            if (env.get(ENV_AUTOMATION_ID) or "").strip()
+            else ENV_AUTOMATION_ID
+        )
         return "automation-env-incomplete:missing-" + missing
     return "keychain-incomplete"
 
