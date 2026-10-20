@@ -74,7 +74,9 @@ UPLOAD_PATH_RE = re.compile(r"^/user_uploads/[A-Za-z0-9_./-]{1,200}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
 _TITLE_BAD_RE = re.compile(r'["\\\x00-\x1f\x7f\x85\u2028\u2029]')
 _PR_RE = re.compile(r"^[0-9#, ]{1,40}$")
-_BRACKET_RE = re.compile(r"\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*)\] \S.*")
+_BRACKET_RE = re.compile(
+    r"\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*)\] \S.*"
+)
 _FENCE_OPEN = "```json\n"
 _FENCE_CLOSE = "\n```"
 

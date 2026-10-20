@@ -127,7 +127,9 @@ class SpecializeTests(unittest.TestCase):
         for key, notes in (("cursor", "Cursor"), ("grok", "Grok"), ("codex", "Codex")):
             out = specialize_from_monet(_notes(), SEATS[key], skill_name="apple-notes")
             self.assertIn(f"Notes `{notes}`", out, key)
-            self.assertNotRegex(out, r"\[(?:APP|ST, CT|TEAM_KEY), (?!Agent\])[A-Z][a-z][A-Za-z ]*\]", key)
+            self.assertNotRegex(
+                out, r"\[(?:APP|ST, CT|TEAM_KEY), (?!Agent\])[A-Z][a-z][A-Za-z ]*\]", key
+            )
 
     def test_fleet_coordination_seats_table_preserved(self) -> None:
         out = specialize_from_monet(_coord(), SEATS["ag"], skill_name="fleet-coordination")
@@ -148,7 +150,9 @@ class SpecializeTests(unittest.TestCase):
 
         out_not = specialize_universal(_notes(), skill_name="apple-notes")
         self.assertIn("[TEAM_KEY, Agent]", out_not)
-        self.assertNotRegex(out_not, r"\[(?:APP|ST, CT|TEAM_KEY), (?!Agent\])[A-Z][a-z][A-Za-z ]*\]")
+        self.assertNotRegex(
+            out_not, r"\[(?:APP|ST, CT|TEAM_KEY), (?!Agent\])[A-Z][a-z][A-Za-z ]*\]"
+        )
 
     def test_codex_grok_renoir_deepseek_tags(self) -> None:
         mapping = {
