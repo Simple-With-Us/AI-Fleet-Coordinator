@@ -52,11 +52,29 @@ def authenticated_env():
     return env
 
 
+def cli_path(env):
+    """FLEET_SECRETS_BIN, else $FLEET_SECRETS_HOME/fleet-secrets, else the installer's default."""
+    home = Path.home()
+    explicit = (env.get("FLEET_SECRETS_BIN") or "").strip()
+    if explicit:
+        return Path(os.path.expanduser(explicit))
+    return Path(env.get("FLEET_SECRETS_HOME") or home / ".local/share/fleet-secrets") / "fleet-secrets"
+
+
 def main():
     try:
         env = authenticated_env()
-        target = Path.home() / ".local/share/fleet-secrets/fleet-secrets"
+        target = cli_path(env)
+        if not target.is_file():
+            raise FileNotFoundError(str(target))
         os.execve(str(target), [str(target), *sys.argv[1:]], env)
+    except FileNotFoundError as exc:
+        missing = exc.filename or (exc.args[0] if exc.args else "the resolved path")
+        print(
+            "fleet-secrets: the fleet-secrets CLI is not at %s (set FLEET_SECRETS_BIN)" % missing,
+            file=sys.stderr,
+        )
+        return 4
     except (OSError, ValueError, subprocess.SubprocessError):
         print(
             "fleet-secrets: Linux machine bootstrap failed; check provisioning and permissions",
