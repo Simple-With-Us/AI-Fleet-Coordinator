@@ -1539,6 +1539,7 @@ class Tools:
         )
         return self._write_result(
             {"id": result["id"], "user_ids": ids, "duplicate": result["duplicate"]}
+            | ({"reformatted": result["reformatted"]} if result.get("reformatted") else {})
         )
 
     # ---- messages -------------------------------------------------------------------------

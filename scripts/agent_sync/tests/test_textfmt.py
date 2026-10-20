@@ -275,6 +275,8 @@ SINGLE_GAPPED = (
     ("Done. @**Codex** look.", "Done.%s@**Codex** look." % G),
     ('He said "Go." Then left.', 'He said "Go."%sThen left.' % G),
     ("4 tests failed. Next.", "4 tests failed.%sNext." % G),
+    # "no" is not an abbreviation:  this is a sentence end, and widening it costs a space, never a word.
+    ("I said no. Then we stop.", "I said no.%sThen we stop." % G),
 )
 SINGLE_UNCHANGED = (
     "Ask Dr. Smith.",
@@ -321,6 +323,9 @@ FLEET_OFFSET_FORMS = (
     ("2026-10-19 10:30:00-05:00", "Mon, Oct 19, 10:30am"),
     ("2026-10-19 10:30:00+05:30", "Mon, Oct 19, 12:00am"),
     ("2026-10-19 10:30:00Z", "Mon, Oct 19, 5:30am"),
+    # A zoned range converts both ends:  the end carries the same zone as the start.
+    ("2026-10-19 10:30-11:00Z", "Mon, Oct 19, 5:30am-6:00am"),
+    ("2026-10-19 22:30-23:30Z", "Mon, Oct 19, 5:30pm-6:30pm"),
 )
 
 

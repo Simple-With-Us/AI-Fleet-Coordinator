@@ -16,8 +16,11 @@ const dump = spawnSync(
     "-c",
     "import json\nfrom agent_sync.tests import test_textfmt as t\nprint(json.dumps({'converted': t.CONVERTED, 'unchanged': t.UNCHANGED, 'now': t.NOW_ISO, 'single_gapped': t.SINGLE_GAPPED, 'single_unchanged': t.SINGLE_UNCHANGED, 'fleet_dates': t.FLEET_DATES, 'fleet_dates_kept': t.FLEET_DATES_KEPT, 'fleet_offsets': t.FLEET_OFFSET_FORMS}))",
   ],
-  { cwd: SCRIPTS, encoding: "utf8", env: { ...process.env, PYTHONPATH: SCRIPTS } },
+  // A hung python must not hold the test runner:  124 is the timeout convention, and it is a failure here
+  // rather than a skip, because a suite that imported cleanly a moment ago should not now hang.
+  { cwd: SCRIPTS, encoding: "utf8", timeout: 60_000, env: { ...process.env, PYTHONPATH: SCRIPTS } },
 );
+if (dump.error?.code === "ETIMEDOUT") throw new Error("the Python textfmt suite did not finish in 60s");
 const tables = dump.status === 0 ? JSON.parse(dump.stdout) : null;
 const skip = tables ? false : `python3 or the Python suite is unavailable (status ${dump.status})`;
 const NOW = tables ? new Date(tables.now) : null;
@@ -63,7 +66,8 @@ test("the Python tables:  a space-form offset is a UTC offset, not a range end",
   }
 });
 
-test("fixOutbound:  both fixes, a report, the length cap and idempotence", () => {
+// `NOW` comes from the Python tables, so this one skips with them rather than reading +null as 1970.
+test("fixOutbound:  both fixes, a report, the length cap and idempotence", { skip }, () => {
   const [fixed, report] = fixOutbound("Merged 2026-10-19. Next.", { now: NOW });
   assert.equal(fixed, `Merged Mon, Oct 19.${GAP}Next.`);
   assert.equal(report.length, 2);

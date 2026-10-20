@@ -163,7 +163,8 @@
         "properties": {
           "id": {"type": "integer"},
           "channel_id": {"type": "integer"},
-          "duplicate": {"type": "boolean"}
+          "duplicate": {"type": "boolean"},
+          "reformatted": {"type": "array", "items": {"type": "string"}, "description": "Present only when the outbound fixes changed the text:  each line says what was rewritten, so the caller learns the fleet format."}
         }
       },
       "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": true}
@@ -190,7 +191,8 @@
         "properties": {
           "id": {"type": "integer"},
           "channel_id": {"type": "integer"},
-          "duplicate": {"type": "boolean"}
+          "duplicate": {"type": "boolean"},
+          "reformatted": {"type": "array", "items": {"type": "string"}, "description": "Present only when the outbound fixes changed the text:  each line says what was rewritten, so the caller learns the fleet format."}
         }
       },
       "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": true}
@@ -239,7 +241,7 @@
       "title": "Send a Direct Message",
       "description": "Send a direct message as this seat's bot to one or more active realm users (up to 8), named by user id or email.  A DM notifies its recipients, so use it for what one person or group needs to act on;  use zulip_post for the fleet's channel record.  The server prepends the [SEAT·session→TO] tag, makes raw @-mentions in the text silent, and refuses text that looks like a secret.  It counts against this seat's post budget.  A retry with the same idempotency_key never sends twice.  The answer is the message id only.",
       "inputSchema": {"type": "object", "additionalProperties": false, "required": ["text"], "properties": {"user_ids": {"type": "array", "maxItems": 8, "items": {"type": "integer", "minimum": 1}, "description": "Zulip user ids of the other people in the conversation (not this bot).  zulip_dm_list shows them."}, "emails": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 3, "maxLength": 100}, "description": "Emails of the other people in the conversation, as an alternative or addition to user_ids."}, "text": {"type": "string", "minLength": 1, "maxLength": 9500, "description": "Message text in Zulip markdown."}, "idempotency_key": {"type": "string", "pattern": "^[A-Za-z0-9_-]{8,64}$", "description": "Any unique string; a retry with the same key returns the first message instead of sending again."}, "session": {"type": "string", "pattern": "^[a-z0-9]{1,8}$", "description": "Session tag for the [SEAT·session] prefix, used only when the client did not pass a session id."}}},
-      "outputSchema": {"type": "object", "required": ["id", "user_ids", "duplicate"], "properties": {"id": {"type": "integer"}, "user_ids": {"type": "array", "items": {"type": "integer"}}, "duplicate": {"type": "boolean"}}},
+      "outputSchema": {"type": "object", "required": ["id", "user_ids", "duplicate"], "properties": {"id": {"type": "integer"}, "user_ids": {"type": "array", "items": {"type": "integer"}}, "duplicate": {"type": "boolean"}, "reformatted": {"type": "array", "items": {"type": "string"}, "description": "Present only when the outbound fixes changed the text:  each line says what was rewritten, so the caller learns the fleet format."}}},
       "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true}
     },
     {

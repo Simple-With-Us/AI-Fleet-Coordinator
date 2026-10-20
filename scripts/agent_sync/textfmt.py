@@ -149,6 +149,8 @@ def sentence_gap(text: str) -> str:
 # Both skip code, math and mentions (the same protected ranges as sentence_gap), and both report what they changed,
 # so the CLI can tell the agent and it learns to write it that way.
 
+# "no" is absent on purpose:  "I said no.  Then we stop." ends a sentence, and "No. 5" cannot be told apart
+# from it here, so the same call as check-routine-prompts.py makes.  A wrong widening is a slightly wider space.
 _ABBREVIATIONS = frozenset(
     [
         "mr",
@@ -170,7 +172,6 @@ _ABBREVIATIONS = frozenset(
         "dept",
         "est",
         "fig",
-        "no",
         "nos",
         "vol",
         "ca",
@@ -288,16 +289,17 @@ def _fleet_date(match: re.Match[str], this_year: int) -> str:
         if hour is None:
             return _fleet_day(datetime(int(year), int(month), int(day)), this_year)
         when = datetime(int(year), int(month), int(day), int(hour), int(minute))
+        offset = ""
         if zone:
-            offset = (
-                "+00:00" if zone == "Z" else (zone if ":" in zone else zone[:3] + ":" + zone[3:])
-            )
+            offset = "+00:00" if zone == "Z" else (zone if ":" in zone else zone[:3] + ":" + zone[3:])
             when = _central(datetime.fromisoformat(when.isoformat() + offset))
         out = _fleet_day(when, this_year) + ", " + clock(when)
         if r_hour is not None:
-            out += "-" + clock(
-                datetime(int(year), int(month), int(day), int(r_hour), int(r_minute))
-            )
+            # The end of a range carries the same zone as its start, so it converts the same way.
+            end = datetime(int(year), int(month), int(day), int(r_hour), int(r_minute))
+            if offset:
+                end = _central(datetime.fromisoformat(end.isoformat() + offset))
+            out += "-" + clock(end)
         return out
     except (ValueError, OverflowError):
         # OverflowError:  a zone conversion off a year-1 stamp runs out of range;  leave the date alone.
@@ -329,10 +331,14 @@ def fleet_dates(text: str, now: Any = None) -> tuple[str, list[tuple[str, str]]]
 
 def fix_outbound(text: str, limit: int | None = None, now: Any = None) -> tuple[str, list[str]]:
     """Every outbound fix, and a short report of what changed for the author.  With `limit`, a result longer than it
-    keeps only the length-safe double-space conversion (a single gap and a date each add a character)."""
+    keeps only the length-safe double-space conversion (a single gap and a date each add a character).
+
+    Idempotent, because the hosted transport applies this after the body layer already applied it:  the date rewrite
+    runs before the gap widening, so a stamp that ends in a single letter (`...T02:03:00Z.`) is decided on the same
+    text both passes see, and a second pass widens nothing new."""
     gapped = sentence_gap(text)
-    fixed, singles = single_gaps(gapped)
-    fixed, dates = fleet_dates(fixed, now)
+    dated, dates = fleet_dates(gapped, now)
+    fixed, singles = single_gaps(dated)
     if limit is not None and len(fixed) > limit:
         return gapped, []
     report: list[str] = []

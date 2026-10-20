@@ -139,9 +139,11 @@ export function sentenceGap(text) {
 // Both skip code, math and mentions (the same protected ranges as sentenceGap), and both report what they changed,
 // so the caller can tell the author.
 
+// "no" is absent on purpose:  "I said no.  Then we stop." ends a sentence, and "No. 5" cannot be told apart from it
+// here, so the same call textfmt.py and check-routine-prompts.py make.  A wrong widening is a slightly wider space.
 const ABBREVIATIONS = new Set([
   "mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "etc", "e.g", "i.e", "eg", "ie", "cf", "al", "approx", "dept",
-  "est", "fig", "no", "nos", "vol", "ca", "mt", "ft", "sq",
+  "est", "fig", "nos", "vol", "ca", "mt", "ft", "sq",
 ]);
 
 // The lookahead carries MASK as well as the plain characters:  a one-space gap before a code span or a mention
@@ -156,8 +158,10 @@ const ANY_SINGLE_GAP_RE = /[.!?]\S* /;
 // the space form a -HH:MM is the end of a time range (2026-10-19 10:30-11:00), so it is tried first;  it is read as
 // a UTC offset only when the start carried seconds and the end did not (2026-10-19 10:30:00-05:00), because a
 // range that shows seconds shows them on both ends (2026-10-19 10:30:00-11:00:00).  A +HH:MM is never a range.
+// The word class is spelled out as \p{L}\p{N}_ rather than \w because JavaScript's \w is ASCII-only and Python's is
+// not:  with \w here, "café2026-10-19" would be rewritten by this port and kept by textfmt.py.
 const ISO_RE =
-  /(?<![\w/.:=?&-])(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?| (\d{2}):(\d{2})(:\d{2}(?:\.\d+)?)?(?:-(\d{2}):(\d{2})(:\d{2}(?:\.\d+)?)?)?(Z|[+-]\d{2}:?\d{2})?)?(?![\w/-]|\.[A-Za-z0-9])/g;
+  /(?<![\p{L}\p{N}_/.:=?&-])(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?| (\d{2}):(\d{2})(:\d{2}(?:\.\d+)?)?(?:-(\d{2}):(\d{2})(:\d{2}(?:\.\d+)?)?)?(Z|[+-]\d{2}:?\d{2})?)?(?![\p{L}\p{N}_/-]|\.[A-Za-z0-9])/gu;
 const ANY_ISO_RE = /\d{4}-\d{2}-\d{2}/;
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -196,7 +200,9 @@ function centralFrom(ms) {
   const nthSunday = (month, n) => {
     const first = new Date(0);
     first.setUTCFullYear(year, month - 1, 1);
-    return 1 + ((6 - first.getUTCDay()) % 7) + 7 * (n - 1);
+    // getUTCDay() is Sunday=0, so the first Sunday is day 1 + ((7 - weekday) % 7).  (textfmt.py uses Python's
+    // Monday=0 base, which is where the 6 comes from there.)
+    return 1 + ((7 - first.getUTCDay()) % 7) + 7 * (n - 1);
   };
   const start = utcMs(year, 2, nthSunday(3, 2), 8);
   const end = utcMs(year, 10, nthSunday(11, 1), 7);
@@ -339,7 +345,9 @@ function fleetDate(match, thisYear) {
     const RH = Number(rangeHour);
     const RM = Number(rangeMinute);
     if (RH > 23 || RM > 59) return match[0];
-    out += "-" + clock(RH, RM);
+    // The end of a range carries the same zone as its start, so it converts the same way.
+    const end = tz ? centralFrom(utcMs(Y, M - 1, D, RH, RM) - offsetMinutes(tz) * 60000) : { h: RH, mi: RM };
+    out += "-" + clock(end.h, end.mi);
   }
   return out;
 }
@@ -347,12 +355,15 @@ function fleetDate(match, thisYear) {
 /**
  * Every outbound fix, and a short report of what changed for the author.  With `limit`, a result longer than it
  * keeps only the length-safe double-space conversion (a single gap and a date each add a character).
+ *
+ * Idempotent, because the hosted transport applies this after the body layer already applied it:  the date rewrite
+ * runs before the gap widening, so a stamp that ends in a single letter (`...T02:03:00Z.`) is decided on the same
+ * text both passes see, and a second pass widens nothing new.
  */
 export function fixOutbound(text, { limit = null, now = undefined } = {}) {
   const gapped = sentenceGap(text);
-  let [fixed, singles] = singleGaps(gapped);
-  let [dated, dates] = fleetDates(fixed, now);
-  fixed = dated;
+  const [dated, dates] = fleetDates(gapped, now);
+  const [fixed, singles] = singleGaps(dated);
   if (limit !== null && [...fixed].length > limit) return [gapped, []];
   const report = [];
   if (dates.length) {

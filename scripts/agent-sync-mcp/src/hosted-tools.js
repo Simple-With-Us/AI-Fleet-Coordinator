@@ -120,7 +120,7 @@ import {
   CLOSING_STATUSES,
   STATUS_WORDS,
 } from "./linear.js";
-import { fixOutbound } from "./textfmt.js";
+import { fixOutbound, sentenceGap } from "./textfmt.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { LISTENER_TOOLS, LISTENER_READ_TOOLS, LISTENER_METHODS } from "./listener.js";
@@ -1231,7 +1231,9 @@ export class HostedTools {
 
   /** The seat tag line that opens every body it writes, as the Zulip tools do. */
   linearBody(text, session) {
-    return neutralizeLinearMentions(fixOutbound(`${tagPrefix(this.seat, sessionTag(session))}] ${text}`, { limit: MAX_CONTENT_LENGTH })[0]);
+    // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
+    // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
+    return neutralizeLinearMentions(sentenceGap(`${tagPrefix(this.seat, sessionTag(session))}] ${text}`));
   }
 
   /** The secret scan on everything the caller wrote, before any request. */
