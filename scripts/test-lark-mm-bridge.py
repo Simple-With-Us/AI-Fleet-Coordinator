@@ -714,6 +714,80 @@ class BridgeTests(unittest.TestCase):
         )
         self.assertEqual(bridge_mod.sentence_gap("Version 3.14 ships."), "Version 3.14 ships.")
 
+    def test_answer_request_answers_a_permission_request_with_allow(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.process = FakeProcess(FakeSessionScript())
+        session.stdin_lock = threading.Lock()
+        session._answer_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "session/request_permission",
+                "params": {
+                    "options": [
+                        {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"},
+                        {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                    ]
+                },
+            }
+        )
+        payload = json.loads(session.process.stdin.written[0])
+        self.assertEqual(payload["id"], 7)
+        self.assertEqual(payload["result"]["outcome"]["optionId"], "allow_once")
+
+    def test_answer_request_prefers_allow_once_over_allow_always(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.process = FakeProcess(FakeSessionScript())
+        session.stdin_lock = threading.Lock()
+        session._answer_request(
+            {
+                "id": 9,
+                "method": "session/request_permission",
+                "params": {
+                    "options": [
+                        {"optionId": "allow_once", "kind": "allow_once"},
+                        {"optionId": "allow_always", "kind": "allow_always"},
+                    ]
+                },
+            }
+        )
+        payload = json.loads(session.process.stdin.written[0])
+        self.assertEqual(payload["result"]["outcome"]["optionId"], "allow_once")
+
+    def test_answer_request_answers_an_unknown_request_so_the_turn_does_not_hang(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.process = FakeProcess(FakeSessionScript())
+        session.stdin_lock = threading.Lock()
+        session._answer_request({"id": 3, "method": "session/some_other_request"})
+        payload = json.loads(session.process.stdin.written[0])
+        self.assertEqual(payload["id"], 3)
+        self.assertIn("error", payload)
+
+    def test_pump_routes_a_server_request_to_the_responder(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        answered = []
+        session._answer_request = lambda message: answered.append(message)
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+        session._handle_message(
+            {"jsonrpc": "2.0", "method": "session/request_permission", "id": 4}
+        )
+        session._handle_message({"jsonrpc": "2.0", "id": 11, "result": {"ok": True}})
+        self.assertEqual(len(answered), 1)
+        self.assertEqual(answered[0]["method"], "session/request_permission")
+        self.assertEqual(len(session.buffer), 1)
+        self.assertEqual(session.buffer[0]["id"], 11)
+
+    def test_pump_keeps_a_notification_out_of_the_responder(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        answered = []
+        session._answer_request = lambda message: answered.append(message)
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+        session._handle_message({"jsonrpc": "2.0", "method": "session/update", "params": {}})
+        self.assertEqual(answered, [])
+        self.assertEqual(len(session.buffer), 1)
+
     def test_lark_env_prepends_cli_prefix(self):
         env = bridge_mod.lark_env()
         self.assertIn(os.path.expanduser("~/.local/npm-global/bin"), env.get("PATH", ""))

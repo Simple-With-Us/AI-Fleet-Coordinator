@@ -366,28 +366,59 @@ class MiniMaxSession:
                 message = json.loads(line)
             except ValueError:
                 continue
-            # The agent also talks to the client: a session/request_permission
-            # frame carries both method and id.  Buffering it instead of
-            # answering leaves the turn waiting for a reply that never comes
-            # until session/prompt times out.
-            if "method" in message and "id" in message:
-                self._answer_request(message)
-                continue
-            with self.buffer_lock:
-                self.buffer.append(message)
+            self._handle_message(message)
+
+    def _handle_message(self, message):
+        """Route one message from the ACP server.
+
+        A message with a method and an id is a request the agent sends to the
+        client.  A message with neither is a notification, and a message with
+        an id and no method is the response to one of our calls.
+        """
+        if "method" in message and "id" in message:
+            # Buffering it instead of answering leaves the turn waiting for a
+            # reply that never comes until session/prompt times out.
+            self._answer_request(message)
+            return
+        with self.buffer_lock:
+            self.buffer.append(message)
 
     def _answer_request(self, message):
-        """Answer an agent-to-client request; an unanswered one stalls the turn."""
+        """Answer a request the agent sends to the client.
+
+        Nobody is watching Lark to approve a tool call, so a request that goes
+        unanswered stalls the turn until the prompt timeout and the chat gets
+        no answer at all.  The owner has set full access for this seat, so a
+        permission request is answered with its allow option, and the
+        least-privileged one of those: allow once before allow always.
+        """
         method = message.get("method")
         request_id = message.get("id")
         if method == "session/request_permission":
-            # Nobody is watching Lark to approve a tool call, so decline and
-            # let the seat answer without the tool rather than hang.
-            payload = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {"outcome": {"outcome": "cancelled"}},
-            }
+            options = (message.get("params") or {}).get("options") or []
+            allow_once = None
+            allow_always = None
+            for option in options:
+                kind = (option.get("kind") or "").lower()
+                if kind == "allow_once":
+                    allow_once = option.get("optionId")
+                elif kind == "allow_always":
+                    allow_always = option.get("optionId")
+                elif kind.startswith("allow") and allow_once is None:
+                    allow_once = option.get("optionId")
+            allow = allow_once or allow_always
+            if allow:
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"outcome": {"outcome": "selected", "optionId": allow}},
+                }
+            else:
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"outcome": {"outcome": "cancelled"}},
+                }
         else:
             payload = {
                 "jsonrpc": "2.0",
