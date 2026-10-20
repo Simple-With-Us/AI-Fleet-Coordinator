@@ -18,6 +18,9 @@ Formats (default claude):
   cursor       {"permission": "deny", "user_message": SHORT, "agent_message": REASON}
                for beforeShellExecution, which sends command, cwd and workspace_roots
   muse         UNVERIFIED: mirrors claude
+  vibe         {"decision": "deny", "reason": REASON} for Mistral Vibe's before_tool hook
+               (HookStructuredResponse; Vibe sends tool_name, tool_input and cwd, the same
+               keys the Claude payload uses, so the payload is read as a Claude payload)
   kimi         the exit-2 contract below (Kimi Code documents exit code 2 with the reason on stderr)
 --exit2 is the plain-text contract: on a deny the reason goes to stderr and the exit code is 2,
 with nothing on stdout.
@@ -33,7 +36,7 @@ import sys
 from collections.abc import Sequence
 from typing import IO
 
-FORMATS = ("claude", "codex", "grok", "antigravity", "cursor", "muse", "kimi")
+FORMATS = ("claude", "codex", "grok", "antigravity", "cursor", "muse", "vibe", "kimi")
 EXIT2_FORMATS = (
     "kimi",
 )  # formats that are the plain-text exit-2 contract, whatever flags come with them
@@ -72,7 +75,7 @@ def _parse_args(argv: Sequence[str]) -> tuple[str, bool]:
 
 def render(reason: str, fmt: str, destination: str = "") -> str:
     """The deny JSON for one platform, as one line."""
-    if fmt in ("grok", "antigravity"):
+    if fmt in ("grok", "antigravity", "vibe"):
         body: dict = {"decision": "deny", "reason": reason}
     elif fmt == "cursor":
         short = (

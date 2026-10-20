@@ -110,10 +110,31 @@ def check_patch(dsh_bin: str, patch_text: str, profiles_dir: str, expect: Sequen
     return (True, detail + "; " + reload_note(profiles_dir)) if ok else (False, detail)
 
 
+def _node_path() -> str:
+    """A PATH that can find node even when the caller's PATH cannot.  The pinned dsh is a symlink whose shebang is
+    `#!/usr/bin/env node`, so the engine resolves node only through PATH; a launchd job, a hook or a bot shell may
+    have a PATH with no node on it, and the run then fails with `env: node: No such file or directory` (exit 127).
+    The caller's PATH is kept and the directories that hold node are prepended: the one `shutil.which` finds now,
+    then the fixed fallbacks /opt/homebrew/bin and /usr/local/bin, deduplicated."""
+    dirs: List[str] = []
+    found = shutil.which("node")
+    if found:
+        dirs.append(os.path.dirname(found))
+    dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"])
+    for part in os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin").split(os.pathsep):
+        if part:
+            dirs.append(part)
+    seen: List[str] = []
+    for d in dirs:
+        if d and d not in seen:
+            seen.append(d)
+    return os.pathsep.join(seen)
+
+
 def _env(scratch: str, dsh_home: str) -> Dict[str, str]:
-    """The environment of the scratch run: PATH (node is found through it), a scratch HOME and DSH_HOME, and nothing
-    else, so no inherited DSH_*, CLUTCH_* or credential variable reaches the engine."""
-    return {"PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"), "HOME": os.path.join(scratch, "home"),
+    """The environment of the scratch run: PATH (node is found through it; see `_node_path`), a scratch HOME and
+    DSH_HOME, and nothing else, so no inherited DSH_*, CLUTCH_* or credential variable reaches the engine."""
+    return {"PATH": _node_path(), "HOME": os.path.join(scratch, "home"),
             "DSH_HOME": dsh_home, "NO_COLOR": "1"}
 
 

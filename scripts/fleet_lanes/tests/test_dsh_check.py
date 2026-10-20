@@ -229,6 +229,41 @@ class DumpConfigTests(World):
         self.assertNotIn("@deepseek-ai/dsh-base", detail.replace(PLUGIN, ""))
 
 
+class NodePathTests(World):
+    """The pinned dsh is a `#!/usr/bin/env node` symlink, so a caller whose PATH has no node (a launchd job, a hook,
+    a bot shell) made the scratch run fail with exit 127.  Every other stub in this file has a Python shebang, so
+    that dependency was invisible: this stub has the env-node shebang and a fake node that is only on the PATH
+    `_env` builds."""
+
+    def test_env_prepends_the_node_directory_once_and_keeps_the_callers_path(self) -> None:
+        with mock.patch.dict(os.environ, {"PATH": "/opt/homebrew/bin:/usr/bin:/bin"}):
+            with mock.patch.object(DC.shutil, "which", return_value="/opt/homebrew/bin/node"):
+                path = DC._env(str(self.tmp), str(self.tmp / "dsh"))["PATH"]
+        parts = path.split(os.pathsep)
+        self.assertEqual(parts[0], "/opt/homebrew/bin")
+        self.assertEqual(parts.count("/opt/homebrew/bin"), 1)
+        self.assertIn("/usr/local/bin", parts)
+        self.assertEqual(parts[-2:], ["/usr/bin", "/bin"])
+
+    def test_a_stub_with_an_env_node_shebang_runs_under_a_path_without_node(self) -> None:
+        link_plugin(self.profiles, PLUGIN)
+        nodebin = self.tmp / "nodebin"
+        nodebin.mkdir()
+        fake_node = nodebin / "node"
+        fake_node.write_text(
+            "#!%s\nprint(%r)\nprint(%r)\n" % (sys.executable, "@deepseek-ai/dsh-base", PLUGIN)
+        )
+        os.chmod(fake_node, 0o755)
+        stub = self.tmp / "dsh-node-stub"
+        stub.write_text("#!/usr/bin/env node\n// the fake node above ignores this file and prints the dump\n")
+        os.chmod(stub, 0o755)
+        with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}):
+            with mock.patch.object(DC.shutil, "which", return_value=str(fake_node)):
+                self.assertNotIn(str(nodebin), os.environ["PATH"].split(os.pathsep))
+                ok, detail = DC.dump_config(str(stub), PATCH, str(self.profiles), [PLUGIN], timeout=60)
+        self.assertTrue(ok, detail)
+
+
 class CordisPatchTests(unittest.TestCase):
     def test_has_entries_and_list_shape(self) -> None:
         self.assertFalse(CP.has_entries(None))
