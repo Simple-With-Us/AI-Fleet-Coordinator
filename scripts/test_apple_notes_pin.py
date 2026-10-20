@@ -121,7 +121,9 @@ class PinDecisionTests(unittest.TestCase):
             if "STUB_KNOB" in env:
                 #  the script reads the knob through the fleet_knobs package next to it and the
                 #  python3 that runs it:  both live here, so `python3 -m fleet_knobs get` is the stub
-                (Path(tmp) / "fleet_knobs").mkdir(mode=0o700)
+                package = (Path(tmp) / "apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet_knobs"
+                           if env.get("STUB_MANAGED_KNOBS") else Path(tmp) / "fleet_knobs")
+                package.mkdir(mode=0o700, parents=True)
                 knob_stub = bindir / "python3"
                 knob_stub.write_text(KNOB_STUB)
                 knob_stub.chmod(0o755)
@@ -133,6 +135,9 @@ class PinDecisionTests(unittest.TestCase):
             child["PATH"] = f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}"
             child["STUB_COUNTER"] = str(counter)
             child.update(env)
+            if env.get("STUB_MANAGED_KNOBS"):
+                child["HOME"] = tmp
+                child.pop("AGENT_SYNC_RUNTIME", None)
             p = subprocess.run(
                 ["bash", str(script)],
                 capture_output=True,
@@ -215,6 +220,12 @@ class PinDecisionTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(runs, 1, "the environment widened the knob back to a retry")
+
+    def test_installed_helper_reads_the_managed_runtime_knob(self):
+        result, runs = self.run_block(STUB_MANAGED_KNOBS="1", STUB_KNOB="false", STUB_FAIL_FIRST="99")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(runs, 1)
+        self.assertEqual(self.knob_reads, 1)
 
     def test_successful_first_attempt_never_fetches_the_retry_knob(self):
         result, runs = self.run_block(STUB_KNOB="true")

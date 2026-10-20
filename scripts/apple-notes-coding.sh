@@ -260,11 +260,14 @@ fi
 _PIN_RETRY=""
 _pin_retry_on() {
   if [[ -z "${_PIN_RETRY:-}" ]]; then
-    local knob="" here
+    local knob="" here candidate
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-    if [[ -n "$here" && -d "$here/fleet_knobs" ]] && command -v python3 >/dev/null 2>&1; then
-      knob="$(cd "$here" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
-    fi
+    for candidate in "$here" "${AGENT_SYNC_RUNTIME:-$HOME/apps/lanes/_managed/fleet/agent-sync-runtime}/scripts"; do
+      if [[ -n "$candidate" && -d "$candidate/fleet_knobs" ]] && command -v python3 >/dev/null 2>&1; then
+        knob="$(cd "$candidate" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
+        break
+      fi
+    done
     case "$knob" in
       true|1|yes|on) _PIN_RETRY=1 ;;
       false|0|no|off) _PIN_RETRY=0 ;;
