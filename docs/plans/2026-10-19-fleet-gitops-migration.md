@@ -37,23 +37,23 @@ Benefit, risk, and effort are relative planning estimates: H is high, M is mediu
 - G2 leaves owner-managed instruction files report-only unless the owner explicitly changes that boundary.
 - G3 concerns the operator start page.  The supported daily digest site remains in AFC; this plan does not remove that web surface.  The source decision is settled, while proof that every operator-page deployment follows the approved push path remains open under G3.
 - G4 and G7 exclude retired or never-installed jobs from desired state.  A manifest must not schedule an obsolete job merely because it appears in the historical inventory.
-- G5 uses a per-Worker gate, a reviewed path scope, deployment provenance, and a health probe.  Do not enable a repository-wide deployment switch as a substitute.  The hosted agent identity service remains excluded until its explicit owner gate and credential-scoping requirements are satisfied.
-- G11 and G15 keep resource identities, topology, operational weaknesses, and access details in the restricted inventory.  Public source contains schemas and generic procedures.
+- G5 uses a per-Worker gate, a reviewed path scope, deployment provenance, and a health probe.  Do not enable a repository-wide deployment switch as a substitute.  The `agent-sync-mcp` Worker stays excluded until its explicit owner gate and credential-scoping requirements are satisfied; the eligible set is the Workers listed in `scripts/worker-targets.json`, each named by its Worker id.
+- G11 and G15 keep resource identities, topology, operational weaknesses, and access details in the restricted inventory.  The declared desired state itself is committed to the private Fleet-OPS repository (public source contains schemas and generic procedures only).
 - G12 stores secret names and wiring in source; values remain in Infisical.
 - G16 begins with export and drift detection.  Tool choice, zone scope, credentials, and apply order remain owner decisions.
 
 ## Decisions Reserved for the Owner
 
-1. Whether the hosted agent identity service may deploy from CI after its credential and review boundaries are defined.
-2. Which narrowly scoped deployment and DNS credentials may be created and used by approved jobs.
-3. Whether reconcilers may restart changed processes after check-only verification, or must remain report-only.
-4. Whether owner-managed instruction files must remain report-only.
+1. Whether the `agent-sync-mcp` Worker may deploy from CI after its credential and review boundaries are defined (G5).
+2. Which narrowly scoped deployment and DNS credentials may be created and used by approved jobs (G5, G12, G16).
+3. Whether reconcilers may restart changed processes after check-only verification, or must remain report-only (G1, G7).
+4. Whether owner-managed instruction files must remain report-only (G2).
 5. Approval of G3 deployment-path acceptance evidence; the one-source decision does not itself prove that every deployment uses that path.
-6. Which obsolete resources may be deleted after current inventory and usage are verified.
-7. Authorization and scope for credentials that can change GitHub rulesets.
-8. Authorization for a secret-store administrative identity and a choice of structure-management tooling.
-9. DNS and edge tooling, zones, and rollout order.
-10. The approved authentication approach for background-process reconciliation.
+6. Which obsolete resources may be deleted after current inventory and usage are verified (G4).
+7. Authorization and scope for credentials that can change GitHub rulesets (G10).
+8. Authorization for a secret-store administrative identity and a choice of structure-management tooling (G15).
+9. DNS and edge tooling, zones, and rollout order (G16).
+10. The approved authentication approach for background-process reconciliation (G7).
 
 ## Outside Automatic Reconciliation
 
