@@ -106,25 +106,33 @@ class IngestLocked(FleetRagError):
 
 
 class IngestLock:
-    """Non-blocking exclusive flock; raises IngestLocked when another process holds it."""
+    """Exclusive flock; raises IngestLocked when another process still holds the lock
+    after timeout_s (0 = non-blocking, the partial-refresh behavior)."""
 
-    def __init__(self, path: pathlib.Path):
+    def __init__(self, path: pathlib.Path, timeout_s: float = 0):
         self.path = pathlib.Path(path)
+        self.timeout_s = timeout_s
         self._fd: int | None = None
 
     def __enter__(self) -> IngestLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as e:
-            os.close(fd)
-            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
-                raise IngestLocked(
-                    f"another ingest is running (lock held: {self.path}); "
-                    f"wait for it or remove a stale lock, exit {EXIT_LOCKED}"
-                ) from None
-            raise
+        deadline = time.monotonic() + self.timeout_s
+        while True:
+            fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as e:
+                os.close(fd)
+                if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                    if time.monotonic() >= deadline:
+                        raise IngestLocked(
+                            f"another ingest is running (lock held: {self.path}); "
+                            f"wait for it or remove a stale lock, exit {EXIT_LOCKED}"
+                        ) from None
+                    time.sleep(min(5.0, max(0.1, deadline - time.monotonic())))
+                    continue
+                raise
         try:
             os.ftruncate(fd, 0)
             os.write(
@@ -502,6 +510,7 @@ def run(
     heartbeat: bool = True,
     prune: bool = False,
     lock_path: pathlib.Path | None = None,
+    lock_timeout_s: float = 0,
 ) -> dict:
     """Run the ingest over the named sources.  Returns the report dict (also written to disk).
 
@@ -528,7 +537,7 @@ def run(
         )
     since_ms = _parse_since(since)
     lock_path = lock_path or (state_path.parent / "ingest.lock")
-    with IngestLock(lock_path):
+    with IngestLock(lock_path, timeout_s=lock_timeout_s):
         return _run_locked(
             names,
             dry_run,
@@ -852,6 +861,15 @@ def main(argv: list[str] | None = None) -> int:
         "(refused with --limit)",
     )
     ap.add_argument("--no-heartbeat", action="store_true")
+    ap.add_argument(
+        "--lock-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="wait up to SECONDS for the ingest lock instead of failing at once "
+        "(default: 0 for a partial refresh; 6000 for a full `--all --prune` nightly, "
+        "so a 90-minute sheet-sync ingest can never lock out the health-attesting run)",
+    )
     args = ap.parse_args(argv)
     try:
         if args.fix_seeds:
@@ -859,6 +877,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not args.all and not args.source:
             ap.error("choose --all, --source, or --fix-seeds")
+        # The nightly is the only run that attests health (sentinel + last-run.json),
+        # so it waits out a partial refresh instead of exiting 3 into a stale sentinel.
+        # A partial refresh keeps the fast exit and itself backs off (Kody review, PR #740).
+        nightly = args.all and args.prune and not args.since and not args.limit
+        lock_timeout = args.lock_timeout if args.lock_timeout is not None else (6000.0 if nightly else 0.0)
         report = run(
             "all" if args.all else args.source,
             dry_run=args.dry_run,
@@ -866,6 +889,7 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             heartbeat=not args.no_heartbeat,
             prune=args.prune,
+            lock_timeout_s=lock_timeout,
         )
     except IngestLocked as e:
         eprint(f"error: {e}")
