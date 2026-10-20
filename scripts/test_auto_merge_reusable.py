@@ -149,9 +149,11 @@ class ArmStep(unittest.TestCase):
 
     def test_any_other_failure_is_still_a_failure(self):
         # The retry is for the queue's refusal and nothing else.  A dead credential or
-        # a broken PR must still fail the step loudly.
-        code, out, _calls = run_arm("fail", "true")
+        # a broken PR must still fail the step loudly -- and exactly one gh call may be
+        # made, or a broadened retry condition would slip past this test.
+        code, out, calls = run_arm("fail", "true")
         self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 1)
         self.assertIn("Failed to enable auto-merge", out)
 
     def test_the_queue_refusal_is_matched_with_its_backticks(self):
