@@ -3,7 +3,7 @@
   run [--path /] [--only NAME,NAME] -- CMD [ARG...]
         exec CMD with the secrets as environment variables.  Existing variables of the same
         name are replaced.  A few names (PATH, HOME, LD_*, DYLD_* ...) are never injected.
-  get NAME [--path /]
+  get NAME [--path /] [--project fleet-ops|ai-fleet-coordinator]
         print one value, exactly, with no trailing newline.  Exit 3 when NAME is absent.
   names [--path /] [--project fleet-ops|ai-fleet-coordinator]
         key names only, one per line.  --project picks the Infisical project (read-only;  default fleet-ops).
@@ -33,7 +33,7 @@ from .core import SecretsError, UsageError
 
 USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
-    "       fleet-secrets get NAME [--path /]\n"
+    "       fleet-secrets get NAME [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets set NAME --path /linear   (value on standard input;  CACHE_* names only)\n"
     "       fleet-secrets doctor [--json]\n"
@@ -76,10 +76,31 @@ def _only_names(raw: object | None) -> list[str] | None:
     return names
 
 
+def _take_project(args: Sequence[str]) -> tuple[str, list[str]]:
+    """Split a read-only `--project NAME` (or `--project=NAME`) out of `args`.  Default fleet-ops."""
+    rest = list(args)
+    project = core.DEFAULT_PROJECT
+    for i, a in enumerate(rest):
+        if a == "--project" or a.startswith("--project="):
+            if a == "--project":
+                if i + 1 >= len(rest):
+                    raise UsageError("--project needs a value")
+                project = rest[i + 1]
+                del rest[i : i + 2]
+            else:
+                project = a.partition("=")[2]
+                del rest[i]
+            break
+    if project not in core.PROJECT_SOURCES:
+        raise UsageError("unknown --project:  use {}".format(" or ".join(core.PROJECT_SOURCES)))
+    return project, rest
+
+
 def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
-    opts = _parse(args, False, 1)
+    project, rest = _take_project(args)
+    opts = _parse(rest, False, 1)
     name = core.check_name(str(opts["args"][0]))  # type: ignore[index]
-    secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
+    secrets = core.fetch_all(core.check_path(str(opts["path"])), env, project)
     if name not in secrets:
         raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
     core.reject_unresolved(secrets, [name])
@@ -107,21 +128,7 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
 
 
 def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
-    rest = list(args)
-    project = core.DEFAULT_PROJECT
-    for i, a in enumerate(rest):
-        if a == "--project" or a.startswith("--project="):
-            if a == "--project":
-                if i + 1 >= len(rest):
-                    raise UsageError("--project needs a value")
-                project = rest[i + 1]
-                del rest[i : i + 2]
-            else:
-                project = a.partition("=")[2]
-                del rest[i]
-            break
-    if project not in core.PROJECT_SOURCES:
-        raise UsageError("unknown --project:  use {}".format(" or ".join(core.PROJECT_SOURCES)))
+    project, rest = _take_project(args)
     opts = _parse(rest, False, 0)
     secrets = core.fetch_all(core.check_path(str(opts["path"])), env, project)
     core.reject_unresolved(secrets)
