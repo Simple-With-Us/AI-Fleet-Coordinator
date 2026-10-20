@@ -88,6 +88,42 @@ class ProvenanceTest(unittest.TestCase):
                 {"target_seat": "MM", "note": "-----BEGIN PRIVATE KEY-----"},
             )
 
+    def test_nested_secret_key_refused(self):
+        with self.assertRaises(P.SecretInDetails):
+            P.emit_provenance_event(
+                self.reg,
+                self.record,
+                "token_mint",
+                "OPERATOR",
+                "ok",
+                "broker",
+                {"target_seat": "MM", "meta": {"api_key": "redacted"}},
+            )
+
+    def test_nested_secret_value_refused(self):
+        with self.assertRaises(P.SecretInDetails):
+            P.emit_provenance_event(
+                self.reg,
+                self.record,
+                "token_mint",
+                "OPERATOR",
+                "ok",
+                "broker",
+                {"target_seat": "MM", "notes": ["clean", {"note": "ghp_" + "b" * 30}]},
+            )
+
+    def test_nested_clean_details_still_write(self):
+        eid = P.emit_provenance_event(
+            self.reg,
+            self.record,
+            "token_mint",
+            "OPERATOR",
+            "ok",
+            "broker",
+            {"target_seat": "MM", "meta": {"note_id": "n1", "tags": ["a", "b"]}},
+        )
+        self.assertTrue(eid)
+
 
 if __name__ == "__main__":
     unittest.main()

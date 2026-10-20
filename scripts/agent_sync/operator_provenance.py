@@ -46,11 +46,23 @@ def _check_details(event: str, details: Mapping[str, Any]) -> None:
     for key in ALLOWED_EVENTS[event]:
         if key not in details:
             raise ValueError(f"{event} requires detail {key!r}")
-    for key, value in details.items():
-        if SECRET_KEY_RE.search(str(key)):
-            raise SecretInDetails(f"detail key refused: {key!r}")
-        if isinstance(value, str) and SECRET_VALUE_RE.search(value):
-            raise SecretInDetails(f"detail value for {key!r} matches a credential pattern")
+    _check_detail_container(details, "")
+
+
+def _check_detail_container(container: Any, path: str) -> None:
+    """Walk every node json.dumps would serialize, including inside nested dicts, lists
+    and tuples, so a nested credential is refused before any write."""
+    if isinstance(container, Mapping):
+        for key, value in container.items():
+            label = f"{path}.{key}" if path else str(key)
+            if SECRET_KEY_RE.search(str(key)):
+                raise SecretInDetails(f"detail key refused: {label!r}")
+            _check_detail_container(value, label)
+    elif isinstance(container, (list, tuple)):
+        for item in container:
+            _check_detail_container(item, path)
+    elif isinstance(container, str) and SECRET_VALUE_RE.search(container):
+        raise SecretInDetails(f"detail value for {path!r} matches a credential pattern")
 
 
 def emit_provenance_event(
