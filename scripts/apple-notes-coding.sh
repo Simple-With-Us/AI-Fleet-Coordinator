@@ -224,6 +224,10 @@ if [[ "$MODE" == "create" || "$MODE" == "update" ]]; then
       echo "session id is not valid:  use 4 to 128 letters, digits, . _ : - starting with a letter or digit" >&2
       exit 2
     fi
+    if printf '%s' "$NOTE_SESSION" | grep -Eiq '^session[0-9]*$'; then
+      echo "session id is not valid:  \"$NOTE_SESSION\" is a chat tag (the [SEAT·session] label), not your platform's session id.  Pass the id your platform sets (${_seat:-your seat}:  $(_session_own_var "$_seat"))." >&2
+      exit 2
+    fi
   elif ! _session_exempt "$_seat"; then
     _own="$(_session_own_var "$_seat")"
     echo "no session id.  Notes record the session they come from, so a headless resume can find this seat's session for the topic.  Pass --session <id>, or export AGENT_SESSION=<id>${_own:+ ($_seat sets $_own;  it is empty here)}.  Grok bots, MA, JET, WISE and ECHO have one thread with the owner and need none.  (seat: ${_seat:-unknown})" >&2
@@ -277,8 +281,18 @@ fi
 # - Formats code blocks with SF Mono font and light styling.
 # - Formats tables with clean border-collapse.
 _convert_body_to_html() {
-  local _md_py
-  _md_py=$(mktemp /tmp/apple-notes-md.XXXXXX.py)
+  local _md_py _md_dir
+  # A private temp DIRECTORY with the converter inside it.  macOS mktemp does not substitute an X
+  # template that does not end the name, so `mktemp /tmp/apple-notes-md.XXXXXX.py` returns a FIXED
+  # path:  two seats writing at once collide, and a stale file (a crash, or a cleanup the runtime's
+  # recoverable-deletion wrapper refused) makes every LATER call fail with "File exists" and an
+  # empty interpreter path.  A directory whose name ends in X's is substituted, so the file inside
+  # it is unique per call and a stale one can never break the next call.
+  if ! _md_dir=$(mktemp -d /tmp/apple-notes-md.XXXXXX); then
+    echo "notes: cannot create a temp dir for the markdown converter" >&2
+    return 1
+  fi
+  _md_py="${_md_dir}/convert.py"
   cat >"${_md_py}" <<'PY'
 import html, os, re, sys
 
@@ -527,7 +541,11 @@ sys.stdout.write("<div>" + "".join(out) + "</div>")
 PY
   /usr/bin/python3 "${_md_py}"
   local _rc=$?
-  rm -f "${_md_py}"
+  # The scratch file and its directory go when they can:  a cleanup the runtime refuses must not
+  # fail the note, and the next call gets a fresh directory either way.  Its output goes nowhere:
+  # this runs inside the body capture, so a word on stdout would land in the note.
+  rm -f "${_md_py}" >/dev/null 2>&1
+  rmdir "${_md_dir}" >/dev/null 2>&1
   return ${_rc}
 }
 
@@ -685,14 +703,127 @@ if m:
         if pr_match:
             pr_suffix = ' · ' + pr_match.group(1).strip()
 
-# AFC-361:  the writer's session id, as the row under the timestamp.  An update rewrites the whole body, so a
-# Session row the caller echoed back from the old body is dropped and the current one is stamped.
-inner = re.sub(r'^(?:<p>)?\s*Session:\s*[^<\n]*(?:</p>)?\s*(?:<div><br\s*/?></div>)?\s*', '', inner, flags=re.I)
+# AFC-361, owner 2026-10-19:  the writer's session id is the small row under the timestamp, with no second date.
+# An update rewrites the whole body, so a Session row the caller echoed back from the old body is dropped
+# wherever it sat (under the timestamp, or at the end, where a version of 2026-10-19 put it) and the current one is
+# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts "Session:" is not a row
+# and stays.  A spacer after the row belongs to it, so a stale row at the end goes with every spacer it left behind
+# (an old note can end on more than one of them, so the row must not have to be the last characters of the body).
+_SESSION_ROW = (
+    r'(?:<p>\s*)?(?:<span[^>]*>\s*)?\s*Session:\s*'
+    r'[A-Za-z0-9][A-Za-z0-9._:-]{3,127}'
+    # A row from before Oct 19 carried a second date after the id (' - Mon, Oct 19, 9:40pm').  Only that exact
+    # shape is taken, so prose that merely begins with 'Session:' ('Session: claude-code resumed') stays.
+    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{4})?(?:, \d{1,2}:\d{2}[ap]m)?)?'
+    r'\s*(?:</span>\s*)?</p>'
+)
+_SPACER = r'(?:<div><br\s*/?></div>\s*)*'
+inner = re.sub(r'^' + _SESSION_ROW + r'\s*' + _SPACER + r'\s*', '', inner, flags=re.I)
+inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*' + _SPACER + r'\s*' + _SESSION_ROW + r'\s*' + _SPACER + r'\s*$', '', inner, flags=re.I)
 session_p = ''
 if note_session:
-    session_p = '<p>' + html.escape('Session: ' + note_session + ' - ' + stamp) + '</p>'
+    session_p = '<p><span style=\"font-size: 11px;\">' + html.escape('Session: ' + note_session) + '</span></p>'
 stamp += pr_suffix
 stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
+
+# Fleet dates (owner 2026-10-19):  an ISO date in the prose (2026-10-19, or 2026-10-20T02:03:00Z) becomes the fleet
+# form, Mon, Oct 19 (or Mon, Oct 19, 9:03pm), in Central, with the year only when it is not this year.  Code, link
+# targets and names that merely contain a date (backup-2026-10-19.tar) keep theirs.
+from zoneinfo import ZoneInfo
+_CENTRAL = ZoneInfo('America/Chicago')
+_ISO = re.compile(
+    #  A date is a token of its own:  a name or a query string that merely contains one (backup-2026-10-19.tar,
+    #  ?d=2026-10-19) keeps it.  A dot after the date is the end of a sentence, so only a dot followed by a word
+    #  character keeps the date whole.
+    r'(?<![\w/.:=?&-])(\d{4})-(\d{2})-(\d{2})'
+    # A +HH:MM / -HH:MM offset is only an offset on the ISO T form.  On the space form (2026-10-19 10:30) a bare
+    # -11:00 after the minutes is the end of a time range, not a UTC offset, and taking it as one moves the hour
+    # and drops the range end.  That range end is a second local time, so it is captured and rendered in the
+    # fleet form too:  a note must not keep a 24-hour clock it rewrote everything else away from.
+    r'(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?'
+    r'| (\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z)?(?:-(\d{2}):(\d{2}))?)?'
+    r'(?![\w/-]|\.[A-Za-z0-9])'
+)
+
+def _fleet_day(d):
+    out = d.strftime('%a, %b ') + str(d.day)
+    return out + (', ' + str(d.year) if d.year != now.year else '')
+
+def _fleet_clock(when):
+    return str(when.hour % 12 or 12) + when.strftime(':%M') + when.strftime('%p').lower()
+
+_changes = {'dates': [], 'gaps': 0}
+
+def _fleet_date(m):
+    new = _fleet_date_text(m)
+    if new != m.group(0):
+        _changes['dates'].append((m.group(0), new))
+    return new
+
+def _fleet_date_text(m):
+    y, mo, d, t_hh, t_mm, t_zone, hh, mm, zone, r_hh, r_mm = m.groups()
+    if t_hh is not None:
+        hh, mm, zone = t_hh, t_mm, t_zone
+    try:
+        if hh is None:
+            return _fleet_day(datetime(int(y), int(mo), int(d)))
+        when = datetime(int(y), int(mo), int(d), int(hh), int(mm))
+        if zone:
+            offset = '+00:00' if zone == 'Z' else (zone if ':' in zone else zone[:3] + ':' + zone[3:])
+            when = datetime.fromisoformat(when.isoformat() + offset).astimezone(_CENTRAL)
+        out = _fleet_day(when) + ', ' + _fleet_clock(when)
+        if r_hh is not None:
+            end = datetime(int(y), int(mo), int(d), int(r_hh), int(r_mm))
+            if zone:  # the range end is in the same zone as its start, so it converts the same way
+                end = datetime.fromisoformat(end.isoformat() + offset).astimezone(_CENTRAL)
+            out += '-' + _fleet_clock(end)
+        return out
+    except ValueError:
+        return m.group(0)
+
+def fleet_dates(markup):
+    parts = re.split(r'(<[^>]+>)', markup)
+    depth = 0
+    for i, part in enumerate(parts):
+        if part.startswith('<'):
+            tag = re.match(r'</?\s*(pre|code)\b', part, re.I)
+            if tag:
+                depth += -1 if part.startswith('</') else 1
+                depth = max(depth, 0)
+        elif depth == 0:
+            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part))
+    return ''.join(parts)
+
+# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as agent-sync's textfmt.single_gaps), so
+# a note reads the same whoever wrote it.  Known abbreviations, dotted words, initials and list markers are skipped.
+_ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq'.split())
+_GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#])')
+_WORD = re.compile(r'([A-Za-z][A-Za-z.]*)\Z')
+
+def _one_space_gaps(segment):
+    def repl(m):
+        if m.group(1).startswith('.'):
+            before = _WORD.search(segment[max(0, m.start() - 40):m.start()])
+            word = before.group(1).casefold().rstrip('.') if before else ''
+            if before and (word in _ABBREV or len(word) == 1 or '.' in word):
+                return m.group(0)
+            if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
+                return m.group(0)
+        _changes['gaps'] += 1
+        return m.group(1) + '  '
+    return _GAP1.sub(repl, segment)
+
+inner = fleet_dates(inner)
+if summary_text:
+    summary_text = fleet_dates(summary_text)
+
+# Tell the writer what was reformatted, on stderr, so the agent learns the fleet format (owner 2026-10-19).
+if _changes['dates']:
+    shown = ', '.join(a + ' to ' + b for a, b in _changes['dates'][:5]) + (' and more' if len(_changes['dates']) > 5 else '')
+    sys.stderr.write('notes: reformatted:  dates rewritten in the fleet format (' + shown + ');  write dates that way' + chr(10))
+if _changes['gaps']:
+    n = _changes['gaps']
+    sys.stderr.write('notes: reformatted:  ' + str(n) + ' sentence gap' + ('' if n == 1 else 's') + ' had one space and ' + ('was' if n == 1 else 'were') + ' widened;  put two spaces after a sentence' + chr(10))
 
 extra_blocks = ''
 if needs_owner:
