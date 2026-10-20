@@ -1030,9 +1030,7 @@ class Daemon:
                 gave_up.append(key[1])
                 continue
             try:
-                landed = NR.refuse_unconsumed(
-                    reader, message, reason, self.log.write
-                )
+                landed = NR.refuse_unconsumed(reader, message, reason, self.log.write)
             except Exception:  # noqa: BLE001 - a retryable error:  the next tick tries again
                 continue
             with self.notes_relay_lock:

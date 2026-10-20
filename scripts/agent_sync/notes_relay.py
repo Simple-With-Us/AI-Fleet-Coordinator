@@ -54,8 +54,8 @@ from typing import Any
 
 from . import identities as X
 from . import identity as I
-from . import notes as N
 from . import live as LIVE
+from . import notes as N
 from . import secretscan
 from . import session_ids as SID
 from . import wakes as W
@@ -468,8 +468,11 @@ def _refuse_unconsumed_locked(
     if not isinstance(message_id, int) or isinstance(message_id, bool):
         return False
     try:
-        validate(message, runner.users.get(message.get("sender_id")),
-                 owner_user_id=int(runner.daemon.config.owner_user_id or 0))
+        validate(
+            message,
+            runner.users.get(message.get("sender_id")),
+            owner_user_id=int(runner.daemon.config.owner_user_id or 0),
+        )
     except Refusal as exc:
         log("notes-relay-unconsumed-invalid", id=message_id, code=exc.code)
         return False
@@ -487,10 +490,12 @@ def _refuse_unconsumed_locked(
         react(runner, message_id, N.REFUSED_EMOJI, log)
         response = runner.client.get("messages/%d" % message_id, {"apply_markdown": False})
         original = response.get("message") if isinstance(response, Mapping) else None
-        if (not isinstance(original, Mapping)
-                or not isinstance(original.get("stream_id"), int)
-                or isinstance(original.get("stream_id"), bool)
-                or not isinstance(original.get("topic", original.get("subject")), str)):
+        if (
+            not isinstance(original, Mapping)
+            or not isinstance(original.get("stream_id"), int)
+            or isinstance(original.get("stream_id"), bool)
+            or not isinstance(original.get("topic", original.get("subject")), str)
+        ):
             raise MalformedResponse("refusal destination must contain stream_id and topic")
         if already_replied(runner, original, message_id, prefix, log):
             LIVE.write_json(row, {"state": "ok"}, durable=True)
@@ -523,8 +528,9 @@ def _refuse_unconsumed_locked(
     return True
 
 
-def refuse_unconsumed(runner: Any, message: Mapping[str, Any], reason: str,
-                     log: Callable[..., None]) -> bool:
+def refuse_unconsumed(
+    runner: Any, message: Mapping[str, Any], reason: str, log: Callable[..., None]
+) -> bool:
     """Serialize reconciliation and sending, retaining ambiguous outcomes across restarts."""
     message_id = message.get("id")
     if not isinstance(message_id, int) or isinstance(message_id, bool):
