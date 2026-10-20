@@ -4574,7 +4574,10 @@ _VIBE_KV_RE = re.compile(r"^[ \t]*([A-Za-z0-9_.-]+)[ \t]*=")
 # A top-level TOML key, as the structural check sees it:  a bare name, a quoted name or
 # a single-quoted name, then an equals sign.  It is the line shape a well-formed
 # top-level key/value pair has.
-_TOML_KEY_RE = re.compile(r"^[ \t]*(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*')[ \t]*=")
+_TOML_KEY_RE = re.compile(
+    r"^[ \t]*(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*')"
+    r"(?:[ \t]*\.[ \t]*(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*'))*[ \t]*="
+)
 
 
 def _vibe_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | None]:

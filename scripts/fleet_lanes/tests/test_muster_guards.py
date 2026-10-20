@@ -286,9 +286,19 @@ class VibeTomlSafetyTests(World):
             "[section]\nhooks = 1\n",
             '[tools.bash]\nname = "x"\n',
             "# a comment\nkey = 1\n",
+            # A dotted key is valid TOML,  and Vibe's own config uses them,  so a
+            # scanner that rejects one would refuse a good file and block the install.
+            "models.openai = 1\n",
+            "a.b.c = 2\n",
+            'quoted."with.dots" = 1\n',
         ):
             with self.subTest(text=text):
                 self.assertIsNone(T._toml_problem(text))
+
+    def test_the_toml_check_still_catches_a_corrupt_line(self) -> None:
+        # The dotted-key allowance must not weaken the check:  a line that is not a
+        # key at all is still reported.
+        self.assertIsNotNone(T._toml_problem('enable_experimental_hooks = true\n  "x",\n]\nother = 1\n'))
 
     def test_the_toml_check_reports_an_unclosed_value(self) -> None:
         self.assertIsNotNone(T._toml_problem('models = [\n  "a",\n'))
