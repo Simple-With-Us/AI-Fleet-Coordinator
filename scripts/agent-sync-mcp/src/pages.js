@@ -97,9 +97,12 @@ export function noConnectionPage() {
  * One-or-more on purpose: a double space can arrive collapsed to a single space by the
  * time it reaches us, and that collapse is intermittent, so a two-space-only pattern
  * silently matched nothing and rendered with no gap at all (verified 2026-10-18).
+ * The lookahead and the (?<![0-9]) lookbehind are the same as every other sentence-gap
+ * surface (perl, SKILL.md): only a gap that opens a sentence counts, so "e.g. tools" and
+ * the "1. Item" list marker are left alone.
  */
 export function gapped(text) {
-  return escapeHtml(text).replace(/(?<![0-9])([.!?])[ \t]+(?=\S)/g, `$1${SENTENCE_GAP}`);
+  return escapeHtml(text).replace(/(?<![0-9])([.!?])[ \t]+(?=[A-Z0-9"*`#@])/g, `$1${SENTENCE_GAP}`);
 }
 
 export function errorPage(title, message, status = 400) {
