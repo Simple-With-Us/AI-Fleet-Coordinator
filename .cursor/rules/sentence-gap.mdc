@@ -55,10 +55,18 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Matching one *or more* is the whole fix.  The old pattern requiring exactly two spaces — written
+Matching one *or more* is half the fix.  The **markup group** `([*_`)\]"]*)` is the other half:  a
+sentence end that sits *inside* a markup span is followed by the markup and only then by the
+space, so a pattern that wants the space right after the sentence end never matches it.
+`**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two checks below
+would catch it, because the file still holds other U+00A0 characters and this shape is not a
+single space after a sentence end.  The group captures the markup and re-emits it after the gap,
+so the span survives and the gap lands.
+
+The old pattern requiring exactly two spaces — written
 here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
 single-space pattern `([.!?]) (?=...)` is no better, because it matches nothing on text that kept
 its two spaces.  Both exit `0` and post with no gap.  The `(?<![0-9])` lookbehind protects a
