@@ -229,6 +229,34 @@ async function refreshStatus(env, channel, topic) {
   return content;
 }
 
+async function sendEventOnce(env, identity, args) {
+  if (!env.WRITER_STORAGE) throw new Error("durable writer required");
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(identity)),
+  );
+  const key =
+    "event:" +
+    [...new Uint8Array(digest)]
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
+  const prior = await env.WRITER_STORAGE.get(key);
+  if (prior?.outcome === "ok") return prior.id;
+  if (prior?.outcome === "unknown") return null;
+  await env.WRITER_STORAGE.put(key, { outcome: "unknown" });
+  try {
+    const id = await postEvent(args);
+    if (id) await env.WRITER_STORAGE.put(key, { outcome: "ok", id });
+    return id;
+  } catch (error) {
+    if (error?.outcome === "refused") {
+      await env.WRITER_STORAGE.put(key, { outcome: "refused" });
+      throw new Error("event definitively refused");
+    }
+    return null;
+  }
+}
+
 async function handleEvent(source, payload, env) {
   const event = normalize(source, payload);
   const channel = DEFAULT_CHANNEL;
@@ -240,18 +268,17 @@ async function handleEvent(source, payload, env) {
     minOpenMs: Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS,
   });
 
-  await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
-  await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
-  await env.ALERT_STATE.put(`idx:${channel}:${topic}:${event.key}`, "1");
-  await env.ALERT_STATE.put(topicKey(channel, topic), "1");
-
-  // Refuse side effects when the destination inventory cannot be completed.
-  await collectStates(env, channel, topic);
+  const inventory = await collectStates(env, channel, topic);
+  if (
+    !inventory.some((row) => row.key === event.key) &&
+    inventory.length >= MAX_KEYS
+  )
+    throw new Error("inventory bound exceeded");
   let posted = null;
   const sev =
     result.state.phase === "alerting" ? result.state.severity : "INFO";
   if (result.action === "announce" || result.action === "update") {
-    posted = await postEvent({
+    posted = await sendEventOnce(env, [event.key, result.action, prev, event], {
       email: env.ZULIP_BOT_EMAIL,
       apiKey: env.ZULIP_BOT_API_KEY,
       channel,
@@ -262,7 +289,7 @@ async function handleEvent(source, payload, env) {
       link: result.state.link,
     });
   } else if (result.action === "resolve") {
-    posted = await postEvent({
+    posted = await sendEventOnce(env, [event.key, result.action, prev, event], {
       email: env.ZULIP_BOT_EMAIL,
       apiKey: env.ZULIP_BOT_API_KEY,
       channel,
@@ -273,6 +300,11 @@ async function handleEvent(source, payload, env) {
       link: event.link,
     });
   }
+
+  await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
+  await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
+  await env.ALERT_STATE.put(`idx:${channel}:${topic}:${event.key}`, "1");
+  await env.ALERT_STATE.put(topicKey(channel, topic), "1");
 
   // Every outcome refreshes the standing status, which is what makes the
   // channel readable at a glance instead of by scrolling.
@@ -293,20 +325,24 @@ async function runSweep(env) {
     const prev = await env.ALERT_STATE.get(name, "json");
     const s = sweep(prev, now, { minOpenMs });
     if (!s) continue;
-    await env.ALERT_STATE.put(name, JSON.stringify(s.state));
-    promoted++;
-    const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
-    await postEvent({
-      email: env.ZULIP_BOT_EMAIL,
-      apiKey: env.ZULIP_BOT_API_KEY,
-      channel: DEFAULT_CHANNEL,
-      topic: service,
-      severity: s.state.severity,
-      service,
-      what: s.state.text,
-      link: s.state.link,
-    });
-    dirtyTopics.add(service);
+    try {
+      const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
+      await sendEventOnce(env, [key, "announce", prev], {
+        email: env.ZULIP_BOT_EMAIL,
+        apiKey: env.ZULIP_BOT_API_KEY,
+        channel: DEFAULT_CHANNEL,
+        topic: service,
+        severity: s.state.severity,
+        service,
+        what: s.state.text,
+        link: s.state.link,
+      });
+      await env.ALERT_STATE.put(name, JSON.stringify(s.state));
+      promoted++;
+      dirtyTopics.add(service);
+    } catch {
+      console.error(JSON.stringify({ event: "alert.promotion_failed" }));
+    }
   }
   // One status refresh per topic, however many incidents promoted in it, and
   // all in parallel instead of one rebuild per incident.
@@ -581,4 +617,11 @@ export default {
     );
   },
 };
-Object.assign(__testing, { listAll, mapBounded, validatePayload, handler });
+Object.assign(__testing, {
+  listAll,
+  mapBounded,
+  validatePayload,
+  handler,
+  handleEvent,
+  sendEventOnce,
+});

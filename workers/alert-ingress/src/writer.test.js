@@ -247,3 +247,96 @@ test("durable overlay preserves historical KV and reads its own writes", async (
     JSON.stringify({ phase: "ok" }),
   );
 });
+test("definite pre-send inventory failure cannot advance event state", async () => {
+  let writes = 0;
+  const kv = {
+    async get() {
+      return { phase: "alerting", severity: "SEVERE", since: 1 };
+    },
+    async list() {
+      return { keys: [], list_complete: false };
+    },
+    async put() {
+      writes++;
+    },
+  };
+  await assert.rejects(
+    __testing.handleEvent(
+      "custom",
+      { id: "one", service: "svc", status: "recovered" },
+      { ALERT_STATE: kv },
+    ),
+  );
+  assert.equal(writes, 0);
+});
+test("definitive timeline refusal retries safely but unknown never retries", async () => {
+  const db = storage(),
+    original = globalThis.fetch;
+  let attempts = 0;
+  const args = {
+    email: "test@example.invalid",
+    apiKey: "fixture",
+    channel: "alerts",
+    topic: "svc",
+    severity: "INFO",
+    service: "svc",
+    what: "recovered",
+  };
+  try {
+    globalThis.fetch = async () => {
+      attempts++;
+      return { ok: false, status: 403 };
+    };
+    await assert.rejects(
+      __testing.sendEventOnce(
+        { WRITER_STORAGE: db },
+        ["stable-transition"],
+        args,
+      ),
+    );
+    globalThis.fetch = async () => {
+      attempts++;
+      return { ok: true, json: async () => ({ result: "success", id: 19 }) };
+    };
+    assert.equal(
+      await __testing.sendEventOnce(
+        { WRITER_STORAGE: db },
+        ["stable-transition"],
+        args,
+      ),
+      19,
+    );
+    assert.equal(
+      await __testing.sendEventOnce(
+        { WRITER_STORAGE: db },
+        ["stable-transition"],
+        args,
+      ),
+      19,
+    );
+    assert.equal(attempts, 2);
+    globalThis.fetch = async () => {
+      attempts++;
+      throw new Error("lost response");
+    };
+    assert.equal(
+      await __testing.sendEventOnce(
+        { WRITER_STORAGE: db },
+        ["uncertain-transition"],
+        args,
+      ),
+      null,
+    );
+    assert.equal(
+      await __testing.sendEventOnce(
+        { WRITER_STORAGE: db },
+        ["uncertain-transition"],
+        args,
+      ),
+      null,
+    );
+    assert.equal(attempts, 3);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
