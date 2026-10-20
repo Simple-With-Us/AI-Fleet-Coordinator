@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import {
   registryIngestArgs, summarizeIngest, summarizeIngestFailure, ingestFailureDetail, buildMarkdownMirror,
   MIRROR_MD_PATH, FLEET_HOME, REGISTRY_INGEST_SOURCE,
-  readIngestKnobs, ingestFailureOutcome, fleetKnob, ingestEnabled, ingestTimeoutMs, INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB
+  readIngestKnobs, ingestFailureOutcome, fleetKnob, ingestEnabled, ingestTimeoutMs, ingestKnobValues, INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB
 } from "./fleet-apps-sheet-sync.mjs";
 
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
@@ -129,6 +129,19 @@ test("the ingest's skip flag and timeout are fleet knobs, not ambient env vars",
   // A missing, unparseable or non-positive timeout falls back to the registered default.
   assert.equal(ingestTimeoutMs({ [INGEST_TIMEOUT_KNOB]: "nonsense" }), 5400000);
   assert.equal(ingestTimeoutMs({ [INGEST_TIMEOUT_KNOB]: "0" }), 5400000);
+});
+
+test("the two knob names map to the two ingest decisions", () => {
+  // A swapped or misspelled knob silently enables ingestion with the default timeout
+  // while the value-level tests above stay green (Kody review, PR #740).
+  const seen = [];
+  const values = ingestKnobValues((name) => {
+    seen.push(name);
+    return `sentinel:${name}`;
+  });
+  assert.deepEqual([...seen].sort(), [INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB].sort());
+  assert.equal(values[INGEST_ENABLED_KNOB], `sentinel:${INGEST_ENABLED_KNOB}`);
+  assert.equal(values[INGEST_TIMEOUT_KNOB], `sentinel:${INGEST_TIMEOUT_KNOB}`);
 });
 
 test("summarizeIngest reads the ingest report and never fakes a success", () => {
