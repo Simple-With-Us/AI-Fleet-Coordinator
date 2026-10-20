@@ -355,16 +355,16 @@ class MiniMaxSession:
                 time.sleep(0.15)
             raise CommandError("%s timed out after %ss" % (method, timeout))
 
-    def _collect_text(self, result):
+    def _collect_text(self, result, since=0):
         """Pull the assistant text out of a prompt result and its updates."""
-        updates = self._collect_notifications()
+        updates = self._collect_notifications(since)
         text = ""
         for block in (result or {}).get("content") or []:
             if block.get("type") == "text" and block.get("text"):
                 text += block["text"]
         return text or updates
 
-    def _collect_notifications(self):
+    def _collect_notifications(self, since=0):
         """Take the text out of this turn's updates, and drop them.
 
         The pump appends every message the ACP server writes and _call only
@@ -373,13 +373,25 @@ class MiniMaxSession:
         answered with the previous turn's text as well, and the buffer grew
         for the life of the session.  They are consumed here, and taken
         whether or not the prompt result carried text of its own.
+
+        Only the notifications that arrived after the prompt was sent count,
+        and only the ones carrying agent text: an ACP session/prompt returns
+        only stopReason, so the text is normally collected from the updates,
+        and a thought chunk is private reasoning the owner must not read.
         """
         text = ""
         with self.buffer_lock:
-            pending = list(self.buffer)
-            self.buffer = [m for m in pending if m.get("method") != "session/update"]
+            pending = list(self.buffer[since:])
+            # The entries before `since` belong to a turn that has already
+            # been answered, and the ones after it are consumed here, so the
+            # whole prefix goes: the buffer never outlives the turn.
+            del self.buffer[: since + len(pending)]
         for message in pending:
+            if message.get("method") != "session/update":
+                continue
             update = (message.get("params") or {}).get("update") or {}
+            if update.get("sessionUpdate") != "agent_message_chunk":
+                continue
             content = update.get("content") or {}
             if content.get("type") == "text" and content.get("text"):
                 text += content["text"]
@@ -388,6 +400,8 @@ class MiniMaxSession:
     def prompt(self, message):
         if self.session_id is None:
             self._start()
+        with self.buffer_lock:
+            since = len(self.buffer)
         result = self._call(
             "session/prompt",
             {
@@ -396,7 +410,7 @@ class MiniMaxSession:
             },
             timeout=self.timeout,
         )
-        return self._collect_text(result)
+        return self._collect_text(result, since)
 
     def close(self):
         process = self.process

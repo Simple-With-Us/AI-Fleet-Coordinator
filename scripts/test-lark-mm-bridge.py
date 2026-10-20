@@ -287,7 +287,12 @@ class BridgeTests(unittest.TestCase):
         session.buffer = [
             {
                 "method": "session/update",
-                "params": {"update": {"content": {"type": "text", "text": "from update"}}},
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "from update"},
+                    }
+                },
             }
         ]
         session.buffer_lock = threading.Lock()
@@ -304,7 +309,12 @@ class BridgeTests(unittest.TestCase):
         session.buffer = [
             {
                 "method": "session/update",
-                "params": {"update": {"content": {"type": "text", "text": "turn one"}}},
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "turn one"},
+                    }
+                },
             }
         ]
         session.buffer_lock = threading.Lock()
@@ -312,13 +322,78 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(session.buffer, [])
         self.assertEqual(session._collect_text({}), "")
 
+    def test_thought_chunks_are_not_answered_to_lark(self):
+        """Private reasoning never reaches the chat surface."""
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = [
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_thought_chunk",
+                        "content": {"type": "text", "text": "thinking about it"},
+                    }
+                },
+            },
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "the answer"},
+                    }
+                },
+            },
+        ]
+        session.buffer_lock = threading.Lock()
+        self.assertEqual(session._collect_text({}), "the answer")
+
+    def test_only_updates_after_the_prompt_are_collected(self):
+        """An update from before the prompt is this turn's answer's ancestor.
+
+        A session/prompt returns only stopReason, so the text comes from the
+        notifications, but only the ones the turn actually produced.
+        """
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = [
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "answer one"},
+                    }
+                },
+            }
+        ]
+        session.buffer_lock = threading.Lock()
+        since = len(session.buffer)
+        session.buffer.append(
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": " answer two"},
+                    }
+                },
+            }
+        )
+        self.assertEqual(session._collect_text({}, since), " answer two")
+        self.assertEqual(session.buffer, [])
+
     def test_collect_text_consumes_updates_even_when_the_result_has_text(self):
         """The result path must clear the updates too, or they build up."""
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
         session.buffer = [
             {
                 "method": "session/update",
-                "params": {"update": {"content": {"type": "text", "text": "leftover"}}},
+                "params": {
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": "leftover"},
+                    }
+                },
             }
         ]
         session.buffer_lock = threading.Lock()
