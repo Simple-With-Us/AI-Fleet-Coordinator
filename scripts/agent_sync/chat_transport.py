@@ -1,4 +1,5 @@
 """Existing-session delivery through Grok's shared leader, without a new agent owner."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -9,8 +10,9 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 _RUNTIME = Path(__file__).resolve().parents[1] / "grok-acp-runtime"
 _DISCOVERY_TIMEOUT = 25.0  # leader-client's supported total RPC budget; list can take 14-22s.
@@ -62,13 +64,24 @@ class GrokTransport:
         cursor: str | None = None, *, timeout: float | None = None
     ) -> tuple[list[dict[str, Any]], str | None, bool]:
         rpc_timeout = min(_DISCOVERY_TIMEOUT, timeout or _DISCOVERY_TIMEOUT)
-        command = [sys.executable, str(_RUNTIME / "leader-client.py"),
-                   "--rpc-timeout", str(rpc_timeout), "list", "--all-pages"]
+        command = [
+            sys.executable,
+            str(_RUNTIME / "leader-client.py"),
+            "--rpc-timeout",
+            str(rpc_timeout),
+            "list",
+            "--all-pages",
+        ]
         if cursor:
             command.extend(["--cursor", cursor])
         try:
-            result = subprocess.run(command, capture_output=True, text=True,
-                                    timeout=timeout or _DISCOVERY_OUTER_TIMEOUT, check=False)
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=timeout or _DISCOVERY_OUTER_TIMEOUT,
+                check=False,
+            )
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError("Grok leader discovery failed") from exc
         try:
@@ -90,8 +103,11 @@ class GrokTransport:
 
     @staticmethod
     def _merge_sessions(candidate: list[dict[str, Any]], sessions: list[dict[str, Any]]) -> None:
-        known = {row.get("sessionId"): index for index, row in enumerate(candidate)
-                 if isinstance(row.get("sessionId"), str)}
+        known = {
+            row.get("sessionId"): index
+            for index, row in enumerate(candidate)
+            if isinstance(row.get("sessionId"), str)
+        }
         for row in sessions:
             sid = row.get("sessionId")
             if isinstance(sid, str) and sid in known:
@@ -108,7 +124,11 @@ class GrokTransport:
         or reaches the page cap.
         """
         global _DISCOVERY_SESSIONS, _DISCOVERY_UPDATED, _DISCOVERY_ERROR, _DISCOVERY_RUNNING
-        global _DISCOVERY_CURSOR, _DISCOVERY_SEEN_CURSORS, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
+        global \
+            _DISCOVERY_CURSOR, \
+            _DISCOVERY_SEEN_CURSORS, \
+            _DISCOVERY_CANDIDATE_SESSIONS, \
+            _DISCOVERY_COMPLETE
         candidate: list[dict[str, Any]] = []
         cursor: str | None = None
         error: str | None = None
@@ -124,13 +144,18 @@ class GrokTransport:
                 if not complete:
                     error = "leader pagination incomplete"
         except Exception:
-            error = ("leader pagination budget exceeded" if time.monotonic() >= deadline
-                     else "leader list unavailable")
+            error = (
+                "leader pagination budget exceeded"
+                if time.monotonic() >= deadline
+                else "leader list unavailable"
+            )
             complete = False
         with _DISCOVERY_LOCK:
-            publish_partial = (not complete and bool(candidate)
-                               and error in ("leader pagination incomplete",
-                                             "leader pagination budget exceeded"))
+            publish_partial = (
+                not complete
+                and bool(candidate)
+                and error in ("leader pagination incomplete", "leader pagination budget exceeded")
+            )
             if complete or publish_partial:
                 _DISCOVERY_SESSIONS = candidate
                 _DISCOVERY_UPDATED = time.monotonic()
@@ -162,11 +187,20 @@ class GrokTransport:
             _DISCOVERY_LAST_ATTEMPT = now
             _DISCOVERY_RUNNING = True
             _DISCOVERY_DONE.clear()
-            thread = threading.Thread(target=cls._refresh, name="grok-leader-discovery", daemon=True)
+            thread = threading.Thread(
+                target=cls._refresh, name="grok-leader-discovery", daemon=True
+            )
             thread.start()
 
-    def discover(self, *, force: bool = False, wait: bool = True, limit: int = 160,
-                 session_id: str | None = None, timeout: float | None = None) -> list[dict[str, Any]]:
+    def discover(
+        self,
+        *,
+        force: bool = False,
+        wait: bool = True,
+        limit: int = 160,
+        session_id: str | None = None,
+        timeout: float | None = None,
+    ) -> list[dict[str, Any]]:
         """List chats owned by the shared leader, then conservatively derive turn state.
 
         active_sessions.json tracks attached TUIs, not chats known to the leader, and is
@@ -176,7 +210,11 @@ class GrokTransport:
         a fresh wakeable inventory.  `timeout` cannot extend the wait past one walk.
         """
         global _DISCOVERY_SESSIONS, _DISCOVERY_UPDATED, _DISCOVERY_LAST_ATTEMPT, _DISCOVERY_ERROR
-        global _DISCOVERY_CURSOR, _DISCOVERY_SEEN_CURSORS, _DISCOVERY_CANDIDATE_SESSIONS, _DISCOVERY_COMPLETE
+        global \
+            _DISCOVERY_CURSOR, \
+            _DISCOVERY_SEEN_CURSORS, \
+            _DISCOVERY_CANDIDATE_SESSIONS, \
+            _DISCOVERY_COMPLETE
         if force:
             with _DISCOVERY_LOCK:
                 if not _DISCOVERY_RUNNING:
@@ -209,7 +247,11 @@ class GrokTransport:
                 break
             _DISCOVERY_DONE.wait(deadline - time.monotonic())
         with _DISCOVERY_LOCK:
-            sessions = [dict(row) for row in _DISCOVERY_SESSIONS] if _DISCOVERY_SESSIONS is not None else None
+            sessions = (
+                [dict(row) for row in _DISCOVERY_SESSIONS]
+                if _DISCOVERY_SESSIONS is not None
+                else None
+            )
             updated = _DISCOVERY_UPDATED
             error = _DISCOVERY_ERROR
         if sessions is None:
@@ -223,11 +265,14 @@ class GrokTransport:
         if session_id is not None:
             sessions = [row for row in sessions if row.get("sessionId") == session_id]
         else:
-            sessions = sessions[:max(0, min(int(limit), 1000))]
+            sessions = sessions[: max(0, min(int(limit), 1000))]
 
         rows = []
-        active_ids = {row.get("sessionId") for row in self.disk.load_active()
-                      if isinstance(row, dict) and isinstance(row.get("sessionId"), str)}
+        active_ids = {
+            row.get("sessionId")
+            for row in self.disk.load_active()
+            if isinstance(row, dict) and isinstance(row.get("sessionId"), str)
+        }
         for session in sessions:
             if not isinstance(session, dict):
                 continue
@@ -246,14 +291,28 @@ class GrokTransport:
             attached = sid in active_ids
             if stale:
                 status = "unknown"
-            rows.append({"platform": "grok-leader", "host": socket.gethostname(),
-                         "session_id": sid, "cwd": cwd,
-                         "title": session.get("title") if isinstance(session.get("title"), str) else "",
-                         "updated_at": session.get("updatedAt"), "state": status,
-                         "turn_ended_at": state.get("turnEndedAt"), "attached": attached,
-                         "pending_permission": pending, "self": self_session, "stale": stale,
-                         "wake": not stale and bool(cwd) and status == "idle" and bool(state.get("turnEndedAt"))
-                                 and not pending and not self_session})
+            rows.append(
+                {
+                    "platform": "grok-leader",
+                    "host": socket.gethostname(),
+                    "session_id": sid,
+                    "cwd": cwd,
+                    "title": session.get("title") if isinstance(session.get("title"), str) else "",
+                    "updated_at": session.get("updatedAt"),
+                    "state": status,
+                    "turn_ended_at": state.get("turnEndedAt"),
+                    "attached": attached,
+                    "pending_permission": pending,
+                    "self": self_session,
+                    "stale": stale,
+                    "wake": not stale
+                    and bool(cwd)
+                    and status == "idle"
+                    and bool(state.get("turnEndedAt"))
+                    and not pending
+                    and not self_session,
+                }
+            )
         return rows
 
     def preflight(self, binding: dict[str, str]) -> str:
@@ -272,7 +331,12 @@ class GrokTransport:
             return "busy"  # Discovery pending/unavailable is transient; leave the nudge queued.
         for row in rows:
             if row["session_id"] == binding.get("session_id") and row["cwd"] == binding.get("cwd"):
-                if row.get("stale") or row.get("self") or row.get("pending_permission") or not row.get("wake"):
+                if (
+                    row.get("stale")
+                    or row.get("self")
+                    or row.get("pending_permission")
+                    or not row.get("wake")
+                ):
                     return "busy"
                 return "ready"
         # A disconnected or unavailable chat can become available later; keep it pending.
@@ -297,21 +361,30 @@ class GrokTransport:
                         row = json.loads(raw)
                     except (ValueError, UnicodeDecodeError):
                         continue
-                    if not isinstance(row, dict) or row.get("type") != "user" or row.get("synthetic_reason"):
+                    if (
+                        not isinstance(row, dict)
+                        or row.get("type") != "user"
+                        or row.get("synthetic_reason")
+                    ):
                         continue
                     content = row.get("content")
                     if isinstance(content, list):
-                        content = "".join(part.get("text", "") for part in content
-                                          if isinstance(part, dict) and part.get("type") == "text"
-                                          and isinstance(part.get("text"), str))
+                        content = "".join(
+                            part.get("text", "")
+                            for part in content
+                            if isinstance(part, dict)
+                            and part.get("type") == "text"
+                            and isinstance(part.get("text"), str)
+                        )
                     if content == text:
                         return True
         except OSError:
             return False
         return False
 
-    def send(self, binding: dict[str, str], text: str, *,
-             permit: Callable[[], bool] | None = None) -> str:
+    def send(
+        self, binding: dict[str, str], text: str, *, permit: Callable[[], bool] | None = None
+    ) -> str:
         # Repeat the check immediately before connecting.  A leader queues a racing prompt;
         # this adapter never cancels the current turn or passes an interrupt option.
         if self.preflight(binding) != "ready":
@@ -331,8 +404,11 @@ class GrokTransport:
             sent = True
             # request() correlates the JSON-RPC id.  Generic session notifications or silence
             # are not an acknowledgement.  Timeout is unknown, never an automatic retry.
-            client.request("session/prompt", {"sessionId": binding["session_id"],
-                           "prompt": [{"type": "text", "text": text}]}, timeout=30)
+            client.request(
+                "session/prompt",
+                {"sessionId": binding["session_id"], "prompt": [{"type": "text", "text": text}]},
+                timeout=30,
+            )
             return "accepted"
         except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError):
             if sent and self.receipt(binding, text):
@@ -357,9 +433,11 @@ class ChatTransport:
                 self.adapters[platform] = GrokTransport()
             elif platform == "codex":
                 from .codex_chat_transport import CodexChatTransport
+
                 self.adapters[platform] = CodexChatTransport()
             elif platform == "cursor-cloud":
                 from .cursor_chat_transport import CursorCloudTransport
+
                 self.adapters[platform] = CursorCloudTransport()
             else:
                 raise ValueError("unsupported chat platform")

@@ -194,8 +194,11 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             if Z.normalise_seat(args.target_seat) == "CODEX":
                 from .chat_catalog import ChatCatalog
 
-                rows = [row for row in ChatCatalog(home=_home(rt), max_records=120).discover()
-                        if row.get("platform") == "codex"]
+                rows = [
+                    row
+                    for row in ChatCatalog(home=_home(rt), max_records=120).discover()
+                    if row.get("platform") == "codex"
+                ]
             elif Z.normalise_seat(args.target_seat) == "CURSOR":
                 from .cursor_chat_transport import CursorCloudTransport
 

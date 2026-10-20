@@ -5110,7 +5110,10 @@ class Daemon:
                     runner.jobs_cond.wait(timeout=1.0)
             if runner.jobs:
                 self.run_jobs(runner.seat, limit=1)
-            if runner.seat in ("GROK", "CURSOR", "CODEX") and self.clock.monotonic() - last_nudge >= 30.0:
+            if (
+                runner.seat in ("GROK", "CURSOR", "CODEX")
+                and self.clock.monotonic() - last_nudge >= 30.0
+            ):
                 last_nudge = self.clock.monotonic()
                 try:
                     self.dispatch_chat_nudge(runner)
@@ -5375,7 +5378,8 @@ class Daemon:
                         (
                             "wake",
                             self.worker_loop,
-                            runner.cfg.wake in C.WORKER_WAKES or runner.seat in ("GROK", "CURSOR", "CODEX"),
+                            runner.cfg.wake in C.WORKER_WAKES
+                            or runner.seat in ("GROK", "CURSOR", "CODEX"),
                         ),
                     ):
                         thread = runner.threads.get(role)

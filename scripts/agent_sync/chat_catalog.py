@@ -385,6 +385,7 @@ class ChatCatalog:
 
     def _scan_codex(self) -> list[dict[str, Any]]:
         from .codex_chat_transport import BINARY, loaded_rollouts
+
         names = {}
         for entry in _jsonl(self.home / ".codex" / "session_index.jsonl"):
             sid = entry.get("id")
@@ -399,8 +400,15 @@ class ChatCatalog:
                     names[sid] = (stamp, title)
         base = self.home / ".codex" / "sessions"
         files = self._list_files(base, recursive=True)
-        loaded = loaded_rollouts() if (files and os.access(BINARY, os.X_OK)
-            and (self.home / ".codex/queue_1.sqlite").is_file()) else frozenset()
+        loaded = (
+            loaded_rollouts()
+            if (
+                files
+                and os.access(BINARY, os.X_OK)
+                and (self.home / ".codex/queue_1.sqlite").is_file()
+            )
+            else frozenset()
+        )
         rows = []
         for path in files:
             events = _jsonl(path)

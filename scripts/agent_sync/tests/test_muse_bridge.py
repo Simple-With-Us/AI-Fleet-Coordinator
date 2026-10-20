@@ -379,7 +379,9 @@ class BridgeWorkerTest(unittest.TestCase):
         self.daemon.config = cfg
         self.daemon.clock = types.SimpleNamespace(time=time.time)
         self.daemon.chat_queue = lambda seat: FakeQueue()
-        self.daemon.seats = {destination: types.SimpleNamespace(cfg=types.SimpleNamespace(enabled=True))}
+        self.daemon.seats = {
+            destination: types.SimpleNamespace(cfg=types.SimpleNamespace(enabled=True))
+        }
         self.bridge.catalog = catalog
         self.bridge.exchange = FakeExchange()
         item = {
