@@ -5263,8 +5263,7 @@ class Daemon:
                     outcome = "unknown"
                 if outcome == "held":
                     inner.hold_reason = (
-                        getattr(daemon._chat_transport, "hold_reason", None)
-                        or inner.hold_reason
+                        getattr(daemon._chat_transport, "hold_reason", None) or inner.hold_reason
                     )
                 if outcome == "deferred" and getattr(inner, "hold_reason", None):
                     outcome = "held"
