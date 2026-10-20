@@ -54,6 +54,7 @@ exit 0
 #  a stand-in for `python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY`, which the script runs in the
 #  directory it lives in;  only put on PATH when a test asks for it (STUB_KNOB)
 KNOB_STUB = """#!/bin/bash
+printf x >> "$STUB_COUNTER.knob"
 printf '%s\\n' "${STUB_KNOB}"
 """
 
@@ -113,14 +114,14 @@ class PinDecisionTests(unittest.TestCase):
     ) -> tuple[subprocess.CompletedProcess, int]:
         with tempfile.TemporaryDirectory() as tmp:
             bindir = Path(tmp) / "bin"
-            bindir.mkdir()
+            bindir.mkdir(mode=0o700)
             stub = bindir / "shortcuts"
             stub.write_text(STUB)
             stub.chmod(0o755)
             if "STUB_KNOB" in env:
                 #  the script reads the knob through the fleet_knobs package next to it and the
                 #  python3 that runs it:  both live here, so `python3 -m fleet_knobs get` is the stub
-                (Path(tmp) / "fleet_knobs").mkdir()
+                (Path(tmp) / "fleet_knobs").mkdir(mode=0o700)
                 knob_stub = bindir / "python3"
                 knob_stub.write_text(KNOB_STUB)
                 knob_stub.chmod(0o755)
@@ -141,6 +142,8 @@ class PinDecisionTests(unittest.TestCase):
                 check=False,
             )
             runs = int(counter.read_text()) if counter.exists() else 0
+            marker = Path(str(counter) + ".knob")
+            self.knob_reads = len(marker.read_text()) if marker.exists() else 0
             return p, runs
 
     def test_a_working_shortcut_pins_the_note_on_the_first_try(self):
@@ -212,6 +215,12 @@ class PinDecisionTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(runs, 1, "the environment widened the knob back to a retry")
+
+    def test_successful_first_attempt_never_fetches_the_retry_knob(self):
+        result, runs = self.run_block(STUB_KNOB="true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(runs, 1)
+        self.assertEqual(self.knob_reads, 0)
 
     def test_local_disable_narrows_an_enabled_knob(self):
         result, runs = self.run_block(

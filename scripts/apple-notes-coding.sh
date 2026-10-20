@@ -252,7 +252,7 @@ fi
 # the list did not read.  First-ever run of each shortcut shows a one-time
 # "Allow ... to share with Notes?" dialog — choose Always Allow.
 #
-# Whether a failed Shortcut run is retried is the APPLE_NOTES_PIN_RETRY fleet knob (Infisical,
+# Whether a failed pin or unpin Shortcut is retried is the APPLE_NOTES_PIN_RETRY fleet knob (Infisical,
 # through scripts/fleet_knobs), resolved once per process through the package that sits next to this
 # script.  APPLE_NOTES_PIN_RETRY in the environment is only a narrowing override:  it can turn the
 # retry off, never on.  With no fleet_knobs on this host, or an unreachable Infisical with no
@@ -295,14 +295,15 @@ _run_note_shortcut() {  # $1 = shortcut name
   # rather not risk a second Shortcut invocation.  The retry runs 3 s later than
   # the first attempt, so the note index has had more time to catch up and the
   # retry is the less likely of the two to miss it.
-  attempts=1
-  if _pin_retry_on; then attempts=2; fi
-  for (( attempt = 1; attempt <= attempts; attempt++ )); do
+  attempt=1
+  while :; do
     if shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
       rm -f "$tmp"
       return 0
     fi
-    [[ "$attempt" -lt "$attempts" ]] && sleep 3
+    if [[ "$attempt" -ge 2 ]] || ! _pin_retry_on; then break; fi
+    attempt=2
+    sleep 3
   done
   rm -f "$tmp"
   return 1

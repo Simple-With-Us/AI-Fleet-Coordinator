@@ -278,7 +278,7 @@ REGISTRY: tuple[Spec, ...] = (
         "N1",
         default=True,
         safe=False,
-        note="true lets apple-notes-coding.sh run the pin Shortcut a second time when the first run misses the note "
+        note="true lets apple-notes-coding.sh run the pin or unpin Shortcut a second time when the first run misses the note "
         "index;  false keeps the single attempt;  the APPLE_NOTES_PIN_RETRY environment variable is only a "
         "local narrowing override and can turn the retry off, never on",
     ),
