@@ -112,7 +112,7 @@ Columns:  how it deploys today, where its desired state lives, whether it drifts
 
 | Item | Deploys today | Desired state | Drift | GitOps fit |
 |---|---|---|---|---|
-| AFC `vercel.json`, `vercel-ignore.sh`, `api/`, `public/` | Not deployed from AFC at all | Stale copies;  `vercel.json` names the old project | High;  AGENTS.md still calls `public/` the home.jays.services output | Pick one source (G3) |
+| AFC web surfaces | `site/` publishes from `fleet-activity-site.yml`;  the `scripts/safari-start/` redirect Worker is hand-deployed | `site/` is in git;  the Worker's `wrangler.jsonc` still claims a hostname Vercel serves | No Vercel copies left in the tree (they went with #693) | `site/` is done;  the redirect retires under G4, so G3 only settles which repo owns it |
 | home.jays.services / start.jays.services | Fleet-OPS CI on push | Fleet-OPS;  SSO and redirect in the Vercel dashboard | Low;  the Oct 11 deploy was a CLI deploy from a dirty checkout | Done for code;  settings partial |
 | Cloudflare zones, records, Access apps, WAF rules, tunnel ingress | By hand in the dashboard or API | Nowhere;  Fleet-OPS `docs/domains.json` is an observed inventory, not desired state | High;  Access apps removed by an unknown hand | Yes, with care (G16) |
 
@@ -154,7 +154,7 @@ Ranked by benefit against risk and effort.  B, R and E are benefit, risk and eff
 |---|---|---|---|---|---|
 | 1 | G1  Hetzner host units, cron and scripts in git, applied by a check-then-apply reconciler | H | L | M | AFC-369 |
 | 2 | G2  Agent configs (skills, rules blocks, hooks, MCP) reconciled on every host from main | H | L | M | AFC-370 |
-| 3 | G3  One source for home.jays.services;  remove AFC's stale Vercel copies | M | L | L | AFC-371 |
+| 3 | G3  One source for the operator start page;  nothing web deploys from AFC any more | M | L | L | AFC-371 |
 | 4 | G4  Retire hand-deployed leftovers (three Workers, dead plists, server `.bak` files, Slack targets) | M | L | L | AFC-372 |
 | 5 | G5  Workers deploy on merge:  one gate per Worker in `scripts/worker-targets.json`, agent-sync-mcp on Jay's call | H | M | L | AFC-373 |
 | 6 | G6  recall-api built from its Dockerfile, auto-deployed from AFC main | M | M | M | AFC-374 |
@@ -183,7 +183,7 @@ Done:  the Mac and the server report the same skill set, hooks and MCP registrat
 
 ### G3  home.jays.services
 
-The live site deploys from Fleet-OPS.  AFC's `vercel.json`, `vercel-ignore.sh`, `api/` and `public/` are stale copies, yet AGENTS.md and `tests/deployment-boundary.test.cjs` describe them as the deployment.  `refresh-rag-snapshot.yml` commits `site-snapshot.json` to AFC, where nothing ships it.  Pick one source, delete the other copy, move the snapshot refresh to the source repo, and fix AGENTS.md.
+The live site deploys from Fleet-OPS, and AFC holds no web deployment of its own:  the Vercel copies (`vercel.json`, `vercel-ignore.sh`, `api/`, `public/`), the `tests/deployment-boundary.test.cjs` guard and the RAG snapshot workflow are all absent from this tree, having gone with #693, and AGENTS.md already names `site/` and `scripts/safari-start/public/` as the repo's only web surfaces.  The one thing left to place is the `start-jays-services` redirect Worker under `scripts/safari-start/`, whose `wrangler.jsonc` still claims a hostname Vercel now serves.  Answer decision 5 for that code and its `visual-tests/` specs - retire it under G4, or move it to the repo that owns the page - and update AGENTS.md to match.
 
 Done:  one repository holds the site, and its merge is the only way the site changes.
 
