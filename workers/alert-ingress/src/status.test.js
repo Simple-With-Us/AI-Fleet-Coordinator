@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing } from "./index.js";
 
-const { collectTopics, collectStates, stateKey, svcKey, topicKey, indexPrefix, ctStamp } = __testing;
+const { collectTopics, collectStates, listKeys, runSweep, stateKey, svcKey, topicKey, indexPrefix, ctStamp } = __testing;
 
 /** Minimal in-memory stand-in for the Workers KV binding. */
 function fakeKV(seed = {}) {
@@ -23,12 +23,36 @@ function fakeKV(seed = {}) {
     async put(key, value) {
       store.set(key, value);
     },
-    async list({ prefix = "" } = {}) {
+    async list({ prefix = "", cursor } = {}) {
       return {
         keys: [...store.keys()]
           .filter((k) => k.startsWith(prefix))
           .map((name) => ({ name })),
         listComplete: true,
+      };
+    },
+  };
+}
+
+/**
+ * The same binding, but paginated like the real one: at most `pageSize` keys
+ * per call plus a cursor.  A caller that reads one page and stops silently
+ * loses the tail.
+ */
+function pagedKV(pageSize = 2, seed = {}) {
+  const base = fakeKV(seed);
+  return {
+    ...base,
+    async list({ prefix = "", cursor } = {}) {
+      const all = [...base.store.keys()].filter((k) => k.startsWith(prefix));
+      const start = cursor ? Number(cursor) : 0;
+      const slice = all.slice(start, start + pageSize);
+      const next = start + pageSize;
+      const more = next < all.length;
+      return {
+        keys: slice.map((name) => ({ name })),
+        listComplete: !more,
+        cursor: more ? String(next) : undefined,
       };
     },
   };
@@ -134,4 +158,47 @@ test("collectStates resolves the service label and falls back to the key", async
 test("ctStamp renders a Central Time string a human can read", () => {
   const s = ctStamp();
   assert.match(s, /^[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}(am|pm)$/);
+});
+
+test("listKeys drains the whole cursor chain, not just the first page", async () => {
+  const kv = pagedKV(2);
+  for (let i = 0; i < 7; i++) kv.store.set(`state:k${i}`, "1");
+  const names = await listKeys({ ALERT_STATE: kv }, "state:");
+  assert.equal(names.length, 7, "every key past page one must be read");
+  assert.deepEqual(names, [...kv.store.keys()].filter((k) => k.startsWith("state:")));
+});
+
+test("a paginated inventory still reports every topic and every alert", async () => {
+  const kv = pagedKV(1);
+  seed(kv, { key: "datadog:1", service: "A.svc", state: { phase: "ok", severity: "INFO", since: 1, updated: 2, text: "a", link: "" } });
+  seed(kv, { key: "datadog:2", service: "B.svc", state: { phase: "alerting", severity: "SEVERE", since: 1, updated: 2, text: "b", link: "" } });
+  seed(kv, { key: "datadog:3", service: "C.svc", state: { phase: "alerting", severity: "SEVERE", since: 1, updated: 2, text: "c", link: "" } });
+  const { topics, total } = await collectTopics(asEnv(kv));
+  assert.deepEqual(Object.keys(topics).sort(), ["A.svc", "B.svc", "C.svc"]);
+  assert.equal(total, 3);
+});
+
+test("one topic's failed status refresh does not abort the rest of the sweep", async () => {
+  const kv = fakeKV();
+  const longAgo = Date.now() - 60 * 60 * 1000;
+  for (const key of ["datadog:1", "datadog:2"]) {
+    seed(kv, { key, service: key, state: { phase: "pending", severity: "SEVERE", since: longAgo, updated: longAgo, text: "t", link: "" } });
+  }
+  const orig = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    // The two promotion posts land (they are sequential); every status
+    // rewrite after them fails, so the refresh batch rejects.
+    if (++calls > 2) throw new Error("zulip unreachable");
+    return { ok: true, json: async () => ({ result: "success", id: calls }) };
+  };
+  try {
+    // Both incidents must still be promoted and reported even though no
+    // standing-status rewrite can land.
+    const out = await runSweep(asEnv(kv));
+    assert.equal(out.promoted, 2, "one failing topic must not cancel the others");
+    assert.equal(out.checked, 2);
+  } finally {
+    globalThis.fetch = orig;
+  }
 });

@@ -124,7 +124,7 @@ export function fromGeneric(payload) {
   // "disrupted" as recovered and closes a live incident.  Unknown statuses stay
   // firing, which is the safe direction.
   const firing = status
-    ? !/^(ok(?:ay)?|up|recover(?:ed|ing|s|y)?|resolv(?:ed|es|ing)|clear(?:ed|s)?)$/.test(
+    ? !/^(ok(?:ay)?|up|recover(?:ed|ing|ies|y|s)?|resolv(?:ed|es|ing)|clear(?:ed|ing|s)?)$/.test(
         status,
       )
     : alert.firing === true;
