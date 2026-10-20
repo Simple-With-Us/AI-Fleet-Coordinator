@@ -17,6 +17,7 @@ class FakeTransport:
     def __init__(self, *, readiness: str = "ready", outcome: str = "accepted") -> None:
         self.readiness = readiness
         self.outcome = outcome
+        self.held_cause: str | None = None
         self.receipt_found = False
         self.receipt_calls: list[tuple[dict[str, str], str]] = []
         self.preflights: list[dict[str, str]] = []
@@ -42,6 +43,10 @@ class FakeTransport:
             if self.release:
                 self.release.wait(timeout=5)
             self.deliveries.append((dict(binding), text))
+            # A real producer sets its hold cause during the attempt, because dispatch_one
+            # clears transport.hold_reason before each candidate.
+            if self.outcome == "held" and self.held_cause:
+                self.hold_reason = self.held_cause
             return self.outcome
         finally:
             with self.guard:
@@ -414,6 +419,23 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertTrue(self._item()["hold_reason"])
         self.assertEqual(self.queue.dispatch_one(transport, 12)["status"], "idle")
         self.assertEqual(len(transport.deliveries), 1)
+
+    def test_held_outcome_records_cause_and_never_blocks_other_wakes(self) -> None:
+        # A "held" outcome must stay pending without a permanent retry, and it must not block a
+        # later wake to the same destination.
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10)
+        transport = FakeTransport(outcome="held")
+        transport.held_cause = "Thread is not writable"
+        self.assertEqual(self.queue.dispatch_one(transport, 11)["status"], "pending")
+        items = self.queue.snapshot()["items"]
+        self.assertEqual(items[0]["hold_reason"], "Thread is not writable")
+        # The held row is skipped, so the second wake still reaches the destination.
+        transport.outcome = "accepted"
+        transport.held_cause = None
+        self.assertEqual(self.queue.dispatch_one(transport, 12)["status"], "accepted")
+        self.assertEqual(len(transport.deliveries), 2)
+        self.assertEqual(self.queue.snapshot()["items"][1]["status"], "accepted")
 
     def test_unbind_and_rebind_never_reroutes_queued_item(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)

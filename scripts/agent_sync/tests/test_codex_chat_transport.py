@@ -334,6 +334,9 @@ class TransportTests(unittest.TestCase):
         self.adapter.loaded = lambda _, **kwargs: False
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
         self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
+        # A deferred outcome must not leave a stale hold cause behind for the queue to record.
+        self.assertIsNone(self.adapter.hold_reason)
+        self.adapter.loaded = lambda _, **kwargs: True
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "accepted")
         self.assertIsNone(self.adapter.hold_reason)
 
@@ -429,11 +432,21 @@ class TransportTests(unittest.TestCase):
             original = self.thread.get(key)
             self.thread[key] = value
             self.assertEqual(self.adapter.send(self.binding, "nudge"), "held")
+            # A permanent hold carries its actionable cause for the queue, not a generic text.
+            self.assertTrue(self.adapter.hold_reason)
+            self.assertNotIn("nudge", str(self.adapter.hold_reason))
             if original is None:
                 self.thread.pop(key)
             else:
                 self.thread[key] = original
         self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
+
+    def test_non_held_outcomes_clear_the_hold_cause(self):
+        self.thread["readOnly"] = True
+        self.assertEqual(self.adapter.send(self.binding, "nudge"), "held")
+        self.thread.pop("readOnly")
+        self.assertEqual(self.adapter.send(self.binding, "nudge"), "accepted")
+        self.assertIsNone(self.adapter.hold_reason)
 
     def test_receipt_snapshot_shared_for_different_items_then_refreshes(self):
         self.queued = [
