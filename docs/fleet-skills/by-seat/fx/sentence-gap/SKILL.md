@@ -85,9 +85,9 @@ here as `\s{2}` so this sentence survives its own advice — matched nothing on 
 single-space pattern `([.!?]) (?=...)` is no better, because it matches nothing on text that kept
 its two spaces.  Both exit `0` and post with no gap.  The `(?<![0-9])` lookbehind protects a
 numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tolerates a tab.  The
-lookahead admits only `[A-Z0-9"*`#@]`, so it skips *every* follower outside that class and not
-only a lowercase one:  `e.g. this` and lower-case domains keep their plain space, and so does a
-follower that is a quote, which is the limitation recorded below.
+lookahead admits `[A-Z0-9"*`#@]` and the three opening quotes — the straight `'`, the left single
+`‘` and the left double `“` — so it skips *every* follower outside that class and not only a
+lowercase one.  `e.g. this` and lower-case domains keep their plain space.
 
 **Known limitations — the pattern is a heuristic, not a dictionary.**  Two deliberate costs:
 
