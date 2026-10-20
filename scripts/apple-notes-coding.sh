@@ -343,7 +343,7 @@ fi
 # - Formats code blocks with SF Mono font and light styling.
 # - Formats tables with clean border-collapse.
 _convert_body_to_html() {
-  local _md_py _md_dir
+  local _md_py _md_dir _rc
   # A private temp DIRECTORY with the converter inside it.  macOS mktemp does not substitute an X
   # template that does not end the name, so `mktemp /tmp/apple-notes-md.XXXXXX.py` returns a FIXED
   # path:  two seats writing at once collide, and a stale file (a crash, or a cleanup the runtime's
@@ -355,6 +355,7 @@ _convert_body_to_html() {
     return 1
   fi
   _md_py="${_md_dir}/convert.py"
+  _rc=0
   cat >"${_md_py}" <<'PY'
 import html, os, re, sys
 
@@ -601,13 +602,15 @@ while i < len(lines):
 close_lists()
 sys.stdout.write("<div>" + "".join(out) + "</div>")
 PY
-  /usr/bin/python3 "${_md_py}"
-  local _rc=$?
+  # `|| _rc=$?` keeps `set -e` (line 46) from aborting here, before the cleanup below:  a converter
+  # failure would otherwise skip the cleanup, leak the scratch directory, and surface as a bare
+  # command failure instead of the note's own error.
+  /usr/bin/python3 "${_md_py}" || _rc=$?
   # The scratch file and its directory go when they can:  a cleanup the runtime refuses must not
   # fail the note, and the next call gets a fresh directory either way.  Its output goes nowhere:
   # this runs inside the body capture, so a word on stdout would land in the note.
-  rm -f "${_md_py}" >/dev/null 2>&1
-  rmdir "${_md_dir}" >/dev/null 2>&1
+  rm -f "${_md_py}" >/dev/null 2>&1 || true
+  rmdir "${_md_dir}" >/dev/null 2>&1 || true
   return ${_rc}
 }
 

@@ -770,7 +770,11 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
             if is_mcode
             else (A.muse_pin_candidate if is_muse else A.pin_candidate)
         )
-        problem = pin_fn(paths, binary, time.time())
+        problem = (
+            A.mcode_pin_candidate(paths, binary, time.time(), model=seat_cfg.mcode_model)
+            if is_mcode
+            else pin_fn(paths, binary, time.time())
+        )
         if problem:
             rt.out("NOT PINNED: %s\n" % problem)
             return 1
@@ -788,9 +792,9 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         elif is_mcode:
             pin = L.read_json(paths.wake_pin_mcode)
             rt.out(
-                "pinned %s for %s as the FALLBACK (fallback-only:  mcode has no sandbox toggle and no "
-                "--disable-shell/--disable-write/--disable-web-tools, and cannot be HOME-isolated)\n"
-                % (binary, seat)
+                "pinned %s for %s as the FALLBACK (model %s;  fallback-only:  mcode has no sandbox "
+                "toggle and no --disable-shell/--disable-write/--disable-web-tools, and cannot be "
+                "HOME-isolated)\n" % (binary, seat, pin.get("model") or seat_cfg.mcode_model)
             )
         else:
             pin = L.read_json(paths.wake_pin)
@@ -839,7 +843,7 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
     argv = (
         A.muse_argv(binary, seat_cfg.model)
         if is_muse
-        else A.mcode_argv(binary)
+        else A.mcode_argv(binary, seat_cfg.mcode_model)
         if is_mcode
         else A.claude_argv(binary, seat_cfg.model, C.fleet_tags(partition))
     )
@@ -917,7 +921,7 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         if is_muse:
             A.record_muse_candidate(paths, binary, time.time(), model=seat_cfg.model)
         elif is_mcode:
-            A.record_mcode_candidate(paths, binary, time.time(), model=seat_cfg.model)
+            A.record_mcode_candidate(paths, binary, time.time(), model=seat_cfg.mcode_model)
         else:
             A.record_candidate(
                 paths,
