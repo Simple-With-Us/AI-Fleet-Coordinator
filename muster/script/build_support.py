@@ -17,6 +17,27 @@ def acquire_lock(path):
         ) from None
 
 
+def fsync_path(path):
+    """Flush one file or directory entry;  a rename alone is not crash-durable."""
+    flags = os.O_RDONLY
+    if path.is_dir():
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def fsync_tree(root):
+    """Flush a copied bundle deepest-first, then its root, before publication."""
+    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        if path.is_symlink():
+            continue
+        fsync_path(path)
+    fsync_path(root)
+
+
 def install_bundle(staged, installed, verify):
     """Prepare on the target filesystem, then replace with rollback on failure."""
     staged, installed = Path(staged), Path(installed)
@@ -31,12 +52,15 @@ def install_bundle(staged, installed, verify):
     try:
         shutil.copytree(staged, prepared, symlinks=True)
         verify(prepared)
+        fsync_tree(prepared)
         for signum in (signal.SIGTERM, signal.SIGINT):
             saved_handlers[signum] = signal.signal(signum, interrupted)
         if os.path.lexists(installed):
             os.replace(installed, previous)
+            fsync_path(installed.parent)
         try:
             os.replace(prepared, installed)
+            fsync_path(installed.parent)
             verify(installed)
             committed = True
         except BaseException:
@@ -44,12 +68,14 @@ def install_bundle(staged, installed, verify):
                 if os.path.lexists(installed):
                     shutil.rmtree(installed)
                 os.replace(previous, installed)
+                fsync_path(installed.parent)
             raise
     finally:
         try:
             # The signal may arrive between the first rename and the inner try.
             if previous.exists() and not os.path.lexists(installed):
                 os.replace(previous, installed)
+                fsync_path(installed.parent)
         finally:
             for signum, handler in saved_handlers.items():
                 signal.signal(signum, handler)

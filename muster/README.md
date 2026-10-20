@@ -64,6 +64,12 @@ bash -n muster/script/build_and_run.sh
 xcodegen generate --spec muster/project.yml
 ```
 
+The install transaction's synthetic tests touch no keychain, app or process, so they run anywhere:
+
+```sh
+cd muster/script && python3 -m unittest discover -s . -t . -v
+```
+
 After a successful `--verify` run, independently inspect the installed signature and bundle metadata:
 
 ```sh
