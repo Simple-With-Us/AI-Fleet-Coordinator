@@ -104,6 +104,7 @@ An incident is held, not posted, until it is still open after `MIN_OPEN_MS` (def
 |---|---|
 | `state:<key>` | `AlertState` — phase (`ok`/`pending`/`alerting`), severity, since, text, link |
 | `svc:<key>` | service name, so a topic stays stable |
+| `svcname:<service>` | alert key, so a renamed vendor label re-joins its incident |
 | `topic:<channel>:<topic>` | topic membership; tracked explicitly rather than parsed out of `idx:` |
 | `idx:<channel>:<topic>:<key>` | membership marker, so a status rebuild knows its rows |
 | `status:<channel>:<topic>` | message id of the standing status, for the PATCH |
@@ -112,7 +113,7 @@ An incident is held, not posted, until it is still open after `MIN_OPEN_MS` (def
 
 1. Create a KV namespace and put its id in `wrangler.toml`.
 2. Create a Zulip bot with an API key — **not** an incoming webhook, which cannot edit.  The bot posts to `#alerts` only.
-3. `wrangler secret put ZULIP_BOT_EMAIL`, `ZULIP_BOT_API_KEY`, `INGRESS_SHARED_TOKEN`, then `DATADOG_WEBHOOK_SECRET` and/or `BETTERSTACK_WEBHOOK_SECRET`.
+3. Register `ZULIP_BOT_EMAIL`, `ZULIP_BOT_API_KEY`, `INGRESS_SHARED_TOKEN`, `DATADOG_WEBHOOK_SECRET` and/or `BETTERSTACK_WEBHOOK_SECRET`, and the `MIN_OPEN_MS` tunable, in the Infisical inventory (`INFISICAL.md`) -- Infisical is the sole source of truth for secrets and settings knobs -- then provision the Worker bindings from Infisical through the secure owner handoff documented there.  A bare `wrangler secret put` creates Worker-only copies that Infisical rotations will not govern.
 4. Deploy, then re-point each vendor's webhook at `https://alert-ingress.<account>.workers.dev/webhook/<source>` and set the matching secret on the vendor side.
 5. Stop the old Zulip incoming-webhook bots for that source, or both will post.
 
