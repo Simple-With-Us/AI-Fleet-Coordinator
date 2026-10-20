@@ -52,7 +52,6 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import identity as I
 from . import session_ids as SID
 
 RELAY_CHANNEL = "notes-relay"
