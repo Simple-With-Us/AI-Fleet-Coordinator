@@ -784,6 +784,10 @@ NEVER_INSTALL = frozenset({"ios-ship"})
 # the body is GitHub review-thread triage for every seat that lands PRs.
 # `mac-cleanup` is Mac disk cleanup; omit from cloud Grok Bot.
 SKILL_SEAT_ALLOWLIST: dict[str, frozenset[str]] = {
+    # The sweep launcher provisions and retires Mac lanes; MA has no such runtime.
+    "pr-sweep": frozenset(
+        seat.seat_key or seat.tag.lower() for seat in SEATS.values() if seat.tag != "MA"
+    ),
     "mac-cleanup": frozenset(
         {
             "cursor",
@@ -1271,6 +1275,10 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
         "git push -u origin HEAD",
     ):
         vm = vm.replace(command, chr(96) + command + chr(96))
+    # Board claims identify the actual cloud checkout, never a nonexistent Mac lane.
+    text = text.replace("--env Mac", "--env cloud")
+    text = re.sub(r'--where "[^"\n]*"', '--where "$(pwd -P) @ $(git branch --show-current)"', text)
+    text = text.replace("<lane path>", "<durable VM checkout path>")
     if skill_name == "session-start":
         # Retitle the section and swap only the Mac lane command block.  The
         # app/acronym table and the scratch-checkout ban below it are
@@ -1297,10 +1305,24 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
             text,
             flags=re.MULTILINE,
         )
+        text = re.sub(
+            r"^Machine-infra issues file to.*$",
+            "Machine-infra issues file to the `OPS` team (`board file --app fleet-infra` routes there).  Use the actual durable VM checkout path and task branch in every cloud claim; never report a Mac lane path.",
+            text,
+            flags=re.MULTILINE,
+        )
+    elif skill_name == "unstick-pr":
+        text = re.sub(
+            r'^cd "\$\(~/apps/lane path [^\n]+$',
+            'cd "<durable VM checkout path>"   # existing per-repo VM checkout',
+            text,
+            flags=re.MULTILINE,
+        )
+        text = text.replace("in your lane", "in your durable VM checkout")
     elif skill_name == "fleet-coordination":
         text = re.sub(
             r"^## 2\. Lanes.*?(?=^## 3\.)",
-            "## 2. VM Lanes\n\n" + vm + "---\n\n",
+            "## 2. Durable VM Checkout\n\n" + vm + "---\n\n",
             text,
             flags=re.MULTILINE | re.DOTALL,
         )

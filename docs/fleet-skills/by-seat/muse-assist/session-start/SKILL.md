@@ -69,13 +69,13 @@ Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratc
 | Personal-Site | `Personal-Site` | PS | `~/apps/lanes/Personal-Site/<seat>-<slug>` |
 | AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/lanes/AI-Fleet-Coordinator/<seat>-<slug>` |
 
-Machine-infra issues file to the `OPS` team (`board file --app fleet-infra` routes there).  `<seat>` is your seat's whole folder name from `fleet-apps.json` (`worktreeSuffix`), never a short tag, and the folder above it is the repo's folder name under `~/Code` (`codeDir`), exactly as spelled there.  Lanes in the old places under `~/apps/lanes` (`<prefix>/` such as `lanes/trading`, `_managed`, `_review`) stay until the layout migration moves them, and flat ones such as `~/apps/trading-muse-assist` are not moved at all and retire normally; do not create new ones in any old place.  Inventory is `~/Code/AI-Fleet-Coordinator/fleet-apps.json`.  `scripts/setup-agent-lanes.sh` is retired (it exits 2); do not run it.  The `~/apps/lane` tool is Mac-only: if MA needs a new repo checkout, ask the owner for the VM path rather than running the lane tool or hand-making a lane.
+Machine-infra issues file to the `OPS` team (`board file --app fleet-infra` routes there).  Use the actual durable VM checkout path and task branch in every cloud claim; never report a Mac lane path.
 
 Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and its open Linear issues (`board list --app <app>`).  `docs/EFFORT-LOG.md` is archived history now; read it only for background.  Personal-Site `AGENTS.md` can lag `README.md` (the live source is `site/`); believe README + current tree over a stale "static snapshot" paragraph.
 
 ## 4. Claim before substantial edits
 
-1. **Linear** — `board list --app <app>` then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/<Repo>/<seat>-<slug> @ <branch>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by "$AGENT_SEAT" --env Mac --where "..." --desc "..."`, then claim it.  The claim sets In Progress and the `claimed:<SEAT>` label; it exits 3 if another seat holds the issue.
+1. **Linear** — `board list --app <app>` then `board claim <id> --by "$AGENT_SEAT" --env cloud --where "$(pwd -P) @ $(git branch --show-current)"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by "$AGENT_SEAT" --env cloud --where "$(pwd -P) @ $(git branch --show-current)" --desc "..."`, then claim it.  The claim sets In Progress and the `claimed:<SEAT>` label; it exits 3 if another seat holds the issue.
 2. **Zulip** — open the work topic and post the claim (below).  There is no effort log and no separate GitHub issue to mark; a GitHub issue filed after the cutover is already a Linear issue.
 3. **Branch and PR** — branch `<seat>/<id>-<slug>` (`muse-assist/afc-123-zulip-cutover`), and the PR body says `Fixes <ID>` when it finishes the issue or `Refs <ID>` for partial work.
 

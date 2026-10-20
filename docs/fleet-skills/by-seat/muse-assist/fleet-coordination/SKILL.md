@@ -85,7 +85,7 @@ Every agent session must start with systematic orientation before touching code:
 
 ---
 
-## 2. VM Lanes
+## 2. Durable VM Checkout
 
 Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  Reuse this durable VM checkout across tasks; do not invoke the Mac lane tool or create Mac lane directories.
 
@@ -96,7 +96,7 @@ Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratc
 Before starting substantial work, reserve your lane on two durable surfaces:
 
 1. **Linear issue (`board claim`):**
-   - `board list --app <app>`, then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>"`.  If nothing exists, `board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
+   - `board list --app <app>`, then `board claim <id> --by "$AGENT_SEAT" --env cloud --where "$(pwd -P) @ $(git branch --show-current)"`.  If nothing exists, `board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
    - Branch `<seat>/<id>-<slug>` (`muse-assist/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
    - Linear is the only writable work tracker.  There is no separate GitHub issue leg or effort-log row; effort logs are archived history and must not be edited.
 2. **Zulip `#agent-sync`, work topic (`<ID> <subject>`, at most 58 characters):**

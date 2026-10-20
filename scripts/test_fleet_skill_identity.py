@@ -1588,6 +1588,36 @@ class VMSeatLaneTests(unittest.TestCase):
         ordinary = specialize_from_monet(_session(), SEATS["codex"], skill_name="session-start")
         self.assertIn("~/apps/lane new", ordinary)
 
+    def test_ma_claims_use_cloud_and_actual_durable_checkout(self):
+        for name in ("session-start", "fleet-coordination", "board-ops"):
+            rendered = specialize_from_monet(
+                _load_skill(name), SEATS["muse-assist"], skill_name=name
+            )
+            self.assertNotIn("--env Mac", rendered, name)
+            self.assertNotIn('where "~/apps/lanes/', rendered, name)
+            self.assertIn("--env cloud", rendered, name)
+            for location in re.findall(r'--where "([^"\n]*)"', rendered):
+                self.assertEqual(location, "$(pwd -P) @ $(git branch --show-current)", name)
+        ordinary = specialize_from_monet(
+            _load_skill("board-ops"), SEATS["codex"], skill_name="board-ops"
+        )
+        self.assertIn("--env Mac", ordinary)
+
+    def test_ma_unstick_keeps_diagnostics_without_mac_lane_lookup(self):
+        rendered = specialize_from_monet(
+            _load_skill("unstick-pr"), SEATS["muse-assist"], skill_name="unstick-pr"
+        )
+        self.assertNotIn("~/apps/lane path", rendered)
+        self.assertIn('cd "<durable VM checkout path>"', rendered)
+        self.assertIn("git merge-tree --write-tree", rendered)
+        self.assertIn("DealDex's hosted Actions ship stays", rendered)
+
+    def test_mac_sweep_launcher_is_not_installed_to_ma(self):
+        self.assertFalse(skill_allowed_for_seat("pr-sweep", SEATS["muse-assist"]))
+        for key, seat in SEATS.items():
+            if seat.tag != "MA":
+                self.assertTrue(skill_allowed_for_seat("pr-sweep", seat), key)
+
 
 if __name__ == "__main__":
     unittest.main()

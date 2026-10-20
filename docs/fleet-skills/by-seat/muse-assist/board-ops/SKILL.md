@@ -37,10 +37,10 @@ Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlist
 
 ```bash
 board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
+  --severity P1 --by "$AGENT_SEAT" --env cloud --where "$(pwd -P) @ $(git branch --show-current)" \
   --desc "path:line + repro"
 
-board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
+board claim <id> --by "$AGENT_SEAT" --env cloud --where "$(pwd -P) @ $(git branch --show-current)"
 
 board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
 
@@ -59,7 +59,7 @@ The full verb table, id forms and exit codes are in `scripts/linear-board/README
 ## What you owe Linear
 
 1. **Before substantial work:** list the app.  Claim the existing issue or file then claim.  Name the branch `<seat>/<id>-<slug>` (`muse-assist/afc-123-zulip-cutover`).
-2. **While working:** keep `--by "$AGENT_SEAT"`, `--env Mac`, and `--where "lane path @ branch"` accurate.
+2. **While working:** keep `--by "$AGENT_SEAT"`, `--env cloud`, and `--where "$(pwd -P) @ $(git branch --show-current)"` accurate.
 3. **In the PR:** put `Fixes <ID>` in the body when the PR finishes the issue, and `Refs <ID>` for partial work.  A `Refs` PR never closes it, even with the id in the branch name.  Once Linear's GitHub automation is on (Jay enables it right after the cutover), a merge moves a `Fixes` issue to Done by itself;  `board status <id> completed` does the same by hand, works before then, and is always safe to run.
 4. **When done:** `completed`, or `deployed` only after the production check, with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
 5. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.
