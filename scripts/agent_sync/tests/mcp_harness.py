@@ -18,6 +18,7 @@ import secrets
 import string
 import subprocess
 import sys
+import uuid
 import threading
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,7 @@ SCRIPT = Path(__file__).resolve().parents[2] / "agent-sync"
 FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
 # the real binary resolves its Infisical project from this env or the home file and fails closed
 # without one, so the fake is always driven with a project named.
-FAKE_PROJECT_ID = "11111111-2222-3333-4444-555555555555"
+FAKE_PROJECT_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-afc'))
 MODERN = "2026-07-28"
 AUTO = object()  # McpSession.call:  a write names the session's default identity
 CLIENT_META = {

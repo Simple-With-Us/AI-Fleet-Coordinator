@@ -2,6 +2,7 @@
 import json
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 from agent_sync import zulip as Z
@@ -11,8 +12,8 @@ class Tests(unittest.TestCase):
         for c in (Z._value_cache,Z._names_cache,Z._failures):c.clear();self.addCleanup(c.clear)
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.home=Path(self.tmp.name)
-        self.a={Z.ENV_INFISICAL_PROJECT:'11111111-1111-1111-1111-111111111111'}
-        self.b={Z.ENV_INFISICAL_PROJECT:'22222222-2222-2222-2222-222222222222'}
+        self.a={Z.ENV_INFISICAL_PROJECT:str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-a'))}
+        self.b={Z.ENV_INFISICAL_PROJECT:str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-b'))}
         self.patch=mock.patch.object(Z,'fleet_secrets_bin',return_value='/fixture/fleet-secrets');self.patch.start();self.addCleanup(self.patch.stop)
     def test_values_and_names_do_not_cross_projects(self):
         def run(argv,env):

@@ -1,4 +1,5 @@
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -13,7 +14,7 @@ from agent_sync.service_identity import (
 
 OPERATOR_BOT_ID=43210
 OPERATOR_EMAIL="operator@example.test"
-AFC_PROJECT="11111111-2222-3333-4444-555555555555"
+AFC_PROJECT=str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-afc'))
 ENV={"OPERATOR_ZULIP_USER_ID":str(OPERATOR_BOT_ID),"OPERATOR_ZULIP_EMAIL":OPERATOR_EMAIL,"INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID":AFC_PROJECT,"ZULIP_SITE":"https://realm.example.test"}
 def check_bot(user):
     return operator_bot(user,ENV,12)
@@ -58,6 +59,20 @@ class Tests(unittest.TestCase):
         c = operator_credentials(ENV, fetch=fetch)
         self.assertEqual(c.email, OPERATOR_EMAIL)
         self.assertEqual(seen, ["ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY"])
+
+    def test_missing_site_names_the_real_setting(self):
+        with self.assertRaisesRegex(Z.CredentialError, "ZULIP_SITE"):
+            operator_credentials(dict(ENV, ZULIP_SITE=""), fetch=lambda names: {
+                "ZULIP_OPERATOR_EMAIL": OPERATOR_EMAIL, "ZULIP_OPERATOR_API_KEY": "test-key"})
+
+    def test_unresolved_reference_is_refused_without_leaking_value(self):
+        for field in ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY"):
+            values = {"ZULIP_OPERATOR_EMAIL": OPERATOR_EMAIL, "ZULIP_OPERATOR_API_KEY": "test-key"}
+            values[field] = "${PRIVATE-REFERENCE}"
+            with self.assertRaises(Z.CredentialError) as caught:
+                operator_credentials(ENV, fetch=lambda names: values)
+            self.assertIn(field, str(caught.exception))
+            self.assertNotIn("PRIVATE-REFERENCE", str(caught.exception))
 
     def test_wrong_email_fails(self):
         with self.assertRaises(Z.CredentialError):
@@ -147,3 +162,35 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostNotesAcceptanceTests(unittest.TestCase):
+    def setUp(self):
+        from types import SimpleNamespace
+        from agent_sync.mcp.tools import Tools
+        self.bot = {"bot_owner_id": 12, "is_bot": True, "user_id": OPERATOR_BOT_ID,
+                    "email": OPERATOR_EMAIL}
+        self.tools = Tools.__new__(Tools)
+        self.tools.agent = SimpleNamespace(rt=SimpleNamespace(env=dict(ENV)), users=lambda: [self.bot])
+        self.tools.notes_consumer = "OPERATOR"
+        self.tools.owner_user_id = 12
+
+    def test_host_accepts_only_pinned_operator_and_owner(self):
+        self.assertTrue(self.tools._relay_consumer(OPERATOR_BOT_ID))
+        self.assertEqual(self.tools._relay_consumer_id(), OPERATOR_BOT_ID)
+        for field, wrong in (("bot_owner_id", 99), ("email", "operator-bot@example.test"),
+                             ("user_id", 999), ("is_bot", False)):
+            original = dict(self.bot)
+            self.bot[field] = wrong
+            self.assertFalse(self.tools._relay_consumer(self.bot["user_id"]))
+            self.assertIsNone(self.tools._relay_consumer_id())
+            self.bot = original
+
+    def test_missing_pins_or_owner_fail_closed(self):
+        for pins in ({}, dict(ENV, OPERATOR_ZULIP_USER_ID=""), dict(ENV, OPERATOR_ZULIP_EMAIL="")):
+            self.tools.agent.rt.env = pins
+            self.assertFalse(self.tools._relay_consumer(OPERATOR_BOT_ID))
+            self.assertIsNone(self.tools._relay_consumer_id())
+        self.tools.agent.rt.env = ENV
+        self.tools.owner_user_id = 0
+        self.assertFalse(self.tools._relay_consumer(OPERATOR_BOT_ID))

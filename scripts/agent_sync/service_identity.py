@@ -1,6 +1,7 @@
 """Explicit deterministic service identities, never general agent roster entries."""
 
 import os
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -48,11 +49,11 @@ def operator_credentials(env, home=None, fetch=None):
     if not project:
         raise Z.CredentialError("Set " + PROJECT_ENV)
     names = ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY")
-    where = "OPERATOR service: configured Notes credential store keys %s; no fallback" % ", ".join(
-        names
+    where = "OPERATOR service: configured Notes credential store keys {}; no fallback".format(
+        ", ".join(names)
     )
     if not Z.infisical_enabled(env):
-        raise Z.CredentialError("cannot read %s: AGENT_SYNC_INFISICAL turns Infisical off" % where)
+        raise Z.CredentialError(f"cannot read {where}: AGENT_SYNC_INFISICAL turns Infisical off")
     try:
         if fetch is not None:
             values = fetch(names)
@@ -66,18 +67,25 @@ def operator_credentials(env, home=None, fetch=None):
                     home if home is not None else Path(env.get("HOME") or os.path.expanduser("~")),
                 )
             except Z.CredentialError as exc:  # a reason token, never a value
-                raise Z.CredentialError("%s: %s" % (where, exc)) from None
+                raise Z.CredentialError(f"{where}: {exc}") from None
         selected = {n: values.get(n, "") for n in names}
-        selected["OPERATOR_SITE"] = env.get("ZULIP_SITE", "")
+        unresolved = [
+            n
+            for n, value in selected.items()
+            if isinstance(value, str) and re.fullmatch(r"\$\{[^}]+\}", value.strip())
+        ]
+        if unresolved:
+            raise Z.CredentialError("Operator unresolved reference: " + ", ".join(unresolved))
+        selected["ZULIP_SITE"] = env.get("ZULIP_SITE", "")
         creds = Z.env_credentials(
-            selected, email_env=names[0], key_env=names[1], site_env="OPERATOR_SITE", label=OPERATOR
+            selected, email_env=names[0], key_env=names[1], site_env="ZULIP_SITE", label=OPERATOR
         )
         # The values came from fleet-secrets, not the ambient environment:  report that provenance.
-        creds = replace(creds, source="infisical AFC prod %s %s" % (Z.INFISICAL_PATH, names[1]))
+        creds = replace(creds, source=f"infisical AFC prod {Z.INFISICAL_PATH} {names[1]}")
         if creds.email.casefold() != expected_email:
-            raise Z.CredentialError("%s: not the pinned service bot" % where)
+            raise Z.CredentialError(f"{where}: not the pinned service bot")
         return creds
     except Z.CredentialError:
         raise
     except Exception as exc:  # a fetch must not leak anything through its own message
-        raise Z.CredentialError("%s: %s" % (where, type(exc).__name__)) from None
+        raise Z.CredentialError(f"{where}: {type(exc).__name__}") from None

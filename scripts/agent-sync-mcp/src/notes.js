@@ -305,8 +305,8 @@ export const NOTES_METHODS = {
    * it, so a check mark, a cross mark or a refusal reply counts only from the bot of the configured consumer seat
    * (NOTES_RELAY_CONSUMER, default CLAUDE), resolved to its user id from the realm's users.
    */
-  async notesFleetBot(userId, members) {
-    const user = members.find((m) => m.user_id === userId);
+  async notesFleetBot(userId, members, index = null) {
+    const user = index ? index.get(userId) : members.find((m) => m.user_id === userId);
     if (!user || user.is_bot !== true) return false;
     if (this.config.notesRelayConsumer === "OPERATOR") {
       return Number.isSafeInteger(this.config.operatorZulipUserId) && this.config.operatorZulipUserId > 0
@@ -324,10 +324,11 @@ export const NOTES_METHODS = {
    * message is reached, at most NOTES_REASON_PAGES pages.  Only the consumer's bot counts, so a peer's forged reply
    * is skipped wherever it sits.  "" when none is found.
    */
-  async notesRefusalReason(message, requestId, channelId, members) {
+  async notesRefusalReason(message, requestId, channelId, members, index = null) {
+    index ??= new Map(members.map((member) => [member.user_id, member]));
     let consumer;
     for (const member of members) {
-      if (await this.notesFleetBot(member.user_id, members)) { consumer = member; break; }
+      if (await this.notesFleetBot(member.user_id, members, index)) { consumer = member; break; }
     }
     const narrow = [
       { operator: "channel", operand: channelId },
@@ -342,7 +343,7 @@ export const NOTES_METHODS = {
       );
       for (const reply of rows) {
         const text = (reply.content ?? "").trimStart();
-        if (reply.id > message.id && text.startsWith(prefix) && (await this.notesFleetBot(reply.sender_id, members))) {
+        if (reply.id > message.id && text.startsWith(prefix) && (await this.notesFleetBot(reply.sender_id, members, index))) {
           return clean(text.slice(prefix.length).trim(), 300)[0];
         }
       }
@@ -394,6 +395,7 @@ export const NOTES_METHODS = {
     }
     if (!message) throw new ToolError("not_found", `no relay request with that request_id from this identity in #${RELAY_CHANNEL}`);
     const members = await this.users();
+    const index = new Map(members.map((member) => [member.user_id, member]));
     let done = false;
     let refused = false;
     for (const raw of message.reactions ?? []) {
@@ -401,7 +403,7 @@ export const NOTES_METHODS = {
       if (!parsed.success) continue;
       const reaction = parsed.data;
       const userId = reaction.user_id ?? reaction.user?.id;
-      if (!(await this.notesFleetBot(userId, members))) continue;
+      if (!(await this.notesFleetBot(userId, members, index))) continue;
       const code = reaction.emoji_code ?? "";
       const name = reaction.emoji_name ?? "";
       if (CHECK_NAMES.refusedCodes.includes(code) || CHECK_NAMES.refused.includes(name)) refused = true;
@@ -410,7 +412,7 @@ export const NOTES_METHODS = {
     // The consumer's refusal reply is authoritative on its own:  a cross mark Zulip refused to take must not leave a
     // refused request reading as queued.  A done mark is not second-guessed.
     let reason = null;
-    if (refused || !done) reason = await this.notesRefusalReason(message, requestId, channelId, members);
+    if (refused || !done) reason = await this.notesRefusalReason(message, requestId, channelId, members, index);
     if (reason !== null) refused = true;
     const info = { request_id: requestId, message_id: message.id, status: refused ? "refused" : done ? "done" : "queued" };
     if (refused && reason) info.reason = reason;

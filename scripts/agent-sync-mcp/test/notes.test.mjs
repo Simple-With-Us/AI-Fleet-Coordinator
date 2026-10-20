@@ -465,3 +465,13 @@ test("OPERATOR service consumer trusts only the pinned bot, not display names or
   assert.equal(await tools.notesFleetBot(43210, [{ ...correct, is_bot: false }]), false);
   assert.equal(await tools.notesFleetBot(43210, [{ ...correct, email: "other@example.test" }]), false);
 });
+
+
+test("Notes consumer discovery indexes members once instead of rescanning per candidate", async () => {
+  const { tools } = harness({ consumer: "OPERATOR" });
+  const members = Array.from({ length: 1000 }, (_, i) => ({ user_id: i + 100, is_bot: true, email: `peer${i}@example.test` }));
+  members.push({ user_id: 43210, is_bot: true, email: "operator@example.test", bot_owner_id: tools.config.ownerUserId });
+  members.find = () => { throw new Error("quadratic member rescan"); };
+  tools.zulip.get = async () => ({ messages: [], found_newest: true });
+  assert.equal(await tools.notesRefusalReason({ id: 1, subject: "note" }, "request-123", RELAY_ID, members), null);
+});
