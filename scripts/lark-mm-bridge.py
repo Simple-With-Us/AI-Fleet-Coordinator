@@ -581,9 +581,7 @@ class Bridge:
         if rows is None:
             # The first release persisted a plain list of delivered ids.
             legacy = data.get("seen_message_ids") or []
-            if not isinstance(legacy, list) or not all(
-                isinstance(item, str) for item in legacy
-            ):
+            if not isinstance(legacy, list) or not all(isinstance(item, str) for item in legacy):
                 raise RuntimeError("Lark bridge state seen_message_ids must be a list of strings")
             rows = {message_id: "ok" for message_id in legacy}
         if not isinstance(rows, dict) or not all(
@@ -830,10 +828,7 @@ class Bridge:
             self._record_delivery(message_id, "refused")
             return True
         except DeliveryError as exc:
-            log(
-                "reply failed for %s: outcome=%s detail=%s"
-                % (message_id, exc.outcome, exc.detail)
-            )
+            log("reply failed for %s: outcome=%s detail=%s" % (message_id, exc.outcome, exc.detail))
             if exc.outcome == "terminal":
                 self._record_delivery(message_id, "refused")
                 return True

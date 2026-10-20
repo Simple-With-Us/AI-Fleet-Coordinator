@@ -169,9 +169,7 @@ class FakeSessionScript:
         # ACP v1 returns only stopReason and streams the answer as a
         # session/update.  A fake that invented a result.content made the
         # only end-to-end test cover a branch the real server never takes.
-        self.process.stdout.emit(
-            self.notification("agent_message_chunk", self.answer)
-        )
+        self.process.stdout.emit(self.notification("agent_message_chunk", self.answer))
         return {
             "jsonrpc": "2.0",
             "id": request["id"],
@@ -410,9 +408,7 @@ class BridgeTests(unittest.TestCase):
             },
         ]
         session.buffer_lock = threading.Lock()
-        self.assertEqual(
-            session._collect_text({}), "snake_case answer and a flat one"
-        )
+        self.assertEqual(session._collect_text({}), "snake_case answer and a flat one")
 
     def test_thought_chunks_are_not_answered_to_lark(self):
         """Private reasoning never reaches the chat surface."""
@@ -624,9 +620,7 @@ class BridgeTests(unittest.TestCase):
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
         bridge._handle("not an object")
-        bridge._handle(
-            {"message_id": {"nested": "om_x"}, "chat_id": "oc_1", "content": "hi"}
-        )
+        bridge._handle({"message_id": {"nested": "om_x"}, "chat_id": "oc_1", "content": "hi"})
         bridge._handle({"message_id": "om_x", "chat_id": 17, "content": "hi"})
         bridge._handle({"message_id": "om_x", "chat_id": "oc_1", "content": {"text": "hi"}})
         self.assertTrue(bridge.turns.empty())
@@ -769,9 +763,7 @@ class BridgeTests(unittest.TestCase):
         session._answer_request = lambda message: answered.append(message)
         session.buffer = []
         session.buffer_lock = threading.Lock()
-        session._handle_message(
-            {"jsonrpc": "2.0", "method": "session/request_permission", "id": 4}
-        )
+        session._handle_message({"jsonrpc": "2.0", "method": "session/request_permission", "id": 4})
         session._handle_message({"jsonrpc": "2.0", "id": 11, "result": {"ok": True}})
         self.assertEqual(len(answered), 1)
         self.assertEqual(answered[0]["method"], "session/request_permission")
@@ -866,9 +858,7 @@ class BridgeTests(unittest.TestCase):
         bridge._reply = self.stub_reply_failure("lark-cli could not start")
         for attempt in range(bridge_mod.MAX_REPLY_ATTEMPTS - 1):
             self.assertFalse(bridge._send("om_1", "hello", attempt=attempt), attempt)
-        self.assertTrue(
-            bridge._send("om_1", "hello", attempt=bridge_mod.MAX_REPLY_ATTEMPTS - 1)
-        )
+        self.assertTrue(bridge._send("om_1", "hello", attempt=bridge_mod.MAX_REPLY_ATTEMPTS - 1))
         # Left pending either way, so a restart can still claim it.
         self.assertEqual(bridge.rows["om_1"], "pending")
 
@@ -895,9 +885,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_the_first_release_state_still_loads(self):
         bridge = self.bare_bridge()
-        bridge.state_file.write_text(
-            json.dumps({"seen_message_ids": ["om_old", "om_newer"]})
-        )
+        bridge.state_file.write_text(json.dumps({"seen_message_ids": ["om_old", "om_newer"]}))
         bridge._load_state()
         self.assertEqual(bridge.rows, {"om_old": "ok", "om_newer": "ok"})
 
@@ -978,9 +966,7 @@ class BridgeTests(unittest.TestCase):
             },
         )
         session._answer_request({"jsonrpc": "2.0", "id": 100, "method": "fs/write"})
-        self.assertEqual(
-            json.loads(process.stdin.written[-1])["error"]["code"], -32601
-        )
+        self.assertEqual(json.loads(process.stdin.written[-1])["error"]["code"], -32601)
 
     def test_start_refuses_to_run_without_a_pinned_sender(self):
         """No pinned owner means every Lark user can drive the seat."""
