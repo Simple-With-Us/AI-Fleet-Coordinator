@@ -26,7 +26,7 @@ class Tests(unittest.TestCase):
                 {
                     "is_bot": True,
                     "user_id": OPERATOR_BOT_ID,
-                    "email": "admin-bot@simplewithus.zulipchat.com",
+                    "email": "fixture-old-admin@example.test",
                 }
             )
         )

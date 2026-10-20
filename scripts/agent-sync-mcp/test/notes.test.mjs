@@ -459,7 +459,7 @@ test("OPERATOR service consumer trusts only the pinned bot, not display names or
   const { tools } = harness({ consumer: "OPERATOR" });
   const correct = { is_bot: true, user_id: 1217148, email: "operator-bot@simplewithus.zulipchat.com", full_name: "[Operator]" };
   assert.equal(await tools.notesFleetBot(1217148, [correct]), true);
-  assert.equal(await tools.notesFleetBot(1217148, [{ ...correct, email: "admin-bot@simplewithus.zulipchat.com" }]), false);
+  assert.equal(await tools.notesFleetBot(1217148, [{ ...correct, email: "fixture-old-admin@example.test" }]), false);
   assert.equal(await tools.notesFleetBot(1, [{ ...correct, user_id: 1 }]), false);
   assert.equal(await tools.notesFleetBot(1217148, [{ ...correct, is_bot: false }]), false);
   assert.equal(await tools.notesFleetBot(1217148, [{ ...correct, email: "other@example.test" }]), false);
