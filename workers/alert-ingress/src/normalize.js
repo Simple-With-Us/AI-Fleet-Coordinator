@@ -117,16 +117,20 @@ export function fromBetterStack(payload) {
   // The key must name the monitor, not the incident: `data.id` is per-outage,
   // so a default delivery without `relationships.monitor` would mint a new key
   // every time and never resolve the previous one.  Prefer the monitor identity
-  // the URL carries, and only fall back to the incident id when nothing else
-  // identifies the check.
+  // the URL carries, then use the monitored URL or check name.
   const id = first(
     monitor.id,
     data.check_id,
     data.monitor_id,
-    (url.match(/\/([a-f0-9]{16,})/i) || [])[1],
-    data.id,
+    (url.match(/\/monitors\/([^/?#]+)/i) || [])[1],
   );
-  const key = id ? `betterstack:${id}` : `betterstack:${name.toLowerCase()}`;
+  // Default incident URLs identify the monitored resource even without an ID.
+  // Never use the per-outage incident ID when a stable URL is available.
+  const key = id
+    ? `betterstack:${id}`
+    : url
+      ? `betterstack:url:${url}`
+      : `betterstack:${name.toLowerCase()}`;
 
   return {
     source: "betterstack",

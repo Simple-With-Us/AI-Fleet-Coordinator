@@ -229,9 +229,17 @@ test("a default Better Stack incident keys on the monitor, not the incident", ()
   assert.equal(decide({ ...open.state, phase: "alerting" }, recovery, 2000).action, "resolve");
 });
 
-test("a Better Stack payload with no monitor identity still falls back to data.id", () => {
+test("a Better Stack payload with no monitor identity uses its stable name", () => {
   const e = normalize("betterstack", {
     data: { type: "incident", id: "77001", attributes: { status: "triggered" } },
   });
-  assert.equal(e.key, "betterstack:77001");
+  assert.equal(e.key, "betterstack:betterstack check");
+});
+
+test("default Better Stack monitored URLs stay stable across incident IDs", () => {
+  for (const url of ["https://example.com/health", "https://uptime.betterstack.com/team/1/monitors/99887766"]) {
+    const event = (id) => normalize("betterstack", {data: {id, attributes: {url, resolved_at: null}}});
+    assert.equal(event("one").key, event("two").key);
+    assert.notEqual(event("one").key, "betterstack:one");
+  }
 });
