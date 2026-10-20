@@ -38,7 +38,7 @@ import re
 import shutil
 import stat as stat_module
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .checks import CheckContext, CheckError, build_result, expand_target, iso_utc
@@ -326,7 +326,7 @@ def check_credential_stat(rule: Rule, platform: str, ctx: CheckContext) -> Check
         )
 
     mode = mode_string(info.st_mode)
-    mtime = iso_utc(datetime.fromtimestamp(info.st_mtime, tz=timezone.utc))
+    mtime = iso_utc(datetime.fromtimestamp(info.st_mtime, tz=UTC))
     observed = ObservedState(
         present=True,
         mode=mode,

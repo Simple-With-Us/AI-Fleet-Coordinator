@@ -10,7 +10,7 @@ from __future__ import annotations
 import inspect
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest import mock
 
 from fleet_config import collectors
@@ -58,7 +58,7 @@ class CollectorCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.ctx = CheckContext(
             home=self.tmp.name,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
             timeout=10,
         )
 

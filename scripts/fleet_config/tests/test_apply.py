@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import subprocess
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest import mock
 
 from fleet_config import aggregator, touchid
@@ -35,7 +35,7 @@ from fleet_config.types import (
 
 from ._fake import FleetTestCase, make_manifest, make_rule, registry_with, snapshot_tree
 
-MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=timezone.utc)
+MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=UTC)
 
 GUARD_REL = ".minimax/plugins/fleet-guard/hooks/hooks.json"
 GUARD_MARKER = "deny the sentinel write"

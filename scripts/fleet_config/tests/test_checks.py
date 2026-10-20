@@ -14,7 +14,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fleet_config import contract
@@ -83,7 +83,7 @@ def make_context(home: str) -> CheckContext:
     """A context pinned to one home and one clock."""
     return CheckContext(
         home=home,
-        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
     )
 
 

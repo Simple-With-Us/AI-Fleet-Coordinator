@@ -15,7 +15,7 @@ import shlex
 import stat
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest import mock
 
 from fleet_config import proof
@@ -128,7 +128,7 @@ class FakeHookCase(unittest.TestCase):
         self.record = os.path.join(self.home, "payload.json")
         self.ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
             timeout=10,
         )
 
@@ -212,7 +212,7 @@ class L1DenyTests(FakeHookCase):
     def test_the_guard_off_switch_is_named_in_the_reason(self):
         ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
             timeout=10,
             env={"FLEET_LANE_GUARD": "off"},
         )
@@ -227,7 +227,7 @@ class L1TimeoutTests(FakeHookCase):
     def test_a_hanging_hook_times_out(self):
         ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
             timeout=1,
         )
         outcome = proof.run_l1_probe("claude", ctx, hook_command=self.hook("sleep"))
@@ -238,7 +238,7 @@ class L1TimeoutTests(FakeHookCase):
     def test_the_timeout_argument_overrides_the_context(self):
         ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
             timeout=600,
         )
         outcome = proof.run_l1_probe("claude", ctx, hook_command=self.hook("sleep"), timeout=1)
