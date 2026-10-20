@@ -26,9 +26,9 @@ The loop is:
         -> lark-cli im +messages-reply              (reply to the same message)
 
 One session per chat means a group chat and a one-to-one chat do not share
-context, and each keeps its own conversation.  Turns inside one chat are
-serialized, so a second message waits for the first answer instead of racing
-it.  In a group chat the bot answers only when it is mentioned, so it does not
+context, and each keeps its own conversation.  One global FIFO worker serializes
+turns across chats, deliberately bounding model concurrency to one.  A queued
+message waits for the previous answer, including turns in another chat.  In a group chat the bot answers only when it is mentioned, so it does not
 talk over the humans; in a one-to-one chat every message is for the bot.
 
 Runs on the Mac's /usr/bin/python3 (3.9): stdlib only, no 3.10+ syntax.
@@ -44,6 +44,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -481,14 +482,31 @@ class MiniMaxSession:
             # always nested, so the strict form turned every deviation into an
             # empty reply instead of a partial answer.  Mirrors
             # extract_agent_text in scripts/grok-acp-runtime/leader-client.py.
-            params = message.get("params") or {}
-            update = params.get("update") if isinstance(params.get("update"), dict) else params
-            kind = update.get("sessionUpdate") or update.get("session_update") or ""
+            params = message.get("params")
+            if not isinstance(params, dict):
+                raise ValueError("ACP session/update params must be an object")
+            if "update" in params:
+                update = params["update"]
+                if not isinstance(update, dict):
+                    raise ValueError("ACP session/update params.update must be an object")
+            else:
+                update = params
+            kind = update.get("sessionUpdate")
+            if kind is None:
+                kind = update.get("session_update")
+            if not isinstance(kind, str):
+                raise ValueError("ACP session/update discriminator must be a string")
             if kind != "agent_message_chunk":
                 continue
-            content = update.get("content") or {}
-            if content.get("type") == "text" and content.get("text"):
-                text += content["text"]
+            content = update.get("content")
+            if isinstance(content, str):
+                text += content
+            elif isinstance(content, dict):
+                chunk = content.get("text")
+                if content.get("type", "text") == "text" and isinstance(chunk, str):
+                    text += chunk
+            elif content is not None:
+                raise ValueError("ACP agent-message content must be text or an object")
         return text
 
     def prompt(self, message):
@@ -534,6 +552,8 @@ class Bridge:
         # sorting them evicts by spelling rather than by age.
         self.rows = {}
         self.seen_lock = threading.Lock()
+        self.active_ids = set()
+        self.state_lock = threading.Lock()
         self.state_dir = Path(args.state_dir)
         if self.state_dir.is_symlink():
             raise ValueError("refusing a symlinked state directory: %s" % self.state_dir)
@@ -550,9 +570,7 @@ class Bridge:
         if rows is None:
             # The first release persisted a plain list of delivered ids.
             legacy = data.get("seen_message_ids") or []
-            if not isinstance(legacy, list) or not all(
-                isinstance(item, str) for item in legacy
-            ):
+            if not isinstance(legacy, list) or not all(isinstance(item, str) for item in legacy):
                 raise RuntimeError("Lark bridge state seen_message_ids must be a list of strings")
             rows = {message_id: "ok" for message_id in legacy}
         if not isinstance(rows, dict) or not all(
@@ -581,22 +599,37 @@ class Bridge:
         self.rows = self._parse_state(data)
 
     def _save_state(self):
-        with self.seen_lock:
-            rows = list(self.rows.items())
-        # Unresolved rows are kept whatever their age: dropping a pending or
-        # unknown row is what loses a reply or replays one.  Only delivered
-        # ids age out, and the newest ones are the last to go.
-        kept = [pair for pair in rows if pair[1] != "ok"]
-        room = DEDUP_WINDOW - len(kept)
-        if room > 0:
-            kept.extend([pair for pair in rows if pair[1] == "ok"][-room:])
-        try:
-            tmp = str(self.state_file) + ".tmp"
-            with open(tmp, "w") as handle:
-                json.dump({"messages": dict(kept)}, handle)
-            os.replace(tmp, self.state_file)
-        except Exception as exc:
-            log("could not write state: %s" % exc)
+        if not hasattr(self, "state_lock"):
+            self.state_lock = threading.Lock()
+        with self.state_lock:
+            with self.seen_lock:
+                rows = list(self.rows.items())
+            kept = [pair for pair in rows if pair[1] != "ok"]
+            room = DEDUP_WINDOW - len(kept)
+            if room > 0:
+                kept.extend([pair for pair in rows if pair[1] == "ok"][-room:])
+            tmp = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", dir=str(self.state_file.parent), delete=False
+                ) as handle:
+                    tmp = handle.name
+                    json.dump({"messages": dict(kept)}, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp, self.state_file)
+                return True
+            except Exception as exc:
+                log("could not persist bridge state: %s" % type(exc).__name__)
+                return False
+            finally:
+                if tmp is not None:
+                    try:
+                        os.unlink(tmp)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        log("could not remove temporary bridge state")
 
     def _claim(self, message_id):
         """Claim a message id for a turn, or report why it must not run.
@@ -608,6 +641,10 @@ class Bridge:
         again costs a model run, but it cannot double-post.
         """
         with self.seen_lock:
+            if not hasattr(self, "active_ids"):
+                self.active_ids = set()
+            if message_id in self.active_ids:
+                return False
             state = self.rows.get(message_id)
             if state == "unknown":
                 log("not replaying %s: its delivery outcome is unknown" % message_id)
@@ -615,6 +652,7 @@ class Bridge:
             if state in ("ok", "refused"):
                 return False
             self.rows[message_id] = "pending"
+            self.active_ids.add(message_id)
             return True
 
     def _record_delivery(self, message_id, state):
@@ -655,8 +693,7 @@ class Bridge:
         if "could not start" in detail:
             return "retryable"
         if re.search(
-            r"(?i)(connection (refused|reset|aborted)|broken pipe|"
-            r"network (is )?(unreachable|error)|temporarily unavailable)",
+            r"(?i)(connection refused|network (is )?unreachable)",
             detail,
         ):
             return "retryable"
@@ -737,7 +774,7 @@ class Bridge:
             return True
         bot_open_id = self.args.bot_open_id
         if not bot_open_id:
-            return True
+            return False
         mentions = event.get("mentions")
         # A mentions field that is not a list of objects is a frame this bridge
         # does not understand, and reading it as "not mentioned" is the safe
@@ -762,10 +799,15 @@ class Bridge:
             # `continue` past the task_done() and the state save, so a turn
             # that errored left the queue counter drifting and its dedup row
             # unwritten -- the next start would answer the same message again.
+            retry = False
             try:
-                if not self._turn(message_id, chat_id, content, attempt):
+                retry = not self._turn(message_id, chat_id, content, attempt)
+                if retry:
                     self.turns.put((message_id, chat_id, content, sender_id, attempt + 1))
             finally:
+                if not retry:
+                    with self.seen_lock:
+                        getattr(self, "active_ids", set()).discard(message_id)
                 self.turns.task_done()
                 self._save_state()
 
@@ -791,6 +833,13 @@ class Bridge:
         or in a state we refuse to replay.  False means the reply provably
         never reached Lark and the attempt budget is not spent yet.
         """
+        # Persist uncertainty before the irreversible write.  A crash after Lark accepts
+        # but before the terminal save must never make a pending row replayable.
+        self._record_delivery(message_id, "unknown")
+        if not self._save_state():
+            self._record_delivery(message_id, "pending")
+            log("reply held for %s: state persistence unavailable" % message_id)
+            return True
         try:
             self._reply(message_id, text)
         except SecretRefusal:
@@ -799,10 +848,7 @@ class Bridge:
             self._record_delivery(message_id, "refused")
             return True
         except DeliveryError as exc:
-            log(
-                "reply failed for %s: outcome=%s detail=%s"
-                % (message_id, exc.outcome, exc.detail)
-            )
+            log("reply failed for %s: outcome=%s detail=%s" % (message_id, exc.outcome, exc.detail))
             if exc.outcome == "terminal":
                 self._record_delivery(message_id, "refused")
                 return True
@@ -833,23 +879,36 @@ class Bridge:
             # closes the pipe, which ends the read.
             reader.stop()
 
-        signal.signal(signal.SIGTERM, handle_signal)
-        signal.signal(signal.SIGINT, handle_signal)
-
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        previous_sigint = signal.getsignal(signal.SIGINT)
         try:
+            signal.signal(signal.SIGTERM, handle_signal)
+            signal.signal(signal.SIGINT, handle_signal)
             for event in reader.events():
                 if self.stopping.is_set():
                     break
                 self._handle(event)
         finally:
-            reader.stop()
-            with self.sessions_lock:
-                sessions = list(self.sessions.values())
-                self.sessions.clear()
-            for session in sessions:
-                session.close()
-            self._save_state()
-            log("bridge stopped")
+            self.stopping.set()
+            try:
+                try:
+                    reader.stop()
+                finally:
+                    with self.sessions_lock:
+                        sessions = list(self.sessions.values())
+                        self.sessions.clear()
+                    for session in sessions:
+                        try:
+                            session.close()
+                        except Exception as exc:
+                            log("session cleanup failed: %s" % type(exc).__name__)
+                    self._save_state()
+                    log("bridge stopped")
+            finally:
+                try:
+                    signal.signal(signal.SIGTERM, previous_sigterm)
+                finally:
+                    signal.signal(signal.SIGINT, previous_sigint)
 
 
 def build_parser():
