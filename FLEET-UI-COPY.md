@@ -202,9 +202,9 @@ destination:
   nbsp character, right after the period, then a normal space, outside code spans.  Emit that
   character in the shell, never type it, because a U+00A0 written into a message is normalized
   away the same way a double space is:
-  `printf 'Sentence one.\302\240 Sentence two.\n'`, where `\302\240` is the UTF-8 encoding of
-  U+00A0, then check the result with `grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l`, which must
-  not print `0`.  Jay:  "I think you need to do nbsp for chats or something", and "I have
+  `printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt`, where `\302\240` is the UTF-8
+  encoding of U+00A0 (the redirect is what puts the text the check reads in the file), then check
+  those same bytes with `grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l`, which must not print `0`.  Jay:  "I think you need to do nbsp for chats or something", and "I have
   confirmed this before with agents and knew you needed nbsp already".  Two ASCII spaces
   collapse in that pane, and the
   `&nbsp;` ENTITY renders as the six literal characters, which is worse than no gap at all.
