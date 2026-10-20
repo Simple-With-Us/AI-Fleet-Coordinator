@@ -11,10 +11,13 @@ For a CLAUDE-only host, keep `[daemon] instance = "mac"` and add only:
 ```toml
 [seat.CLAUDE]
 bot = "Claude"
+creds = "infisical"
 wake = "inbox"
 ```
 
-This captures authorized messages without enabling headless wakes.  Configure the intended wake adapter only with explicit owner authorization and after its probe, pin and status checks succeed.  Run `agent-sync daemon init` using the authorized identity to pin the owner, and verify the host's hook/session registration before expecting live delivery.  A successful installation or an active service does not prove Zulip authentication, native delivery, or wake receipt.
+This captures authorized messages without enabling headless wakes.  Configure the intended wake adapter only with explicit owner authorization and after its probe, pin and status checks succeed.  Run `agent-sync daemon init` using the authorized identity to pin the owner, and verify the host's hook/session registration before expecting live delivery.  For live delivery, use the plugin from the installed runtime: `claude plugin install agent-sync --marketplace /root/.local/share/fleet-cli/current --scope user`.  This preserves unrelated user settings and hooks.  Existing sessions may need a normal session restart before loading newly installed plugin hooks; never interrupt an owner session.  Verify terminal rewake in isolated scratch state with two sessions, then set `[platform.claude-code] rewake_verified_cli = true` in the live config only after the receipt check passes.  Keep Desktop verification separate.
+
+A successful installation or an active service does not prove Zulip authentication, native delivery, or wake receipt.
 
 After configuration and approved authentication are ready, activate within the authorized handoff:
 
