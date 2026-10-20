@@ -1086,18 +1086,26 @@ def _l2_outcome(
     )
 
 
-def _l2_has_deny_evidence(text: str, marker: str) -> bool:
-    """True when a transcript holds the guard's deny.
+def _l2_has_deny_evidence(text: str) -> bool:
+    """True when a transcript holds the GUARD'S deny, and not merely a denial.
 
-    The guard's own sentence is the evidence, because a permission denial from the
-    platform would not carry it.  The weaker check (the marker plus a deny word) is
-    a fallback for a guard whose wording changed, and it is only reached when the
-    guard's sentence is absent.
+    The evidence is the guard's own sentence,  which names the rule it applied and the
+    destination it refused.  A platform permission rejection, a model refusal or a git
+    error all say "denied" too,  and the sentinel destination is echoed in the prompt
+    and in a verbose transcript,  so a transcript containing the marker plus a deny word
+    proves nothing:  it would accept a canary where the hook never fired at all.
+
+    So the marker alone is not evidence,  and a deny word alone is not evidence.  The
+    guard's sentence is the only thing that is,  and the marker must appear with it so
+    the deny is attributable to THIS probe rather than to an earlier one.  A guard whose
+    wording changes would stop being provable here,  and that is the safe direction to
+    fail:  an L2 proof is better absent than wrong.
     """
     if L2_DENY_PHRASE in text:
         return True
-    lowered = text.lower()
-    return marker in text and ("deny" in lowered or "denied" in lowered)
+    # A guard that words the refusal differently is not provable at L2.  Say so rather
+    # than accept any sentence that merely mentions a denial.
+    return False
 
 
 def run_l2_canary(
@@ -1160,7 +1168,7 @@ def run_l2_canary(
         )
     text = run.stdout.decode("utf-8", "replace") + "\n" + run.stderr.decode("utf-8", "replace")
     marker = os.path.basename(destination)
-    if _l2_has_deny_evidence(text, marker):
+    if _l2_has_deny_evidence(text):
         return L2Outcome(
             level=ProofLevel.L2,
             passed=True,

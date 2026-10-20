@@ -701,6 +701,28 @@ class L2CanaryTests(FakeHookCase):
                 self.assertIn("{prompt}", spec.argv)
                 self.assertGreater(spec.timeout, 0)
 
+    def test_a_transcript_merely_mentioning_a_denial_is_not_evidence(self):
+        # The sentinel destination is echoed in the prompt and in a verbose transcript,
+        # and a platform permission rejection, a model refusal or a git error all say
+        # "denied".  A transcript with the marker and a deny word but NOT the guard's
+        # own sentence proves nothing, so it must not accept an L2 proof:  that would
+        # pass a canary where the hook never fired at all.
+        marker = "fleet-config-l2-sentinel-destination"
+        transcript = (
+            "The assistant attempted the clone.\n"
+            "Error: permission denied while writing to %s\n"
+            "fatal: could not read from remote repository\n" % marker
+        )
+        self.assertFalse(proof._l2_has_deny_evidence(transcript))
+
+    def test_the_guard_own_sentence_is_evidence(self):
+        marker = "fleet-config-l2-sentinel-destination"
+        transcript = (
+            "Blocked: fleet-repo checkouts are not allowed in temp directories, and this "
+            "command would put a clone of the fleet repo at %s\n" % marker
+        )
+        self.assertTrue(proof._l2_has_deny_evidence(transcript))
+
 
 class ResultTests(FakeHookCase):
     """A proof outcome becomes a checked result."""

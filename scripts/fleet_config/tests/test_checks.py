@@ -287,6 +287,22 @@ class HooksTests(TempHome):
             }
         }
 
+    def test_an_absent_config_is_still_missing_when_the_rule_expects_a_hook(self):
+        # The inversion applies ONLY to a rule that expects absence.  A rule that
+        # expects a hook to be registered must still read MISSING for an absent file,
+        # which is failing,  so the two cases cannot be confused.
+        rule = make_rule(
+            CheckType.HOOK_REGISTERED,
+            "~/.claude/settings.json",
+            detail="PreToolUse",
+            expected=ExpectedState(description="d", names=("lane-guard",)),
+            kind=ConfigKind.HOOKS,
+        )
+        result = check_hook_registered(rule, "claude", self.ctx)
+        self.assertIs(result.state, CheckState.MISSING)
+        self.assertIs(result.reason_code, ReasonCode.MISSING)
+        self.assertTrue(contract.is_failing(result))
+
     def test_hook_registered_passes_on_the_claude_shape(self):
         self.write_json(".claude/settings.json", self.claude_settings())
         rule = make_rule(
