@@ -6,11 +6,13 @@ Provenance events carry metadata - note ids, target seats, outcomes - never cred
 
 Standard library only, Python 3.11+.
 """
+
 from __future__ import annotations
 
 import json
 import re
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from .operator_registry import SessionRegistry
 
