@@ -162,6 +162,12 @@ jobs:
     - name: Fleet skill identity tests
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # The sentence-gap converter, read from the one home:  its shape (one or more
+    # spaces, the numbered-list lookbehind, the markup group) and its behaviour on
+    # every shape a body can hold, plus the check that no copy has drifted.
+    - name: Sentence gap converter tests
+      run: |
+        cd scripts && python3 -m unittest test_sentence_gap_converter -v
     # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
