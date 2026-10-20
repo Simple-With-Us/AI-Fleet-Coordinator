@@ -13,7 +13,7 @@ The rules under test,  from the design document's section 4:
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fleet_config import aggregator, contract
 from fleet_config.checks import CheckContext, CheckError, CheckRegistry
@@ -31,7 +31,7 @@ from fleet_config.types import (
 
 from ._fake import make_manifest, make_rule, registry_with, result_check
 
-MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=UTC)
+MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=timezone.utc)
 
 
 def context(home="/tmp/fleet-config-home", timeout: int = 10) -> CheckContext:

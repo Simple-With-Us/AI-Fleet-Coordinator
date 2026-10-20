@@ -14,7 +14,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fleet_config import contract
@@ -83,7 +83,7 @@ def make_context(home: str) -> CheckContext:
     """A context pinned to one home and one clock."""
     return CheckContext(
         home=home,
-        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
+        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -991,7 +991,7 @@ class PackagingTests(unittest.TestCase):
         Copy only ``fleet_config`` (no tests, no ``fleet_lanes``) and import it.  This
         is what keeps the package free of a runtime import of the installer engines,
         and it also catches a spelling that only the newest interpreter has, such as
-        ``datetime.UTC``, which breaks on the fleet's 3.9 Macs and nowhere else.
+        ``datetime.timezone.utc``, which breaks on the fleet's 3.9 Macs and nowhere else.
         """
         import pathlib
         import shutil

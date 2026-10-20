@@ -25,7 +25,7 @@ import hashlib
 import os
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .types import (
@@ -121,14 +121,14 @@ def resolve_home(home: os.PathLike[str] | None = None) -> os.PathLike[str]:
 
 def utc_now() -> datetime:
     """The current time, timezone-aware and in timezone.utc."""
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def iso_utc(moment: datetime) -> str:
     """A timestamp in the pinned format:  ISO 8601 timezone.utc with a ``Z`` suffix."""
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=UTC)
-    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def sha256_text(text: str) -> str:

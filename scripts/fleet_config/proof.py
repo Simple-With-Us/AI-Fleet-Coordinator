@@ -320,6 +320,11 @@ MAX_COMMAND_CHARS = 4096
 # The events the harnesses name their hooks under.  A config that keeps hooks in named
 # groups is read only where one of these is the key, so a sibling section is never
 # mistaken for a hook list.
+#
+# The list holds the Claude-family names plus the ones the other harnesses use for the
+# same moment:  Cursor gates its tool calls on `beforeShellExecution`,  which is the
+# only event where its guard hook can fire,  so leaving it out would make the probe
+# read no command from a Cursor config that plainly has one.
 HOOK_EVENTS = (
     "PreToolUse",
     "PostToolUse",
@@ -330,6 +335,9 @@ HOOK_EVENTS = (
     "SessionEnd",
     "Stop",
     "SubagentStop",
+    "beforeShellExecution",
+    "beforeTool",
+    "afterTool",
 )
 
 

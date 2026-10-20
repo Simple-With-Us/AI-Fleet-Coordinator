@@ -28,7 +28,7 @@ import os
 import stat
 import tempfile
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from . import contract
@@ -321,7 +321,7 @@ def report_is_stale(report: StatusReport, now: datetime | None = None) -> bool:
     """
     from . import aggregator
 
-    moment = now if now is not None else datetime.now(UTC)
+    moment = now if now is not None else datetime.now(timezone.utc)
     return any(aggregator.result_is_expired(result, moment) for result in report.results)
 
 
