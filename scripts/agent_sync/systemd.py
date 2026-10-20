@@ -212,9 +212,10 @@ def install(
             temporary = fh.name
             fh.write(data)
             fh.flush()
+            # Set the owner-only mode before the fsync so contents and mode reach the disk together.
+            os.fchmod(fh.fileno(), 0o600)
             os.fsync(fh.fileno())
         try:
-            os.chmod(temporary, 0o600)
             os.replace(temporary, target)
         finally:
             if os.path.exists(temporary):
