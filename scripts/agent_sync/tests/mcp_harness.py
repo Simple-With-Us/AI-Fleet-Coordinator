@@ -32,6 +32,9 @@ from agent_sync.tests.harness import SESSION, Harness, write_rc
 
 SCRIPT = Path(__file__).resolve().parents[2] / "agent-sync"
 FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
+# the real binary resolves its Infisical project from this env or the home file and fails closed
+# without one, so the fake is always driven with a project named.
+FAKE_PROJECT_ID = "11111111-2222-3333-4444-555555555555"
 MODERN = "2026-07-28"
 AUTO = object()  # McpSession.call:  a write names the session's default identity
 CLIENT_META = {
@@ -262,6 +265,7 @@ class McpHarness(Harness):
             "CLAUDE_CODE_SESSION_ID": SESSION,
             "FLEET_SECRETS_BIN": str(FAKE_FLEET_SECRETS),
             "FAKE_FLEET_SECRETS_FILE": str(self.fake_secrets_file),
+            "INFISICAL_FLEET_OPS_PROJECT_ID": FAKE_PROJECT_ID,
         }
         base.update({k: v for k, v in overrides.items() if v is not None})
         for name, value in overrides.items():

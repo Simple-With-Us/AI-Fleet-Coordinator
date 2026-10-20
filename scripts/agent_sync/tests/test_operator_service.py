@@ -1,9 +1,12 @@
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from agent_sync import config as C
 from agent_sync import identity as I
 from agent_sync import zulip as Z
 from agent_sync.service_identity import (
+    AFC_PROJECT,
     OPERATOR_BOT_ID,
     OPERATOR_EMAIL,
     operator_bot,
@@ -68,6 +71,23 @@ class Tests(unittest.TestCase):
         with self.assertRaises(Z.CredentialError) as c:
             operator_credentials({}, fetch=fetch)
         self.assertNotIn("DO-NOT-LOG", str(c.exception))
+
+    def test_the_production_reader_is_pinned_to_the_afc_project_and_the_two_names(self):
+        seen = {}
+
+        def fake(names, env, home):
+            seen["names"] = names
+            seen["env"] = dict(env)
+            return {"ZULIP_OPERATOR_EMAIL": OPERATOR_EMAIL, "ZULIP_OPERATOR_API_KEY": "test-key"}
+
+        with mock.patch.object(Z, "_default_infisical_fetch", fake):
+            c = operator_credentials({"HOME": "/tmp"}, Path("/tmp"))
+        self.assertEqual(c.email, OPERATOR_EMAIL)
+        self.assertEqual(
+            seen["names"], ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY")
+        )
+        # the AFC /zulip store, not Fleet-OPS /zulip and not the ambient environment
+        self.assertEqual(seen["env"][Z.ENV_INFISICAL_PROJECT], AFC_PROJECT)
 
     def test_no_env_fallback(self):
         from types import SimpleNamespace as NS

@@ -498,14 +498,10 @@ def _project_scope(env: Mapping[str, str], home: Path) -> str:
     """The Infisical project this read targets, for cache keying only (never echoed).  One binary can
     serve several projects (the AFC /zulip the Notes service reads, the Fleet-OPS /zulip the seats
     read), so values, names and outages are kept apart per project:  an outage in one store must not
-    refuse a fetch from a healthy one."""
-    value = (env.get(ENV_INFISICAL_PROJECT) or "").strip()
-    if value:
-        return value
-    try:
-        return (home / INFISICAL_PROJECT_FILE).read_text(encoding="utf-8").strip().splitlines()[0].strip()
-    except (OSError, UnicodeDecodeError, IndexError):
-        return ""
+    refuse a fetch from a healthy one.  Fails closed like infisical_project_id, which resolves the same
+    two places and is what fleet-secrets itself does:  an unresolvable project is never cached under
+    an empty scope, and no value can be fetched without one."""
+    return infisical_project_id(env, home)
 
 
 def _recent_failure(key: tuple[str, ...], now: float) -> str | None:
