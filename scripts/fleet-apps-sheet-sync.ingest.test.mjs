@@ -115,6 +115,9 @@ test("the ingest's skip flag and timeout are fleet knobs, not ambient env vars",
   });
   assert.equal(settings[INGEST_ENABLED_KNOB], "false");
   assert.equal(settings[INGEST_TIMEOUT_KNOB], "60000");
+  assert.equal(ingestEnabled(settings), false);
+  assert.equal(ingestTimeoutMs(settings), 60000);
+  assert.equal(ingestEnabled({ [INGEST_ENABLED_KNOB]: "true" }), true);
   assert.equal(fleetKnob("NOT_A_KNOB"), undefined);
 });
 

@@ -845,16 +845,16 @@ export function fleetKnob(name) {
   return KNOB_CACHE[name];
 }
 
-export function ingestEnabled() {
-  return fleetKnob(INGEST_ENABLED_KNOB) !== "false";
+export function ingestEnabled(values) {
+  return (values ? values[INGEST_ENABLED_KNOB] : fleetKnob(INGEST_ENABLED_KNOB)) !== "false";
 }
 
 // The doc source covers every document the fleet owns, so a hung embedder or a Qdrant call would
 // otherwise block the sheet sync with no bound at all.  A full corpus walk took about 43 minutes
 // the last time it ran, so the default is generous; Infisical can lower it when a run must be
 // bounded tighter.
-export function ingestTimeoutMs() {
-  const ms = Number(fleetKnob(INGEST_TIMEOUT_KNOB));
+export function ingestTimeoutMs(values) {
+  const ms = Number(values ? values[INGEST_TIMEOUT_KNOB] : fleetKnob(INGEST_TIMEOUT_KNOB));
   return Number.isFinite(ms) && ms > 0 ? ms : Number(KNOB_DEFAULTS[INGEST_TIMEOUT_KNOB]);
 }
 

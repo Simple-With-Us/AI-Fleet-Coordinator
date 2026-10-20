@@ -272,6 +272,16 @@ REGISTRY: tuple[Spec, ...] = (
         "trusts a mark or a refusal reply only from it;  a local [notes_relay] seat that differs is ignored and "
         "the listener does not consume;  the Worker gets the same value as a binding at deploy",
     ),
+    _S(
+        "APPLE_NOTES_PIN_RETRY",
+        "bool",
+        "N1",
+        default=True,
+        safe=False,
+        note="true lets apple-notes-coding.sh run the pin or unpin Shortcut a second time when the first run misses the note "
+        "index;  false keeps the single attempt;  the APPLE_NOTES_PIN_RETRY environment variable is only a "
+        "local narrowing override and can turn the retry off, never on",
+    ),
     # C7 consult
     _S(
         "CONSULT_ENABLED",
