@@ -2517,7 +2517,7 @@ class Daemon:
         mcode = A.resolve_mcode(runner.cfg.mcode, self.wake_path)
         if not mcode:
             return None, "no_mcode"
-        state = A.mcode_pin_state(runner.paths, mcode)
+        state = A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model)
         if not state["pinned"]:
             return None, str(state["why"] or "not_pinned")
         return str(state["mcode"]), None
@@ -2583,7 +2583,7 @@ class Daemon:
         )
         if runner.cfg.fallback == "mcode":
             return self.mcode_runner.run(
-                A.mcode_argv(binary),
+                A.mcode_argv(binary, runner.cfg.mcode_model),
                 A.mcode_env(self.env, self.home, self.wake_path, seat=runner.seat),
                 runner.paths.wake_dir,
                 prompt,
@@ -4849,6 +4849,13 @@ class Daemon:
                 if runner.cfg.wake == "muse"
                 else None
             )
+            # The fallback is opt-in (`fallback = "mcode"`), so its pin is only read for a seat that
+            # actually configured one -- the same gate `_pinned_fallback` uses.
+            mcode = (
+                A.resolve_mcode(runner.cfg.mcode, self.wake_path)
+                if runner.cfg.fallback == "mcode"
+                else None
+            )
             routine = None
             if runner.cfg.wake == "http":
                 target, why, detail = self.routine(runner)
@@ -4901,6 +4908,29 @@ class Daemon:
                     "wake pin is stale: muse moved to %s (pinned %s); run "
                     "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
                     % (muse_pin["muse"], muse_pin["pinned_muse"], seat)
+                )
+            # The fallback pin reports on its own file too.  It gates the fallback on its own, so a
+            # stale one holds every fallback wake; without a red entry here a seat whose fallback
+            # silently stopped looks exactly as healthy as a seat that never configured one.
+            mcode_pin = (
+                A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model) if mcode else None
+            )
+            if mcode_pin and mcode_pin["why"] == "pin_stale":
+                # `pin_stale` covers two causes:  the binary moved (the paths differ), or the
+                # command/model changed under a pin that still names the same binary (they match).
+                # Naming the wrong one points the operator at a path that never moved, and shows
+                # the same path twice.
+                _moved = mcode_pin["mcode"] != mcode_pin["pinned_mcode"]
+                _cause = (
+                    "mcode moved to %s (pinned %s)"
+                    % (mcode_pin["mcode"], mcode_pin["pinned_mcode"])
+                    if _moved
+                    else "the fallback command or model changed (pinned %s)"
+                    % mcode_pin["pinned_mcode"]
+                )
+                red.append(
+                    "fallback pin is stale: %s; run "
+                    "`agent-sync daemon test-wake --seat %s --run`, then `--pin`" % (_cause, seat)
                 )
             for problem in runner.cfg.config_problems:
                 red.append(
