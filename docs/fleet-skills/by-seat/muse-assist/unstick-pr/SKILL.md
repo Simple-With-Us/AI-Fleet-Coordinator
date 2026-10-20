@@ -37,7 +37,7 @@ git merge-tree --write-tree origin/main origin/<branch>
 **Phantom fix:** merge `origin/main` in your lane and push a fresh head SHA.
 
 ```bash
-cd "$(~/apps/lane path <app> <slug>)"   # your lane; never ~/Code/<repo>
+cd ~/muse-assist-<repo>   # your lane; never ~/Code/<repo>
 git fetch origin
 git merge origin/main --no-edit
 git push origin muse-assist/<slug>

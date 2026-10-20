@@ -1230,9 +1230,125 @@ def _launcher_aware_prose(text: str) -> str:
     )
 
 
+# MA runs on a cloud VM with no `~/apps/lane` and no `~/apps/lanes`.  The shared
+# pack teaches the Mac lane workflow in four skills; its banner already forbids
+# it, so the steps below are rewritten to the durable VM checkout
+# (`muse-assist-<repo>`) rather than left contradicting the seat's own identity.
+MA_LANE_STEPS: tuple[tuple[str, str], ...] = (
+    # session-start: section 3 picks the lane before any edit is made.
+    (
+        "Make one lane per task with `lane new`.  It needs `AGENT_SEAT` set to "
+        "the seat you verified in section 1 (never a guess) and prints the path:",
+        "Work in your durable VM checkout, one per repo, named "
+        "`muse-assist-<repo>`.  You have no Mac lane: do not create "
+        "`~/apps/lanes` folders and do not run the Mac-only `~/apps/lane`.  For "
+        "each task create a fresh branch from `refs/remotes/origin/main` "
+        "(`git fetch origin && git switch --no-track -c muse-assist/<new-task-"
+        "slug> refs/remotes/origin/main`) and publish its upstream with "
+        "`git push -u origin HEAD`, so no commit from an earlier task rides "
+        "along in the PR:",
+    ),
+    (
+        "~/apps/lane new <app> <slug>                # ~/apps/lanes/<Repo>/<seat>-"
+        "<slug>, on a branch named <your prefix>/<slug>; start the slug with the "
+        "lowercase issue id (afc-123-fix-thing) so the branch links the Linear issue",
+        "cd ~/muse-assist-<repo>                     # the one durable checkout for this repo; never a scratch folder",
+    ),
+    (
+        "~/apps/lane new <app> --review --pr <n>     # a read-only check of "
+        "someone else's PR, at ~/apps/lanes/<Repo>/review-pr-<n>",
+        "git fetch origin && git show origin/<pr-branch>   # review someone else's PR from the remote ref, not a Mac review checkout",
+    ),
+    (
+        'cd "$(~/apps/lane path <app> <slug>)"',
+        'cd ~/muse-assist-<repo>',
+    ),
+    # fleet-coordination: the same rule, restated as the seat's working rule.
+    (
+        "Always work in your own lane.  Make it with `lane new` (owner 2026-10-07, "
+        "`docs/protocols/lane-map.md`; `AGENT_SEAT` must be set to your seat tag):",
+        "Always work in your durable VM checkout (owner 2026-10-20, "
+        "`docs/protocols/lane-map.md`).  You have no Mac lane and never run "
+        "`~/apps/lane`:",
+    ),
+    (
+        "~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<Repo>/<seat>-"
+        "<feature-slug>, branch <your prefix>/<feature-slug>",
+        "cd ~/muse-assist-<repo> && git switch -c muse-assist/<feature-slug>   # "
+        "one checkout per repo, branch muse-assist/<feature-slug> per task",
+    ),
+    # land-lane: the precondition names the folder MA is not in.
+    (
+        "1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, made with "
+        "`~/apps/lane new`; a lane in an old place (`~/apps/lanes/<prefix>/`, "
+        "which the migration moves, or a flat `~/apps/<prefix>-<seat>[-<lane>]`, "
+        "which retires where it is) that already exists is fine).  See "
+        "`session-start`.",
+        "1. You are in your durable VM checkout `muse-assist-<repo>` (you have no "
+        "Mac lane and never run `~/apps/lane`).  See `session-start`.",
+    ),
+    # closeout: retiring a Mac lane is not a step on the VM; the durable
+    # checkout stays.
+    (
+        "Once the PR is merged (or closed on purpose) and nothing is left in the "
+        "lane, remove it from OUTSIDE the lane, so your own shell does not count "
+        "as a process using it:",
+        "Once the PR is merged (or closed on purpose) and nothing is left in your "
+        "checkout, switch your durable VM checkout back to "
+        "`refs/remotes/origin/main` so the next task starts clean (there is no Mac "
+        "lane to retire):",
+    ),
+    (
+        "cd ~ && ~/apps/lane retire <slug>    # or the lane's path; --repo <app> "
+        "if the slug is in two repos",
+        "cd ~/muse-assist-<repo> && git switch --detach refs/remotes/origin/main   # one durable checkout per repo, never deleted",
+    ),
+    (
+        "~/apps/lane prune                    # a table of all your lanes; add "
+        "--apply to remove the removable ones",
+        "git branch --merged origin/main -d 'muse-assist/*'   # drop merged task branches; keep the checkout itself",
+    ),
+    # Trailing prose in the same two sections still describes the Mac tool.
+    (
+        "`lane retire` refuses (exit 64, with the reason) a lane that is dirty, "
+        "has unpushed commits no merged or closed PR holds, has an open PR, or "
+        "is in use; fix that or leave the lane.  It uses `git worktree remove` "
+        "without `--force` and `git branch -d`, never `rm -rf` or `-D`.  A "
+        "parked lane stays.  Rules: `docs/protocols/lane-map.md` (Retiring A "
+        "Lane).",
+        "Drop a merged task branch only with `git branch -d`, never `-D`, and "
+        "never delete the durable checkout itself.  Rules: "
+        "`docs/protocols/lane-map.md`.",
+    ),
+    (
+        "- Retire the lane once the PR is merged:  `cd ~ && ~/apps/lane retire "
+        "<slug>` (from outside the lane; it refuses a dirty, unpushed, "
+        "open-PR or in-use lane and says why).  `~/apps/lane prune` lists all "
+        "your lanes and `--apply` removes the merged ones.",
+        "- Once the PR is merged, drop the task branch:  `cd ~/muse-assist-<repo> "
+        "&& git branch -d muse-assist/<slug>`.  Keep the durable checkout; there "
+        "is no Mac lane to retire.",
+    ),
+)
+
+
+def _specialize_muse_assist(text: str, seat: Seat, skill_name: str = "") -> str:
+    """MA's lane steps, rewritten for a VM with no Mac lane tool.
+
+    Runs before the identity swaps so the anchors below still read as the
+    shared pack writes them.
+    """
+    for old, new in MA_LANE_STEPS:
+        text = text.replace(old, new)
+    return text
+
+
 def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     if seat.mode == "grok_bot":
         return _specialize_grok_bot(text, seat, skill_name)
+
+    if seat.seat_key == "muse-assist":
+        text = _specialize_muse_assist(text, seat, skill_name)
 
     text = _stash_identity_source(text)
     text = _protect(text)

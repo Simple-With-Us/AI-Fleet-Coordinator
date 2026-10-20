@@ -16,7 +16,7 @@ Seat: **MA**.  Branch: `muse-assist/<slug>`.  Never `claude/`.  Never `monet/`. 
 
 ## Preconditions
 
-1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, made with `~/apps/lane new`; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves, or a flat `~/apps/<prefix>-<seat>[-<lane>]`, which retires where it is) that already exists is fine).  See `session-start`.
+1. You are in your durable VM checkout `muse-assist-<repo>` (you have no Mac lane and never run `~/apps/lane`).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 
@@ -96,7 +96,7 @@ If the box is gating several lanes, announce the full gate in #builds topic `gat
 - Linear issue: **Completed** (Done) means merged to `main`, not "PR opened."  A `Fixes <ID>` PR moves it on merge once Linear's GitHub automation is on;  otherwise run `board status <id> completed`.
 - **Deployed** only after the app's production target is verified (`deploy-verify`).
 - Merge to `main` auto-deploys ST / CT / UM on Coolify and DealDex on Vercel.  Do not double-trigger.  Personal-Site live origin is Vercel behind Cloudflare and is **not** "merge = live" — do not mint a second Vercel project.
-- Retire the lane once the PR is merged:  `cd ~ && ~/apps/lane retire <slug>` (from outside the lane; it refuses a dirty, unpushed, open-PR or in-use lane and says why).  `~/apps/lane prune` lists all your lanes and `--apply` removes the merged ones.
+- Once the PR is merged, drop the task branch:  `cd ~/muse-assist-<repo> && git branch -d muse-assist/<slug>`.  Keep the durable checkout; there is no Mac lane to retire.
 - Closeout: `closeout` skill.
 
 ## Do not

@@ -57,12 +57,12 @@ or MCP `recall_search`.  A hit is a lead, not a verdict — open the Linear issu
 
 The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.  Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders` (Lane Map, owner 2026-10-07: `docs/protocols/lane-map.md` in AI-Fleet-Coordinator).
 
-Make one lane per task with `lane new`.  It needs `AGENT_SEAT` set to the seat you verified in section 1 (never a guess) and prints the path:
+Work in your durable VM checkout, one per repo, named `muse-assist-<repo>`.  You have no Mac lane: do not create `~/apps/lanes` folders and do not run the Mac-only `~/apps/lane`.  For each task create a fresh branch from `refs/remotes/origin/main` (`git fetch origin && git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`) and publish its upstream with `git push -u origin HEAD`, so no commit from an earlier task rides along in the PR:
 
 ```bash
-~/apps/lane new <app> <slug>                # ~/apps/lanes/<Repo>/<seat>-<slug>, on a branch named <your prefix>/<slug>; start the slug with the lowercase issue id (afc-123-fix-thing) so the branch links the Linear issue
-~/apps/lane new <app> --review --pr <n>     # a read-only check of someone else's PR, at ~/apps/lanes/<Repo>/review-pr-<n>
-cd "$(~/apps/lane path <app> <slug>)"
+cd ~/muse-assist-<repo>                     # the one durable checkout for this repo; never a scratch folder
+git fetch origin && git show origin/<pr-branch>   # review someone else's PR from the remote ref, not a Mac review checkout
+cd ~/muse-assist-<repo>
 ```
 
 | App | Zulip `repo:` | Acronym (Linear team) | Lane folder |

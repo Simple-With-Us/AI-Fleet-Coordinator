@@ -72,14 +72,14 @@ Do not SIGKILL `com.jay.claude-remote-control`.
 
 ## 7. Retire the lane
 
-Once the PR is merged (or closed on purpose) and nothing is left in the lane, remove it from OUTSIDE the lane, so your own shell does not count as a process using it:
+Once the PR is merged (or closed on purpose) and nothing is left in your checkout, switch your durable VM checkout back to `refs/remotes/origin/main` so the next task starts clean (there is no Mac lane to retire):
 
 ```bash
-cd ~ && ~/apps/lane retire <slug>    # or the lane's path; --repo <app> if the slug is in two repos
-~/apps/lane prune                    # a table of all your lanes; add --apply to remove the removable ones
+cd ~/muse-assist-<repo> && git switch --detach refs/remotes/origin/main   # one durable checkout per repo, never deleted
+git branch --merged origin/main -d 'muse-assist/*'   # drop merged task branches; keep the checkout itself
 ```
 
-`lane retire` refuses (exit 64, with the reason) a lane that is dirty, has unpushed commits no merged or closed PR holds, has an open PR, or is in use; fix that or leave the lane.  It uses `git worktree remove` without `--force` and `git branch -d`, never `rm -rf` or `-D`.  A parked lane stays.  Rules: `docs/protocols/lane-map.md` (Retiring A Lane).
+Drop a merged task branch only with `git branch -d`, never `-D`, and never delete the durable checkout itself.  Rules: `docs/protocols/lane-map.md`.
 
 ## 8. Default-off features
 

@@ -91,9 +91,9 @@ Every agent session must start with systematic orientation before touching code:
 
 Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.
 
-Always work in your own lane.  Make it with `lane new` (owner 2026-10-07, `docs/protocols/lane-map.md`; `AGENT_SEAT` must be set to your seat tag):
+Always work in your durable VM checkout (owner 2026-10-20, `docs/protocols/lane-map.md`).  You have no Mac lane and never run `~/apps/lane`:
 ```bash
-~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<Repo>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
+cd ~/muse-assist-<repo> && git switch -c muse-assist/<feature-slug>   # one checkout per repo, branch muse-assist/<feature-slug> per task
 ```
 Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they retire; do not create new ones.
 
