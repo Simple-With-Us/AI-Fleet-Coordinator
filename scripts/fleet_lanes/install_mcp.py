@@ -10,11 +10,11 @@ The default set is MINIMAL on purpose (each registered server is a process per s
 through an MCP fan-out overload):  `fleet-recall` only, which is the stdio server that
 `scripts/install-fleet-rag.sh` installs under ~/apps/fleet-rag.  `--with-agent-sync` also registers
 `agent-sync mcp --default-seat <SEAT>` for the targets that have a FIXED seat (opencode OPENCODE, muse MC,
-minimax MM, fx FX, clutch CLUTCH).  A tool with no default seat (Kimi, Copilot CLI) never gets it: the
+minimax MM, fx FX, clutch CLUTCH).  A tool with no default seat (Kimi) never gets it: the
 registration has to name a seat, and these tools have none.  Never a pinned AGENT_SEAT in env (a launcher's seat must still win,
 AGENT-SYNC § Identity Rules), and never a token anywhere.
 
-TARGET is opencode, kimi, copilot, muse, minimax, fx or clutch.  `install-fleet-rag.sh` already registers
+TARGET is opencode, kimi, muse, minimax, fx or clutch.  `install-fleet-rag.sh` already registers
 fleet-recall in Claude, Cursor, Antigravity, Codex and Grok and calls this tool for the rest.
 
 What each target writes (every shape below was written by the tool's own `mcp add`, or copied from an entry the
@@ -22,7 +22,6 @@ tool already holds, on a throwaway home):
 
     opencode  ~/.config/opencode/opencode.json   mcp.servers.<name> = {type: local, command: [argv...]}
     kimi      ~/.kimi-code/mcp.json              mcpServers.<name> = {command, args}
-    copilot   ~/.copilot/mcp-config.json         mcpServers.<name> = {tools: ["*"], type: local, command, args}
     muse      ~/.config/muse/settings.json       mcpServers.<name> = {type: stdio, command, args, mode: optional}
     minimax   ~/.minimax/mcp.json                mcpServers.<name> = {type: stdio, enabled, configured, builtin: false, command, args}
     fx        ~/.fx/mcp.json                     mcp.<name> = {type: local, command: [argv...], enabled}
@@ -31,7 +30,7 @@ tool already holds, on a throwaway home):
               would double it)
 
 Rules for a config this tool does not own:
-  - the tool's home folder must already exist (~/.copilot, ~/.kimi-code, ...), or the target is
+  - the tool's home folder must already exist (~/.kimi-code, ~/.minimax, ...), or the target is
     skipped-not-installed and nothing is created; the config FILE is created when the folder exists
   - an entry with the same name and the same command is `present` and is never rewritten (a hand-registered one
     often has extra keys, such as timeouts); an entry with the same name and a different command is
@@ -147,11 +146,6 @@ def _build_kimi(name: str, argv: List[str]) -> dict:
     return {"command": cmd, "args": args}
 
 
-def _build_copilot(name: str, argv: List[str]) -> dict:
-    cmd, args = _split(argv)
-    return {"tools": ["*"], "type": "local", "command": cmd, "args": args}
-
-
 def _build_muse(name: str, argv: List[str]) -> dict:
     cmd, args = _split(argv)
     return {"type": "stdio", "command": cmd, "args": args, "mode": "optional"}
@@ -194,9 +188,6 @@ JSON_TARGETS: Tuple[JsonTarget, ...] = (
     JsonTarget("kimi", "Kimi Code", ".kimi-code", ".kimi-code/mcp.json", ("mcpServers",),
                _build_kimi, _command_args_of,
                note="engine-only CLI with no default seat: fleet-recall only"),
-    JsonTarget("copilot", "GitHub Copilot CLI", ".copilot", ".copilot/mcp-config.json", ("mcpServers",),
-               _build_copilot, _command_args_of,
-               note="no default seat: fleet-recall only.  Copilot already holds about a dozen servers"),
     JsonTarget("muse", "Muse Code", ".config/muse", ".config/muse/settings.json", ("mcpServers",),
                _build_muse, _command_args_of, seat="MC",
                note="settings.json also holds the rest of Muse's settings; only mcpServers is touched"),
@@ -214,8 +205,7 @@ CLUTCH_PATCH = ".clutch/dsh/cordis.patch.yml"
 CLUTCH_BLOCK = "mcp-agent-sync"
 MCP_CLIENT_PLUGIN = "@deepseek-ai/dsh-mcp-client"
 TARGET_KEYS = tuple(t.key for t in JSON_TARGETS) + (CLUTCH_KEY,)
-ALIASES = {"muse-code": "muse", "mc": "muse", "mm": "minimax", "kimi-code": "kimi", "copilot-cli": "copilot",
-           "dsh": "clutch"}
+ALIASES = {"muse-code": "muse", "mc": "muse", "mm": "minimax", "kimi-code": "kimi", "dsh": "clutch"}
 
 
 # --------------------------------------------------------------------------- one config, one server
