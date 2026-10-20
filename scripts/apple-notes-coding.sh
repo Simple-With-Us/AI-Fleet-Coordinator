@@ -253,19 +253,20 @@ fi
 # "Allow ... to share with Notes?" dialog — choose Always Allow.
 #
 # Whether a failed pin or unpin Shortcut is retried is the APPLE_NOTES_PIN_RETRY fleet knob (Infisical,
-# through scripts/fleet_knobs), resolved once per process through the package that sits next to this
-# script.  APPLE_NOTES_PIN_RETRY in the environment is only a narrowing override:  it can turn the
-# retry off, never on.  With no fleet_knobs on this host, or an unreachable Infisical with no
-# last-known-good copy, the registered default (on) applies, narrowed by that override.
+# through scripts/fleet_knobs), resolved once per process through the package next to this script
+# (a source checkout) or the managed stable copy at ~/apps/needs-owner (the live helper).  APPLE_NOTES_PIN_RETRY
+# in the environment is only a narrowing override:  it can turn the retry off, never on.  With no fleet_knobs
+# on this host, or an unreachable Infisical with no last-known-good copy, the registered default (on) applies,
+# narrowed by that override.
 _PIN_RETRY=""
 _pin_retry_on() {
   if [[ -z "${_PIN_RETRY:-}" ]]; then
     local knob="" here candidate
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-    for candidate in "$here" "${AGENT_SYNC_RUNTIME:-$HOME/apps/lanes/_managed/fleet/agent-sync-runtime}/scripts"; do
+    for candidate in "$here" "$HOME/apps/needs-owner" "${AGENT_SYNC_RUNTIME:-$HOME/apps/lanes/_managed/fleet/agent-sync-runtime}/scripts"; do
       if [[ -n "$candidate" && -d "$candidate/fleet_knobs" ]] && command -v python3 >/dev/null 2>&1; then
         knob="$(cd "$candidate" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
-        break
+        [[ -n "$knob" ]] && break
       fi
     done
     case "$knob" in
