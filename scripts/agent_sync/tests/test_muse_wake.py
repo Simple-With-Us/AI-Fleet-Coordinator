@@ -315,7 +315,11 @@ class MusePinTest(unittest.TestCase):
             self.paths.wake_pin_muse,
             {"muse": A.binary_pin(muse), "at": time.time(), "model": C.MUSE_DEFAULT_MODEL},
         )
-        self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
+        # The binary is the same, so this pin did verify SOMETHING and says so apart from a moved
+        # binary:  `pin_stale` would point the operator at a path that never moved.
+        state = A.muse_pin_state(self.paths, muse)
+        self.assertEqual(state["why"], "pin_unverified")
+        self.assertEqual(state["muse"], state["pinned_muse"])
         L.write_json(
             self.paths.wake_pin_candidate_muse,
             {"muse": A.binary_pin(muse), "at": time.time(), "model": C.MUSE_DEFAULT_MODEL},
@@ -343,15 +347,46 @@ class MusePinTest(unittest.TestCase):
             self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
             self.assertIn("changed since the test", A.muse_pin_candidate(self.paths, muse, now))
 
-    def test_missing_contract_makes_existing_pin_stale_and_blocks_candidate(self) -> None:
+    def test_an_unreadable_contract_is_not_reported_as_a_changed_pin(self) -> None:
         muse = self._muse("muse")
         now = time.time()
         A.record_muse_pin(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
         A.record_muse_candidate(self.paths, muse, now, model=C.MUSE_DEFAULT_MODEL)
         missing_contract = os.path.join(self.tmp.name, "missing-contract.md")
         with mock.patch.object(A, "CONTRACT_PATH", missing_contract):
-            self.assertEqual(A.muse_pin_state(self.paths, muse)["why"], "pin_stale")
-            self.assertIn("unavailable", A.muse_pin_candidate(self.paths, muse, now))
+            state = A.muse_pin_state(self.paths, muse)
+            # A changed pin is fixed by re-pinning;  an unreadable contract is not, because the
+            # same re-pin re-reads the same missing file and refuses again.
+            self.assertEqual(state["why"], "pin_unreadable")
+            self.assertNotEqual(state["why"], "pin_stale")
+            self.assertIn("restore them", A.muse_pin_candidate(self.paths, muse, now))
+        self.assertIn("could not be read", A.muse_pin_cause(state))
+        self.assertIn("restore the wake contract", A.MUSE_PIN_UNREADABLE_REMEDIATION)
+
+    def test_the_muse_cause_names_the_fault_instead_of_repeating_the_path(self) -> None:
+        # `pin_stale` covers a moved binary and a changed command/contract/schema.  Reporting the
+        # wrong one points the operator at a path that never moved, and shows it twice.
+        moved = {
+            "why": "pin_stale",
+            "muse": "/opt/homebrew/bin/muse",
+            "pinned_muse": "/usr/local/bin/muse",
+        }
+        self.assertIn("muse moved to", A.muse_pin_cause(moved))
+        self.assertIn("/usr/local/bin/muse", A.muse_pin_cause(moved))
+        changed = {
+            "why": "pin_stale",
+            "muse": "/opt/homebrew/bin/muse",
+            "pinned_muse": "/opt/homebrew/bin/muse",
+        }
+        cause = A.muse_pin_cause(changed)
+        self.assertIn("command, contract or schema", cause)
+        self.assertEqual(cause.count("/opt/homebrew/bin/muse"), 1, cause)
+        unverified = {
+            "why": "pin_unverified",
+            "muse": "/opt/homebrew/bin/muse",
+            "pinned_muse": "/opt/homebrew/bin/muse",
+        }
+        self.assertIn("predates the command fingerprint", A.muse_pin_cause(unverified))
 
 
 class QuotaRefusalTest(unittest.TestCase):
