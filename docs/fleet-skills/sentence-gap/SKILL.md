@@ -11,7 +11,6 @@ description: >-
   ASCII spaces in files, commits and terminals. The owner must never see the six
   characters &nbsp; as text. Use whenever writing any prose a human will read.
 ---
----
 
 # Sentence gap (portable — always on)
 
