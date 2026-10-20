@@ -62,15 +62,9 @@ DATED_RECORDS = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
 # Generated mirrors.  These are built from Fleet-OPS handbook/ and this repository cannot
 # change them:  scripts/check-generated-mirror.py refuses any edit from a branch that is
 # not handbook-sync/mirror, so the pattern reaches one only when the upstream handbook page
-# changes and the sync job rewrites the mirror.  The checkout-wide sweep below skips them
-# for the same reason DATED_RECORDS is skipped -- not a copy this repository may edit --
-# and check-generated-mirror.py is the gate that holds them honest in the meantime.
-#
-# The mirror is the file every seat reads first, so it does not stay a blind exemption:
-# the assertion that compares it with the one home lands in the pull request that carries
-# the mirror itself, because the mirror cannot hold the canonical converter before the
-# handbook merge that produces it.  Until then the sweep skips it and the follow-up
-# assertion is what keeps it honest.
+# changes and the sync job rewrites the mirror.  The mirror is still the file every seat
+# reads first, so it is asserted separately rather than skipped:  the test below fails
+# with a pointer to the handbook sync instead of letting the mirror drift unnoticed.
 GENERATED_MIRRORS = ("AGENT-SYNC.md",)
 
 # This file holds the checks themselves, so the sweep below finds its own command
@@ -439,11 +433,11 @@ class OneSourceOfTruthTests(unittest.TestCase):
     def test_no_live_file_holds_a_converter_without_the_markup_group(self) -> None:
         """A copy that drifts is a body that ships with no gap, so every converter in the
         checkout carries the markup group.  A dated record of a ruling keeps the form it
-        was written in and is listed as such, and the generated mirror is asserted on its
-        own, with a pointer to the handbook sync."""
+        was written in and is listed as such, and a generated mirror is built elsewhere and
+        cannot be edited here."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
+            if rel in DATED_RECORDS or rel in CHECKER_FILES:
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -654,11 +648,11 @@ class AssertionCommandTests(unittest.TestCase):
 
     def test_no_live_file_holds_a_blind_leftover_check(self) -> None:
         """No live file may hold the check that cannot see a gap after a markup span.
-        A dated record of a ruling keeps the form it was written in and is skipped, and
-        the generated mirror is asserted on its own."""
+        A dated record of a ruling keeps the form it was written in and is skipped, and a
+        generated mirror is built elsewhere and cannot be edited here."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
+            if rel in DATED_RECORDS or rel in CHECKER_FILES:
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -671,6 +665,63 @@ class AssertionCommandTests(unittest.TestCase):
                     pattern,
                     "%s holds a blind leftover check:  %s" % (rel, pattern),
                 )
+
+
+class GeneratedMirrorTests(unittest.TestCase):
+    """AGENT-SYNC.md is the file every seat reads first, so it is asserted, not skipped.
+
+    The mirror is built from the Fleet-OPS handbook and this repository cannot change it:
+    scripts/check-generated-mirror.py refuses any hand edit from a branch that is not
+    handbook-sync/mirror.  It is also the copy a seat reads before it reads anything
+    else, so a stale converter in it ships a body with no gap.  The assertions below
+    compare it with the one home and fail with a pointer to the handbook sync, rather
+    than letting the mirror drift unnoticed behind a blanket exemption.
+    """
+
+    MIRROR = ROOT / "AGENT-SYNC.md"
+
+    POINTER = (
+        "AGENT-SYNC.md is built from the Fleet-OPS handbook, so it cannot be fixed "
+        "here:  change handbook/owner/writing-for-owner.md in a Fleet-OPS pull request "
+        "and the sync job writes the mirror from the merge.  A hand edit is refused by "
+        "scripts/check-generated-mirror.py."
+    )
+
+    def _mirror_text(self) -> str:
+        with open(self.MIRROR, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_mirror_holds_the_one_homes_converter(self) -> None:
+        """The mirror carries the same converter the one home ships, so a seat that
+        reads only the mirror reads a converter that can see a markup gap."""
+        canonical = one_home_patterns()[0]
+        found = patterns_in(self._mirror_text())
+        self.assertTrue(found, "AGENT-SYNC.md holds no converter pattern")
+        self.assertEqual(
+            found[-1],
+            canonical,
+            "AGENT-SYNC.md does not hold the one home's converter:  %s\n%s"
+            % (found[-1], self.POINTER),
+        )
+
+    def test_the_mirror_holds_no_converter_without_the_markup_group(self) -> None:
+        for pattern in patterns_in(self._mirror_text()):
+            self.assertIn(
+                _MARKUP_GROUP,
+                pattern,
+                "AGENT-SYNC.md holds a converter without the markup group:  %s\n%s"
+                % (pattern, self.POINTER),
+            )
+
+    def test_the_mirror_holds_no_blind_leftover_check(self) -> None:
+        """The leftover check the mirror ships must be able to see a gap that was never
+        converted, including one that sits after a markup span."""
+        for pattern in leftover_checks(self._mirror_text()):
+            self.assertIn(
+                _ASSERT_MARKUP_GROUP,
+                pattern,
+                "AGENT-SYNC.md holds a blind leftover check:  %s\n%s" % (pattern, self.POINTER),
+            )
 
 
 class ProtocolContentTests(unittest.TestCase):
