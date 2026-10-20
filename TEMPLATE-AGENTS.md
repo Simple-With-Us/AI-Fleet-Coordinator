@@ -362,11 +362,16 @@ other document the owner needs to read/review**, also put it in **Apple Notes**
 
 1. **Folder:** always iCloud **`Coding`** (create if missing) — never only the default Notes inbox.
 2. **Pin:** pin so it sits at the top under Pinned.
-3. **Title:** `[APP, Agent] short topic` — apps + agent **first**. Multi-app:
-   `[APP1, APP2, Grok] …`. Acronyms: `CT` `ST` `UM` `CTS` `FLEET`. Agent Title Case
-   (`Grok` / `Monet` / `Claude` / `Codex` / `AG` / `Cursor` / …). **No "session"** in title; **no date** in title.
+3. **Title:** `[TEAM_KEY, SEAT_TAG] Topic` — team key and seat tag **first**, both in
+   capitals, the topic in Title Case (owner 2026-10-19:  never the app's long name, never
+   the seat's long name). Multi-app:
+   `[APP1, APP2, MM] …`. Team keys: `CT` `ST` `UM` `CTS` `AFC`. Seat tags: `MM` / `AG` /
+   `CODEX` / `GROK-WEB` / `BF-FIXER` / …. **No "session"** in title; **no date** in title.
 4. **Second body line:** local create/update stamp + optional PR #, e.g. `Sun, Aug 9, 3:52pm · PR #18`
    (refresh on every material update; pass `--pr "18"` to helper). Helper auto-injects/preserves this.
+   **Dates and times (owner 2026-10-19):** dates in a note are month-first (`Oct 19`, `10-19-2026`),
+   never year-first or day-first;  times are 12-hour am/pm in US Central, converted from whatever zone
+   the source used, and the zone is never named.  The helper rewrites an ISO date in prose to that form.
 5. **Helper:** `/Users/jay/apps/apple-notes-coding.sh "Title" "body"`  
    (supports `--html path`, `--update`, `--pr "18"`, `--notify` for instant Pushover alerts, `--needs-owner` for amber review banners, and `--summary "text"` for mobile quick view).  
    Fleet-coordinator copy: `scripts/apple-notes-coding.sh`. Converts MD → HTML (Notes does not render raw markdown).
@@ -453,7 +458,7 @@ when it finishes the issue and `Refs <ID>` for partial work.  When done: real st
 `--resolution`.  There is no effort log to land and no GitHub-issues mirror any more.
 Canonical: `~/apps/AGENT-SYNC.md` § Linear and the Claim Lifecycle.
 
-**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own variable:  `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `CURSOR_CONVERSATION_ID` then `CURSOR_AGENT_CHAT_ID` (Cursor), `GROK_SESSION_ID` (Grok TUI), `OPENCODE_SESSION_ID` (OpenCode), `__MAVIS_RUNTIME_SESSION_ID` (MiniMax Code, when present).  FX, Clutch, Antigravity, Muse Code and Grok Web have no variable that is known to be set, so they pass `--session <id>` or export `AGENT_SESSION`, using the id their app shows for the current chat.  A Claude Code MCP server may not inherit its variable, so Claude Code passes `session` explicitly on `notes_create` / `notes_update` (the value of `CLAUDE_CODE_SESSION_ID` from its shell).  Cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot (GROK-BOT and GB-*), MA, JET, WISE and ECHO.  Notes get a stamped `Session: <id> - <time>` line after the timestamp.  For your seat the platform variable is `<SEAT-SESSION-VAR>` (delete this sentence if the platform has none).
+**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own variable:  `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `CURSOR_CONVERSATION_ID` then `CURSOR_AGENT_CHAT_ID` (Cursor), `GROK_SESSION_ID` (Grok TUI), `OPENCODE_SESSION_ID` (OpenCode), `__MAVIS_RUNTIME_SESSION_ID` (MiniMax Code, when present).  FX, Clutch, Antigravity, Muse Code and Grok Web have no variable that is known to be set, so they pass `--session <id>` or export `AGENT_SESSION`, using the id their app shows for the current chat.  A Claude Code MCP server may not inherit its variable, so Claude Code passes `session` explicitly on `notes_create` / `notes_update` (the value of `CLAUDE_CODE_SESSION_ID` from its shell).  Cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot (GROK-BOT and GB-*), MA, JET, WISE and ECHO.  Notes get a stamped `Session: <id>` line under the timestamp, with no second date (owner 2026-10-19).  For your seat the platform variable is `<SEAT-SESSION-VAR>` (delete this sentence if the platform has none).
 
 ## Two spaces between sentences (owner — ALL contexts)
 

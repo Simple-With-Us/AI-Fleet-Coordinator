@@ -2,26 +2,27 @@
 
 > Moved from `AGENT-SYNC.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in AGENT-SYNC.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
 
-**Title (note name / first heading row) — ALWAYS start with app acronym(s) + agent:**
+**Title (note name / first heading row) — ALWAYS start with the team key(s) + the seat tag:**
 
 ```
-[APP, Agent] short topic title
+[TEAM_KEY, SEAT_TAG] Topic
 ```
 
 Examples:
-- `[UM, Grok] TestFlight first ship + export compliance`
-- `[ST, Monet] Pinecone WU breaker and embed staging`
-- `[CT, Claude] stuck-filing recovery (deterministic)`
-- `[ST, CT, Grok] R2 free-tier labels and peer checks`  ← multi-app
-- `[AFC, Grok] Apple Notes title/timestamp standard`
+- `[UM, GROK] TestFlight First Ship and Export Compliance`
+- `[ST, MONET] Pinecone WU Breaker and Embed Staging`
+- `[CT, CLAUDE] Stuck-Filing Recovery (Deterministic)`
+- `[ST, CT, GROK] R2 Free-Tier Labels and Peer Checks`  ← multi-app
+- `[AFC, GROK] Apple Notes Title and Timestamp Standard`
 
 Rules:
-- **App acronyms FIRST, then agent name**, comma-separated inside `[]`, then a space,
-  then the short topic. **No** bare `App — topics` titles; **no** "session" in the title.
-- **Multiple apps** when more than one is impacted: list each acronym
-  (`[ST, CT, UM, Grok] …`). Order = impact order (primary first).
-- **Agent display name** (Title Case, not the ALL-CAPS chat tag):  
-  `Grok` | `Grok Build` | `Monet` | `Claude` | `Codex` | `Cursor` | `AG` | `Kimi` | `Copilot` | `MiniMax` | `DeepSeek Harness` | …
+- **Team key FIRST, then the seat tag**, comma-separated inside `[]`, then a space,
+  then the topic in Title Case. **No** bare `App — topics` titles; **no** "session" in the title.
+- **Multiple apps** when more than one is impacted: list each team key
+  (`[ST, CT, UM, GROK] …`). Order = impact order (primary first).
+- **Seat tag** (the ALL-CAPS chat tag;  the seat's long name is never a title slot — owner
+  2026-10-19):  
+  `GROK` | `GROK` (Grok Build) | `MONET` | `CLAUDE` | `CODEX` | `CURSOR` | `AG` | `KIMI` | `COPILOT` | `MM` | `DSH` | …
 - **Never put the date in the title** — date lives on the **second row** (body).
 - **Never repeat the title as an H1 inside the body** — Notes already shows the title.
 

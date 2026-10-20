@@ -116,7 +116,7 @@ class SpecializeTests(unittest.TestCase):
         self.assertNotIn("trading-monet", out)
 
     def test_ag_notes_name_is_antigravity(self) -> None:
-        # The canonical apple-notes text is seat-neutral (`[APP, Agent]`), so the
+        # The canonical apple-notes text is seat-neutral (`[TEAM_KEY, SEAT_TAG]`), so the
         # seat's Notes name comes from the install banner, never from Monet.
         out = specialize_from_monet(_notes(), SEATS["ag"], skill_name="apple-notes")
         self.assertIn("Notes `Antigravity`", out)
@@ -147,7 +147,7 @@ class SpecializeTests(unittest.TestCase):
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
 
         out_not = specialize_universal(_notes(), skill_name="apple-notes")
-        self.assertIn("[APP, Agent]", out_not)
+        self.assertIn("[TEAM_KEY, SEAT_TAG]", out_not)
         self.assertNotIn("[APP, Monet]", out_not)
 
     def test_codex_grok_renoir_deepseek_tags(self) -> None:
