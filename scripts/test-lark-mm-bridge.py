@@ -383,6 +383,37 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(session.buffer, [])
         self.assertEqual(session._collect_text({}), "")
 
+    def test_update_shape_variations_are_still_collected(self):
+        """A spelled discriminator or a flat update still reaches Lark.
+
+        The seat's ACP client has shipped the snake_case key and a params
+        without a nested update; a strict parse answered those turns with
+        "(MM produced no reply.)".
+        """
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = [
+            {
+                "method": "session/update",
+                "params": {
+                    "update": {
+                        "session_update": "agent_message_chunk",
+                        "content": {"type": "text", "text": "snake_case answer"},
+                    }
+                },
+            },
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": " and a flat one"},
+                },
+            },
+        ]
+        session.buffer_lock = threading.Lock()
+        self.assertEqual(
+            session._collect_text({}), "snake_case answer and a flat one"
+        )
+
     def test_thought_chunks_are_not_answered_to_lark(self):
         """Private reasoning never reaches the chat surface."""
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)

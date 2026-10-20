@@ -477,8 +477,14 @@ class MiniMaxSession:
         for message in pending:
             if message.get("method") != "session/update":
                 continue
-            update = (message.get("params") or {}).get("update") or {}
-            if update.get("sessionUpdate") != "agent_message_chunk":
+            # The discriminator is spelled both ways and the update is not
+            # always nested, so the strict form turned every deviation into an
+            # empty reply instead of a partial answer.  Mirrors
+            # extract_agent_text in scripts/grok-acp-runtime/leader-client.py.
+            params = message.get("params") or {}
+            update = params.get("update") if isinstance(params.get("update"), dict) else params
+            kind = update.get("sessionUpdate") or update.get("session_update") or ""
+            if kind != "agent_message_chunk":
                 continue
             content = update.get("content") or {}
             if content.get("type") == "text" and content.get("text"):
