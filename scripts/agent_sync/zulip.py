@@ -990,6 +990,7 @@ class ZulipClient:
             headers["Content-Type"] = content_type
         rate_retries = 0
         net_retries = 0
+
         def pause(seconds: float) -> None:
             if deadline is not None:
                 seconds = min(seconds, max(0.0, deadline - time.monotonic()))
@@ -1004,9 +1005,7 @@ class ZulipClient:
                 budget = min(budget, remaining)
             request = urllib.request.Request(url, data=data, method=method, headers=headers)
             try:
-                with self._opener.open(
-                    request, timeout=budget
-                ) as response:
+                with self._opener.open(request, timeout=budget) as response:
                     body = response.read()
                     status = response.status
             except urllib.error.HTTPError as exc:

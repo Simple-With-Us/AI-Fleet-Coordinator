@@ -350,12 +350,23 @@ def in_relay_channel(message: Mapping[str, Any], channel: str = N.RELAY_CHANNEL)
     )
 
 
-def react(runner: Any, message_id: int, names: tuple[str, ...], log: Callable[..., None], *, deadline: float | None = None) -> None:
+def react(
+    runner: Any,
+    message_id: int,
+    names: tuple[str, ...],
+    log: Callable[..., None],
+    *,
+    deadline: float | None = None,
+) -> None:
     """Set the first emoji Zulip accepts.  A network failure propagates (the request stays spooled and is
     published on the retry);  an emoji Zulip does not know falls through to the next name."""
     for name in names:
         try:
-            runner.client.post("messages/%d/reactions" % message_id, {"emoji_name": name}, **({"deadline": deadline} if deadline is not None else {}))
+            runner.client.post(
+                "messages/%d/reactions" % message_id,
+                {"emoji_name": name},
+                **({"deadline": deadline} if deadline is not None else {}),
+            )
             return
         except Z.ApiError as exc:
             if exc.code == "REACTION_ALREADY_EXISTS":
@@ -375,7 +386,8 @@ def already_replied(
     message_id: int,
     prefix: str,
     log: Callable[..., None],
-    *, deadline: float | None = None,
+    *,
+    deadline: float | None = None,
 ) -> bool:
     """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
     forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
@@ -389,7 +401,9 @@ def already_replied(
         + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else [])
     )
     anchor = message_id
-    deadline = min(deadline, time.monotonic() + 10.0) if deadline is not None else time.monotonic() + 10.0
+    deadline = (
+        min(deadline, time.monotonic() + 10.0) if deadline is not None else time.monotonic() + 10.0
+    )
     for _ in range(REPLY_SCAN_PAGES):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -404,7 +418,8 @@ def already_replied(
                 "include_anchor": "false",
                 "apply_markdown": "false",
             },
-            timeout=remaining, deadline=deadline,
+            timeout=remaining,
+            deadline=deadline,
         )
         if not isinstance(found, Mapping) or not isinstance(found.get("messages"), list):
             raise MalformedResponse("Zulip messages response must include a list of messages")
@@ -480,8 +495,14 @@ def _refuse_unconsumed_locked(
         if exc.code == "sender_unknown":
             previous = LIVE.read_json(row)
             attempts = int(previous.get("sender_attempts") or 0) + 1
-            LIVE.write_json(row, {"state": "sender_pending" if attempts < 3 else "unauthorized",
-                                  "sender_attempts": attempts}, durable=True)
+            LIVE.write_json(
+                row,
+                {
+                    "state": "sender_pending" if attempts < 3 else "unauthorized",
+                    "sender_attempts": attempts,
+                },
+                durable=True,
+            )
             if attempts < 3:
                 raise MalformedResponse("sender inventory is incomplete") from None
             return False
@@ -500,8 +521,18 @@ def _refuse_unconsumed_locked(
     label = W.neutralize_mentions(safe_reason(request_id or "(message %d)" % message_id))
     prefix = N.refusal_label(label)
     try:
-        react(runner, message_id, N.REFUSED_EMOJI, log, **({"deadline": deadline} if deadline is not None else {}))
-        response = runner.client.get("messages/%d" % message_id, {"apply_markdown": False}, **({"deadline": deadline} if deadline is not None else {}))
+        react(
+            runner,
+            message_id,
+            N.REFUSED_EMOJI,
+            log,
+            **({"deadline": deadline} if deadline is not None else {}),
+        )
+        response = runner.client.get(
+            "messages/%d" % message_id,
+            {"apply_markdown": False},
+            **({"deadline": deadline} if deadline is not None else {}),
+        )
         original = response.get("message") if isinstance(response, Mapping) else None
         if (
             not isinstance(original, Mapping)
@@ -510,7 +541,14 @@ def _refuse_unconsumed_locked(
             or not isinstance(original.get("topic", original.get("subject")), str)
         ):
             raise MalformedResponse("refusal destination must contain stream_id and topic")
-        if already_replied(runner, original, message_id, prefix, log, **({"deadline": deadline} if deadline is not None else {})):
+        if already_replied(
+            runner,
+            original,
+            message_id,
+            prefix,
+            log,
+            **({"deadline": deadline} if deadline is not None else {}),
+        ):
             LIVE.write_json(row, {"state": "ok"}, durable=True)
             return True
         if unknown:
@@ -536,7 +574,11 @@ def _refuse_unconsumed_locked(
             status = None
         definite_rejection = status is not None and 400 <= status < 500 and status != 408
         definitely_unsent = status is None and getattr(exc, "maybe_sent", None) is False
-        LIVE.write_json(row, {"state": "refused" if definite_rejection or definitely_unsent else "unknown"}, durable=True)
+        LIVE.write_json(
+            row,
+            {"state": "refused" if definite_rejection or definitely_unsent else "unknown"},
+            durable=True,
+        )
         if isinstance(exc, Z.NetworkError) or retryable(exc):
             raise
         log("notes-relay-reply-failed", id=message_id, status=status)
@@ -550,8 +592,12 @@ def _refuse_unconsumed_locked(
 
 
 def refuse_unconsumed(
-    runner: Any, message: Mapping[str, Any], reason: str, log: Callable[..., None],
-    *, deadline: float | None = None,
+    runner: Any,
+    message: Mapping[str, Any],
+    reason: str,
+    log: Callable[..., None],
+    *,
+    deadline: float | None = None,
 ) -> bool:
     """Serialize reconciliation and sending, retaining ambiguous outcomes across restarts."""
     message_id = message.get("id")

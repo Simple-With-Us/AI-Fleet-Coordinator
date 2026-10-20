@@ -1007,7 +1007,9 @@ class Daemon:
         with self.notes_relay_lock:
             seat = self.notes_relay_refuser
             reader = self.seats.get(seat) if seat else None
-            keys = sorted((key for key in self.notes_relay_retry if key[0] == seat), key=lambda item: item[1])[:4]
+            keys = sorted(
+                (key for key in self.notes_relay_retry if key[0] == seat), key=lambda item: item[1]
+            )[:4]
             reason = self.notes_relay_refusal_reason
         if reader is None or not reader.connected or reader.client is None:
             return
@@ -1081,13 +1083,19 @@ class Daemon:
         try:
             page = reader.fetch(
                 [{"operator": "channel", "operand": NR.N.RELAY_CHANNEL}],
-                anchor=anchor, after=PAGE, deadline=deadline,
+                anchor=anchor,
+                after=PAGE,
+                deadline=deadline,
             )
             if not isinstance(page, list):
                 raise NR.MalformedResponse("relay message page must be a list")
             for message in page:
-                if (not isinstance(message, dict) or isinstance(message.get("id"), bool)
-                        or not isinstance(message.get("id"), int) or message["id"] <= 0):
+                if (
+                    not isinstance(message, dict)
+                    or isinstance(message.get("id"), bool)
+                    or not isinstance(message.get("id"), int)
+                    or message["id"] <= 0
+                ):
                     raise NR.MalformedResponse("relay page entries need positive integer ids")
             rows = sorted((m for m in page if m["id"] > last), key=lambda m: m["id"])
         except Exception as exc:
@@ -1100,10 +1108,16 @@ class Daemon:
             if NR.in_relay_channel(message) and NR.is_request(message):
                 processed += 1
                 try:
-                    if not NR.refuse_unconsumed(reader, message, reason, self.log.write, deadline=deadline):
-                        self.log.write("notes-relay-refusal-gave-up", id=message["id"], status="refused")
+                    if not NR.refuse_unconsumed(
+                        reader, message, reason, self.log.write, deadline=deadline
+                    ):
+                        self.log.write(
+                            "notes-relay-refusal-gave-up", id=message["id"], status="refused"
+                        )
                 except Exception as exc:
-                    self.log.write("notes-relay-refusal-retry", id=message["id"], error=type(exc).__name__)
+                    self.log.write(
+                        "notes-relay-refusal-retry", id=message["id"], error=type(exc).__name__
+                    )
                     self._keep_for_relay_retry(reader, message)
                     with self.notes_relay_lock:
                         if (reader.seat, message["id"]) not in self.notes_relay_retry:
@@ -1332,7 +1346,9 @@ class Daemon:
                 reason="no osascript or no apple-notes-coding.sh on this host",
             )
             if self.notes_relay_refuser is None:
-                self._abandon_relay_holds("the notes script is unavailable and this host is not its refuser")
+                self._abandon_relay_holds(
+                    "the notes script is unavailable and this host is not its refuser"
+                )
             return
         if not agrees:
             self.log.write(
