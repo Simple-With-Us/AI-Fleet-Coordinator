@@ -45,7 +45,7 @@ def loaded_rollouts(*, fresh=False):
             timeout=3,
             check=False,
         )
-        if len(result.stdout) > MAX_RESPONSE:
+        if result.returncode not in (0, 1) or len(result.stdout) > MAX_RESPONSE:
             return frozenset()
         processes = {}
         pid = None
@@ -63,7 +63,9 @@ def loaded_rollouts(*, fresh=False):
                     if "/.codex/sessions/" in name and name.endswith(".jsonl")
                 )
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        # A failed fresh probe cannot authorize delivery or overwrite the last successful
+        # discovery snapshot used by other bindings.  Never fall back to positive proof here.
+        return frozenset()
     _LOADED_CACHE = (now, frozenset(paths))
     return _LOADED_CACHE[1]
 
@@ -276,7 +278,7 @@ class CodexChatTransport:
 
     def _is_loaded(self, thread, *, fresh=False):
         if self.loaded is not None:
-            return self.loaded(thread)
+            return self.loaded(thread, fresh=fresh)
         return thread.get("path") in loaded_rollouts(fresh=fresh)
 
     @staticmethod

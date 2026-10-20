@@ -79,7 +79,8 @@ class TransportTests(unittest.TestCase):
                 pass
 
         self.adapter = CodexChatTransport(
-            home=self.home, binary=str(self.binary), rpc_factory=FakeRPC, loaded=lambda row: True
+            home=self.home, binary=str(self.binary), rpc_factory=FakeRPC,
+            loaded=lambda row, **kwargs: True
         )
 
     def test_send_exact_input_stable_id_and_permit(self):
@@ -176,7 +177,7 @@ class TransportTests(unittest.TestCase):
             expected = "busy" if key == "path" else "invalid"
             self.assertEqual(self.adapter.preflight(self.binding), expected)
             self.thread = original
-        self.adapter.loaded = lambda _: False
+        self.adapter.loaded = lambda _, **kwargs: False
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
 
     def test_missing_local_prerequisites_stay_busy_not_unsupported(self):
@@ -311,9 +312,9 @@ class TransportTests(unittest.TestCase):
         self.path.unlink()
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
         self.path.touch()
-        self.adapter.loaded = lambda _: False
+        self.adapter.loaded = lambda _, **kwargs: False
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
-        self.adapter.loaded = lambda _: True
+        self.adapter.loaded = lambda _, **kwargs: True
         self.adapter._probe_failures.clear()  # Simulate expiration of the bounded busy probe cache.
         self.assertEqual(self.adapter.preflight(self.binding), "ready")
 
@@ -329,7 +330,7 @@ class TransportTests(unittest.TestCase):
         self.thread["path"] = str(self.path.parent / "missing")
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
         self.thread["path"] = str(self.path)
-        self.adapter.loaded = lambda _: False
+        self.adapter.loaded = lambda _, **kwargs: False
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
         self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
 
@@ -343,6 +344,16 @@ class TransportTests(unittest.TestCase):
                 return True
             self.assertEqual(self.adapter.send(self.binding, "nudge", permit=close_chat), "deferred")
             self.assertEqual(proof.call_args.kwargs, {"fresh": True})
+        self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
+
+    def test_injected_loader_receives_forced_refresh(self):
+        probes = []
+        def loaded(thread, *, fresh=False):
+            probes.append(fresh)
+            return not fresh
+        self.adapter.loaded = loaded
+        self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
+        self.assertEqual(probes, [False, True])
         self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
 
     def test_full_queue_verdict_cached_per_exact_binding_and_expires(self):
@@ -696,6 +707,15 @@ class LoadedProofTests(unittest.TestCase):
             ),
         ):
             self.assertEqual(module.loaded_rollouts(), frozenset())
+
+    def test_failed_fresh_probe_never_reuses_or_replaces_positive_snapshot(self):
+        snapshot = (module.time.monotonic(), frozenset(["/old/rollout.jsonl"]))
+        with (
+            patch.object(module, "_LOADED_CACHE", snapshot),
+            patch.object(module.subprocess, "run", side_effect=subprocess.TimeoutExpired("lsof", 3)),
+        ):
+            self.assertEqual(module.loaded_rollouts(fresh=True), frozenset())
+            self.assertEqual(module._LOADED_CACHE, snapshot)
 
     def test_rpc_explicit_codex_home(self):
         with tempfile.TemporaryDirectory() as home, patch.object(module, "RPC") as rpc:
