@@ -44,6 +44,20 @@ def too_old(python: str) -> bool:
     return version is not None and version < MIN_PYTHON
 
 
+def fsync_directory(directory: str) -> None:
+    """Flush a rename into the directory itself; a crash must not lose the unit it replaced."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def unit_path(home: str) -> str:
     return os.path.join(home, ".config", "systemd", "user", UNIT)
 
@@ -121,11 +135,17 @@ def install(
         os.path.expanduser(env.get(L.ENV_STATE_DIR) or os.path.join(home, ".agent-sync"))
     )
     config = os.path.abspath(L.config_path(root, env))
-    python = python or (
-        DEFAULT_PYTHON
-        if os.access(DEFAULT_PYTHON, os.X_OK) and not too_old(DEFAULT_PYTHON)
-        else sys.executable
-    )
+    if python is None:
+        if os.access(DEFAULT_PYTHON, os.X_OK) and not too_old(DEFAULT_PYTHON):
+            python = DEFAULT_PYTHON
+        else:
+            # The unit would fail to start under an interpreter the operator never chose, and may name a
+            # virtual-environment or /usr/local Python the user manager cannot reach.  Say so, never silently.
+            python = sys.executable
+            out.write(
+                f"note: {DEFAULT_PYTHON} is missing or older than Python 3.11; the unit's ExecStart uses "
+                f"{python} instead (inspect it before enabling, or pass --python PATH)\n"
+            )
     if not os.access(python, os.X_OK):
         out.write(f"note: {python} is not executable; pass --python PATH (3.11 or newer)\n")
     elif too_old(python):
@@ -134,9 +154,13 @@ def install(
     unit_dir = os.path.dirname(target)
     probe = unit_dir
     while probe != os.path.dirname(home):
+        # $HOME itself is the operator's own layout and may legitimately be a symlink; only the
+        # directory chain the unit is created below is this guard's business.
+        if probe == home:
+            break
         if os.path.islink(probe):
             raise ValueError("refusing symlink in service directory")
-        if probe == home or probe == os.path.dirname(probe):
+        if probe == os.path.dirname(probe):
             break
         probe = os.path.dirname(probe)
     if not dry_run:
@@ -159,12 +183,15 @@ def install(
         ) as fh:
             temporary = fh.name
             fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
         try:
             os.chmod(temporary, 0o600)
             os.replace(temporary, target)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+        fsync_directory(unit_dir)
     out.write(
         "This command does not run systemctl or provision credentials.  Provision the authorized authentication source before activation.\n"
     )

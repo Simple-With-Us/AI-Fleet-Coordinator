@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -74,6 +75,23 @@ class UnitTests(unittest.TestCase):
                 systemd.install({}, home, io.StringIO())
             self.assertEqual(list(Path(outside).iterdir()), [])
 
+    def test_symlinked_home_installs_but_a_link_below_it_is_refused(self):
+        with tempfile.TemporaryDirectory() as real:
+            home = str(Path(real, "link"))
+            os.symlink(real, home)
+            systemd.install({}, home, io.StringIO())
+            self.assertTrue(Path(systemd.unit_path(home)).exists())
+        # The guard still covers the directory chain the unit is created below.
+        with tempfile.TemporaryDirectory() as real, tempfile.TemporaryDirectory() as outside:
+            home = str(Path(real, "link"))
+            os.symlink(real, home)
+            directory = Path(systemd.unit_path(home)).parent
+            directory.parent.mkdir(parents=True)
+            directory.symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                systemd.install({}, home, io.StringIO())
+            self.assertEqual(list(Path(outside).iterdir()), [])
+
     def test_missing_interpreter_falls_back_or_warns_and_control_home_is_rejected(self):
         with tempfile.TemporaryDirectory() as home:
             original = systemd.os.access
@@ -88,9 +106,12 @@ class UnitTests(unittest.TestCase):
 
     def test_old_interpreter_falls_back_or_is_noted(self):
         with tempfile.TemporaryDirectory() as home:
+            out = io.StringIO()
             with patch.object(systemd, "too_old", return_value=True):
-                systemd.install({}, home, io.StringIO())
+                systemd.install({}, home, out)
             self.assertIn(systemd.quote(sys.executable), Path(systemd.unit_path(home)).read_text())
+            # The fallback interpreter was never chosen by the operator, so it is reported.
+            self.assertIn(sys.executable, out.getvalue())
             out = io.StringIO()
             with patch.object(systemd, "too_old", return_value=True):
                 systemd.install({}, home, out, python="/usr/bin/python3")
@@ -130,7 +151,10 @@ class UnitTests(unittest.TestCase):
 class DispatchTests(ListenerHarness):
     def test_linux_install_and_status(self):
         with patch("agent_sync.listener_cli.sys.platform", "linux"):
-            result = self.run_cli("daemon", "install", env=self.env(AGENT_SYNC_STATE_DIR=None))
+            # The system Python is the default only when this host's copy is 3.11 or newer; a Mac's
+            # /usr/bin/python3 is 3.9 and install() falls back deliberately (tested in UnitTests).
+            with patch.object(systemd, "too_old", return_value=False):
+                result = self.run_cli("daemon", "install", env=self.env(AGENT_SYNC_STATE_DIR=None))
             self.assertEqual(result.code, 0, result.err)
             self.assertTrue(Path(systemd.unit_path(str(self.home))).exists())
             self.assertIn(
