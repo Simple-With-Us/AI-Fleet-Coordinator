@@ -4399,12 +4399,67 @@ _VIBE_TABLE_RE = re.compile(r"^[ \t]*\[")
 _VIBE_KV_RE = re.compile(r"^[ \t]*([A-Za-z0-9_.-]+)[ \t]*=")
 
 
+def _vibe_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | None]:
+    """The bracket depth and the open string delimiter after reading `line`, both carried across lines.  A value may
+    span lines, so `depth` and `quote` are the whole state of a TOML value: inside them the lines are the value's
+    text and not keys or tables of their own."""
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote is not None:
+            if ch == "\\" and quote == '"':
+                i += 2  # an escaped character, whatever it is
+                continue
+            if line.startswith(quote, i):
+                i += len(quote)
+                quote = None
+                continue
+            i += 1
+            continue
+        if line.startswith('"""', i) or line.startswith("'''", i):
+            quote = line[i : i + 3]
+            i += 3
+        elif ch == "#":
+            break  # a comment runs to the end of the line
+        elif ch == '"' or ch == "'":
+            quote = ch
+            i += 1
+        elif ch in "[{":
+            depth += 1
+            i += 1
+        elif ch in "]}":
+            depth -= 1
+            i += 1
+        else:
+            i += 1
+    return depth, quote
+
+
+def _vibe_value_end(lines: list[str], start: int) -> int:
+    """The index just past the value that begins on `lines[start]`: a multi-line array, inline table or
+    triple-quoted string ends on the line that closes it, not on the line its key is on."""
+    depth = 0
+    quote: str | None = None
+    for i in range(start, len(lines)):
+        depth, quote = _vibe_scan(lines[i], depth, quote)
+        if quote is None and depth <= 0:
+            return i + 1
+    return len(lines)
+
+
 def vibe_gate(text: str | None) -> bool | None:
     """The top-level `enable_experimental_hooks` value in a Vibe config.toml (True, False or None when absent).
-    Only the top level counts: the key under a table belongs to that table."""
+    Only the top level counts: the key under a table belongs to that table, and a line inside a value that spans
+    lines is that value's text rather than a key."""
     if text is None:
         return None
+    depth = 0
+    quote: str | None = None
     for line in text.splitlines():
+        at_top = quote is None and depth <= 0
+        depth, quote = _vibe_scan(line, depth, quote)
+        if not at_top:
+            continue
         if _VIBE_TABLE_RE.match(line):
             break
         m = _VIBE_GATE_RE.match(line)
@@ -4415,20 +4470,24 @@ def vibe_gate(text: str | None) -> bool | None:
 
 def vibe_set_gate(text: str) -> str:
     """`text` with the top-level gate set to true.  An existing top-level key is replaced in place; a missing one is
-    inserted after the last top-level key, or at the top when there is none.  Nothing else is changed."""
+    inserted after the last top-level key, or at the top when there is none.  A key whose value spans lines ends
+    where that value ends, so the gate never lands inside it.  Nothing else is changed."""
     lines = text.split("\n")
-    table_at = len(lines)
+    depth = 0
+    quote: str | None = None
+    insert_at = 0
     for i, line in enumerate(lines):
+        at_top = quote is None and depth <= 0
+        depth, quote = _vibe_scan(line, depth, quote)
+        if not at_top:
+            continue
         if _VIBE_TABLE_RE.match(line):
-            table_at = i
             break
         if _VIBE_GATE_RE.match(line):
             lines[i] = _VIBE_GATE_KEY + " = true"
             return "\n".join(lines)
-    insert_at = 0
-    for i in range(table_at):
-        if _VIBE_KV_RE.match(lines[i]):
-            insert_at = i + 1
+        if _VIBE_KV_RE.match(line):
+            insert_at = _vibe_value_end(lines, i)
     lines.insert(insert_at, _VIBE_GATE_KEY + " = true")
     out = "\n".join(lines)
     return out if out.endswith("\n") or not out else out + "\n"

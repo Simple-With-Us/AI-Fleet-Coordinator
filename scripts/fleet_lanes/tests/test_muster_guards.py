@@ -296,6 +296,26 @@ class VibeTests(World):
         off = T.vibe_set_gate("enable_experimental_hooks = false\nx = 1\n")
         self.assertTrue(off.startswith("enable_experimental_hooks = true\nx = 1\n"))
 
+    def test_the_gate_is_not_inserted_inside_a_value_that_spans_lines(self) -> None:
+        # The gate goes after the last top-level key, and a value that spans lines ends where it ends: inserting
+        # into the middle of one writes a config.toml that will not parse (and nothing catches it without tomllib).
+        for src in (
+            'mcp_servers = [\n  "alpha",\n  "beta",\n]\n',
+            'system_prompt = """one\ntwo\nthree"""\n',
+            'mcp_servers = [\n  "alpha",\n]\n\n[experiment_overrides]\nx = 1\n',
+        ):
+            with self.subTest(src=src):
+                new = T.vibe_set_gate(src)
+                self.assertIs(T.vibe_gate(new), True)
+                try:
+                    import tomllib
+
+                    tomllib.loads(new)
+                except ImportError:
+                    self.skipTest("no tomllib to validate with")
+                except tomllib.TOMLDecodeError as exc:
+                    self.fail(f"the new config.toml would not parse ({exc}):\n{new}")
+
     def test_the_match_is_vibes_shell_tool_name(self) -> None:
         # Vibe matches the hook against the tool name it sends, and a wrong exact name silently never fires, so the
         # name is pinned to the one the installed package and the live config agree on.
