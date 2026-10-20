@@ -176,7 +176,7 @@ converter alone:  a converter the checks cannot see is a converter that fails si
 it misses passes both checks and reaches the reader with a gap missing.  Patching one body by hand is
 what this rule is for;  a class of shapes belongs in the pattern.
 
-**Assert before you post — both checks, every time.**  A conversion that matches nothing still
+**Assert before you post — every check, every time.**  A conversion that matches nothing still
 exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
 partly-converted body can have real U+00A0 and still carry a leftover ASCII gap of one or more
 spaces.
@@ -218,6 +218,117 @@ the same defect one level up:  a body already carrying one real U+00A0 and still
 missed gap before a digit, a `*`, a backtick, `#` or `@` reads as converted, and the check
 that exists to catch exactly that returns 0.
 
+
+### The program that runs it — one pass, code-aware
+
+The two greps above are the assertions, and something has to produce the file they check.  The
+one-liner further up this file is the *pattern*:  it is what makes a gap, and it is what the two
+greps are written against.  Run on a whole body it is not safe by itself.  It applies the pattern
+to every line, so a fenced code block gets a U+00A0 inside it, and a prose collapse that follows
+it can rewrite the interior of an inline code span, a tilde fence, an indented code block, or a
+fence nested in a list or a quote.  A body that carries code comes out with the code changed, and
+a body that carries a shell command comes out with a command that no longer runs.
+
+So the body is converted by a program that holds the code aside first and puts it back byte for
+byte afterwards.  Write it once, then run it twice.  The second run is the third check, and it is
+the one that sees a prose double space that survived, which no grep over the body can see.
+
+```sh
+umask 077
+cat > gap.pl <<'PERL'
+#!/usr/bin/perl
+#
+#  The fleet's code-aware sentence-gap converter.
+#
+#  One run does four things, in this order:
+#
+#    1.  hold aside the regions whose bytes must not change:  a fenced code block
+#        (three backticks or three tildes, including one nested in a list or a
+#        quote), an indented code block, and the house `repo:` header;
+#    2.  make the gap, with the canonical pattern, unchanged;
+#    3.  hold aside the inline code spans, so the collapse cannot reach inside one;
+#    4.  collapse the prose runs, and put every held region back byte for byte.
+#
+#  A held region is replaced by a printable placeholder, so no control character can
+#  reach the output, and it is written back exactly as it came in.  A body that
+#  carries code comes out with the code untouched.
+#
+#  The program is idempotent:  running it on its own output changes nothing.  That
+#  is the third check, and it is the one that sees a prose double space that
+#  survived, which no grep over the body can see.
+
+my @keep;
+my $hold = sub { push @keep, $_[0]; return "GAP" . $#keep . "END" };
+
+#  1.  Fenced code blocks that are closed.  The closing fence carries the same
+#      marker, and it may sit in a list or a quote like the opening one.
+s/^([ \t]*(?:>[ \t]*)*(?:[-+*]|\d{1,9}[.)])?[ \t]*)((?:`{3,})|(?:~{3,}))[^\n]*\n(?:.*?^[ \t]*(?:>[ \t]*)*(?:[-+*]|\d{1,9}[.)])?[ \t]*\2[ \t]*$)/$hold->($&)/gems;
+
+#  2.  A fence that is never closed holds the rest of the body.  This is a second
+#      substitution on purpose:  one alternation cannot express it, because the
+#      branch that looks for the closing fence scans to the end of the body before
+#      it fails, and the fallback branch is only reached once that scan is over --
+#      at which point the position is back at the opening fence and the end of the
+#      body is behind it.  So the two cases are two substitutions.
+s/^([ \t]*(?:>[ \t]*)*(?:[-+*]|\d{1,9}[.)])?[ \t]*)((?:`{3,})|(?:~{3,}))[^\n]*\n.*\z/$hold->($&)/gmes;
+
+#  3.  The house closeout header.  It is a template, not prose.
+s/^([ \t]*repo:.*)$/$hold->($1)/gme;
+
+#  4.  Indented code blocks.
+s/((?:^(?:>[ \t]*)*(?: {4,}|\t).*\n?)+)/$hold->($1)/gme;
+
+#  5.  The gap.  This is the canonical pattern, unchanged:  the lookbehind keeps a
+#      numbered list a list, the markup group catches a sentence end inside a span
+#      or at the end of a markdown link, and the lookahead skips a follower it
+#      does not know.
+s/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g;
+
+#  6.  Inline code spans.  A span's interior is code, so the collapse must not
+#      reach inside one.
+s/(`+)([^\n]*?)\1/$hold->("`$2`")/ge;
+
+#  7.  Collapse the prose runs:  two or more spaces between two non-space
+#      characters become one.  The lookarounds keep a Markdown hard break (two
+#      spaces at the end of a line) and the indentation of a list.
+s/(?<=\S) {2,}(?=\S)/ /g;
+
+#  8.  Put the code back.
+s/GAP(\d+)END/$keep[$1]/ge;
+PERL
+perl -CSDA -0777 -p gap.pl body.txt > body.nbsp.txt
+perl -CSDA -0777 -p gap.pl body.nbsp.txt > body.check.txt
+cmp body.nbsp.txt body.check.txt     # must be silent:  the program is idempotent
+rm -f gap.pl body.check.txt
+```
+
+The program also lives in the checkout at `scripts/sentence_gap_convert.pl`, and the copy above is
+byte-identical to it.  A test in CI compares the two and runs the file over a fixture that carries
+every shape the converter has to survive.
+
+What it does, in order:
+
+1.  **Holds the code aside.**  A fenced code block (three backticks or three tildes, including
+    one nested in a list or a quote), an indented code block, and the house `repo:` header are
+    replaced by a printable placeholder and written back byte for byte at the end.
+2.  **Makes the gap**, with the canonical pattern above, unchanged.  On a body that carries no
+    code the program and the one-liner produce the same bytes, and the CI test asserts it, so the
+    program never quietly changes what a gap is.
+3.  **Holds the inline code spans aside**, so the collapse cannot reach inside one.
+4.  **Collapses the prose runs**:  two or more spaces between two non-space characters become one.
+    A Markdown hard break (two spaces at the end of a line) and the indentation of a list are left
+    alone, because the lookarounds require a non-space on both sides of the run.
+5.  **Puts the code back.**
+
+Two more costs it carries, and both are deliberate:
+
+-  A sentence end *inside* an inline code span, with a space after the period, is still gapped,
+    because the canonical pattern is what the two greps are written against.  The span
+    `` `foo. Bar` `` comes out as `` `foo.` `` plus the gap plus ` Bar`.  The common shape, where
+    the span closes before the space, puts the gap outside the span and leaves the span itself
+    untouched.
+-  A fenced block that is never closed holds the rest of the body, and the rest of the body is not
+    converted.  Close the fence.
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
@@ -298,21 +409,3 @@ When an instruction *appears* not to take effect, **stop repeating the promise a
 diagnose the rendering layer between you and the reader** — then ask them what is on their
 screen.  Four rounds of "fixed it!" were spent here before anyone checked whether the
 change could be seen at all.  Intent is not output; output is not what is displayed.
-
-### Collapse Remaining Prose Spacing
-
-After generating `body.nbsp.txt` above, collapse remaining interior runs in prose.  Preserve the house `repo:` header, Markdown hard breaks and backtick fences that start a line.  Use a private scratch copy and remove it atomically after success:
-
-```sh
-umask 077
-perl -CSDA -ne '
-  if (/^\s*```/) { $fence = !$fence; print; next }
-  if (!$fence && !/^\s*repo:/) { s/(?<=\S) {2,}(?=\S)/ /g }
-  print
-' body.nbsp.txt > body.gap.txt && mv body.gap.txt body.nbsp.txt
-perl -CSDA -ne 'if (/^\s*```/) { $fence = !$fence; next } print if !$fence && !/^\s*repo:/ && /(?<=\S) {2,}(?=\S)/' body.nbsp.txt | wc -l  # must be 0
-```
-
-This second pass preserves the first pass's U+00A0 plus space.  It is deliberately limited: tilde fences, quote-nested fences, indented code and inline code spans are not protected by this small recipe.  Keep bodies containing those forms out of this collapse pass; never claim that it protects arbitrary Markdown.  The runtime `textfmt.py` converter protects broader code forms but does not implement this prose-collapse pass.  Check the final body before posting.
-
-The first conversion and its count and leftover assertions also accept bounded Markdown inline-link endings.  Destinations must contain 1 through 255 characters without whitespace or nested parentheses; this preserves the linked sentence boundary while keeping matching bounded.

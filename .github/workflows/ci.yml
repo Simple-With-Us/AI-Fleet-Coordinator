@@ -168,6 +168,13 @@ jobs:
     - name: Sentence gap converter tests
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_converter -v
+    # The code-aware sentence-gap program:  every surface embeds the same program,
+    # the program carries the one home's pattern, the code comes back byte for byte,
+    # the gaps are made, the prose runs collapse, and the program is idempotent --
+    # the check that sees a prose double space no grep over the body can see.
+    - name: Sentence gap program tests
+      run: |
+        cd scripts && python3 -m unittest test_sentence_gap_program -v
     # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
