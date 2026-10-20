@@ -159,6 +159,10 @@ class Seat:
     extra_banner: str = ""
     write_home: bool = True
     seat_key: str = ""
+    # The banner's lane clause.  Empty means the Mac default
+    # `~/apps/lanes/<Repo>/<suffix>-<slug>`; a cloud seat whose checkout is its
+    # lane says so here instead (MA).
+    lane_clause: str = ""
     # Zulip identity (owner 2026-10-07).  `zulip_bot` is the
     # bot's email local part; the realm is simplewithus.zulipchat.com for all of
     # them.  `zulip_rc` is the credential code the Infisical `<BOT>_ZULIP_*` names derive from (AFC-359).
@@ -196,14 +200,18 @@ def zulip_identity_sentence(seat: Seat) -> str:
     )
 
 
-def _banner(tag: str, notes: str, prefix: str, suffix: str, zulip: str = "") -> str:
+def _banner(
+    tag: str, notes: str, prefix: str, suffix: str, zulip: str = "", lanes: str = ""
+) -> str:
     inherit = "a shared template"
     if tag == "MONET":
         inherit = "another seat's upload pack"
+    if not lanes:
+        lanes = f"Lanes `~/apps/lanes/<Repo>/{suffix}-<slug>`."
     return (
         f"> **This install is for `{tag}`.**  Chat tag `[{tag}·session8]`.  "
         f"Notes `{notes}`.  "
-        f"Branches `{prefix}/`.  Lanes `~/apps/lanes/<Repo>/{suffix}-<slug>`.  Do not inherit "
+        f"Branches `{prefix}/`.  {lanes}  Do not inherit "
         f"another seat's tag from {inherit}."
         f"{zulip}\n\n"
     )
@@ -687,7 +695,9 @@ SEATS: dict[str, Seat] = {
         "exclusive",
         "This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  "
         "Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` "
-        "(historical `muse/<slug>`).  No lane on the Mac (cloud VM).  "
+        "(historical `muse/<slug>`).  No Mac lane (cloud VM):  the lane is your VM checkout, "
+        "one per repo named `muse-assist-<repo>`, so never create `~/apps/lanes` or run "
+        "`~/apps/lane`.  "
         "Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly "
         "distinguish from Muse Code (`[MC]`).  Pin `AGENT_SEAT=MA` / `AGENT_TAG=MA`.",
         extra_banner=MUSE_ASSIST_BANNER,
@@ -695,6 +705,10 @@ SEATS: dict[str, Seat] = {
         seat_key="muse-assist",
         zulip_bot="muse-assist-bot",
         zulip_rc="MA",
+        lane_clause=(
+            "No Mac lane (cloud VM):  your lane is the durable VM checkout "
+            "`muse-assist-<repo>`, one per repo."
+        ),
     ),
     # The shared Claude Code skill home.  CLAUDE is the only Claude seat, so it
     # renders as CLAUDE.  It is a second home for the `claude` pack, not a
@@ -1308,7 +1322,12 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     if skill_name in IDENTITY_SKILL_NAMES and not seat.retired:
         zulip = zulip_identity_sentence(seat)
         banners += _banner(
-            seat.tag, seat.notes, seat.prefix, seat.suffix, f"  {zulip}" if zulip else ""
+            seat.tag,
+            seat.notes,
+            seat.prefix,
+            seat.suffix,
+            f"  {zulip}" if zulip else "",
+            seat.lane_clause,
         )
     banners += seat.extra_banner
     if banners:
