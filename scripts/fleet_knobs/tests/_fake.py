@@ -96,11 +96,7 @@ class FakeInfisical:
         """The automation pair each CLI call actually received (None when absent)."""
         if not self.automation_file.exists():
             return []
-        return [
-            json.loads(line)
-            for line in self.automation_file.read_text().splitlines()
-            if line
-        ]
+        return [json.loads(line) for line in self.automation_file.read_text().splitlines() if line]
 
 
 class KnobTestCase(unittest.TestCase):
