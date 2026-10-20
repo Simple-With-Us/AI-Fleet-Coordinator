@@ -60,7 +60,7 @@ const SERVER_LISTENER_PATH = repoPath("scripts/agent_sync/server/listener.toml")
 const BOARD_CLI_PATH = repoPath("scripts/linear-board/board");
 const BACKUP_DIR = "/Users/jay/apps/fleet-ops-sheet/backups";
 const LAST_RUN_PATH = "/Users/jay/apps/fleet-ops-sheet/last-run-registry.json";
-const MIRROR_MD_PATH = "/Users/jay/apps/FLEET-APPS-REGISTRY.md";
+export const MIRROR_MD_PATH = "/Users/jay/apps/FLEET-APPS-REGISTRY.md";
 
 const TAB_RULES = "RULES & STANDARDS";
 const TAB_REGISTRY = "App Store Registry";
@@ -789,12 +789,52 @@ export function buildMarkdownMirror(rules, tabs, nowIso) {
   return lines.join("\n");
 }
 
+// The Fleet RAG ingest step.
+//
+// `recall ingest` ingests a SOURCE, not a file:  its argparse takes no positional path, so the old
+// `recall ingest <mirror.md>` call always exited 2 with "unrecognized arguments" and this step had
+// been a silent no-op since the CLI changed.  The registry mirror is a top-level ~/apps/*.md file,
+// and the `doc` source owns exactly that directory (fleet_rag/sources.py:  APPS_DIR.glob("*.md")),
+// so the doc source carries the mirror.  The ingest is hash-skipped, so a sheet sync that changed
+// nothing costs a walk, not a re-embed.
+export const REGISTRY_INGEST_SOURCE = "doc";
+
+export function registryIngestArgs() {
+  return ["ingest", "--source", REGISTRY_INGEST_SOURCE];
+}
+
+// The ingest prints its JSON report on stdout and its progress on stderr.
+export function summarizeIngest(stdout) {
+  const text = String(stdout || "");
+  try {
+    const report = JSON.parse(text);
+    const stats = (report && report.per_source && report.per_source[REGISTRY_INGEST_SOURCE]) || {};
+    const parts = [];
+    if (stats.docs_seen != null) parts.push(`${stats.docs_seen} docs`);
+    if (stats.docs_changed != null) parts.push(`${stats.docs_changed} changed`);
+    if (stats.chunks_new != null) parts.push(`${stats.chunks_new} chunks written`);
+    return parts.length ? parts.join(", ") : "done";
+  } catch {
+    // Not the JSON report (an older CLI, or a wrapper that printed nothing):  fall through.
+  }
+  const lines = text.trim().split("\n").filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : "done";
+}
+
 function exportMarkdownMirror(markdown) {
   writeFileSync(MIRROR_MD_PATH, markdown, "utf8");
   console.log(`   Exported Markdown mirror: ${MIRROR_MD_PATH}`);
+  if (process.env.FLEET_SHEET_INGEST === "0") {
+    console.log("   Fleet RAG ingest skipped (FLEET_SHEET_INGEST=0)");
+    return;
+  }
   try {
-    const out = execFileSync("recall", ["ingest", MIRROR_MD_PATH], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    console.log(`   Fleet RAG ingested: ${out.trim().split("\n").pop()}`);
+    const out = execFileSync("recall", registryIngestArgs(), {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    console.log(`   Fleet RAG ingested: ${summarizeIngest(out)}`);
   } catch (err) {
     console.warn(`   Note: Fleet RAG ingest skipped (${err.message.split("\n")[0]})`);
   }
