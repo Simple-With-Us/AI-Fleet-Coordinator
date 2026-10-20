@@ -18,6 +18,7 @@
 import {
   BODY_LIMIT,
   NAME_LIMIT,
+  MAX_CONTENT_LENGTH,
   RESOLVED_PREFIX,
   MAX_TOPIC_LENGTH,
   ToolError,
@@ -36,7 +37,7 @@ import {
   seatTagFor,
   formatTime,
 } from "./contract.js";
-import { sentenceGap } from "./textfmt.js";
+import { fixOutbound } from "./textfmt.js";
 
 export const FLAG_NARROW_MAX = 1000;
 export const UPLOAD_MAX_BYTES = 1024 * 1024;
@@ -138,7 +139,7 @@ export const ZULIP_FULL_METHODS = {
 
   async tagged(text, session) {
     try {
-      return sentenceGap(composeBody(tagPrefix(this.seat, sessionTag(session)), text));
+      return fixOutbound(composeBody(tagPrefix(this.seat, sessionTag(session)), text), { limit: MAX_CONTENT_LENGTH })[0];
     } catch (error) {
       if (error instanceof UsageError) throw new ToolError("invalid_argument", error.message);
       throw error;

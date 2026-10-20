@@ -583,6 +583,7 @@ export const LINEAR_TOOLS = Object.freeze([
         id: ISSUE_ID,
         status: { type: "string", enum: [...STATUS_WORDS, "duplicate"] },
         of: { ...ISSUE_ID, description: "Required for status duplicate:  the issue this one duplicates." },
+        session: SESSION,
       },
     },
     outputSchema: {

@@ -1,0 +1,39 @@
+name: Signal the server to update its fleet tools
+# On a merge to main that touches the fleet tools, ask the Hetzner server to move its git checkout
+# (scripts/fleet-cli-git-update.py).  The key can do nothing else:  its authorized_keys entry is
+# `restrict` with a forced command that starts the fleet-cli-git-update service.  The server's
+# hourly timer is the safety net if this signal is ever lost.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "fleet-apps.json"
+      - "docs/FLEET-MODE.md"
+      - "docs/protocols/agent-sync-*"
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: fleet-cli-server-update
+  cancel-in-progress: true
+jobs:
+  signal:
+    if: vars.FLEET_CLI_SIGNAL_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Start the server's update
+        env:
+          SSH_KEY: ${{ secrets.FLEET_CLI_UPDATE_SSH_KEY }}
+          SSH_HOST: ${{ secrets.FLEET_CLI_UPDATE_HOST }}
+          KNOWN_HOSTS: ${{ secrets.FLEET_CLI_UPDATE_KNOWN_HOSTS }}
+        run: |
+          set -eu
+          umask 077
+          dir="$(mktemp -d)"
+          trap 'rm -rf "$dir"' EXIT
+          printf '%s\n' "$SSH_KEY" > "$dir/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$dir/known_hosts"
+          # The forced command ignores what is asked for;  "update" is only a label in the server's log.
+          ssh -i "$dir/key" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$dir/known_hosts" -o ConnectTimeout=15 "root@$SSH_HOST" update

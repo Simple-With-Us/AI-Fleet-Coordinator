@@ -59,7 +59,7 @@ wake = "inbox"
 # MCP Worker (https://agent-sync.jays.services/internal/wake/JET), which sends a signed `zulip.mention` event to
 # every ChatGPT chat or dot that subscribed (scripts/agent-sync-mcp/ARMING-JAY.md, "Wake Jet").  JET_ROUTINE_URL
 # is that URL;  JET_ROUTINE_KEY is the shared HMAC key, the same value as the Worker secret WAKE_HMAC_KEY_JET
-# (kept in ~/.secrets/jet-wake-hmac.env on Jay's Mac).  Until both are set and the container restarts, each wake
+# (kept in Infisical Fleet-OPS /jet-wake-hmac as JET_ROUTINE_KEY).  Until both are set and the container restarts, each wake
 # is logged as routine-unready and dropped;  the inbox still captures everything.  The budget is explicit
 # because every wake starts a ChatGPT task.  A volume seeded before this change keeps JET on "inbox":  switch
 # it with the scoped edit in ARMING-JAY.md "Wake Jet", step 1b.

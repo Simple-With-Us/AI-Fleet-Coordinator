@@ -1,4 +1,5 @@
 """Source generator tests: a temp findings.db with the real schema shape, files on disk, notes."""
+
 from __future__ import annotations
 
 import json
@@ -35,27 +36,66 @@ def make_db(path: pathlib.Path) -> None:
     con.execute(
         "INSERT INTO findings (id, app, title, severity, description, recommended_fix, status, "
         "created_at, updated_at, source_kind, reported_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        ("aaaa1111", "congress-trade", "No account deletion path", "P0", "Users cannot delete.",
-         "Add delete_account.", "open", "2026-08-20T01:57:12.791030+00:00",
-         "2026-08-20T01:57:12.791030+00:00", "review-finding", "Claude (Mac)"))
+        (
+            "aaaa1111",
+            "congress-trade",
+            "No account deletion path",
+            "P0",
+            "Users cannot delete.",
+            "Add delete_account.",
+            "open",
+            "2026-08-20T01:57:12.791030+00:00",
+            "2026-08-20T01:57:12.791030+00:00",
+            "review-finding",
+            "Claude (Mac)",
+        ),
+    )
     con.execute(
         "INSERT INTO findings (id, app, title, severity, description, status, addressed_by, resolution, "
         "created_at, updated_at, source_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        ("bbbb2222", "API-Usage-Monitor", "Snapshot scheduler late", "P1", "Rows scheduled in the past.",
-         "completed", "GROK", "Landed in #123.", "2026-08-21T03:00:00+00:00",
-         "2026-08-22T08:42:11.038241+00:00", "effort-row"))
+        (
+            "bbbb2222",
+            "API-Usage-Monitor",
+            "Snapshot scheduler late",
+            "P1",
+            "Rows scheduled in the past.",
+            "completed",
+            "GROK",
+            "Landed in #123.",
+            "2026-08-21T03:00:00+00:00",
+            "2026-08-22T08:42:11.038241+00:00",
+            "effort-row",
+        ),
+    )
     con.execute(
         "INSERT INTO findings (id, app, title, description, status, created_at, updated_at, source_kind) "
         "VALUES (?,?,?,?,?,?,?,?)",
-        ("cccc3333", "dealdex", "Issue with effort key",
-         "Body line.\n\n<!-- effort-key: 0123456789abcdef0123456789abcdef01234567 -->\nMore.",
-         "open", "2026-08-24T00:00:00+00:00", "2026-08-24T00:00:00+00:00", "github-issue"))
-    con.execute("INSERT INTO comments (id, finding_id, author, text, created_at) VALUES (?,?,?,?,?)",
-                ("c2", "aaaa1111", "GROK", "Second comment.", "2026-08-23T10:00:00+00:00"))
-    con.execute("INSERT INTO comments (id, finding_id, author, text, created_at) VALUES (?,?,?,?,?)",
-                ("c1", "aaaa1111", "CLAUDE", "First comment.", "2026-08-22T10:00:00+00:00"))
+        (
+            "cccc3333",
+            "dealdex",
+            "Issue with effort key",
+            "Body line.\n\n<!-- effort-key: " + FAKE_EFFORT_HASH + " -->\nMore.",
+            "open",
+            "2026-08-24T00:00:00+00:00",
+            "2026-08-24T00:00:00+00:00",
+            "github-issue",
+        ),
+    )
+    con.execute(
+        "INSERT INTO comments (id, finding_id, author, text, created_at) VALUES (?,?,?,?,?)",
+        ("c2", "aaaa1111", "GROK", "Second comment.", "2026-08-23T10:00:00+00:00"),
+    )
+    con.execute(
+        "INSERT INTO comments (id, finding_id, author, text, created_at) VALUES (?,?,?,?,?)",
+        ("c1", "aaaa1111", "CLAUDE", "First comment.", "2026-08-22T10:00:00+00:00"),
+    )
     con.commit()
     con.close()
+
+
+# Made-up fixtures, built at run time so no source line looks like a credential to gitleaks.
+FAKE_EFFORT_HASH = "0123456789" * 4  # 40 hex characters
+FAKE_SLACK = "xoxb-" + "1" * 12 + "-abcdefghijkl"
 
 
 class BoardTests(unittest.TestCase):
@@ -80,13 +120,22 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(a.app, "congress-trade")
         self.assertEqual(a.seat, "CLAUDE")
         self.assertEqual(a.title, "No account deletion path")
-        self.assertTrue(a.url.startswith("https://mac.jays.services/board"))
+        self.assertEqual(a.url, "")  # no mapping given: never a dead link
         self.assertEqual(a.created_at_ms, sources.parse_ts_ms("2026-08-20T01:57:12.791030+00:00"))
         # updated_at is the last comment, and comments come in chronological order
         self.assertEqual(a.updated_at_ms, sources.parse_ts_ms("2026-08-23T10:00:00+00:00"))
-        self.assertLess(a.text_markdown.index("First comment."), a.text_markdown.index("Second comment."))
-        for needle in ("# No account deletion path", "Severity: P0", "## Description", "Users cannot delete.",
-                       "## Recommended fix", "### CLAUDE — 2026-08-22T10:00:00+00:00", "Board id: aaaa1111"):
+        self.assertLess(
+            a.text_markdown.index("First comment."), a.text_markdown.index("Second comment.")
+        )
+        for needle in (
+            "# No account deletion path",
+            "Severity: P0",
+            "## Description",
+            "Users cannot delete.",
+            "## Recommended fix",
+            "### CLAUDE — 2026-08-22T10:00:00+00:00",
+            "Board id: aaaa1111",
+        ):
             self.assertIn(needle, a.text_markdown)
         b = docs["board/bbbb2222"]
         self.assertEqual(b.category, "lesson")
@@ -94,6 +143,34 @@ class BoardTests(unittest.TestCase):
         self.assertEqual(b.seat, "GROK")
         self.assertIn("## Resolution\n\nLanded in #123.", b.text_markdown)
         self.assertEqual(b.updated_at_ms, sources.parse_ts_ms("2026-08-22T08:42:11.038241+00:00"))
+
+    def test_url_is_the_linear_issue_from_the_migration_map(self) -> None:
+        tsv = pathlib.Path(self.tmp.name) / "board-to-linear.tsv"
+        tsv.write_text(
+            "board_id\tsource_key\tteam\tlinear_identifier\tlinear_url\tlinear_id\n"
+            "\teffortlog:x:1\tST\tST-1\thttps://linear.app/simple-with-us/issue/ST-1/x\tu1\n"
+            "aaaa1111\tboard:aaaa1111\tCTS\tCTS-5\thttps://linear.app/simple-with-us/issue/CTS-5/y\tu2\n",
+            encoding="utf-8",
+        )
+        urls = sources.load_board_url_map(tsv)
+        self.assertEqual(urls, {"aaaa1111": "https://linear.app/simple-with-us/issue/CTS-5/y"})
+        docs = {d.doc_id: d for d in sources.iter_board(self.db, url_map=urls)}
+        self.assertEqual(
+            docs["board/aaaa1111"].url, "https://linear.app/simple-with-us/issue/CTS-5/y"
+        )
+        self.assertEqual(
+            docs["board/bbbb2222"].url, ""
+        )  # unmapped row: empty, not mac.jays.services
+        self.assertEqual(
+            sources.load_board_url_map(pathlib.Path(self.tmp.name) / "missing.tsv"), {}
+        )
+        for d in docs.values():
+            self.assertNotIn("mac.jays.services", d.url)
+
+    def test_default_paths_point_at_the_retired_database(self) -> None:
+        self.assertEqual(
+            sources.BOARD_DB.parts[-3:], ("_retired", "mac-collab-20261019", "findings.db")
+        ) if "FLEET_RAG_BOARD_DB" not in os.environ else None
 
     def test_limit_and_missing_db(self) -> None:
         self.assertEqual(len(list(sources.iter_board(self.db, limit=2))), 2)
@@ -114,13 +191,17 @@ class FileSourceTests(unittest.TestCase):
         (self.root / "API-USAGE-MONITOR-EFFORT-LOG.md").write_text("# UM log\n")
         (self.root / "EFFORT-LOG-PROTOCOL.md").write_text("# Protocol\n")
         docs = {d.doc_id: d for d in sources.iter_effort_logs(self.root)}
-        self.assertEqual(set(docs), {"effort-log/SOCRATIC-TRADE", "effort-log/API-USAGE-MONITOR",
-                                     "effort-log/PROTOCOL"})
+        self.assertEqual(
+            set(docs),
+            {"effort-log/SOCRATIC-TRADE", "effort-log/API-USAGE-MONITOR", "effort-log/PROTOCOL"},
+        )
         self.assertEqual(docs["effort-log/SOCRATIC-TRADE"].app, "socratic-trade")
         self.assertEqual(docs["effort-log/API-USAGE-MONITOR"].app, "usage-monitor")
         self.assertEqual(docs["effort-log/PROTOCOL"].app, "fleet")
         d = docs["effort-log/SOCRATIC-TRADE"]
-        self.assertEqual((d.source, d.category, d.seat, d.title), ("effort-log", "lesson", "FLEET", "ST log"))
+        self.assertEqual(
+            (d.source, d.category, d.seat, d.title), ("effort-log", "lesson", "FLEET", "ST log")
+        )
         self.assertGreater(d.created_at_ms, 0)
 
     def test_docs_filters(self) -> None:
@@ -145,9 +226,17 @@ class FileSourceTests(unittest.TestCase):
         (repo / "docs" / "vendor" / "lib.md").write_text("# vendor\n")
         (repo / "docs" / "build").mkdir()
         (repo / "docs" / "build" / "gen.md").write_text("# build\n")
-        docs = {d.path: d for d in sources.iter_docs(
-            repo, self.root / "missing-ops", [extra],
-            code_dir=None, apps_dir=None, grok_home=None)}
+        docs = {
+            d.path: d
+            for d in sources.iter_docs(
+                repo,
+                self.root / "missing-ops",
+                [extra],
+                code_dir=None,
+                apps_dir=None,
+                grok_home=None,
+            )
+        }
         names = {pathlib.Path(p).name for p in docs}
         # the repo's .claude/skills copy is the skill source's job (mirror rule b)
         self.assertEqual(names, {"README.md", "A.md", "2026-review.md", "AGENT-SYNC.md"})
@@ -170,10 +259,14 @@ class FileSourceTests(unittest.TestCase):
         self.assertTrue(all(d.category == "runbook" and d.seat == "FLEET" for d in docs))
         self.assertEqual(docs[0].title, "same")
         # same directory name, different content -> two docs with tree-unique ids (no collision)
-        (self.root / "cursor" / "same" / "SKILL.md").write_text("---\nname: same\n---\n# Same skill, edited\n")
+        (self.root / "cursor" / "same" / "SKILL.md").write_text(
+            "---\nname: same\n---\n# Same skill, edited\n"
+        )
         docs = list(sources.iter_skills([self.root / "claude", self.root / "cursor"]))
-        self.assertEqual(sorted(d.doc_id for d in docs),
-                         ["skill/claude/same", "skill/cursor/only", "skill/cursor/same"])
+        self.assertEqual(
+            sorted(d.doc_id for d in docs),
+            ["skill/claude/same", "skill/cursor/only", "skill/cursor/same"],
+        )
         self.assertEqual(len({d.doc_id for d in docs}), len(docs))
         # the real trees map to claude / cursor
         self.assertEqual(sources.skill_tree(pathlib.Path.home() / ".claude" / "skills"), "claude")
@@ -184,19 +277,30 @@ class FileSourceTests(unittest.TestCase):
         proj = self.root / "projects" / "-Users-jay-Code-Socratic-Trade" / "memory"
         proj.mkdir(parents=True)
         (proj / "MEMORY.md").write_text("# index\n")
-        (proj / "pref.md").write_text("---\nname: pref\nmetadata:\n  type: feedback\n---\n\nOwner wants X.\n")
-        (proj / "infra.md").write_text("---\nname: infra\ntype: reference\n---\n\nQdrant lives at Y.\n")
+        (proj / "pref.md").write_text(
+            "---\nname: pref\nmetadata:\n  type: feedback\n---\n\nOwner wants X.\n"
+        )
+        (proj / "infra.md").write_text(
+            "---\nname: infra\ntype: reference\n---\n\nQdrant lives at Y.\n"
+        )
         (proj / "plain.md").write_text("# Plain\n\nno frontmatter\n")
         codex = self.root / "codex"
         codex.mkdir()
         (codex / "MEMORY.md").write_text("# Task group\n\nscope: x\n")
         docs = {d.doc_id: d for d in sources.iter_memory(self.root / "projects", codex)}
-        self.assertEqual(set(docs), {"memory/claude/code-socratic-trade/pref.md",
-                                     "memory/claude/code-socratic-trade/infra.md",
-                                     "memory/claude/code-socratic-trade/plain.md",
-                                     "memory/codex/MEMORY.md"})
+        self.assertEqual(
+            set(docs),
+            {
+                "memory/claude/code-socratic-trade/pref.md",
+                "memory/claude/code-socratic-trade/infra.md",
+                "memory/claude/code-socratic-trade/plain.md",
+                "memory/codex/MEMORY.md",
+            },
+        )
         self.assertEqual(docs["memory/claude/code-socratic-trade/pref.md"].category, "preference")
-        self.assertEqual(docs["memory/claude/code-socratic-trade/infra.md"].category, "infrastructure")
+        self.assertEqual(
+            docs["memory/claude/code-socratic-trade/infra.md"].category, "infrastructure"
+        )
         self.assertEqual(docs["memory/claude/code-socratic-trade/plain.md"].category, "lesson")
         self.assertEqual(docs["memory/claude/code-socratic-trade/pref.md"].app, "socratic-trade")
         self.assertEqual(docs["memory/claude/code-socratic-trade/pref.md"].seat, "CLAUDE")
@@ -206,50 +310,85 @@ class FileSourceTests(unittest.TestCase):
 
 class NoteTests(unittest.TestCase):
     def test_title_parse(self) -> None:
-        self.assertEqual(sources.parse_note_title("[UM, Grok] TestFlight"), ("usage-monitor", "GROK"))
-        self.assertEqual(sources.parse_note_title("[ST, CT, Monet] digests"), ("socratic-trade", "MONET"))
+        self.assertEqual(
+            sources.parse_note_title("[UM, Grok] TestFlight"), ("usage-monitor", "GROK")
+        )
+        self.assertEqual(
+            sources.parse_note_title("[ST, CT, Monet] digests"), ("socratic-trade", "MONET")
+        )
         self.assertEqual(sources.parse_note_title("[FLEET, Claude] review"), ("fleet", "CLAUDE"))
-        self.assertEqual(sources.parse_note_title("[CTS, Antigravity] x"), ("congress-trading-shared", "AG"))
+        self.assertEqual(
+            sources.parse_note_title("[CTS, Antigravity] x"), ("congress-trading-shared", "AG")
+        )
         self.assertEqual(sources.parse_note_title("[BF, AG] y"), ("botfleet", "AG"))
         self.assertEqual(sources.parse_note_title("[DD, Cursor] z"), ("dealdex", "CURSOR"))
         self.assertEqual(sources.parse_note_title("[Codex] z"), ("fleet", "CODEX"))
         self.assertEqual(sources.parse_note_title("New Note"), ("fleet", "FLEET"))
 
     def test_html_to_text(self) -> None:
-        html = ('<div><b><span style="font-size: 24px">[UM, Grok] Title</span></b></div>'
-                '<style>.x{}</style><div>Tue, Sep 1, 3:01pm</div><div><br></div>'
-                '<div>Line one &amp; two.</div><ul><li>alpha</li><li>beta</li></ul><p>End.</p>')
+        html = (
+            '<div><b><span style="font-size: 24px">[UM, Grok] Title</span></b></div>'
+            "<style>.x{}</style><div>Tue, Sep 1, 3:01pm</div><div><br></div>"
+            "<div>Line one &amp; two.</div><ul><li>alpha</li><li>beta</li></ul><p>End.</p>"
+        )
         text = html_to_text(html)
         self.assertIn("[UM, Grok] Title\nTue, Sep 1, 3:01pm", text)
         self.assertIn("Line one & two.", text)
         self.assertIn("- alpha\n- beta", text)
         self.assertNotIn(".x{}", text)
-        self.assertEqual(strip_title_line(text, "[UM, Grok] Title").split("\n")[0], "Tue, Sep 1, 3:01pm")
+        self.assertEqual(
+            strip_title_line(text, "[UM, Grok] Title").split("\n")[0], "Tue, Sep 1, 3:01pm"
+        )
         # entities are decoded exactly once: a literal "&amp;amp;" in a note is "&amp;" as text
         self.assertEqual(html_to_text("<div>a &amp;amp; b &lt;tag&gt;</div>"), "a &amp; b <tag>")
 
     def test_iter_apple_notes(self) -> None:
         recs = [
-            {"id": "x-coredata://ABC/ICNote/p1", "name": "[ST, Monet] Plan", "created": "2026-08-09T15:52:00",
-             "modified": "2026-08-10T09:00:00", "text": "[ST, Monet] Plan\nSun, Aug 9, 3:52pm\n\nBody text long enough."},
-            {"id": "x-coredata://ABC/ICNote/p2", "name": "New Note", "created": "", "modified": "", "text": "New Note"},
+            {
+                "id": "x-coredata://ABC/ICNote/p1",
+                "name": "[ST, Monet] Plan",
+                "created": "2026-08-09T15:52:00",
+                "modified": "2026-08-10T09:00:00",
+                "text": "[ST, Monet] Plan\nSun, Aug 9, 3:52pm\n\nBody text long enough.",
+            },
+            {
+                "id": "x-coredata://ABC/ICNote/p2",
+                "name": "New Note",
+                "created": "",
+                "modified": "",
+                "text": "New Note",
+            },
         ]
         docs = list(sources.iter_apple_notes(recs))
         self.assertEqual(len(docs), 1)
         d = docs[0]
         self.assertEqual(d.doc_id, "note/ABC/ICNote/p1")
-        self.assertEqual((d.source, d.category, d.app, d.seat), ("apple-note", "note", "socratic-trade", "MONET"))
+        self.assertEqual(
+            (d.source, d.category, d.app, d.seat), ("apple-note", "note", "socratic-trade", "MONET")
+        )
         self.assertTrue(d.text_markdown.startswith("Sun, Aug 9"))
         self.assertGreater(d.updated_at_ms, d.created_at_ms)
 
 
 class NotesCacheTests(unittest.TestCase):
-    META = [{"id": "x-coredata://ABC/ICNote/p1", "name": "[ST, Monet] Plan", "modified": "2026-08-10T09:00:00",
-             "created": "2026-08-09T15:52:00"},
-            {"id": "x-coredata://ABC/ICNote/p2", "name": "Gone", "modified": "2026-08-11T09:00:00",
-             "created": "2026-08-11T09:00:00"}]
-    BODY = ('<div>[ST, Monet] Plan</div><div>Sun, Aug 9, 3:52pm</div><div>Deploy with '
-            'SLACK_TOKEN=xoxb-123456789012-abcdefghijkl and go.</div>')
+    META = [
+        {
+            "id": "x-coredata://ABC/ICNote/p1",
+            "name": "[ST, Monet] Plan",
+            "modified": "2026-08-10T09:00:00",
+            "created": "2026-08-09T15:52:00",
+        },
+        {
+            "id": "x-coredata://ABC/ICNote/p2",
+            "name": "Gone",
+            "modified": "2026-08-11T09:00:00",
+            "created": "2026-08-11T09:00:00",
+        },
+    ]
+    BODY = (
+        "<div>[ST, Monet] Plan</div><div>Sun, Aug 9, 3:52pm</div><div>Deploy with "
+        "SLACK_TOKEN=" + FAKE_SLACK + " and go.</div>"
+    )
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -257,16 +396,18 @@ class NotesCacheTests(unittest.TestCase):
         self.range_calls: list[tuple[int, int]] = []
         self.byid_calls: list[list[str]] = []
 
-        def fake_range(start, end, folder, account):  # noqa: ANN001
+        def fake_range(start, end, folder, account):
             self.range_calls.append((start, end))
-            return {self.META[0]["id"]: self.BODY}       # p2's body never comes back
+            return {self.META[0]["id"]: self.BODY}  # p2's body never comes back
 
-        def fake_by_id(ids):  # noqa: ANN001
+        def fake_by_id(ids):
             self.byid_calls.append(list(ids))
             return {}
 
         self.patches = [
-            mock.patch.object(notes_export, "list_notes", lambda folder, account: [dict(m) for m in self.META]),
+            mock.patch.object(
+                notes_export, "list_notes", lambda folder, account: [dict(m) for m in self.META]
+            ),
             mock.patch.object(notes_export, "_fetch_bodies_range", fake_range),
             mock.patch.object(notes_export, "_fetch_bodies_by_id", fake_by_id),
         ]
@@ -293,7 +434,7 @@ class NotesCacheTests(unittest.TestCase):
         # on disk: dir 0700, file 0600, and the raw body never touched the disk
         self.assertEqual(stat.S_IMODE(self.cache.stat().st_mode), 0o700)
         files = sorted(self.cache.glob("*.json"))
-        self.assertEqual(len(files), 1)                  # p2 (no body) is NOT cached
+        self.assertEqual(len(files), 1)  # p2 (no body) is NOT cached
         self.assertEqual(stat.S_IMODE(files[0].stat().st_mode), 0o600)
         raw = files[0].read_text()
         self.assertNotIn("xoxb-", raw)
@@ -311,26 +452,38 @@ class NotesCacheTests(unittest.TestCase):
     def test_old_cache_records_are_invalidated_and_rewritten(self) -> None:
         self.cache.mkdir(parents=True)
         old = self.cache / f"{notes_export.safe_id(self.META[0]['id'])}.json"
-        old.write_text(json.dumps({**self.META[0], "html": self.BODY, "text": "raw unscrubbed xoxb-123456789012-abcdefghijkl"}))
+        old.write_text(
+            json.dumps(
+                {
+                    **self.META[0],
+                    "html": self.BODY,
+                    "text": "raw unscrubbed " + FAKE_SLACK + "",
+                }
+            )
+        )
         os.chmod(old, 0o644)
-        self.assertEqual(list(notes_export.iter_cached(self.cache)), [])      # v1 never served
+        self.assertEqual(list(notes_export.iter_cached(self.cache)), [])  # v1 never served
         recs = notes_export.export_notes(cache_dir=self.cache)
-        self.assertEqual(self.range_calls, [(1, 2)])                           # re-fetched (p2 never cached)
+        self.assertEqual(self.range_calls, [(1, 2)])  # re-fetched (p2 never cached)
         self.assertEqual(recs[0]["v"], notes_export.CACHE_VERSION)
         self.assertNotIn("html", json.loads(old.read_text()))
         self.assertEqual(stat.S_IMODE(old.stat().st_mode), 0o600)
-        self.assertEqual([r["id"] for r in notes_export.iter_cached(self.cache)], [self.META[0]["id"]])
+        self.assertEqual(
+            [r["id"] for r in notes_export.iter_cached(self.cache)], [self.META[0]["id"]]
+        )
 
     def test_iter_apple_notes_falls_back_to_cache(self) -> None:
         notes_export.export_notes(cache_dir=self.cache)
         logs: list[str] = []
         sources.take_warnings()
 
-        def unavailable(log=None):  # noqa: ANN001
+        def unavailable(log=None):
             raise notes_export.NotesUnavailable("automation denied")
 
-        with mock.patch.object(notes_export, "export_notes", unavailable), \
-                mock.patch.object(notes_export, "CACHE_DIR", self.cache):
+        with (
+            mock.patch.object(notes_export, "export_notes", unavailable),
+            mock.patch.object(notes_export, "CACHE_DIR", self.cache),
+        ):
             docs = list(sources.iter_apple_notes(log=logs.append))
         self.assertEqual([d.doc_id for d in docs], ["note/ABC/ICNote/p1"])
         self.assertEqual(docs[0].seat, "MONET")
@@ -352,16 +505,29 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(sources.seat_tag("monet"), "MONET")
         self.assertEqual(sources.seat_tag("GB-CONDUCTOR"), "GB-CONDUCTOR")
         self.assertEqual(sources.seat_tag(None), "FLEET")
-        self.assertEqual(sources.project_slug("-Users-jay-Code-AI-Fleet-Coordinator"), "code-ai-fleet-coordinator")
-        self.assertEqual(sources.app_from_project("code-congress-trading-shared"), "congress-trading-shared")
+        self.assertEqual(
+            sources.project_slug("-Users-jay-Code-AI-Fleet-Coordinator"),
+            "code-ai-fleet-coordinator",
+        )
+        self.assertEqual(
+            sources.app_from_project("code-congress-trading-shared"), "congress-trading-shared"
+        )
         self.assertEqual(sources.app_from_project("code-congress-trade-app"), "congress-trade")
-        self.assertEqual(sources.app_from_path(pathlib.Path("/Users/jay/Code/Socratic.Trade/README.md")),
-                         "socratic-trade")
-        self.assertEqual(sources.app_from_path(pathlib.Path("/Users/jay/Code/Usage-Monitor/docs/a.md")),
-                         "usage-monitor")
-        self.assertEqual(sources.app_from_path(pathlib.Path("/Users/jay/Code/fleet-ops/ATTACK-MAP.md"),
-                                               fleet_ops=pathlib.Path("/Users/jay/Code/fleet-ops")),
-                         "fleet-ops")
+        self.assertEqual(
+            sources.app_from_path(pathlib.Path("/Users/jay/Code/Socratic.Trade/README.md")),
+            "socratic-trade",
+        )
+        self.assertEqual(
+            sources.app_from_path(pathlib.Path("/Users/jay/Code/Usage-Monitor/docs/a.md")),
+            "usage-monitor",
+        )
+        self.assertEqual(
+            sources.app_from_path(
+                pathlib.Path("/Users/jay/Code/fleet-ops/ATTACK-MAP.md"),
+                fleet_ops=pathlib.Path("/Users/jay/Code/fleet-ops"),
+            ),
+            "fleet-ops",
+        )
 
     def test_parse_ts(self) -> None:
         self.assertEqual(sources.parse_ts_ms("2026-08-31T22:00:00Z"), 1788213600000)
@@ -428,9 +594,16 @@ class ExtraDocWalkerTests(unittest.TestCase):
         (self.grok / "skills" / "board-ops").mkdir(parents=True)
         (self.grok / "skills" / "board-ops" / "SKILL.md").write_text("# Board ops\n")
 
-        docs = list(sources.iter_docs(
-            self.fleet, self.ops, extra=[],
-            code_dir=self.code, apps_dir=self.apps, grok_home=self.grok))
+        docs = list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=self.code,
+                apps_dir=self.apps,
+                grok_home=self.grok,
+            )
+        )
         by_name = {pathlib.Path(d.path).name: d for d in docs}
         self.assertIn("README.md", by_name)
         self.assertEqual(
@@ -444,7 +617,7 @@ class ExtraDocWalkerTests(unittest.TestCase):
         self.assertIn("COOLIFY.md", names)
         self.assertIn("AGENT-SYNC.md", names)
         self.assertIn("sessions.md", names)
-        self.assertNotIn("SKILL.md", names)                 # ~/.grok/skills is a skill-source tree now
+        self.assertNotIn("SKILL.md", names)  # ~/.grok/skills is a skill-source tree now
         self.assertNotIn("out.md", names)
         self.assertNotIn("gen.md", names)
         self.assertNotIn("lib.md", names)
@@ -458,8 +631,12 @@ class ExtraDocWalkerTests(unittest.TestCase):
         skipped = dict((path, rule) for rule, path in sources.take_doc_skips())
         # grok skills are not walked by the doc source at all (they are a SKILL_DIRS tree)
         self.assertNotIn(str(self.grok / "skills" / "board-ops" / "SKILL.md"), skipped)
-        self.assertEqual(skipped[str(self.apps / "SOCRATIC-TRADE-EFFORT-LOG.md")], sources.SKIP_EFFORT_LOG)
-        self.assertEqual(skipped[str(self.apps / "EFFORT-LOG-PROTOCOL.md")], sources.SKIP_EFFORT_LOG)
+        self.assertEqual(
+            skipped[str(self.apps / "SOCRATIC-TRADE-EFFORT-LOG.md")], sources.SKIP_EFFORT_LOG
+        )
+        self.assertEqual(
+            skipped[str(self.apps / "EFFORT-LOG-PROTOCOL.md")], sources.SKIP_EFFORT_LOG
+        )
         # resolved-path dedup: walking coordinator both as fleet_repo and as a DOC_APP_REPO
         paths = [d.path for d in docs]
         self.assertEqual(len(paths), len(set(pathlib.Path(p).resolve() for p in paths)))
@@ -492,8 +669,16 @@ class MirrorSkipTests(unittest.TestCase):
         return path
 
     def _walk(self, extra=()) -> tuple[set[str], dict[str, str]]:
-        docs = list(sources.iter_docs(self.fleet, self.ops, extra=extra, code_dir=self.code,
-                                      apps_dir=self.apps, grok_home=self.grok))
+        docs = list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=extra,
+                code_dir=self.code,
+                apps_dir=self.apps,
+                grok_home=self.grok,
+            )
+        )
         kept = {d.path for d in docs}
         skipped = {path: rule for rule, path in sources.take_doc_skips()}
         self.assertFalse(kept & set(skipped))
@@ -534,8 +719,12 @@ class MirrorSkipTests(unittest.TestCase):
     def test_rule_b_skill_copies(self):
         # under docs/: walked, then dropped by the rule (and logged)
         walked = [
-            self._w(self.fleet / "docs" / "fleet-skills" / "by-seat" / "ag" / "board-ops" / "SKILL.md"),
-            self._w(self.fleet / "docs" / "fleet-skills" / "by-seat" / "ag" / "board-ops" / "README.md"),
+            self._w(
+                self.fleet / "docs" / "fleet-skills" / "by-seat" / "ag" / "board-ops" / "SKILL.md"
+            ),
+            self._w(
+                self.fleet / "docs" / "fleet-skills" / "by-seat" / "ag" / "board-ops" / "README.md"
+            ),
             self._w(self.fleet / "docs" / "fleet-skills" / "board-ops" / "SKILL.md"),
             self._w(self.st / "docs" / "skills" / "deploy" / "SKILL.md"),
         ]
@@ -576,17 +765,34 @@ class MirrorSkipTests(unittest.TestCase):
         self._w(self.apps / "AGENT-SYNC.md")
         self._w(self.fleet / "AGENT-SYNC.md")
         for i in range(5):
-            self._w(self.fleet / "docs" / "fleet-skills" / "by-seat" / f"seat{i}" / "x" / "SKILL.md")
+            self._w(
+                self.fleet / "docs" / "fleet-skills" / "by-seat" / f"seat{i}" / "x" / "SKILL.md"
+            )
         self._w(self.st / "docs" / "EFFORT-LOG.md")
-        list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
-                               apps_dir=self.apps, grok_home=self.grok))
+        list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=self.code,
+                apps_dir=self.apps,
+                grok_home=self.grok,
+            )
+        )
         warnings = sources.take_warnings()
         self.assertEqual(len(warnings), 3)
         by_rule = {w.split()[3]: w for w in warnings}
-        self.assertEqual(set(by_rule), {sources.SKIP_APPS_MIRROR, sources.SKIP_SKILL_COPY, sources.SKIP_EFFORT_LOG})
-        self.assertTrue(by_rule[sources.SKIP_APPS_MIRROR].startswith("doc: skipped 1 apps-mirror file(s): "))
+        self.assertEqual(
+            set(by_rule),
+            {sources.SKIP_APPS_MIRROR, sources.SKIP_SKILL_COPY, sources.SKIP_EFFORT_LOG},
+        )
+        self.assertTrue(
+            by_rule[sources.SKIP_APPS_MIRROR].startswith("doc: skipped 1 apps-mirror file(s): ")
+        )
         self.assertIn("AGENT-SYNC.md", by_rule[sources.SKIP_APPS_MIRROR])
-        self.assertTrue(by_rule[sources.SKIP_SKILL_COPY].startswith("doc: skipped 5 skill-copy file(s): "))
+        self.assertTrue(
+            by_rule[sources.SKIP_SKILL_COPY].startswith("doc: skipped 5 skill-copy file(s): ")
+        )
         self.assertTrue(by_rule[sources.SKIP_SKILL_COPY].endswith("(+2 more)"))
         self.assertIn("EFFORT-LOG.md", by_rule[sources.SKIP_EFFORT_LOG])
         # the (rule, path) pairs stay available until consumed, then the list is empty
@@ -595,19 +801,31 @@ class MirrorSkipTests(unittest.TestCase):
         # a walk with nothing to skip logs nothing
         for f in list(self.fleet.rglob("*.md")) + list(self.st.rglob("*.md")):
             f.unlink()
-        list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
-                               apps_dir=self.apps, grok_home=self.grok))
+        list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=self.code,
+                apps_dir=self.apps,
+                grok_home=self.grok,
+            )
+        )
         self.assertEqual(sources.take_warnings(), [])
 
     def test_mirror_skip_reason_unit(self):
         r = sources.mirror_skip_reason
         fleet = pathlib.Path("/x/Code/AI-Fleet-Coordinator")
-        self.assertEqual(r(pathlib.Path("/x/Code/Socratic.Trade/docs/EFFORT-LOG.md")), sources.SKIP_EFFORT_LOG)
+        self.assertEqual(
+            r(pathlib.Path("/x/Code/Socratic.Trade/docs/EFFORT-LOG.md")), sources.SKIP_EFFORT_LOG
+        )
         self.assertEqual(r(pathlib.Path("/x/apps/BOTFLEET-EFFORT-LOG.md")), sources.SKIP_EFFORT_LOG)
         self.assertEqual(r(pathlib.Path("/x/.claude/skills/a/SKILL.md")), sources.SKIP_SKILL_COPY)
         self.assertEqual(r(pathlib.Path("/x/.cursor/skills/a/README.md")), sources.SKIP_SKILL_COPY)
         self.assertEqual(r(pathlib.Path("/x/.grok/skills/a/SKILL.md")), sources.SKIP_SKILL_COPY)
-        self.assertEqual(r(fleet / "docs/fleet-skills/by-seat/fx/a/anything.md"), sources.SKIP_SKILL_COPY)
+        self.assertEqual(
+            r(fleet / "docs/fleet-skills/by-seat/fx/a/anything.md"), sources.SKIP_SKILL_COPY
+        )
         self.assertEqual(r(fleet / "docs/fleet-skills/a/SKILL.md"), sources.SKIP_SKILL_COPY)
         self.assertEqual(r(fleet / "skills/a/SKILL.md"), sources.SKIP_SKILL_COPY)
         self.assertIsNone(r(fleet / "docs/fleet-skills/README.md"))
@@ -618,15 +836,21 @@ class MirrorSkipTests(unittest.TestCase):
         mirror = self._w(self.fleet / "AGENT-SYNC.md")
         readme = self._w(self.fleet / "README.md")
         outside = self._w(self.st / "AGENT-SYNC.md")
-        self.assertEqual(r(mirror, fleet_repos=[self.fleet], live_basenames=live), sources.SKIP_APPS_MIRROR)
+        self.assertEqual(
+            r(mirror, fleet_repos=[self.fleet], live_basenames=live), sources.SKIP_APPS_MIRROR
+        )
         self.assertIsNone(r(readme, fleet_repos=[self.fleet], live_basenames=live))
         self.assertIsNone(r(outside, fleet_repos=[self.fleet], live_basenames=live))
         self.assertIsNone(r(mirror, fleet_repos=[self.fleet], live_basenames=()))
 
     # ---- rule (d): the Fleet-OPS handbook.  Its public pages and generated/ are the text of the live AGENT-SYNC.md.
 
-    PUBLIC = "---\ntitle: {t}\norder: {o}\nvisibility: public\nsection: {s}\n---\n## {t}\n\n{body}\n"
-    PRIVATE = "---\ntitle: {t}\norder: {o}\nvisibility: private\nsection: {s}\n---\n## {t}\n\n{body}\n"
+    PUBLIC = (
+        "---\ntitle: {t}\norder: {o}\nvisibility: public\nsection: {s}\n---\n## {t}\n\n{body}\n"
+    )
+    PRIVATE = (
+        "---\ntitle: {t}\norder: {o}\nvisibility: private\nsection: {s}\n---\n## {t}\n\n{body}\n"
+    )
     RULE = "Never idle-watch a PR:  a PR that is not merging is waiting on an action, not on time."
 
     def _handbook(self):
@@ -634,25 +858,53 @@ class MirrorSkipTests(unittest.TestCase):
         mistake, the README, and generated/AGENT-SYNC.md; plus the live file and the AFC mirror that hold the same text."""
         live = self._w(self.apps / "AGENT-SYNC.md", f"# Agent sync (live)\n\n{self.RULE}\n")
         mirror = self._w(self.fleet / "AGENT-SYNC.md", f"# Agent sync (mirror)\n\n{self.RULE}\n")
-        generated = self._w(self.ops / "generated" / "AGENT-SYNC.md", f"# Agent sync (generated)\n\n{self.RULE}\n")
+        generated = self._w(
+            self.ops / "generated" / "AGENT-SYNC.md", f"# Agent sync (generated)\n\n{self.RULE}\n"
+        )
         h = self.ops / "handbook"
         public = [
-            self._w(h / "work" / "landing.md", self.PUBLIC.format(t="Landing", o="0400", s="work", body=self.RULE)),
-            self._w(h / "core" / "how-to-use.md", self.PUBLIC.format(t="How", o="0100", s="core", body="Read it.")),
-            self._w(h / "00-preamble.md", self.PUBLIC.format(t="Preamble", o="0010", s="core", body="Scope.")),
+            self._w(
+                h / "work" / "landing.md",
+                self.PUBLIC.format(t="Landing", o="0400", s="work", body=self.RULE),
+            ),
+            self._w(
+                h / "core" / "how-to-use.md",
+                self.PUBLIC.format(t="How", o="0100", s="core", body="Read it."),
+            ),
+            self._w(
+                h / "00-preamble.md",
+                self.PUBLIC.format(t="Preamble", o="0010", s="core", body="Scope."),
+            ),
         ]
         private = [
-            self._w(h / "private" / "pointers.md", self.PRIVATE.format(t="Pointers", o="9000", s="private", body="See ATTACK-MAP.")),
-            self._w(h / "rulings" / "2026-10.md", self.PUBLIC.format(t="Rulings", o="9100", s="rulings", body="A ruling.")),
-            self._w(h / "ops" / "held-back.md", self.PRIVATE.format(t="Held", o="8000", s="ops", body="Not yet public.")),
+            self._w(
+                h / "private" / "pointers.md",
+                self.PRIVATE.format(t="Pointers", o="9000", s="private", body="See ATTACK-MAP."),
+            ),
+            self._w(
+                h / "rulings" / "2026-10.md",
+                self.PUBLIC.format(t="Rulings", o="9100", s="rulings", body="A ruling."),
+            ),
+            self._w(
+                h / "ops" / "held-back.md",
+                self.PRIVATE.format(t="Held", o="8000", s="ops", body="Not yet public."),
+            ),
             self._w(h / "README.md", "# Fleet Handbook\n\nEditing rules.\n"),
         ]
         return live, mirror, generated, public, private
 
     def test_rule_d_public_handbook_pages_are_one_hit_through_the_live_file(self):
         live, mirror, generated, public, private = self._handbook()
-        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
-                                      apps_dir=self.apps, grok_home=self.grok))
+        docs = list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=self.code,
+                apps_dir=self.apps,
+                grok_home=self.grok,
+            )
+        )
         skipped = {path: rule for rule, path in sources.take_doc_skips()}
         kept = {d.path for d in docs}
         # the handbook rule appears once, in the live file
@@ -663,18 +915,28 @@ class MirrorSkipTests(unittest.TestCase):
         for page in private:
             self.assertIn(str(page), kept, page)
         self.assertEqual(skipped.get(str(mirror)), sources.SKIP_APPS_MIRROR)
-        self.assertNotIn(str(generated), kept)       # the walk never enters generated/
+        self.assertNotIn(str(generated), kept)  # the walk never enters generated/
         self.assertNotIn(str(generated), skipped)
         # the private pages are ingested as fleet-ops docs
         by_path = {d.path: d for d in docs}
         pointers = by_path[str(self.ops / "handbook" / "private" / "pointers.md")]
-        self.assertEqual((pointers.source, pointers.app, pointers.title), ("doc", "fleet-ops", "Pointers"))
+        self.assertEqual(
+            (pointers.source, pointers.app, pointers.title), ("doc", "fleet-ops", "Pointers")
+        )
 
     def test_rule_d_stands_down_to_the_afc_mirror_when_there_is_no_live_file(self):
         live, mirror, generated, public, private = self._handbook()
-        live.unlink()                       # a fresh host:  no ~/apps/AGENT-SYNC.md
-        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
-                                      apps_dir=self.apps, grok_home=self.grok))
+        live.unlink()  # a fresh host:  no ~/apps/AGENT-SYNC.md
+        docs = list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=self.code,
+                apps_dir=self.apps,
+                grok_home=self.grok,
+            )
+        )
         skipped = {path: rule for rule, path in sources.take_doc_skips()}
         kept = {d.path for d in docs}
         # the mirror is the one AGENT-SYNC.md the walk ingests, so the public pages are dropped for it, as they are
@@ -690,9 +952,17 @@ class MirrorSkipTests(unittest.TestCase):
     def test_rule_d_keeps_the_public_pages_when_no_agent_sync_copy_is_ingested(self):
         live, mirror, generated, public, private = self._handbook()
         live.unlink()
-        mirror.unlink()                     # nothing else holds the text:  the public pages are the only copy
-        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
-                                      apps_dir=self.apps, grok_home=self.grok))
+        mirror.unlink()  # nothing else holds the text:  the public pages are the only copy
+        docs = list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=self.code,
+                apps_dir=self.apps,
+                grok_home=self.grok,
+            )
+        )
         skipped = {path: rule for rule, path in sources.take_doc_skips()}
         kept = {d.path for d in docs}
         for page in public + private:
@@ -704,7 +974,9 @@ class MirrorSkipTests(unittest.TestCase):
         live, mirror, generated, public, private = self._handbook()
         live.unlink()
         mirror.unlink()
-        self._w(self.st / "docs" / "AGENT-SYNC.md", f"# ST's own copy\n\n{self.RULE}\n")   # not the coordinator's mirror
+        self._w(
+            self.st / "docs" / "AGENT-SYNC.md", f"# ST's own copy\n\n{self.RULE}\n"
+        )  # not the coordinator's mirror
         kept, skipped = self._walk()
         for page in public:
             self.assertIn(str(page), kept, page)
@@ -712,15 +984,27 @@ class MirrorSkipTests(unittest.TestCase):
 
     def test_a_live_file_the_walk_rejects_does_not_hide_its_mirrors(self):
         live, mirror, generated, public, private = self._handbook()
-        live.write_text(f"# Agent sync (live)\n\n{self.RULE}\n" + "x" * (sources.DOC_MAX_BYTES + 10))
-        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
-                                      apps_dir=self.apps, grok_home=self.grok))
+        live.write_text(
+            f"# Agent sync (live)\n\n{self.RULE}\n" + "x" * (sources.DOC_MAX_BYTES + 10)
+        )
+        docs = list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=self.code,
+                apps_dir=self.apps,
+                grok_home=self.grok,
+            )
+        )
         skipped = {path: rule for rule, path in sources.take_doc_skips()}
         kept = {d.path for d in docs}
-        self.assertNotIn(str(live), kept)                       # too big for the doc source
-        self.assertIn(str(mirror), kept)                        # so the mirror is not dropped for it (rule a)
-        for page in public:                                     # and the mirror, which is ingested, stands in for
-            self.assertEqual(skipped.get(str(page)), sources.SKIP_HANDBOOK_MIRROR, page)   # the pages (rule d)
+        self.assertNotIn(str(live), kept)  # too big for the doc source
+        self.assertIn(str(mirror), kept)  # so the mirror is not dropped for it (rule a)
+        for page in public:  # and the mirror, which is ingested, stands in for
+            self.assertEqual(
+                skipped.get(str(page)), sources.SKIP_HANDBOOK_MIRROR, page
+            )  # the pages (rule d)
         self.assertNotIn(str(mirror), skipped)
         self.assertEqual([d.path for d in docs if self.RULE in d.text_markdown], [str(mirror)])
 
@@ -735,8 +1019,16 @@ class MirrorSkipTests(unittest.TestCase):
             return real(p)
 
         with mock.patch.object(sources, "_skip_doc", unreadable):
-            docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
-                                          apps_dir=self.apps, grok_home=self.grok))
+            docs = list(
+                sources.iter_docs(
+                    self.fleet,
+                    self.ops,
+                    extra=[],
+                    code_dir=self.code,
+                    apps_dir=self.apps,
+                    grok_home=self.grok,
+                )
+            )
         kept = {d.path for d in docs}
         # the walk finishes, and since no AGENT-SYNC.md could be read the public pages are the only copy
         self.assertNotIn(str(mirror), kept)
@@ -748,8 +1040,16 @@ class MirrorSkipTests(unittest.TestCase):
         big = "x" * (sources.DOC_MAX_BYTES + 10)
         live.write_text(f"# Agent sync (live)\n\n{self.RULE}\n{big}")
         mirror.write_text(f"# Agent sync (mirror)\n\n{self.RULE}\n{big}")
-        docs = list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
-                                      apps_dir=self.apps, grok_home=self.grok))
+        docs = list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=self.code,
+                apps_dir=self.apps,
+                grok_home=self.grok,
+            )
+        )
         skipped = {path: rule for rule, path in sources.take_doc_skips()}
         kept = {d.path for d in docs}
         for page in public:
@@ -758,25 +1058,52 @@ class MirrorSkipTests(unittest.TestCase):
 
     def test_rule_d_is_logged_once(self):
         self._handbook()
-        list(sources.iter_docs(self.fleet, self.ops, extra=[], code_dir=self.code,
-                               apps_dir=self.apps, grok_home=self.grok))
+        list(
+            sources.iter_docs(
+                self.fleet,
+                self.ops,
+                extra=[],
+                code_dir=self.code,
+                apps_dir=self.apps,
+                grok_home=self.grok,
+            )
+        )
         by_rule = {w.split()[3]: w for w in sources.take_warnings()}
         self.assertIn(sources.SKIP_HANDBOOK_MIRROR, by_rule)
-        self.assertTrue(by_rule[sources.SKIP_HANDBOOK_MIRROR].startswith("doc: skipped 3 handbook-mirror file(s): "))
+        self.assertTrue(
+            by_rule[sources.SKIP_HANDBOOK_MIRROR].startswith(
+                "doc: skipped 3 handbook-mirror file(s): "
+            )
+        )
 
     def test_rule_d_unit(self):
         r = sources.mirror_skip_reason
         h = self.ops / "handbook"
-        pub = self._w(h / "chat" / "posting.md", self.PUBLIC.format(t="P", o="0700", s="chat", body="x"))
-        priv = self._w(h / "private" / "p.md", self.PRIVATE.format(t="P", o="9000", s="private", body="x"))
-        ruling = self._w(h / "rulings" / "2026-10.md", self.PUBLIC.format(t="R", o="9100", s="rulings", body="x"))
-        quoted = self._w(h / "chat" / "quoted.md", '---\ntitle: Q\nvisibility: "public"\n---\n## Q\n')
+        pub = self._w(
+            h / "chat" / "posting.md", self.PUBLIC.format(t="P", o="0700", s="chat", body="x")
+        )
+        priv = self._w(
+            h / "private" / "p.md", self.PRIVATE.format(t="P", o="9000", s="private", body="x")
+        )
+        ruling = self._w(
+            h / "rulings" / "2026-10.md", self.PUBLIC.format(t="R", o="9100", s="rulings", body="x")
+        )
+        quoted = self._w(
+            h / "chat" / "quoted.md", '---\ntitle: Q\nvisibility: "public"\n---\n## Q\n'
+        )
         nofm = self._w(h / "README.md", "# readme\n")
-        crlf = self._w(h / "chat" / "crlf.md", "---\r\ntitle: C\r\nvisibility: public\r\n---\n## C\n")
-        late = self._w(h / "chat" / "late.md", "## No front matter\n\n---\nvisibility: public\n---\n")
+        crlf = self._w(
+            h / "chat" / "crlf.md", "---\r\ntitle: C\r\nvisibility: public\r\n---\n## C\n"
+        )
+        late = self._w(
+            h / "chat" / "late.md", "## No front matter\n\n---\nvisibility: public\n---\n"
+        )
         gen = self._w(self.ops / "generated" / "AGENT-SYNC.md")
         docs_gen = self._w(self.ops / "docs" / "generated" / "x.md")
-        elsewhere = self._w(self.st / "handbook" / "chat" / "posting.md", self.PUBLIC.format(t="P", o="1", s="chat", body="x"))
+        elsewhere = self._w(
+            self.st / "handbook" / "chat" / "posting.md",
+            self.PUBLIC.format(t="P", o="1", s="chat", body="x"),
+        )
         ops = [self.ops]
         live = {"AGENT-SYNC.md"}
         self.assertEqual(r(pub, ops_repos=ops, live_basenames=live), sources.SKIP_HANDBOOK_MIRROR)
@@ -791,24 +1118,35 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIsNone(r(pub, ops_repos=ops))
         self.assertIsNone(r(gen, ops_repos=ops, live_basenames={"MAC-LOCAL-PROCESSES.md"}))
         # the caller may say a copy is ingested that is not live (the coordinator's mirror), or that none is
-        self.assertEqual(r(pub, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR)
-        self.assertEqual(r(gen, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR)
+        self.assertEqual(
+            r(pub, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR
+        )
+        self.assertEqual(
+            r(gen, ops_repos=ops, agent_sync_ingested=True), sources.SKIP_HANDBOOK_MIRROR
+        )
         self.assertIsNone(r(pub, ops_repos=ops, live_basenames=live, agent_sync_ingested=False))
 
     def test_rule_d_public_page_reads_only_the_front_matter(self):
         rel = pathlib.PurePath("handbook/chat/posting.md")
-        page = self._w(self.ops / "handbook" / "chat" / "posting.md",
-                       "---\ntitle: P\nvisibility: private\n---\n## P\n\nvisibility: public\n")
+        page = self._w(
+            self.ops / "handbook" / "chat" / "posting.md",
+            "---\ntitle: P\nvisibility: private\n---\n## P\n\nvisibility: public\n",
+        )
         self.assertFalse(sources.handbook_page_is_public(page, rel))
         self.assertFalse(sources.handbook_page_is_public(self.ops / "handbook" / "missing.md", rel))
 
     def test_grok_skills_are_a_skill_source_tree(self):
         self.assertIn(sources.GROK_HOME / "skills", sources.SKILL_DIRS)
-        self._w(self.grok / "skills" / "housekeeper" / "SKILL.md", "---\nname: housekeeper\n---\n# HK (GROK)\n")
+        self._w(
+            self.grok / "skills" / "housekeeper" / "SKILL.md",
+            "---\nname: housekeeper\n---\n# HK (GROK)\n",
+        )
         self._w(self.grok / "skills" / "README.md", "# index, not a skill\n")
         docs = list(sources.iter_skills([self.grok / "skills"]))
         self.assertEqual([d.doc_id for d in docs], ["skill/grok/housekeeper"])
-        self.assertEqual((docs[0].source, docs[0].category, docs[0].title), ("skill", "runbook", "housekeeper"))
+        self.assertEqual(
+            (docs[0].source, docs[0].category, docs[0].title), ("skill", "runbook", "housekeeper")
+        )
 
 
 class ChatLogTests(unittest.TestCase):
@@ -816,8 +1154,11 @@ class ChatLogTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.tmp.name)
         self.none = dict(
-            claude_projects=None, grok_sessions=None, cursor_projects=None,
-            codex_sessions=None, gemini_home=None,
+            claude_projects=None,
+            grok_sessions=None,
+            cursor_projects=None,
+            codex_sessions=None,
+            gemini_home=None,
         )
 
     def tearDown(self) -> None:
@@ -834,7 +1175,9 @@ class ChatLogTests(unittest.TestCase):
         (sess / "transcript.md").write_text(
             "# User\n\nOwner ruling: default UI theme is light.\n\n# Assistant\n\nHi back.\n"
         )
-        (sess / "events.jsonl").write_text(json.dumps({"type": "assistant", "content": "spam"}) + "\n")
+        (sess / "events.jsonl").write_text(
+            json.dumps({"type": "assistant", "content": "spam"}) + "\n"
+        )
         docs = self._docs(grok_sessions=self.root / "grok")
         self.assertEqual(len(docs), 1)
         self.assertEqual(docs[0].doc_id, "chat/grok/mdonly#ruling1")
@@ -845,95 +1188,182 @@ class ChatLogTests(unittest.TestCase):
 
     def test_skip_tool_only_jsonl(self) -> None:
         claude = self.root / "claude" / "proj"
-        _jsonl(claude / "tool-only.jsonl", [
-            {"type": "queue-operation", "operation": "init"},
-            {"type": "user", "message": {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "1", "content": "ok"},
-            ]}},
-            {"type": "assistant", "message": {"role": "assistant", "content": [
-                {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
-            ]}},
-            {"type": "mode", "mode": "plan"},
-        ])
+        _jsonl(
+            claude / "tool-only.jsonl",
+            [
+                {"type": "queue-operation", "operation": "init"},
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "tool_use_id": "1", "content": "ok"},
+                        ],
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                        ],
+                    },
+                },
+                {"type": "mode", "mode": "plan"},
+            ],
+        )
         grok_sess = self.root / "grok" / "cwd" / "sid"
-        _jsonl(grok_sess / "events.jsonl", [
-            {"type": "assistant", "content": "should not be ingested from events.jsonl"},
-        ])
-        _jsonl(grok_sess / "chat_history.jsonl", [
-            {"type": "system", "content": "You are Grok."},
-            {"type": "tool_result", "content": "huge tool blob " * 20},
-            {"type": "reasoning", "summary": "thinking"},
-            {"type": "assistant", "content": "", "tool_calls": [{"name": "x"}]},
-        ])
+        _jsonl(
+            grok_sess / "events.jsonl",
+            [
+                {"type": "assistant", "content": "should not be ingested from events.jsonl"},
+            ],
+        )
+        _jsonl(
+            grok_sess / "chat_history.jsonl",
+            [
+                {"type": "system", "content": "You are Grok."},
+                {"type": "tool_result", "content": "huge tool blob " * 20},
+                {"type": "reasoning", "summary": "thinking"},
+                {"type": "assistant", "content": "", "tool_calls": [{"name": "x"}]},
+            ],
+        )
         docs = self._docs(claude_projects=self.root / "claude", grok_sessions=self.root / "grok")
         self.assertEqual(docs, [])
 
     def test_extract_user_and_assistant(self) -> None:
         claude = self.root / "claude" / "-Users-jay-Code-Socratic-Trade"
-        _jsonl(claude / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl", [
-            {"type": "queue-operation", "operation": "start"},
-            {"type": "permission-mode"},
-            {"type": "user", "message": {"role": "user", "content": "Ship the ST patch."}},
-            {"type": "user", "message": {"role": "user", "content": [
-                {"type": "tool_result", "content": "ignore me"},
-            ]}},
-            {"type": "assistant", "message": {"role": "assistant", "content": [
-                {"type": "text", "text": "Landed the ST patch on main."},
-                {"type": "tool_use", "name": "Read", "input": {"path": "x"}},
-            ]}},
-        ])
+        _jsonl(
+            claude / "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl",
+            [
+                {"type": "queue-operation", "operation": "start"},
+                {"type": "permission-mode"},
+                {"type": "user", "message": {"role": "user", "content": "Ship the ST patch."}},
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "content": "ignore me"},
+                        ],
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "Landed the ST patch on main."},
+                            {"type": "tool_use", "name": "Read", "input": {"path": "x"}},
+                        ],
+                    },
+                },
+            ],
+        )
         grok_sess = self.root / "grok" / "cwd" / "01abc"
         _jsonl(grok_sess / "events.jsonl", [{"type": "assistant", "content": "events spam"}])
-        _jsonl(grok_sess / "chat_history.jsonl", [
-            {"type": "user", "content": [{"type": "text", "text": "Owner ruling: default UI theme is light."}]},
-            {"type": "assistant", "content": "Recorded the light-theme default."},
-            {"type": "tool_result", "content": "not a turn"},
-        ])
+        _jsonl(
+            grok_sess / "chat_history.jsonl",
+            [
+                {
+                    "type": "user",
+                    "content": [
+                        {"type": "text", "text": "Owner ruling: default UI theme is light."}
+                    ],
+                },
+                {"type": "assistant", "content": "Recorded the light-theme default."},
+                {"type": "tool_result", "content": "not a turn"},
+            ],
+        )
         (grok_sess / "system_prompt.txt").write_text("skip me")
         (grok_sess / "chat_history.jsonl.lock").write_text("lock")
-        cur = (self.root / "cursor" / "Users-jay-Code-Socratic-Trade" / "agent-transcripts" / "tid")
-        _jsonl(cur / "tid.jsonl", [
-            {"role": "user", "message": {"content": [{"type": "text", "text": "Cursor user turn."}]}},
-            {"role": "assistant", "message": {"content": [
-                {"type": "tool_use", "name": "Read", "input": {}},
-                {"type": "text", "text": "Cursor assistant turn."},
-            ]}},
-        ])
-        _jsonl(self.root / "codex" / "rollout-1.jsonl", [
-            {"type": "session_meta", "payload": {"id": "1"}},
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "developer", "content": [{"type": "input_text", "text": "sys"}],
-            }},
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "user", "content": [{"type": "input_text", "text": "Codex user."}],
-            }},
-            {"type": "response_item", "payload": {"type": "reasoning", "summary": "nope"}},
-            {"type": "response_item", "payload": {
-                "type": "message", "role": "assistant",
-                "content": [{"type": "output_text", "text": "Codex assistant."}],
-            }},
-        ])
+        cur = self.root / "cursor" / "Users-jay-Code-Socratic-Trade" / "agent-transcripts" / "tid"
+        _jsonl(
+            cur / "tid.jsonl",
+            [
+                {
+                    "role": "user",
+                    "message": {"content": [{"type": "text", "text": "Cursor user turn."}]},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "tool_use", "name": "Read", "input": {}},
+                            {"type": "text", "text": "Cursor assistant turn."},
+                        ]
+                    },
+                },
+            ],
+        )
+        _jsonl(
+            self.root / "codex" / "rollout-1.jsonl",
+            [
+                {"type": "session_meta", "payload": {"id": "1"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "developer",
+                        "content": [{"type": "input_text", "text": "sys"}],
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "Codex user."}],
+                    },
+                },
+                {"type": "response_item", "payload": {"type": "reasoning", "summary": "nope"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "Codex assistant."}],
+                    },
+                },
+            ],
+        )
         gem = self.root / "gemini" / "brain" / "g1" / ".system_generated" / "logs"
-        _jsonl(gem / "transcript.jsonl", [
-            {"type": "USER_INPUT", "content": "<USER_REQUEST> Gemini hello </USER_REQUEST>"
-             "<ADDITIONAL_METADATA> cwd=/tmp </ADDITIONAL_METADATA>"},
-            {"type": "GENERIC", "content": "Created At: ignore"},
-            {"type": "PLANNER_RESPONSE", "content": "Gemini reply.&nbsp; Done."},
-        ])
-        _jsonl(gem / "chunks" / "transcript" / "000.jsonl", [
-            {"type": "USER_INPUT", "content": "<USER_REQUEST> duplicate chunk </USER_REQUEST>"},
-        ])
-        _jsonl(gem / "transcript_full.jsonl", [
-            {"type": "USER_INPUT", "content": "<USER_REQUEST> duplicate full </USER_REQUEST>"},
-        ])
+        _jsonl(
+            gem / "transcript.jsonl",
+            [
+                {
+                    "type": "USER_INPUT",
+                    "content": "<USER_REQUEST> Gemini hello </USER_REQUEST>"
+                    "<ADDITIONAL_METADATA> cwd=/tmp </ADDITIONAL_METADATA>",
+                },
+                {"type": "GENERIC", "content": "Created At: ignore"},
+                {"type": "PLANNER_RESPONSE", "content": "Gemini reply.&nbsp; Done."},
+            ],
+        )
+        _jsonl(
+            gem / "chunks" / "transcript" / "000.jsonl",
+            [
+                {"type": "USER_INPUT", "content": "<USER_REQUEST> duplicate chunk </USER_REQUEST>"},
+            ],
+        )
+        _jsonl(
+            gem / "transcript_full.jsonl",
+            [
+                {"type": "USER_INPUT", "content": "<USER_REQUEST> duplicate full </USER_REQUEST>"},
+            ],
+        )
 
-        docs = {d.doc_id: d for d in self._docs(
-            claude_projects=self.root / "claude",
-            grok_sessions=self.root / "grok",
-            cursor_projects=self.root / "cursor",
-            codex_sessions=self.root / "codex",
-            gemini_home=self.root / "gemini",
-        )}
+        docs = {
+            d.doc_id: d
+            for d in self._docs(
+                claude_projects=self.root / "claude",
+                grok_sessions=self.root / "grok",
+                cursor_projects=self.root / "cursor",
+                codex_sessions=self.root / "codex",
+                gemini_home=self.root / "gemini",
+            )
+        }
         # Owner 2026-09-02: only owner-ruling / infra-policy user turns, not full sessions.
         self.assertEqual(set(docs), {"chat/grok/01abc#ruling1"})
         grok = docs["chat/grok/01abc#ruling1"]
@@ -949,12 +1379,25 @@ class ChatLogTests(unittest.TestCase):
 
     def test_secret_lines_dropped_on_ruling(self) -> None:
         claude = self.root / "claude" / "proj"
-        _jsonl(claude / "sess.jsonl", [
-            {"type": "user", "message": {"role": "user",
-             "content": "Owner ruling: keep this line\nexport GH=ghp_notarealtoken\nmore keep"}},
-            {"type": "assistant", "message": {"role": "assistant",
-             "content": "ok\nsk-ant-dummy\nxoxb-dummy\nstill ok"}},
-        ])
+        _jsonl(
+            claude / "sess.jsonl",
+            [
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": "Owner ruling: keep this line\nexport GH=ghp_notarealtoken\nmore keep",
+                    },
+                },
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok\nsk-ant-dummy\nxoxb-dummy\nstill ok",
+                    },
+                },
+            ],
+        )
         docs = self._docs(claude_projects=self.root / "claude")
         self.assertEqual(len(docs), 1)
         text = docs[0].text_markdown
@@ -968,19 +1411,32 @@ class ChatLogTests(unittest.TestCase):
 
     def test_two_rulings_are_separate_docs(self) -> None:
         claude = self.root / "claude" / "proj"
-        _jsonl(claude / "big.jsonl", [
-            {"type": "user", "message": {"role": "user",
-             "content": "Owner ruling: never mix OpenRouter vectors into fleet-agents."}},
-            {"type": "assistant", "message": {"role": "assistant", "content": "noted"}},
-            {"type": "user", "message": {"role": "user",
-             "content": "Owner said default UI theme is light."}},
-            {"type": "assistant", "message": {"role": "assistant", "content": "ok"}},
-        ])
+        _jsonl(
+            claude / "big.jsonl",
+            [
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": "Owner ruling: never mix OpenRouter vectors into fleet-agents.",
+                    },
+                },
+                {"type": "assistant", "message": {"role": "assistant", "content": "noted"}},
+                {
+                    "type": "user",
+                    "message": {"role": "user", "content": "Owner said default UI theme is light."},
+                },
+                {"type": "assistant", "message": {"role": "assistant", "content": "ok"}},
+            ],
+        )
         split = {d.doc_id: d for d in self._docs(claude_projects=self.root / "claude")}
-        self.assertEqual(set(split), {
-            "chat/claude/big#ruling1",
-            "chat/claude/big#ruling2",
-        })
+        self.assertEqual(
+            set(split),
+            {
+                "chat/claude/big#ruling1",
+                "chat/claude/big#ruling2",
+            },
+        )
         self.assertEqual(split["chat/claude/big#ruling1"].category, "infrastructure")
         self.assertEqual(split["chat/claude/big#ruling2"].category, "preference")
 
@@ -1023,16 +1479,18 @@ class CaseVariantRepoTests(unittest.TestCase):
         if not shutil.which("git"):
             self.skipTest("git not installed")
         env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
-        for args in (["init", "-q", "-b", "main"],
-                     ["remote", "add", "origin", "git@github.com:owner/Autorotate.git"],
-                     ["add", "."],
-                     ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "init"]):
+        for args in (
+            ["init", "-q", "-b", "main"],
+            ["remote", "add", "origin", "git@github.com:owner/Autorotate.git"],
+            ["add", "."],
+            ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "init"],
+        ):
             subprocess.run(["git", *args], cwd=self.repo, check=True, env=env, capture_output=True)
 
     def test_fs_key_is_filesystem_identity(self) -> None:
         a = self.repo / "README.md"
         link = self.repo / "README-link.md"
-        os.link(a, link)                       # hard link: another name for the same inode
+        os.link(a, link)  # hard link: another name for the same inode
         self.assertEqual(sources.fs_key(a), sources.fs_key(link))
         self.assertNotEqual(sources.fs_key(a), sources.fs_key(self.repo / "docs" / "A.md"))
         with self.assertRaises(OSError):
@@ -1053,21 +1511,36 @@ class CaseVariantRepoTests(unittest.TestCase):
         if not self.case_insensitive:
             self.skipTest("case-sensitive filesystem: the two spellings are different paths")
         dirs = sources._unique_repo_dirs(self.code, ("AutoRotate", "Autorotate", "missing"))
-        self.assertEqual(dirs, [self.repo])      # on-disk spelling, symlinks untouched
+        self.assertEqual(dirs, [self.repo])  # on-disk spelling, symlinks untouched
         # a case-sensitive-safe check too: the same entry twice is walked once
-        self.assertEqual(sources._unique_repo_dirs(self.code, ("Autorotate", "Autorotate")), [self.repo])
+        self.assertEqual(
+            sources._unique_repo_dirs(self.code, ("Autorotate", "Autorotate")), [self.repo]
+        )
 
     def test_doc_walk_yields_each_file_once_with_canonical_doc_id(self) -> None:
         if not self.case_insensitive:
             self.skipTest("case-sensitive filesystem: the two spellings are different paths")
         self._git_init()
         with mock.patch.object(sources, "DOC_APP_REPOS", ("AutoRotate", "Autorotate")):
-            docs = list(sources.iter_docs(self.root / "no-fleet", self.root / "no-ops", extra=(),
-                                          code_dir=self.code, apps_dir=None, grok_home=None))
-        self.assertEqual(sorted(d.doc_id for d in docs),
-                         ["doc/Autorotate/README.md", "doc/Autorotate/docs/A.md"])
-        self.assertTrue(all(d.path.startswith(str(self.repo) + os.sep) for d in docs), [d.path for d in docs])
-        self.assertTrue(all(d.url.startswith("https://github.com/owner/Autorotate/blob/main/") for d in docs))
+            docs = list(
+                sources.iter_docs(
+                    self.root / "no-fleet",
+                    self.root / "no-ops",
+                    extra=(),
+                    code_dir=self.code,
+                    apps_dir=None,
+                    grok_home=None,
+                )
+            )
+        self.assertEqual(
+            sorted(d.doc_id for d in docs), ["doc/Autorotate/README.md", "doc/Autorotate/docs/A.md"]
+        )
+        self.assertTrue(
+            all(d.path.startswith(str(self.repo) + os.sep) for d in docs), [d.path for d in docs]
+        )
+        self.assertTrue(
+            all(d.url.startswith("https://github.com/owner/Autorotate/blob/main/") for d in docs)
+        )
 
     def test_repo_info_and_doc_id_from_variant_spelling(self) -> None:
         if not self.case_insensitive:
@@ -1076,7 +1549,7 @@ class CaseVariantRepoTests(unittest.TestCase):
         canonical = sources.canonical_path(self.repo)
         info = sources.repo_info(self.code / "AUTOROTATE" / "docs" / "A.md")
         self.assertEqual(pathlib.Path(info["top"]), canonical)
-        self.assertIs(sources.repo_info(self.repo), info)       # one cache entry for both spellings
+        self.assertIs(sources.repo_info(self.repo), info)  # one cache entry for both spellings
         self.assertEqual(len(sources._git_cache), 1)
         d = sources.doc_from_file(self.code / "AUTOROTATE" / "docs" / "A.md")
         self.assertEqual(d.doc_id, "doc/Autorotate/docs/A.md")

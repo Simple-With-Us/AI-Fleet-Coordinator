@@ -134,13 +134,10 @@ class LoadApiKeyTests(unittest.TestCase):
         self.old_api = os.environ.pop("CURSOR_API_KEY", None)
         self.old_sync = os.environ.pop("CURSOR_SYNC_API_KEY", None)
         self.old_fleet_secrets = ccs._fleet_secrets_key
-        self.old_secrets = ccs.SECRET_FILES
         ccs._fleet_secrets_key = lambda: None  # never shell out to a real fleet-secrets
-        ccs.SECRET_FILES = ()
 
     def tearDown(self) -> None:
         ccs._fleet_secrets_key = self.old_fleet_secrets
-        ccs.SECRET_FILES = self.old_secrets
         for name, old in (
             ("CURSOR_API_KEY", self.old_api),
             ("CURSOR_SYNC_API_KEY", self.old_sync),
@@ -157,13 +154,6 @@ class LoadApiKeyTests(unittest.TestCase):
     def test_sync_env(self) -> None:
         os.environ["CURSOR_SYNC_API_KEY"] = "cursor_sync_test_key"
         self.assertEqual(ccs.load_api_key(), "cursor_sync_test_key")
-
-    def test_file_plain(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "cursor-api-key"
-            path.write_text("cursor_from_file\n", encoding="utf-8")
-            ccs.SECRET_FILES = (path,)
-            self.assertEqual(ccs.load_api_key(), "cursor_from_file")
 
     def test_fleet_secrets_fallback(self) -> None:
         ccs._fleet_secrets_key = lambda: "from_fleet_secrets"

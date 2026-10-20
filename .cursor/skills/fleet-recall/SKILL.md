@@ -46,7 +46,7 @@ registered, so call the tools directly:
 - `recall_contribute(text, category, app, seat, title, url)`
 - `recall_stats()`
 
-The same tools are on the CLI (on PATH via `~/.local/bin/recall` and `~/apps/mac-collab/recall`, like `board`):
+The same tools are on the CLI (on PATH via `~/.local/bin/recall`, like `board`;  the old `~/apps/mac-collab/recall` symlink was retired 2026-10-19):
 
 ```bash
 recall "pm2 orphan holds port"

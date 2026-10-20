@@ -28,7 +28,7 @@
 #     bare `lsof` was a no-op and watch treated lock-held as DOWN).
 #   - grok-leader status=errored while lock-held -> pm2 stop (not restart)
 #     so the job is stopped instead of a 355-restart storm.
-#   - local /health for mac-collab/xcode-health: curl rc 7
+#   - local /health for xcode-health: curl rc 7
 #     (connection refused) -> pm2 restart that job at once.  Any other
 #     failure (timeout, empty reply, HTTP error) is SLOW, not dead: it
 #     must repeat MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES (default 3) runs in
@@ -96,8 +96,9 @@ grok_leader_lock_held() {
   pgrep -f '/[.]grok/bin/grok .* leader' >/dev/null 2>&1
 }
 
-# Deprecated / off-Mac (do not watch or resurrect): mac-collab-sync and
-# mac-collab-writeback (retired at the Linear cutover), scout, senate-relay,
+# Deprecated / off-Mac (do not watch or resurrect): mac-collab, mac-collab-litestream,
+# mac-collab-sync and mac-collab-writeback (all retired 2026-10-19, AFC-363;  the board
+# archive is gone, Linear is the tracker), scout, senate-relay,
 # senate-tunnel, residential-proxy, Congress/Socratic/Usage mac-xcode runners.
 # Slack retired in the hard cut to Zulip on 2026-10-07: agent-sync-push
 # (the Slack relay, :8787), cursor-slack-sync and the slack-agent-inbox
@@ -110,8 +111,6 @@ expect_pm2=(
   agy-acp
   grok-leader
   grok-acp
-  mac-collab
-  mac-collab-litestream
   clutch-web
   seat-mcp
   botfleet-mcp
@@ -981,7 +980,6 @@ fi
 # --- local HTTP health (pm2 "online" with a dead/orphan port) ---
 # Skip grok-leader (unix socket; this TUI may hold the lock).
 expect_http=(
-  "mac-collab http://127.0.0.1:8792/health"
   "xcode-health http://127.0.0.1:8791/health"
 )
 

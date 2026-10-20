@@ -51,7 +51,7 @@ before copying the key, and the hosted Worker repeats those checks at runtime.
 `AGENT_SYNC_CURSOR_TOOL_BUDGETS` is a JSON policy in AFC `prod` `/zulip`,
 copied to the same encrypted Worker binding.  Config validation rejects unknown
 kinds, invalid limits and pacing changes outside Linear.  Missing policy retains
-the existing limits.  The policy applies only to CURSOR, across all its grants.
+the existing limits.  The policy applies only to CURSOR, across all its grants, and only ever raises a default:  each window is the larger of the policy and the built-in limit (owner 2026-10-19), so Cursor's 100 Zulip writes an hour now count as 120.
 
 Owner requested capacity for approximately 40 Cursor agents on 2026-10-15:
 Linear writes 2,000/hour and 20,000/day, Linear reads 12,000/hour with separate
@@ -66,14 +66,14 @@ Other seats retain their existing limits.  Upstream rate limits still apply.
 
 | Reader | How it gets the value |
 |---|---|
-| Mac listener, stdio MCP, CLI | `fleet_knobs` (one fetch per process, last-known-good copy).  A `[notes_relay] seat` in `listener.toml` that differs is ignored and the listener then does not consume.  With Infisical unreachable and no usable copy the answer is the default `CLAUDE`, labelled `default CLAUDE (unreachable:...)` in the log line `notes relay consumer ...`. |
+| Mac listener, stdio MCP, CLI | `fleet_knobs` (one fetch per process, last-known-good copy).  A `[notes_relay] seat` in `listener.toml` that differs is ignored and the listener then does not consume.  With Infisical unreachable and no usable copy the answer is the default `CLAUDE`, labelled `default CLAUDE (unreachable:...)` in the log line `notes relay consumer ...`.  The stdio MCP reads the knob on the first Notes tool call that needs the consumer, not at start, so a slow fetch never delays an MCP process start. |
 | Hosted Worker | An encrypted Worker binding of the same name, copied at deploy by `scripts/agent-sync-mcp/sync_notes_consumer.py` (DEPLOY.md, "Notes, recall and the guide").  Never in `wrangler.jsonc`.  Unset means `notes_status` answers `not_configured`. |
 
 ## Zulip Outgoing Wake Tokens
 
 The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.
 
-The on-demand `scripts/zulip_migrate_outgoing.py publish` helper readback-verifies the replacement email, API key, and service token in Infisical before atomically installing the local zuliprc.  Refresh every additional credential consumer before retiring the old identity.  See [the migration runbook](docs/protocols/zulip-outgoing-migration.md).
+`scripts/zulip_migrate_outgoing.py` was retired 2026-10-19 because it needed the owner key;  bots are now provisioned through `scripts/zulip_provision_bots.py` with the realm-admin bot.  See [the outgoing-webhook runbook](docs/protocols/zulip-outgoing-migration.md).
 
 ## Hosted Echo and Wise Zulip identities
 
@@ -117,11 +117,11 @@ This service has no per-user settings: seat identity is passed per-request by th
 
 ## Deliberately not migrated (this PR)
 
-- `scripts/mac-collab/mac-collab-server.py` (THE BOARD, a read-only archive after the Linear cutover and retired at about day 30): Mac-local; reads `~/.secrets/mac-collab.env` (canonical) or the environment.  Operator-managed on the Mac, not a hosted service surface.
+- `scripts/mac-collab/mac-collab-server.py` (THE BOARD, retired on 2026-10-19, AFC-363): Mac-local; reads `~/.secrets/mac-collab.env` (canonical) or the environment.  Operator-managed on the Mac, not a hosted service surface.
+- The `/mac-collab` Fleet-OPS folder is gone (owner Jay, 2026-10-19, AFC-363):  its 15 `MAC_COLLAB_TOKEN*` secrets (root and per-seat), the 26 root `MAC_COLLAB_*` reference entries that pointed at them, and the `admin-jays-services` Worker secret `MAC_COLLAB_TOKEN` were deleted.  The stale `/global-api-keys` copy `MAC_COLLAB_TOKEN` and its root reference `GLOBAL_API_KEYS_MAC_COLLAB_TOKEN` were deleted the same day (owner Jay, AFC-363);  no `MAC_COLLAB` name is left in Fleet-OPS.
 - Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `board` CLI reads them from there first, through the `INFISICAL_AUTOMATION` identity, falling back to `~/.secrets/Linear/<SEAT>.env` only on a host without it (AFC-348).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `board` writes after every mint and reads instead of minting again.  Never print one.
 - `fleet-sentry-monitor/monitor.py`: operator cron script; env-configured on the box that runs it.
 - `fleet_rag` CLI tools and MCP scripts: per-invocation env; no long-lived process to host a cache.
-- `scripts/admin-panel` (Cloudflare Worker): serverless, no Infisical-reading backend in this repo.
 - `workers/pr-conflict-watch`: Cloudflare Worker.
 - `RECALL_FAKE=1`: local test/smoke switch only; stays an env var.  Bootstrap plumbing (`RECALL_REF`, `GITLEAKS_*`) likewise stays env-only.
 
@@ -129,7 +129,7 @@ This service has no per-user settings: seat identity is passed per-request by th
 
 `scripts/fleet_knobs/` is how the open-loops jobs (LaunchAgents, hooks and CLIs that run for seconds) read their modes, caps and flags.  The values live in this project, `prod`, at the root path, and they are the only place a mode or a cap is set.  A refresh thread does not fit a job that lives a few seconds, so the contract differs from the service above:
 
-1. **Fetch once per process.**  The first `knobs.get()` runs one `infisical export --env=prod --projectId=... --format=json` through the installed CLI, keeps only the names in the registry and drops the rest at once.  A failed fetch is not retried in the same process.  A non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused before anything runs.
+1. **Fetch once per process.**  The first `knobs.get()` runs one `infisical export --env=prod --projectId=... --format=json` through the installed CLI, keeps only the names in the registry and drops the rest at once.  A failed fetch is not retried in the same process.  A non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused before anything runs.  Auth follows `fleet-secrets` (below), first match wins:  `INFISICAL_TOKEN` already set, else the machine identity in the login Keychain, then the System keychain, logged in through fleet-secrets' own helper (loaded from `FLEET_SECRETS_HOME`, the sibling `scripts/fleet_secrets`, or `~/.local/share/fleet-secrets`), else the CLI's own session.  This is what makes a fetch work under pm2, which runs as the system LaunchDaemon `com.pm2.daemon` where the login Keychain and the CLI session are unreachable.  The token goes only into the CLI child's environment, never into a log, an argument list or a file.  The whole fetch (keychain lookups, the machine-identity login and the export) shares one 8 second budget, and running out anywhere is reason `timeout`.  **Fail fast across processes.**  A failed fetch writes `~/.local/state/fleet-knobs/fetch-failed.json` (0600, a timestamp and the reason token only).  For 60 seconds after it, other processes skip the fetch and use the last-known-good copy (reason `recent-<token>`), so a broken auth path costs one timeout across a burst of processes instead of one each.  A good fetch removes the marker, and `knobs.refresh()` ignores it.  A secret still fails closed inside the window.
 2. **Last-known-good.**  After a good fetch the non-secret knobs are copied to `~/.local/state/fleet-knobs/lkg.json` (directory 0700, file 0600, atomic rename).  When Infisical cannot be reached the job reads that copy and its report says `stale`.  A copy older than 48 hours, or one that is a symlink, belongs to someone else or is readable by group or other, is ignored, and the job runs on the defaults below.  A knob unset in Infisical is dropped from the copy, and so is a value that fails validation (a typo), so an outage right after a typo reads the default, the same answer a live read gives, and never an older and possibly wider value.  An export that holds none of the registered names (empty output, or only other keys) is treated as a failed fetch, reason `empty`, while the copy still has knobs:  the copy is kept and every answer is stale, because an empty answer is also what a wrong path or a broken login looks like.  The tradeoff:  deleting every knob on purpose reads as an outage until the copy ages out at 48 hours;  a project that has never had a knob has no such copy and is unaffected.  The 48 hour limit also applies to a pause:  `NEEDS_OWNER_NOTIFY_PAUSED=true` stops holding after 48 hours without a good fetch, and the fallback notifier runs again (owner decision open:  keep the limit, or let the last pause value hold).
 3. **Secrets fail closed.**  `FLEET_FACTS_SIGNING_KEY` is never written to the copy, never defaulted and never exported.  A job that cannot fetch it stops (`SecretUnavailable`).  The value stays in that process's memory for the one fetch, as the service cache does.
 4. **Local files only narrow.**  A job's own config file or a STOP file may lower a cap, remove a list entry, force a mode toward its first choice or set a flag to its safe value.  Anything that would widen the answer is ignored and the report says `local_ignored`.  The owner id and the launch time take no local override.
@@ -199,7 +199,7 @@ Set a new value in the Infisical UI/API, or `POST /admin/settings` (write-throug
 
 ## Prod-only lint
 
-`python3 scripts/check-infisical-env.py` (CI step "Infisical environment lint") fails on anything that would select a non-prod environment:  `INFISICAL_ENV` / `INFISICAL_ENVIRONMENT` set to `dev` or `staging` in an env file (`.cursor/infisical.env`, `.env.example`), a `:-dev` / `:=dev` fallback or `--env=dev` in a `cursor-cloud-start.sh`, and a `.infisical.json` whose `defaultEnvironment` is not `prod`.  `--fleet` lints every repo under `~/Code` as it is on `origin/main` (add `--fetch` to refresh first).  A line that truly needs the word carries `infisical-env: allow` with a reason.  This repo's CLI callers (`scripts/fleet_knobs`, `scripts/infisical-secrets-sync.sh`) always pass `--env=prod` and `--projectId` themselves, so it has no `.infisical.json`;  a repo that relies on one gets it with `"defaultEnvironment": "prod"`, because the CLI's own default is `dev`.
+`python3 scripts/check-infisical-env.py` (CI step "Infisical environment lint") fails on anything that would select a non-prod environment:  `INFISICAL_ENV` / `INFISICAL_ENVIRONMENT` set to `dev` or `staging` in an env file (`.cursor/infisical.env`, `.env.example`), a `:-dev` / `:=dev` fallback or `--env=dev` in a `cursor-cloud-start.sh`, and a `.infisical.json` whose `defaultEnvironment` is not `prod`.  `--fleet` lints every repo under `~/Code` as it is on `origin/main` (add `--fetch` to refresh first).  A line that truly needs the word carries `infisical-env: allow` with a reason.  This repo's CLI callers (`scripts/fleet_knobs`, `scripts/fleet_secrets`) always pass `--env=prod` and `--projectId` themselves, so it has no `.infisical.json`;  a repo that relies on one gets it with `"defaultEnvironment": "prod"`, because the CLI's own default is `dev`.
 
 ## Local dev
 
@@ -214,11 +214,12 @@ Copy `.env.example` (non-sensitive keys) and set the secrets in your shell, or p
 | `fleet-secrets run [--path /] [--only A,B] -- CMD [ARG...]` | Fetches once, then `exec`s `CMD` with the secrets as environment variables (a variable of the same name is replaced).  `--only` injects just those keys and exits 3 if one is absent.  PATH, HOME, USER, SHELL, TMPDIR, `LD_*`, `DYLD_*` and a few interpreter variables are never injected by `run`, and `--only` naming one of them is a usage error (exit 2).  Every `INFISICAL_*` key is in that list too, so a stored `INFISICAL_TOKEN` or client secret never reaches the command.  The fleet-secrets auth variables (`INFISICAL_TOKEN` and the universal-auth client id and secret) are removed from the started command's environment. |
 | `fleet-secrets get NAME [--path /]` | Prints exactly one value to stdout with no trailing newline.  Exit 3 and a message naming the key if it is absent. |
 | `fleet-secrets names [--path /]` | Key names only, one per line. |
+| `fleet-secrets set NAME --path /linear` | Creates or updates one Fleet-OPS prod secret, but ONLY names on the built-in allowlist `core.WRITE_ALLOWLIST` (now `^CACHE_[A-Z0-9_]+$` under `/linear`, the minted Linear tokens `board` keeps);  anything else exits 2 before auth.  Widening the list takes a reviewed code change, never a flag or environment variable (a general write would let any agent overwrite any secret through the shared identity) (AFC-359).  The value comes from standard input (one trailing newline removed), never an argument.  It writes over REST with the machine identity's token (Keychain or `INFISICAL_TOKEN`);  the CLI's own login session is refused because it cannot hand a token to a REST call.  It never creates a folder:  a missing one fails with `folder-missing` and writes nothing.  Prints `created|updated NAME at PATH`, never the value.  Exit 4 on a failed write. |
 | `fleet-secrets doctor [--json]` | Booleans, the CLI version and counts only:  CLI present, project id resolvable, auth mode, session valid, a test fetch, key count, unresolved-reference count.  Exit 1 when something is wrong. |
 
 Exit codes:  0 ok, 2 usage or a refused setting, 3 key absent, 4 fetch or auth failure, 5 unresolved reference, 126 or 127 the command could not start.
 
-**Where the values come from.**  Project Fleet-OPS, environment `prod` (the only one;  a non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused).  Root `/` holds every key as an Infisical reference that expands to the real value, under the names the flat file used.  Folder `/global-api-keys` holds the same values as plain secrets, so `--path /global-api-keys` is the fallback for a key that is missing at root (checked Sun, Oct 18, 2026:  eleven names present in the flat file were not at root;  `AGENT_SYNC_TOKEN`, `AGENT_SYNC_POST_TOKEN`, `ANTIGRAVITY_INGEST_TOKEN`, `B2_CT_BUCKET_NAME`, `B2_FLEET_BUCKET_NAME`, `B2_ST_BUCKET_NAME`, `B2_UM_BUCKET_NAME`, `PAGERDUTY_API_KEY`, `USAGE_INGEST_TOKEN`, `USAGE_INGEST_PRODUCER_TOKENS` and `USAGE_READ_TOKEN`).  The repo is public, so the project id is never committed:  it comes from `INFISICAL_FLEET_OPS_PROJECT_ID`, then the first line of `~/.agent-sync/fleet-ops-project-id` (the same two sources and error text as `scripts/agent_sync/zulip.py`), and the command fails closed when neither holds a UUID.
+**Where the values come from.**  Project Fleet-OPS, environment `prod` (the only one;  a non-prod `INFISICAL_ENVIRONMENT` or `INFISICAL_ENV` is refused).  Root `/` holds every key as an Infisical reference that expands to the real value, under the names the flat file used.  Folder `/global-api-keys` holds the same values as plain secrets.  Every key in the flat file is at root (checked Sun, Oct 18, 2026:  eleven names that were missing, the `AGENT_SYNC_*`, `B2_*_BUCKET_NAME` and `USAGE_*` tokens, `ANTIGRAVITY_INGEST_TOKEN` and `PAGERDUTY_API_KEY`, now have root references), so `--path` is only needed for keys that live in a folder alone.  The repo is public, so the project id is never committed:  it comes from `INFISICAL_FLEET_OPS_PROJECT_ID`, then the first line of `~/.agent-sync/fleet-ops-project-id` (the same two sources and error text as `scripts/agent_sync/zulip.py`), and the command fails closed when neither holds a UUID.
 
 **Auth, first match wins.**  (1) `INFISICAL_TOKEN` already in the environment (mode `token`, for a cloud worker).  (2) A universal-auth machine identity in the login Keychain (mode `keychain`):  generic passwords with service `fleet-secrets` and accounts `infisical-client-id` and `infisical-client-secret`.  (3) The same two items in the System keychain, `/Library/Keychains/System.keychain` (mode `system-keychain`), which is the path for pm2 and any other boot-time job:  pm2 is started by `/Library/LaunchDaemons/com.pm2.daemon.plist`, so its jobs run as `jay` in the launchd System session, where the login Keychain is unreachable.  The command reads an item with `security find-generic-password -s fleet-secrets -a ACCOUNT -w` (plus the System keychain path for mode 3), captures it, runs `infisical login --method=universal-auth --plain` with the client id and secret in the child's environment (`INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` and `_CLIENT_SECRET`), and hands the access token to the export call as `INFISICAL_TOKEN`.  Neither the secret nor the token is ever in an argument list, and neither reaches the command `run` starts.  Only one of the two items in a keychain is an error (`keychain-incomplete`), not a quiet fallback.  (4) The Infisical CLI's own login session (mode `session`), which is how a login shell works.  A LaunchAgent should use mode 2 or 3 once the machine identity exists, because a user session expires.  `doctor` reports `keychain_client_*_present` and `system_keychain_client_*_present` as booleans and the chosen `auth_mode`.  The System keychain items are written with `-A` (any application may read them without a prompt), so any account on this Mac can read the automation identity;  the owner accepted that on 2026-10-18 (OPS-818).  Rotate the machine identity in Infisical to revoke.
 
@@ -235,7 +236,7 @@ KEY="$(grep -m1 '^KEY=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
 KEY="$(fleet-secrets get KEY)" || exit $?
 ```
 
-`get` already strips nothing and adds nothing, so drop the `tr`.  Add `--path /global-api-keys` for one of the eleven names above.  Never `echo` the variable.
+`get` already strips nothing and adds nothing, so drop the `tr`.  Never `echo` the variable.
 
 **(b) A start script that sources the whole file.**
 
@@ -263,24 +264,60 @@ token = os.environ["KEY"]          # launched as:  fleet-secrets run --only KEY 
 
 Delete the file reader, read `os.environ` (`process.env` in Node) and launch the program under `fleet-secrets run`.  A job that must fetch inside the process can call `subprocess.run(["fleet-secrets", "get", "KEY"], capture_output=True, check=True).stdout.decode()`.  Do not put the value in argv or a log.
 
-**One-time setup for a machine identity** (owner action, not done by the tool):  create a universal-auth machine identity in Infisical with read access to Fleet-OPS `prod`, then store its two values in the Keychain without printing them, for example `security add-generic-password -U -s fleet-secrets -a infisical-client-id -w` and the same for `infisical-client-secret`, answering the prompts.  `fleet-secrets doctor` then reports `auth_mode: keychain`.  **System keychain (owner action, once, with sudo):**  run `{ fleet-secrets get INFISICAL_AUTOMATION_CLIENT_ID; echo; fleet-secrets get INFISICAL_AUTOMATION_CLIENT_SECRET; echo; } | sudo bash scripts/fleet_secrets/seed-system-keychain.sh` from a checkout of this repo, in your GUI shell.  `get` returns `INFISICAL_*` names (only `run` withholds them), so no extra flag is needed.  The script writes the two items with `security add-generic-password -U -A` fed to `security -i` on stdin (so no value is ever on a command line), refuses a value with a character outside `[A-Za-z0-9+/=_.:@-]`, reads them back and prints only `match: true` or `match: false`.  After that, `bash scripts/fleet_secrets/switch-pm2-jobs.sh` proves `fleet-secrets doctor` passes from inside pm2 (`auth_mode: system-keychain`) and moves the pm2 jobs `mac-collab-litestream`, `vision-worker` and `mac-collab` onto `fleet-secrets`, restoring a job's backup if it does not come back online.
+**One-time setup for a machine identity** (owner action, not done by the tool):  create a universal-auth machine identity in Infisical with read access to Fleet-OPS `prod`, then store its two values in the Keychain without printing them, for example `security add-generic-password -U -s fleet-secrets -a infisical-client-id -w` and the same for `infisical-client-secret`, answering the prompts.  `fleet-secrets doctor` then reports `auth_mode: keychain`.  **System keychain (owner action, once, with sudo):**  run `{ fleet-secrets get INFISICAL_AUTOMATION_CLIENT_ID; echo; fleet-secrets get INFISICAL_AUTOMATION_CLIENT_SECRET; echo; } | sudo bash scripts/fleet_secrets/seed-system-keychain.sh` from a checkout of this repo, in your GUI shell.  `get` returns `INFISICAL_*` names (only `run` withholds them), so no extra flag is needed.  The script writes the two items with `security add-generic-password -U -A` fed to `security -i` on stdin (so no value is ever on a command line), refuses a value with a character outside `[A-Za-z0-9+/=_.:@-]`, reads them back and prints only `match: true` or `match: false`.  After that, `bash scripts/fleet_secrets/switch-pm2-jobs.sh` proves `fleet-secrets doctor` passes from inside pm2 (`auth_mode: system-keychain`) and moves the pm2 jobs `vision-worker` (and, until their retirement on 2026-10-19, `mac-collab-litestream` and `mac-collab`) onto `fleet-secrets`, restoring a job's backup if it does not come back online.
 
-## Mac `global-api-keys` sync (`scripts/infisical-secrets-sync.sh`)
+## Brokering credentials to agents
 
-The LaunchAgent `com.jay.infisical-secrets-sync` copies selected secrets from Infisical
-into `~/.secrets/global-api-keys`.  Nothing may read that file any more (OPS-818);  the readers in this repo now use `fleet-secrets` or the environment;  the Usage-Monitor jobs and the pm2 daemons are still moving (target, not yet shipped), and this sync retires at an owner-gated cutover.
-Infisical remains the source of truth;  the file is derived and write-once rules apply where
-noted in the sync map.
+`fleet-secrets` injects values into a process it starts.  A **broker** is the other shape:  the agent never receives the value, only a placeholder, and a proxy attaches the real credential to the outbound HTTPS request.  Infisical ships two, and they are not interchangeable.
 
-| Key | Kind | Status |
+| | Agent Proxy | Agent Vault |
 |---|---|---|
-| `RESTIC_FLEET_WORK_PASSWORD` | secret | **to be filled by admin** (write-once in the sync map after the first good copy;  `fleet_work_backup.py new-password` sets it in Infisical without printing) |
-| `B2_FLEET_WORK_BUCKET_NAME` | env config | **to be filled by admin** (dedicated bucket for fleet-work-backup;  not `B2_FLEET_BUCKET_NAME`) |
-| `B2_FLEET_WORK_KEY_ID` | secret | **to be filled by admin** (scoped B2 application key, prefix `fleet-work-backup/`) |
-| `B2_FLEET_WORK_APPLICATION_KEY` | secret | **to be filled by admin** |
+| Command | `infisical secrets agent-proxy run \| start \| connect` | `infisical agent-vault proxy \| run` |
+| Sandbox | `run` sandboxes on macOS (Seatbelt) | no sandbox |
+| Agent credential | universal-auth client id and secret | time-bound session token over a named access bundle |
+| Plan | any plan | Pro add-on, 5,000 brokered requests a month included, then $2 per 1,000 |
+| Infisical's guidance | local sandboxed proxy, or dynamic secrets | **recommended for new setups** |
 
-Consumer:  `scripts/fleet-work-backup/` (`fleet_work_backup.py`, `install.py`).  Runbook:
-`scripts/fleet-work-backup/README.md`.  Linear OPS-907.
+Measured on this Mac, Oct 18 (OPS-818):  the `run` sandbox denies `~/.infisical`, `~/.ssh`, `~/.aws` and `~/.config/gh` but **not** `~/.secrets`, `~/Library/Keychains`, `~/.codex/config.toml` or `~/.claude.json`, and it has no deny flag;  `127.0.0.1` is unreachable inside it even with `--allow-host`, so local MCP servers and hooks break;  `--unmatched-host block` works;  and the first run writes `~/.infisical/agent-proxy/local-ca.{crt,key}`, which expires in about a week.  Agent Vault has no sandbox and `--no-proxy` always merges `localhost` and `127.0.0.1`, and its CA is fetched per run with optional `--ca-fingerprint` pinning.
+
+Not everything can be brokered.  A broker attaches a header to an HTTPS request, so App Store Connect (a JWT signed by the p8), the Google service-account JSON, OAuth refresh tokens, IMAP/SMTP app passwords, certificates and private keys, and every loopback service are out of its reach and stay on `fleet-secrets run`.  `docs/plans/2026-10-18-fleet-ops-brokerable-host-map.md` classifies all 667 keys in Fleet-OPS `prod` by host, scheme and whether a broker can carry them, and names the two identities in `/agent-proxy` the pilot needs.  Adoption plan and phase gates:  `docs/plans/2026-10-18-infisical-agent-proxy-adoption.md`.
+
+## Mac `global-api-keys` sync (retired, AFC-359)
+
+The LaunchAgent `com.jay.infisical-secrets-sync` used to copy a few Infisical secrets into `~/.secrets/global-api-keys`.  Nothing reads that file (OPS-818), and the sync would refill the folder after it is archived, so `bash scripts/retire-secrets-dir.sh bootout` stops it and moves its plist, script and the one-time seeder `~/apps/infisical-sync` to `~/apps/_retired/` (the script, its plist template and its test are removed from this repo).  The keys it carried (the restic and B2 `fleet-work-backup` keys, the Cloudflare token) are read with `fleet-secrets` from Fleet-OPS root.
+
+## Retiring `~/.secrets` (AFC-359)
+
+Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.secrets`;  every value lives in Fleet-OPS (prod) and is read with `fleet-secrets` (environment first, then `fleet-secrets get NAME --path /folder`, then a loud failure that names the folder and key, never a fallback to a file).  Jay decides when the folder is deleted;  agents never delete it.
+
+| Old file or folder | Infisical folder (Fleet-OPS, prod) |
+|---|---|
+| `Zulip/<Bot>-zuliprc` | `/zulip`, keys `<BOT>_ZULIP_EMAIL`, `_KEY`, `_SITE` |
+| `ZulipAdmin/realm-admin.zuliprc` | `/zulipadmin`, `REALM_ADMIN_ZULIP_*` (the realm-admin bot, role administrator) |
+| `Linear/<SEAT>.env` | `/linear`, `<SEAT>_LINEAR_CLIENT_ID` and `_CLIENT_SECRET` |
+| `appstore-connect.env`, `AuthKey_*.p8` | `/asc` (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`);  per-key `.p8` folders `/authkey-<id>-p8` |
+| `ios-distribution.p12`, `ios-dist-p12-pass`, `apple-certs` | `/mac-certs` (`IOS_DISTRIBUTION_P12_BASE64`, `IOS_DIST_P12_PASSWORD`), root `IOS_DIST_P12_PASS` |
+| `botfleet-developer-id-export-*/` | `/botfleet-developer-id-export` (`DEVELOPER_ID_P12_BASE64`, `P12_PASSWORD`) |
+| `google-sheets-sa.json` | `/google-sheets-sa`, `GOOGLE_SHEETS_SA` |
+| `seat-mcp.env`, `mac-collab.env`, `grok-acp.env`, `senate-relay.env`, `icloud-mail.env`, `provider-knob-sync.env` | `/seat-mcp`, `/mac-collab`, `/grok-acp`, `/senate-relay`, `/icloud-mail`, `/provider-knob-sync` |
+| `agent-sync.env`, `fleetlink-auth.env`, `fleetlink-handbook.env`, `fleet-share-hmac.env` | `/agent-sync`, `/fleetlink-auth`, `/fleetlink-handbook`, `/fleet-share-hmac` |
+| `usage-monitor*.env`, `backblaze-*.env`, `ct-r2-weekly-archive.env` | `/usage-monitor`, `/usage-monitor-bills`, `/backblaze-monitor`, `/backblaze-app-keys`, `/ct-r2-weekly-archive` |
+| `composio-session-id` | `/composio-session-id`, `COMPOSIO_SESSION_ID` (line 1 the session id, line 2 the MCP url) |
+| `global-api-keys` | root `/` and `/global-api-keys` |
+| (BotFleet webhook receivers, AFC-359) | `/botfleet-github-webhooks` (new);  `/botfleet-firefighter-webhooks` and `/botfleet-housekeeper-webhook` rotated after a path leaked into the seat-mcp log |
+
+The names for every other file match its name (lower case, dashes), with one folder per file.
+
+**State is not a secret.**  A file that a program rewrites while it runs (Echo's OAuth bundle, watermarks, health files, token caches) lives outside `~/.secrets`:  `~/.agent-sync/echo`, `~/.agent-sync/echo-linear`, `~/.cache/fleet-linear/` (directories 0700, files 0600).  `ECHO_OAUTH_JSON` in `/agent-sync` is only a bootstrap seed and goes stale on the first token refresh.
+
+**Cutover** (`scripts/retire-secrets-dir.sh`, tested by `scripts/test-retire-secrets-dir.sh`, allowlist `scripts/retire-secrets-dir.allow`).  The script never deletes anything.
+
+1. `bash scripts/retire-secrets-dir.sh check`  lists every reader left in the repos (on `origin/main`) and on the Mac, every symlink that points into the folder, and every process that holds a file open there.  Output is paths and line numbers only.
+2. `bash scripts/retire-secrets-dir.sh bootout`  stops and disables `com.jay.infisical-secrets-sync`, the one writer.
+3. `bash scripts/retire-secrets-dir.sh archive --rename`  copies the folder into an AES-256 encrypted disk image in `~/Documents` (you type the passphrase twice), verifies the image by mounting it read-only and comparing it with the folder, then renames the folder to `~/.secrets.retired-<stamp>`.  `rollback` puts it back and re-enables the writer.
+4. After a quiet day, delete the renamed folder yourself.  The script prints the command and never runs it.
+
+**fleet-work-backup is retired (owner ruling 2026-10-19).**  It was never installed on this Mac and its restic repository has zero snapshots, so OPS-907's backup never ran.  The B2 bucket `jays-fleet-work-backup` is left in place and empty, and the code stays in the repo (`scripts/fleet-work-backup/`) with nothing scheduling it.  Do not describe backups as working.
 
 ## Hosted CLAUDE Zulip identity (AFC-296)
 
@@ -299,6 +336,18 @@ verifies the stored identity and provisions the Worker secret.  Its live
 identity check requires the CLAUDE bot and member role 400 before writing.
 See [the CLAUDE rollout](scripts/agent-sync-mcp/DEPLOY.md#add-hosted-claude-afc-296).
 
+## Server fleet-tools update signal (2026-10-19)
+
+AFC `prod` `/fleet-cli` holds the three values the GitHub workflow `fleet-cli-server-update.yml` uses to tell the Hetzner server to move its fleet-tools checkout (`docs/protocols/fleet-cli-from-git.md`), copied to repository secrets of the same names:
+
+| Key | Kind | Notes |
+|---|---|---|
+| `FLEET_CLI_UPDATE_SSH_KEY` | secret | An ed25519 private key.  Its public half is in the server's `/root/.ssh/authorized_keys` with `restrict` and a forced command that only starts `fleet-cli-git-update.service`. |
+| `FLEET_CLI_UPDATE_HOST` | private infrastructure | The server's address, kept out of this public repo. |
+| `FLEET_CLI_UPDATE_KNOWN_HOSTS` | public | The server's host key line, so the workflow checks the host strictly. |
+
+Rotate by minting a new key, replacing the `authorized_keys` line and both copies.  The repository variable `FLEET_CLI_SIGNAL_ENABLED=true` turns the workflow on.
+
 ## FleetLink agent server credential (AFC-328)
 
 Canonical location: AI Fleet Coordinator, `prod`, `/fleetlink`.
@@ -306,8 +355,9 @@ Canonical location: AI Fleet Coordinator, `prod`, `/fleetlink`.
 | Key | Kind | Status |
 | --- | --- | --- |
 | `FLEETLINK_AGENT_SECRET` | secret | Created and read back 2026-10-15.  Installed as Worker secret `FLEETLINK_AGENT_SECRET` on `agent-sync-mcp` and as `AGENT_SYNC_SECRET` on FleetLink's `fleetlink-api`.  Never copy it to source, chat or a client. |
-
 | `FLEETLINK_TOKEN_<SEAT>` | secret | One per fleet bot (hyphens as underscores, such as `FLEETLINK_TOKEN_GROK_WEB`):  that bot's FleetLink API token, minted to follow Jay's limits as they change.  Read by the Agent-Sync Worker (bundled as `FLEETLINK_SEAT_TOKENS`) and written to `~/.secrets/FleetLink/<SEAT>.env` on hosts where the seat runs `fleet-share`.  No expiry. |
+
+The stdio Agent-Sync server (`agent-sync mcp`, every Mac and server seat) serves the `fleetlink_*` tools too, as each identity's own FleetLink bot and never with `FLEETLINK_AGENT_SECRET`.  It runs `fleet-share` with that seat's token from `FLEETLINK_TOKEN_<SEAT>` in its environment, else `FLEETLINK_TOKEN` (only when no launcher is set and `AGENT_SEAT` is unset or the same seat;  the server sets `AGENT_SEAT` to the seat it resolved from `--as` or `--default-seat` when the environment named none), else the file `~/.secrets/FleetLink/<SEAT>.env` (hyphens as underscores, `FLEETLINK_TOKEN=...`, a regular file the user owns with mode 0600 or 0400), which it hands to the child as `FLEETLINK_AUTH_FILE` without reading it.  With none of them, those tools answer `not_configured` naming the key to set (`docs/protocols/agent-sync-mcp.md` section 2.2).
 
 The Agent-Sync MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
 FleetLink's `/mcp`, which maps each seat to its own FleetLink agent account.

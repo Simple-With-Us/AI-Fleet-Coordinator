@@ -1,6 +1,6 @@
 """Paths and constants for seat-mcp.
 
-Loopback only.  Token lives in ~/.secrets/seat-mcp.env, never in agents.json.
+Loopback only.  Token lives in Infisical Fleet-OPS /seat-mcp (SEAT_MCP_TOKEN), never in agents.json or a file.
 """
 
 from __future__ import annotations
@@ -9,7 +9,9 @@ from pathlib import Path
 
 HOME = Path("/Users/jay")
 APP_ROOT = HOME / "apps" / "seat-mcp"
-SECRETS_FILE = HOME / ".secrets" / "seat-mcp.env"
+FLEET_SECRETS_BIN = HOME / ".local" / "bin" / "fleet-secrets"
+TOKEN_FOLDER = "/seat-mcp"
+TOKEN_NAME = "SEAT_MCP_TOKEN"
 JOBS_DIR = HOME / ".seat-mcp" / "jobs"
 AGENTS_JSON = HOME / ".shellular" / "agents.json"
 

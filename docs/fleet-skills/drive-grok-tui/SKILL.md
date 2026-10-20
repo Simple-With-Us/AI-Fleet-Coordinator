@@ -74,9 +74,8 @@ literals in git:
 ```
 
 Tracked fragment: `scripts/seat-mcp/mcp.example.json`.  Secrets live in
-`~/.secrets/seat-mcp.env` and
-`~/.secrets/agents-jays-services-access-service-token.env` on the Mac, and in
-the cloud dashboard env vars — not in this skill.
+Infisical Fleet-OPS (`/seat-mcp` and the Cloudflare Access service token, read with
+`fleet-secrets get`) on the Mac, and in the cloud dashboard env vars — not in this skill.
 
 Tools: `grok_sessions_list`, `grok_session_peek`, `grok_session_tail`,
 `grok_session_prompt`, `grok_session_await`, `grok_session_cancel`.

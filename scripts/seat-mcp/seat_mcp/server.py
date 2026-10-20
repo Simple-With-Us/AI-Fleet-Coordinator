@@ -22,6 +22,10 @@ from .seats import SeatError
 from .tools import TOOL_IMPL, tool_schemas
 
 RECALL_PATHS = ("/recall/stats", "/recall/search", "/recall/contribute")
+# Largest request body any path reads:  JSON-RPC, /recall/* and the /hooks/ pass-through (AFC-359).
+MAX_BODY_BYTES = 2_000_000
+# /hooks/ body read timeout (AFC-359).  The BotFleet ingress itself refuses bodies over 256 KiB.
+HOOK_READ_TIMEOUT_SECONDS = 30.0
 
 JsonDict = dict[str, Any]
 PROTOCOL_VERSIONS = ("2025-03-26", "2025-11-25", "2026-07-28")
@@ -41,7 +45,11 @@ def handle_rpc(msg: JsonDict) -> JsonDict | None:
         # Notification.  No response body.
         return None
     if not method:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32600, "message": "invalid request"}}
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32600, "message": "invalid request"},
+        }
     try:
         result = _dispatch(str(method), params)
     except FileNotFoundError as exc:
@@ -108,12 +116,19 @@ def _dispatch(method: str, params: JsonDict) -> JsonDict:
 class SeatHandler(BaseHTTPRequestHandler):
     server_version = "seat-mcp/1.0"
     token = ""
+    # Per-operation socket timeout:  a stalled or slow client must not hold a
+    # handler thread open forever (BaseHTTPRequestHandler defaults to none).
+    timeout = 60
 
     def log_message(self, fmt: str, *args: Any) -> None:
         # Do not log Authorization or query strings that might carry a token.
-        path = urlparse(self.path).path
+        raw_path = urlparse(self.path).path
+        # A /hooks/<id>/<secret> path IS the credential:  never log it (AFC-359).
+        path = "/hooks/<redacted>" if raw_path.startswith("/hooks/") else raw_path
         try:
             msg = fmt % args
+            if path != raw_path:
+                msg = msg.replace(self.path, path).replace(raw_path, path)
         except Exception:
             msg = "log"
         if "Bearer" in msg or "SEAT_MCP" in msg:
@@ -123,7 +138,9 @@ class SeatHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def _send(self, code: int, body: bytes, content_type: str, extra: list[tuple[str, str]] | None = None) -> None:
+    def _send(
+        self, code: int, body: bytes, content_type: str, extra: list[tuple[str, str]] | None = None
+    ) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -138,12 +155,16 @@ class SeatHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "")
         if origin_ok(origin, access_ok=access_authenticated(self.headers)):
             return False
-        payload = _json_bytes({"jsonrpc": "2.0", "error": {"code": -32002, "message": "invalid origin"}})
+        payload = _json_bytes(
+            {"jsonrpc": "2.0", "error": {"code": -32002, "message": "invalid origin"}}
+        )
         self._send(403, payload, "application/json")
         return True
 
     def _unauthorized(self) -> None:
-        payload = _json_bytes({"jsonrpc": "2.0", "error": {"code": -32001, "message": "unauthorized"}})
+        payload = _json_bytes(
+            {"jsonrpc": "2.0", "error": {"code": -32001, "message": "unauthorized"}}
+        )
         self._send(401, payload, "application/json", [("WWW-Authenticate", "Bearer")])
 
     def _auth_ok(self) -> bool:
@@ -179,6 +200,9 @@ class SeatHandler(BaseHTTPRequestHandler):
             # No standalone SSE in v1.  Spec allows 405.
             self._send(405, b"sse not offered\n", "text/plain; charset=utf-8")
             return
+        if path.startswith("/hooks/"):
+            self._proxy_to_webhook_ingress()
+            return
         self._send(404, b"not found\n", "text/plain; charset=utf-8")
 
     def do_HEAD(self) -> None:
@@ -202,7 +226,7 @@ class SeatHandler(BaseHTTPRequestHandler):
             length = int(length_s)
         except ValueError:
             length = 0
-        if length < 0 or length > 2_000_000:
+        if length < 0 or length > MAX_BODY_BYTES:
             self._send(413, b"payload too large\n", "text/plain; charset=utf-8")
             return None
         raw = self.rfile.read(length) if length else b"{}"
@@ -212,7 +236,9 @@ class SeatHandler(BaseHTTPRequestHandler):
             self._send(400, _json_bytes({"ok": False, "error": "parse error"}), "application/json")
             return None
         if not isinstance(msg, dict):
-            self._send(400, _json_bytes({"ok": False, "error": "invalid request"}), "application/json")
+            self._send(
+                400, _json_bytes({"ok": False, "error": "invalid request"}), "application/json"
+            )
             return None
         return msg
 
@@ -236,10 +262,80 @@ class SeatHandler(BaseHTTPRequestHandler):
             return
         self._send(200, _json_bytes({"ok": True, **data}), "application/json")
 
+    def _hook_reject(self, code: int, error: str) -> None:
+        """Refuse a /hooks/ request and drop the connection, so an unread body is never parsed as a next request."""
+        self.close_connection = True
+        self._send(
+            code,
+            _json_bytes({"ok": False, "error": error}),
+            "application/json",
+            [("Connection", "close")],
+        )
+
+    def _proxy_to_webhook_ingress(self) -> None:
+        import urllib.error
+        import urllib.request
+
+        # Unauthenticated surface:  bound what one request can cost a handler thread.
+        length_s = self.headers.get("Content-Length")
+        if self.headers.get("Transfer-Encoding") or (length_s is None and self.command == "POST"):
+            # Chunked bodies are not de-chunked here, so only a declared Content-Length is accepted.
+            self._hook_reject(411, "Content-Length required")
+            return
+        if length_s is None:
+            length = 0
+        else:
+            try:
+                length = int(length_s.strip())
+            except ValueError:
+                length = -1
+            if length < 0:
+                self._hook_reject(400, "invalid Content-Length")
+                return
+        if length > MAX_BODY_BYTES:
+            # Answer without reading the body, then drop the connection so it is never parsed as a next request.
+            self._hook_reject(413, "webhook body too large")
+            return
+        body = None
+        if length > 0:
+            try:
+                self.connection.settimeout(HOOK_READ_TIMEOUT_SECONDS)
+                body = self.rfile.read(length)
+            except TimeoutError:
+                self._hook_reject(408, "webhook body read timed out")
+                return
+            if len(body) != length:
+                self._hook_reject(400, "incomplete webhook body")
+                return
+        target_url = f"http://127.0.0.1:8800{self.path}"
+        headers = {}
+        for key, val in self.headers.items():
+            if key.lower() not in {"host", "connection"}:
+                headers[key] = val
+        req = urllib.request.Request(target_url, data=body, headers=headers, method=self.command)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp_body = resp.read()
+                content_type = resp.headers.get("Content-Type", "application/json")
+                self._send(resp.status, resp_body, content_type)
+        except urllib.error.HTTPError as exc:
+            err_body = exc.read()
+            content_type = exc.headers.get("Content-Type", "application/json")
+            self._send(exc.code, err_body, content_type)
+        except Exception as exc:
+            self._send(
+                502,
+                _json_bytes({"ok": False, "error": f"Webhook proxy failed: {exc}"}),
+                "application/json",
+            )
+
     def do_POST(self) -> None:
         if self._forbidden_origin():
             return
         path = urlparse(self.path).path
+        if path.startswith("/hooks/"):
+            self._proxy_to_webhook_ingress()
+            return
         if path in {"/recall/search", "/recall/contribute", "/recall/stats"}:
             if not self._auth_ok():
                 self._unauthorized()
@@ -261,25 +357,52 @@ class SeatHandler(BaseHTTPRequestHandler):
             length = int(length_s)
         except ValueError:
             length = 0
-        if length < 0 or length > 2_000_000:
+        if length < 0 or length > MAX_BODY_BYTES:
             self._send(413, b"payload too large\n", "text/plain; charset=utf-8")
             return
         raw = self.rfile.read(length) if length else b""
         try:
             msg = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            self._send(400, _json_bytes({"jsonrpc": "2.0", "error": {"code": -32700, "message": "parse error"}}), "application/json")
+            self._send(
+                400,
+                _json_bytes(
+                    {"jsonrpc": "2.0", "error": {"code": -32700, "message": "parse error"}}
+                ),
+                "application/json",
+            )
             return
         if not isinstance(msg, dict):
-            self._send(400, _json_bytes({"jsonrpc": "2.0", "error": {"code": -32600, "message": "invalid request"}}), "application/json")
+            self._send(
+                400,
+                _json_bytes(
+                    {"jsonrpc": "2.0", "error": {"code": -32600, "message": "invalid request"}}
+                ),
+                "application/json",
+            )
             return
         header_method = self.headers.get("Mcp-Method") or self.headers.get("MCP-Method")
         if header_method and msg.get("method") and header_method != msg.get("method"):
-            self._send(400, _json_bytes({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Mcp-Method mismatch"}}), "application/json")
+            self._send(
+                400,
+                _json_bytes(
+                    {"jsonrpc": "2.0", "error": {"code": -32600, "message": "Mcp-Method mismatch"}}
+                ),
+                "application/json",
+            )
             return
         proto = self.headers.get("MCP-Protocol-Version") or self.headers.get("Mcp-Protocol-Version")
         if proto and proto not in PROTOCOL_VERSIONS:
-            self._send(400, _json_bytes({"jsonrpc": "2.0", "error": {"code": -32600, "message": "unsupported MCP-Protocol-Version"}}), "application/json")
+            self._send(
+                400,
+                _json_bytes(
+                    {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32600, "message": "unsupported MCP-Protocol-Version"},
+                    }
+                ),
+                "application/json",
+            )
             return
         result = handle_rpc(msg)
         extra: list[tuple[str, str]] = []

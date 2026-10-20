@@ -18,7 +18,7 @@ DC="nbg1-dc3"
 CURRENT_TYPE="cx43"
 STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
 
-# Environment first, then `fleet-secrets get` (OPS-818;  the flat file ~/.secrets/global-api-keys is retired).
+# Environment first, then `fleet-secrets get` (OPS-818;  the old flat secrets file is retired, AFC-359).
 TOKEN="${HCLOUD_TOKEN:-}"
 if [ -z "$TOKEN" ] && [ -x "$FLEET_SECRETS" ]; then
   TOKEN="$("$FLEET_SECRETS" get HCLOUD_TOKEN 2>/dev/null || true)"

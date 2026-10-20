@@ -112,6 +112,15 @@ jobs:
     # Fleet tool parity doctor (docs/protocols/fleet-tool-parity.md).
     - name: Fleet tools doctor tests
       run: python3 scripts/test_fleet_tools_doctor.py
+    # Zulip bot provisioning script (AFC-359):  runs against a fake Zulip on 127.0.0.1 and a fake fleet-secrets.
+    - name: Zulip provision bots tests
+      run: python3 scripts/test_zulip_provision_bots.py
+    # MiniMax Code guard live proof (AFC-365):  the tool that separates the matcher, the
+    # policy and the live dispatch, so an installed-but-never-fired guard cannot read as
+    # protected.  The test builds a temporary plugin directory and a fake hook command, so
+    # it starts no MiniMax session and reads no installed plugin.
+    - name: Muster guard live proof tests
+      run: python3 scripts/test_muster_guard_live_proof.py
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
     # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
     - name: Fleet skill identity tests
@@ -153,11 +162,7 @@ jobs:
       run: python3 scripts/fleet-work-backup/test_fleet_work_backup.py
     - name: Verify public activity boundary
       run: python3 scripts/test-public-activity.py
-    # The admin panel inlines its own copy of the app registry because the Worker
-    # has no filesystem.  Nothing compared the two, so a renamed repo silently
-    # turned its GitHub card row red (Socratic.Trade -> Socratic-Trade, a 301 the
-    # Worker will not follow).  This now fails the build instead.
-    - name: Verify fleet registry (incl. admin-panel APPS copy)
+    - name: Verify fleet registry
       run: python3 scripts/check-fleet-registry.py
     # The registry's AGENT-SYNC.md rows are read under the GENERATED header, which itself names Fleet-OPS.
     - name: Registry checks read AGENT-SYNC.md under its header
@@ -171,13 +176,22 @@ jobs:
       run: |
         python3 scripts/mac-collab/test_seat_alias.py
         python3 scripts/linear-board/test_board.py SeatAliasTests
+    # AFC-361:  board writes, notes_create/notes_update and apple-notes-coding.sh carry a session id and refuse
+    # without one (single-thread seats exempt).  The parity test keeps every copy of fleet-apps.json
+    # `sessionIds` equal;  the other two run the board verbs against the mock Linear and the notes script with
+    # APPLE_NOTES_PRINT_HTML=1, which never touches Notes.
+    - name: Session id contract (AFC-361)
+      run: |
+        cd scripts && python3 -m unittest test_session_ids_parity test_apple_notes_session
+        cd .. && python3 scripts/linear-board/test_board.py SessionIdTests
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
-    # slower and stays a local run.  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
+    # slower and stays a local run.  TokenBlobTests (about 8 seconds) pins the per-key fleet-secrets reads and the
+    # zero-mint, zero-write fresh-blob path (AFC-361).  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
     # needs-owner notifier checks the owner's Linear reply by.
     - name: Board CLI input files and flat labels
-      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests
+      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests TokenBlobTests
     # Infisical for the board CLI (AFC-348):  client pairs from /linear before local files, the shared
     # LINEAR_<SEAT>_CACHE_TOKEN adopted and published, and the fallback when Infisical is down.  Mock servers only.
     - name: Board CLI Infisical tests
@@ -218,10 +232,6 @@ jobs:
       run: |
         npm ci --ignore-scripts --prefix scripts/agent-sync-mcp
         node --test scripts/agent-sync-mcp/test/*.test.mjs
-    - name: Verify operator dashboard deployment boundary
-      run: node --test tests/deployment-boundary.test.cjs
-    - name: Agent quota display unit tests
-      run: node --test tests/quota-display.test.mjs
     - name: Kody defer and deferred sweep tests
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
     # The pr-sweep Claude adapter (a Workflow script) against stubbed workflow hooks:  a mismatched or missing status,
@@ -242,10 +252,9 @@ jobs:
         bash -n scripts/ios-fleet/install-testflight-freshness.sh
     - name: Mac ledger mirror tests
       run: bash scripts/test-mac-ledger-mirror.sh
-    # The LaunchAgent script that copies a Cloudflare token from Infisical prod into the handoff
-    # file.  A stub CLI and a temp dir stand in for the real ones.
-    - name: Infisical secrets sync tests
-      run: bash scripts/test-infisical-secrets-sync.sh
+    # The cutover helper for retiring ~/.secrets (AFC-359):  a temp HOME, stub launchctl and lsof, a throwaway repo.
+    - name: Retire secrets dir tests
+      run: bash scripts/test-retire-secrets-dir.sh
     # The BotFleet launch wrapper and its LaunchAgent template:  the "already healthy" exit, the
     # missing-checkout exits, and the fleet-seat switch (BOTFLEET_FLEET_SEAT_PROMPTS=1) that the
     # open-loops routines depend on.  A stub curl and a stub node stand in for the real ones.

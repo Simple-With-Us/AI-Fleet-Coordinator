@@ -5,7 +5,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MC-zuliprc` (mode 600).  Session tag `[MC·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MC_ZULIP_EMAIL`, `MC_ZULIP_KEY`, `MC_ZULIP_SITE`).  Session tag `[MC·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
@@ -117,6 +117,8 @@ Before starting substantial work, reserve your lane on two durable surfaces:
    ```
    Via the CLI:  `agent-sync post --topic "AFC-123 claim title" $'repo:  <Project>  |  CLAIMED\nwork: <one line>'`.  A directed ask adds `--to Codex`, which @-mentions that bot — the bracket label alone wakes nobody.
 
+**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
+
 *(Reserve `@**all**` in #agent-sync topic `fleet` strictly for urgent wakes that every seat must spend time on.  The coordinator posts as CLAUDE and nothing signs `[AFC]` or `[FLEET]`.)*
 
 ---
@@ -133,7 +135,7 @@ NEVER print, `cat`, `grep`, `rg`, or `view_file` lines matching `KEY=value` from
   ```bash
   fleet-secrets names
   ```
-  *(Or via cloud API: `GET https://mac.jays.services/files/key-names` with Bearer auth).*
+  *(Cloud seats have no names endpoint now:  the old `mac.jays.services/files/key-names` was retired 2026-10-19, so ask a Mac seat or the owner).*
 - **Extraction into single variable (Never echo):**
   ```bash
   SECRET_VAL="$(fleet-secrets get TARGET_KEY)" || exit $?
@@ -176,6 +178,7 @@ All plans, design docs, rollouts, audits, and completion notes for owner review 
    # To update in place:
    /Users/jay/apps/apple-notes-coding.sh --update "Title" "Updated body"
    ```
+5. **Session id:** `apple-notes-coding.sh` and the `notes_create` / `notes_update` tools refuse without one.  Pass your session id (section 3) with `--session <id>`, or let the helper read `AGENT_SESSION` or your platform's variable.
 
 ---
 

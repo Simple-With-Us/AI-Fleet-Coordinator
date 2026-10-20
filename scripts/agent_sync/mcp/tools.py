@@ -51,13 +51,15 @@ from .. import listener_records as LR
 from .. import live as LIVE
 from .. import notes as NOTES
 from .. import secretscan
+from .. import session_ids as SESSION_IDS
 from .. import wakes as W
 from .. import zulip as Z
 from .. import zulip_cli as ZCLI
 from .. import zulip_ops as OPS
 from ..idem import PENDING_FRESH, IdemStore
 from ..state import State
-from ..textfmt import sentence_gap
+from ..textfmt import fix_outbound
+from . import fleetlink_tools as FLEETLINK
 from . import guide as GUIDE
 from . import linear_tools as LINEAR
 from . import recall_tools as RECALL
@@ -67,6 +69,7 @@ TOOLS_PATH = os.path.join(HERE, "tools.json")
 LISTENER_TOOLS_PATH = os.path.join(HERE, "listener-tools.json")
 NOTES_TOOLS_PATH = os.path.join(HERE, "notes-tools.json")
 RECALL_TOOLS_PATH = os.path.join(HERE, "recall-tools.json")
+FLEETLINK_TOOLS_PATH = os.path.join(HERE, "fleetlink-tools.json")
 FIXTURES_PATH = os.path.join(HERE, "fixtures.jsonl")
 
 TRANSPORT = "stdio"
@@ -123,6 +126,7 @@ WRITE_TOOLS = (
         }
     )
     | LINEAR.write_names()
+    | FLEETLINK.write_names()
 )
 READ_TOOLS = (
     frozenset(
@@ -158,6 +162,7 @@ READ_TOOLS = (
         }
     )
     | LINEAR.read_names()
+    | FLEETLINK.read_names()
 )
 # Every MCP tool and the CLI command that does the same job (AFC-330:  "keeping the CLI, stdio and
 # hosted in step").  tools.json is the contract;  a test checks that every tool in it and in
@@ -222,10 +227,27 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
 }
 # The tools whose command is not in the agent-sync CLI:  recall_* run the `recall` CLI and linear_* run
 # `board` (`board run NAME`, `board api ...`, `board mcp call ...`, and board's own verbs for the core ones).
+# fleetlink_* are FleetLink's own CLI, `fleet-share` (its MCP_TO_CLI table in the FleetLink repo,
+# test/cli-mcp-parity.test.mjs);  the stdio server runs each one as `fleet-share tool NAME` (fleetlink_tools.py).
 EXTERNAL_CLI: dict[str, str] = {
     "recall_search": "recall search",
     "recall_stats": "recall stats",
     "recall_contribute": "recall contribute",
+    "fleetlink_create_share": "fleet-share upload",
+    "fleetlink_create_link": "fleet-share link",
+    "fleetlink_list_shares": "fleet-share list",
+    "fleetlink_get_share": "fleet-share info",
+    "fleetlink_list_teams": "fleet-share teams",
+    "fleetlink_share_to_team": "fleet-share share",
+    "fleetlink_make_personal": "fleet-share unshare",
+    "fleetlink_update_share": "fleet-share update",
+    "fleetlink_add_file": "fleet-share add",
+    "fleetlink_delete_file": "fleet-share rm-file",
+    "fleetlink_read_file": "fleet-share cat",
+    "fleetlink_upload_url": "fleet-share upload-url",
+    "fleetlink_renew_share": "fleet-share renew",
+    "fleetlink_delete_share": "fleet-share delete",
+    "fleetlink_whoami": "fleet-share whoami",
 }
 UPLOAD_MCP_MAX = 1024 * 1024  # an MCP upload carries the file in its arguments:  at most 1 MB
 UNTRUSTED_NOTE = (
@@ -276,14 +298,16 @@ def _load(path: str) -> dict[str, Any]:
 
 def load_served_tools() -> dict[str, Any]:
     """What stdio tools/list serves:  tools.json, then listener-tools.json, notes-tools.json (the notes_*
-    tools), recall-tools.json (the recall_* tools, generated from the hosted src/recall.js) and the linear_*
-    tools from the board catalogs (linear_tools.py).  The hosted Worker serves the same names."""
+    tools), recall-tools.json (the recall_* tools, generated from the hosted src/recall.js), the linear_*
+    tools from the board catalogs (linear_tools.py) and fleetlink-tools.json (the fleetlink_* tools, generated
+    from the hosted src/fleetlink.js).  The hosted Worker serves the same names."""
     return {
         "tools": load_tools()["tools"]
         + load_listener_tools()["tools"]
         + _load(NOTES_TOOLS_PATH)["tools"]
         + _load(RECALL_TOOLS_PATH)["tools"]
         + LINEAR.tool_specs()
+        + _load(FLEETLINK_TOOLS_PATH)["tools"]
     }
 
 
@@ -630,6 +654,7 @@ class Tools:
         owner_clients: Iterable[str] = (),
         notes_consumer: str = "CLAUDE",
         notes_consumer_label: str = "",
+        notes_consumer_resolver: Callable[[], tuple[str, str]] | None = None,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda text: None,
@@ -649,12 +674,13 @@ class Tools:
         self._call_state_key: str | None = None
         self.owner_user_id = owner_user_id
         self.owner_clients = set(owner_clients)
-        self.notes_consumer = (
-            notes_consumer  # [notes_relay] seat:  the only bot whose reactions and replies count
-        )
-        self.notes_consumer_label = (
-            notes_consumer_label  # where the knob's answer came from (notes.relay_consumer)
-        )
+        # [notes_relay] seat:  the only bot whose reactions and replies count, and where the knob's answer came from
+        # (notes.relay_consumer).  With a resolver both are read on first use, not at start:  the knob fetch can take
+        # seconds (Infisical through the CLI), and most sessions never call a Notes tool.
+        self._notes_consumer = notes_consumer
+        self._notes_consumer_label = notes_consumer_label
+        self._notes_consumer_resolver = notes_consumer_resolver
+        self._notes_consumer_lock = threading.Lock()
         self.clock = clock
         self.sleep = sleep
         self.log = log
@@ -692,6 +718,8 @@ class Tools:
                 handler = getattr(self, "_tool_" + name, None)
                 if handler is None and name in self.linear:
                     handler = functools.partial(self._tool_linear, name)
+                if handler is None and name.startswith("fleetlink_"):
+                    handler = functools.partial(self._tool_fleetlink, name)
                 result = handler(with_defaults(spec["inputSchema"], arguments))
                 outcome = "ok"
             except Exception as exc:  # noqa: BLE001 - every failure becomes a tool error
@@ -1019,7 +1047,7 @@ class Tools:
         # The hash is of the text Zulip stores:  the client converts sentence gaps to U+00A0 plus a
         # space on the way out (textfmt, AFC #392), and the reconcile read compares stored content.
         fields = {
-            "body_sha": _sha(sentence_gap(body).strip()),
+            "body_sha": _sha(fix_outbound(body, limit=10000)[0].strip()),
             "channel": channel,
             "topic": topic,
             "channel_id": channel_id,
@@ -1089,7 +1117,12 @@ class Tools:
             raise error from None
         self._idem_set(row_key, state="sent", id=message_id, channel_id=channel_id)
         self._remember_posted(message_id)
-        return {"id": message_id, "channel_id": channel_id, "duplicate": False}
+        result: dict[str, Any] = {"id": message_id, "channel_id": channel_id, "duplicate": False}
+        # Owner 2026-10-19:  say what the outbound fixes changed, so the agent learns the fleet format.
+        reformatted = fix_outbound(body, limit=10000)[1]
+        if reformatted:
+            result["reformatted"] = reformatted
+        return result
 
     def _write_result(self, result: Mapping[str, Any]) -> dict[str, Any]:
         return self.ok(json.dumps(dict(result)), result)
@@ -1506,6 +1539,7 @@ class Tools:
         )
         return self._write_result(
             {"id": result["id"], "user_ids": ids, "duplicate": result["duplicate"]}
+            | ({"reformatted": result["reformatted"]} if result.get("reformatted") else {})
         )
 
     # ---- messages -------------------------------------------------------------------------
@@ -2057,8 +2091,39 @@ class Tools:
     def _notes_error(self, exc: NOTES.NotesError) -> ToolError:
         return ToolError(exc.code, exc.message)
 
+    def _own_session_env(self) -> Mapping[str, str]:
+        """The server's environment, but only when it is this identity's own.  A process that serves several
+        identities holds one session in its environment (the seat it was started for), so a call acting as another
+        identity must not borrow it:  that call passes its own `session` or, if exempt, none (AFC-361)."""
+        env = self.agent.rt.env
+        named = (env.get("AGENT_LAUNCH_SEAT") if env.get("AGENT_LAUNCHER") else None) or env.get(
+            "AGENT_SEAT"
+        )
+        if named and IDENT.canonical_seat(named) == self.seat:
+            return env
+        return {}
+
+    def _notes_session(self, action: str, args: Mapping[str, Any]) -> str | None:
+        """The session id a create or update carries (AFC-361):  the `session` argument, else this server's own
+        environment, judged for the identity the call acts as.  An exempt single-thread identity needs none.
+        Nothing the caller sends can make a seat exempt:  the exemption is read from self.seat."""
+        if action not in ("create", "update"):
+            return None
+        try:
+            return SESSION_IDS.require(
+                self.seat, args.get("session"), self._own_session_env(), "tool"
+            )
+        except ValueError as exc:  # SessionRequired is a ValueError
+            code = (
+                "session_required"
+                if isinstance(exc, SESSION_IDS.SessionRequired)
+                else "invalid_argument"
+            )
+            raise ToolError(code, str(exc)) from None
+
     def _notes_envelope(self, action: str, args: Mapping[str, Any]) -> dict[str, Any]:
         flags = notes_flags(args, action)
+        session = self._notes_session(action, args)
         try:
             request_id = (
                 NOTES.check_request_id(args["request_id"])
@@ -2072,6 +2137,7 @@ class Tools:
                 flags,
                 request_id,
                 self.seat,
+                session,
             )
         except NOTES.NotesError as exc:
             raise self._notes_error(exc) from None
@@ -2184,6 +2250,36 @@ class Tools:
 
     def _tool_notes_unpin(self, args: Mapping[str, Any]) -> dict[str, Any]:
         return self._notes_write("unpin", args)
+
+    def _resolve_notes_consumer(self) -> None:
+        if self._notes_consumer_resolver is None:
+            return
+        with self._notes_consumer_lock:
+            resolver, self._notes_consumer_resolver = self._notes_consumer_resolver, None
+            if resolver is None:
+                return
+            try:
+                self._notes_consumer, self._notes_consumer_label = resolver()
+            except Exception:  # noqa: BLE001 - notes.relay_consumer never raises;  keep the default if it ever does
+                self._notes_consumer_label = "default %s (resolver failed)" % self._notes_consumer
+
+    @property
+    def notes_consumer(self) -> str:
+        self._resolve_notes_consumer()
+        return self._notes_consumer
+
+    @notes_consumer.setter
+    def notes_consumer(self, value: str) -> None:
+        self._notes_consumer, self._notes_consumer_resolver = value, None
+
+    @property
+    def notes_consumer_label(self) -> str:
+        self._resolve_notes_consumer()
+        return self._notes_consumer_label
+
+    @notes_consumer_label.setter
+    def notes_consumer_label(self, value: str) -> None:
+        self._notes_consumer_label, self._notes_consumer_resolver = value, None
 
     def _relay_consumer(self, user_id: Any) -> bool:
         """Is this Zulip user the configured relay consumer's bot?  #notes-relay is public and every fleet bot can
@@ -2356,6 +2452,28 @@ class Tools:
             anchor = max(ids)
         return None
 
+    # ---- FleetLink (fleetlink_tools.py) --------------------------------------------------------
+    def _tool_fleetlink(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+        """One fleetlink_* tool as this identity's own FleetLink bot, through FleetLink's CLI."""
+        rt = self.agent.rt
+        home = Path(rt.home) if rt.home else Path(rt.env.get("HOME") or Path.home())
+
+        def scan(field: str, value: str, extra: list[str]) -> None:
+            kind = secretscan.scan(value, [*self.known, *extra])
+            if kind:
+                raise ToolError(
+                    "refused_secret",
+                    "refusing to publish:  the %s looks like it contains %s" % (field, kind),
+                )
+
+        try:
+            text, structured = FLEETLINK.run(
+                name, args, self.seat, env=rt.env, home=home, scan=scan
+            )
+        except FLEETLINK.FleetLinkFailure as exc:
+            raise ToolError(exc.code, exc.message, retryable=exc.retryable) from None
+        return self.ok(text, structured)
+
     # ---- fleet recall (AFC-331 section 4) -----------------------------------------------------
     def _recall(self, call: Callable[[], tuple[str, dict[str, Any]]]) -> dict[str, Any]:
         try:
@@ -2477,8 +2595,28 @@ class Tools:
     def _linear_run(self, spec: Any, args: Mapping[str, Any], uid: str | None = None) -> Any:
         """Run board and map its failures to tool errors.  LinearOutcomeUnknown (a timeout on a write) is its own
         exception here so a caller can keep an idempotency row for it."""
+        session_env = self._own_session_env()
+        if spec.tool["name"] in LINEAR.SESSION_TOOLS:
+            # board file, claim, status and comment record a session id and refuse without one (AFC-361):  refuse
+            # here, with this tool's wording, before board runs.  The id is the `session` argument, else this
+            # identity's own environment;  an exempt single-thread identity needs none.
+            try:
+                found = SESSION_IDS.require(
+                    self.seat, args.get("session"), session_env, "tool", board=True
+                )
+            except ValueError as exc:  # SessionRequired is a ValueError
+                code = (
+                    "session_required"
+                    if isinstance(exc, SESSION_IDS.SessionRequired)
+                    else "invalid_argument"
+                )
+                raise ToolError(code, str(exc)) from None
+            if found:
+                args = dict(args, session=found)
         try:
-            result = LINEAR.run_board(spec, args, self.seat, env=self.agent.rt.env, uid=uid)
+            result = LINEAR.run_board(
+                spec, args, self.seat, env=self.agent.rt.env, uid=uid, session_env=session_env
+            )
         except LINEAR.LinearInvalid as exc:
             raise ToolError("invalid_argument", str(exc)) from None
         except LINEAR.LinearOutcomeUnknown as exc:

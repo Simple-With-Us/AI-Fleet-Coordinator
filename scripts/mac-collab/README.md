@@ -1,6 +1,8 @@
 # mac-collab (tracked copy)
 
-> **Archive after the Linear cutover (owner 2026-10-10).**  Linear replaced THE BOARD.  `mac-collab-sync` and `mac-collab-writeback` are stopped and removed, the server stays as a read-only archive with `mac-collab-litestream` for 14 days, and it is retired at about day 30.  `board-legacy` and `BOARD_BACKEND=mac-collab` (the rollback) still run the old CLI against it.  The server has no read-only switch, so after the cutover no seat is told to write to it.  See `scripts/linear-board/README.md` and `AGENT-SYNC.md` § Linear and the Claim Lifecycle.
+> **RETIRED 2026-10-19 (owner, AFC-363).**  The `mac-collab` service is gone.  The pm2 jobs `mac-collab`, `mac-collab-litestream`, `mac-collab-sync` and `mac-collab-writeback` are deleted, the `mac.jays.services` tunnel ingress is removed (the hostname answers 404), `~/apps/mac-collab` was moved to `~/apps/_retired/mac-collab-20261019/` (the database copy is `findings.db` there), and `board-legacy` and `BOARD_BACKEND=mac-collab` are removed.  The routes `/health`, `/board`, `/login`, `/findings*`, `/files*` and `/effort-logs*` no longer exist, and `MAC_COLLAB_TOKEN` and the per-seat `MAC_COLLAB_TOKEN_<SEAT>` tokens authenticate nothing.  Nothing below is in force;  it is kept as history only.  Linear replaced THE BOARD on 2026-10-10:  see `scripts/linear-board/README.md` and `AGENT-SYNC.md` § Linear and the Claim Lifecycle.
+
+> **Earlier note (owner 2026-10-10, history).**  Linear replaced THE BOARD.  `mac-collab-sync` and `mac-collab-writeback` were stopped and removed at the cutover, and the server stayed as a read-only archive with `mac-collab-litestream` until the retirement above.
 
 Live process: `~/apps/mac-collab/` under pm2 `mac-collab` (HTTP), `mac-collab-sync`
 (files+issues → board), and `mac-collab-writeback` (board writes → live effort logs
@@ -16,7 +18,7 @@ and only shows the in-page token bar on 401.  Agents still use Bearer.
 `GET /login` is an HTML form for browsers whose password manager cannot fill the native
 Basic dialog (browser-only seats such as Instinct): `POST /login` with a form field `token`
 runs the same token check, mints the same 30-day cookie, and 303s to `/board`.  A
-`MAC_COLLAB_TOKEN_<SEAT>=` line in `~/.secrets/mac-collab.env` keeps that seat's writes
+`MAC_COLLAB_TOKEN_<SEAT>` key in Infisical Fleet-OPS `/mac-collab` keeps that seat's writes
 attributed to itself.  Failures share the Bearer rate limit and are never echoed or logged.
 `board show` / `board status` accept unique 8-char id prefixes.
 `mac-collab-sync` snapshots `findings.db` under `~/apps/mac-collab/backups/` (14-day keep).
@@ -37,15 +39,17 @@ an unrelated process, lsof-timeout -> ps fallback).  Board `cd895d6f`.
 
 ## Token rotation (board `029f6346`)
 
-`~/.secrets/mac-collab.env` is canonical.  `load_tokens()` re-reads it on
-every request so a file rotation takes effect without a server restart.
-Process-env `MAC_COLLAB_TOKEN*` is ignored when the file is present (cloud
-seats with no file still use env).  Authenticated `GET /health` includes
-`token_source`, `token_count`, `secrets_mtime`, `secrets_newer_than_process`,
-`pid`, and `restart_hint` — never the token value.  A 401 body carries the
-same restart hint.  `board` CLI prefers the file and prints that hint on 401.
+Infisical Fleet-OPS `/mac-collab` is canonical (AFC-359).  `load_tokens()` re-reads it
+through `fleet-secrets run --path /mac-collab` at most once every `MAC_COLLAB_TOKEN_TTL`
+seconds (60 by default), so a rotation takes effect without a server restart;  a failed
+read keeps the last good tokens.  Process-env `MAC_COLLAB_TOKEN*` is ignored when
+Infisical has tokens (cloud seats with none still use env).  Authenticated `GET /health`
+includes `token_source` (`infisical`, `env` or `missing`), `token_count`,
+`vault_refreshed_at`, `pid`, and `restart_hint` — never the token value.  A 401 body
+carries the same restart hint.  `board` CLI reads `fleet-secrets get MAC_COLLAB_TOKEN
+--path /mac-collab` first and prints that hint on 401.
 
-After rotating the file, long-running processes that exported the old token
+After rotating the token, long-running processes that exported the old token
 at start still need a new shell.  `pm2 restart mac-collab --update-env` if
-the server process env itself still holds a stale token (file-canonical
+the server process env itself still holds a stale token (Infisical-canonical
 auth does not need that restart).

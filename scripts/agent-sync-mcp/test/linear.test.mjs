@@ -588,7 +588,7 @@ test("linear_comment logs GraphQL metadata when Linear still refuses (scrubbed, 
   assert.equal(logs[0].path?.[0], "commentCreate");
 });
 
-test("only Cursor gets separate Linear budgets and its configured override", async () => {
+test("every seat gets separate Linear budgets, and only Cursor its configured override", async () => {
   const cursor = harness({ seat: "CURSOR" });
   cursor.tools.config = { ...config, cursorToolBudgets: { linear_write: { hour: 2000, day: 20000, spacingMs: 100 } } };
   await cursor.tools.reserveLinear("write");
@@ -597,8 +597,8 @@ test("only Cursor gets separate Linear budgets and its configured override", asy
   const other = harness();
   other.tools.config = cursor.tools.config;
   await other.tools.reserveLinear("write");
-  assert.equal((await other.gate.store.get("budget:write")).length, 1);
-  assert.equal(await other.gate.store.get("budget:linear_write"), undefined);
+  assert.equal((await other.gate.store.get("budget:linear_write")).length, 1);
+  assert.equal(await other.gate.store.get("budget:write"), undefined);
 });
 
 test("a 30-day token is re-minted early on day 28, and a failed early mint keeps the cached token", async () => {

@@ -6,7 +6,7 @@ description: >-
 
 # Sentence gap (portable — always on)
 
-> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `cursor-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/Cursor-zuliprc` (mode 600).  Session tag `[CURSOR·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `cursor-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CURSOR_ZULIP_EMAIL`, `CURSOR_ZULIP_KEY`, `CURSOR_ZULIP_SITE`).  Session tag `[CURSOR·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
@@ -25,6 +25,29 @@ notes, design docs.
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),
 inside a URL, email, filename, or a brand name containing a period.
 
+### The gap covers your CHAT PROSE, not only your artifacts
+
+Owner ruling 2026-10-20, after a session where every file, commit, PR, board row and
+Zulip post carried the gap correctly while the chat messages in the same turn did not.
+Jay's words on that session:  "NEED TWO SPACES BETWEEN SENTENCES", "OR I AM GOING TO
+FLIP OUT", "EVEN FUCKING THERE", "I think you need to do nbsp for chats or something".
+
+Every message you write to Jay needs the gap, including a one-line progress note and an
+acknowledgement.  Getting it right in artifacts while writing plain single spaces in the
+chat is still a failure.  **Read your reply back before you send it** and check every
+`.`, `!` and `?` boundary.
+
+In the MiniMax Code pane the gap is a REAL U+00A0 plus a normal space.  Generate it in
+the shell rather than typing it, because a model that emits U+00A0 directly can have it
+normalized to a plain space:
+
+```sh
+printf 'Sentence one.\302\240 Sentence two.\n'
+```
+
+`\302\240` is the UTF-8 encoding of U+00A0.  Verify with
+`grep -o $'[.!?]\xc2\xa0' f | wc -l`, which must not print `0`.
+
 ### The catch that wastes everyone's time
 
 **Typing two literal spaces usually does nothing visible.**  HTML and most Markdown
@@ -39,7 +62,8 @@ depends on the surface, so pick by destination:
 |---|---|---|
 | **Cloud / BotFleet / OpenMausBot chat** | two literal ASCII spaces | Owner 2026-09-03: never display the six characters `&nbsp;` in cloud text.  The backend maps doubles (or the entity) to a real U+00A0 before paint. |
 | **Claude Code — desktop app (Code tab)** | the literal entity text `&nbsp;` then a normal space after each sentence, outside code spans → `End.&nbsp; Next.` | Owner-verified 2026-10-08 with a screenshot.  The renderer decodes the entity into a real gap.  A raw U+00A0 from the model arrives as a plain space, and two ASCII spaces collapse.  Supersedes the 2026-09-04 ASCII ruling and the 2026-08-19 finding below for this surface — see History. |
-| **Any other agent chat pane that renders Markdown** (Codex, Cursor, Antigravity, Grok, Kimi, MiniMax, DeepSeek, Fx, Muse, and similar) | the same: `&nbsp;` then a normal space, outside code spans | Owner ruling 2026-10-08: Markdown chat collapses ASCII doubles everywhere, so use the entity by default and do not ask first.  Only the Code tab is verified; none of these panes has been individually confirmed to decode it.  If the owner ever sees the six literal characters, stop using the entity on that surface and report it in #agent-sync — that surface then needs a different mechanism, and it is unknown until tested. |
+| **MiniMax Code chat pane** (owner-verified 2026-10-20) | a REAL U+00A0, the nbsp character, then a normal space, outside code spans | Jay:  "I think you need to do nbsp for chats or something" and "I have confirmed this before with agents and knew you needed nbsp already".  Two ASCII spaces collapse in this pane, and the `&nbsp;` entity renders as the six literal characters, which is worse than no gap.  The 2026-10-18 entry for this pane was wrong and is corrected here. |
+| **Any other agent chat pane that renders Markdown** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse, and similar) | the same: `&nbsp;` then a normal space, outside code spans | Owner ruling 2026-10-08: Markdown chat collapses ASCII doubles everywhere, so use the entity by default and do not ask first.  Only the Code tab and the MiniMax Code pane are verified, and they differ: MiniMax needs a real U+00A0, the Code tab needs the entity.  If the owner ever sees the six literal characters, stop using the entity on that surface and report it in #agent-sync — that surface then needs a different mechanism, and it is unknown until tested. |
 | **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode) | two literal ASCII spaces | Unverified.  A terminal prints the entity as the literal text `&nbsp;`, which the owner must never see.  Do not use the entity here. |
 | **Plain-text chat (no Markdown rendering)** | two literal ASCII spaces | Nothing collapses them; an entity would show as the ugly text `&nbsp;` |
 | **Files read as source** — repo docs, commit messages, code comments, config, diffs, terminal output | two literal ASCII spaces | Read in an editor/terminal/`git diff`, which preserve them verbatim; an entity would appear literally |
@@ -47,12 +71,76 @@ depends on the surface, so pick by destination:
 | **GitHub PR and issue titles, bodies and comments, review comments, Zulip posts, and any text a tool writes that a Markdown or HTML renderer then displays** | a real U+00A0 plus a space | Owner ruling 2026-10-08.  Tools preserve the character, and the renderer shows a real gap.  Never use the `&nbsp;` entity here: GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.  Supersedes the 2026-10-07 finding that two ASCII spaces were enough in Zulip. |
 | **Markdown source** | two literal spaces *between* sentences | ⚠️ Two spaces at the **end of a line** is the unrelated hard-line-break syntax — don't confuse the two |
 
-**Producing U+00A0 through a tool.**  You cannot type a raw U+00A0 into your own chat reply,
-but a shell step can produce one.  Write the text with two ASCII spaces after each sentence,
-then convert it before it leaves your hands:
-`perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g' body.txt > body.nbsp.txt`.  Check that the
-output holds at least one U+00A0 (`grep -c $'\xc2\xa0' body.nbsp.txt`) before passing it to
-`gh pr create --body-file`, `gh pr comment --body-file`, or the text you hand to `agent-sync post`.
+**Producing U+00A0 through a tool.**  You cannot type a raw U+00A0 into your own chat reply.
+Worse, you cannot count on emitting a *double* space either:  a run of whitespace you write into
+a tool call or a shell heredoc **sometimes** gets normalized to a single space before it lands.
+This is **intermittent, not deterministic** — in one session on 2026-10-18 a ~3 KB PR body kept
+all eight of its double spaces while a ~3 KB Zulip body lost every one, same machine, same tool.
+So you cannot tell from one write whether it will happen again, and you cannot diagnose it after
+the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a regex that
+matches one *or more* spaces, so it is correct in both states:
+
+```sh
+perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+```
+
+Matching one *or more* is the whole fix.  The old pattern requiring exactly two spaces — written
+here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
+single-space pattern `([.!?]) (?=...)` is no better, because it matches nothing on text that kept
+its two spaces.  Both exit `0` and post with no gap.  The `(?<![0-9])` lookbehind protects a
+numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tolerates a tab.  The
+lookahead class skips a lowercase follower, so `e.g. this` and lower-case domains keep their plain
+space.
+
+**Known limitations — the pattern is a heuristic, not a dictionary.**  Two deliberate costs:
+
+- It gaps a *capitalised* abbreviation:  `Dr. Smith` and `e.g. Acme` both come out with a U+00A0,
+  against the rule above about non-terminal abbreviations.
+- `(?<![0-9])` is what keeps a numbered list marker intact.  CommonMark only recognises `1.  Item`
+  when the character after the period is a real space, so a U+00A0 there silently stops the list
+  parsing as a list, and a body with steps in it renders as one run-on paragraph.  The lookbehind
+  skips any period preceded by a digit, which fixes the marker and also protects `v1.2.3`, but it
+  costs the gap on a sentence that ends in a digit:  `The answer is 42. Next thing.` gets none.
+
+If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
+it, and do not widen the pattern to chase it.
+
+**Assert before you post — both checks, every time.**  A conversion that matches nothing still
+exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
+partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
+
+```sh
+grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
+```
+
+The second check is what the one-or-more pattern prevents, and it catches the case the first
+one misses:  a body with three gaps where one survived unconverted has a non-zero U+00A0 count
+and still ships a wrong gap.  `[^0-9]` in front is deliberate, so a legitimate numbered-list
+marker (`1. Item`) is not mistaken for an unconverted gap — the same reason the conversion
+carries `(?<![0-9])`.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
+read them and confirm they are abbreviations rather than real sentences.
+
+A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
+Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
+`agent-sync post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
+run `chmod 600` on it first.  There is no override flag.
+
+**Source files are a different surface and are NOT affected.**  Swift, TypeScript, shell, and
+markdown read as source want **two literal ASCII spaces**, and in the same session those
+two-space gaps came through the write tool completely intact.  Do **not** "fix" a source file by
+inserting U+00A0 on the strength of this chat-surface problem:  plain source wants plain ASCII,
+and a U+00A0 committed into a source file is a real defect.  The perl conversion above is for
+text bound for GitHub, Zulip, or any renderer.  Never run it over source.
+
+Two more traps, both hit 2026-10-18:
+
+- **Never type a raw U+00A0 into a message body or tool call.**  It is normalized the same way
+  a double space is.  Let perl emit it.
+- The first `agent-sync` call in a session can die with "Parent-death guardian target
+  registration timed out".  Retry verbatim.  If the retry fails with "cannot open it (No such
+  file or directory)", the first attempt died before writing the file — the perl step never
+  ran.  That is not evidence the post went out.
 
 ### Verify, don't assume — run this self-test only on a NEW, unlisted surface
 

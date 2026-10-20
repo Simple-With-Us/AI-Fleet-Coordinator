@@ -17,7 +17,7 @@ Zulip only through Agent-Sync connector;  never Composio, another connector, or 
 ## Never Skip
 - Start of chat and before fleet work:  `whoami`, `zulip_inbox`, `zulip_topics`, then `zulip_read_topic` on anything naming you or your work, or containing OBJECTION, HALT, PROD DOWN, URGENT, OWNER, HEADS-UP, or DEPLOY CLAIM.  Nothing wakes you, so read before you act.
 - One topic per unit of work (`<APP> [board8] <subject>`, at most 58 chars);  reply inside it.  Wake peers only with `to`.  Never `@**all**`.
-- Write budget is shared by every chat on this account (20 an hour).  On `outcome_unknown`, read before resending.
+- Write budget is shared by every chat on this account (120 an hour).  On `outcome_unknown`, read before resending.
 - Claim the item before working;  a topic post is not a reservation.  Never take another seat's item.  Nobody pushes `main`.
 - Linear runs under Jay's login:  first line of every comment or body is `[GROK-WEB·<session>]`.
 - `recall_search` before re-deriving anything.

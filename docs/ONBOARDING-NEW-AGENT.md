@@ -1,7 +1,7 @@
 # Onboarding a new agent seat
 
 Policy + steps for adding a coding agent (Claude, Codex, Grok, Cursor,
-Antigravity, Monet, Kimi, Copilot, or a future seat) to this fleet.
+Antigravity, Kimi, or a future seat) to this fleet.
 
 **GitHub:** https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
 **Sibling (new app):** [ONBOARDING-NEW-APP.md](ONBOARDING-NEW-APP.md) · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
@@ -103,11 +103,11 @@ with the top-level `apps` (the acronyms) and `--app`.
    owner to say "commit". Do not leave a remote branch without a PR.
 5. **Prior owner messages stay in scope** unless the owner cancels or
    clearly redirects.
-6. **Secrets:** read from `~/.secrets/` (chmod 600). Never print them.
+6. **Secrets:** read from Infisical Fleet-OPS with `fleet-secrets` (nothing reads `~/.secrets`). Never print them.
    Infisical is the runtime source of truth. Never `infisical secrets` bare.
    Never `grep` / `rg` a secrets file without `-o` — `grep '^[A-Z0-9_]+='`
    prints **values**.  Fleet keys: `fleet-secrets get NAME` (one value) or
-   `fleet-secrets names` (names only);  the flat `~/.secrets/global-api-keys` is retired and
+   `fleet-secrets names` (names only);  the flat `global-api-keys` file is retired and
    nothing may read it.  Never `cat` or open a secrets file with a Read tool.  Never
    `od` / `xxd` / `hexdump` a loaded `$KEY` / `$TOKEN` / `$SECRET` variable.
 7. **Light theme default.  Two spaces between sentences everywhere**,
@@ -230,7 +230,7 @@ agent-sync post --topic "<ID> <subject>" $'repo:  <app>  |  CLAIMED\nclaim:  <br
 agent-sync listen --topic "<work topic>" --topic fleet --mentions
 ```
 
-Your bot's credential lives in `~/.secrets/Zulip/<file code>-zuliprc`, mode 600.  Only Jay
+Your bot's credential lives in Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_EMAIL`, `_KEY`, `_SITE`).  Only Jay
 creates bot users, so ask him for yours (`docs/protocols/zulip-fleet-guide.md` § Bot Setup).
 Never echo the key.
 
@@ -304,7 +304,6 @@ Then, by hand and with the owner's approval of each live install (read the `plan
    | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `agent-sync` | `muse`, a plugin the owner installs |
    | Kimi Code | none | `kimi`, `~/.kimi-code/AGENTS.md` | none (reads the shared `~/.agents/skills`) | `kimi`: `fleet-recall` | `kimi`, a `[[hooks]]` block |
    | Mistral Vibe | none | `vibe`, `~/.vibe/AGENTS.md` | none | none (its `config.toml` holds `mcp_servers = []`) | none |
-   | Copilot CLI | none | `copilot`, `~/.copilot/copilot-instructions.md` (UNVERIFIED) | none | `copilot`: `fleet-recall` | none (its hook is fail-closed) |
    | OpenCode | none | `opencode`, `~/.config/opencode/AGENTS.md` (the owner's row, #438; it may also read `~/AGENTS.md`) | none | `opencode`: `fleet-recall` | none (plugin API unproven) |
    | Conductor | none | none: its Claude Code and Codex read theirs | none | none: each harness inside reads its own | none: the Claude and Codex guards fire inside it |
    | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `agent-sync` | `minimax` (alias `mm`, in `all`), a local plugin directory `~/.minimax/plugins/fleet-guard/` with the lane and secret guard |
@@ -350,7 +349,7 @@ Only when the seat's product needs them. Do not block first code on these.
 | Extra | Notes |
 |-------|-------|
 | Digest agent logo | `agent-logos/<seat>.svg` + legend in `build-fleet-daily-digest.py` |
-| MCP servers | Per-platform config. Secrets from `~/.secrets/`. Never commit tokens. |
+| MCP servers | Per-platform config. Secrets from Infisical (`fleet-secrets`). Never commit tokens. |
 | Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app; `ZULIP_EMAIL` + `ZULIP_API_KEY` + `ZULIP_SITE` + `GH_TOKEN` must be **runtime** vars |
 | iOS copy | Title Case nav / ASC listing copy: `FLEET-UI-COPY.md`.  TestFlight notes never include agent names.  Compiler / `GB-COMPILER` owns iOS ship on GitHub-hosted `macos-latest` only.  DealDex's hosted Actions ship stays — do not disable it.  Do not run `xcodebuild` / TestFlight / `ios-ship-now` / `--force-ship` from a fleet seat. |
 | Sentry | Fleet-infra DSN is a repo secret, not a chat paste |

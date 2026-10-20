@@ -36,6 +36,7 @@ credits the id to both so neither document's edit deletes it.
 
 Report: ~/apps/fleet-rag/state/last-run.json plus one line in ~/apps/fleet-rag/logs/ingest.log.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -52,7 +53,8 @@ import time
 import traceback
 import urllib.request
 import uuid
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from . import core, health, sources, telemetry
 from .chunk import chunk_markdown
@@ -66,18 +68,17 @@ STATE_PATH = STATE_DIR / "ingest-state.json"
 LAST_RUN_PATH = STATE_DIR / "last-run.json"
 LOCK_PATH = STATE_DIR / "ingest.lock"
 LOG_PATH = LOG_DIR / "ingest.log"
-HEARTBEAT_ENV = pathlib.Path.home() / ".secrets" / "fleet-rag.env"
 HEARTBEAT_KEY = "FLEET_RAG_INGEST_HEARTBEAT_URL"
 
 SEED_DOC_ID = "seed/fleet-standards"
-SEED_ISO = "2026-08-31T22:00:00+00:00"   # the real seed time
-SEED_MS = int(_dt.datetime.fromisoformat(SEED_ISO).timestamp() * 1000)   # 1788213600000
+SEED_ISO = "2026-08-31T22:00:00+00:00"  # the real seed time
+SEED_MS = int(_dt.datetime.fromisoformat(SEED_ISO).timestamp() * 1000)  # 1788213600000
 
 UPSERT_BATCH = 64
 DELETE_BATCH = 256
-GROUP_DOCS = 48                    # documents per gitleaks / existence-check / embed group
+GROUP_DOCS = 48  # documents per gitleaks / existence-check / embed group
 GROUP_CHUNKS = 512
-EMBED_RATE = 24.0                  # texts per second budget for the shared TEI box
+EMBED_RATE = 24.0  # texts per second budget for the shared TEI box
 PROGRESS_EVERY = 200
 EXIT_LOCKED = 3
 
@@ -99,6 +100,7 @@ class IngestLocked(FleetRagError):
 
 # --------------------------------------------------------------------------- lock
 
+
 class IngestLock:
     """Non-blocking exclusive flock; raises IngestLocked when another process holds it."""
 
@@ -106,7 +108,7 @@ class IngestLock:
         self.path = pathlib.Path(path)
         self._fd: int | None = None
 
-    def __enter__(self) -> "IngestLock":
+    def __enter__(self) -> IngestLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
         try:
@@ -114,18 +116,22 @@ class IngestLock:
         except OSError as e:
             os.close(fd)
             if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
-                raise IngestLocked(f"another ingest is running (lock held: {self.path}); "
-                                   f"wait for it or remove a stale lock, exit {EXIT_LOCKED}") from None
+                raise IngestLocked(
+                    f"another ingest is running (lock held: {self.path}); "
+                    f"wait for it or remove a stale lock, exit {EXIT_LOCKED}"
+                ) from None
             raise
         try:
             os.ftruncate(fd, 0)
-            os.write(fd, f"{os.getpid()} {_dt.datetime.now().isoformat(timespec='seconds')}\n".encode())
+            os.write(
+                fd, f"{os.getpid()} {_dt.datetime.now().isoformat(timespec='seconds')}\n".encode()
+            )
         except OSError:
             pass
         self._fd = fd
         return self
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         if self._fd is not None:
             try:
                 fcntl.flock(self._fd, fcntl.LOCK_UN)
@@ -135,6 +141,7 @@ class IngestLock:
 
 
 # --------------------------------------------------------------------------- state
+
 
 def load_state(path: pathlib.Path = STATE_PATH) -> dict:
     try:
@@ -159,12 +166,15 @@ def _write_json(path: pathlib.Path, obj: Any) -> None:
 
 # --------------------------------------------------------------------------- qdrant helpers
 
+
 def existing_points(qd: Qdrant, ids: list[str], batch: int = 256) -> dict[str, str | None]:
     """{id: stored doc_id} for the ids already present (POST /collections/{c}/points, read key)."""
     found: dict[str, str | None] = {}
     for i in range(0, len(ids), batch):
-        res = qd._call(qd._cpath("/points"), {"ids": ids[i:i + batch], "with_payload": ["doc_id"],
-                                              "with_vector": False})
+        res = qd._call(
+            qd._cpath("/points"),
+            {"ids": ids[i : i + batch], "with_payload": ["doc_id"], "with_vector": False},
+        )
         for p in res.get("result", []):
             pl = p.get("payload") or {}
             found[str(p.get("id"))] = pl.get("doc_id") if isinstance(pl, dict) else None
@@ -198,11 +208,20 @@ def _embed_throttled(cfg: dict, texts: list[str]) -> list[list[float]]:
 
 # --------------------------------------------------------------------------- rows
 
-def _payload(doc: sources.Doc, ch, text: str, kinds: list[str], count: int, run_id: str) -> dict:  # noqa: ANN001
+
+def _payload(doc: sources.Doc, ch, text: str, kinds: list[str], count: int, run_id: str) -> dict:
     p = {
-        "source": doc.source, "app": doc.app, "category": doc.category, "seat": doc.seat,
-        "doc_id": doc.doc_id, "chunk_index": ch.index, "chunk_count": count, "heading": ch.heading,
-        "title": doc.title, "url": doc.url or "", "path": doc.path or "",
+        "source": doc.source,
+        "app": doc.app,
+        "category": doc.category,
+        "seat": doc.seat,
+        "doc_id": doc.doc_id,
+        "chunk_index": ch.index,
+        "chunk_count": count,
+        "heading": ch.heading,
+        "title": doc.title,
+        "url": doc.url or "",
+        "path": doc.path or "",
         "created_at": int(doc.created_at_ms or doc.updated_at_ms or 0),
         "updated_at": int(doc.updated_at_ms or doc.created_at_ms or 0),
         "ingest_run": run_id,
@@ -239,8 +258,13 @@ def gitleaks_drop(rows: list[dict]) -> tuple[list[dict], int]:
         return rows, 0
     with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as fh:
         for r in rows:
-            fh.write(json.dumps({"doc_id": r["payload"]["doc_id"], "text": r["payload"]["text"]},
-                                ensure_ascii=False) + "\n")
+            fh.write(
+                json.dumps(
+                    {"doc_id": r["payload"]["doc_id"], "text": r["payload"]["text"]},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
         staged = fh.name
     try:
         flagged = gitleaks_gate(staged)
@@ -256,6 +280,7 @@ def gitleaks_drop(rows: list[dict]) -> tuple[list[dict], int]:
 
 
 # --------------------------------------------------------------------------- core write path
+
 
 class Writer:
     """Embeds + upserts point rows, honouring dry-run and the existence check."""
@@ -283,8 +308,12 @@ class Writer:
                 out.append(r)
                 continue
             owner = present[r["id"]]
-            if live_owners is not None and owner and owner != r["payload"]["doc_id"] \
-                    and owner not in live_owners:
+            if (
+                live_owners is not None
+                and owner
+                and owner != r["payload"]["doc_id"]
+                and owner not in live_owners
+            ):
                 self.repoint(r)
         return out
 
@@ -298,9 +327,11 @@ class Writer:
         if not rows or self.dry_run:
             return len(rows)
         for i in range(0, len(rows), UPSERT_BATCH):
-            batch = rows[i:i + UPSERT_BATCH]
+            batch = rows[i : i + UPSERT_BATCH]
             vecs = _embed_throttled(self.cfg, [r["payload"]["text"] for r in batch])
-            points = [{"id": r["id"], "vector": v, "payload": r["payload"]} for r, v in zip(batch, vecs)]
+            points = [
+                {"id": r["id"], "vector": v, "payload": r["payload"]} for r, v in zip(batch, vecs)
+            ]
             self.qd.upsert(points, wait=True)
             self.embedded += len(batch)
             if self.embedded - self._progress_mark >= PROGRESS_EVERY:
@@ -313,12 +344,20 @@ class Writer:
         if not ids or self.dry_run or self.qd is None:
             return
         for i in range(0, len(ids), DELETE_BATCH):
-            self.qd.delete_ids(ids[i:i + DELETE_BATCH], wait=True)
+            self.qd.delete_ids(ids[i : i + DELETE_BATCH], wait=True)
 
 
 def _empty_stats() -> dict:
-    return {"docs_seen": 0, "docs_changed": 0, "docs_pruned": 0, "chunks_new": 0, "chunks_deleted": 0,
-            "chunks_repointed": 0, "chunks_dropped_by_gitleaks": 0, "chunks_scrubbed": 0}
+    return {
+        "docs_seen": 0,
+        "docs_changed": 0,
+        "docs_pruned": 0,
+        "chunks_new": 0,
+        "chunks_deleted": 0,
+        "chunks_repointed": 0,
+        "chunks_dropped_by_gitleaks": 0,
+        "chunks_scrubbed": 0,
+    }
 
 
 def _parse_since(since: str | int | None) -> int | None:
@@ -334,7 +373,9 @@ def _parse_since(since: str | int | None) -> int | None:
         return int(s)
     ts = sources.parse_ts_ms(s)
     if not ts:
-        raise FleetRagError(f"--since must be YYYY-MM-DD, an ISO stamp, Nd, or epoch ms (got {s!r})")
+        raise FleetRagError(
+            f"--since must be YYYY-MM-DD, an ISO stamp, Nd, or epoch ms (got {s!r})"
+        )
     return ts
 
 
@@ -349,8 +390,15 @@ def _dedupe_rows(rows: list[dict]) -> list[dict]:
     return out
 
 
-def process_group(docs: list[tuple[sources.Doc, str]], state: dict, writer: Writer, run_id: str,
-                  stats: dict, state_path: pathlib.Path, live_owners: set[str] | None = None) -> None:
+def process_group(
+    docs: list[tuple[sources.Doc, str]],
+    state: dict,
+    writer: Writer,
+    run_id: str,
+    stats: dict,
+    state_path: pathlib.Path,
+    live_owners: set[str] | None = None,
+) -> None:
     """Chunk/scrub/gate/embed/upsert a group of changed documents, then update state."""
     per_doc: list[tuple[sources.Doc, str, list[dict]]] = []
     all_rows: list[dict] = []
@@ -359,7 +407,7 @@ def process_group(docs: list[tuple[sources.Doc, str]], state: dict, writer: Writ
         stats["chunks_scrubbed"] += scrubbed
         per_doc.append((doc, doc_hash, rows))
         all_rows.extend(rows)
-    kept, dropped = gitleaks_drop(_dedupe_rows(all_rows))     # raises GitleaksError: fail closed
+    kept, dropped = gitleaks_drop(_dedupe_rows(all_rows))  # raises GitleaksError: fail closed
     stats["chunks_dropped_by_gitleaks"] += dropped
     kept_ids = {r["id"] for r in kept}
     before = writer.repointed
@@ -389,21 +437,29 @@ def process_group(docs: list[tuple[sources.Doc, str]], state: dict, writer: Writ
         writer.delete(stale)
         stats["chunks_deleted"] += len(stale)
         if not writer.dry_run:
-            state[doc.doc_id] = {"doc_hash": doc_hash, "chunk_ids": new_ids,
-                                 "updated_at": int(doc.updated_at_ms or 0), "source": doc.source}
+            state[doc.doc_id] = {
+                "doc_hash": doc_hash,
+                "chunk_ids": new_ids,
+                "updated_at": int(doc.updated_at_ms or 0),
+                "source": doc.source,
+            }
     if not writer.dry_run:
         save_state(state, state_path)
 
 
-def prune_source(name: str, yielded: set[str], state: dict, writer: Writer, stats: dict,
-                 state_path: pathlib.Path) -> list[str]:
+def prune_source(
+    name: str, yielded: set[str], state: dict, writer: Writer, stats: dict, state_path: pathlib.Path
+) -> list[str]:
     """Delete the chunks of documents `name` no longer yields and drop their state rows.
 
     Ids still credited to any surviving state row are kept (shared chunks).  Returns the
     pruned doc_ids.  Only ever deletes by explicit id.
     """
-    gone = sorted(did for did, rec in state.items()
-                  if isinstance(rec, dict) and rec.get("source") == name and did not in yielded)
+    gone = sorted(
+        did
+        for did, rec in state.items()
+        if isinstance(rec, dict) and rec.get("source") == name and did not in yielded
+    )
     if not gone:
         return []
     gone_set = set(gone)
@@ -428,38 +484,91 @@ def prune_source(name: str, yielded: set[str], state: dict, writer: Writer, stat
     return gone
 
 
-def run(source_names: Iterable[str] | str = "all", dry_run: bool = False, since: str | int | None = None,
-        limit: int | None = None, state_path: pathlib.Path = STATE_PATH,
-        last_run_path: pathlib.Path = LAST_RUN_PATH, log_path: pathlib.Path = LOG_PATH,
-        cfg: dict | None = None, qd: Qdrant | None = None, log=eprint, heartbeat: bool = True,
-        prune: bool = False, lock_path: pathlib.Path | None = None) -> dict:
+def run(
+    source_names: Iterable[str] | str = "all",
+    dry_run: bool = False,
+    since: str | int | None = None,
+    limit: int | None = None,
+    state_path: pathlib.Path = STATE_PATH,
+    last_run_path: pathlib.Path = LAST_RUN_PATH,
+    log_path: pathlib.Path = LOG_PATH,
+    cfg: dict | None = None,
+    qd: Qdrant | None = None,
+    log=eprint,
+    heartbeat: bool = True,
+    prune: bool = False,
+    lock_path: pathlib.Path | None = None,
+) -> dict:
     """Run the ingest over the named sources.  Returns the report dict (also written to disk).
 
     Raises IngestLocked (exit 3 from the CLI) when another ingest holds the lock.
     """
-    names = list(sources.NIGHTLY_SOURCES) if source_names in ("all", None) else \
-        [s.strip() for s in (source_names.split(",") if isinstance(source_names, str) else source_names) if s.strip()]
+    names = (
+        list(sources.NIGHTLY_SOURCES)
+        if source_names in ("all", None)
+        else [
+            s.strip()
+            for s in (source_names.split(",") if isinstance(source_names, str) else source_names)
+            if s.strip()
+        ]
+    )
     unknown = [n for n in names if n not in GENERATORS]
     if unknown:
-        raise FleetRagError(f"unknown source(s): {', '.join(unknown)}; known: {', '.join(GENERATORS)}")
+        raise FleetRagError(
+            f"unknown source(s): {', '.join(unknown)}; known: {', '.join(GENERATORS)}"
+        )
     if prune and limit:
-        raise FleetRagError("--prune cannot be combined with --limit: a truncated source would prune "
-                            "every document past the limit")
+        raise FleetRagError(
+            "--prune cannot be combined with --limit: a truncated source would prune "
+            "every document past the limit"
+        )
     since_ms = _parse_since(since)
     lock_path = lock_path or (state_path.parent / "ingest.lock")
     with IngestLock(lock_path):
-        return _run_locked(names, dry_run, since_ms, limit, state_path, last_run_path, log_path,
-                           cfg, qd, log, heartbeat, prune)
+        return _run_locked(
+            names,
+            dry_run,
+            since_ms,
+            limit,
+            state_path,
+            last_run_path,
+            log_path,
+            cfg,
+            qd,
+            log,
+            heartbeat,
+            prune,
+        )
 
 
-def _run_locked(names: list[str], dry_run: bool, since_ms: int | None, limit: int | None,
-                state_path: pathlib.Path, last_run_path: pathlib.Path, log_path: pathlib.Path,
-                cfg: dict | None, qd: Qdrant | None, log, heartbeat: bool, prune: bool) -> dict:  # noqa: ANN001
-    run_id = f"{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
+def _run_locked(
+    names: list[str],
+    dry_run: bool,
+    since_ms: int | None,
+    limit: int | None,
+    state_path: pathlib.Path,
+    last_run_path: pathlib.Path,
+    log_path: pathlib.Path,
+    cfg: dict | None,
+    qd: Qdrant | None,
+    log,
+    heartbeat: bool,
+    prune: bool,
+) -> dict:
+    run_id = f"{_dt.datetime.now(_dt.UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
     started = now_ms()
-    report: dict[str, Any] = {"run_id": run_id, "started_at": started, "finished_at": None, "ok": True,
-                              "dry_run": dry_run, "prune": prune, "sources": names, "per_source": {},
-                              "errors": [], "warnings": []}
+    report: dict[str, Any] = {
+        "run_id": run_id,
+        "started_at": started,
+        "finished_at": None,
+        "ok": True,
+        "dry_run": dry_run,
+        "prune": prune,
+        "sources": names,
+        "per_source": {},
+        "errors": [],
+        "warnings": [],
+    }
 
     if cfg is None or (qd is None and not dry_run):
         try:
@@ -481,9 +590,9 @@ def _run_locked(names: list[str], dry_run: bool, since_ms: int | None, limit: in
     writer = Writer(cfg, qd, dry_run, log)
     state = load_state(state_path)
     t_run = time.monotonic()
-    seen_run: dict[str, str] = {}          # doc_id -> source, for the duplicate guard
-    live_owners: set[str] = set()          # doc_ids yielded so far (shared-chunk re-pointing)
-    sources.take_warnings()                # drop anything left over from an earlier call
+    seen_run: dict[str, str] = {}  # doc_id -> source, for the duplicate guard
+    live_owners: set[str] = set()  # doc_ids yielded so far (shared-chunk re-pointing)
+    sources.take_warnings()  # drop anything left over from an earlier call
 
     for name in names:
         stats = _empty_stats()
@@ -498,8 +607,10 @@ def _run_locked(names: list[str], dry_run: bool, since_ms: int | None, limit: in
             for doc in GENERATORS[name](limit=limit):
                 stats["docs_seen"] += 1
                 if doc.doc_id in seen_run:
-                    raise FleetRagError(f"duplicate doc_id {doc.doc_id!r}: already yielded by "
-                                        f"source {seen_run[doc.doc_id]!r} in this run")
+                    raise FleetRagError(
+                        f"duplicate doc_id {doc.doc_id!r}: already yielded by "
+                        f"source {seen_run[doc.doc_id]!r} in this run"
+                    )
                 seen_run[doc.doc_id] = name
                 yielded.add(doc.doc_id)
                 live_owners.add(doc.doc_id)
@@ -533,8 +644,11 @@ def _run_locked(names: list[str], dry_run: bool, since_ms: int | None, limit: in
             try:
                 gone = prune_source(name, yielded, state, writer, stats, state_path)
                 if gone:
-                    log(f"[{name}] {'would prune' if dry_run else 'pruned'} {len(gone)} document(s): "
-                        + ", ".join(gone[:10]) + (" ..." if len(gone) > 10 else ""))
+                    log(
+                        f"[{name}] {'would prune' if dry_run else 'pruned'} {len(gone)} document(s): "
+                        + ", ".join(gone[:10])
+                        + (" ..." if len(gone) > 10 else "")
+                    )
             except Exception as e:  # noqa: BLE001
                 msg = f"{name}: prune: {type(e).__name__}: {e}"
                 report["errors"].append(msg)
@@ -554,7 +668,7 @@ def _run_locked(names: list[str], dry_run: bool, since_ms: int | None, limit: in
     return report
 
 
-def _write_sentinel_safely(cfg: dict | None, qd: Qdrant | None, report: dict, log) -> None:  # noqa: ANN001
+def _write_sentinel_safely(cfg: dict | None, qd: Qdrant | None, report: dict, log) -> None:
     """Upsert the ingest sentinel with the run outcome (ok=false on a failed run too)."""
     if cfg is None or qd is None:
         report["sentinel"] = None
@@ -573,11 +687,15 @@ def _write_sentinel_safely(cfg: dict | None, qd: Qdrant | None, report: dict, lo
 def _append_log(log_path: pathlib.Path, report: dict) -> None:
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        totals = {k: sum(s.get(k, 0) for s in report["per_source"].values()) for k in _empty_stats()}
-        line = (f"{_dt.datetime.now().isoformat(timespec='seconds')} run={report['run_id']} "
-                f"ok={report['ok']} wall={report.get('wall_s')}s sources={','.join(report['sources'])} "
-                f"{json.dumps(totals)} errors={len(report['errors'])} "
-                f"warnings={len(report.get('warnings', []))}\n")
+        totals = {
+            k: sum(s.get(k, 0) for s in report["per_source"].values()) for k in _empty_stats()
+        }
+        line = (
+            f"{_dt.datetime.now().isoformat(timespec='seconds')} run={report['run_id']} "
+            f"ok={report['ok']} wall={report.get('wall_s')}s sources={','.join(report['sources'])} "
+            f"{json.dumps(totals)} errors={len(report['errors'])} "
+            f"warnings={len(report.get('warnings', []))}\n"
+        )
         with open(log_path, "a", encoding="utf-8") as fh:
             fh.write(line)
     except OSError:
@@ -585,15 +703,11 @@ def _append_log(log_path: pathlib.Path, report: dict) -> None:
 
 
 def _heartbeat() -> None:
-    """GET the heartbeat URL from ~/.secrets/fleet-rag.env if defined.  Never prints the URL."""
-    url = None
-    try:
-        for line in HEARTBEAT_ENV.read_text(encoding="utf-8").splitlines():
-            m = re.match(rf"^\s*(?:export\s+)?{HEARTBEAT_KEY}\s*=\s*(.+?)\s*$", line)
-            if m:
-                url = m.group(1).strip().strip('"').strip("'")
-    except OSError:
-        return
+    """GET the heartbeat URL (environment, then Infisical `fleet-secrets get`) if defined.  Never
+    prints the URL.  No credential file is read (AFC-359)."""
+    url = (os.environ.get(HEARTBEAT_KEY) or "").strip()
+    if not url:
+        url = (core.fleet_secret(HEARTBEAT_KEY) or "").strip()
     if not url:
         return
     try:
@@ -605,15 +719,22 @@ def _heartbeat() -> None:
 
 # --------------------------------------------------------------------------- raw JSONL rows
 
-def ingest_rows(rows: list[dict], defaults: dict, dry_run: bool = False, cfg: dict | None = None,
-                qd: Qdrant | None = None, log=eprint) -> dict:
+
+def ingest_rows(
+    rows: list[dict],
+    defaults: dict,
+    dry_run: bool = False,
+    cfg: dict | None = None,
+    qd: Qdrant | None = None,
+    log=eprint,
+) -> dict:
     """Scrub + gitleaks-gate + upsert pre-chunked rows (the `fleet-rag.py ingest FILE` path).
 
     Each row needs `text`; other payload v2 fields fall back to `defaults`.  No state tracking
     — raw rows are addressed purely by content hash.  Raises GitleaksError (nothing written)
     when the gate cannot complete.
     """
-    run_id = f"rows-{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    run_id = f"rows-{_dt.datetime.now(_dt.UTC).strftime('%Y%m%dT%H%M%SZ')}"
     if cfg is None:
         cfg = load_config(need_write=not dry_run)
     if qd is None:
@@ -633,10 +754,14 @@ def ingest_rows(rows: list[dict], defaults: dict, dry_run: bool = False, cfg: di
             "category": row.get("category", defaults.get("category", "lesson")),
             "seat": sources.seat_tag(row.get("seat", defaults.get("seat", "CLAUDE"))),
             "doc_id": row.get("doc_id", defaults.get("doc_id", "rows/unnamed")),
-            "chunk_index": int(row.get("chunk_index", i)), "chunk_count": int(row.get("chunk_count", len(rows))),
-            "heading": row.get("heading", ""), "title": row.get("title", defaults.get("title", "")),
-            "url": row.get("url", ""), "path": row.get("path", ""),
-            "created_at": created, "updated_at": int(row.get("updated_at") or created),
+            "chunk_index": int(row.get("chunk_index", i)),
+            "chunk_count": int(row.get("chunk_count", len(rows))),
+            "heading": row.get("heading", ""),
+            "title": row.get("title", defaults.get("title", "")),
+            "url": row.get("url", ""),
+            "path": row.get("path", ""),
+            "created_at": created,
+            "updated_at": int(row.get("updated_at") or created),
             "ingest_run": run_id,
         }
         if kinds:
@@ -645,14 +770,23 @@ def ingest_rows(rows: list[dict], defaults: dict, dry_run: bool = False, cfg: di
     kept, dropped = gitleaks_drop(_dedupe_rows(points))
     new_rows = writer.missing(kept)
     writer.write(new_rows)
-    return {"rows": len(rows), "scrubbed": scrubbed, "dropped_by_gitleaks": dropped,
-            "already_present": len(kept) - len(new_rows), "written": 0 if dry_run else len(new_rows),
-            "would_write": len(new_rows) if dry_run else 0, "run_id": run_id}
+    return {
+        "rows": len(rows),
+        "scrubbed": scrubbed,
+        "dropped_by_gitleaks": dropped,
+        "already_present": len(kept) - len(new_rows),
+        "written": 0 if dry_run else len(new_rows),
+        "would_write": len(new_rows) if dry_run else 0,
+        "run_id": run_id,
+    }
 
 
 # --------------------------------------------------------------------------- seeds
 
-def fix_seeds(dry_run: bool = False, cfg: dict | None = None, qd: Qdrant | None = None, log=eprint) -> int:
+
+def fix_seeds(
+    dry_run: bool = False, cfg: dict | None = None, qd: Qdrant | None = None, log=eprint
+) -> int:
     """Stamp the hand-seeded points (doc_id seed/fleet-standards) with the real seed time."""
     if cfg is None:
         cfg = load_config(need_write=not dry_run)
@@ -671,21 +805,39 @@ def fix_seeds(dry_run: bool = False, cfg: dict | None = None, qd: Qdrant | None 
 
 # --------------------------------------------------------------------------- CLI
 
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="python3 -m fleet_rag.ingest", description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        prog="python3 -m fleet_rag.ingest",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     g = ap.add_mutually_exclusive_group()
-    g.add_argument("--all", action="store_true",
-                   help="nightly sources (board, effort-log, doc, skill, memory, apple-note; "
-                        "excludes chat-log — pass --source chat-log for the rare policy scan)")
+    g.add_argument(
+        "--all",
+        action="store_true",
+        help="nightly sources (board, effort-log, doc, skill, memory, apple-note; "
+        "excludes chat-log — pass --source chat-log for the rare policy scan)",
+    )
     g.add_argument("--source", help="comma-separated: " + ",".join(GENERATORS))
-    g.add_argument("--fix-seeds", action="store_true", help=f"stamp {SEED_DOC_ID} points with the real seed time")
-    ap.add_argument("--dry-run", action="store_true", help="chunk/scrub/gate and count, but never embed or write")
+    g.add_argument(
+        "--fix-seeds",
+        action="store_true",
+        help=f"stamp {SEED_DOC_ID} points with the real seed time",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="chunk/scrub/gate and count, but never embed or write",
+    )
     ap.add_argument("--limit", type=int, help="max documents per source")
     ap.add_argument("--since", help="only documents updated since YYYY-MM-DD | ISO | Nd | epoch ms")
-    ap.add_argument("--prune", action="store_true",
-                    help="after a source finishes cleanly, delete chunks of documents it no longer yields "
-                         "(refused with --limit)")
+    ap.add_argument(
+        "--prune",
+        action="store_true",
+        help="after a source finishes cleanly, delete chunks of documents it no longer yields "
+        "(refused with --limit)",
+    )
     ap.add_argument("--no-heartbeat", action="store_true")
     args = ap.parse_args(argv)
     try:
@@ -694,8 +846,14 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not args.all and not args.source:
             ap.error("choose --all, --source, or --fix-seeds")
-        report = run("all" if args.all else args.source, dry_run=args.dry_run, since=args.since,
-                     limit=args.limit, heartbeat=not args.no_heartbeat, prune=args.prune)
+        report = run(
+            "all" if args.all else args.source,
+            dry_run=args.dry_run,
+            since=args.since,
+            limit=args.limit,
+            heartbeat=not args.no_heartbeat,
+            prune=args.prune,
+        )
     except IngestLocked as e:
         eprint(f"error: {e}")
         return EXIT_LOCKED

@@ -6,7 +6,7 @@ description: >-
 
 # Secret handoff (MC)
 
-> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/MC-zuliprc` (mode 600).  Session tag `[MC·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MC_ZULIP_EMAIL`, `MC_ZULIP_KEY`, `MC_ZULIP_SITE`).  Session tag `[MC·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
@@ -34,7 +34,7 @@ On the Mac:
 - `fleet-secrets run --only A,B -- CMD` runs a command with just those keys as environment variables.
 - `fleet-secrets names` lists key names only.  `fleet-secrets doctor` prints booleans and counts only.
 
-Cloud: `GET https://mac.jays.services/files/key-names` with the same Bearer as `/files` (`MAC_COLLAB_TOKEN`) gives names only;  runtime keys are managed via Infisical per app.
+Cloud: there is no key-names endpoint now (the old `mac.jays.services/files/key-names` was retired 2026-10-19);  ask a Mac seat or the owner.  Runtime keys are managed via Infisical per app.
 
 Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  Copy cross-app keys into the consuming Infisical project (store-to-store), and do not teach an app to read `fleet-secrets` or the retired flat file.
 
@@ -42,9 +42,9 @@ When the owner hands you a new secret, it arrives as the path to a `chmod 600` f
 
 ## Zulip bot credentials
 
-Each seat bot's key is its own credential and nobody else's.  Mac seats:  `~/.secrets/Zulip/<file code>-zuliprc`, mode 600 (`Claude-zuliprc`, `Codex-zuliprc`, `MM-zuliprc`, …).  Cloud seats with no Mac filesystem:  env `ZULIP_EMAIL`, `ZULIP_API_KEY`, `ZULIP_SITE`.  `agent-sync` picks the source:  `--rc PATH`, then `ZULIP_RC`, then the seat file, then the env triple; `agent-sync whoami` shows which source it used, never the key.
+Each seat bot's key is its own credential and nobody else's.  Mac seats:  Infisical Fleet-OPS `/zulip`, keys `<BOT>_ZULIP_EMAIL`, `<BOT>_ZULIP_KEY`, `<BOT>_ZULIP_SITE` (`CLAUDE_ZULIP_KEY`, `CODEX_ZULIP_KEY`, `MM_ZULIP_KEY`, …), read through `fleet-secrets`.  Cloud seats with no Mac filesystem:  env `ZULIP_EMAIL`, `ZULIP_API_KEY`, `ZULIP_SITE`.  `agent-sync` picks the source:  `--rc PATH`, then `ZULIP_RC`, then the env triple, then the seat's Infisical names; `agent-sync whoami` shows which source it used, never the key.
 
-Never print, `cat`, echo, or paste a zuliprc or a key, never put one in a message, a DM, a commit, or a log, and never type one literally on a command line.  Never use another seat's key, and never handle Jay's personal API key.  If a key ever lands in a message:  delete the message (do not edit — Zulip keeps edit history), have the owner rotate it in Settings → Bots, update Infisical first, then the seat file, and note the leak on the Linear issue (`board comment <id>`) without the value.
+Never print, `cat`, echo, or paste a zuliprc or a key, never put one in a message, a DM, a commit, or a log, and never type one literally on a command line.  Never use another seat's key, and never handle Jay's personal API key.  If a key ever lands in a message:  delete the message (do not edit — Zulip keeps edit history), have the owner rotate it in Settings → Bots, update Infisical (the only home of the key), and note the leak on the Linear issue (`board comment <id>`) without the value.
 
 ## Secrets-file grep trap (2026-08-14)
 

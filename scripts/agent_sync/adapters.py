@@ -29,6 +29,7 @@ query string, the key and the signature are never logged.
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -47,7 +48,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Any
 
 from . import live as L
 from . import zulip as Z
@@ -58,7 +60,9 @@ from .wakes import CONTRACT_PATH, parse_result, schema_text
 WAKE_TIMEOUT = 240.0
 MAX_TURNS = 4
 NOTIFY_CUT = 120
-ALLOWED_INIT_TOOLS = frozenset({"StructuredOutput"})  # the harness's own output tool for --json-schema
+ALLOWED_INIT_TOOLS = frozenset(
+    {"StructuredOutput"}
+)  # the harness's own output tool for --json-schema
 NO_HOOKS_SETTINGS = '{"disableAllHooks":true}'
 CANDIDATE_SECONDS = 86400.0
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -73,6 +77,7 @@ def default_wake_path(home: str) -> str:
 # Claude headless wake
 # --------------------------------------------------------------------------------------------
 
+
 def resolve_claude(explicit: str | None, wake_path: str) -> str | None:
     """The claude binary:  the configured absolute path, else `claude` on the fixed wake PATH."""
     if explicit:
@@ -85,15 +90,42 @@ def claude_argv(claude: str, model: str, seats: Iterable[str] | None = None) -> 
     """The fixed wake argv.  `claude` should be the pinned realpath (binary_pin), so the binary
     that runs is the one that was checked, even if a symlink moves in between.  `seats` is the live
     fleet tag set, the enum of the schema's route seat (wakes.schema_text)."""
-    return [claude, "-p", "--safe-mode", "--restricted", "--settings", NO_HOOKS_SETTINGS, "--model", model,
-            "--tools", "", "--strict-mcp-config", "--disallowedTools", "mcp__*",
-            "--permission-mode", "dontAsk", "--permission-prompts", "none",
-            "--no-session-persistence", "--max-turns", str(MAX_TURNS), "--max-budget-usd", "%.2f" % WAKE_MAX_BUDGET_USD,
-            "--output-format", "stream-json", "--verbose", "--json-schema", schema_text(seats),
-            "--append-system-prompt-file", CONTRACT_PATH]
+    return [
+        claude,
+        "-p",
+        "--safe-mode",
+        "--restricted",
+        "--settings",
+        NO_HOOKS_SETTINGS,
+        "--model",
+        model,
+        "--tools",
+        "",
+        "--strict-mcp-config",
+        "--disallowedTools",
+        "mcp__*",
+        "--permission-mode",
+        "dontAsk",
+        "--permission-prompts",
+        "none",
+        "--no-session-persistence",
+        "--max-turns",
+        str(MAX_TURNS),
+        "--max-budget-usd",
+        "%.2f" % WAKE_MAX_BUDGET_USD,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--json-schema",
+        schema_text(seats),
+        "--append-system-prompt-file",
+        CONTRACT_PATH,
+    ]
 
 
-def claude_env(env: Mapping[str, str], home: str, wake_path: str, *, seat: str | None = None) -> dict[str, str]:
+def claude_env(
+    env: Mapping[str, str], home: str, wake_path: str, *, seat: str | None = None
+) -> dict[str, str]:
     """`env -i` plus a fixed list:  every CLAUDE_CODE_* (the messaging socket and token), AGENT_*,
     ZULIP_* and ANTHROPIC_API_KEY are dropped, so the run uses the claude.ai login.
 
@@ -103,12 +135,25 @@ def claude_env(env: Mapping[str, str], home: str, wake_path: str, *, seat: str |
     every inherited identity variable was dropped.  The wake has no tools and posts nothing itself
     (the daemon posts its validated reply as the seat's bot), so this only keeps the seat explicit."""
     user = env.get("USER") or env.get("LOGNAME") or os.path.basename(home)
-    out = {"HOME": home, "USER": user, "LOGNAME": user, "LANG": "en_US.UTF-8",
-           "TMPDIR": env.get("TMPDIR") or "/tmp", "PATH": wake_path,
-           "ENABLE_CLAUDEAI_MCP_SERVERS": "false", "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1"}
+    out = {
+        "HOME": home,
+        "USER": user,
+        "LOGNAME": user,
+        "LANG": "en_US.UTF-8",
+        "TMPDIR": env.get("TMPDIR") or "/tmp",
+        "PATH": wake_path,
+        "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
+        "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",
+    }
     if seat:
-        out.update({"AGENT_LAUNCHER": WAKE_LAUNCHER, "AGENT_LAUNCH_SEAT": seat, "AGENT_SEAT": seat,
-                    "AGENT_SYNC_ATTACH": "0"})
+        out.update(
+            {
+                "AGENT_LAUNCHER": WAKE_LAUNCHER,
+                "AGENT_LAUNCH_SEAT": seat,
+                "AGENT_SEAT": seat,
+                "AGENT_SYNC_ATTACH": "0",
+            }
+        )
     return out
 
 
@@ -127,7 +172,9 @@ def result_reason(result: Mapping[str, Any]) -> str:
 
 class RunResult:
     def __init__(self) -> None:
-        self.refused: str | None = None  # why the run was refused (the init assertion, the model count)
+        self.refused: str | None = (
+            None  # why the run was refused (the init assertion, the model count)
+        )
         self.error: str | None = None  # is_error subtype, timeout, no result
         self.result: dict[str, Any] | None = None
         self.parsed: Any = None
@@ -138,7 +185,9 @@ class RunResult:
         self.stdout_len = 0
         self.stderr_len = 0
         self.stderr_sha = ""
-        self.init_tools: list[Any] | None = None  # what the init event listed, for test-wake's record
+        self.init_tools: list[Any] | None = (
+            None  # what the init event listed, for test-wake's record
+        )
         self.killed = False
         self.limited = False  # the provider refused for a quota, not an internal fault
 
@@ -162,9 +211,14 @@ class ClaudeRunner:
     daemon can track every running child (several seats may wake at once) and kill each group on
     SIGTERM."""
 
-    def __init__(self, *, timeout: float = WAKE_TIMEOUT, clock: Callable[[], float] = time.monotonic,
-                 on_start: Callable[[subprocess.Popen[Any]], None] | None = None,
-                 on_exit: Callable[[subprocess.Popen[Any]], None] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        timeout: float = WAKE_TIMEOUT,
+        clock: Callable[[], float] = time.monotonic,
+        on_start: Callable[[subprocess.Popen[Any]], None] | None = None,
+        on_exit: Callable[[subprocess.Popen[Any]], None] | None = None,
+    ) -> None:
         self.timeout = timeout
         self.clock = clock
         self.on_start = on_start
@@ -182,8 +236,16 @@ class ClaudeRunner:
         try:
             with open(prompt_path, "rb") as stdin:
                 try:
-                    proc = subprocess.Popen(list(argv), cwd=cwd, env=dict(env), stdin=stdin, stdout=subprocess.PIPE,
-                                            stderr=subprocess.PIPE, start_new_session=True, close_fds=True)
+                    proc = subprocess.Popen(
+                        list(argv),
+                        cwd=cwd,
+                        env=dict(env),
+                        stdin=stdin,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        start_new_session=True,
+                        close_fds=True,
+                    )
                 except OSError as exc:
                     out.error = "could not start claude (%s)" % (exc.strerror or type(exc).__name__)
                     return out
@@ -228,8 +290,12 @@ class ClaudeRunner:
                     continue
                 if not isinstance(event, dict):
                     continue
-                if event.get("type") == "system" and str(event.get("subtype") or "").startswith("hook"):
-                    out.refused = "a hook ran in the wake (%s)" % clean_banner(str(event.get("subtype")), 40)
+                if event.get("type") == "system" and str(event.get("subtype") or "").startswith(
+                    "hook"
+                ):
+                    out.refused = "a hook ran in the wake (%s)" % clean_banner(
+                        str(event.get("subtype")), 40
+                    )
                     out.killed = True
                     _kill_group(proc)
                     break
@@ -277,7 +343,11 @@ class ClaudeRunner:
                 usage = out.result.get("modelUsage")
                 out.models = sorted(usage) if isinstance(usage, dict) else []
                 cost = out.result.get("total_cost_usd")
-                out.cost_usd = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else WAKE_MAX_BUDGET_USD
+                out.cost_usd = (
+                    float(cost)
+                    if isinstance(cost, (int, float)) and not isinstance(cost, bool)
+                    else WAKE_MAX_BUDGET_USD
+                )
                 # A rate-limited run returns a `result` with `is_error` and NO modelUsage at all
                 # (verified Oct 11 2026 against claude 2.1.296 at its weekly cap:  exit 1, empty
                 # stderr, ~5 KB of stdout whose result text is "You've hit your weekly limit ...
@@ -308,7 +378,9 @@ class ClaudeRunner:
 
 def init_tools_ok(tools: Any) -> bool:
     """The init event's tools:  empty, or only the harness's StructuredOutput tool."""
-    return isinstance(tools, list) and all(isinstance(t, str) and t in ALLOWED_INIT_TOOLS for t in tools)
+    return isinstance(tools, list) and all(
+        isinstance(t, str) and t in ALLOWED_INIT_TOOLS for t in tools
+    )
 
 
 def parse_agents(text: str | None) -> list[dict[str, Any]] | None:
@@ -326,8 +398,16 @@ def parse_agents(text: str | None) -> list[dict[str, Any]] | None:
 def run_agents(argv: Sequence[str], env: Mapping[str, str], cwd: str) -> str | None:
     """`claude agents --json`, stdin closed, 10 seconds at most.  stdout, or None on any failure."""
     try:
-        done = subprocess.run(list(argv), capture_output=True, text=True, timeout=10, check=False, env=dict(env),
-                              cwd=cwd, stdin=subprocess.DEVNULL)
+        done = subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            env=dict(env),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     return done.stdout if done.returncode == 0 else None
@@ -372,17 +452,38 @@ def agents_pinned(paths: L.SeatPaths, claude: str | None) -> bool:
     return pinned(paths, claude) and L.read_json(paths.wake_pin).get("agents_ok") is True
 
 
-def record_pin(paths: L.SeatPaths, claude: str, now: float, *, agents_ok: bool = False,
-               init_tools: list[Any] | None = None) -> None:
-    L.write_json(paths.wake_pin, {"claude": binary_pin(claude), "at": now, "agents_ok": bool(agents_ok),
-                                  "init_tools": init_tools})
+def record_pin(
+    paths: L.SeatPaths,
+    claude: str,
+    now: float,
+    *,
+    agents_ok: bool = False,
+    init_tools: list[Any] | None = None,
+) -> None:
+    L.write_json(
+        paths.wake_pin,
+        {
+            "claude": binary_pin(claude),
+            "at": now,
+            "agents_ok": bool(agents_ok),
+            "init_tools": init_tools,
+        },
+    )
 
 
-def record_candidate(paths: L.SeatPaths, claude: str, now: float, *, agents_ok: bool,
-                     init_tools: list[Any] | None) -> None:
+def record_candidate(
+    paths: L.SeatPaths, claude: str, now: float, *, agents_ok: bool, init_tools: list[Any] | None
+) -> None:
     """A binary that passed `test-wake --run`, waiting for a person to read the result and pin it."""
-    L.write_json(paths.wake_pin_candidate, {"claude": binary_pin(claude), "at": now, "agents_ok": bool(agents_ok),
-                                            "init_tools": init_tools})
+    L.write_json(
+        paths.wake_pin_candidate,
+        {
+            "claude": binary_pin(claude),
+            "at": now,
+            "agents_ok": bool(agents_ok),
+            "init_tools": init_tools,
+        },
+    )
 
 
 def pin_candidate(paths: L.SeatPaths, claude: str, now: float) -> str | None:
@@ -394,9 +495,17 @@ def pin_candidate(paths: L.SeatPaths, claude: str, now: float) -> str | None:
     if not isinstance(at, (int, float)) or now - float(at) > CANDIDATE_SECONDS or now < float(at):
         return "the last passing test-wake --run is over a day old; run it again"
     if cand.get("claude") != binary_pin(claude):
-        return "the claude binary changed since the test (%s, tested %s); run test-wake --run again" % (
-            binary_pin(claude), cand.get("claude"))
-    record_pin(paths, claude, now, agents_ok=cand.get("agents_ok") is True, init_tools=cand.get("init_tools"))
+        return (
+            "the claude binary changed since the test (%s, tested %s); run test-wake --run again"
+            % (binary_pin(claude), cand.get("claude"))
+        )
+    record_pin(
+        paths,
+        claude,
+        now,
+        agents_ok=cand.get("agents_ok") is True,
+        init_tools=cand.get("init_tools"),
+    )
     try:
         os.unlink(paths.wake_pin_candidate)
     except OSError:
@@ -446,7 +555,9 @@ MUSE_MAX_MODEL_STEPS = 8
 MUSE_REASONING_EFFORT = "minimal"  # the lowest effort `muse exec` accepts on the meta provider
 # `--output-schema` needs the meta provider (the default).  Naming it keeps the contract explicit.
 MUSE_PROVIDER = "meta"
-MUSE_SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake", "wake-schema.json")
+MUSE_SCHEMA_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "wake", "wake-schema.json"
+)
 # muse takes the prompt, the schema and the workspace by path;  the argv carries these slots and
 # MuseRunner.run swaps in the private files it wrote, so the argv can be printed and diffed as-is.
 MUSE_PROMPT_SLOT = "<prompt-file>"
@@ -471,23 +582,40 @@ def muse_argv(muse: str, model: str) -> list[str]:
     The three path slots are filled in by MuseRunner.run against the wake dir;  the fleet tag set
     (the enum of the schema's route seat) travels in the schema file itself (wakes.schema_text),
     which is why it is not an argv parameter here."""
-    return [muse, "exec",
-            "-c", "run.toolset=[]",
-            "--model", model,
-            "--reasoning-effort", MUSE_REASONING_EFFORT,
-            "--provider", MUSE_PROVIDER,
-            "--prompt-file", MUSE_PROMPT_SLOT,
-            "--output-schema", MUSE_SCHEMA_SLOT,
-            "--json",
-            "--approval-mode", "never",
-            "--disable-shell", "--disable-write", "--disable-web-tools", "--disable-reminders",
-            "--no-session-log",
-            "--workspace", MUSE_WORKSPACE_SLOT,
-            "--max-model-steps", str(MUSE_MAX_MODEL_STEPS),
-            "--no-foreign-personal-context"]
+    return [
+        muse,
+        "exec",
+        "-c",
+        "run.toolset=[]",
+        "--model",
+        model,
+        "--reasoning-effort",
+        MUSE_REASONING_EFFORT,
+        "--provider",
+        MUSE_PROVIDER,
+        "--prompt-file",
+        MUSE_PROMPT_SLOT,
+        "--output-schema",
+        MUSE_SCHEMA_SLOT,
+        "--json",
+        "--approval-mode",
+        "never",
+        "--disable-shell",
+        "--disable-write",
+        "--disable-web-tools",
+        "--disable-reminders",
+        "--no-session-log",
+        "--workspace",
+        MUSE_WORKSPACE_SLOT,
+        "--max-model-steps",
+        str(MUSE_MAX_MODEL_STEPS),
+        "--no-foreign-personal-context",
+    ]
 
 
-def muse_env(env: Mapping[str, str], home: str, wake_path: str, *, seat: str | None = None) -> dict[str, str]:
+def muse_env(
+    env: Mapping[str, str], home: str, wake_path: str, *, seat: str | None = None
+) -> dict[str, str]:
     """`env -i` plus a fixed list, the same shape as claude_env.
 
     Every ANTHROPIC_*, CLAUDE_*, AGENT_*, ZULIP_* and MUSE_* variable is dropped, so the run uses
@@ -497,11 +625,23 @@ def muse_env(env: Mapping[str, str], home: str, wake_path: str, *, seat: str | N
     first.  The wake has no tools and posts nothing itself (the daemon posts its validated reply as
     the seat's bot), so this only keeps the seat explicit."""
     user = env.get("USER") or env.get("LOGNAME") or os.path.basename(home)
-    out = {"HOME": home, "USER": user, "LOGNAME": user, "LANG": "en_US.UTF-8",
-           "TMPDIR": env.get("TMPDIR") or "/tmp", "PATH": wake_path}
+    out = {
+        "HOME": home,
+        "USER": user,
+        "LOGNAME": user,
+        "LANG": "en_US.UTF-8",
+        "TMPDIR": env.get("TMPDIR") or "/tmp",
+        "PATH": wake_path,
+    }
     if seat:
-        out.update({"AGENT_LAUNCHER": WAKE_LAUNCHER, "AGENT_LAUNCH_SEAT": seat, "AGENT_SEAT": seat,
-                    "AGENT_SYNC_ATTACH": "0"})
+        out.update(
+            {
+                "AGENT_LAUNCHER": WAKE_LAUNCHER,
+                "AGENT_LAUNCH_SEAT": seat,
+                "AGENT_SEAT": seat,
+                "AGENT_SYNC_ATTACH": "0",
+            }
+        )
     return out
 
 
@@ -538,7 +678,7 @@ def parse_muse_records(text_lines: Iterable[str]) -> tuple[str | None, str | Non
             # Any terminal record that is not `completed` is a refusal.  The name may sit in the
             # record's own `terminal` field, in the payload_type's suffix, or in `reason`, and a
             # bare reason with no terminal name still means the run did not complete.
-            terminal = str(payload.get("terminal") or "") or payload_type[len("run.terminal."):]
+            terminal = str(payload.get("terminal") or "") or payload_type[len("run.terminal.") :]
             reason = payload.get("reason")
             detail = clean_banner(str(reason), 120) if isinstance(reason, str) and reason else ""
             why = "%s (%s)" % (terminal, detail) if detail else terminal
@@ -555,7 +695,7 @@ def parse_muse_result(text: str | None) -> Any:
     if body.startswith("```"):
         body = body.strip("`")
     if "{" in body:
-        body = body[body.find("{"):]
+        body = body[body.find("{") :]
     try:
         return json.loads(body)
     except ValueError:
@@ -571,16 +711,28 @@ class MuseRunner:
         wake dir and removed afterwards.
       * The schema goes in a FILE too, so it is materialised next to the prompt from the same
         in-memory source the claude wake passes as a string.  One schema, two transports."""
-    def __init__(self, *, timeout: float = WAKE_TIMEOUT, clock: Callable[[], float] = time.monotonic,
-                 on_start: Callable[[subprocess.Popen[Any]], None] | None = None,
-                 on_exit: Callable[[subprocess.Popen[Any]], None] | None = None) -> None:
+
+    def __init__(
+        self,
+        *,
+        timeout: float = WAKE_TIMEOUT,
+        clock: Callable[[], float] = time.monotonic,
+        on_start: Callable[[subprocess.Popen[Any]], None] | None = None,
+        on_exit: Callable[[subprocess.Popen[Any]], None] | None = None,
+    ) -> None:
         self.timeout = timeout
         self.clock = clock
         self.on_start = on_start
         self.on_exit = on_exit
 
-    def run(self, argv: Sequence[str], env: Mapping[str, str], cwd: str, prompt: str,
-            schema: str | None = None) -> RunResult:
+    def run(
+        self,
+        argv: Sequence[str],
+        env: Mapping[str, str],
+        cwd: str,
+        prompt: str,
+        schema: str | None = None,
+    ) -> RunResult:
         out = RunResult()
         try:
             with open(CONTRACT_PATH, encoding="utf-8") as fh:
@@ -603,15 +755,30 @@ class MuseRunner:
             fh.write(schema if schema is not None else schema_text())
         # muse takes these three by path, and the paths are the wake dir's own private files, so
         # the argv is rebuilt here with the real paths in place of the placeholders.
-        argv = [prompt_path if a == MUSE_PROMPT_SLOT else schema_path if a == MUSE_SCHEMA_SLOT
-                else workspace if a == MUSE_WORKSPACE_SLOT else a for a in argv]
+        argv = [
+            prompt_path
+            if a == MUSE_PROMPT_SLOT
+            else schema_path
+            if a == MUSE_SCHEMA_SLOT
+            else workspace
+            if a == MUSE_WORKSPACE_SLOT
+            else a
+            for a in argv
+        ]
         started = self.clock()
         proc: subprocess.Popen[Any] | None = None
         try:
             try:
-                proc = subprocess.Popen(list(argv), cwd=cwd, env=dict(env), stdin=subprocess.DEVNULL,
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
-                                        close_fds=True)
+                proc = subprocess.Popen(
+                    list(argv),
+                    cwd=cwd,
+                    env=dict(env),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                    close_fds=True,
+                )
             except OSError as exc:
                 out.error = "could not start muse (%s)" % (exc.strerror or type(exc).__name__)
                 return out
@@ -706,9 +873,15 @@ def muse_wake_fingerprint() -> str | None:
         schema = schema_text()
     except (OSError, UnicodeError, ValueError):
         return None
-    command = json.dumps({"policy_version": MUSE_WAKE_POLICY_VERSION,
-                          "argv": muse_argv("<muse>", "<model>"), "schema": schema},
-                         sort_keys=True, separators=(",", ":")).encode("utf-8")
+    command = json.dumps(
+        {
+            "policy_version": MUSE_WAKE_POLICY_VERSION,
+            "argv": muse_argv("<muse>", "<model>"),
+            "schema": schema,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     digest = hashlib.sha256()
     digest.update(command)
     digest.update(b"\0")
@@ -733,8 +906,13 @@ def muse_pin_state(paths: L.SeatPaths, muse: str | None) -> dict[str, Any]:
         return {"pinned": False, "why": "not_pinned", "pinned_muse": None, "muse": current}
     recorded_fingerprint = pin.get("fingerprint")
     current_fingerprint = muse_wake_fingerprint()
-    if (recorded != current or not isinstance(recorded_fingerprint, str) or not recorded_fingerprint
-            or current_fingerprint is None or recorded_fingerprint != current_fingerprint):
+    if (
+        recorded != current
+        or not isinstance(recorded_fingerprint, str)
+        or not recorded_fingerprint
+        or current_fingerprint is None
+        or recorded_fingerprint != current_fingerprint
+    ):
         return {"pinned": False, "why": "pin_stale", "pinned_muse": recorded, "muse": current}
     return {"pinned": True, "why": None, "pinned_muse": recorded, "muse": current}
 
@@ -743,19 +921,40 @@ def muse_pinned(paths: L.SeatPaths, muse: str | None) -> bool:
     return muse_pin_state(paths, muse)["pinned"]
 
 
-def record_muse_pin(paths: L.SeatPaths, muse: str, now: float, *, model: str | None = None,
-                    fingerprint: str | None = None) -> None:
-    L.write_json(paths.wake_pin_muse, {"muse": binary_pin(muse), "at": now, "model": model,
-                                       "effort": MUSE_REASONING_EFFORT,
-                                       "fingerprint": fingerprint if fingerprint is not None
-                                       else muse_wake_fingerprint()})
+def record_muse_pin(
+    paths: L.SeatPaths,
+    muse: str,
+    now: float,
+    *,
+    model: str | None = None,
+    fingerprint: str | None = None,
+) -> None:
+    L.write_json(
+        paths.wake_pin_muse,
+        {
+            "muse": binary_pin(muse),
+            "at": now,
+            "model": model,
+            "effort": MUSE_REASONING_EFFORT,
+            "fingerprint": fingerprint if fingerprint is not None else muse_wake_fingerprint(),
+        },
+    )
 
 
-def record_muse_candidate(paths: L.SeatPaths, muse: str, now: float, *, model: str | None = None) -> None:
+def record_muse_candidate(
+    paths: L.SeatPaths, muse: str, now: float, *, model: str | None = None
+) -> None:
     """A binary that passed `test-wake --run`, waiting for a person to read the result and pin it."""
-    L.write_json(paths.wake_pin_candidate_muse, {"muse": binary_pin(muse), "at": now, "model": model,
-                                                 "effort": MUSE_REASONING_EFFORT,
-                                                 "fingerprint": muse_wake_fingerprint()})
+    L.write_json(
+        paths.wake_pin_candidate_muse,
+        {
+            "muse": binary_pin(muse),
+            "at": now,
+            "model": model,
+            "effort": MUSE_REASONING_EFFORT,
+            "fingerprint": muse_wake_fingerprint(),
+        },
+    )
 
 
 def muse_pin_candidate(paths: L.SeatPaths, muse: str, now: float) -> str | None:
@@ -767,17 +966,27 @@ def muse_pin_candidate(paths: L.SeatPaths, muse: str, now: float) -> str | None:
     if current_fingerprint is None:
         return "the wake contract or schema is unavailable; run test-wake --run again"
     recorded_fingerprint = cand.get("fingerprint")
-    if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint \
-            or recorded_fingerprint != current_fingerprint:
+    if (
+        not isinstance(recorded_fingerprint, str)
+        or not recorded_fingerprint
+        or recorded_fingerprint != current_fingerprint
+    ):
         return "the muse wake command or contract changed since the test; run test-wake --run again"
     at = cand.get("at")
     if not isinstance(at, (int, float)) or now - float(at) > CANDIDATE_SECONDS or now < float(at):
         return "the last passing test-wake --run is over a day old; run it again"
     if cand.get("muse") != binary_pin(muse):
-        return "the muse binary changed since the test (%s, tested %s); run test-wake --run again" % (
-            binary_pin(muse), cand.get("muse"))
-    record_muse_pin(paths, muse, now, model=cand.get("model") if isinstance(cand.get("model"), str) else None,
-                    fingerprint=recorded_fingerprint)
+        return (
+            "the muse binary changed since the test (%s, tested %s); run test-wake --run again"
+            % (binary_pin(muse), cand.get("muse"))
+        )
+    record_muse_pin(
+        paths,
+        muse,
+        now,
+        model=cand.get("model") if isinstance(cand.get("model"), str) else None,
+        fingerprint=recorded_fingerprint,
+    )
     try:
         os.unlink(paths.wake_pin_candidate_muse)
     except OSError:
@@ -799,8 +1008,9 @@ def muse_pin_candidate(paths: L.SeatPaths, muse: str, now: float) -> str | None:
 # missing, stale, malformed or simply has no window for this provider NEVER blocks a wake:  this is
 # an optimisation, not a safety control, and a quota source that is down must not silence the fleet.
 
-QUOTA_PATH = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Usage Monitor",
-                          "quota-windows.json")
+QUOTA_PATH = os.path.join(
+    os.path.expanduser("~"), "Library", "Application Support", "Usage Monitor", "quota-windows.json"
+)
 QUOTA_MAX_AGE = 15 * 60
 QUOTA_MAX_BYTES = 1024 * 1024
 QUOTA_FORMAT = "usage-monitor-local-quotas"
@@ -813,7 +1023,12 @@ def _quota_file(path: str) -> dict[str, Any] | None:
         st = os.lstat(path)
     except OSError:
         return None
-    if os.path.islink(path) or st.st_size <= 0 or st.st_size > QUOTA_MAX_BYTES or not os.path.isfile(path):
+    if (
+        os.path.islink(path)
+        or st.st_size <= 0
+        or st.st_size > QUOTA_MAX_BYTES
+        or not os.path.isfile(path)
+    ):
         return None
     try:
         with open(path, encoding="utf-8") as fh:
@@ -843,7 +1058,9 @@ def _quota_generated_at(value: Any) -> float | None:
         return None
 
 
-def provider_quota(provider: str, now: float | None = None, path: str | None = None) -> dict[str, Any]:
+def provider_quota(
+    provider: str, now: float | None = None, path: str | None = None
+) -> dict[str, Any]:
     """One provider's verdict from the CodeCaps snapshot.
 
     `known` False means the snapshot cannot speak for this provider (no file, stale, malformed, or
@@ -852,8 +1069,14 @@ def provider_quota(provider: str, now: float | None = None, path: str | None = N
     percentage:  a passed reset and an unknown remainder also render as 0%, and only one of those
     three means the provider refused to serve."""
     key = (provider or "").strip().casefold()
-    unknown = {"known": False, "exhausted": False, "remaining": None, "reset_at": None, "reason": None,
-               "source": "unknown"}
+    unknown = {
+        "known": False,
+        "exhausted": False,
+        "remaining": None,
+        "reset_at": None,
+        "reason": None,
+        "source": "unknown",
+    }
     if not key:
         return unknown
     data = _quota_file(path or QUOTA_PATH)
@@ -876,7 +1099,10 @@ def provider_quota(provider: str, now: float | None = None, path: str | None = N
     for window in windows:
         if not isinstance(window, dict):
             continue
-        names = {str(window.get("provider") or "").casefold(), str(window.get("providerKey") or "").casefold()}
+        names = {
+            str(window.get("provider") or "").casefold(),
+            str(window.get("providerKey") or "").casefold(),
+        }
         if key not in names and not any(key in name for name in names if name):
             continue
         matched += 1
@@ -891,8 +1117,14 @@ def provider_quota(provider: str, now: float | None = None, path: str | None = N
             reset_at = window["resetAt"]
     if not matched:
         return unknown
-    return {"known": True, "exhausted": exhausted, "remaining": remaining, "reset_at": reset_at,
-            "reason": reason, "source": "codecaps"}
+    return {
+        "known": True,
+        "exhausted": exhausted,
+        "remaining": remaining,
+        "reset_at": reset_at,
+        "reason": reason,
+        "source": "codecaps",
+    }
 
 
 def quota_block(provider: str, now: float | None = None, path: str | None = None) -> str | None:
@@ -903,7 +1135,10 @@ def quota_block(provider: str, now: float | None = None, path: str | None = None
     state = provider_quota(provider, now, path)
     if state["known"] and state["exhausted"]:
         reset = state.get("reset_at")
-        return "%s quota is exhausted%s" % (provider, (" until %s" % clean_banner(str(reset), 40)) if reset else "")
+        return "%s quota is exhausted%s" % (
+            provider,
+            (" until %s" % clean_banner(str(reset), 40)) if reset else "",
+        )
     return None
 
 
@@ -957,33 +1192,61 @@ def mcode_argv(mcode: str, prompt_path: str | None = None) -> list[str]:
     The prompt arrives on STDIN, not as a positional argument:  mcode has no `--prompt-file`, and
     `--input -` is its documented stdin form.  Keeping the prompt off the command line also keeps it
     out of any process listing for the life of the run."""
-    return [mcode, "exec",
-            "--prompt-mode", MCODE_PROMPT_MODE,
-            "--permission", MCODE_PERMISSION,
-            "--output-format", "json",
-            "--input", "-",
-            "--output-schema", MCODE_SCHEMA_SLOT,
-            "--max-steps", str(MCODE_MAX_STEPS),
-            "--timeout", MCODE_TIMEOUT,
-            "--cwd", MCODE_CWD_SLOT,
-            "-o", MCODE_LAST_SLOT]
+    return [
+        mcode,
+        "exec",
+        "--prompt-mode",
+        MCODE_PROMPT_MODE,
+        "--permission",
+        MCODE_PERMISSION,
+        "--output-format",
+        "json",
+        "--input",
+        "-",
+        "--output-schema",
+        MCODE_SCHEMA_SLOT,
+        "--max-steps",
+        str(MCODE_MAX_STEPS),
+        "--timeout",
+        MCODE_TIMEOUT,
+        "--cwd",
+        MCODE_CWD_SLOT,
+        "-o",
+        MCODE_LAST_SLOT,
+    ]
 
 
-def mcode_env(env: Mapping[str, str], home: str, wake_path: str, *, seat: str | None = None) -> dict[str, str]:
+def mcode_env(
+    env: Mapping[str, str], home: str, wake_path: str, *, seat: str | None = None
+) -> dict[str, str]:
     """`env -i` plus a fixed list, the same shape as the other two.
 
     Unlike muse, HOME must stay the real one:  mcode reads its sign-in from there and refuses to run
     otherwise (verified).  That is a real difference in the lockdown, recorded rather than hidden."""
     user = env.get("USER") or env.get("LOGNAME") or os.path.basename(home)
-    out = {"HOME": home, "USER": user, "LOGNAME": user, "LANG": "en_US.UTF-8",
-           "TMPDIR": env.get("TMPDIR") or "/tmp", "PATH": wake_path}
+    out = {
+        "HOME": home,
+        "USER": user,
+        "LOGNAME": user,
+        "LANG": "en_US.UTF-8",
+        "TMPDIR": env.get("TMPDIR") or "/tmp",
+        "PATH": wake_path,
+    }
     if seat:
-        out.update({"AGENT_LAUNCHER": WAKE_LAUNCHER, "AGENT_LAUNCH_SEAT": seat, "AGENT_SEAT": seat,
-                    "AGENT_SYNC_ATTACH": "0"})
+        out.update(
+            {
+                "AGENT_LAUNCHER": WAKE_LAUNCHER,
+                "AGENT_LAUNCH_SEAT": seat,
+                "AGENT_SEAT": seat,
+                "AGENT_SYNC_ATTACH": "0",
+            }
+        )
     return out
 
 
-def parse_mcode_result(status: str | None, text: str | None, stderr: str = "") -> tuple[str | None, list[str]]:
+def parse_mcode_result(
+    status: str | None, text: str | None, stderr: str = ""
+) -> tuple[str | None, list[str]]:
     """(why the run failed, the model ids it names) from mcode's envelope and its last message.
 
     mcode's `exec.result` reports `status` ("succeeded", or whatever went wrong) and `model`;  the
@@ -1000,16 +1263,27 @@ class McodeRunner:
     """Runs one headless mcode fallback.  Same lifecycle contract as the other two runners:  the
     child gets its own process group, is tracked while it runs, and is killed on SIGTERM."""
 
-    def __init__(self, *, timeout: float = WAKE_TIMEOUT, clock: Callable[[], float] = time.monotonic,
-                 on_start: Callable[[subprocess.Popen[Any]], None] | None = None,
-                 on_exit: Callable[[subprocess.Popen[Any]], None] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        timeout: float = WAKE_TIMEOUT,
+        clock: Callable[[], float] = time.monotonic,
+        on_start: Callable[[subprocess.Popen[Any]], None] | None = None,
+        on_exit: Callable[[subprocess.Popen[Any]], None] | None = None,
+    ) -> None:
         self.timeout = timeout
         self.clock = clock
         self.on_start = on_start
         self.on_exit = on_exit
 
-    def run(self, argv: Sequence[str], env: Mapping[str, str], cwd: str, prompt: str,
-            schema: str | None = None) -> RunResult:
+    def run(
+        self,
+        argv: Sequence[str],
+        env: Mapping[str, str],
+        cwd: str,
+        prompt: str,
+        schema: str | None = None,
+    ) -> RunResult:
         out = RunResult()
         L.private_dir(cwd)
         schema_path = os.path.join(cwd, "schema-mcode.json")
@@ -1020,7 +1294,9 @@ class McodeRunner:
         # an old "action: board" would then be acted on again.  The name carries the pid and clock so
         # two attempts can never share it, and an unlink before launch makes "missing" mean "this
         # attempt produced nothing" rather than "something was there".
-        last_path = os.path.join(cwd, "last-mcode-%d-%d.json" % (os.getpid(), int(self.clock() * 1000)))
+        last_path = os.path.join(
+            cwd, "last-mcode-%d-%d.json" % (os.getpid(), int(self.clock() * 1000))
+        )
         try:
             os.unlink(last_path)
         except OSError:
@@ -1029,15 +1305,30 @@ class McodeRunner:
         fd = os.open(schema_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(schema if schema is not None else schema_text())
-        argv = [schema_path if a == MCODE_SCHEMA_SLOT else workspace if a == MCODE_CWD_SLOT
-                else last_path if a == MCODE_LAST_SLOT else a for a in argv]
+        argv = [
+            schema_path
+            if a == MCODE_SCHEMA_SLOT
+            else workspace
+            if a == MCODE_CWD_SLOT
+            else last_path
+            if a == MCODE_LAST_SLOT
+            else a
+            for a in argv
+        ]
         started = self.clock()
         proc: subprocess.Popen[Any] | None = None
         try:
             try:
-                proc = subprocess.Popen(list(argv), cwd=cwd, env=dict(env),
-                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                        start_new_session=True, close_fds=True)
+                proc = subprocess.Popen(
+                    list(argv),
+                    cwd=cwd,
+                    env=dict(env),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                    close_fds=True,
+                )
             except OSError as exc:
                 out.error = "could not start mcode (%s)" % (exc.strerror or type(exc).__name__)
                 return out
@@ -1068,7 +1359,9 @@ class McodeRunner:
                     continue
                 if isinstance(envelope, dict) and envelope.get("type") == "exec.result":
                     envelopes += 1
-                    status = envelope.get("status") if isinstance(envelope.get("status"), str) else None
+                    status = (
+                        envelope.get("status") if isinstance(envelope.get("status"), str) else None
+                    )
                     found = envelope.get("model")
                     model = found if isinstance(found, str) and found else None
             text = None
@@ -1095,7 +1388,9 @@ class McodeRunner:
                 out.error = "no parseable result"
             else:
                 out.result = {"text": text}
-                out.parsed = parse_muse_result(text)  # the same JSON leniency;  the schema is the same
+                out.parsed = parse_muse_result(
+                    text
+                )  # the same JSON leniency;  the schema is the same
         finally:
             if proc is not None and self.on_exit:
                 self.on_exit(proc)
@@ -1129,12 +1424,18 @@ def mcode_pinned(paths: L.SeatPaths, mcode: str | None) -> bool:
     return L.read_json(paths.wake_pin_mcode).get("mcode") == binary_pin(mcode)
 
 
-def record_mcode_pin(paths: L.SeatPaths, mcode: str, now: float, *, model: str | None = None) -> None:
+def record_mcode_pin(
+    paths: L.SeatPaths, mcode: str, now: float, *, model: str | None = None
+) -> None:
     L.write_json(paths.wake_pin_mcode, {"mcode": binary_pin(mcode), "at": now, "model": model})
 
 
-def record_mcode_candidate(paths: L.SeatPaths, mcode: str, now: float, *, model: str | None = None) -> None:
-    L.write_json(paths.wake_pin_candidate_mcode, {"mcode": binary_pin(mcode), "at": now, "model": model})
+def record_mcode_candidate(
+    paths: L.SeatPaths, mcode: str, now: float, *, model: str | None = None
+) -> None:
+    L.write_json(
+        paths.wake_pin_candidate_mcode, {"mcode": binary_pin(mcode), "at": now, "model": model}
+    )
 
 
 def mcode_pin_candidate(paths: L.SeatPaths, mcode: str, now: float) -> str | None:
@@ -1145,9 +1446,13 @@ def mcode_pin_candidate(paths: L.SeatPaths, mcode: str, now: float) -> str | Non
     if not isinstance(at, (int, float)) or now - float(at) > CANDIDATE_SECONDS or now < float(at):
         return "the last passing test-wake --run is over a day old; run it again"
     if cand.get("mcode") != binary_pin(mcode):
-        return "the mcode binary changed since the test (%s, tested %s); run test-wake --run again" % (
-            binary_pin(mcode), cand.get("mcode"))
-    record_mcode_pin(paths, mcode, now, model=cand.get("model") if isinstance(cand.get("model"), str) else None)
+        return (
+            "the mcode binary changed since the test (%s, tested %s); run test-wake --run again"
+            % (binary_pin(mcode), cand.get("mcode"))
+        )
+    record_mcode_pin(
+        paths, mcode, now, model=cand.get("model") if isinstance(cand.get("model"), str) else None
+    )
     try:
         os.unlink(paths.wake_pin_candidate_mcode)
     except OSError:
@@ -1168,7 +1473,9 @@ ROUTINE_RESPONSE_CAP = 65536
 # `held_back` stays far below it;  run_routine lists fewer items rather than ever cross it.
 ROUTINE_MAX_BODY = 64 * 1024
 # The hosted Worker's settled outcomes (docs/protocols/agent-sync-mcp.md section 3.12, item 12).
-WORKER_OUTCOMES = frozenset({"delivered", "no_subscriber", "channel_refused", "rejected", "gone", "not_live"})
+WORKER_OUTCOMES = frozenset(
+    {"delivered", "no_subscriber", "channel_refused", "rejected", "gone", "not_live"}
+)
 
 
 class RoutineTarget:
@@ -1198,7 +1505,10 @@ class RoutineTarget:
             return "Bearer " + self.key
         if self.auth == "header":
             return self.key
-        return self.signature_prefix + hmac.new(self.key.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        return (
+            self.signature_prefix
+            + hmac.new(self.key.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        )
 
     def secrets(self) -> list[str]:
         """Values the daemon scrubs from every log line and error (routine_secret_values)."""
@@ -1250,7 +1560,9 @@ def routine_url_problem(url: str) -> str | None:
     return None
 
 
-def resolve_routine(cfg: RoutineConfig | None, env: Mapping[str, str]) -> tuple[RoutineTarget | None, str | None, str]:
+def resolve_routine(
+    cfg: RoutineConfig | None, env: Mapping[str, str]
+) -> tuple[RoutineTarget | None, str | None, str]:
     """(target, reason code, detail).  The detail names environment variables, never values.
     Values lose wrapping quotes, as the Zulip credentials do (Z.env_credentials):  a synced
     `"https://..."` would otherwise be refused as not https, and a quoted key sent as
@@ -1261,8 +1573,12 @@ def resolve_routine(cfg: RoutineConfig | None, env: Mapping[str, str]) -> tuple[
     key = Z._strip_quotes(env.get(cfg.key_env) or "")
     missing = [name for name, value in ((cfg.url_env, url), (cfg.key_env, key)) if not value]
     if missing:
-        return None, "routine_not_configured", "environment variable%s not set: %s" % (
-            "" if len(missing) == 1 else "s", ", ".join(missing))
+        return (
+            None,
+            "routine_not_configured",
+            "environment variable%s not set: %s"
+            % ("" if len(missing) == 1 else "s", ", ".join(missing)),
+        )
     if any(ch in key for ch in "\r\n\x00"):
         return None, "routine_key_refused", "%s holds a control character" % cfg.key_env
     problem = routine_url_problem(url)
@@ -1301,14 +1617,18 @@ def routine_answer(data: bytes) -> dict[str, Any] | None:
         return None
     delivered = obj.get("delivered")
     outcome = obj.get("outcome")
-    return {"delivered": delivered if isinstance(delivered, int) and not isinstance(delivered, bool) and delivered >= 0
-            else None,
-            "paused": obj.get("paused") is True, "disabled": obj.get("disabled") is True,
-            "duplicate": obj.get("duplicate") is True,
-            "outcome": outcome if isinstance(outcome, str) and outcome in WORKER_OUTCOMES else None}
+    return {
+        "delivered": delivered
+        if isinstance(delivered, int) and not isinstance(delivered, bool) and delivered >= 0
+        else None,
+        "paused": obj.get("paused") is True,
+        "disabled": obj.get("disabled") is True,
+        "duplicate": obj.get("duplicate") is True,
+        "outcome": outcome if isinstance(outcome, str) and outcome in WORKER_OUTCOMES else None,
+    }
 
 
-def routine_surfaced(result: "RoutineResult") -> bool:
+def routine_surfaced(result: RoutineResult) -> bool:
     """Did this wake reach the seat, so the held-back items it listed count as surfaced?  Not when
     the routine did not take it.  A 2xx from a routine that is not the hosted Worker counts.  The
     Worker answers 202 for several outcomes that reached nobody (no subscriber, a channel off its
@@ -1330,9 +1650,15 @@ class RoutineRunner:
     is computed over those bytes, and the identical bytes go out on every attempt.  No proxy and
     no redirects (a redirect would re-send the key elsewhere), and an explicit timeout."""
 
-    def __init__(self, *, sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
-                 retries: int = ROUTINE_RETRIES, backoff: Sequence[float] = ROUTINE_BACKOFF,
-                 should_stop: Callable[[], bool] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+        retries: int = ROUTINE_RETRIES,
+        backoff: Sequence[float] = ROUTINE_BACKOFF,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> None:
         self.sleep = sleep
         self.clock = clock
         self.retries = retries
@@ -1342,16 +1668,22 @@ class RoutineRunner:
     def deliver(self, target: RoutineTarget, body: bytes, *, idempotency_key: str) -> RoutineResult:
         out = RoutineResult()
         started = self.clock()
-        headers = {"Content-Type": "application/json; charset=utf-8", "Accept": "application/json",
-                   "User-Agent": Z.USER_AGENT, "Idempotency-Key": idempotency_key,
-                   target.header: target.header_value(body)}
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "Accept": "application/json",
+            "User-Agent": Z.USER_AGENT,
+            "Idempotency-Key": idempotency_key,
+            target.header: target.header_value(body),
+        }
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), Z._NoRedirect())
         for attempt in range(1, self.retries + 2):
             out.attempts = attempt
             status: int | None = None
             data = b""
             retry = False
-            request = urllib.request.Request(target.url, data=body, method=target.method, headers=headers)
+            request = urllib.request.Request(
+                target.url, data=body, method=target.method, headers=headers
+            )
             try:
                 with opener.open(request, timeout=target.timeout) as response:
                     status = int(response.status)
@@ -1390,7 +1722,11 @@ class RoutineRunner:
                     out.error = "HTTP %d (redirects are refused)" % status
                 else:
                     out.error = "HTTP %d" % status
-            if not retry or attempt > self.retries or (self.should_stop is not None and self.should_stop()):
+            if (
+                not retry
+                or attempt > self.retries
+                or (self.should_stop is not None and self.should_stop())
+            ):
                 break
             self.sleep(self.backoff[min(attempt - 1, len(self.backoff) - 1)])
         out.secs = round(self.clock() - started, 2)
@@ -1406,13 +1742,23 @@ def zulip_link(realm: str, row: Mapping[str, Any]) -> str:
     """A link to the trigger message:  its topic for a channel message, its thread for a DM."""
     message_id = int(row.get("id") or 0)
     if row.get("type") == "private":
-        ids = sorted(i for i in row.get("recipients") or [] if isinstance(i, int) and not isinstance(i, bool))
+        ids = sorted(
+            i for i in row.get("recipients") or [] if isinstance(i, int) and not isinstance(i, bool)
+        )
         return "%s/#narrow/dm/%s-dm/near/%d" % (realm, ",".join(str(i) for i in ids), message_id)
     channel = str(row.get("channel") or "")
     stream_id = row.get("stream_id")
-    where = ("%d-%s" % (stream_id, _hash_part(channel)) if isinstance(stream_id, int) and not isinstance(stream_id, bool)
-             else _hash_part(channel))
-    return "%s/#narrow/channel/%s/topic/%s/near/%d" % (realm, where, _hash_part(str(row.get("topic") or "")), message_id)
+    where = (
+        "%d-%s" % (stream_id, _hash_part(channel))
+        if isinstance(stream_id, int) and not isinstance(stream_id, bool)
+        else _hash_part(channel)
+    )
+    return "%s/#narrow/channel/%s/topic/%s/near/%d" % (
+        realm,
+        where,
+        _hash_part(str(row.get("topic") or "")),
+        message_id,
+    )
 
 
 def routine_excerpt(text: str, limit: int = ROUTINE_EXCERPT_LIMIT, nonce: str | None = None) -> str:
@@ -1431,9 +1777,19 @@ def routine_excerpt(text: str, limit: int = ROUTINE_EXCERPT_LIMIT, nonce: str | 
     return head + body[:room] + tail
 
 
-def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Mapping[str, Any], bot_user_id: int | None,
-                 realm: str, now: float, scrub: Callable[[str], str] = lambda text: text,
-                 nonce: str | None = None, held_back: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def routine_body(
+    *,
+    seat: str,
+    wake_id: str,
+    trigger_ids: Iterable[int],
+    row: Mapping[str, Any],
+    bot_user_id: int | None,
+    realm: str,
+    now: float,
+    scrub: Callable[[str], str] = lambda text: text,
+    nonce: str | None = None,
+    held_back: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """The fixed contract (agent-sync-wake/1) for one wake.  `row` is the trigger's seat-inbox
     row:  its owner flag is the daemon's (the owner's user id from a human Zulip app).  A DM
     trigger is marked `dm: true` and its `reply_to` is that DM's other members only, never a
@@ -1447,7 +1803,9 @@ def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Ma
     so a body without it is unchanged)."""
     dm = row.get("type") == "private"
     message_id = int(row["id"])
-    members = sorted(i for i in row.get("recipients") or [] if isinstance(i, int) and not isinstance(i, bool))
+    members = sorted(
+        i for i in row.get("recipients") or [] if isinstance(i, int) and not isinstance(i, bool)
+    )
     others = [i for i in members if i != bot_user_id]
     # The exact channel and topic go only into `reply_to`, which the routine needs for
     # addressing.  The top-level copies are display text, escaped like every other Zulip-derived
@@ -1467,17 +1825,28 @@ def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Ma
         "dm": dm,
         "channel": channel,
         "topic": topic,
-        "stream_id": (stream_id if not dm and isinstance(stream_id, int) and not isinstance(stream_id, bool)
-                      and stream_id > 0 else None),
+        "stream_id": (
+            stream_id
+            if not dm
+            and isinstance(stream_id, int)
+            and not isinstance(stream_id, bool)
+            and stream_id > 0
+            else None
+        ),
         "dm_recipient_ids": others if dm else [],
-        "sender_user_id": sender_id if isinstance(sender_id, int) and not isinstance(sender_id, bool) else None,
+        "sender_user_id": sender_id
+        if isinstance(sender_id, int) and not isinstance(sender_id, bool)
+        else None,
         "sender_full_name": L.escape_line(str(row.get("sender") or ""), 100),
         "is_bot": bool(row.get("is_bot", True)),
         "owner": bool(row.get("owner")),
         "excerpt": routine_excerpt(scrub(str(row.get("content") or "")), nonce=nonce),
         "zulip_link": zulip_link(realm, row),
-        "reply_to": ({"type": "direct", "to": others} if dm
-                     else {"type": "stream", "channel": raw_channel, "topic": raw_topic}),
+        "reply_to": (
+            {"type": "direct", "to": others}
+            if dm
+            else {"type": "stream", "channel": raw_channel, "topic": raw_topic}
+        ),
         "reply_prefix": "[%s·wake] re=%d" % (seat, message_id),
         "sent_at": int(now),
     }
@@ -1488,12 +1857,15 @@ def routine_body(*, seat: str, wake_id: str, trigger_ids: Iterable[int], row: Ma
 
 def routine_bytes(body: Mapping[str, Any]) -> bytes:
     """Serialize once:  these bytes are signed and sent, unchanged on every retry."""
-    return json.dumps(body, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
 
 
 # --------------------------------------------------------------------------------------------
 # notify-owner
 # --------------------------------------------------------------------------------------------
+
 
 def clean_banner(text: str, limit: int = NOTIFY_CUT) -> str:
     """Seat, sender and topic are attacker-controlled:  control characters go, the text is one
@@ -1504,9 +1876,18 @@ def clean_banner(text: str, limit: int = NOTIFY_CUT) -> str:
 
 
 def osascript_argv(osascript: str, text: str, title: str) -> list[str]:
-    return [osascript, "-e", "on run argv",
-            "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
-            "-e", "end run", "--", clean_banner(text), clean_banner(title)]
+    return [
+        osascript,
+        "-e",
+        "on run argv",
+        "-e",
+        "display notification (item 1 of argv) with title (item 2 of argv)",
+        "-e",
+        "end run",
+        "--",
+        clean_banner(text),
+        clean_banner(title),
+    ]
 
 
 def _run_quiet(argv: Sequence[str]) -> None:
@@ -1520,9 +1901,15 @@ class Notifier:
     """A macOS banner plus an owner-queue entry.  Each `key` notifies at most once per `once_per`
     seconds (default a day), recorded in listener/notify.json so a restart does not repeat it."""
 
-    def __init__(self, root: str, *, clock: Callable[[], float] = time.time,
-                 runner: Callable[[Sequence[str]], None] | None = None, banners: bool = True,
-                 osascript: str = "/usr/bin/osascript") -> None:
+    def __init__(
+        self,
+        root: str,
+        *,
+        clock: Callable[[], float] = time.time,
+        runner: Callable[[Sequence[str]], None] | None = None,
+        banners: bool = True,
+        osascript: str = "/usr/bin/osascript",
+    ) -> None:
         self.root = root
         self.clock = clock
         self.runner = runner or _run_quiet
@@ -1531,10 +1918,22 @@ class Notifier:
         self.sent: list[list[str]] = []
         self.lock = threading.Lock()
 
-    def notify(self, seat: str, title: str, text: str, *, kind: str, key: str | None = None,
-               once_per: float = 86400.0, note: str | None = None, trigger_ids: Sequence[int] = (),
-               sender_id: Any = None, owner: bool = False, risk: str | None = None,
-               banners: bool | None = None) -> bool:
+    def notify(
+        self,
+        seat: str,
+        title: str,
+        text: str,
+        *,
+        kind: str,
+        key: str | None = None,
+        once_per: float = 86400.0,
+        note: str | None = None,
+        trigger_ids: Sequence[int] = (),
+        sender_id: Any = None,
+        owner: bool = False,
+        risk: str | None = None,
+        banners: bool | None = None,
+    ) -> bool:
         now = self.clock()
         key = key or "%s:%s" % (seat, kind)
         with self.lock:
@@ -1546,7 +1945,11 @@ class Notifier:
                 if isinstance(last, (int, float)) and now - last < once_per:
                     return
                 data[key] = now
-                for old in [k for k, v in data.items() if isinstance(v, (int, float)) and now - v > 7 * 86400]:
+                for old in [
+                    k
+                    for k, v in data.items()
+                    if isinstance(v, (int, float)) and now - v > 7 * 86400
+                ]:
                     data.pop(old, None)
                 fresh.append(True)
 
@@ -1558,10 +1961,24 @@ class Notifier:
             with L.locked(meta):
                 data = L.read_json(meta)
                 seq = int(data.get("next_seq") or 1)
-                L.append_jsonl(paths.owner_queue, [{"seq": seq, "ts": now, "seat": seat, "kind": kind,
-                                                    "title": clean_banner(title), "text": clean_banner(text, 300),
-                                                    "note": note, "trigger_ids": list(trigger_ids),
-                                                    "sender_id": sender_id, "owner": owner, "risk": risk}])
+                L.append_jsonl(
+                    paths.owner_queue,
+                    [
+                        {
+                            "seq": seq,
+                            "ts": now,
+                            "seat": seat,
+                            "kind": kind,
+                            "title": clean_banner(title),
+                            "text": clean_banner(text, 300),
+                            "note": note,
+                            "trigger_ids": list(trigger_ids),
+                            "sender_id": sender_id,
+                            "owner": owner,
+                            "risk": risk,
+                        }
+                    ],
+                )
                 data["next_seq"] = seq + 1
                 L.write_json(meta, data)
             argv = osascript_argv(self.osascript, text, title)
@@ -1578,11 +1995,16 @@ class Notifier:
 # Board filing (built, off by default:  board_per_day = 0)
 # --------------------------------------------------------------------------------------------
 
+
 def fleet_acronyms(repo_root: str = REPO_ROOT) -> set[str]:
     try:
         with open(os.path.join(repo_root, "fleet-apps.json"), encoding="utf-8") as fh:
             data = json.load(fh)
-        return {str(a["acronym"]).upper() for a in data.get("apps", []) if isinstance(a, dict) and a.get("acronym")}
+        return {
+            str(a["acronym"]).upper()
+            for a in data.get("apps", [])
+            if isinstance(a, dict) and a.get("acronym")
+        }
     except (OSError, ValueError, KeyError, TypeError):
         return {"AFC"}
 
@@ -1598,21 +2020,56 @@ def board_app(topic: str, acronyms: set[str]) -> str:
     return first if first in acronyms else "AFC"
 
 
-def board_argv(board: str, *, seat: str, title: str, desc: str, severity: str, app: str, trigger_id: int,
-               url: str) -> list[str]:
+# The daemon files this board item with no agent session behind it, and `board file` needs a session id from every
+# seat but the single-thread ones (AFC-361).  A label that is not a transcript id resolves to no session.
+BOARD_SESSION_LABEL = "agent-sync-wake"
+
+
+def board_argv(
+    board: str,
+    *,
+    seat: str,
+    title: str,
+    desc: str,
+    severity: str,
+    app: str,
+    trigger_id: int,
+    url: str,
+) -> list[str]:
     if severity not in ("P2", "P3"):
         raise ValueError("severity must be P2 or P3")
     if not re.fullmatch(r"[A-Z]{2,4}", app):
         raise ValueError("app must be a fleet acronym")
-    return [board, "file", "--title=" + title, "--desc=" + desc, "--severity=" + severity, "--app=" + app,
-            "--by", seat, "--env", "Mac", "--kind", "agent-report", "--uid", "zulip:%s:%d" % (seat, trigger_id),
-            "--url", url]
+    return [
+        board,
+        "file",
+        "--title=" + title,
+        "--desc=" + desc,
+        "--severity=" + severity,
+        "--app=" + app,
+        "--by",
+        seat,
+        "--env",
+        "Mac",
+        "--kind",
+        "agent-report",
+        "--uid",
+        "zulip:%s:%d" % (seat, trigger_id),
+        "--url",
+        url,
+        "--session",
+        BOARD_SESSION_LABEL,
+    ]
 
 
-def run_board(argv: Sequence[str], env: Mapping[str, str], runner: Callable[..., Any] | None = None) -> tuple[bool, str]:
+def run_board(
+    argv: Sequence[str], env: Mapping[str, str], runner: Callable[..., Any] | None = None
+) -> tuple[bool, str]:
     run = runner or subprocess.run
     try:
-        done = run(list(argv), capture_output=True, text=True, timeout=60, env=dict(env), check=False)
+        done = run(
+            list(argv), capture_output=True, text=True, timeout=60, env=dict(env), check=False
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, type(exc).__name__
     return done.returncode == 0, "exit %d" % done.returncode

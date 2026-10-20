@@ -2,7 +2,7 @@
 """board -- fleet findings board CLI (mac-collab).
 
 The one command every agent uses to file, claim, resolve, and discuss work.
-Reads MAC_COLLAB_TOKEN itself from ~/.secrets/mac-collab.env (or the env var),
+Reads MAC_COLLAB_TOKEN itself from Infisical Fleet-OPS /mac-collab (or the env var),
 so the token NEVER appears on a command line, in a process list, or in a
 transcript.  That is deliberate: it means this command can be allowlisted once
 and used without permission prompts or secret-redaction gymnastics.
@@ -33,6 +33,7 @@ import http.client
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -40,7 +41,7 @@ import urllib.request
 from pathlib import Path
 
 BASE = os.environ.get("MAC_COLLAB_URL", "http://127.0.0.1:8792")
-SECRETS = Path.home() / ".secrets" / "mac-collab.env"
+FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(Path.home() / ".local" / "bin" / "fleet-secrets")
 
 # The board server is single-process Python on a Mac that routinely runs a dozen
 # agent lanes building and testing at once.  At load average ~290 (2026-08-20) a
@@ -69,46 +70,36 @@ def canonical_seat(value: str | None) -> str | None:
 
 AUTH_FAIL_HINT = (
     "Auth rejected.  If MAC_COLLAB_TOKEN was rotated:\n"
-    "  1. Unset MAC_COLLAB_TOKEN in this process — file ~/.secrets/mac-collab.env "
-    "is canonical (mtime shown below).\n"
+    "  1. Unset MAC_COLLAB_TOKEN in this process — Infisical Fleet-OPS /mac-collab "
+    "(`fleet-secrets get MAC_COLLAB_TOKEN --path /mac-collab`) is canonical.\n"
     "  2. Restart mac-collab if it still has the old token in process env: "
     "pm2 restart mac-collab --update-env\n"
     "  3. Long-running agents that exported the token at session start need a new shell."
 )
 
 
-def _file_token() -> str:
-    if not SECRETS.is_file():
+def _vault_token() -> str:
+    """MAC_COLLAB_TOKEN from Infisical Fleet-OPS /mac-collab through `fleet-secrets get`, or ""."""
+    try:
+        proc = subprocess.run(
+            [FLEET_SECRETS, "get", "MAC_COLLAB_TOKEN", "--path", "/mac-collab"],
+            capture_output=True, text=True, timeout=60, check=False, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
         return ""
-    for line in SECRETS.read_text().splitlines():
-        s = line.strip()
-        if s.startswith("export "):
-            s = s[7:]
-        if s.startswith("MAC_COLLAB_TOKEN="):
-            return s.split("=", 1)[1].strip().strip('"').strip("'")
-    return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
 def token() -> str:
-    # File wins so a rotation of ~/.secrets/mac-collab.env is visible to the
-    # next `board` invocation without restarting this shell.  Env is the
-    # fallback for cloud seats that have no file.
-    file_tok = _file_token()
-    if file_tok:
-        return file_tok
+    # Infisical wins so a rotation is visible to the next `board` invocation without restarting this
+    # shell.  Env is the fallback for cloud seats and hosts with no fleet-secrets.
+    vault_tok = _vault_token()
+    if vault_tok:
+        return vault_tok
     tok = os.environ.get("MAC_COLLAB_TOKEN", "").strip()
     if tok:
         return tok
-    sys.exit("board: MAC_COLLAB_TOKEN not found (env or ~/.secrets/mac-collab.env)")
-
-
-def _secrets_mtime_label() -> str:
-    try:
-        if SECRETS.is_file():
-            return str(int(SECRETS.stat().st_mtime))
-    except OSError:
-        pass
-    return "missing"
+    sys.exit("board: MAC_COLLAB_TOKEN not found (env, or Infisical Fleet-OPS /mac-collab through fleet-secrets)")
 
 
 def call(method: str, path: str, payload: dict | None = None):
@@ -126,7 +117,7 @@ def call(method: str, path: str, payload: dict | None = None):
         if e.code == 401:
             extra = (
                 f"\n{AUTH_FAIL_HINT}\n"
-                f"  secrets file mtime={_secrets_mtime_label()}  "
+                "  token source: Infisical /mac-collab  "
                 f"env_set={'yes' if os.environ.get('MAC_COLLAB_TOKEN', '').strip() else 'no'}"
             )
         sys.exit(f"board: HTTP {e.code} on {method} {path}\n{body}{extra}")

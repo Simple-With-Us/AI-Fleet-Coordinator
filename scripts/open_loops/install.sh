@@ -18,7 +18,7 @@
 # /opt/homebrew/bin/python3), so a BotFleet routine's short PATH cannot pick an older Python and the link
 # always runs isolated.  If no Python 3.11 is found the line is left as it is and a note says so.
 #
-# It touches nothing else:  no LaunchAgent, no pm2, no network, and nothing under ~/.secrets.  Every path is
+# It touches nothing else:  no LaunchAgent, no pm2, no network, and no credential files.  Every path is
 # built from $HOME, so a test can point HOME at a temp folder.  Run it from a checkout of the repository
 # (a lane or the managed runtime checkout), never from the human tree under ~/Code.
 set -eu

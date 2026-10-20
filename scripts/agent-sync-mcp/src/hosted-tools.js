@@ -18,6 +18,7 @@ import {
   READ_TOOLS,
   BODY_LIMIT,
   NAME_LIMIT,
+  MAX_CONTENT_LENGTH,
   RESOLVED_PREFIX,
   ToolError,
   ApiError,
@@ -119,7 +120,7 @@ import {
   CLOSING_STATUSES,
   STATUS_WORDS,
 } from "./linear.js";
-import { sentenceGap } from "./textfmt.js";
+import { fixOutbound, sentenceGap } from "./textfmt.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { LISTENER_TOOLS, LISTENER_READ_TOOLS, LISTENER_METHODS } from "./listener.js";
@@ -460,9 +461,9 @@ export class HostedTools {
     this.me = { user_id: me.user_id, role: me.role };
   }
 
-  // Keep Cursor's parallel Linear work separate from its Zulip allowance.
+  // Every seat's Linear work has its own allowance, separate from its Zulip one (owner 2026-10-19).
   async reserveLinear(kind) {
-    return this.reserve(this.callerSeat === "CURSOR" ? `linear_${kind}` : kind);
+    return this.reserve(`linear_${kind}`);
   }
 
   async reserve(kind) {
@@ -811,10 +812,11 @@ export class HostedTools {
     return okResult(JSON.stringify(result), result);
   }
 
+  /** [content, reformatted]:  the report is kept so the caller learns the fleet format, as the stdio path does. */
   async compose(text, to, session) {
     const { mentions, labels } = await this.resolveTo(to);
     try {
-      return sentenceGap(composeBody(tagPrefix(this.seat, sessionTag(session)), text, { labels, mentions }));
+      return fixOutbound(composeBody(tagPrefix(this.seat, sessionTag(session)), text, { labels, mentions }), { limit: MAX_CONTENT_LENGTH });
     } catch (error) {
       if (error instanceof UsageError) throw new ToolError("invalid_argument", error.message);
       throw error;
@@ -838,11 +840,11 @@ export class HostedTools {
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const prior = await this.gate.idemPeek({ key: idem.key });
     if (prior) return this.writeResult({ id: prior.id, channel_id: prior.channel_id ?? channelId, duplicate: true });
-    const content = await this.compose(text, to, args.session);
+    const [content, reformatted] = await this.compose(text, to, args.session);
     audit.body_len = [...content].length;
     const result = await this.deliver(idem, { content, channelId, topic, check: { channel, topic, include_self: true } });
     audit.message_id = result.id;
-    return this.writeResult(result);
+    return this.writeResult({ ...result, ...(reformatted.length ? { reformatted } : {}) });
   }
 
   async tool_reply(args, audit) {
@@ -863,12 +865,12 @@ export class HostedTools {
     const topic = String(original.subject ?? original.topic ?? "");
     audit.channel_id = channelId;
     audit.topic = await this.auditTopic(topic);
-    const content = await this.compose(text, to, args.session);
+    const [content, reformatted] = await this.compose(text, to, args.session);
     audit.body_len = [...content].length;
     // The topic comes from Zulip, so the check names the message, never the topic.
     const result = await this.deliver(idem, { content, channelId, topic, check: { reply_to: messageId, include_self: true } });
     audit.message_id = result.id;
-    return this.writeResult(result);
+    return this.writeResult({ ...result, ...(reformatted.length ? { reformatted } : {}) });
   }
 
   async tool_react(args, audit) {
@@ -1018,9 +1020,9 @@ export class HostedTools {
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const prior = await this.gate.idemPeek({ key: idem.key });
     if (prior) return this.dmResult({ id: prior.id, userIds, duplicate: true });
-    let content;
+    let content, reformatted;
     try {
-      content = sentenceGap(composeBody(tagPrefix(this.seat, tag), text, { labels: users.map(seatTagFor) }));
+      [content, reformatted] = fixOutbound(composeBody(tagPrefix(this.seat, tag), text, { labels: users.map(seatTagFor) }), { limit: MAX_CONTENT_LENGTH });
     } catch (error) {
       if (error instanceof UsageError) throw new ToolError("invalid_argument", error.message);
       throw error;
@@ -1028,11 +1030,11 @@ export class HostedTools {
     audit.body_len = [...content].length;
     const result = await this.deliver(idem, { content, channelId: 0, topic: "", dm: userIds, check: { user_ids: userIds, include_self: true } });
     audit.message_id = result.id;
-    return this.dmResult({ id: result.id, userIds, duplicate: result.duplicate });
+    return this.dmResult({ id: result.id, userIds, duplicate: result.duplicate, reformatted });
   }
 
-  dmResult({ id, userIds, duplicate }) {
-    return this.writeResult({ id, user_ids: userIds, duplicate });
+  dmResult({ id, userIds, duplicate, reformatted }) {
+    return this.writeResult({ id, user_ids: userIds, duplicate, ...(reformatted?.length ? { reformatted } : {}) });
   }
 
   // ---------------------------------------------------------------- FleetLink (AFC-328)
@@ -1230,6 +1232,8 @@ export class HostedTools {
 
   /** The seat tag line that opens every body it writes, as the Zulip tools do. */
   linearBody(text, session) {
+    // Linear records keep their ISO dates:  only the sentence gap is fixed here.  The fleet date format is a Zulip
+    // rule, and a Linear issue that says "Blocked until 2026-11-02" means that date there, not "Mon, Nov 2".
     return neutralizeLinearMentions(sentenceGap(`${tagPrefix(this.seat, sessionTag(session))}] ${text}`));
   }
 

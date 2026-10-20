@@ -14,7 +14,11 @@ not, that the partition does not give to its own instance (a seat of the other i
 `none` seat, or a seat the partition does not list), or a section that reads another listed
 seat's credential, refuses to start, so a seat is never held twice.
 
-Credentials:  `creds = "file"` (the default) reads <secrets dir>/<bot>-zuliprc.  `creds = "env"`
+Credentials:  `creds = "file"` (the default) is the seat's own bot, named by `bot` (its credential
+file stem, e.g. Grok-Build):  read from Infisical Fleet-OPS /zulip as <BOT>_ZULIP_EMAIL, _KEY and _SITE
+(BOT is the stem in upper case with hyphens as underscores), or from <dir>/<bot>-zuliprc only when the
+explicit override AGENT_SYNC_SECRETS_DIR is set (there is no default folder, AFC-359).
+`creds = "infisical"` is the same without the file override.  `creds = "env"`
 (server instance only) reads the seat's email and key from environment variables named in the
 config, ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY by default (CODE is the seat with hyphens
 as underscores), and the site from ZULIP_SITE.  The realm host is still enforced.
@@ -27,6 +31,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from . import live as L
@@ -219,6 +224,7 @@ class SeatConfig:
         fallback: str | None = None,
         fallback_uncontained_ok: bool = False,
         muse_bridge: bool = False,
+        config_problems: list[str] | None = None,
     ) -> None:
         self.seat = seat
         self.bot = bot
@@ -241,7 +247,7 @@ class SeatConfig:
         self.provider = provider  # the CodeCaps provider name this seat's quota is read under
         self.instance = instance
         self.enabled = enabled
-        self.creds = creds  # "file" or "env"
+        self.creds = creds  # "file", "infisical" or "env"
         self.email_env = email_env
         self.key_env = key_env
         self.site_env = site_env
@@ -249,6 +255,9 @@ class SeatConfig:
         self.muse_bridge = (
             muse_bridge  # default-off central decision path; original adapter stays configured
         )
+        # Wake-config problems found in this seat's section (AFC-358).  The seat connects and captures
+        # anyway;  its wake was downgraded to inbox, and status shows the seat red until they are fixed.
+        self.config_problems: list[str] = list(config_problems or [])
         self.route_enabled = route_enabled  # the per-seat kill switch for wake route suggestions
         self.held_back: dict[str, Any] = (
             held_back if held_back is not None else held_back_defaults(wake)
@@ -304,6 +313,9 @@ class Config:
         self.muse_bridge_enabled = False
         self.muse_bridge_remote_seats: tuple[str, ...] = ()
         self.errors: list[str] = []
+        # Seats a config problem kept out entirely (AFC-358):  seat -> why.  They have no runner, so
+        # status shows them as a red row instead of letting them vanish.
+        self.skipped_seats: dict[str, list[str]] = {}
         self.instance = "mac"
         self.owner_user_id = 0
         self.eligible_user_ids: set[int] = set()
@@ -314,7 +326,8 @@ class Config:
         self.owner_coalesce_seconds = 5.0
         self.presence: list[tuple[str, str]] = [(c, t) for c, t in L.DEFAULT_PRESENCE]
         self.claude_seat: str | None = None
-        self.rewake_verified = False
+        self.rewake_verified_cli = False
+        self.rewake_verified_desktop = False
         self.seats: dict[str, SeatConfig] = {}
         self.disabled: dict[
             str, SeatConfig
@@ -357,6 +370,11 @@ class Config:
         self.host_wake_load_per_core = 3.0
         self.host_wake_defer_max_minutes = 20.0
         self.host_wake_max_running = 0
+
+    @property
+    def rewake_verified(self) -> bool:
+        """True only when both surfaces are verified (the blanket answer for an unnamed surface)."""
+        return self.rewake_verified_cli and self.rewake_verified_desktop
 
     @property
     def ok(self) -> bool:
@@ -756,7 +774,12 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             cfg.claude_seat = seat.upper()
         else:
             errors.append("platform.claude-code.seat must be a seat name such as CLAUDE")
-    cfg.rewake_verified = L.rewake_verified(raw)
+    cfg.rewake_verified_cli, cfg.rewake_verified_desktop = L.rewake_flags(raw)
+    for key in L.REWAKE_SURFACE_KEYS:
+        if key in platform and not isinstance(platform[key], bool):
+            # Fail soft:  the flag is False for that surface (never the legacy value) and the seat keeps
+            # capturing;  the problem shows in status and raises the config banner.
+            errors.append("platform.claude-code.%s must be true or false;  treated as false" % key)
     seats = raw.get("seat") or {}
     if not isinstance(seats, dict):
         errors.append("[seat.X] sections must be tables")
@@ -765,8 +788,16 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         seat_name = str(name).upper()
         if not _SEAT_RE.match(seat_name) or not isinstance(section, dict):
             errors.append("seat.%s is not a valid seat section" % name)
+            if _SEAT_RE.match(seat_name):  # an unsafe name never becomes a path or a status key
+                cfg.skipped_seats[seat_name] = ["not a valid seat section"]
             continue
+        # Two kinds of problem (AFC-358).  `problems` stop the seat:  without a valid instance, credential
+        # and environment names there is no bot to connect as, so nothing can be captured.
+        # `wake_problems` concern only how the seat is WOKEN (the wake type, its binaries, the model,
+        # a routine, the budgets):  the seat still connects and still queues every message, and only
+        # its wake drops to inbox.  A typo in a wake key once cost a seat 41 minutes of mentions.
         problems: list[str] = []
+        wake_problems: list[str] = []
         seat_instance = section.get("instance")
         if seat_instance is not None and seat_instance not in INSTANCES:
             problems.append(
@@ -780,26 +811,27 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             enabled = True
         route_enabled = section.get("route_enabled", True)
         if not isinstance(route_enabled, bool):
-            problems.append("seat.%s.route_enabled must be true or false" % seat_name)
+            wake_problems.append("seat.%s.route_enabled must be true or false" % seat_name)
             route_enabled = True
         muse_bridge = section.get("muse_bridge", False)
         if not isinstance(muse_bridge, bool):
-            problems.append("seat.%s.muse_bridge must be true or false" % seat_name)
+            wake_problems.append("seat.%s.muse_bridge must be true or false" % seat_name)
             muse_bridge = False
         creds = section.get("creds", "file")
-        if creds not in ("file", "env"):
+        if creds not in ("file", "infisical", "env"):
             problems.append(
-                'seat.%s.creds must be "file" (a zuliprc) or "env" (environment variables)'
+                'seat.%s.creds must be "file" (the bot\'s own credential:  Infisical /zulip, or a zuliprc '
+                'in AGENT_SYNC_SECRETS_DIR), "infisical" or "env" (environment variables)'
                 % seat_name
             )
             creds = "file"
         if creds == "env" and cfg.instance != "server":
             problems.append(
-                'seat.%s.creds = "env" is for the server instance only; the Mac instance reads one '
-                "credential file per seat" % seat_name
+                'seat.%s.creds = "env" is for the server instance only; the Mac instance reads each '
+                "seat's own bot from Infisical /zulip" % seat_name
             )
         bot = section.get("bot")
-        if creds == "file" or bot is not None:
+        if creds in ("file", "infisical") or bot is not None:
             if not isinstance(bot, str) or not _BOT_RE.match(bot):
                 problems.append(
                     "seat.%s.bot must be the credential file code (e.g. Claude for Claude-zuliprc)"
@@ -834,81 +866,89 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                     problems.append('seat.%s.%s applies only to creds = "env"' % (seat_name, key))
         wake = section.get("wake", "inbox")
         if wake not in KNOWN_WAKES:
-            problems.append("seat.%s.wake must be one of %s" % (seat_name, ", ".join(KNOWN_WAKES)))
+            wake_problems.append(
+                "seat.%s.wake must be one of %s" % (seat_name, ", ".join(KNOWN_WAKES))
+            )
         routine = None
         if wake == "http":
-            routine = _routine(seat_name, section.get("routine"), problems)
+            routine = _routine(seat_name, section.get("routine"), wake_problems)
         elif "routine" in section:
-            problems.append('seat.%s.routine applies only to wake = "http"' % seat_name)
+            wake_problems.append('seat.%s.routine applies only to wake = "http"' % seat_name)
         model = section.get("model") or (MUSE_DEFAULT_MODEL if wake == "muse" else "sonnet")
         if not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
-            problems.append("seat.%s.model must be a model alias such as sonnet" % seat_name)
+            wake_problems.append("seat.%s.model must be a model alias such as sonnet" % seat_name)
         claude = section.get("claude")
         if claude is not None and (not isinstance(claude, str) or not os.path.isabs(claude)):
-            problems.append("seat.%s.claude must be an absolute path" % seat_name)
+            wake_problems.append("seat.%s.claude must be an absolute path" % seat_name)
         muse = section.get("muse")
         if muse is not None and (not isinstance(muse, str) or not os.path.isabs(muse)):
-            problems.append("seat.%s.muse must be an absolute path" % seat_name)
+            wake_problems.append("seat.%s.muse must be an absolute path" % seat_name)
         if wake != "muse" and "muse" in section:
-            problems.append('seat.%s.muse applies only to wake = "muse"' % seat_name)
+            wake_problems.append('seat.%s.muse applies only to wake = "muse"' % seat_name)
         mcode = section.get("mcode")
         if mcode is not None and (not isinstance(mcode, str) or not os.path.isabs(mcode)):
-            problems.append("seat.%s.mcode must be an absolute path" % seat_name)
+            wake_problems.append("seat.%s.mcode must be an absolute path" % seat_name)
         if "mcode" in section and wake not in ("claude", "muse"):
-            problems.append('seat.%s.mcode applies only to wake = "claude" or "muse"' % seat_name)
+            wake_problems.append(
+                'seat.%s.mcode applies only to wake = "claude" or "muse"' % seat_name
+            )
         # The fallback runtime, tried only when the primary could not produce a usable answer.  It
         # is never consulted for a quota refusal:  a capped provider stays capped whatever runs.
         fallback = section.get("fallback")
         if fallback is not None and fallback not in KNOWN_FALLBACKS:
-            problems.append(
+            wake_problems.append(
                 "seat.%s.fallback must be one of %s" % (seat_name, ", ".join(KNOWN_FALLBACKS))
             )
         if fallback is not None and wake not in WORKER_WAKES:
-            problems.append("seat.%s.fallback applies only to a wake that runs a turn" % seat_name)
+            wake_problems.append(
+                "seat.%s.fallback applies only to a wake that runs a turn" % seat_name
+            )
         if fallback is not None and fallback == wake:
-            problems.append("seat.%s.fallback may not be its own wake type" % seat_name)
+            wake_problems.append("seat.%s.fallback may not be its own wake type" % seat_name)
         # Naming a fallback is not enough to run it.  mcode's tools are live while it answers, and a
         # parent cannot undo a side effect that already happened inside the child, so the fallback
         # runtime is not contained to the posture an unattended wake needs (measured: asked to write
         # a file under the wake argv, it wrote one).  A seat must say so explicitly in the config
         # before the fallback is ever trusted, on top of pinning the binary.
         if "fallback_uncontained_ok" in section and fallback is None:
-            problems.append(
+            wake_problems.append(
                 "seat.%s.fallback_uncontained_ok applies only with a fallback" % seat_name
             )
         uncontained = section.get("fallback_uncontained_ok", False)
         if not isinstance(uncontained, bool):
-            problems.append("seat.%s.fallback_uncontained_ok must be true or false" % seat_name)
+            wake_problems.append(
+                "seat.%s.fallback_uncontained_ok must be true or false" % seat_name
+            )
         provider = section.get("provider")
         if provider is not None:
             if not isinstance(provider, str) or not re.fullmatch(
                 r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,60}", provider
             ):
-                problems.append(
+                wake_problems.append(
                     'seat.%s.provider must be a provider name such as "Claude Code" or "MiniMax"'
                     % seat_name
                 )
             elif wake not in ("claude", "muse"):
-                problems.append(
+                wake_problems.append(
                     'seat.%s.provider applies only to wake = "claude" or "muse"' % seat_name
                 )
         budget = dict(BUDGET_DEFAULTS)
         given = section.get("budget", {})
         if not isinstance(given, dict):
-            problems.append("seat.%s.budget must be a table" % seat_name)
+            wake_problems.append("seat.%s.budget must be a table" % seat_name)
             given = {}
         for key, value in given.items():
             if key not in BUDGET_DEFAULTS:
-                problems.append("seat.%s.budget.%s is not a known budget" % (seat_name, key))
+                wake_problems.append("seat.%s.budget.%s is not a known budget" % (seat_name, key))
                 continue
-            number = _number(value, "seat.%s.budget.%s" % (seat_name, key), problems)
+            number = _number(value, "seat.%s.budget.%s" % (seat_name, key), wake_problems)
             if number is not None:
                 budget[key] = number
         held_back = _held_back(
             seat_name,
             str(wake),
             section.get("held_back", {}),
-            problems,
+            wake_problems,
             catch_up=cfg.held_back_catch_up,
         )
         if "allow_admin" in section:
@@ -927,20 +967,33 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             )
             if name
         ]
+        routine_names = {routine.url_env, routine.key_env} if routine else set()
         for name in sorted({n for n in used if used.count(n) > 1}):
-            problems.append(
+            message = (
                 "seat.%s uses %s for more than one setting; its Zulip email, key and site and its routine "
                 "URL and key must be separate variables (a shared one could send the bot key to the "
                 "routine)" % (seat_name, name)
             )
+            (wake_problems if name in routine_names else problems).append(message)
         if routine is not None and DEFAULT_SITE_ENV in (routine.url_env, routine.key_env):
-            problems.append(
+            wake_problems.append(
                 "seat.%s.routine may not read %s, the Zulip site variable"
                 % (seat_name, DEFAULT_SITE_ENV)
             )
         if problems:
             errors.extend(problems)
+            errors.extend(wake_problems)
+            cfg.skipped_seats[seat_name] = problems + wake_problems
             continue
+        if wake_problems:
+            # Fail soft:  keep the seat connected and capturing, wake it by inbox only, and say why.
+            errors.extend(wake_problems)
+            wake, routine, fallback, held_back = "inbox", None, None, None
+            claude = muse = mcode = None
+            uncontained = False
+            provider = None
+            if not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
+                model = "sonnet"
         seat_cfg = SeatConfig(
             seat_name,
             bot,
@@ -964,6 +1017,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             fallback=fallback,
             fallback_uncontained_ok=uncontained,
             muse_bridge=muse_bridge,
+            config_problems=wake_problems,
         )
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
@@ -996,6 +1050,9 @@ def _refuse_shared_env(cfg: Config) -> None:
             for seat in seats:
                 cfg.seats.pop(seat, None)
                 cfg.disabled.pop(seat, None)
+                cfg.skipped_seats.setdefault(seat, []).append(
+                    "environment variable %s is shared with another seat" % name
+                )
 
 
 def load(root: str, path: str | None = None) -> Config:
@@ -1020,10 +1077,12 @@ def load(root: str, path: str | None = None) -> Config:
 
 
 def seat_credentials(
-    seat_cfg: SeatConfig, env: Mapping[str, str], secrets_dir: str
+    seat_cfg: SeatConfig, env: Mapping[str, str], secrets_dir: str | None
 ) -> Z.Credentials:
-    """The one place a listener seat's credentials are read:  its own zuliprc file, or (creds =
-    "env") the environment variables its config names.  Never ZULIP_RC or the CLI's triple."""
+    """The one place a listener seat's credentials are read:  its own bot's keys in Infisical /zulip
+    (named by `bot`), its zuliprc in `secrets_dir` (only the explicit AGENT_SYNC_SECRETS_DIR override,
+    never a default), or (creds = "env") the environment variables its config names.  Never ZULIP_RC
+    or the CLI's triple."""
     if seat_cfg.creds == "env":
         assert seat_cfg.email_env and seat_cfg.key_env
         return Z.env_credentials(
@@ -1033,7 +1092,31 @@ def seat_credentials(
             site_env=seat_cfg.site_env,
             label=seat_cfg.seat,
         )
-    return Z.read_zuliprc(os.path.join(secrets_dir, seat_cfg.bot + "-zuliprc"))
+    if seat_cfg.creds == "file" and secrets_dir:
+        return Z.read_zuliprc(os.path.join(secrets_dir, seat_cfg.bot + "-zuliprc"))
+    return Z.infisical_credentials(
+        seat_cfg.seat,
+        env=env,
+        home=Path(env.get("HOME") or os.path.expanduser("~")),
+        stem=seat_cfg.bot,
+    )
+
+
+def seat_credential_present(
+    seat_cfg: SeatConfig, env: Mapping[str, str], secrets_dir: str | None
+) -> bool:
+    """Whether the seat's credential exists (names only, never a value):  the override file, or its
+    three /zulip names in Infisical, or (creds = "env") its variables."""
+    if seat_cfg.creds == "env":
+        return all(
+            (env.get(n) or "").strip()
+            for n in (seat_cfg.email_env, seat_cfg.key_env, seat_cfg.site_env)
+            if n
+        )
+    if seat_cfg.creds == "file" and secrets_dir:
+        return os.path.isfile(os.path.join(secrets_dir, seat_cfg.bot + "-zuliprc"))
+    names = Z.infisical_names(env)
+    return all(n in names for n in Z.infisical_key_names_for_stem(seat_cfg.bot))
 
 
 # --------------------------------------------------------------------------------------------
@@ -1092,7 +1175,7 @@ def credential_aliases(seat_cfg: SeatConfig, known: set[str]) -> list[tuple[str,
     `key_env` in another seat's default pattern (ZULIP_GB_COMPILER_API_KEY).  Custom names that
     match no known seat pass here; the connect-time users/me check still refuses them."""
     found: list[tuple[str, str]] = []
-    if seat_cfg.creds == "file":
+    if seat_cfg.creds in ("file", "infisical"):
         owner = Z.seat_from_rc_path(seat_cfg.bot + "-zuliprc")
         if owner and owner != seat_cfg.seat and owner in known:
             found.append(("bot = %r (%s-zuliprc)" % (seat_cfg.bot, seat_cfg.bot), owner))

@@ -57,7 +57,7 @@ API = "https://api.cloudflare.com/client/v4"
 
 def _load(name: str) -> str:
     """One credential:  the environment first, then `fleet-secrets get` (OPS-818).  The flat
-    file ~/.secrets/global-api-keys is retired.  Only the name is ever reported."""
+    handoff file is retired (AFC-359).  Only the name is ever reported."""
     value = os.environ.get(name, "").strip()
     if value:
         return value

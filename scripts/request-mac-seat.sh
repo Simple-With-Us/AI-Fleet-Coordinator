@@ -37,7 +37,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FLEET_APPS="${REPO_ROOT}/fleet-apps.json"
 OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
 # Zulip posting needs no shared secret: the agent-sync CLI reads the seat's own
-# ~/.secrets/Zulip/<file code>-zuliprc.  The old AGENT_SYNC_POST_URL / AGENT_SYNC_ENV
+# Zulip credential (Infisical Fleet-OPS /zulip).  The old AGENT_SYNC_POST_URL / AGENT_SYNC_ENV
 # relay is retired and deliberately not referenced here.
 ZULIP_CHANNEL="${ZULIP_CHANNEL:-agent-sync}"
 
@@ -169,8 +169,8 @@ run gh issue create \
   --label "needs-mac"
 
 if [ "$NO_ZULIP" -eq 0 ]; then
-  # Post to Zulip with the seat's own bot via the agent-sync CLI.  The CLI reads
-  # that seat's ~/.secrets/Zulip/<file code>-zuliprc itself, so there is no
+  # Post to Zulip with the seat's own bot via the agent-sync CLI.  The CLI resolves
+  # that seat's own Zulip credential (Infisical /zulip) itself, so there is no
   # shared bearer token to parse, rotate, or leak in this script.  (The old relay
   # POST is retired; see AGENT-SYNC.md.)
   TEXT="repo: ${REPO_NAME} | needs-mac ${REASON}: ${TITLE}"

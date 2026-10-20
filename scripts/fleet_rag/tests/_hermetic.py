@@ -1,9 +1,6 @@
-"""Shared hermeticity helper: isolate a test from this machine's real ~/.secrets and Infisical.
+"""Shared hermeticity helper: isolate a test from this machine's real credentials and Infisical.
 
-fleet_rag.public_fallback's PUBLIC_ENV_FILES / CF_ACCESS_FILE are resolved from
-pathlib.Path.home() at IMPORT time (see public_fallback.py), *before* any test's setUp runs.
-Patching os.environ["HOME"] from inside a test therefore does nothing to them -- the real path
-was already captured.  And an owner's Mac has `fleet-secrets` installed (OPS-818), which
+An owner's Mac has `fleet-secrets` installed (OPS-818), which
 fleet_rag.core falls back to for missing credentials.  A test that reaches any of these unpatched
 seams will read real credentials and, if fleet_rag.core.infisical_login() then succeeds, make a
 real network call to Infisical -- slow, and a genuine credential leak into the test process.
@@ -29,7 +26,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from fleet_rag import core, public_fallback
+from fleet_rag import core
 
 
 class HermeticCredentialsMixin:
@@ -46,7 +43,6 @@ class HermeticCredentialsMixin:
         home = pathlib.Path(tmp.name)
         # Deliberately absent -- these paths are never created under `home`.
         absent_handoff = home / ".secrets" / "no-such-handoff"
-        absent_cf_access = home / ".secrets" / "no-such-cf-access"
 
         env_patch = mock.patch.dict(
             os.environ,
@@ -58,23 +54,9 @@ class HermeticCredentialsMixin:
         env_patch.start()
         self.addCleanup(env_patch.stop)
 
-        # public_fallback's PUBLIC_ENV_FILES / CF_ACCESS_FILE were computed from the REAL home
-        # directory when their module was first imported -- the HOME patch above cannot reach
-        # them.  FLEET_RAG_HANDOFF_FILE covers core.handoff_file() callers (core._identity, via
-        # infisical_login); these patches cover direct readers of the already-captured
-        # attributes, and the `fleet-secrets` fallback is switched off so no test shells out.
-        for patcher in (
-            mock.patch.object(public_fallback, "CF_ACCESS_FILE", absent_cf_access),
-            mock.patch.object(
-                public_fallback,
-                "PUBLIC_ENV_FILES",
-                {
-                    "CF_ACCESS_CLIENT_ID": absent_cf_access,
-                    "CF_ACCESS_CLIENT_SECRET": absent_cf_access,
-                },
-            ),
-            mock.patch.object(core, "_fleet_secrets_bin", lambda: None),
-        ):
+        # FLEET_RAG_HANDOFF_FILE covers core.handoff_file() callers (core._identity, via
+        # infisical_login);  the `fleet-secrets` fallback is switched off so no test shells out.
+        for patcher in (mock.patch.object(core, "_fleet_secrets_bin", lambda: None),):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -103,9 +85,6 @@ class _SelfTest(HermeticTestCase):
         self.assertFalse(core.handoff_file().exists())
         self.assertIsNone(core._fleet_secrets_bin())
         self.assertEqual(core.fleet_secrets_many(["TEI_URL"]), {})
-        self.assertFalse(public_fallback.CF_ACCESS_FILE.exists())
-        for path in public_fallback.PUBLIC_ENV_FILES.values():
-            self.assertFalse(path.exists())
 
     def test_infisical_login_is_stubbed_out(self) -> None:
         self.assertIsNone(core.infisical_login())

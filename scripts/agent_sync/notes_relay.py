@@ -15,6 +15,8 @@ A request runs only when ALL of these hold, checked here and nowhere else:
   2. the message holds one well-formed envelope (notes.parse_message);
   3. envelope.identity is the sender's own identity (not merely an allowed one);
   4. the title's Agent is the sender's own name (notes.title_problem);
+  4b. a create or update carries a session id (envelope `session`, AFC-361) unless the sender is a single-thread
+     identity (session_ids.is_exempt:  Grok bots, Rob, Jet, Wise, Echo);
   5. the request_id was never run before for that sender (a duplicate gets the earlier outcome's reaction
      and never runs twice).
 
@@ -34,6 +36,7 @@ to exactly one reply.
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -44,18 +47,22 @@ import queue
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from . import identities as X
 from . import identity as I
 from . import notes as N
 from . import secretscan
+from . import session_ids as SID
 from . import wakes as W
 from . import zulip as Z
 
 PROCESSED_LIMIT = 2000
-SPOOL_LIMIT = 1000  # pending requests kept on disk;  past it `offer` says no and the daemon holds the cursor
+SPOOL_LIMIT = (
+    1000  # pending requests kept on disk;  past it `offer` says no and the daemon holds the cursor
+)
 RELAY_DIR = "notes-relay"  # <state>/notes-relay/:  seat-independent, so a change of consumer seat strands nothing
 SPOOL_DIR = "spool"
 RETRY_SECONDS = 60.0
@@ -72,14 +79,17 @@ def unknown_emoji(exc: Z.ApiError) -> bool:
     """Zulip's answer to an emoji name it does not know:  HTTP 400 naming the emoji.  Nothing else may fall
     through to the alias."""
     text = ("%s %s" % (exc.msg, exc.data.get("msg") if isinstance(exc.data, dict) else "")).lower()
-    return exc.status == 400 and "emoji" in text and ("not exist" in text or "invalid" in text or "unknown" in text)
+    return (
+        exc.status == 400
+        and "emoji" in text
+        and ("not exist" in text or "invalid" in text or "unknown" in text)
+    )
 
 
 def retryable(exc: Z.ApiError) -> bool:
     """An API failure a later attempt can fix:  rate limit, server error, timeout, or a credential or permission
     error (the owner can repair those).  Anything else 4xx is a permanent refusal."""
     return exc.status is None or exc.status in (401, 403, 408, 429) or exc.status >= 500
-
 
 
 def _fsync_dir(path: str) -> None:
@@ -89,6 +99,7 @@ def _fsync_dir(path: str) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
 
 class Refusal(Exception):
     """A request that must not run.  The text is the reason a sender reads in the reply.  `code` is a fixed category
@@ -114,18 +125,28 @@ def sender_identity(person: Mapping[str, Any] | None, owner_user_id: int = 0) ->
     if not person:
         raise Refusal("the sender is not a user this listener knows", code="sender_unknown")
     if owner_user_id and person.get("user_id") == owner_user_id:
-        raise Refusal("the owner's own account does not send notes requests;  write the note directly", code="sender_owner")
+        raise Refusal(
+            "the owner's own account does not send notes requests;  write the note directly",
+            code="sender_owner",
+        )
     if not person.get("is_bot"):
         raise Refusal("only a fleet agent bot may send a notes request", code="sender_not_bot")
     tag = I.seat_tag_for(person)
     problem = X.agent_identity_problem(tag)
     if problem:
-        raise Refusal("the sender is not a fleet agent identity:  %s" % problem[:120], code="sender_identity")
+        raise Refusal(
+            "the sender is not a fleet agent identity:  %s" % problem[:120], code="sender_identity"
+        )
     return tag
 
 
-def validate(message: Mapping[str, Any], person: Mapping[str, Any] | None, *, owner_user_id: int = 0,
-             registry_path: str | None = None) -> tuple[str, dict[str, Any]]:
+def validate(
+    message: Mapping[str, Any],
+    person: Mapping[str, Any] | None,
+    *,
+    owner_user_id: int = 0,
+    registry_path: str | None = None,
+) -> tuple[str, dict[str, Any]]:
     """(sender identity, envelope) for a request that may run, else Refusal.  A refusal of a message whose envelope
     parses carries that envelope's request_id, whichever check refused it."""
     try:
@@ -141,11 +162,22 @@ def validate(message: Mapping[str, Any], person: Mapping[str, Any] | None, *, ow
     if parsed is None:
         raise Refusal("not a notes request:  %s" % parse_error, code="envelope") from None
     if parsed["identity"] != identity:
-        raise Refusal("envelope identity %s is not the sender, %s" % (parsed["identity"][:40], identity), request_id,
-                      "identity_mismatch")
+        raise Refusal(
+            "envelope identity %s is not the sender, %s" % (parsed["identity"][:40], identity),
+            request_id,
+            "identity_mismatch",
+        )
     problem = N.title_problem(parsed["title"], identity, registry_path=registry_path)
     if problem:
         raise Refusal(problem, request_id, "title")
+    if parsed["action"] in ("create", "update"):
+        # AFC-361:  a write carries the session id of the agent that sent it.  The exemption is judged from the
+        # sender's own bot (identity, checked above), never from a field of the envelope, and the listener's own
+        # environment is not the sender's, so only the envelope's value counts (env={}).
+        try:
+            SID.require(identity, parsed.get("session"), {}, "relay")
+        except ValueError as exc:  # SessionRequired is a ValueError
+            raise Refusal(str(exc), request_id, "session") from None
     return identity, parsed
 
 
@@ -193,12 +225,16 @@ class Processed:
                 return str(rows[key].get("outcome") or "started")
             rows[key] = {"outcome": "started", "message_id": message_id, "ts": int(self.clock())}
             if len(rows) > PROCESSED_LIMIT:
-                for old in sorted(rows, key=lambda k: rows[k].get("ts", 0))[: len(rows) - PROCESSED_LIMIT]:
+                for old in sorted(rows, key=lambda k: rows[k].get("ts", 0))[
+                    : len(rows) - PROCESSED_LIMIT
+                ]:
                     rows.pop(old, None)
             self._write(rows)
             return None
 
-    def finish(self, identity: str, request_id: str, outcome: str, reason: str | None = None) -> None:
+    def finish(
+        self, identity: str, request_id: str, outcome: str, reason: str | None = None
+    ) -> None:
         """Record where a request stands.  The outcomes are started, done_pending (the note was written, the
         check mark is not posted yet), done, refused_pending (the reason is recorded, the cross mark and reply are
         not posted yet) and refused.  A `_pending` row is how a retry knows to publish and never to run again."""
@@ -214,7 +250,11 @@ class Processed:
     def reason(self, identity: str, request_id: str) -> str | None:
         with self.lock:
             row = (self._read().get("rows") or {}).get(self.key(identity, request_id))
-        return row.get("reason") if isinstance(row, dict) and isinstance(row.get("reason"), str) else None
+        return (
+            row.get("reason")
+            if isinstance(row, dict) and isinstance(row.get("reason"), str)
+            else None
+        )
 
     def forget(self, identity: str, request_id: str) -> None:
         """Drop a `started` row, for a failure before anything ran (so a retry starts clean)."""
@@ -288,10 +328,20 @@ class Consumer:
     """One per listener.  `offer(runner, message)` is called from the seat thread that routes the message and
     returns at once;  a worker thread does the rest."""
 
-    def __init__(self, *, seat: str, state_dir: str, script: Callable[[], Path | None], env: Mapping[str, str],
-                 owner_user_id: Callable[[], int] = lambda: 0, runner: Callable[..., Any] | None = None,
-                 log: Callable[..., None] = lambda event, **fields: None, clock: Callable[[], float] = time.time,
-                 registry_path: str | None = None, channel: str = N.RELAY_CHANNEL) -> None:
+    def __init__(
+        self,
+        *,
+        seat: str,
+        state_dir: str,
+        script: Callable[[], Path | None],
+        env: Mapping[str, str],
+        owner_user_id: Callable[[], int] = lambda: 0,
+        runner: Callable[..., Any] | None = None,
+        log: Callable[..., None] = lambda event, **fields: None,
+        clock: Callable[[], float] = time.time,
+        registry_path: str | None = None,
+        channel: str = N.RELAY_CHANNEL,
+    ) -> None:
         self.seat = seat
         self.channel = channel
         self.script = script
@@ -305,18 +355,25 @@ class Consumer:
         # already moved on.  The lock file in it is the single owner, across seats and processes.
         self.processed = Processed(os.path.join(state_dir, RELAY_DIR, STATE_FILE), clock)
         self.spool = Spool(os.path.join(state_dir, RELAY_DIR, SPOOL_DIR))
-        self.jobs: "queue.Queue[bool | None]" = queue.Queue(1)  # a wake-up signal;  the work is in the spool
+        self.jobs: queue.Queue[bool | None] = queue.Queue(
+            1
+        )  # a wake-up signal;  the work is in the spool
         self.reader: Any = None  # the reading seat's runner, for the worker
         self.thread: threading.Thread | None = None
         self.stopped = threading.Event()
         self.dropped = 0
-        self.retry_seconds = RETRY_SECONDS  # a request whose answer failed is tried again this often
+        self.retry_seconds = (
+            RETRY_SECONDS  # a request whose answer failed is tried again this often
+        )
 
     # ---- the seat thread's side ---------------------------------------------------------------
     def in_channel(self, message: Mapping[str, Any]) -> bool:
         """Is this a message in the relay channel?  Every seat's runner treats one as consumed (it is not work
         for any session), whichever seat reads it."""
-        return message.get("type") == "stream" and Z.message_channel(message).casefold() == self.channel
+        return (
+            message.get("type") == "stream"
+            and Z.message_channel(message).casefold() == self.channel
+        )
 
     def wants(self, runner: Any, message: Mapping[str, Any]) -> bool:
         """Should this seat's reader take the message?  Only the configured seat.  The reader's own posts are
@@ -342,7 +399,12 @@ class Consumer:
         self.reader = runner
         if not self.spool.put(message):
             self.dropped += 1
-            self.log("notes-relay-not-accepted", id=message.get("id"), dropped=self.dropped, pending=len(self.spool.ids()))
+            self.log(
+                "notes-relay-not-accepted",
+                id=message.get("id"),
+                dropped=self.dropped,
+                pending=len(self.spool.ids()),
+            )
             return False
         self.start()
         self._signal()
@@ -463,10 +525,16 @@ class Consumer:
         message_id = int(message["id"])
         person = runner.users.get(message.get("sender_id"))
         try:
-            identity, envelope = validate(message, person, owner_user_id=int(self.owner_user_id() or 0),
-                                          registry_path=self.registry_path)
+            identity, envelope = validate(
+                message,
+                person,
+                owner_user_id=int(self.owner_user_id() or 0),
+                registry_path=self.registry_path,
+            )
         except Refusal as exc:
-            self.log("notes-relay-refused", id=message_id, code=exc.code)  # a category only:  the text quotes the sender
+            self.log(
+                "notes-relay-refused", id=message_id, code=exc.code
+            )  # a category only:  the text quotes the sender
             self._answer(runner, message_id, exc.request_id, refused=str(exc))
             return "refused"
         request_id = envelope["request_id"]
@@ -481,11 +549,16 @@ class Consumer:
                 return "done" if earlier == "done_pending" else "duplicate"
             unknown = earlier in ("started", "unknown", "unknown_pending")
             if unknown:
-                reason = (self.processed.reason(identity, request_id)
-                          or "this request id was already started and may have been interrupted;  check the note, "
-                          "then send it again with a new request_id")
+                reason = (
+                    self.processed.reason(identity, request_id)
+                    or "this request id was already started and may have been interrupted;  check the note, "
+                    "then send it again with a new request_id"
+                )
             else:
-                reason = self.processed.reason(identity, request_id) or "this request id was already refused"
+                reason = (
+                    self.processed.reason(identity, request_id)
+                    or "this request id was already refused"
+                )
             if earlier in ("refused", "unknown"):
                 # Already published:  never downgrade the row.  _answer is a no-op once the reply exists and the
                 # reaction is idempotent, so a network failure here leaves the row as it was.
@@ -510,20 +583,42 @@ class Consumer:
             # the field and never quotes any of it.
             for field, text in N.text_fields(full).items():
                 if secretscan.scan(text):
-                    raise N.NotesError("secret", "the %s looked like it contains a secret;  nothing was written" % field)
+                    raise N.NotesError(
+                        "secret",
+                        "the %s looked like it contains a secret;  nothing was written" % field,
+                    )
+            creds = getattr(runner, "creds", None)
+            full = N.with_provenance(
+                full, identity, message_id, getattr(creds, "site", "") or N.PROVENANCE_SITE
+            )
             kwargs = {"runner": self.runner} if self.runner is not None else {}
             N.run_direct(full, script, env=self.env, **kwargs)
         except N.NotesError as exc:
             # A timeout (outcome_unknown) is not a definite failure:  the script may have written the note.  It is
             # recorded as `unknown`, so a retry of the same request id is refused as "may have been interrupted"
             # and never runs the action a second time.
-            return self._refuse(runner, message_id, identity, request_id, exc.message, "notes-relay-failed", exc.code,
-                                kind="unknown" if exc.code == "outcome_unknown" else "refused")
+            return self._refuse(
+                runner,
+                message_id,
+                identity,
+                request_id,
+                exc.message,
+                "notes-relay-failed",
+                exc.code,
+                kind="unknown" if exc.code == "outcome_unknown" else "refused",
+            )
         except Z.AgentSyncError as exc:
             if isinstance(exc, Z.NetworkError):
                 raise
-            return self._refuse(runner, message_id, identity, request_id,
-                                "could not fetch the attached body:  %s" % str(exc)[:100], "notes-relay-failed", "zulip")
+            return self._refuse(
+                runner,
+                message_id,
+                identity,
+                request_id,
+                "could not fetch the attached body:  %s" % str(exc)[:100],
+                "notes-relay-failed",
+                "zulip",
+            )
         # The action is done.  Record that BEFORE publishing, so a failed publish retries only the acknowledgement.
         self.processed.finish(identity, request_id, "done_pending")
         self.log("notes-relay-done", id=message_id, action=envelope["action"], identity=identity)
@@ -531,8 +626,17 @@ class Consumer:
         self.processed.finish(identity, request_id, "done")
         return "done"
 
-    def _refuse(self, runner: Any, message_id: int, identity: str, request_id: str, reason: str, event: str,
-                code: str, kind: str = "refused") -> str:
+    def _refuse(
+        self,
+        runner: Any,
+        message_id: int,
+        identity: str,
+        request_id: str,
+        reason: str,
+        event: str,
+        code: str,
+        kind: str = "refused",
+    ) -> str:
         reason = safe_reason(reason)
         self.processed.finish(identity, request_id, kind + "_pending", reason)
         self.log(event, id=message_id, code=code)
@@ -559,7 +663,9 @@ class Consumer:
                 return  # a permanent refusal (the message is gone):  nothing a retry could change
         self.log("notes-relay-no-emoji", id=message_id, names=list(names))
 
-    def _answer(self, runner: Any, message_id: int, request_id: str | None, *, refused: str) -> None:
+    def _answer(
+        self, runner: Any, message_id: int, request_id: str | None, *, refused: str
+    ) -> None:
         """Cross mark, then one reply with the reason.  Safe to replay after a crash at any point:  the reaction
         is idempotent and the reply is skipped when this bot already posted one with the same label."""
         self._react(runner, message_id, N.REFUSED_EMOJI)
@@ -567,31 +673,62 @@ class Consumer:
         label = request_id or "(message %d)" % message_id
         prefix = N.refusal_label(label)
         try:
-            original = runner.client.get("messages/%d" % message_id, {"apply_markdown": False}).get("message") or {}
+            original = (
+                runner.client.get("messages/%d" % message_id, {"apply_markdown": False}).get(
+                    "message"
+                )
+                or {}
+            )
             if self._already_replied(runner, original, message_id, prefix):
                 return
-            runner.client.post("messages", {"type": "stream", "to": original.get("stream_id"),
-                                            "topic": Z.message_topic(original), "content": "%s %s" % (prefix, reason)})
+            runner.client.post(
+                "messages",
+                {
+                    "type": "stream",
+                    "to": original.get("stream_id"),
+                    "topic": Z.message_topic(original),
+                    "content": "%s %s" % (prefix, reason),
+                },
+            )
         except Z.ApiError as exc:
             if retryable(exc):
                 raise  # the reply is part of the result:  keep the request spooled and post it on the retry
-            self.log("notes-relay-reply-failed", id=message_id, status=exc.status)  # permanent:  not retried
+            self.log(
+                "notes-relay-reply-failed", id=message_id, status=exc.status
+            )  # permanent:  not retried
 
-    def _already_replied(self, runner: Any, original: Mapping[str, Any], message_id: int, prefix: str) -> bool:
+    def _already_replied(
+        self, runner: Any, original: Mapping[str, Any], message_id: int, prefix: str
+    ) -> bool:
         """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
         forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
         after a long backlog is still seen.  The scan is bounded;  past the bound it logs and answers anyway."""
         me = getattr(runner.me, "user_id", None)
-        narrow = json.dumps([{"operator": "channel", "operand": original.get("stream_id")},
-                             {"operator": "topic", "operand": Z.message_topic(original)}]
-                            + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else []))
+        narrow = json.dumps(
+            [
+                {"operator": "channel", "operand": original.get("stream_id")},
+                {"operator": "topic", "operand": Z.message_topic(original)},
+            ]
+            + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else [])
+        )
         anchor = message_id
         for _ in range(REPLY_SCAN_PAGES):
-            found = runner.client.get("messages", {
-                "narrow": narrow, "anchor": anchor, "num_before": 0, "num_after": REPLY_SCAN_PAGE,
-                "include_anchor": "false", "apply_markdown": "false"})
+            found = runner.client.get(
+                "messages",
+                {
+                    "narrow": narrow,
+                    "anchor": anchor,
+                    "num_before": 0,
+                    "num_after": REPLY_SCAN_PAGE,
+                    "include_anchor": "false",
+                    "apply_markdown": "false",
+                },
+            )
             page = [m for m in found.get("messages") or [] if isinstance(m, dict)]
-            if any(m.get("sender_id") == me and str(m.get("content") or "").startswith(prefix) for m in page):
+            if any(
+                m.get("sender_id") == me and str(m.get("content") or "").startswith(prefix)
+                for m in page
+            ):
                 return True
             ids = [m["id"] for m in page if isinstance(m.get("id"), int) and m["id"] > anchor]
             if found.get("found_newest") is not False or not ids:
@@ -604,8 +741,10 @@ class Consumer:
         """The uploaded .md at /user_uploads/..., through the reading bot's own credential:  Zulip hands back a
         short-lived signed URL for the file, which is then fetched without credentials."""
         if not N.UPLOAD_PATH_RE.match(path) or ".." in path:
-            raise N.NotesError("invalid_argument", "the attachment path is not a /user_uploads/ path")
-        answer = runner.client.get("user_uploads/" + path[len("/user_uploads/"):])
+            raise N.NotesError(
+                "invalid_argument", "the attachment path is not a /user_uploads/ path"
+            )
+        answer = runner.client.get("user_uploads/" + path[len("/user_uploads/") :])
         url = str(answer.get("url") or "")
         if not url:
             raise N.NotesError("unavailable", "Zulip gave no download URL for the attachment")
@@ -622,7 +761,7 @@ def fetch_unauthenticated(client: Any, url: str, limit: int = N.UPLOAD_MAX) -> b
 
     request = urllib.request.Request(url, headers={"User-Agent": Z.USER_AGENT})
     try:
-        with client._opener.open(request, timeout=client.timeout) as response:  # noqa: SLF001 - same redirect-free opener
+        with client._opener.open(request, timeout=client.timeout) as response:
             data = response.read(limit + 1)
     except OSError as exc:
         raise Z.NetworkError("fetching the attachment failed:  %s" % type(exc).__name__) from None

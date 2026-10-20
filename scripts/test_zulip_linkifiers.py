@@ -214,5 +214,69 @@ class ApplyTest(unittest.TestCase):
         self.assertIsNone(L.order(zulip.linkifiers()))
 
 
+class CredentialTests(unittest.TestCase):
+    """Writes use only the realm-admin bot (AFC-359);  no owner-key option exists."""
+
+    def run_main(self, *argv):
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                L.main(list(argv))
+        return cm.exception.code
+
+    def test_apply_without_admin_is_refused(self):
+        self.assertEqual(self.run_main("--apply"), 2)
+
+    def test_removed_owner_key_option_is_rejected(self):
+        self.assertEqual(self.run_main("--apply", "--owner" + "-rc", "x"), 2)
+
+    def test_admin_and_rc_are_mutually_exclusive(self):
+        self.assertEqual(self.run_main("--admin", "--rc", "x"), 2)
+
+    def test_admin_reads_env_first_and_ignores_member_env(self):
+        env = {
+            "REALM_ADMIN_ZULIP_EMAIL": "admin-bot@example.test",
+            "REALM_ADMIN_ZULIP_KEY": "k",
+            "ZULIP_EMAIL": "member@example.test",
+            "ZULIP_API_KEY": "m",
+        }
+        with (
+            mock.patch.dict("os.environ", env),
+            mock.patch.object(L, "_fleet_secret", return_value="") as fs,
+        ):
+            email, key, site = L.credentials(None, admin=True)
+        self.assertEqual((email, key), ("admin-bot@example.test", "k"))
+        self.assertEqual(site, L.REALM)
+        fs.assert_called_once_with("REALM_ADMIN_ZULIP_SITE")
+
+    def test_admin_falls_back_to_zulipadmin_folder_first(self):
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return mock.Mock(returncode=0, stdout="v\n")
+
+        env = {
+            k: ""
+            for k in ("REALM_ADMIN_ZULIP_EMAIL", "REALM_ADMIN_ZULIP_KEY", "REALM_ADMIN_ZULIP_SITE")
+        }
+        with mock.patch.dict("os.environ", env), mock.patch("subprocess.run", fake_run):
+            L.credentials(None, admin=True)
+        self.assertTrue(calls)
+        self.assertTrue(all(c[3:5] == ["--path", "/zulipadmin"] for c in calls))
+
+    def test_admin_without_credentials_exits_naming_the_folder(self):
+        env = {
+            k: ""
+            for k in ("REALM_ADMIN_ZULIP_EMAIL", "REALM_ADMIN_ZULIP_KEY", "REALM_ADMIN_ZULIP_SITE")
+        }
+        with (
+            mock.patch.dict("os.environ", env),
+            mock.patch.object(L, "_fleet_secret", return_value=""),
+        ):
+            with self.assertRaises(SystemExit) as cm:
+                L.credentials(None, admin=True)
+        self.assertIn("/zulipadmin, /zulip, or the root", str(cm.exception.code))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,8 @@
 # 2026-10-08 — Sentence gap: the chat entity returns, GitHub and Zulip use U+00A0
 
 Type: Fleet change  (board `86aa2176`)
+> **Correction, 2026-10-20:**  the MiniMax Code pane does NOT decode the `&nbsp;` entity — it shows the six literal characters.  In that pane the gap is a real U+00A0 followed by a normal space, and two ASCII spaces collapse as well.  See the `sentence-gap` skill for the per-surface table.
+
 
 ## Why
 
@@ -39,6 +41,20 @@ tested.  When a surface needs a mechanism to show two spaces, use it without ask
 Producing U+00A0 through a tool:  write two ASCII spaces after each sentence, then run
 `perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g' body.txt > body.nbsp.txt`, and check the
 output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
+
+> ⚠️ **Superseded 2026-10-18 — do not copy the perl line above.**  A run of whitespace written
+> into a tool call or heredoc *sometimes* collapses to a single space before it lands, and that
+> collapse is **intermittent, not deterministic**:  in one session a ~3 KB PR body kept all eight
+> of its double spaces while a ~3 KB Zulip body lost every one, same machine, same tool.  So the
+> pattern must match one *or more* spaces to be correct either way:
+> `perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt`.
+> Note the single-space form is *not* a fix — it matches nothing on text that kept its two
+> spaces.  Before posting run both checks: `grep -o $'\xc2\xa0' body.nbsp.txt | wc -l` must be
+> `> 0` and `grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt` must be `0`, since a partly converted body can
+> hold real U+00A0 and still carry one leftover single-space gap.  Source files (Swift, TypeScript,
+> shell, markdown read as source) are unaffected and keep two literal ASCII spaces; never put a
+> U+00A0 into a committed source file.  This file is a dated record of the 2026-10-08 ruling and
+> is kept as-is above;  the live procedure is in `docs/fleet-skills/sentence-gap/SKILL.md`.
 
 ## What landed (docs, in this PR)
 

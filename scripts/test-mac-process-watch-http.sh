@@ -135,7 +135,7 @@ expect_streak_file() {
 #    change that would let the real curl hit the live servers).
 new_case baseline
 run_watch
-grep -q '^curl 8792$' "${STUB_DIR}/curl-calls" 2>/dev/null || fail "stub curl was not called for :8792"
+grep -q '^curl 8791$' "${STUB_DIR}/curl-calls" 2>/dev/null || fail "stub curl was not called for :8791"
 run_reject_log "SLOW  pm2:"
 run_reject_log "status=http-"
 no_other_restart none
@@ -151,124 +151,125 @@ slack_code="$(grep -v '^[[:space:]]*#' "$WATCH" | grep -i -E 'slack|agent-sync' 
 
 # 1. rc 7 (connection refused): dead, restart on the very first run.
 new_case refused
-set_rc 8792 7
+set_rc 8791 7
 run_watch
-run_expect_log "DOWN  pm2:mac-collab  status=http-dead curl=7"
-run_reject_log "SLOW  pm2:mac-collab"
-expect_restart mac-collab
-no_other_restart mac-collab
-expect_streak_file mac-collab 0
+run_expect_log "DOWN  pm2:xcode-health  status=http-dead curl=7"
+run_reject_log "SLOW  pm2:xcode-health"
+expect_restart xcode-health
+no_other_restart xcode-health
+expect_streak_file xcode-health 0
 
 # 2. rc 28 (timeout): slow.  No restart on runs 1 and 2, restart on run 3,
 #    then the streak starts over.
 new_case timeout-three-strikes
-set_rc 8792 28
+set_rc 8791 28
 run_watch
-run_expect_log "SLOW  pm2:mac-collab  curl=28 streak=1/3"
-run_reject_log "DOWN  pm2:mac-collab"
-reject_restart mac-collab
-expect_streak_file mac-collab 1
+run_expect_log "SLOW  pm2:xcode-health  curl=28 streak=1/3"
+run_reject_log "DOWN  pm2:xcode-health"
+reject_restart xcode-health
+expect_streak_file xcode-health 1
 run_watch
-run_expect_log "SLOW  pm2:mac-collab  curl=28 streak=2/3"
-reject_restart mac-collab
-expect_streak_file mac-collab 2
+run_expect_log "SLOW  pm2:xcode-health  curl=28 streak=2/3"
+reject_restart xcode-health
+expect_streak_file xcode-health 2
 run_watch
-run_expect_log "SLOW  pm2:mac-collab  curl=28 streak=3/3"
-run_expect_log "DOWN  pm2:mac-collab  status=http-slow curl=28 streak=3/3"
-expect_restart mac-collab
-no_other_restart mac-collab
-expect_streak_file mac-collab 0
+run_expect_log "SLOW  pm2:xcode-health  curl=28 streak=3/3"
+run_expect_log "DOWN  pm2:xcode-health  status=http-slow curl=28 streak=3/3"
+expect_restart xcode-health
+no_other_restart xcode-health
+expect_streak_file xcode-health 0
 run_watch
-run_expect_log "SLOW  pm2:mac-collab  curl=28 streak=1/3"
-reject_restart mac-collab
+run_expect_log "SLOW  pm2:xcode-health  curl=28 streak=1/3"
+reject_restart xcode-health
 
 # 3. An rc 0 run in between resets the streak: 28, 28, 0, 28, 28 never
 #    restarts; the third 28 after the reset does.
 new_case healthy-resets
-set_rc 8792 28
-run_watch; reject_restart mac-collab
-run_watch; reject_restart mac-collab
-expect_streak_file mac-collab 2
-set_rc 8792 0
+set_rc 8791 28
+run_watch; reject_restart xcode-health
+run_watch; reject_restart xcode-health
+expect_streak_file xcode-health 2
+set_rc 8791 0
 run_watch
-run_reject_log "SLOW  pm2:mac-collab"
-reject_restart mac-collab
-expect_streak_file mac-collab 0
-set_rc 8792 28
-run_watch; run_expect_log "streak=1/3"; reject_restart mac-collab
-run_watch; run_expect_log "streak=2/3"; reject_restart mac-collab
-run_watch; run_expect_log "status=http-slow"; expect_restart mac-collab
+run_reject_log "SLOW  pm2:xcode-health"
+reject_restart xcode-health
+expect_streak_file xcode-health 0
+set_rc 8791 28
+run_watch; run_expect_log "streak=1/3"; reject_restart xcode-health
+run_watch; run_expect_log "streak=2/3"; reject_restart xcode-health
+run_watch; run_expect_log "status=http-slow"; expect_restart xcode-health
 
 # 4. Every other non-zero rc is slow, and mixed ones add up.
 new_case mixed-slow-codes
-set_rc 8792 52
-run_watch; run_expect_log "SLOW  pm2:mac-collab  curl=52 streak=1/3"; reject_restart mac-collab
-set_rc 8792 22
-run_watch; run_expect_log "SLOW  pm2:mac-collab  curl=22 streak=2/3"; reject_restart mac-collab
-set_rc 8792 56
-run_watch; run_expect_log "status=http-slow curl=56 streak=3/3"; expect_restart mac-collab
+set_rc 8791 52
+run_watch; run_expect_log "SLOW  pm2:xcode-health  curl=52 streak=1/3"; reject_restart xcode-health
+set_rc 8791 22
+run_watch; run_expect_log "SLOW  pm2:xcode-health  curl=22 streak=2/3"; reject_restart xcode-health
+set_rc 8791 56
+run_watch; run_expect_log "status=http-slow curl=56 streak=3/3"; expect_restart xcode-health
 
 # 5. rc 7 in the middle of a slow streak restarts at once and clears it.
 new_case refused-mid-streak
-set_rc 8792 28
-run_watch
-run_watch
-expect_streak_file mac-collab 2
-set_rc 8792 7
-run_watch
-run_expect_log "status=http-dead curl=7"
-expect_restart mac-collab
-expect_streak_file mac-collab 0
-set_rc 8792 28
-run_watch; run_expect_log "streak=1/3"; reject_restart mac-collab
-
-# 6. Streaks are per service, and only the slow one is touched.
-new_case per-service
-set_rc 8792 28
 set_rc 8791 28
 run_watch
-run_expect_log "SLOW  pm2:mac-collab  curl=28 streak=1/3"
-run_expect_log "SLOW  pm2:xcode-health  curl=28 streak=1/3"
-run_reject_log "agent-sync-push"
-set_rc 8792 0
 run_watch
-run_expect_log "SLOW  pm2:xcode-health  curl=28 streak=2/3"
-run_reject_log "SLOW  pm2:mac-collab"
-expect_streak_file mac-collab 0
 expect_streak_file xcode-health 2
-set_rc 8792 28
+set_rc 8791 7
 run_watch
-run_expect_log "SLOW  pm2:mac-collab  curl=28 streak=1/3"
-run_expect_log "status=http-slow"
+run_expect_log "status=http-dead curl=7"
 expect_restart xcode-health
-reject_restart mac-collab
-reject_restart agent-sync-push
+expect_streak_file xcode-health 0
+set_rc 8791 28
+run_watch; run_expect_log "streak=1/3"; reject_restart xcode-health
+
+# 6. Streaks are per service.  Only xcode-health is probed since mac-collab was
+#    retired (2026-10-19, AFC-363), so this drives the watch's own streak helpers
+#    (http_slow_get / http_slow_set, extracted from the script) with synthetic
+#    service names, and fails if one service's streak leaks into another.
+new_case per-service
+HTTP_SLOW_STATE="${tmp}/per-service/slow-state"
+helpers="$(awk '/^http_slow_get\(\) \{/ {f=1} f {print} f && /^}/ {n++; f=(n<2)}' "$WATCH" \
+  | awk '/^http_slow_set\(\) \{/ {f=1} /^http_slow_get\(\) \{/ {f=1} f {print} f && /^}/ {f=0}')"
+[ -n "$helpers" ] || fail "could not extract http_slow_get/http_slow_set from $WATCH"
+slow() { ( eval "$helpers"; HTTP_SLOW_STATE="$HTTP_SLOW_STATE"; "$@" ); }
+slow http_slow_set svc 3
+slow http_slow_set svc-a 2
+slow http_slow_set svc-b 1
+[ "$(slow http_slow_get svc-a)" = 2 ] || fail "per-service: svc-a streak is $(slow http_slow_get svc-a), want 2"
+[ "$(slow http_slow_get svc-b)" = 1 ] || fail "per-service: svc-b streak is $(slow http_slow_get svc-b), want 1"
+[ "$(slow http_slow_get svc)" = 3 ] || fail "per-service: svc streak is $(slow http_slow_get svc), want 3 (name prefix must not merge)"
+slow http_slow_set svc-a 0
+[ "$(slow http_slow_get svc-a)" = 0 ] || fail "per-service: clearing svc-a left $(slow http_slow_get svc-a)"
+[ "$(slow http_slow_get svc-b)" = 1 ] || fail "per-service: clearing svc-a changed svc-b to $(slow http_slow_get svc-b)"
+[ "$(slow http_slow_get svc)" = 3 ] || fail "per-service: clearing svc-a changed svc to $(slow http_slow_get svc)"
+slow http_slow_set svc-b 2
+[ "$(slow http_slow_get svc-a)" = 0 ] || fail "per-service: setting svc-b changed svc-a to $(slow http_slow_get svc-a)"
 
 # 7. MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES overrides K.
 new_case strikes-override
-set_rc 8792 28
+set_rc 8791 28
 run_watch MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES=2
-run_expect_log "streak=1/2"; reject_restart mac-collab
+run_expect_log "streak=1/2"; reject_restart xcode-health
 run_watch MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES=2
-run_expect_log "status=http-slow curl=28 streak=2/2"; expect_restart mac-collab
+run_expect_log "status=http-slow curl=28 streak=2/2"; expect_restart xcode-health
 
 # 8. Junk or zero in the override falls back to 3.
 new_case strikes-junk
-set_rc 8792 28
+set_rc 8791 28
 run_watch MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES=abc
-run_expect_log "streak=1/3"; reject_restart mac-collab
+run_expect_log "streak=1/3"; reject_restart xcode-health
 run_watch MAC_PROCESS_WATCH_HTTP_SLOW_STRIKES=0
-run_expect_log "streak=2/3"; reject_restart mac-collab
+run_expect_log "streak=2/3"; reject_restart xcode-health
 
 # 9. MAC_PROCESS_WATCH_RESTART=0 still counts strikes but never restarts.
 new_case restart-off
-set_rc 8792 28
+set_rc 8791 28
 run_watch MAC_PROCESS_WATCH_RESTART=0
 run_watch MAC_PROCESS_WATCH_RESTART=0
 run_watch MAC_PROCESS_WATCH_RESTART=0
 run_expect_log "status=http-slow"
-run_expect_log "SKIP  pm2:mac-collab-http  restart=off"
-reject_restart mac-collab
+run_expect_log "SKIP  pm2:xcode-health-http  restart=off"
+reject_restart xcode-health
 
 if [ "$failures" -gt 0 ]; then
   echo "FAIL ${failures} assertion(s)" >&2

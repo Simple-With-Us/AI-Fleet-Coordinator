@@ -453,6 +453,8 @@ when it finishes the issue and `Refs <ID>` for partial work.  When done: real st
 `--resolution`.  There is no effort log to land and no GitHub-issues mirror any more.
 Canonical: `~/apps/AGENT-SYNC.md` § Linear and the Claim Lifecycle.
 
+**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own variable:  `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `CURSOR_CONVERSATION_ID` then `CURSOR_AGENT_CHAT_ID` (Cursor), `GROK_SESSION_ID` (Grok TUI), `OPENCODE_SESSION_ID` (OpenCode), `__MAVIS_RUNTIME_SESSION_ID` (MiniMax Code, when present).  FX, Clutch, Antigravity, Muse Code and Grok Web have no variable that is known to be set, so they pass `--session <id>` or export `AGENT_SESSION`, using the id their app shows for the current chat.  A Claude Code MCP server may not inherit its variable, so Claude Code passes `session` explicitly on `notes_create` / `notes_update` (the value of `CLAUDE_CODE_SESSION_ID` from its shell).  Cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot (GROK-BOT and GB-*), MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.  For your seat the platform variable is `<SEAT-SESSION-VAR>` (delete this sentence if the platform has none).
+
 ## Two spaces between sentences (owner — ALL contexts)
 
 Two spaces after sentence terminators in **all** human-readable prose: web, PWA,
@@ -496,11 +498,11 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
 - **Private Infrastructure Hub & Secrets Inventory (LOUD NOTICE):**
   This repository and all public fleet repositories MUST NOT contain real host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, or secret values.
   - **Canonical private infrastructure inventory:** [`Simple-With-Us/fleet-ops:ATTACK-MAP.md`](https://github.com/Simple-With-Us/fleet-ops/blob/main/ATTACK-MAP.md) (local clone at `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`).
-  - **Cloud agents without repo access:** Fetch securely via `GET https://mac.jays.services/files/ATTACK-MAP.md` using `MAC_COLLAB_TOKEN`.
+  - **Seats without a local clone:** a seat with read access to the private repo fetches it with `gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'`;  a seat without access asks a Mac seat or the owner.  The old `GET https://mac.jays.services/files/ATTACK-MAP.md` relay was retired on 2026-10-19 (AFC-363).
   - **Secret reads:** On the Mac read a fleet key with `fleet-secrets get NAME`, or run a command with only the keys it needs via `fleet-secrets run --only A,B -- CMD` (both come from Infisical Fleet-OPS; cookbook in `INFISICAL.md` § `fleet-secrets`). Never log, grep, or print raw `KEY=value` lines. Never commit or refer to cloud storage / Google Drive backups of secrets.
 - **App runtime secrets** live in **Infisical** (the app's own project, prod).  
-  The flat file `~/.secrets/global-api-keys` is retired in favor of Infisical Fleet-OPS via
-  `fleet-secrets`; nothing may read it, and no deployed app depends on it. Cross-app keys
+  Fleet keys live in Infisical Fleet-OPS and are read with `fleet-secrets`;
+  nothing reads `~/.secrets` (AFC-359), and no deployed app depends on it. Cross-app keys
   needed at runtime must be **copied into the consuming app's Infisical project**
   (store-to-store, never printed).
 - **Coolify tokens — do not mix:**
@@ -525,7 +527,7 @@ Canonical: `~/apps/AGENT-SYNC.md` § Secret handoff / Infisical / Coolify tokens
 Chat engine: the `agent-sync` CLI (`~/.local/bin/agent-sync`, AFC `scripts/agent_sync`) is the
 one tool for chat — `post`, `reply`, `read`, `wait`, `listen`, `inbox`, `topics`, `subscribe`,
 `react`, `follow`, `mute`, `resolve`, and `whoami`.  Credentials: Mac seats use
-`~/.secrets/Zulip/<file code>-zuliprc`, mode 600; cloud seats use env `ZULIP_EMAIL`,
+Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_*`, read through `fleet-secrets`); cloud seats use env `ZULIP_EMAIL`,
 `ZULIP_API_KEY`, `ZULIP_SITE`.  Pin your seat in `AGENT_SEAT`.  Setup and FAQ:
 `docs/protocols/zulip-fleet-guide.md` (published at
 https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1).

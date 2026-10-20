@@ -1143,10 +1143,10 @@ def _load_seat_block_checker():
 
 
 class FleetBasicsTests(HomeCase):
-    """Clutch, Kimi, Vibe and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
+    """Clutch, Kimi and Vibe get the Fleet Basics ahead of the Lane Map in one marker block."""
 
     NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "nodefault"),
-           "vibe": (".vibe/AGENTS.md", "nodefault"), "copilot": (".copilot/copilot-instructions.md", "nodefault")}
+           "vibe": (".vibe/AGENTS.md", "nodefault")}
 
     def test_the_new_platforms_name_their_file_and_variant(self) -> None:
         for name, (rel, variant) in self.NEW.items():
@@ -1249,14 +1249,6 @@ class FleetBasicsTests(HomeCase):
         self.assertLess(len(IR.block_text("clutch").encode("utf-8")), 8 * 1024,
                         "the engine drops the broadest file first when the 64 KiB baseline fills")
 
-    def test_copilot_prints_its_unverified_caveat(self) -> None:
-        os.makedirs(self.path(".copilot"))
-        _, out, _ = self.run_cli("plan", "copilot", "--create")
-        self.assertIn("WARNING: UNVERIFIED on this Mac", out)
-        code, out, _ = self.run_cli("apply", "copilot", "--create")
-        self.assertEqual(code, IR.EXIT_OK)
-        self.assertIn("warning: UNVERIFIED on this Mac", out)
-
     def test_opencode_prints_its_double_load_caveat(self) -> None:
         os.makedirs(self.path(".config/opencode"))
         _, out, _ = self.run_cli("plan", "opencode", "--create")
@@ -1323,8 +1315,8 @@ class FleetBasicsTests(HomeCase):
                 self.assertEqual(os.listdir(self.home), [])
 
     def test_short_names_resolve(self) -> None:
-        names = [p.name for p in IR.resolve_platform_names(["mc", "muse", "kimi-code", "mistral-vibe", "copilot-cli", "dsh"])]
-        self.assertEqual(names, ["muse-code", "kimi", "vibe", "copilot", "clutch"])
+        names = [p.name for p in IR.resolve_platform_names(["mc", "muse", "kimi-code", "mistral-vibe", "dsh"])]
+        self.assertEqual(names, ["muse-code", "kimi", "vibe", "clutch"])
 
 
 # --------------------------------------------------------------------------- command line

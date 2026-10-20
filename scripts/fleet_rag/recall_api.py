@@ -10,6 +10,7 @@ Backend seams: the module-level names `load_config`, `embed`, `embedder_healthy`
 functions call, so a test (or the FLEET_RECALL_FAKE=1 hook, see `install_fake_backend`) can
 replace them without touching the live services.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -22,8 +23,17 @@ import time
 from typing import Any
 
 from . import core, search_log, telemetry
-from .core import (FleetRagError, LESSON_CATEGORIES, LESSON_SOURCE, build_point, content_hash,
-                   match_filter, now_ms, query_terms, rerank_configured)
+from .core import (
+    LESSON_CATEGORIES,
+    LESSON_SOURCE,
+    FleetRagError,
+    build_point,
+    content_hash,
+    match_filter,
+    now_ms,
+    query_terms,
+    rerank_configured,
+)
 from .scrub import gitleaks_flagged as _real_gitleaks_flagged
 from .scrub import scrub
 
@@ -43,14 +53,54 @@ def _real_gitleaks_available() -> bool:
 
 gitleaks_available = _real_gitleaks_available
 
-SOURCES = ("board", "effort-log", "apple-note", "doc", "skill", "memory", "chat-log",
-           "agent-contribution")
-CATEGORIES = ("lesson", "preference", "infrastructure", "decision", "runbook", "finding", "note", "doc")
+SOURCES = (
+    "board",
+    "effort-log",
+    "apple-note",
+    "doc",
+    "skill",
+    "memory",
+    "chat-log",
+    "agent-contribution",
+)
+CATEGORIES = (
+    "lesson",
+    "preference",
+    "infrastructure",
+    "decision",
+    "runbook",
+    "finding",
+    "note",
+    "doc",
+)
 CONTRIB_CATEGORIES = ("lesson", "preference", "infrastructure", "decision", "runbook")
-KNOWN_APPS = ("fleet", "socratic-trade", "congress-trade", "congress-trading-shared", "usage-monitor",
-              "dealdex", "botfleet", "personal-site", "fleet-ops", "autorotate", "contactlogo", "clutch")
-HIT_FIELDS = ("source", "app", "category", "seat", "doc_id", "chunk_index", "heading", "title",
-              "url", "path", "created_at")
+KNOWN_APPS = (
+    "fleet",
+    "socratic-trade",
+    "congress-trade",
+    "congress-trading-shared",
+    "usage-monitor",
+    "dealdex",
+    "botfleet",
+    "personal-site",
+    "fleet-ops",
+    "autorotate",
+    "contactlogo",
+    "clutch",
+)
+HIT_FIELDS = (
+    "source",
+    "app",
+    "category",
+    "seat",
+    "doc_id",
+    "chunk_index",
+    "heading",
+    "title",
+    "url",
+    "path",
+    "created_at",
+)
 
 # The ingest orchestrator stores its run sentinel as a point with source="meta".  It is never
 # a search result: every search filter carries this must_not clause.
@@ -61,13 +111,14 @@ def meta_exclude() -> dict:
     """Fresh must_not condition for the ingest sentinel (fresh so callers cannot share state)."""
     return {"key": "source", "match": {"value": META_SOURCE}}
 
+
 # Marker appended to recall_contribute()["scrubbed"] when gitleaks is not installed, so callers
 # can see that only the regex scrub ran.
 GITLEAKS_UNAVAILABLE = "gitleaks-unavailable"
 
 MAX_LIMIT = 50
-PER_DOC_MAX = 3          # recall_search(per_doc=...) upper bound
-GROUP_DEPTH = 5          # chunks kept per doc group; group_hits is capped here
+PER_DOC_MAX = 3  # recall_search(per_doc=...) upper bound
+GROUP_DEPTH = 5  # chunks kept per doc group; group_hits is capped here
 # In-process grouping fetches limit * GROUP_DEPTH points.  When one document owns most of the
 # top of the fused list that window fills before `limit` docs are seen (30 chunks of one doc +
 # 8 other matching docs, limit 5 -> 1 hit), so the window widens GROUP_WIDEN_FACTOR x, up to
@@ -96,6 +147,7 @@ _CACHE: dict[str, dict[str, str]] = {}
 
 # --------------------------------------------------------------------------- config
 
+
 def get_config(need_write: bool = False) -> dict[str, str]:
     """Cached credentials.  A write-capable config also satisfies later read requests."""
     if "write" in _CACHE:
@@ -122,6 +174,7 @@ def key_mode(cfg: dict[str, str]) -> str:
 
 # --------------------------------------------------------------------------- validation
 
+
 def _opt_str(name: str, value: Any) -> str | None:
     """Optional string argument: None / blank -> None; any non-str -> FleetRagError."""
     if value is None:
@@ -140,9 +193,15 @@ def _one_of(name: str, value: str | None, allowed: tuple[str, ...]) -> str | Non
 
 # --------------------------------------------------------------------------- search
 
-def build_filter(category: str | None = None, app: str | None = None, source: str | None = None,
-                 seat: str | None = None, since_days: int | None = None,
-                 now: int | None = None) -> dict:
+
+def build_filter(
+    category: str | None = None,
+    app: str | None = None,
+    source: str | None = None,
+    seat: str | None = None,
+    since_days: int | None = None,
+    now: int | None = None,
+) -> dict:
     """Exact-match filter on the four enumerated fields plus a created_at lower bound.
 
     Always excludes the ingest sentinel (source="meta"), so the result is never None.
@@ -162,7 +221,10 @@ def build_filter(category: str | None = None, app: str | None = None, source: st
 
 def _hit(raw: dict) -> dict:
     p = raw.get("payload") or {}
-    out: dict[str, Any] = {"score": round(float(raw.get("score", 0.0)), 4), "text": p.get("text", "")}
+    out: dict[str, Any] = {
+        "score": round(float(raw.get("score", 0.0)), 4),
+        "text": p.get("text", ""),
+    }
     for f in HIT_FIELDS:
         out[f] = p.get(f, 0 if f in ("chunk_index", "created_at") else "")
     return out
@@ -193,8 +255,15 @@ def group_hits(points: list[dict], group_by: str = "doc_id", group_size: int = 1
     return [{"id": k, "hits": v} for k, v in groups.items()]
 
 
-def fused_groups(q: Any, vector: list[float], terms: list[str], n_groups: int, depth: int,
-                 flt: dict | None, prefer_lessons: bool = True) -> list[dict]:
+def fused_groups(
+    q: Any,
+    vector: list[float],
+    terms: list[str],
+    n_groups: int,
+    depth: int,
+    flt: dict | None,
+    prefer_lessons: bool = True,
+) -> list[dict]:
     """Up to `n_groups` doc groups from one flat fused query, grouped in-process in fused order.
 
     Starts with a window of n_groups * depth points and widens it (GROUP_WIDEN_FACTOR x, at
@@ -242,8 +311,9 @@ def _apply_rerank(cfg: dict[str, str], query: str, hits: list[dict]) -> bool:
         # means a real outage only surfaces at the next weekly `recall eval`.  One Sentry
         # breadcrumb per fallback (no query text, no doc content) closes that gap without
         # changing the fallback behavior itself.
-        telemetry.capture_message(f"rerank fallback: {type(e).__name__}", level="warning",
-                                  operation="rerank-fallback")
+        telemetry.capture_message(
+            f"rerank fallback: {type(e).__name__}", level="warning", operation="rerank-fallback"
+        )
         return False
     if len(scores) != len(hits):
         return False
@@ -256,10 +326,18 @@ def _apply_rerank(cfg: dict[str, str], query: str, hits: list[dict]) -> bool:
     return True
 
 
-def recall_search(query: str, limit: int = 5, category: str | None = None, app: str | None = None,
-                  source: str | None = None, seat: str | None = None,
-                  since_days: int | None = None, per_doc: int = 1, prefer_lessons: bool = True,
-                  rerank: bool = True) -> dict:
+def recall_search(
+    query: str,
+    limit: int = 5,
+    category: str | None = None,
+    app: str | None = None,
+    source: str | None = None,
+    seat: str | None = None,
+    since_days: int | None = None,
+    per_doc: int = 1,
+    prefer_lessons: bool = True,
+    rerank: bool = True,
+) -> dict:
     """Hybrid (dense + keyword + lesson, RRF) search over the fleet-agents corpus, one hit per
     document.
 
@@ -307,25 +385,36 @@ def recall_search(query: str, limit: int = 5, category: str | None = None, app: 
     groups: list[dict] | None = None
     if use_qdrant_groups():
         try:
-            groups = q.query_groups(vector, terms, n_cand, flt, group_by="doc_id", group_size=depth,
-                                    prefer_lessons=bool(prefer_lessons))
+            groups = q.query_groups(
+                vector,
+                terms,
+                n_cand,
+                flt,
+                group_by="doc_id",
+                group_size=depth,
+                prefer_lessons=bool(prefer_lessons),
+            )
         except FleetRagError as e:
             if not _groups_unsupported(e):
                 raise
     if groups is None:
-        groups = fused_groups(q, vector, terms, n_cand, depth, flt, prefer_lessons=bool(prefer_lessons))
+        groups = fused_groups(
+            q, vector, terms, n_cand, depth, flt, prefer_lessons=bool(prefer_lessons)
+        )
     hits = _grouped_candidates(groups, per_doc)
     mode = "hybrid" if terms else "dense"
     if will_rerank and _apply_rerank(cfg, query, hits):
         mode += "+rerank"
     hits_out = hits[:limit]
     latency_ms = int((time.time() - t0) * 1000)
-    search_log.log_search(query=query, seat=seat, app=app, hits_count=len(hits_out),
-                          latency_ms=latency_ms, mode=mode)
+    search_log.log_search(
+        query=query, seat=seat, app=app, hits_count=len(hits_out), latency_ms=latency_ms, mode=mode
+    )
     return {"hits": hits_out, "mode": mode}
 
 
 # --------------------------------------------------------------------------- stats
+
 
 def recall_stats() -> dict:
     """Collection status plus counts by source and by app.
@@ -359,6 +448,7 @@ def recall_stats() -> dict:
 
 # --------------------------------------------------------------------------- contribute
 
+
 def _still_secret(text: str) -> bool:
     """True when gitleaks still flags the scrubbed text.
 
@@ -368,7 +458,9 @@ def _still_secret(text: str) -> bool:
     """
     path: str | None = None
     try:
-        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8") as fh:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".jsonl", delete=False, encoding="utf-8"
+        ) as fh:
             fh.write(json.dumps({"text": text}) + "\n")
             path = fh.name
         try:
@@ -376,8 +468,10 @@ def _still_secret(text: str) -> bool:
         except FleetRagError:
             raise
         except Exception as e:  # noqa: BLE001 - GitleaksError or anything else: refuse, class only
-            raise FleetRagError("refusing: the gitleaks gate could not verify the scrubbed text "
-                                f"({type(e).__name__}); nothing was stored") from None
+            raise FleetRagError(
+                "refusing: the gitleaks gate could not verify the scrubbed text "
+                f"({type(e).__name__}); nothing was stored"
+            ) from None
     finally:
         if path:
             try:
@@ -386,8 +480,14 @@ def _still_secret(text: str) -> bool:
                 pass
 
 
-def recall_contribute(text: str, category: str, app: str = "fleet", seat: str | None = None,
-                      title: str | None = None, url: str | None = None) -> dict:
+def recall_contribute(
+    text: str,
+    category: str,
+    app: str = "fleet",
+    seat: str | None = None,
+    title: str | None = None,
+    url: str | None = None,
+) -> dict:
     """Store one reusable lesson / preference / infrastructure fact / decision / runbook.
 
     Guardrails: 40..4000 chars after strip, category from CONTRIB_CATEGORIES, seat required
@@ -424,13 +524,15 @@ def recall_contribute(text: str, category: str, app: str = "fleet", seat: str | 
     reported = list(kinds)
     if gitleaks_available():
         if _still_secret(clean):
-            raise FleetRagError("refusing: text still looks like it contains a secret after scrubbing")
+            raise FleetRagError(
+                "refusing: text still looks like it contains a secret after scrubbing"
+            )
     else:
         reported.append(GITLEAKS_UNAVAILABLE)
 
     cfg = get_config(need_write=True)
     ts = now_ms()
-    day = datetime.datetime.fromtimestamp(ts / 1000, datetime.timezone.utc).strftime("%Y-%m-%d")
+    day = datetime.datetime.fromtimestamp(ts / 1000, datetime.UTC).strftime("%Y-%m-%d")
     doc_id = f"contrib/{seat}/{day}/{content_hash(clean)[:8]}"
     payload: dict[str, Any] = {
         "source": "agent-contribution",
@@ -457,6 +559,7 @@ def recall_contribute(text: str, category: str, app: str = "fleet", seat: str | 
 
 
 # --------------------------------------------------------------------------- fake backend
+
 
 class FakeQdrant:
     """In-memory stand-in with the subset of core.Qdrant the recall functions use.
@@ -518,7 +621,9 @@ class FakeQdrant:
     def count(self, flt: dict | None = None, exact: bool = True) -> int:
         return sum(1 for p in self.points if self._matches(p, flt))
 
-    def search_dense(self, vector: list[float], limit: int = 5, flt: dict | None = None) -> list[dict]:
+    def search_dense(
+        self, vector: list[float], limit: int = 5, flt: dict | None = None
+    ) -> list[dict]:
         return self.query_hybrid(vector, [], limit, flt, prefer_lessons=False)
 
     @staticmethod
@@ -526,8 +631,9 @@ class FakeQdrant:
         pl = p["payload"]
         return pl.get("source") == LESSON_SOURCE and pl.get("category") in LESSON_CATEGORIES
 
-    def _scored(self, vector: list[float], terms: list[str], flt: dict | None,
-                prefer_lessons: bool) -> list[dict]:
+    def _scored(
+        self, vector: list[float], terms: list[str], flt: dict | None, prefer_lessons: bool
+    ) -> list[dict]:
         """Keyword-overlap score (0.5 + 0.1 per matching term); lessons get +0.3 when boosted.
         Ties keep insertion order, so a seeded point outranks a later identical one."""
         scored = []
@@ -541,19 +647,41 @@ class FakeQdrant:
         scored.sort(key=lambda h: -h["score"])
         return scored
 
-    def query_hybrid(self, vector: list[float], terms: list[str], limit: int = 5,
-                     flt: dict | None = None, prefetch_limit: int | None = None,
-                     prefer_lessons: bool = True) -> list[dict]:
+    def query_hybrid(
+        self,
+        vector: list[float],
+        terms: list[str],
+        limit: int = 5,
+        flt: dict | None = None,
+        prefetch_limit: int | None = None,
+        prefer_lessons: bool = True,
+    ) -> list[dict]:
         FakeQdrant.calls.append((vector, terms, limit, flt))
         return self._scored(vector, terms, flt, prefer_lessons)[:limit]
 
-    def query_groups(self, vector: list[float], terms: list[str], limit: int = 5,
-                     flt: dict | None = None, group_by: str = "doc_id", group_size: int = 1,
-                     prefetch_limit: int | None = None, prefer_lessons: bool = True) -> list[dict]:
+    def query_groups(
+        self,
+        vector: list[float],
+        terms: list[str],
+        limit: int = 5,
+        flt: dict | None = None,
+        group_by: str = "doc_id",
+        group_size: int = 1,
+        prefetch_limit: int | None = None,
+        prefer_lessons: bool = True,
+    ) -> list[dict]:
         """Groups built on top of query_hybrid, so a test subclass that overrides query_hybrid
         (to raise, to record) sees the grouped path too."""
-        FakeQdrant.group_calls.append({"limit": limit, "group_by": group_by, "group_size": group_size,
-                                       "prefer_lessons": prefer_lessons, "flt": flt, "terms": terms})
+        FakeQdrant.group_calls.append(
+            {
+                "limit": limit,
+                "group_by": group_by,
+                "group_size": group_size,
+                "prefer_lessons": prefer_lessons,
+                "flt": flt,
+                "terms": terms,
+            }
+        )
         size = max(1, group_size)
         n = limit
         while True:
@@ -561,49 +689,88 @@ class FakeQdrant:
             groups = group_hits(pts, group_by, size)
             if len(groups) >= limit or len(pts) < n:
                 return groups[:limit]
-            n *= 2                      # same doc dominated: widen until `limit` groups are filled
+            n *= 2  # same doc dominated: widen until `limit` groups are filled
 
     def upsert(self, points: list[dict], wait: bool = True) -> str:
         FakeQdrant.upserts.append(points)
         ids = {p["id"] for p in points}
         FakeQdrant.points = [p for p in self.points if p["id"] not in ids] + [
-            {"id": p["id"], "payload": p["payload"]} for p in points]
+            {"id": p["id"], "payload": p["payload"]} for p in points
+        ]
         return "completed"
 
 
 def _fake_seed() -> list[dict]:
     rows = [
-        ("Never grep, cat, or Read ~/.secrets/global-api-keys for KEY=value lines - that prints "
-         "secret values into the transcript.  List names only.", "preference", "fleet"),
-        ("The fleet vector database runs as Coolify service qdrant-st on the shared Hetzner box, "
-         "bound to the Tailscale mesh address on port 6333.", "infrastructure", "fleet"),
-        ("Commit and land finished work without waiting to be asked; unpushed work is invisible "
-         "to peer agents and gets redone.", "preference", "fleet"),
+        (
+            "Never grep, cat, or Read the global-api-keys file for KEY=value lines - that prints "
+            "secret values into the transcript.  List names only.",
+            "preference",
+            "fleet",
+        ),
+        (
+            "The fleet vector database runs as Coolify service qdrant-st on the shared Hetzner box, "
+            "bound to the Tailscale mesh address on port 6333.",
+            "infrastructure",
+            "fleet",
+        ),
+        (
+            "Commit and land finished work without waiting to be asked; unpushed work is invisible "
+            "to peer agents and gets redone.",
+            "preference",
+            "fleet",
+        ),
     ]
     out = []
     for i, (text, cat, app) in enumerate(rows):
-        pt = build_point(text, {"source": "doc", "app": app, "category": cat, "seat": "CLAUDE",
-                                "doc_id": f"seed/fleet-standards-{i}", "chunk_index": 0, "chunk_count": 1,
-                                "heading": "", "title": "Fleet standards seed", "url": "", "path": "",
-                                "created_at": 1756684800000, "updated_at": 1756684800000,
-                                "ingest_run": "fake"})
+        pt = build_point(
+            text,
+            {
+                "source": "doc",
+                "app": app,
+                "category": cat,
+                "seat": "CLAUDE",
+                "doc_id": f"seed/fleet-standards-{i}",
+                "chunk_index": 0,
+                "chunk_count": 1,
+                "heading": "",
+                "title": "Fleet standards seed",
+                "url": "",
+                "path": "",
+                "created_at": 1756684800000,
+                "updated_at": 1756684800000,
+                "ingest_run": "fake",
+            },
+        )
         out.append({"id": pt["id"], "payload": pt["payload"]})
     return out
 
 
 def install_fake_backend(seed: bool = True) -> None:
     """Point every seam at in-process fakes (no network, no credentials, no gitleaks)."""
-    global load_config, embed, embedder_healthy, rerank_healthy, Qdrant, rerank, gitleaks_flagged, gitleaks_available
+    global \
+        load_config, \
+        embed, \
+        embedder_healthy, \
+        rerank_healthy, \
+        Qdrant, \
+        rerank, \
+        gitleaks_flagged, \
+        gitleaks_available
     FakeQdrant.reset(seed=seed)
-    load_config = lambda need_write=False, extra=(): {  # noqa: E731
-        "TEI_URL": "http://fake", "TEI_API_KEY": "fake", "QDRANT_URL": "http://fake",
-        "QDRANT_FLEET_COLLECTION": "fleet-agents-fake", "QDRANT_API_KEY": "fake",
-        "QDRANT_READONLY_API_KEY": "fake"}
-    embed = lambda cfg, texts: [[0.0] * 4 for _ in texts]  # noqa: E731
-    embedder_healthy = lambda cfg: True  # noqa: E731
-    rerank_healthy = lambda cfg: True  # noqa: E731 - fake config has no rerank keys, so unused
+    load_config = lambda need_write=False, extra=(): {
+        "TEI_URL": "http://fake",
+        "TEI_API_KEY": "fake",
+        "QDRANT_URL": "http://fake",
+        "QDRANT_FLEET_COLLECTION": "fleet-agents-fake",
+        "QDRANT_API_KEY": "fake",
+        "QDRANT_READONLY_API_KEY": "fake",
+    }
+    embed = lambda cfg, texts: [[0.0] * 4 for _ in texts]
+    embedder_healthy = lambda cfg: True
+    rerank_healthy = lambda cfg: True
     Qdrant = FakeQdrant
-    rerank = core.rerank                  # real client; the fake config has no rerank keys
-    gitleaks_flagged = lambda path, timeout=300: set()  # noqa: E731
-    gitleaks_available = lambda: True  # noqa: E731
+    rerank = core.rerank  # real client; the fake config has no rerank keys
+    gitleaks_flagged = lambda path, timeout=300: set()
+    gitleaks_available = lambda: True
     reset_config_cache()
