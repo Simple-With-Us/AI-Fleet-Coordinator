@@ -116,7 +116,7 @@ class UnitTests(unittest.TestCase):
             self.assertIn(sys.executable, out.getvalue())
             out = io.StringIO()
             with patch.object(systemd, "too_old", return_value=True):
-                self.assertEqual(systemd.install({}, home, out, python=sys.executable), 2)
+                self.assertEqual(systemd.install({}, home, out, python=sys.executable), 4)
             self.assertIn("older than Python 3.11", out.getvalue())
         with patch.object(
             systemd.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "3.9\n", "")
@@ -235,3 +235,20 @@ class DispatchTests(ListenerHarness):
             self.assertNotEqual(result.code, 0)
             self.assertIn("only macOS and Linux", result.err)
             self.assertFalse(Path(systemd.unit_path(str(self.home))).exists())
+
+class RelativeExecutableTests(unittest.TestCase):
+    def test_install_absolutizes_relative_overrides_before_probe_and_write(self):
+        with tempfile.TemporaryDirectory() as home:
+            out = io.StringIO()
+            with patch.object(systemd.os, "access", return_value=True), patch.object(systemd, "_confirmed_too_old", return_value=False) as probe:
+                result = systemd.install({}, home, out, dry_run=True, python="./venv/bin/python", program="scripts/agent-sync")
+            self.assertEqual(result, 0)
+            self.assertEqual(probe.call_args.args[0], os.path.abspath("./venv/bin/python"))
+            self.assertIn(systemd.quote(os.path.abspath("scripts/agent-sync")), out.getvalue())
+
+    def test_timeout_identifies_interpreter(self):
+        with patch.object(systemd, "too_old", side_effect=subprocess.TimeoutExpired("probe", 1)):
+            with self.assertRaises(systemd.InterpreterProbeFailure) as error:
+                systemd._confirmed_too_old("/chosen/python", io.StringIO())
+        self.assertIn("/chosen/python", str(error.exception))
+        self.assertEqual(error.exception.code, 124)

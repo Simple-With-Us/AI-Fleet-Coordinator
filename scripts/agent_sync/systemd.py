@@ -70,7 +70,7 @@ def _confirmed_too_old(python: str, out: TextIO) -> bool:
         code = probe_failure_exit_code(error)
         raise InterpreterProbeFailure(
             code,
-            "interpreter version probe failed (exit %d); pass --python PATH (3.11 or newer)" % code,
+            "interpreter %s version probe failed (exit %d); pass --python PATH (3.11 or newer)" % (python, code),
         ) from error
 
 
@@ -162,6 +162,10 @@ def install(
     err: TextIO | None = None,
 ) -> int:
     home = os.path.abspath(home)
+    if python and "/" in python:
+        python = os.path.abspath(python)
+    if program:
+        program = os.path.abspath(program)
     target = unit_path(home)
     root = os.path.abspath(
         os.path.expanduser(env.get(L.ENV_STATE_DIR) or os.path.join(home, ".agent-sync"))
@@ -185,7 +189,7 @@ def install(
             )
         if not probed and _confirmed_too_old(python, out):
             raise InterpreterProbeFailure(
-                2, "interpreter is older than Python 3.11; pass --python PATH (3.11 or newer)"
+                4, "interpreter is older than Python 3.11; pass --python PATH (3.11 or newer)"
             )
     except InterpreterProbeFailure as error:
         err.write("agent-sync: %s\n" % error)
