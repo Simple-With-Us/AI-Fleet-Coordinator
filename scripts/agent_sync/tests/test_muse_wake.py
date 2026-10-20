@@ -528,11 +528,70 @@ class McodeFallbackTest(unittest.TestCase):
             self.assertEqual(
                 A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3.1-Flash")["why"], "pin_stale"
             )
-            # A pin recorded before the fingerprint existed cannot stand in for one.
+            # A pin recorded before the fingerprint existed vouches for nothing about the current
+            # command, and says so apart from a moved binary:  the binary here is the same, so
+            # `pin_stale` would point the operator at a path that never moved.
             L.write_json(paths.wake_pin_mcode, {"mcode": A.binary_pin(exe), "at": time.time()})
-            self.assertEqual(
-                A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3")["why"], "pin_stale"
-            )
+            state = A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3")
+            self.assertEqual(state["why"], "pin_unverified")
+            self.assertFalse(state["pinned"])
+            self.assertEqual(state["mcode"], state["pinned_mcode"])
+
+    def test_the_fallback_cause_names_the_fault_instead_of_repeating_the_path(self) -> None:
+        # `pin_stale` covers a moved binary and a changed model/contract/schema.  Reporting the
+        # wrong one points the operator at a path that never moved, and shows it twice.
+        moved = {
+            "why": "pin_stale",
+            "mcode": "/opt/homebrew/bin/mcode",
+            "pinned_mcode": "/usr/local/bin/mcode",
+        }
+        self.assertIn("mcode moved to", A.mcode_pin_cause(moved))
+        self.assertIn("/usr/local/bin/mcode", A.mcode_pin_cause(moved))
+        changed = {
+            "why": "pin_stale",
+            "mcode": "/opt/homebrew/bin/mcode",
+            "pinned_mcode": "/opt/homebrew/bin/mcode",
+        }
+        cause = A.mcode_pin_cause(changed)
+        self.assertIn("model, contract or schema", cause)
+        self.assertEqual(cause.count("/opt/homebrew/bin/mcode"), 1, cause)
+        unverified = {
+            "why": "pin_unverified",
+            "mcode": "/opt/homebrew/bin/mcode",
+            "pinned_mcode": "/opt/homebrew/bin/mcode",
+        }
+        self.assertIn("predates the command fingerprint", A.mcode_pin_cause(unverified))
+
+    def test_the_fallback_remediation_selects_the_fallback_runtime(self) -> None:
+        # Without `--runtime fallback`, `test-wake` resolves the default "auto" to seat_cfg.wake and
+        # re-pins the PRIMARY runtime, which leaves this pin stale and the fallback still refused.
+        self.assertIn("--runtime fallback", A.MCDE_PIN_REMEDIATION)
+        self.assertIn("--run", A.MCDE_PIN_REMEDIATION)
+
+    def test_the_fallback_fingerprint_covers_the_contract_and_the_schema(self) -> None:
+        # The fallback is validated against the same wake contract and result schema the muse
+        # runner uses, so a pin that ignores them still reads as verified after either changes.
+        base = A.mcode_wake_fingerprint("<mcode>", "minimax/MiniMax-M3")
+        self.assertTrue(base)
+        original = A.MCODE_WAKE_POLICY_VERSION
+        try:
+            A.MCODE_WAKE_POLICY_VERSION = "mcode-fallback-model-v2"
+            self.assertNotEqual(A.mcode_wake_fingerprint("<mcode>", "minimax/MiniMax-M3"), base)
+        finally:
+            A.MCODE_WAKE_POLICY_VERSION = original
+        self.assertEqual(A.mcode_wake_fingerprint("<mcode>", "minimax/MiniMax-M3"), base)
+
+    def test_the_fallback_fingerprint_fails_closed_when_the_contract_is_unreadable(self) -> None:
+        # A pin must never vouch for a command whose contract could not be loaded, so an
+        # unreadable contract returns None and every pin reads stale rather than pinned.
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "no-such-contract.md")
+            original = A.CONTRACT_PATH
+            try:
+                A.CONTRACT_PATH = missing
+                self.assertIsNone(A.mcode_wake_fingerprint("<mcode>", "minimax/MiniMax-M3"))
+            finally:
+                A.CONTRACT_PATH = original
 
     def test_a_fallback_candidate_from_another_model_is_not_pinned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

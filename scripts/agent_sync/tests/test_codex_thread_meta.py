@@ -26,6 +26,35 @@ class CodexThreadMetaTests(McpHarness):
         self.add_infisical_bot("CODEX", email="codex-bot@zulip.test", key=key)
         self.env = self.mcp_env(AGENT_SEAT="CODEX", CLAUDE_CODE_SESSION_ID=None)
 
+    def test_a_caller_supplied_session_reaches_the_state_file(self):
+        """A cloud seat's MCP client cannot inherit the platform session variable, so it passes
+        `session` on the call.  Without it in the state file the post is attributed to an
+        8-character tag and the session behind it is unrecoverable for a resume-wake."""
+        full = "mvs_0123456789abcdef0123456789abcdef"
+        tools = self.direct(session=None, source="none")
+        tools._use_tag(Z.session_tag(full), full)
+        tools.agent.state.record_posted(1)
+        data = json.loads(tools.agent.state.path.read_text())
+        self.assertEqual(data.get("session"), full)
+        self.assertEqual(tools.agent.state.session_id, full)
+
+    def test_an_unattributable_tag_still_records_no_session(self):
+        """A tag the server cannot tie to a thread, to the caller's `session` or to its own id
+        must not borrow the server's id:  that would point a foreign tag at this process."""
+        tools = self.direct(session=None, source="none")
+        tools._use_tag("abcd1234")
+        tools.agent.state.record_posted(1)
+        data = json.loads(tools.agent.state.path.read_text())
+        self.assertNotIn("session", data)
+
+    def test_the_servers_own_tag_keeps_the_servers_own_session(self):
+        full = "mvs_0123456789abcdef0123456789abcdef"
+        tools = self.direct(session=full, source="process_env")
+        tools._use_tag(tools.process_tag)
+        tools.agent.state.record_posted(1)
+        data = json.loads(tools.agent.state.path.read_text())
+        self.assertEqual(data.get("session"), full)
+
     def direct(self, session=None, source="none"):
         rt = cli.Runtime(
             env=dict(self.env),

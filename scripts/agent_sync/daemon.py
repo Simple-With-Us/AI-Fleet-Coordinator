@@ -4915,22 +4915,15 @@ class Daemon:
             mcode_pin = (
                 A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model) if mcode else None
             )
-            if mcode_pin and mcode_pin["why"] == "pin_stale":
-                # `pin_stale` covers two causes:  the binary moved (the paths differ), or the
-                # command/model changed under a pin that still names the same binary (they match).
-                # Naming the wrong one points the operator at a path that never moved, and shows
-                # the same path twice.
-                _moved = mcode_pin["mcode"] != mcode_pin["pinned_mcode"]
-                _cause = (
-                    "mcode moved to %s (pinned %s)"
-                    % (mcode_pin["mcode"], mcode_pin["pinned_mcode"])
-                    if _moved
-                    else "the fallback command or model changed (pinned %s)"
-                    % mcode_pin["pinned_mcode"]
-                )
+            if mcode_pin and mcode_pin["why"] in ("pin_stale", "pin_unverified"):
+                # The cause and the remediation both live in adapters, so the wording is testable
+                # without standing up a daemon.
                 red.append(
-                    "fallback pin is stale: %s; run "
-                    "`agent-sync daemon test-wake --seat %s --run`, then `--pin`" % (_cause, seat)
+                    "fallback pin is stale: %s; run %s"
+                    % (
+                        A.mcode_pin_cause(mcode_pin),
+                        A.MCDE_PIN_REMEDIATION % seat,
+                    )
                 )
             for problem in runner.cfg.config_problems:
                 red.append(
