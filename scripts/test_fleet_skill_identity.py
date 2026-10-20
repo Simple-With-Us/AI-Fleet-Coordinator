@@ -1576,5 +1576,72 @@ class AgentSyncRosterTests(unittest.TestCase):
             self.assertNotRegex(text, rf"(?m)^\| {tag} \|", tag)
 
 
+class VMSeatLaneTests(unittest.TestCase):
+    def test_vm_steps_replace_mac_lane_commands_and_keep_identity(self):
+        for name in ("session-start", "fleet-coordination", "land-lane", "closeout"):
+            source = Path(ROOT, "docs", "fleet-skills", name, "SKILL.md").read_text()
+            rendered = specialize_from_monet(source, SEATS["muse-assist"], skill_name=name)
+            self.assertIn(
+                "durable VM checkout" if name in ("land-lane", "closeout") else "durable", rendered
+            )
+            self.assertNotRegex(rendered, r"(?m)^\s*~/apps/lane (?:new|retire|prune)")
+            self.assertNotIn("Make one lane per task", rendered)
+            self.assertNotIn("lane.lane new", rendered)
+            self.assertNotIn("create the lane by hand", rendered)
+            self.assertNotIn("checkout is the lane", rendered)
+            self.assertIn("MA", rendered)
+        ordinary = specialize_from_monet(_session(), SEATS["codex"], skill_name="session-start")
+        self.assertIn("~/apps/lane new", ordinary)
+
+    def test_ma_app_table_keeps_repository_metadata_without_mac_paths(self):
+        rendered = specialize_from_monet(
+            _load_skill("session-start"), SEATS["muse-assist"], skill_name="session-start"
+        )
+        table = [line for line in rendered.splitlines() if line.startswith("|")]
+        self.assertTrue(any("AI-Fleet-Coordinator" in row and "AFC" in row for row in table))
+        self.assertFalse(any("~/apps/lanes/" in row for row in table))
+        self.assertFalse(any("Lane folder" in row for row in table))
+
+    def test_ma_claims_use_cloud_and_actual_durable_checkout(self):
+        for name in ("session-start", "fleet-coordination", "board-ops"):
+            rendered = specialize_from_monet(
+                _load_skill(name), SEATS["muse-assist"], skill_name=name
+            )
+            self.assertNotIn("--env Mac", rendered, name)
+            self.assertNotIn('where "~/apps/lanes/', rendered, name)
+            self.assertIn("--env cloud", rendered, name)
+            for location in re.findall(r'--where "([^"\n]*)"', rendered):
+                self.assertEqual(location, "$(pwd -P) @ $(git branch --show-current)", name)
+        ordinary = specialize_from_monet(
+            _load_skill("board-ops"), SEATS["codex"], skill_name="board-ops"
+        )
+        self.assertIn("--env Mac", ordinary)
+
+    def test_ma_unstick_keeps_diagnostics_without_mac_lane_lookup(self):
+        rendered = specialize_from_monet(
+            _load_skill("unstick-pr"), SEATS["muse-assist"], skill_name="unstick-pr"
+        )
+        self.assertNotIn("~/apps/lane path", rendered)
+        self.assertIn('cd "<durable VM checkout path>"', rendered)
+        self.assertIn("git merge-tree --write-tree", rendered)
+        self.assertIn("DealDex's hosted Actions ship stays", rendered)
+
+    def test_mac_sweep_launcher_is_not_installed_to_ma(self):
+        self.assertFalse(skill_allowed_for_seat("pr-sweep", SEATS["muse-assist"]))
+        for key, seat in SEATS.items():
+            if seat.tag != "MA":
+                self.assertTrue(skill_allowed_for_seat("pr-sweep", seat), key)
+
+    def test_every_installed_ma_skill_avoids_mac_lane_invocations(self):
+        docs = Path(ROOT, "docs", "fleet-skills")
+        for name in catalog_skill_names(str(docs)):
+            if not skill_allowed_for_seat(name, SEATS["muse-assist"]):
+                continue
+            rendered = specialize_from_monet(
+                _load_skill(name), SEATS["muse-assist"], skill_name=name
+            )
+            self.assertNotIn("~/apps/lane ", rendered, name)
+
+
 if __name__ == "__main__":
     unittest.main()
