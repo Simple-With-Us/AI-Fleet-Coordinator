@@ -223,10 +223,9 @@ class SpecializeTests(unittest.TestCase):
         with open(GAP, encoding="utf-8") as f:
             src = f.read()
         out = specialize_from_monet(src, SEATS["cursor"], skill_name="sentence-gap")
-        self.assertTrue(
-            "Monet portable" in out or "Monet's portable" in out,
-            out[:600],
-        )
+        #  The protocol attribution is generic, never the retired Monet seat (Kody rule 13).
+        self.assertIn("the canonical portable protocol", out)
+        self.assertNotIn("Monet", out[:600])
 
     def test_quoted_description_folds_for_fx(self) -> None:
         out = specialize_from_monet(_session(), SEATS["codex"], skill_name="session-start")
