@@ -2,6 +2,9 @@
 line-length = 100
 target-version = "py313"
 
+# Explicitly named files (autofix.ci passes the changed files) must still honor extend-exclude.
+force-exclude = true
+
 extend-exclude = [
     "scripts/fleet_rag/tests",
     "scripts/fleet_facts/tests",
@@ -11,3 +14,22 @@ extend-exclude = [
     "scripts/needs_owner/tests",
     "scripts/open_loops/tests",
 ]
+
+# The 3.9 contract for scripts/fleet_lanes (the Mac runs it under /usr/bin/python3).  autofix-ci installs the
+# latest ruff and passes no --select, and ruff 0.17's default rule set already includes the UP rules and
+# RUF100 (check with `ruff check --show-settings`), so no `select` is needed here.
+#
+# per-file-target-version stops every rule that needs a newer Python (UP007, UP045, UP017, UP040, UP041,
+# UP046, B905 and future ones).  It does NOT stop UP006 or UP035, which still fire at py39 and rewrite to
+# builtin generics and collections.abc imports;  the ignore list below covers those and the older UP rules
+# explicitly.  RUF100 is ignored because the package's `# noqa: UP0xx` markers go unused once they are off.
+# Every other rule stays on.  See AFC-425.
+[per-file-target-version]
+"scripts/fleet_lanes/**" = "py39"
+
+[lint.per-file-ignores]
+"scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
+
+[format]
+# Whitespace churn and py313-only syntax: the 3.9-run package keeps its hand layout.  See AFC-425.
+exclude = ["scripts/fleet_lanes/**"]
