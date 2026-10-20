@@ -969,6 +969,7 @@ class ZulipClient:
         *,
         timeout: float | None = None,
         long_poll: bool = False,
+        deadline: float | None = None,
         upload: tuple[str, bytes, str] | None = None,
     ) -> dict[str, Any]:
         """One API call.  429 is retried (Retry-After, at most 3 times).  GET also retries
@@ -1002,12 +1003,22 @@ class ZulipClient:
             headers["Content-Type"] = content_type
         rate_retries = 0
         net_retries = 0
+
+        def pause(seconds: float) -> None:
+            if deadline is not None:
+                seconds = min(seconds, max(0.0, deadline - time.monotonic()))
+            self.sleep(seconds)
+
         while True:
+            budget = timeout if timeout is not None else self.timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise NetworkError("request deadline exhausted", timeout=True, maybe_sent=False)
+                budget = min(budget, remaining)
             request = urllib.request.Request(url, data=data, method=method, headers=headers)
             try:
-                with self._opener.open(
-                    request, timeout=timeout if timeout is not None else self.timeout
-                ) as response:
+                with self._opener.open(request, timeout=budget) as response:
                     body = response.read()
                     status = response.status
             except urllib.error.HTTPError as exc:
@@ -1020,14 +1031,14 @@ class ZulipClient:
                     exc.close()
                 if status == 429 and rate_retries < MAX_RATE_LIMIT_RETRIES:
                     rate_retries += 1
-                    self.sleep(self._retry_after(exc.headers, body))
+                    pause(self._retry_after(exc.headers, body))
                     continue
                 if (
                     method == "GET"
                     and status in GATEWAY_STATUSES
                     and net_retries < len(GET_RETRY_BACKOFF)
                 ):
-                    self.sleep(GET_RETRY_BACKOFF[net_retries])
+                    pause(GET_RETRY_BACKOFF[net_retries])
                     net_retries += 1
                     continue
                 raise self._api_error(status, body) from None
@@ -1040,7 +1051,7 @@ class ZulipClient:
                     and not (long_poll and is_timeout)
                 )
                 if retryable:
-                    self.sleep(GET_RETRY_BACKOFF[net_retries])
+                    pause(GET_RETRY_BACKOFF[net_retries])
                     net_retries += 1
                     continue
                 refused = isinstance(reason, ConnectionRefusedError)

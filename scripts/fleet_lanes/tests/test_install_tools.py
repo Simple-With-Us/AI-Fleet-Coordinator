@@ -1775,6 +1775,7 @@ class StableDirOwnershipTests(World):
                 "minimax-guard-hook",
                 "muse-plugin",
                 "muse-seat",
+                "opencode-plugin",
             ],
         )
 
@@ -2471,7 +2472,9 @@ class ApplyAllProbeTests(World):
         src = self.make_source(name, sha=sha)
         hook = Path(src.scripts_dir) / "fleet_lanes" / "lane_guard_hook.py"
         text = hook.read_text(encoding="utf-8")
-        broken = text.replace('if fmt in ("grok", "antigravity"):', 'if fmt in ("antigravity",):')
+        broken = text.replace(
+            'if fmt in ("grok", "antigravity", "vibe"):', 'if fmt in ("antigravity", "vibe"):'
+        )
         self.assertNotEqual(broken, text, "the grok output branch moved; update this test")
         hook.write_text(broken, encoding="utf-8")
         return src
@@ -2542,7 +2545,9 @@ class ApplyAllProbeTests(World):
         hook = Path(self.paths.package_dir) / "lane_guard_hook.py"
         text = hook.read_text(encoding="utf-8")
         hook.write_text(
-            text.replace('if fmt in ("grok", "antigravity"):', 'if fmt in ("antigravity",):'),
+            text.replace(
+                'if fmt in ("grok", "antigravity", "vibe"):', 'if fmt in ("antigravity", "vibe"):'
+            ),
             encoding="utf-8",
         )
         res = T.apply_platform(
@@ -4884,7 +4889,7 @@ class FleetHookStableCopyTests(World):
             r = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertTrue(r.ok, r)
         fleet = [c for c in calls if "fleet-guard-hook" in c[0]]
-        self.assertEqual({c[2] for c in fleet}, {"muse", "claude", "kimi"})
+        self.assertEqual({c[2] for c in fleet}, {"muse", "claude", "kimi", "vibe"})
         self.assertTrue(all(c[1] for c in fleet))
 
     def test_a_staged_fleet_shim_that_cannot_deny_a_ps_is_never_swapped_in(self) -> None:
