@@ -1,10 +1,10 @@
 """Filesystem operations for the local Muster builder.  Never launches an app."""
 
-from pathlib import Path
 import os
 import shutil
 import signal
 import tempfile
+from pathlib import Path
 
 
 def acquire_lock(path):
@@ -12,7 +12,9 @@ def acquire_lock(path):
     try:
         Path(path).mkdir()
     except FileExistsError:
-        raise RuntimeError("Another Muster build holds the lock; inspect it before removal.") from None
+        raise RuntimeError(
+            "Another Muster build holds the lock; inspect it before removal."
+        ) from None
 
 
 def install_bundle(staged, installed, verify):
