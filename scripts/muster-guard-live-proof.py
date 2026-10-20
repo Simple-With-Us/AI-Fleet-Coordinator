@@ -456,7 +456,7 @@ def check_policy(plugin: dict) -> dict:
                 # through sends the operator to fix a guard that was never exercised.
                 return _stage_error(
                     f"the hook command exited {proc.returncode}: "
-                    f"{(proc.stderr or '').strip()[:200]}"
+                    f"{(proc.stderr or '').strip()[-200:]}"
                 )
         if not denied:
             missed.append(tool_name)

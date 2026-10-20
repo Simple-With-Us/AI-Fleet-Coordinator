@@ -413,6 +413,18 @@ class CheckPolicy(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["missed"], [])
 
+    def test_a_failed_hook_retains_the_terminal_error(self):
+        diagnostic = "early frame " * 30 + "terminal interpreter failure"
+        command = write_fake_hook(
+            self.root / "broken.sh", "printf '%s' '" + diagnostic + "' >&2; exit 127"
+        )
+        plugin = write_plugin(self.root, "Bash|bash", command)
+        result = proof.check_policy(proof.read_plugin(plugin))
+        self.assertIsNone(result["ok"])
+        self.assertEqual(result["status"], "error")
+        self.assertIn("terminal interpreter failure", result["why"])
+        self.assertNotIn(diagnostic, result["why"])
+
     def test_an_allowing_hook_fails(self):
         command = write_fake_hook(self.root / "allow.sh", "exit 0")
         plugin = write_plugin(self.root, "Bash|bash", command)
