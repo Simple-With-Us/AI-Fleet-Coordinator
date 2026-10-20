@@ -1282,6 +1282,83 @@ class RefusalBoundaryTests(unittest.TestCase):
             self.assertFalse(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
             runner.client.post.assert_not_called()
 
+    def test_ambiguous_reaction_does_not_suppress_the_reply(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            failed = [False]
+            replies = []
+            def post(path, params):
+                if path.endswith("/reactions") and not failed[0]:
+                    failed[0] = True
+                    raise Z.NetworkError("reaction timeout", maybe_sent=True)
+                if path == "messages":
+                    replies.append(params)
+                return {}
+            runner.client.post.side_effect = post
+            with self.assertRaises(Z.NetworkError):
+                NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertTrue(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+            self.assertEqual(len(replies), 1)
+
+    def test_capped_scan_resumes_after_a_new_runner_loads_its_state(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            anchors = []
+            def get(path, params, **kwargs):
+                anchor = params["anchor"]
+                anchors.append(anchor)
+                return {"messages": [{"id": anchor + 1, "sender_id": 10, "content": "unrelated"}],
+                        "found_newest": anchor >= 103}
+            runner.client.get.side_effect = get
+            with mock.patch.object(NR, "REPLY_SCAN_PAGES", 2):
+                with self.assertRaises(NR.MalformedResponse):
+                    NR.already_replied(runner, message, 101, "refused", lambda *a, **k: None)
+            replacement, _ = self.runner(root)
+            replacement.client.get.side_effect = get
+            self.assertFalse(NR.already_replied(replacement, message, 101, "refused", lambda *a, **k: None))
+            self.assertEqual(anchors, [101, 102, 103])
+
+    def test_completed_receipts_and_lock_registry_are_bounded(self):
+        import tempfile
+        from pathlib import Path
+        from agent_sync import live as LIVE
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            before = len(LIVE._PATH_LOCKS)
+            with mock.patch.object(NR, "REFUSAL_ROWS_KEEP", 2), mock.patch.object(NR, "REFUSAL_ROWS_LIMIT", 4):
+                for message_id in range(101, 111):
+                    self.assertTrue(NR.refuse_unconsumed(runner, dict(message, id=message_id), "Disabled.", lambda *a, **k: None))
+            self.assertLessEqual(len(list((Path(root) / NR.RELAY_DIR / "refusals").glob("*.json"))), 2)
+            self.assertLessEqual(len(list(Path(root).rglob("*.lock"))), 2)
+            self.assertLessEqual(len(LIVE._PATH_LOCKS) - before, 2)
+
+    def test_capacity_refuses_new_rows_without_deleting_ambiguous_receipts(self):
+        import tempfile
+        from pathlib import Path
+        from agent_sync import live as LIVE
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            directory = Path(root) / NR.RELAY_DIR / "refusals"
+            for index in range(3):
+                LIVE.write_json(str(directory / (str(index) + ".json")), {"state": "unknown"}, durable=True)
+            with mock.patch.object(NR, "REFUSAL_ROWS_LIMIT", 3):
+                with self.assertRaisesRegex(NR.MalformedResponse, "capacity"):
+                    NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertEqual(len(list(directory.glob("*.json"))), 3)
+            runner.client.post.assert_not_called()
+
+    def test_unauthorized_requests_allocate_no_state(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            runner.users[11]["is_bot"] = False
+            for message_id in range(101, 121):
+                self.assertFalse(NR.refuse_unconsumed(runner, dict(message, id=message_id), "Disabled.", lambda *a, **k: None))
+            self.assertEqual(list(Path(root).rglob("*")), [])
+
     def test_malformed_destination_never_posts_message(self):
         import tempfile
         with tempfile.TemporaryDirectory() as root:

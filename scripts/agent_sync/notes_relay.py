@@ -380,6 +380,54 @@ def react(
     log("notes-relay-no-emoji", id=message_id, names=list(names))
 
 
+REFUSAL_ROWS_KEEP = 256
+REFUSAL_ROWS_LIMIT = 512
+SCAN_PROGRESS_KEEP = 256
+
+
+def _scan_progress(runner, key, anchor=None, *, state_root=None):
+    """Bounded durable cursors shared by active and disabled relay refusal scans."""
+    path = os.path.join(state_root if state_root is not None else runner.paths.root, RELAY_DIR, "refusal-scan-progress.json")
+    with LIVE.locked(path):
+        rows = LIVE.read_json(path)
+        if anchor is None:
+            value = rows.get(key, {}).get("anchor")
+            return value if isinstance(value, int) and not isinstance(value, bool) else None
+        if anchor is False:
+            rows.pop(key, None)
+        else:
+            rows[key] = {"anchor": anchor, "updated": time.time()}
+        rows = dict(sorted(rows.items(), key=lambda item: item[1].get("updated", 0))[-SCAN_PROGRESS_KEEP:])
+        LIVE.write_json(path, rows, durable=True)
+
+
+def _prune_refusals(directory):
+    """Keep recent terminal receipts, preserve all ambiguous outcomes, and cap new admissions."""
+    try:
+        paths = [os.path.join(directory, name) for name in os.listdir(directory) if name.endswith(".json")]
+    except FileNotFoundError:
+        return 0
+    terminal = []
+    for path in paths:
+        row = LIVE.read_json(path)
+        if row.get("state") in ("ok", "unauthorized"):
+            try:
+                terminal.append((os.stat(path).st_mtime, path))
+            except FileNotFoundError:
+                continue
+    now = time.time()
+    terminal.sort(reverse=True)
+    removed = 0
+    for index, (modified, path) in enumerate(terminal):
+        if index >= REFUSAL_ROWS_KEEP or now - modified > 7 * 86400:
+            try:
+                os.unlink(path)
+                removed += 1
+            except FileNotFoundError:
+                pass
+    return len(paths) - removed
+
+
 def already_replied(
     runner: Any,
     original: Mapping[str, Any],
@@ -388,6 +436,7 @@ def already_replied(
     log: Callable[..., None],
     *,
     deadline: float | None = None,
+    state_root: str | None = None,
 ) -> bool:
     """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
     forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
@@ -400,7 +449,8 @@ def already_replied(
         ]
         + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else [])
     )
-    anchor = message_id
+    scan_key = hashlib.sha256(json.dumps([me, original.get("stream_id"), Z.message_topic(original), message_id, prefix]).encode()).hexdigest()
+    anchor = max(message_id, _scan_progress(runner, scan_key, state_root=state_root) or message_id)
     deadline = (
         min(deadline, time.monotonic() + 10.0) if deadline is not None else time.monotonic() + 10.0
     )
@@ -428,6 +478,7 @@ def already_replied(
             m.get("sender_id") == me and str(m.get("content") or "").startswith(prefix)
             for m in page
         ):
+            _scan_progress(runner, scan_key, False, state_root=state_root)
             return True
         ids: list[int] = []
         for m in page:
@@ -440,6 +491,7 @@ def already_replied(
         if not isinstance(found_newest, bool):
             raise MalformedResponse("Zulip messages response must include a boolean found_newest")
         if found_newest:
+            _scan_progress(runner, scan_key, False, state_root=state_root)
             return False  # the topic's newest message has been read:  no reply yet
         if not page:
             # Zulip's found_newest is a coverage flag, not a cursor flag:  when the anchor is newer than every message
@@ -449,10 +501,12 @@ def already_replied(
             # topic, so the request stays held instead of a second refusal being published.
             if not isinstance(found.get("messages"), list):
                 raise MalformedResponse("Zulip messages response must include a list of messages")
+            _scan_progress(runner, scan_key, False, state_root=state_root)
             return False
         if not ids:
             raise MalformedResponse("Zulip messages response omitted a valid next anchor")
         anchor = max(ids)
+        _scan_progress(runner, scan_key, anchor, state_root=state_root)
     log("notes-relay-reply-scan-capped", id=message_id, pages=REPLY_SCAN_PAGES)
     raise MalformedResponse("refusal reply scan incomplete")
 
@@ -520,6 +574,7 @@ def _refuse_unconsumed_locked(
         request_id = candidate if isinstance(candidate, str) and candidate else None
     label = W.neutralize_mentions(safe_reason(request_id or "(message %d)" % message_id))
     prefix = N.refusal_label(label)
+    reply_attempted = False
     try:
         react(
             runner,
@@ -558,6 +613,7 @@ def _refuse_unconsumed_locked(
             return True
         LIVE.write_json(row, {"state": "unknown"}, durable=True)
         text = W.neutralize_mentions(safe_reason(" ".join(reason.split())[:REASON_LIMIT]))
+        reply_attempted = True
         runner.client.post(
             "messages",
             {
@@ -574,11 +630,12 @@ def _refuse_unconsumed_locked(
             status = None
         definite_rejection = status is not None and 400 <= status < 500 and status != 408
         definitely_unsent = status is None and getattr(exc, "maybe_sent", None) is False
-        LIVE.write_json(
-            row,
-            {"state": "refused" if definite_rejection or definitely_unsent else "unknown"},
-            durable=True,
-        )
+        # A reaction or lookup failure says nothing about the non-idempotent reply outcome.
+        # Preserve a pre-existing reply ambiguity, but never create one before its POST.
+        if reply_attempted:
+            LIVE.write_json(row, {"state": "refused" if definite_rejection or definitely_unsent else "unknown"}, durable=True)
+        elif not unknown:
+            LIVE.write_json(row, {"state": "refused"}, durable=True)
         if isinstance(exc, Z.NetworkError) or retryable(exc):
             raise
         log("notes-relay-reply-failed", id=message_id, status=status)
@@ -603,17 +660,33 @@ def refuse_unconsumed(
     message_id = message.get("id")
     if not isinstance(message_id, int) or isinstance(message_id, bool):
         return False
+    # Known unauthorized realm users never allocate state or a lock entry.
+    try:
+        validate(message, runner.users.get(message.get("sender_id")),
+                 owner_user_id=int(runner.daemon.config.owner_user_id or 0))
+    except Refusal as exc:
+        if exc.code in ("sender_not_bot", "sender_owner", "sender_identity", "identity_mismatch"):
+            return False
     key = hashlib.sha256((str(runner.me.user_id) + ":" + str(message_id)).encode()).hexdigest()
-    row = os.path.join(runner.paths.root, RELAY_DIR, "refusals", key + ".json")
-    with LIVE.locked(row):
+    directory = os.path.join(runner.paths.root, RELAY_DIR, "refusals")
+    row = os.path.join(directory, key + ".json")
+    # One bounded collection lock replaces a permanent lock file and thread-lock entry per request.
+    # It serializes retention and row access, so pruning cannot remove an in-flight receipt.
+    with LIVE.locked(os.path.join(runner.paths.root, RELAY_DIR, "refusal-state")):
+        count = _prune_refusals(directory)
         previous = LIVE.read_json(row)
         if previous.get("state") == "ok":
             return True
         if previous.get("state") == "unauthorized":
             return False
-        return _refuse_unconsumed_locked(
-            runner, message, reason, log, row, previous.get("state") == "unknown", deadline
-        )
+        if not previous and count >= REFUSAL_ROWS_LIMIT:
+            raise MalformedResponse("refusal state capacity reached; ambiguous outcomes retained")
+        try:
+            return _refuse_unconsumed_locked(
+                runner, message, reason, log, row, previous.get("state") == "unknown", deadline
+            )
+        finally:
+            _prune_refusals(directory)
 
 
 class Consumer:
@@ -982,7 +1055,7 @@ class Consumer:
         """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
         forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
         after a long backlog is still seen.  The scan is bounded;  past the bound it raises and keeps the request held."""
-        return already_replied(runner, original, message_id, prefix, self.log)
+        return already_replied(runner, original, message_id, prefix, self.log, state_root=os.path.dirname(os.path.dirname(self.processed.path)))
 
     def _download(self, runner: Any, path: str) -> bytes:
         """The uploaded .md at /user_uploads/..., through the reading bot's own credential:  Zulip hands back a
