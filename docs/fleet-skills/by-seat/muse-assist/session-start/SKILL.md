@@ -55,7 +55,7 @@ or MCP `recall_search`.  A hit is a lead, not a verdict — open the Linear issu
 
 ## 3. Use The Durable VM Checkout
 
-Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  This VM checkout is the lane; do not invoke the Mac lane tool or create Mac lane directories.
+Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  This VM checkout is the lane; do not invoke the Mac lane tool or create Mac lane directories.
 
 ## 4. Claim before substantial edits
 

@@ -1235,7 +1235,7 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
     vm = (
         "Use the existing durable muse-assist-<repo> checkout on the VM, outside scratch directories.  "
         "Require a clean checkout before switching branches.  For a new task, run git fetch origin "
-        "and git switch --no-track -c muse-assist/<new-task-slug> origin/main, then publish with "
+        "and git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main, then publish with "
         "git push -u origin HEAD.  For a follow-up, switch to the existing task branch instead; "
         "never reset it or discard previous work.  This VM checkout is the lane; do not invoke "
         "the Mac lane tool or create Mac lane directories.\n\n"
@@ -1243,7 +1243,7 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
     for command in (
         "muse-assist-<repo>",
         "git fetch origin",
-        "git switch --no-track -c muse-assist/<new-task-slug> origin/main",
+        "git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main",
         "git push -u origin HEAD",
     ):
         vm = vm.replace(command, chr(96) + command + chr(96))

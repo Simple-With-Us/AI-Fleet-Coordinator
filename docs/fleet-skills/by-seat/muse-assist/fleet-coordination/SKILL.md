@@ -87,7 +87,7 @@ Every agent session must start with systematic orientation before touching code:
 
 ## 2. VM Lanes
 
-Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  This VM checkout is the lane; do not invoke the Mac lane tool or create Mac lane directories.
+Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  This VM checkout is the lane; do not invoke the Mac lane tool or create Mac lane directories.
 
 ---
 
