@@ -797,8 +797,7 @@ class Tools:
                     self.thread_id
                     if state_key
                     else (
-                        session_id
-                        or (self.agent.session_id if key == self.process_tag else None)
+                        session_id or (self.agent.session_id if key == self.process_tag else None)
                     )
                 ),
             )
