@@ -691,6 +691,28 @@ class TransportTests(unittest.TestCase):
 
 
 class LoadedProofTests(unittest.TestCase):
+    def setUp(self):
+        failed = patch.object(module, "_LOADED_PROBE_FAILED_AT", float("-inf"))
+        failed.start()
+        self.addCleanup(failed.stop)
+
+    def test_failed_probe_is_bounded_but_fresh_probe_bypasses_failure_cache(self):
+        snapshot = (99, frozenset(["/old/rollout.jsonl"]))
+        with (
+            patch.object(module, "_LOADED_CACHE", snapshot),
+            patch.object(module.time, "monotonic", return_value=100) as clock,
+            patch.object(module.subprocess, "run", side_effect=subprocess.TimeoutExpired("lsof", 3)) as run,
+        ):
+            self.assertEqual(module.loaded_rollouts(fresh=True), frozenset())
+            self.assertEqual(module.loaded_rollouts(), frozenset())
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(module._LOADED_CACHE, snapshot)
+            self.assertEqual(module.loaded_rollouts(fresh=True), frozenset())
+            self.assertEqual(run.call_count, 2)
+            clock.return_value = 106
+            self.assertEqual(module.loaded_rollouts(), frozenset())
+            self.assertEqual(run.call_count, 3)
+
     def test_exact_desktop_executable_and_rollout_must_share_process(self):
         path = "/Users/x/.codex/sessions/rollout.jsonl"
         output = ("p1\nn" + module.DESKTOP_EXECUTABLE + "\np2\nn" + path + "\n").encode()
