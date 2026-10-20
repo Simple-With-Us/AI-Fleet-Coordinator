@@ -92,7 +92,9 @@ def installed_pids(binary):
     binary = Path(binary).resolve()
     found = subprocess.run(
         ["/usr/bin/pgrep", "-x", binary.name],
-        capture_output=True, text=True, timeout=5,
+        capture_output=True,
+        text=True,
+        timeout=5,
     )
     if found.returncode == 1:
         return []
@@ -106,7 +108,9 @@ def installed_pids(binary):
         try:
             inspected = subprocess.run(
                 ["/usr/sbin/lsof", "-a", "-p", pid, "-d", "txt", "-Fn"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             paths = [line[1:] for line in inspected.stdout.splitlines() if line.startswith("n")]
             if inspected.returncode or not paths:

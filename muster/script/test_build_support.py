@@ -144,7 +144,6 @@ class BuildSupportTests(unittest.TestCase):
         self.assertEqual((self.installed / "version").read_text(), "old")
 
 
-
 class ProcessInspectionTests(unittest.TestCase):
     binary = Path("/synthetic/Applications/Muster.app/Contents/MacOS/Muster")
 
@@ -152,8 +151,11 @@ class ProcessInspectionTests(unittest.TestCase):
         return subprocess.CompletedProcess([], status, output, "")
 
     def test_matches_exact_executable_and_ignores_other_copy(self):
-        results = [self.result("12\n13\n"), self.result("p12\nn" + str(self.binary) + "\n"),
-                   self.result("p13\nn/other/Muster.app/Contents/MacOS/Muster\n")]
+        results = [
+            self.result("12\n13\n"),
+            self.result("p12\nn" + str(self.binary) + "\n"),
+            self.result("p13\nn/other/Muster.app/Contents/MacOS/Muster\n"),
+        ]
         with mock.patch.object(support.subprocess, "run", side_effect=results) as run:
             self.assertEqual(support.installed_pids(self.binary), ["12"])
         self.assertEqual(run.call_args_list[0].args[0], ["/usr/bin/pgrep", "-x", "Muster"])
@@ -163,7 +165,9 @@ class ProcessInspectionTests(unittest.TestCase):
 
     def test_no_match_is_empty_and_discovery_error_refuses(self):
         for status in (1, 2):
-            with mock.patch.object(support.subprocess, "run", return_value=self.result(status=status)):
+            with mock.patch.object(
+                support.subprocess, "run", return_value=self.result(status=status)
+            ):
                 if status == 1:
                     self.assertEqual(support.installed_pids(self.binary), [])
                 else:
@@ -171,20 +175,33 @@ class ProcessInspectionTests(unittest.TestCase):
                         support.installed_pids(self.binary)
 
     def test_uninspectable_active_process_refuses(self):
-        for inspected in (self.result(status=1), self.result("p12\n"),
-                          subprocess.TimeoutExpired("synthetic", 5)):
-            with (mock.patch.object(support.subprocess, "run", side_effect=[self.result("12\n"), inspected]),
-                  mock.patch.object(support.os, "kill", return_value=None)):
+        for inspected in (
+            self.result(status=1),
+            self.result("p12\n"),
+            subprocess.TimeoutExpired("synthetic", 5),
+        ):
+            with (
+                mock.patch.object(
+                    support.subprocess, "run", side_effect=[self.result("12\n"), inspected]
+                ),
+                mock.patch.object(support.os, "kill", return_value=None),
+            ):
                 with self.assertRaises(RuntimeError):
                     support.installed_pids(self.binary)
 
     def test_process_exit_during_inspection_is_harmless(self):
-        with (mock.patch.object(support.subprocess, "run", side_effect=[self.result("12\n"), self.result(status=1)]),
-              mock.patch.object(support.os, "kill", side_effect=ProcessLookupError)):
+        with (
+            mock.patch.object(
+                support.subprocess, "run", side_effect=[self.result("12\n"), self.result(status=1)]
+            ),
+            mock.patch.object(support.os, "kill", side_effect=ProcessLookupError),
+        ):
             self.assertEqual(support.installed_pids(self.binary), [])
 
     def test_malformed_pid_refuses_before_inspection(self):
-        with mock.patch.object(support.subprocess, "run", return_value=self.result("not-a-pid\n")) as run:
+        with mock.patch.object(
+            support.subprocess, "run", return_value=self.result("not-a-pid\n")
+        ) as run:
             with self.assertRaises(RuntimeError):
                 support.installed_pids(self.binary)
             self.assertEqual(run.call_count, 1)
