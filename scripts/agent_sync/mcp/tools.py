@@ -777,7 +777,40 @@ class Tools:
         `session_id` is the FULL id the caller passed as `session`, when it passed one.  Without
         it the tag is all that survives into the state file, and the session behind the tag is
         unrecoverable.
+
+        The id is validated before use.  It becomes an opaque external identifier inside the
+        state file, and a resume-wake reads that value back to find the session, so a blank or
+        non-string one would be written through and later fail to match anything:  `""` is
+        falsy and silently degrades to no id, while a number would round-trip into the file as
+        a type the contract does not allow.  And an id no longer than the tag is the tag, so
+        writing it would persist the tag AS the session id and a resume-wake could not tell
+        them apart.  Both are refused here, loudly, as `ToolError("invalid_argument", ...)` so
+        `map_exception` preserves the message and names the argument the caller must fix.
         """
+        if session_id is not None and (not isinstance(session_id, str) or not session_id.strip()):
+            raise ToolError(
+                "invalid_argument",
+                "session must be a non-empty string when given, not %r"
+                % (type(session_id).__name__,),
+            )
+        if isinstance(session_id, str) and session_id.strip():
+            # Validate shape AND length:  `ID_PATTERN` allows ids from 4 characters, and an id
+            # at `SESSION_TAG_LEN` would equal its own tag, which a resume-wake could not tell
+            # apart.  A real id is strictly longer than the tag.  `session_ids.check` raises
+            # `ValueError`; we re-raise as `ToolError("invalid_argument", ...)` so the message
+            # survives `map_exception` and the caller sees the same code for both shape- and
+            # length-shaped failures.
+            try:
+                validated = SESSION_IDS.check(session_id, "the session argument")
+            except ValueError as exc:
+                raise ToolError("invalid_argument", str(exc)) from None
+            if len(validated) <= Z.SESSION_TAG_LEN:
+                raise ToolError(
+                    "invalid_argument",
+                    "session must be strictly longer than the %d-character tag, not %r (length %d)"
+                    % (Z.SESSION_TAG_LEN, validated, len(validated)),
+                )
+            session_id = validated
         state_key = self._call_state_key if tag == self._call_tag else None
         key = state_key or tag
         if tag != self.agent.tag or self.agent.state.tag != key:
