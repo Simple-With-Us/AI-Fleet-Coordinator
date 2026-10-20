@@ -3264,9 +3264,12 @@ class Daemon:
             return self._chat_catalog
 
     def chat_queue(self, seat: str) -> CN.ChatNudges:
-        if seat not in self._chat_queues:
-            self._chat_queues[seat] = CN.ChatNudges(self.root, seat, recover=False)
-        return self._chat_queues[seat]
+        # Fanout threads reach this from a background thread, so the check and the construction are
+        # one guarded step, exactly like chat_catalog() above.
+        with self._fanout_lock:
+            if seat not in self._chat_queues:
+                self._chat_queues[seat] = CN.ChatNudges(self.root, seat, recover=False)
+            return self._chat_queues[seat]
 
     def chat_context(
         self, runner: SeatRunner, pending: W.Pending, history: list[dict[str, Any]] | None = None

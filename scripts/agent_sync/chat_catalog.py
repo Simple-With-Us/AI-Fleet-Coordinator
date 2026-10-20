@@ -13,6 +13,7 @@ import os
 import re
 import socket
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -182,6 +183,9 @@ class ChatCatalog:
         self._last_scan = 0.0
         self._availability: dict[str, str] = {}
         self._missing_since: dict[str, float] = {}
+        # A scan rewrites `_records` wholesale, so one at a time:  the fanout thread and the wake path
+        # share this instance and must not merge two generations of rows.
+        self._scan_lock = threading.RLock()
 
     def _row(
         self,
@@ -875,6 +879,13 @@ class ChatCatalog:
         self._expires = self._last_scan + self.ttl
 
     def discover(
+        self, force: bool = False, *, wait_grok: bool = False, grok_timeout: float | None = None
+    ) -> list[dict[str, Any]]:
+        # Every caller shares this instance across threads, so a rescan is one guarded step.
+        with self._scan_lock:
+            return self._discover(force, wait_grok=wait_grok, grok_timeout=grok_timeout)
+
+    def _discover(
         self, force: bool = False, *, wait_grok: bool = False, grok_timeout: float | None = None
     ) -> list[dict[str, Any]]:
         now = self._clock()
