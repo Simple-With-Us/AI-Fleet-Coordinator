@@ -355,6 +355,9 @@ class ChatTransport:
         if platform not in self.adapters:
             if platform == "grok-leader":
                 self.adapters[platform] = GrokTransport()
+            elif platform == "codex":
+                from .codex_chat_transport import CodexChatTransport
+                self.adapters[platform] = CodexChatTransport()
             elif platform == "cursor-cloud":
                 from .cursor_chat_transport import CursorCloudTransport
                 self.adapters[platform] = CursorCloudTransport()

@@ -12,7 +12,7 @@ from typing import Any, Protocol
 from . import live as L
 
 SUPPORTED_PLATFORM = "grok-leader"
-SUPPORTED_PLATFORMS = {"grok-leader", "cursor-cloud"}
+SUPPORTED_PLATFORMS = {"grok-leader", "cursor-cloud", "codex"}
 TERMINAL_KEEP_SECONDS = 90 * 86400
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 _BINDING_FIELDS = ("channel", "topic", "platform", "host", "session_id", "cwd")

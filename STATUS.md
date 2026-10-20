@@ -1,5 +1,11 @@
 # Status
 
+## 2026-10-19 CODEX — Native Codex Wake Transport (AFC-305, AFC-326)
+
+Adds exact loaded-thread delivery through Codex’s durable queue, CODEX queue dispatch in the existing listener, and CODEX destination selection in the Muse bridge.  Operator remains the existing listener service, with Echo’s token work integrated separately.  Native preflight, one queue acknowledgment and its exact stored-message receipt are verified; actual idle-turn pickup and fresh live Zulip-to-Muse acceptance remain pending.  Live source switches remain off until review and activation gates pass.
+
+Rollout: `docs/rollouts/2026-10-19-native-codex-wake-delivery.md`.
+
 ## 2026-10-15 CURSOR — fleet-work-backup Mac watch wiring (OPS-907)
 
 Closes the remaining coordinator-repo work for fleet-work-backup:  `mac-process-watch.sh`

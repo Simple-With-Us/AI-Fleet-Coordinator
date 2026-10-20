@@ -26,7 +26,7 @@ from . import live as L
 from . import muse_bridge as MB
 from . import wakes as W
 
-BRIDGE_VERSION = "muse-inbox-bridge-v1"
+BRIDGE_VERSION = "muse-inbox-bridge-v2"
 CONTRACT = Path(__file__).parent / "wake" / "muse-bridge-contract.md"
 STATE_NAME = "muse-bridge-mac.json"
 PIN_NAME = "muse-bridge-pin.json"
@@ -405,7 +405,8 @@ class MacBridge:
             or fresh.get("stale")
             or not (fresh.get("capabilities") or {}).get("wake")
             or any(fresh.get(k) != offered.get(k) for k in ("seat", "platform", "host", "cwd"))
-            or fresh.get("seat") not in ("GROK", "CURSOR")
+            or fresh.get("seat") not in ("GROK", "CURSOR", "CODEX")
+            or (fresh.get("seat") == "CODEX" and fresh.get("platform") != "codex")
             or fresh.get("seat") not in self.daemon.seats
             or not self.daemon.seats[fresh["seat"]].cfg.enabled
         ):
@@ -480,7 +481,8 @@ class MacBridge:
                 or fresh.get("stale")
                 or not (fresh.get("capabilities") or {}).get("wake")
                 or fresh.get("seat") != decision.get("destination_seat")
-                or fresh.get("seat") not in ("GROK", "CURSOR")
+                or fresh.get("seat") not in ("GROK", "CURSOR", "CODEX")
+                or (fresh.get("seat") == "CODEX" and fresh.get("platform") != "codex")
                 or fresh.get("seat") not in self.daemon.seats
                 or not self.daemon.seats[fresh["seat"]].cfg.enabled
                 or L.paused(self.daemon.root, fresh["seat"], wakes=True)

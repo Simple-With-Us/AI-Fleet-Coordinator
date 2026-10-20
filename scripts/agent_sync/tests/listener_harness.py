@@ -19,9 +19,11 @@ import sys
 import textwrap
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from agent_sync import adapters as A
 from agent_sync import live as L
+from agent_sync import host_load as HL
 from agent_sync.daemon import Daemon
 from agent_sync.tests.fake_zulip import EPOCH
 from agent_sync.tests.harness import Harness
@@ -109,6 +111,10 @@ class ListenerHarness(Harness):
 
     def setUp(self) -> None:
         super().setUp()
+        # Routing tests use a fake host; dedicated load tests override this sample.
+        host_load = mock.patch.object(HL, "read_host_load", return_value=HL.HostLoad(0.0, 8))
+        host_load.start()
+        self.addCleanup(host_load.stop)
         self.clock = FakeClock(EPOCH + 1000)
         self.bin = self.tmp / "bin"
         self.bin.mkdir()

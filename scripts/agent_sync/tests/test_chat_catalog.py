@@ -131,6 +131,31 @@ class ChatCatalogTests(unittest.TestCase):
         self.assertNotIn("_internal_path", catalog.projection(claude["id"]))
         self.assertIsNone(catalog.resolve("/etc/passwd"))
 
+    def test_codex_index_title_uses_newest_metadata_and_transcript_priority(self):
+        path = self.home / ".codex/sessions/rollout-test.jsonl"
+        write_jsonl(path, [{"type": "session_meta", "payload": {"id": "thread-id", "cwd": "/repo"}}])
+        write_jsonl(self.home / ".codex/session_index.jsonl", [
+            {"id": "thread-id", "thread_name": "New Title", "updated_at": "2026-10-19T12:00:00Z"},
+            {"id": "thread-id", "thread_name": "Old Title", "updated_at": "2026-10-18T12:00:00Z"},
+        ])
+        row = self.catalog()._scan_codex()[0]
+        self.assertEqual(row["title"], "New Title")
+        write_jsonl(path, [{"type": "session_meta", "payload": {"id": "thread-id", "cwd": "/repo", "title": "Transcript Title"}}])
+        self.assertEqual(self.catalog()._scan_codex()[0]["title"], "Transcript Title")
+
+    def test_codex_index_title_scrubs_controls_and_secrets_and_missing_falls_back(self):
+        path = self.home / ".codex/sessions/rollout-test.jsonl"
+        write_jsonl(path, [{"type": "session_meta", "payload": {"id": "thread-id", "cwd": "/repo"}}])
+        self.assertEqual(self.catalog()._scan_codex()[0]["title"], "Codex chat rollout-test")
+        write_jsonl(self.home / ".codex/session_index.jsonl", [
+            {"id": "thread-id", "thread_name": "Title\napi_key=privatevalue\x00", "updated_at": 1},
+        ])
+        row = self.catalog()._scan_codex()[0]
+        self.assertNotIn("privatevalue", row["title"])
+        self.assertNotIn("\n", row["title"])
+        self.assertNotIn("\x00", row["title"])
+        self.assertIn("[REDACTED]", row["title"])
+
     def test_codex_header_survives_large_rollout_tail(self):
         path = self.home / ".codex/sessions/2026/rollout-placeholder.jsonl"
         path.parent.mkdir(parents=True)

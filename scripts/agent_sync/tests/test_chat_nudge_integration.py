@@ -44,6 +44,29 @@ class ChatNudgeIntegrationTests(DaemonHarness):
         self.assertEqual(nudge[-1]["cost_usd"], 0.0)
         self.assertTrue(nudge[-1]["downstream_cost_unknown"])
 
+    def test_muse_selected_codex_nudge_uses_guarded_dispatch(self):
+        daemon = self.daemon()
+        runner = self._grok_runner(daemon)
+        runner.seat = "CODEX"
+        queue = daemon.chat_queue("CODEX")
+        binding = {"channel": "agent-sync", "topic": "AFC-305", "platform": "codex",
+                   "host": "host", "session_id": "existing-1", "cwd": "/repo"}
+        self.assertTrue(queue.enqueue_target(binding, 42, self.clock.time(), source_seat="CODEX", owner=False))
+        sent = []
+        def send(target, text, *, permit):
+            if not permit():
+                return "deferred"
+            sent.append((target, text))
+            return "accepted"
+        daemon._chat_transport = SimpleNamespace(preflight=lambda binding: "ready", send=send)
+        self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], binding)
+        self.assertEqual(queue.snapshot()["items"][0]["status"], "accepted")
+        self.assertEqual(daemon.chat_nudges.snapshot()["items"], [], "Grok queue is independent")
+        self.assertEqual([r["state"] for r in runner.ledger.rows() if r.get("adapter") == "chat-nudge"],
+                         ["started", "done"])
+
     def test_stale_owner_backlog_surfaces_once_but_fresh_owner_still_wakes(self):
         daemon = self.daemon()
         daemon.chat_nudges.bind("agent-sync", "topic", "grok-leader", "host", "existing", "/repo")
