@@ -14,6 +14,7 @@ Those tests skip cleanly when node is not on PATH;  every other test runs everyw
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import io
 import json
@@ -977,6 +978,65 @@ class FxTests(World):
             T.PLATFORMS["fx"], self.paths, timeout=TIMEOUT, minimal_path=False
         )
         self.assertEqual(checks[0].status, "SKIP")
+
+
+class InstallLockAndPrivateDirTests(World):
+    """The install writes into a private directory, and the check and the write are one unit.
+
+    The re-read that guards against a concurrent edit used to run outside any lock,  so two
+    installers could both pass the check and the second write erased the first.  An
+    exclusive per-target lock now covers the check,  the write,  the validation and the
+    rollback,  and the lock files live in the fleet's own state directory,  never beside
+    the file they guard.
+    """
+
+    def test_a_private_directory_is_created_owner_only(self) -> None:
+        target = self.home / "private" / "nested"
+        T._makedirs_private(str(target))
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(target.parent.stat().st_mode), 0o700)
+
+    def test_an_existing_directory_keeps_its_own_permissions(self) -> None:
+        target = self.home / "already"
+        target.mkdir(mode=0o750)
+        T._makedirs_private(str(target))
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o750)
+
+    def test_a_symlinked_directory_is_refused_and_nothing_is_written(self) -> None:
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        (self.home / "link").symlink_to(elsewhere)
+        with self.assertRaises(OSError):
+            T._makedirs_private(str(self.home / "link"))
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_the_lock_is_exclusive_and_lives_outside_the_platform_home(self) -> None:
+        target = self.home / ".vibe" / "hooks.toml"
+        lock_dir = self.home / ".local" / "state" / "fleet-lanes" / "locks"
+        with T._target_lock(str(self.home), str(target)):
+            self.assertTrue(lock_dir.is_dir())
+            locks = list(lock_dir.iterdir())
+            self.assertEqual(len(locks), 1)
+            # The lock is held:  a second open file description cannot take it.
+            other = os.open(str(locks[0]), os.O_RDWR)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(other)
+        # Released:  the same lock is free again.
+        other = os.open(str(locks[0]), os.O_RDWR)
+        try:
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(other)
+
+    def test_the_lock_file_is_not_left_in_the_platform_directory(self) -> None:
+        vibe = self.home / ".vibe"
+        vibe.mkdir()
+        with T._target_lock(str(self.home), str(vibe / "hooks.toml")):
+            pass
+        self.assertEqual(sorted(p.name for p in vibe.iterdir()), [])
 
 
 if __name__ == "__main__":

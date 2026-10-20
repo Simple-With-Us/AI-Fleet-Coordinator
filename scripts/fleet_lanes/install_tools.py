@@ -204,8 +204,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import copy
 import difflib
+import fcntl
 import functools
 import hashlib
 import json
@@ -3616,12 +3618,72 @@ def _makedirs_private(dirpath: str) -> None:
 
     A config directory the fleet writes credentials into must not be created with the
     process umask's permissions,  and `os.makedirs` follows a symlink at the target,  so
-    the link is refused here rather than written through.  `exist_ok=True` keeps an
-    existing directory's own permissions:  only a directory this call creates is 0o700.
+    the link is refused here rather than written through.  Every level this call creates
+    is 0700,  because `os.makedirs` gives its intermediate levels the umask's default.
+    `exist_ok=True` keeps an existing directory's own permissions:  only a directory this
+    call creates is 0700.
     """
     if os.path.islink(dirpath):
         raise OSError(f"{dirpath} is a symlink; not creating a directory through it")
-    os.makedirs(dirpath, mode=0o700, exist_ok=True)
+    missing = []
+    current = dirpath
+    while current and not os.path.isdir(current):
+        missing.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    for level in reversed(missing):
+        try:
+            os.mkdir(level, 0o700)
+        except FileExistsError:
+            pass
+    if os.path.islink(dirpath):
+        raise OSError(f"{dirpath} is a symlink; not creating a directory through it")
+
+
+# The lock files live in the fleet's own state directory,  never beside the file they
+# guard,  so a lock never appears in a platform's home as a file this tool does not own.
+LOCK_DIR_REL = ".local/state/fleet-lanes/locks"
+
+
+@contextlib.contextmanager
+def _target_lock(home: str, *targets: str):
+    """Hold an exclusive lock over the targets for the whole check-and-write.
+
+    The re-read that guards against a concurrent edit runs outside any lock,  so two
+    installers can both pass the check and the second write then erases the first.
+    The lock is taken before the re-read and released after the last write,  its
+    validation and its rollback,  so the check and the write are one unit.
+    """
+    directory = os.path.join(home, *LOCK_DIR_REL.split("/"))
+    missing = []
+    current = directory
+    while current and not os.path.isdir(current):
+        missing.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    for level in reversed(missing):
+        try:
+            os.mkdir(level, 0o700)
+        except FileExistsError:
+            pass
+    handles = []
+    try:
+        for target in sorted(set(targets)):
+            name = hashlib.sha256(target.encode("utf-8")).hexdigest()[:16] + ".lock"
+            handle = open(os.path.join(directory, name), "a+")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            handles.append(handle)
+        yield
+    finally:
+        for handle in handles:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
 
 
 def _make_backup(real: str, raw: bytes, mode: int | None, stamp: str) -> str:
@@ -5174,66 +5236,70 @@ def apply_block(
         assert bp.gate_new_text is not None
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
         backups: list[str] = []
-        try:
-            _makedirs_private(os.path.dirname(bp.path))
-            _makedirs_private(os.path.dirname(bp.gate_path))
-            if bp.gate_exists and bp.gate_action != "none":
-                assert bp.gate_raw is not None
-                backups.append(_make_backup(bp.gate_path, bp.gate_raw, bp.gate_mode, stamp))
-            if bp.exists:
-                assert bp.raw is not None
-                backups.append(_make_backup(bp.path, bp.raw, bp.mode, stamp))
-            changed = _reread_matches(bp.path, bp.raw or b"", bp.exists) and _reread_matches(
-                bp.gate_path, bp.gate_raw or b"", bp.gate_exists
-            )
-            if not changed:
-                for b in backups:
-                    os.unlink(b)
+        # The lock covers the re-read,  both writes,  the validation and the rollback:
+        # without it a second installer can pass the same check first and then erase
+        # what this one just wrote.
+        with _target_lock(paths.home, bp.path, bp.gate_path):
+            try:
+                _makedirs_private(os.path.dirname(bp.path))
+                _makedirs_private(os.path.dirname(bp.gate_path))
+                if bp.gate_exists and bp.gate_action != "none":
+                    assert bp.gate_raw is not None
+                    backups.append(_make_backup(bp.gate_path, bp.gate_raw, bp.gate_mode, stamp))
+                if bp.exists:
+                    assert bp.raw is not None
+                    backups.append(_make_backup(bp.path, bp.raw, bp.mode, stamp))
+                changed = _reread_matches(bp.path, bp.raw or b"", bp.exists) and _reread_matches(
+                    bp.gate_path, bp.gate_raw or b"", bp.gate_exists
+                )
+                if not changed:
+                    for b in backups:
+                        os.unlink(b)
+                    return Result(
+                        plat.key,
+                        "failed",
+                        f"{bp.path} or {bp.gate_path} changed while it was being edited; nothing written, retry",
+                    )
+                if bp.gate_action != "none":
+                    atomic_write(
+                        bp.gate_path,
+                        bp.gate_new_text.encode("utf-8"),
+                        bp.gate_mode if bp.gate_mode is not None else 0o644,
+                    )
+                if bp.new_text.encode("utf-8") != (bp.raw or b""):
+                    atomic_write(
+                        bp.path, bp.new_text.encode("utf-8"), bp.mode if bp.mode is not None else 0o644
+                    )
+            except OSError as exc:
                 return Result(
                     plat.key,
                     "failed",
-                    f"{bp.path} or {bp.gate_path} changed while it was being edited; nothing written, retry",
+                    f"{bp.path} not changed: {type(exc).__name__}: {exc}",
+                    backups[0] if backups else None,
                 )
-            if bp.gate_action != "none":
-                atomic_write(
-                    bp.gate_path,
-                    bp.gate_new_text.encode("utf-8"),
-                    bp.gate_mode if bp.gate_mode is not None else 0o644,
+            again = plan_block(plat, paths)
+            if again.state != "ok" or again.action != "none" or again.gate_action != "none":
+                try:
+                    if bp.gate_exists and bp.gate_raw is not None:
+                        atomic_write(
+                            bp.gate_path,
+                            bp.gate_raw,
+                            bp.gate_mode if bp.gate_mode is not None else 0o644,
+                        )
+                    elif os.path.lexists(bp.gate_path):
+                        os.unlink(bp.gate_path)
+                    if bp.exists and bp.raw is not None:
+                        atomic_write(bp.path, bp.raw, bp.mode if bp.mode is not None else 0o644)
+                    elif os.path.lexists(bp.path):
+                        os.unlink(bp.path)
+                except OSError:
+                    pass
+                return Result(
+                    plat.key,
+                    "failed",
+                    f"{bp.path} failed validation after the write; the originals were restored",
+                    backups[0] if backups else None,
                 )
-            if bp.new_text.encode("utf-8") != (bp.raw or b""):
-                atomic_write(
-                    bp.path, bp.new_text.encode("utf-8"), bp.mode if bp.mode is not None else 0o644
-                )
-        except OSError as exc:
-            return Result(
-                plat.key,
-                "failed",
-                f"{bp.path} not changed: {type(exc).__name__}: {exc}",
-                backups[0] if backups else None,
-            )
-        again = plan_block(plat, paths)
-        if again.state != "ok" or again.action != "none" or again.gate_action != "none":
-            try:
-                if bp.gate_exists and bp.gate_raw is not None:
-                    atomic_write(
-                        bp.gate_path,
-                        bp.gate_raw,
-                        bp.gate_mode if bp.gate_mode is not None else 0o644,
-                    )
-                elif os.path.lexists(bp.gate_path):
-                    os.unlink(bp.gate_path)
-                if bp.exists and bp.raw is not None:
-                    atomic_write(bp.path, bp.raw, bp.mode if bp.mode is not None else 0o644)
-                elif os.path.lexists(bp.path):
-                    os.unlink(bp.path)
-            except OSError:
-                pass
-            return Result(
-                plat.key,
-                "failed",
-                f"{bp.path} failed validation after the write; the originals were restored",
-                backups[0] if backups else None,
-            )
         detail = f"{bp.path} and the gate in {bp.gate_path}"
         if backups:
             detail += " (backups " + ", ".join(backups) + ")"
@@ -6167,43 +6233,46 @@ def apply_copilot(
         return Result("copilot", "unchanged", f"{cp.path} already holds the hook")
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     backup: str | None = None
-    try:
-        _makedirs_private(os.path.dirname(cp.path))
-        if cp.exists:
-            assert cp.raw is not None
-            backup = _make_backup(cp.path, cp.raw, cp.mode, stamp)
-        if not _reread_matches(cp.path, cp.raw or b"", cp.exists):
-            if backup:
-                os.unlink(backup)
+    # The lock covers the re-read,  the write,  the validation and the rollback,  so a
+    # second installer cannot write between this check and this write.
+    with _target_lock(paths.home, cp.path):
+        try:
+            _makedirs_private(os.path.dirname(cp.path))
+            if cp.exists:
+                assert cp.raw is not None
+                backup = _make_backup(cp.path, cp.raw, cp.mode, stamp)
+            if not _reread_matches(cp.path, cp.raw or b"", cp.exists):
+                if backup:
+                    os.unlink(backup)
+                return Result(
+                    "copilot",
+                    "failed",
+                    f"{cp.path} changed while it was being written; nothing written, retry",
+                )
+            atomic_write(cp.path, cp.text.encode("utf-8"), cp.mode if cp.mode is not None else 0o644)
+        except OSError as exc:
+            return Result(
+                "copilot", "failed", f"{cp.path} not changed: {type(exc).__name__}: {exc}", backup
+            )
+        try:
+            after = json.loads(_read_bytes(cp.path).decode("utf-8"))
+            ok = after == copilot_expected(paths) and bool(locate(after, PLATFORMS["copilot"]))
+        except (OSError, ValueError):
+            ok = False
+        if not ok:
+            try:
+                if cp.exists and cp.raw is not None:
+                    atomic_write(cp.path, cp.raw, cp.mode if cp.mode is not None else 0o644)
+                else:
+                    os.unlink(cp.path)
+            except OSError:
+                pass
             return Result(
                 "copilot",
                 "failed",
-                f"{cp.path} changed while it was being written; nothing written, retry",
+                f"{cp.path} failed validation after the write; the original was restored",
+                backup,
             )
-        atomic_write(cp.path, cp.text.encode("utf-8"), cp.mode if cp.mode is not None else 0o644)
-    except OSError as exc:
-        return Result(
-            "copilot", "failed", f"{cp.path} not changed: {type(exc).__name__}: {exc}", backup
-        )
-    try:
-        after = json.loads(_read_bytes(cp.path).decode("utf-8"))
-        ok = after == copilot_expected(paths) and bool(locate(after, PLATFORMS["copilot"]))
-    except (OSError, ValueError):
-        ok = False
-    if not ok:
-        try:
-            if cp.exists and cp.raw is not None:
-                atomic_write(cp.path, cp.raw, cp.mode if cp.mode is not None else 0o644)
-            else:
-                os.unlink(cp.path)
-        except OSError:
-            pass
-        return Result(
-            "copilot",
-            "failed",
-            f"{cp.path} failed validation after the write; the original was restored",
-            backup,
-        )
     detail = cp.path + (f" (backup {backup})" if backup else " (new file)")
     return Result("copilot", "added" if cp.state == "new" else "updated", detail, backup)
 
@@ -6484,43 +6553,46 @@ def apply_opencode(
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     backup: str | None = None
     real = cfg.real
-    try:
-        _makedirs_private(os.path.dirname(real))
-        if cfg.exists:
-            backup = _make_backup(real, cfg.raw, cfg.mode, stamp)
-        if not _reread_matches(real, cfg.raw, cfg.exists):
-            if backup:
-                os.unlink(backup)
+    # The lock covers the re-read,  the write,  the validation and the rollback,  so a
+    # second installer cannot write between this check and this write.
+    with _target_lock(paths.home, real):
+        try:
+            _makedirs_private(os.path.dirname(real))
+            if cfg.exists:
+                backup = _make_backup(real, cfg.raw, cfg.mode, stamp)
+            if not _reread_matches(real, cfg.raw, cfg.exists):
+                if backup:
+                    os.unlink(backup)
+                return Result(
+                    "opencode",
+                    "failed",
+                    f"{op.config} changed while it was being merged; nothing written, retry",
+                )
+            atomic_write(real, op.new_text.encode("utf-8"), cfg.mode if cfg.mode is not None else 0o600)
+        except OSError as exc:
+            return Result(
+                "opencode", "failed", f"{op.config} not changed: {type(exc).__name__}: {exc}", backup
+            )
+        try:
+            after = json.loads(_read_bytes(real).decode("utf-8"))
+            _doc, act = opencode_merge(after, paths)
+            ok = act == "unchanged"
+        except (OSError, ValueError, Refused):
+            ok = False
+        if not ok:
+            try:
+                if cfg.exists:
+                    atomic_write(real, cfg.raw, cfg.mode if cfg.mode is not None else 0o600)
+                else:
+                    os.unlink(real)
+            except OSError:
+                pass
             return Result(
                 "opencode",
                 "failed",
-                f"{op.config} changed while it was being merged; nothing written, retry",
+                f"{op.config} failed validation after the write; the original was restored",
+                backup,
             )
-        atomic_write(real, op.new_text.encode("utf-8"), cfg.mode if cfg.mode is not None else 0o600)
-    except OSError as exc:
-        return Result(
-            "opencode", "failed", f"{op.config} not changed: {type(exc).__name__}: {exc}", backup
-        )
-    try:
-        after = json.loads(_read_bytes(real).decode("utf-8"))
-        _doc, act = opencode_merge(after, paths)
-        ok = act == "unchanged"
-    except (OSError, ValueError, Refused):
-        ok = False
-    if not ok:
-        try:
-            if cfg.exists:
-                atomic_write(real, cfg.raw, cfg.mode if cfg.mode is not None else 0o600)
-            else:
-                os.unlink(real)
-        except OSError:
-            pass
-        return Result(
-            "opencode",
-            "failed",
-            f"{op.config} failed validation after the write; the original was restored",
-            backup,
-        )
     detail = op.config + (f" (backup {backup})" if backup else " (new file)")
     return Result("opencode", "added" if not cfg.exists else "updated", detail, backup)
 
