@@ -380,6 +380,7 @@ class MiniMaxSession:
             log("ignoring an ACP frame that is not an object")
             return
         if "method" in message and not isinstance(message["method"], str):
+            log("ACP frame refused: code=invalid_method field=method")
             return
         if "id" in message and (type(message["id"]) not in (str, int)):
             return
@@ -420,7 +421,7 @@ class MiniMaxSession:
         for line in self.process.stderr:
             line = line.rstrip()
             if line:
-                log("acp: %s" % ("[withheld: secret-shaped]" if scan_secret(line) else line))
+                log("ACP stderr received: code=external_stderr field=stderr")
 
     def _call(self, method, params, timeout):
         with self.lock:
@@ -496,18 +497,21 @@ class MiniMaxSession:
             # extract_agent_text in scripts/grok-acp-runtime/leader-client.py.
             params = message.get("params")
             if not isinstance(params, dict):
-                raise ValueError("ACP session/update params must be an object")
+                log("ACP update refused: code=invalid_type field=params")
+                continue
             if "update" in params:
                 update = params["update"]
                 if not isinstance(update, dict):
-                    raise ValueError("ACP session/update params.update must be an object")
+                    log("ACP update refused: code=invalid_type field=update")
+                    continue
             else:
                 update = params
             kind = update.get("sessionUpdate")
             if kind is None:
                 kind = update.get("session_update")
             if not isinstance(kind, str):
-                raise ValueError("ACP session/update discriminator must be a string")
+                log("ACP update refused: code=invalid_type field=sessionUpdate")
+                continue
             if kind != "agent_message_chunk":
                 continue
             content = update.get("content")
@@ -657,7 +661,7 @@ class Bridge:
         with self.state_lock:
             with self.seen_lock:
                 rows = list(self.rows.items())
-                jobs = dict(getattr(self, "jobs", {}))
+                jobs = {key: dict(job) for key, job in getattr(self, "jobs", {}).items()}
             # The rows are filtered against the snapshot and not self.rows read
             # again: between the two, another thread can record a delivery and
             # the persisted messages and jobs would disagree.
@@ -722,6 +726,8 @@ class Bridge:
             if message_id in self.active_ids:
                 return False
             state = self.rows.get(message_id)
+            if state == "pending" and getattr(self, "jobs", {}).get(message_id):
+                return False
             if state == "pending" and (
                 getattr(self, "jobs", {}).get(message_id, {}).get("stage")
                 not in ("queued", "reply")

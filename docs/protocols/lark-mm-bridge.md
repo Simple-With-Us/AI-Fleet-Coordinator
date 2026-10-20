@@ -11,7 +11,7 @@ Verify the source with the synthetic bridge test script using Python 3.9 or newe
 
 Permission requests are cancelled automatically; offered allow options and a full-access model configuration do not establish a trusted owner decision.  There is no approval grant path in this bridge.
 
-The bridge imports the canonical `agent_sync.secretscan` module.  Deploy the script together with its `agent_sync` package from the same reviewed revision; a missing scanner prevents startup.  Incoming job content, model output, dry-run output and ACP stderr use that scanner before persistence or publication.
+The bridge imports the canonical `agent_sync.secretscan` module.  Deploy the script together with its `agent_sync` package from the same reviewed revision; a missing scanner prevents startup.  Incoming job content and model output use that scanner before persistence or publication.  ACP stderr is discarded after a fixed diagnostic identifying only its source field; dry-run output contains no event body.
 
 Safe queued jobs and generated replies are persisted in the private state file before execution or delivery.  Reply retries reuse the generated answer and never call the model again.  HTTP 429 and provably unsent failures use bounded backoff and a persisted attempt budget; unknown delivery outcomes never replay.  During shutdown the active worker gets a bounded join before sessions close; unstarted queued jobs and cached replies remain durable for restart.  A crash during model execution leaves a running job held for explicit reconciliation, because automatically repeating that model turn could repeat tool side effects.  Legacy pending rows without a safe durable job are also held rather than rerun.
 
