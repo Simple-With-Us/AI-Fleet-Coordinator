@@ -199,11 +199,12 @@ destination:
   a real gap.  Two ASCII spaces collapse, and a raw U+00A0 typed by the model arrives as a
   plain space (the verified reply held 0 NBSPs).
 - **Chat reply in the MiniMax Code chat pane** (owner-verified 2026-10-20):  a REAL U+00A0, the
-  nbsp character, followed by a normal space.  Jay:  "I think you need to do nbsp for chats or
-  something", and "I have confirmed this before with agents and knew you needed nbsp already".
-  Two ASCII spaces collapse in that pane, and the `&nbsp;` ENTITY renders as the six literal
-  characters, which is worse than no gap at all.  The earlier 2026-10-18 note for this pane,
-  entity plus a space, was wrong, and it is corrected here.
+  nbsp character, right after the period, then a normal space, outside code spans.  Jay:  "I
+  think you need to do nbsp for chats or something", and "I have confirmed this before with
+  agents and knew you needed nbsp already".  Two ASCII spaces collapse in that pane, and the
+  `&nbsp;` ENTITY renders as the six literal characters, which is worse than no gap at all.
+  The earlier 2026-10-18 note for this pane, entity plus a space, was wrong, and it is
+  corrected here.
 - **Chat reply in any other Markdown-rendering agent chat pane** (Codex, Cursor,
   Antigravity, Grok, Kimi, DeepSeek, Fx, Muse): the same entity plus a space, by
   owner ruling 2026-10-08, unless that surface has been individually verified otherwise.
