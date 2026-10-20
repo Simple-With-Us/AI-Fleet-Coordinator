@@ -285,14 +285,9 @@ def save_report(report: StatusReport, now: float | None = None) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, cache_path())
-<<<<<<< HEAD
         # The rename is only durable once the directory entry is on disk too,  or a
         # crash can lose the last-known-good report the fsync above protected.
         _fsync_dir(state_dir())
-||||||| parent of 5f804a90 (AFC-385: close the remaining review findings on the fleet-config engine)
-=======
-        _fsync_dir(state_dir())
->>>>>>> 5f804a90 (AFC-385: close the remaining review findings on the fleet-config engine)
     except BaseException:
         try:
             os.close(fd)
