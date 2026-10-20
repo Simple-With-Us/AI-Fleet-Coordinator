@@ -676,10 +676,7 @@ class DocumentationExecutionTests(unittest.TestCase):
                 if "grep -cE" not in block:
                     continue
                 checked += 1
-                script = "\n".join(
-                    line.removeprefix(indent)
-                    for line in block.splitlines()
-                )
+                script = "\n".join(line.removeprefix(indent) for line in block.splitlines())
                 with tempfile.TemporaryDirectory() as tmp:
                     body = convert(canonical, "[Sentence.](https://example.com) Next sentence.\n")
                     for name in ("reply.txt", "body.nbsp.txt"):
