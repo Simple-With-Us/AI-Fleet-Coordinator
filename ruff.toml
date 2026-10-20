@@ -25,11 +25,8 @@ extend-exclude = [
 # py39 does not turn these off:  UP006/UP035 still fire at py39 (collections.abc / builtin generics in
 # runtime positions break on 3.9).  The rest are listed as well so the package stays 3.9 safe even if the
 # target version above is dropped.  Keep every other rule on.  See AFC-425.
-"scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045"]
-
-[lint.per-file-ignores]
-# Existing `# noqa: UP0xx` markers in the package are unused once py39 turns those rules off.
-"scripts/fleet_lanes/**" = ["RUF100"]
+# RUF100:  existing `# noqa: UP0xx` markers in the package are unused once those rules are off.
+"scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
 
 [format]
 # Whitespace churn and py313-only syntax: the 3.9-run package keeps its hand layout.  See AFC-425.
