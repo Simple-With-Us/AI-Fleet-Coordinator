@@ -180,6 +180,15 @@ class TransportTests(unittest.TestCase):
         self.queued = self.queued[:-1]
         self.assertEqual(self.adapter.preflight(self.binding), "ready")
 
+    def test_receipt_reads_the_same_queue_window_as_preflight(self):
+        # The queue is shared storage, so a narrower receipt window would hide the client's
+        # submission from reconcile and strand the item as unknown.
+        self.assertFalse(self.adapter.receipt(self.binding, "nudge"))
+        self.assertEqual(
+            [p["limit"] for m, p in self.calls if m == "thread/queue/list"],
+            [module.QUEUE_CAPACITY],
+        )
+
     def test_timeout_before_send_deferred_after_add_unknown(self):
         self.fail = "thread/read"
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")

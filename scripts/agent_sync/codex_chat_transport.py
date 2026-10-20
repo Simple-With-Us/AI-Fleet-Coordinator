@@ -276,7 +276,8 @@ class CodexChatTransport:
             rpc = self.rpc_factory()
             thread = self._thread(rpc, binding)
             result = rpc.request(
-                "thread/queue/list", {"threadId": binding["session_id"], "limit": 100}
+                "thread/queue/list",
+                {"threadId": binding["session_id"], "limit": QUEUE_CAPACITY},
             )
             client_id = message_id(binding, text)
             for item in result.get("data", []):
