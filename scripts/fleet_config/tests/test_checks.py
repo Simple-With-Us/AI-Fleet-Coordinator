@@ -14,7 +14,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fleet_config import contract
@@ -83,7 +83,7 @@ def make_context(home: str) -> CheckContext:
     """A context pinned to one home and one clock."""
     return CheckContext(
         home=home,
-        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
     )
 
 
@@ -926,7 +926,10 @@ class SecretStoreCredentialTests(TempHome):
     def test_the_folder_must_be_a_path_the_check_may_ask_for(self):
         self.fake_secrets("echo CLAUDE_ZULIP_KEY")
         rule = self.rule()
-        rule = replace(rule, check=CheckSpec(type=CheckType.CREDENTIAL_KEY_PRESENT, target="rm -rf /", detail="x"))
+        rule = replace(
+            rule,
+            check=CheckSpec(type=CheckType.CREDENTIAL_KEY_PRESENT, target="rm -rf /", detail="x"),
+        )
         result = check_credential_key_present(rule, "claude", self.ctx)
         self.assertIs(result.state, CheckState.UNKNOWN)
         self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)

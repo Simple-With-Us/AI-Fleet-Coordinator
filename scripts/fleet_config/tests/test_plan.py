@@ -8,7 +8,7 @@ snapshots must be identical.
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fleet_config import plan as plan_module
 from fleet_config.checks import build_result
@@ -22,7 +22,7 @@ from fleet_config.types import (
 
 from ._fake import FleetTestCase, make_manifest, make_rule, snapshot_tree
 
-MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=timezone.utc)
+MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=UTC)
 
 
 def a_result(rule, state=CheckState.DRIFT, reason="it differs"):
