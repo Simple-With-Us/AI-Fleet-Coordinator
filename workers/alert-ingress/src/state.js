@@ -69,10 +69,11 @@ export function decide(prev, event, now, opts = {}) {
     if (state.phase === "alerting") {
       return {
         action: "resolve",
-        state: { ...state, phase: "ok", severity: "INFO", since: now, updated: now, text: "", link: "" },
+        state: { ...state, phase: "ok", severity: "INFO", since: now, updated: now, text: "", link: "", prodDown: false },
       };
     }
-    return { action: "refresh", state };
+    // Already closed: a stale prodDown flag must not survive recovery either.
+    return { action: "refresh", state: state.prodDown ? { ...state, prodDown: false } : state };
   }
 
   // --- opening -----------------------------------------------------------
