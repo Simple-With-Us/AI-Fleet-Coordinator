@@ -37,7 +37,8 @@ removed document), the point's document fields are refreshed to the current writ
 live documents share a chunk, the payload names whichever wrote it last; the state file still
 credits the id to both so neither document's edit deletes it.
 
-Report: ~/apps/fleet-rag/state/last-run.json plus one line in ~/apps/fleet-rag/logs/ingest.log.
+Report: ~/apps/fleet-rag/state/last-run.json (written by the nightly pass only) plus one line in
+~/apps/fleet-rag/logs/ingest.log (every run).
 """
 
 from __future__ import annotations

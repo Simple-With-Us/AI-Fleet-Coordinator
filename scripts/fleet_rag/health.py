@@ -1,9 +1,12 @@
 """Ingest sentinel: the dead-man switch for the nightly ingest routine.
 
-After every ingest run the Mac writes one point with doc_id ``meta/ingest-status`` into the
-fleet-agents collection.  The Hetzner box's fleet-health-verify.sh (every 15 minutes) reads it
+After the full nightly ingest run the Mac writes one point with doc_id ``meta/ingest-status`` into
+the fleet-agents collection.  The Hetzner box's fleet-health-verify.sh (every 15 minutes) reads it
 and pages through the existing Pushover path when it is older than 30 hours or ``ok`` is false.
 No credential has to leave the box for that check, and no new monitor is needed.
+
+Only the nightly pass attests it:  a partial or unpruned run ingests and logs but leaves the
+sentinel and last-run.json untouched, so it cannot make a stale or failed night look healthy.
 
 The sentinel carries source="meta" so recall_search excludes it from results.
 """
