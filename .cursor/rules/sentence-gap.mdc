@@ -42,11 +42,11 @@ to a plain space.  This applies to the MiniMax pane only.  In Cursor chat use th
 `&nbsp;` entity per the table row below, and do not substitute a raw U+00A0 here.
 
 ```sh
-printf 'Sentence one.\302\240 Sentence two.\n'
+printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
 ```
 
-`\302\240` is the UTF-8 encoding of U+00A0.  On the MiniMax pane, verify with
-`grep -o $'[.!?]\xc2\xa0' f | wc -l`, which must not print `0`.
+`\302\240` is the UTF-8 encoding of U+00A0.  On the MiniMax pane, verify the file you
+just wrote with `grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l`, which must not print `0`.
 
 ### Precedence: this is the owner's highest-priority house rule
 
