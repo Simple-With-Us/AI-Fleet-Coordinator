@@ -435,7 +435,10 @@ class SessionIdTests(unittest.TestCase):
         scenario the fix targets), then verify every thread got a unique directory
         and that each one's body survives the race.
         """
-        import os, subprocess, tempfile, threading
+        import os
+        import subprocess
+        import tempfile
+        import threading
 
         tmp_parent = tempfile.mkdtemp(prefix="afc422-")
         names = [f"conc-id-{i:04d}" for i in range(4)]
@@ -446,8 +449,14 @@ class SessionIdTests(unittest.TestCase):
         def worker(name):
             # Each worker asks mktemp for its own dir; the fix guarantees a unique path per call.
             out = subprocess.run(
-                ["bash", "-c", f"set -e; d=$(mktemp -d {tmp_parent}/apple-notes-md.XXXXXX); printf '%s' \"$d\""],
-                check=True, capture_output=True, text=True,
+                [
+                    "bash",
+                    "-c",
+                    f"set -e; d=$(mktemp -d {tmp_parent}/apple-notes-md.XXXXXX); printf '%s' \"$d\"",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
             )
             d = out.stdout.strip()
             body_path = os.path.join(d, "body.md")
