@@ -91,6 +91,15 @@ TOOL_STATUS_FAILED = 3
 # string, never its start, so the first words of the reason survive any truncation.
 FINGERPRINT_CHARS = 48
 
+# Bounds on what the live session's own event stream may be.  The transcript is written
+# by the model runtime, so its size and nesting are not this tool's to assume: a session
+# that emitted a hundred megabytes, or one event nested deep enough to exhaust the
+# interpreter's stack, must read as an unrunnable check rather than as a verdict.
+MAX_SESSION_BYTES = 16 * 1024 * 1024
+MAX_SESSION_EVENTS = 100_000
+MAX_JSON_DEPTH = 64
+MAX_JSON_NODES = 1_000_000
+
 
 def _matcher_gates(matcher: object, tool: str) -> bool:
     """True when the installer's own matcher rule lets `tool` reach this group.
@@ -392,18 +401,21 @@ def check_policy(plugin: dict) -> dict:
             out = (proc.stdout or "") + (proc.stderr or "")
             if DENY_SHAPE.search(out):
                 denied = True
-                denied_for[tool_name] = out.strip()
+                # stdout alone is kept whole, not an excerpt.  A denial is a JSON object
+                # and the fleet guard's reason is ~550 characters, so truncating before
+                # the parse cuts the JSON in half: the parse fails, the reason comes back
+                # empty, the fingerprint is empty, and the dispatch stage can never
+                # attribute a refusal to this hook - it would report "refused, but not
+                # attributable" for a guard that had just refused.  stderr is not part of
+                # the JSON, so it is searched for the deny shape but never parsed.
+                denied_for[tool_name] = (proc.stdout or "").strip()
                 break
         if not denied:
             missed.append(tool_name)
     ok = not missed
-    # The whole output is parsed for the reason.  A denial is a JSON object, and the
-    # fleet guard's reason is long, so truncating before the parse cuts the JSON in
-    # half: the parse fails, the reason comes back empty, the fingerprint is empty,
-    # and the dispatch stage can never attribute a refusal to this hook - it would
-    # report "refused, but not attributable" for a guard that had just refused.
-    reason = _denial_reason(next(iter(denied_for.values()), ""))
-    detail = next(iter(denied_for.values()), "")[:400]
+    full = next(iter(denied_for.values()), "")
+    reason = _denial_reason(full)
+    detail = full[:400]
     why = (
         "the hook denied the canary when run directly"
         if ok
@@ -424,30 +436,125 @@ def check_policy(plugin: dict) -> dict:
     }
 
 
+def _validate_json_limits(value: object) -> None:
+    """Reject a parsed event that is too large or too deeply nested to walk.
+
+    An explicit depth and node walk, because `json.loads` itself has no bound: the
+    interpreter's recursion limit is not a limit this tool chose, and one event can
+    exhaust the stack before any caller ever sees it.
+    """
+    stack = [(value, 1)]
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_JSON_NODES:
+            raise ValueError("a session event exceeds the JSON node limit")
+        if depth > MAX_JSON_DEPTH:
+            raise ValueError("a session event exceeds the JSON depth limit")
+        if isinstance(current, dict):
+            stack.extend((child, depth + 1) for child in current.values())
+        elif isinstance(current, list):
+            stack.extend((child, depth + 1) for child in current)
+
+
+def _validate_tool_call_shape(call: dict) -> None:
+    """Reject a tool call whose shape the helpers below would dereference wrongly.
+
+    Every field these helpers read is checked here, once, at the boundary.  A `toolCall`
+    that is a string, or an `output` that is a list, would otherwise raise out of the
+    verdict and take the whole tool down with a traceback instead of a report.
+    """
+    for field, expected in (("name", str), ("status", int), ("input", dict), ("output", dict)):
+        value = call.get(field)
+        if value is None:
+            continue
+        if expected is int and isinstance(value, bool):
+            raise ValueError(f"session toolCall {field!r} must be an integer")
+        if not isinstance(value, expected):
+            raise ValueError(f"session toolCall {field!r} must be a {expected.__name__}")
+    tool_input = call.get("input")
+    if isinstance(tool_input, dict):
+        command = tool_input.get("command")
+        if command is not None and not isinstance(command, str):
+            raise ValueError("session toolCall input 'command' must be a string")
+    output = call.get("output")
+    if not isinstance(output, dict):
+        return
+    content = output.get("content")
+    if content is not None:
+        if not isinstance(content, list):
+            raise ValueError("session toolCall output 'content' must be an array")
+        for block in content:
+            if not isinstance(block, dict):
+                raise ValueError("session toolCall output content entries must be objects")
+            if "text" in block and not isinstance(block["text"], str):
+                raise ValueError("session toolCall output content 'text' must be a string")
+    details = output.get("details")
+    if not isinstance(details, dict):
+        return
+    execution = details.get("execution")
+    if execution is not None and not isinstance(execution, dict):
+        raise ValueError("session toolCall details 'execution' must be an object")
+    process_output = details.get("processOutput")
+    if process_output is not None:
+        if not isinstance(process_output, dict):
+            raise ValueError("session toolCall details 'processOutput' must be an object")
+        exit_code = process_output.get("exitCode")
+        if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
+            raise ValueError("session toolCall processOutput 'exitCode' must be an integer")
+    for source in (details, execution or {}):
+        for field in ("reason", "message", "error"):
+            value = source.get(field)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"session toolCall {field!r} must be a string")
+
+
 def _completed_tool_calls(text: str) -> list[dict]:
     """Every completed tool call in a `stream-json` run.
 
     The run's own event stream is the runtime's record of what it did.  The model's answer
     is not: the fleet's deny reason recommends `pgrep`, so a model that merely declines the
     command can put that word in its prose.
+
+    Raises `ValueError` when the stream is not a usable record.  A stream that cannot be
+    read proves nothing, and the caller turns that into an unrunnable check rather than
+    into a verdict about the guard.
     """
+    if len(text.encode("utf-8")) > MAX_SESSION_BYTES:
+        raise ValueError("the live session output exceeds the byte limit")
     calls = []
-    for line in text.splitlines():
+    for event_count, line in enumerate(text.splitlines(), start=1):
+        if event_count > MAX_SESSION_EVENTS:
+            raise ValueError("the live session output exceeds the event limit")
         line = line.strip()
         if not line.startswith("{"):
             continue
         try:
             event = json.loads(line)
+        except RecursionError as exc:
+            raise ValueError("a session event exceeds the JSON depth limit") from exc
         except ValueError:
             continue
+        if not isinstance(event, dict):
+            raise ValueError("a session event must be a JSON object")
+        _validate_json_limits(event)
         if event.get("type") != "item.completed":
             continue
-        item = event.get("item") or {}
+        item = event.get("item")
+        if not isinstance(item, dict):
+            raise ValueError("a session item.completed event must carry an object 'item'")
         if item.get("type") != "tool_call":
             continue
-        call = item.get("toolCall") or {}
-        if call:
-            calls.append(call)
+        call = item.get("toolCall")
+        if call is None:
+            continue
+        if not isinstance(call, dict):
+            raise ValueError("a session tool_call item must carry an object 'toolCall'")
+        if not call:
+            continue
+        _validate_tool_call_shape(call)
+        calls.append(call)
     return calls
 
 
@@ -534,7 +641,12 @@ def _kill_group(proc) -> None:
 
 def _dispatch_verdict(text: str, returncode: int, fingerprint: str) -> dict:
     """Decide what the live run proved."""
-    calls = _completed_tool_calls(text)
+    try:
+        calls = _completed_tool_calls(text)
+    except ValueError as exc:
+        # An unreadable event stream is not a statement about the guard.  The session
+        # could not be read as a record, so the hook was never judged here.
+        return _stage_error(f"the live session output could not be read: {exc}")
     tool_names = sorted({str(call.get("name")) for call in calls if call.get("name")})
     canary_calls = [call for call in calls if _is_canary_call(call)]
     if not canary_calls:
@@ -548,11 +660,19 @@ def _dispatch_verdict(text: str, returncode: int, fingerprint: str) -> dict:
     denied = [call for call in canary_calls if _call_was_denied(call, fingerprint)]
     if ran:
         # The canary ran.  That is direct evidence the guard did not stop it, whatever
-        # the session's own exit code was afterwards.
+        # the session's own exit code was afterwards.  When the same session also records
+        # a refusal the guard did fire, just not every time, so say that instead of
+        # claiming a hook that this transcript shows working never fired at all.
+        why = "the live session was not refused by the guard, so the hook never fired"
+        if denied:
+            why = (
+                f"the guard refused {len(denied)} of {len(canary_calls)} canary calls, "
+                f"but the session ran {len(ran)} of them, so it did not stop every attempt"
+            )
         return {
             "ok": False,
             "status": STATUS_FAIL,
-            "why": "the live session was not refused by the guard, so the hook never fired",
+            "why": why,
             "exit_code": returncode,
             "canary_calls": len(canary_calls),
             "tool_names": tool_names,
@@ -575,7 +695,7 @@ def _dispatch_verdict(text: str, returncode: int, fingerprint: str) -> dict:
             tool_names=tool_names,
         )
     return _stage_error(
-        "the live session ran the canary but the runtime recorded neither a run nor a refusal",
+        "the live session recorded neither a run nor a refusal of the canary",
         tool_names=tool_names,
     )
 
@@ -607,6 +727,15 @@ def check_dispatch(model: str, timeout: int, fingerprint: str = "") -> dict:
             "stream-json",
             "--input",
             "-",
+            # `--permission off` means "never ask", not "hold no tools": the session can
+            # still write.  It runs in this tool's own empty directory with a step cap,
+            # the same shape as the fleet's own mcode argv, so a proof can never edit
+            # the operator's checkout.  A parent timer cannot undo a write the child
+            # already made.
+            "--max-steps",
+            "8",
+            "--cwd",
+            tmp,
         ]
         with open(out_path, "w", encoding="utf-8") as handle:
             try:
@@ -625,6 +754,12 @@ def check_dispatch(model: str, timeout: int, fingerprint: str = "") -> dict:
             except subprocess.TimeoutExpired:
                 _kill_group(proc)
                 return _stage_error(f"the live session timed out after {timeout}s")
+            except BaseException:
+                # SIGINT and KeyboardInterrupt arrive here too.  The session's tools are
+                # enabled, so leaving its process group running would let an interrupted
+                # proof keep acting on the machine after this tool has gone.
+                _kill_group(proc)
+                raise
         try:
             text = Path(out_path).read_text(encoding="utf-8", errors="replace")
         except OSError as exc:

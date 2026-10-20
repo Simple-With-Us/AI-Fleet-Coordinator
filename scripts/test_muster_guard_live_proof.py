@@ -461,9 +461,10 @@ class CheckPolicy(unittest.TestCase):
     def test_a_denial_longer_than_the_detail_limit_still_yields_a_fingerprint(self):
         # The fleet guard's real denial is a JSON object of about 670 characters.  If the
         # policy stage truncates the hook's output before parsing it, the JSON is cut in
-        # half, the reason comes back empty, the fingerprint is empty, and the dispatch
-        # stage can never attribute a refusal to this hook - it would report "refused,
-        # but not attributable" for a guard that had just refused.
+        # half, the parse fails, the reason comes back empty, the fingerprint is empty,
+        # and the dispatch stage can never attribute a refusal to this hook - it would
+        # report "refused, but not attributable" and exit 2 forever, for a guard that had
+        # just refused.
         long_reason = "the guard refuses this command because " + ("x" * 500)
         payload = json.dumps(
             {
@@ -478,6 +479,7 @@ class CheckPolicy(unittest.TestCase):
         plugin = write_plugin(self.root, "Bash|bash", command)
         result = proof.check_policy(proof.read_plugin(plugin))
         self.assertTrue(result["ok"])
+        self.assertGreater(len(payload), 400)
         self.assertEqual(result["denial_reason"], long_reason)
         self.assertTrue(result["denial_fingerprint"])
         self.assertIn(result["denial_fingerprint"], result["denial_reason"])
@@ -558,6 +560,41 @@ class DispatchVerdict(unittest.TestCase):
         result = proof._dispatch_verdict(stream, 0, "some fingerprint")
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], proof.STATUS_FAIL)
+
+    def test_a_session_that_denied_and_also_ran_does_not_claim_the_hook_never_fired(self):
+        # The guard refused one attempt and the model ran a variant anyway.  That is
+        # still a failure - the canary got through - but the old message said "the hook
+        # never fired" in a transcript that carries the hook's own refusal, and sent
+        # the operator to re-install a guard that was demonstrably armed.
+        stream = "\n".join(
+            [
+                tool_call_event(refused_call("ps > /dev/null", "the guard refuses this")),
+                tool_call_event({**ran_call("ps aux > /dev/null"), "id": "call_2"}),
+            ]
+        )
+        result = proof._dispatch_verdict(stream, 0, "the guard refuses this")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], proof.STATUS_FAIL)
+        self.assertNotIn("never fired", result["why"])
+        self.assertIn("refused 1 of 2", result["why"])
+
+    def test_an_unreadable_session_stream_is_an_error_not_a_crash(self):
+        # A toolCall that is a string used to raise AttributeError out of the verdict,
+        # taking the whole tool down with a traceback instead of a report.
+        stream = json.dumps(
+            {"type": "item.completed", "item": {"type": "tool_call", "toolCall": "nope"}}
+        )
+        result = proof._dispatch_verdict(stream, 0, "fingerprint")
+        self.assertIsNone(result["ok"])
+        self.assertEqual(result["status"], proof.STATUS_ERROR)
+
+    def test_a_deeply_nested_event_is_an_error_not_a_crash(self):
+        # json.loads has no depth bound of its own, so a session that nests an event
+        # past the interpreter's stack limit raised RecursionError out of the verdict.
+        deep = '{"type": "item.completed", "pad": ' + "[" * 50_000 + "]" * 50_000 + "}"
+        result = proof._dispatch_verdict(deep, 0, "fingerprint")
+        self.assertIsNone(result["ok"])
+        self.assertEqual(result["status"], proof.STATUS_ERROR)
 
     def test_a_canary_refused_by_the_installed_hook_is_a_proof(self):
         stream = tool_call_event(refused_call("ps > /dev/null", "the guard refuses this"))
@@ -666,6 +703,40 @@ class CheckDispatch(unittest.TestCase):
             popen.return_value.pid = 4242
             proof.check_dispatch("model", 5)
         self.assertTrue(killpg.called)
+
+    def test_an_interrupt_kills_the_session_process_group(self):
+        # SIGINT and KeyboardInterrupt arrive as a BaseException, not a TimeoutExpired.
+        # The old code only cleaned up on the timeout path, so Ctrl-C left the live
+        # session's whole process tree running with its tools enabled.
+        with (
+            mock.patch.object(proof.shutil, "which", return_value="/usr/bin/mcode"),
+            mock.patch.object(proof.subprocess, "Popen") as popen,
+            mock.patch.object(proof, "_kill_group") as kill_group,
+        ):
+            popen.return_value.communicate.side_effect = KeyboardInterrupt
+            popen.return_value.pid = 4242
+            with self.assertRaises(KeyboardInterrupt):
+                proof.check_dispatch("model", 5)
+        self.assertTrue(kill_group.called)
+
+    def test_the_session_runs_in_its_own_directory_with_a_step_cap(self):
+        # `--permission off` means "never ask", not "hold no tools", so the session can
+        # still write.  It has to run somewhere inert, or a proof can edit the
+        # operator's own checkout.
+        with (
+            mock.patch.object(proof.shutil, "which", return_value="/usr/bin/mcode"),
+            mock.patch.object(proof.subprocess, "Popen") as popen,
+        ):
+            popen.return_value.communicate.return_value = ("", "")
+            popen.return_value.returncode = 0
+            proof.check_dispatch("model", 5)
+        cmd = popen.call_args[0][0]
+        self.assertEqual(cmd[cmd.index("--max-steps") + 1], "8")
+        cwd = Path(cmd[cmd.index("--cwd") + 1])
+        # The temp directory is removed when the session ends, so it is gone by now;
+        # what matters is that it was somewhere other than the operator's checkout.
+        self.assertNotEqual(str(cwd), str(Path.cwd()))
+        self.assertTrue(str(cwd).startswith(tempfile.gettempdir()))
 
     def test_the_prompt_goes_on_stdin_and_the_model_is_one_token(self):
         with (
