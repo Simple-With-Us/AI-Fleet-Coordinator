@@ -15,17 +15,19 @@ extend-exclude = [
     "scripts/open_loops/tests",
 ]
 
-# The 3.9 contract is enforced by the target version, not by a list of rule codes:  with py39 every
-# version-gated rule (UP007/UP045/UP017/UP040/UP041/UP046/B905/...) stays off for the package that the
-# Mac runs under /usr/bin/python3, including ones added by a future ruff upgrade.  See AFC-425.
+# The 3.9 contract for scripts/fleet_lanes (the Mac runs it under /usr/bin/python3).  autofix-ci installs the
+# latest ruff and passes no --select, and ruff 0.17's default rule set already includes the UP rules and
+# RUF100 (check with `ruff check --show-settings`), so no `select` is needed here.
+#
+# per-file-target-version stops every rule that needs a newer Python (UP007, UP045, UP017, UP040, UP041,
+# UP046, B905 and future ones).  It does NOT stop UP006 or UP035, which still fire at py39 and rewrite to
+# builtin generics and collections.abc imports;  the ignore list below covers those and the older UP rules
+# explicitly.  RUF100 is ignored because the package's `# noqa: UP0xx` markers go unused once they are off.
+# Every other rule stays on.  See AFC-425.
 [per-file-target-version]
 "scripts/fleet_lanes/**" = "py39"
 
 [lint.per-file-ignores]
-# py39 does not turn these off:  UP006/UP035 still fire at py39 (collections.abc / builtin generics in
-# runtime positions break on 3.9).  The rest are listed as well so the package stays 3.9 safe even if the
-# target version above is dropped.  Keep every other rule on.  See AFC-425.
-# RUF100:  existing `# noqa: UP0xx` markers in the package are unused once those rules are off.
 "scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
 
 [format]
