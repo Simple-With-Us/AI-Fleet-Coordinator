@@ -33,8 +33,8 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | **`session-start`** | Systematic startup: read the Zulip inbox (`agent-sync inbox`), read Linear (the `board` CLI), lanes under `~/apps/lanes/<Repo>/` (made with `lane new`), claim before editing. |
 | **`board-ops`** | Operating the `board` CLI on Linear (`board stats`, `board list`, `board claim`, `board file`), ids like `BF-123`. |
 | **`secret-handoff`** | Strict secret safety: `fleet-secrets` reads (the flat `global-api-keys` file is retired), Infisical runtime source of truth, grep-trap ban, safe helpers. |
-| **`sentence-gap`** | Visible double-space between sentences (`&nbsp;` plus a space in Markdown chat panes, U+00A0 plus a space in GitHub and Zulip text, two literal spaces in source files and terminals). |
-| **`owner-copy`** | Human-facing copy standards: two spaces, light theme default, Title Case headings, no agent names in ASC release notes. |
+| **`sentence-gap`** | Visible double-space between sentences (`&nbsp;` plus a space in Markdown chat panes except the MiniMax Code pane, which takes a generated U+00A0 plus a space; U+00A0 plus a space in GitHub and Zulip text; two literal spaces in source files and terminals). |
+| **`owner-copy`** | Human-facing copy standards: two spaces, system theme default (owner ruling 2026-09-19), Title Case headings, no agent names in ASC release notes. |
 | **`apple-notes`** | Owner-facing review docs, plans, rollouts, and completion notes in the `Coding` folder (local on this Mac). |
 | **`land-lane`** | App-specific verification gates, PR creation, auto-merge arming, and production deploy triggers. |
 | **`unstick-pr`** | Diagnosing and unblocking stuck PRs (phantom vs real conflicts with 2-arg `git merge-tree`, bot review threads, flakes). |
