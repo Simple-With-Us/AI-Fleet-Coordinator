@@ -6,11 +6,11 @@ The stub records what it was given (the scratch DSH_HOME's entries and the envir
 prove the real DSH_HOME was never read except for its profile folders, and that no inherited variable reaches the
 engine.  No real dsh runs here; the real engine was run by hand against a scratch DSH_HOME on 2026-10-10.
 """
+
 from __future__ import annotations
 
 import json
 import os
-import stat
 import sys
 import tempfile
 import unittest
@@ -20,7 +20,7 @@ from unittest import mock
 from fleet_lanes import cordis_patch as CP
 from fleet_lanes import dsh_check as DC
 
-STUB = '''#!{python}
+STUB = """#!{python}
 import json, os, sys
 log = {log!r}
 home = os.environ["DSH_HOME"]
@@ -38,7 +38,7 @@ if {mode!r} == "crash" or not any(line.startswith("- ") for line in text.splitli
 print("@deepseek-ai/dsh-base")
 if "dsh-hooks-claude-code" in text:
     print("@deepseek-ai/dsh-hooks-claude-code")
-'''
+"""
 
 PATCH = "- insert:\n    - id: fleet-hooks-guards\n      name: '@deepseek-ai/dsh-hooks-claude-code'\n      config:\n        configPath: \"/x/hooks.json\"\n"
 PLUGIN = "@deepseek-ai/dsh-hooks-claude-code"
@@ -55,7 +55,7 @@ class World(unittest.TestCase):
             (self.profiles / name).mkdir(parents=True)
             (self.profiles / name / "cordis.yml").write_text("plugins: []\n")
         (self.profiles / "node_modules").mkdir()
-        (self.profiles / "notes").mkdir()                                  # no cordis.yml: not a profile
+        (self.profiles / "notes").mkdir()  # no cordis.yml: not a profile
         # things a real DSH_HOME holds that must never be copied
         (self.tmp / "dsh" / ".credentials.yaml").write_text("secret: sentinel-credential\n")
         (self.tmp / "dsh" / "settings.yaml").write_text("key: sentinel-setting\n")
@@ -67,7 +67,11 @@ class World(unittest.TestCase):
         return str(p)
 
     def calls(self) -> list:
-        return [json.loads(ln) for ln in self.log.read_text().splitlines()] if self.log.exists() else []
+        return (
+            [json.loads(ln) for ln in self.log.read_text().splitlines()]
+            if self.log.exists()
+            else []
+        )
 
 
 class FindTests(World):
@@ -124,10 +128,15 @@ class ResolveAndReloadTests(World):
     def test_patch_reload_is_read_from_each_profile(self) -> None:
         self.set_reload("web", "live")
         self.set_reload("headless", "startup")
-        self.assertEqual(DC.patch_reload_modes(str(self.profiles)), {"headless": "startup", "web": "live"})
+        self.assertEqual(
+            DC.patch_reload_modes(str(self.profiles)), {"headless": "startup", "web": "live"}
+        )
         self.set_reload("web", None)
         (self.profiles / "headless" / "package.json").write_text("{not json")
-        self.assertEqual(DC.patch_reload_modes(str(self.profiles)), {"headless": "unknown", "web": "live (default)"})
+        self.assertEqual(
+            DC.patch_reload_modes(str(self.profiles)),
+            {"headless": "unknown", "web": "live (default)"},
+        )
         self.set_reload("web", "sometimes")
         self.assertEqual(DC.patch_reload_modes(str(self.profiles))["web"], "unknown")
 
@@ -149,7 +158,9 @@ class ResolveAndReloadTests(World):
         self.assertIn("Restart clutch-web first", detail)
         self.assertEqual(self.calls(), [], "the engine was not run")
 
-    def test_check_patch_passes_when_the_plugin_resolves_and_reports_when_the_patch_is_read(self) -> None:
+    def test_check_patch_passes_when_the_plugin_resolves_and_reports_when_the_patch_is_read(
+        self,
+    ) -> None:
         link_plugin(self.profiles, PLUGIN)
         self.set_reload("web", "live")
         self.set_reload("headless", "startup")
@@ -160,7 +171,9 @@ class ResolveAndReloadTests(World):
 
     def test_check_patch_still_fails_a_patch_the_engine_rejects(self) -> None:
         link_plugin(self.profiles, PLUGIN)
-        ok, detail = DC.check_patch(self.stub(), "# only a comment\n", str(self.profiles), [PLUGIN], timeout=60)
+        ok, detail = DC.check_patch(
+            self.stub(), "# only a comment\n", str(self.profiles), [PLUGIN], timeout=60
+        )
         self.assertFalse(ok)
         self.assertIn("exited 1", detail)
 
@@ -169,18 +182,27 @@ class DumpConfigTests(World):
     def test_every_profile_must_mount_the_plugin(self) -> None:
         ok, detail = DC.dump_config(self.stub(), PATCH, str(self.profiles), [PLUGIN], timeout=60)
         self.assertTrue(ok, detail)
-        self.assertEqual(detail, f"headless, web: the patch merges and the dump names {PLUGIN} "
-                                 "(a merge-and-parse check, not a plugin load)")
-        self.assertEqual([c["argv"] for c in self.calls()],
-                         [["--profile", "headless", "--dump-config"], ["--profile", "web", "--dump-config"]])
+        self.assertEqual(
+            detail,
+            f"headless, web: the patch merges and the dump names {PLUGIN} "
+            "(a merge-and-parse check, not a plugin load)",
+        )
+        self.assertEqual(
+            [c["argv"] for c in self.calls()],
+            [["--profile", "headless", "--dump-config"], ["--profile", "web", "--dump-config"]],
+        )
 
     def test_a_patch_without_the_plugin_fails(self) -> None:
-        ok, detail = DC.dump_config(self.stub(), "- id: other\n", str(self.profiles), [PLUGIN], timeout=60)
+        ok, detail = DC.dump_config(
+            self.stub(), "- id: other\n", str(self.profiles), [PLUGIN], timeout=60
+        )
         self.assertFalse(ok)
         self.assertIn("does not name", detail)
 
     def test_an_engine_that_exits_nonzero_fails_with_its_last_stderr_line(self) -> None:
-        ok, detail = DC.dump_config(self.stub("crash"), PATCH, str(self.profiles), [PLUGIN], timeout=60)
+        ok, detail = DC.dump_config(
+            self.stub("crash"), PATCH, str(self.profiles), [PLUGIN], timeout=60
+        )
         self.assertFalse(ok)
         self.assertIn("exited 1", detail)
         self.assertIn("Node.js v24", detail)
@@ -188,12 +210,24 @@ class DumpConfigTests(World):
     def test_an_empty_or_comment_only_patch_fails_like_the_real_engine(self) -> None:
         for text in ("", "# only a comment\n"):
             with self.subTest(text=text):
-                ok, detail = DC.dump_config(self.stub(), text, str(self.profiles), [PLUGIN], timeout=60)
+                ok, detail = DC.dump_config(
+                    self.stub(), text, str(self.profiles), [PLUGIN], timeout=60
+                )
                 self.assertFalse(ok)
-        self.assertTrue(DC.dump_config(self.stub(), "[]\n- id: a\n", str(self.profiles), ["@deepseek-ai/dsh-base"], timeout=60)[0])
+        self.assertTrue(
+            DC.dump_config(
+                self.stub(),
+                "[]\n- id: a\n",
+                str(self.profiles),
+                ["@deepseek-ai/dsh-base"],
+                timeout=60,
+            )[0]
+        )
 
     def test_a_slow_engine_times_out(self) -> None:
-        ok, detail = DC.dump_config(self.stub("slow"), PATCH, str(self.profiles), [PLUGIN], timeout=1)
+        ok, detail = DC.dump_config(
+            self.stub("slow"), PATCH, str(self.profiles), [PLUGIN], timeout=1
+        )
         self.assertFalse(ok)
         self.assertIn("timed out", detail)
 
@@ -201,17 +235,27 @@ class DumpConfigTests(World):
         ok, detail = DC.dump_config(self.stub(), PATCH, str(self.tmp / "none"), [PLUGIN])
         self.assertFalse(ok)
         self.assertIn("no profile", detail)
-        ok, detail = DC.dump_config(str(self.tmp / "no-such-dsh"), PATCH, str(self.profiles), [PLUGIN])
+        ok, detail = DC.dump_config(
+            str(self.tmp / "no-such-dsh"), PATCH, str(self.profiles), [PLUGIN]
+        )
         self.assertFalse(ok)
         self.assertIn("cannot run", detail)
 
     def test_only_the_profiles_are_copied_and_the_environment_is_bare(self) -> None:
-        with mock.patch.dict(os.environ, {"CLUTCH_API_TOKEN_TEST": "sentinel-env", "DSH_HOME": "/real/dsh"}):
+        with mock.patch.dict(
+            os.environ, {"CLUTCH_API_TOKEN_TEST": "sentinel-env", "DSH_HOME": "/real/dsh"}
+        ):
             ok, _ = DC.dump_config(self.stub(), PATCH, str(self.profiles), [PLUGIN], timeout=60)
         self.assertTrue(ok)
         first = self.calls()[0]
-        self.assertEqual(first["entries"], ["cordis.patch.yml", "profiles"], "no credentials, no settings")
-        self.assertEqual(first["profiles"], ["headless", "node_modules", "notes", "web"], "the profiles folder is copied whole")
+        self.assertEqual(
+            first["entries"], ["cordis.patch.yml", "profiles"], "no credentials, no settings"
+        )
+        self.assertEqual(
+            first["profiles"],
+            ["headless", "node_modules", "notes", "web"],
+            "the profiles folder is copied whole",
+        )
         for name in ("CLUTCH_API_TOKEN_TEST",):
             self.assertNotIn(name, first["env"])
         self.assertTrue({"DSH_HOME", "HOME", "PATH"} <= set(first["env"]))
@@ -221,7 +265,11 @@ class DumpConfigTests(World):
         scratch_before = set(os.listdir(tempfile.gettempdir()))
         DC.dump_config(self.stub(), PATCH, str(self.profiles), [PLUGIN], timeout=60)
         self.assertEqual(sorted(str(p) for p in (self.tmp / "dsh").rglob("*")), before)
-        leftover = [n for n in set(os.listdir(tempfile.gettempdir())) - scratch_before if n.startswith("fleet-dsh-check-")]
+        leftover = [
+            n
+            for n in set(os.listdir(tempfile.gettempdir())) - scratch_before
+            if n.startswith("fleet-dsh-check-")
+        ]
         self.assertEqual(leftover, [])
 
     def test_the_output_is_never_returned(self) -> None:
@@ -255,12 +303,16 @@ class NodePathTests(World):
         )
         os.chmod(fake_node, 0o755)
         stub = self.tmp / "dsh-node-stub"
-        stub.write_text("#!/usr/bin/env node\n// the fake node above ignores this file and prints the dump\n")
+        stub.write_text(
+            "#!/usr/bin/env node\n// the fake node above ignores this file and prints the dump\n"
+        )
         os.chmod(stub, 0o755)
         with mock.patch.dict(os.environ, {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}):
             with mock.patch.object(DC.shutil, "which", return_value=str(fake_node)):
                 self.assertNotIn(str(nodebin), os.environ["PATH"].split(os.pathsep))
-                ok, detail = DC.dump_config(str(stub), PATCH, str(self.profiles), [PLUGIN], timeout=60)
+                ok, detail = DC.dump_config(
+                    str(stub), PATCH, str(self.profiles), [PLUGIN], timeout=60
+                )
         self.assertTrue(ok, detail)
 
 
@@ -295,5 +347,5 @@ class CordisPatchTests(unittest.TestCase):
         self.assertEqual(CP.remove(None, "a"), (None, "none"))
 
 
-if __name__ == "__main__":      # pragma: no cover
+if __name__ == "__main__":  # pragma: no cover
     unittest.main()

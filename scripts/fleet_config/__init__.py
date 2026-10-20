@@ -6,18 +6,19 @@ See ``docs/plans/2026-10-19-fleet-config-design.md`` for the pinned contract and
 module ownership map.  Stdlib only;  a stable copy run with ``python3 -I`` carries just
 this package, matching ``fleet_knobs``.
 """
+
 from . import contract, manifest, types
 from .contract import SCHEMA_VERSION
 from .manifest import ManifestError
 from .types import CheckState, ConfigKind, ProofLevel
 
 __all__ = [
+    "SCHEMA_VERSION",
+    "CheckState",
+    "ConfigKind",
+    "ManifestError",
+    "ProofLevel",
     "contract",
     "manifest",
     "types",
-    "SCHEMA_VERSION",
-    "ManifestError",
-    "CheckState",
-    "ConfigKind",
-    "ProofLevel",
 ]

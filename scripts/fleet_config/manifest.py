@@ -16,12 +16,12 @@ Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.  This package never 
 package, so the registry file is read as JSON here and ``fleet_lanes.layout`` remains
 the canonical parser whose semantics this loader mirrors.
 """
+
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 from .types import (
     CheckSpec,
@@ -37,14 +37,14 @@ from .types import (
 )
 
 __all__ = [
-    "MANIFEST_SCHEMA_VERSION",
     "MANIFEST_FILENAME",
+    "MANIFEST_SCHEMA_VERSION",
     "REGISTRY_FILENAME",
     "ManifestError",
     "default_manifest_path",
     "default_registry_path",
-    "registry_seat_tags",
     "load_manifest",
+    "registry_seat_tags",
     "validate_coverage",
     "validate_platforms",
     "validate_rules",
@@ -73,7 +73,7 @@ def default_registry_path() -> Path:
     return Path(__file__).resolve().parents[2] / REGISTRY_FILENAME
 
 
-def registry_seat_tags(registry_path: Optional[Path] = None) -> Tuple[str, ...]:
+def registry_seat_tags(registry_path: Path | None = None) -> tuple[str, ...]:
     """The live roster:  ``seats[].tag`` from fleet-apps.json, in registry order.
 
     A row counts as live when it is not marked retired and carries no ``aliasOf``.  This
@@ -90,7 +90,7 @@ def registry_seat_tags(registry_path: Optional[Path] = None) -> Tuple[str, ...]:
         raise ManifestError("the fleet registry at %s is not valid JSON" % target) from exc
     if not isinstance(data, dict) or not isinstance(data.get("seats"), list):
         raise ManifestError("the fleet registry at %s has no seats list" % target)
-    tags: List[str] = []
+    tags: list[str] = []
     for row in data["seats"]:
         if not isinstance(row, dict):
             continue
@@ -110,7 +110,7 @@ def _enum(enum_type, value: object, what: str):
         raise ManifestError("%s has an unknown value %r" % (what, value)) from None
 
 
-def _str_tuple(value: object, what: str) -> Tuple[str, ...]:
+def _str_tuple(value: object, what: str) -> tuple[str, ...]:
     """A list of strings from the manifest, or ManifestError naming the field."""
     if value is None:
         return ()
@@ -162,7 +162,7 @@ def _parse_seat(tag: str, raw: object) -> SeatManifest:
     if not isinstance(raw, dict):
         raise ManifestError("seat %s entry is not an object" % tag)
     rules = tuple(_parse_rule(item, tag) for item in raw.get("rules") or [])
-    covers: List[NotApplicable] = []
+    covers: list[NotApplicable] = []
     for item in raw.get("notApplicable") or []:
         if not isinstance(item, dict):
             raise ManifestError("seat %s holds a not-applicable entry that is not an object" % tag)
@@ -170,7 +170,9 @@ def _parse_seat(tag: str, raw: object) -> SeatManifest:
             NotApplicable(
                 kind=_enum(ConfigKind, item.get("kind"), "seat %s not-applicable kind" % tag),
                 reason=str(item.get("reason") or ""),
-                platforms=_str_tuple(item.get("platforms"), "seat %s not-applicable platforms" % tag),
+                platforms=_str_tuple(
+                    item.get("platforms"), "seat %s not-applicable platforms" % tag
+                ),
             )
         )
     return SeatManifest(
@@ -182,8 +184,8 @@ def _parse_seat(tag: str, raw: object) -> SeatManifest:
 
 
 def load_manifest(
-    path: Optional[Path] = None,
-    registry_path: Optional[Path] = None,
+    path: Path | None = None,
+    registry_path: Path | None = None,
 ) -> Manifest:
     """Load and parse the manifest, checking it against the live registry roster.
 
@@ -202,25 +204,27 @@ def load_manifest(
     if not isinstance(data, dict):
         raise ManifestError("the manifest at %s is not a JSON object" % target)
     if data.get("schemaVersion") != MANIFEST_SCHEMA_VERSION:
-        raise ManifestError(
-            "the manifest schemaVersion must be %d" % MANIFEST_SCHEMA_VERSION
-        )
+        raise ManifestError("the manifest schemaVersion must be %d" % MANIFEST_SCHEMA_VERSION)
     raw_seats = data.get("seats")
     if not isinstance(raw_seats, dict):
         raise ManifestError("the manifest seats must be an object keyed by registry tag")
     live = registry_seat_tags(registry_path)
     unknown = sorted(set(raw_seats) - set(live))
     if unknown:
-        raise ManifestError("manifest seats not in the live registry roster: %s" % ", ".join(unknown))
+        raise ManifestError(
+            "manifest seats not in the live registry roster: %s" % ", ".join(unknown)
+        )
     missing = sorted(set(live) - set(raw_seats))
     if missing:
         raise ManifestError("live registry seats with no manifest entry: %s" % ", ".join(missing))
     seats = tuple(_parse_seat(tag, raw_seats[tag]) for tag in live if tag in raw_seats)
-    seen: Dict[str, str] = {}
+    seen: dict[str, str] = {}
     for seat in seats:
         for rule in seat.rules:
             if rule.id in seen:
-                raise ManifestError("duplicate rule id %s (seats %s and %s)" % (rule.id, seen[rule.id], seat.seat))
+                raise ManifestError(
+                    "duplicate rule id %s (seats %s and %s)" % (rule.id, seen[rule.id], seat.seat)
+                )
             seen[rule.id] = seat.seat
     return Manifest(schema_version=MANIFEST_SCHEMA_VERSION, seats=seats, source_path=str(target))
 
@@ -238,7 +242,7 @@ def validate_coverage(manifest: Manifest) -> None:
     raise NotImplementedError("coverage validation is pinned in the design doc, section 7")
 
 
-def validate_platforms(manifest: Manifest, known_platforms: Tuple[str, ...]) -> None:
+def validate_platforms(manifest: Manifest, known_platforms: tuple[str, ...]) -> None:
     """Every platform named anywhere in the manifest is known, or ManifestError.
 
     ``known_platforms`` comes from ``fleet_lanes.install_rules.PLATFORMS`` at the call

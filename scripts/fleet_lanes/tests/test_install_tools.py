@@ -2465,7 +2465,9 @@ class ApplyAllProbeTests(World):
         src = self.make_source(name, sha=sha)
         hook = Path(src.scripts_dir) / "fleet_lanes" / "lane_guard_hook.py"
         text = hook.read_text(encoding="utf-8")
-        broken = text.replace('if fmt in ("grok", "antigravity", "vibe"):', 'if fmt in ("antigravity", "vibe"):')
+        broken = text.replace(
+            'if fmt in ("grok", "antigravity", "vibe"):', 'if fmt in ("antigravity", "vibe"):'
+        )
         self.assertNotEqual(broken, text, "the grok output branch moved; update this test")
         hook.write_text(broken, encoding="utf-8")
         return src
@@ -2536,7 +2538,9 @@ class ApplyAllProbeTests(World):
         hook = Path(self.paths.package_dir) / "lane_guard_hook.py"
         text = hook.read_text(encoding="utf-8")
         hook.write_text(
-            text.replace('if fmt in ("grok", "antigravity", "vibe"):', 'if fmt in ("antigravity", "vibe"):'),
+            text.replace(
+                'if fmt in ("grok", "antigravity", "vibe"):', 'if fmt in ("antigravity", "vibe"):'
+            ),
             encoding="utf-8",
         )
         res = T.apply_platform(

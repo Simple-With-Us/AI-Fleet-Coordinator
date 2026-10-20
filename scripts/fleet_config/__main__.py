@@ -8,11 +8,11 @@ Only argument parsing lives here in the kernel.  Each verb is a stub that says s
 exits 2, until its owning module lands (design doc, section 10).  Exit codes for the
 finished CLI are pinned there too:  0 pass, 1 fail, 3 unknown, 2 refused, 64 usage.
 """
+
 from __future__ import annotations
 
 import argparse
 import sys
-from typing import List, Optional
 
 
 def _not_implemented(args: argparse.Namespace) -> int:
@@ -24,7 +24,7 @@ def _not_implemented(args: argparse.Namespace) -> int:
     return 2
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Parse arguments and dispatch.  ``--help`` is the only finished surface for now."""
     parser = argparse.ArgumentParser(
         prog="fleet-config",

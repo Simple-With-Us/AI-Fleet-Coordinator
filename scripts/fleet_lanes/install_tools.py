@@ -3018,9 +3018,7 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
                 "skip": "skip",
                 "refuse": "refuse",
             }[op.state]
-            return PlatformPlan(
-                plat, op.config, act, op.entry, op.reason, notes=list(op.notes)
-            )
+            return PlatformPlan(plat, op.config, act, op.entry, op.reason, notes=list(op.notes))
         return PlatformPlan(
             plat,
             paths.muse_bundle,
@@ -3386,7 +3384,8 @@ def apply_platform(
         return Result(
             plat.key,
             "skipped",
-            FX_BLOCKER + "; no file was written.  Merge the compensating control from `plan fx` by hand "
+            FX_BLOCKER
+            + "; no file was written.  Merge the compensating control from `plan fx` by hand "
             "only after Jay approves it",
         )
     if plat.kind == "plugin":
@@ -4393,7 +4392,9 @@ def block_fields(plat: Platform, paths: Paths) -> dict:
 
 
 _VIBE_GATE_KEY = "enable_experimental_hooks"
-_VIBE_GATE_RE = re.compile(r"^[ \t]*enable_experimental_hooks[ \t]*=[ \t]*([^#\n]*?)[ \t]*(?:#.*)?$")
+_VIBE_GATE_RE = re.compile(
+    r"^[ \t]*enable_experimental_hooks[ \t]*=[ \t]*([^#\n]*?)[ \t]*(?:#.*)?$"
+)
 _VIBE_TABLE_RE = re.compile(r"^[ \t]*\[")
 _VIBE_KV_RE = re.compile(r"^[ \t]*([A-Za-z0-9_.-]+)[ \t]*=")
 
@@ -4541,7 +4542,11 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
             return bp
         bp.notes.append(
             f"{bp.gate_path}: enable_experimental_hooks is "
-            + ("already true" if gate is True else "not true, so Vibe loads no hooks; apply sets it to true")
+            + (
+                "already true"
+                if gate is True
+                else "not true, so Vibe loads no hooks; apply sets it to true"
+            )
         )
     try:
         if plat.key == "clutch":
@@ -4724,7 +4729,9 @@ def apply_block(
         else:
             notes.append("the patch was NOT checked with the engine (--no-dsh-check)")
     elif plat.key == "vibe":
-        notes.append("both TOML files parse (when tomllib is available); no Vibe binary check is run")
+        notes.append(
+            "both TOML files parse (when tomllib is available); no Vibe binary check is run"
+        )
     else:
         if check_kimi:
             status, detail = _kimi_doctor(bp.new_text, timeout, paths.home)
@@ -4785,7 +4792,9 @@ def apply_block(
             try:
                 if bp.gate_exists and bp.gate_raw is not None:
                     atomic_write(
-                        bp.gate_path, bp.gate_raw, bp.gate_mode if bp.gate_mode is not None else 0o644
+                        bp.gate_path,
+                        bp.gate_raw,
+                        bp.gate_mode if bp.gate_mode is not None else 0o644,
                     )
                 elif os.path.lexists(bp.gate_path):
                     os.unlink(bp.gate_path)
@@ -5607,12 +5616,20 @@ def _copilot_foreign(doc: object, paths: Paths) -> str | None:
     if doc == copilot_expected(paths) or doc == {}:
         return None
     if set(doc) - {"version", "hooks"}:
-        return "it holds top-level keys this tool never writes (" + ", ".join(sorted(set(doc) - {"version", "hooks"})) + ")"
+        return (
+            "it holds top-level keys this tool never writes ("
+            + ", ".join(sorted(set(doc) - {"version", "hooks"}))
+            + ")"
+        )
     hooks = doc.get("hooks")
     if not isinstance(hooks, dict):
         return "its hooks value is not an object"
     if set(hooks) - {"PreToolUse"}:
-        return "it holds hook events this tool never writes (" + ", ".join(sorted(set(hooks) - {"PreToolUse"})) + ")"
+        return (
+            "it holds hook events this tool never writes ("
+            + ", ".join(sorted(set(hooks) - {"PreToolUse"}))
+            + ")"
+        )
     total = 0
     for group in hooks.get("PreToolUse") or []:
         inner = group.get("hooks") if isinstance(group, dict) else None
@@ -5656,7 +5673,9 @@ def plan_copilot(paths: Paths, *, follow_symlinks: bool = False) -> CopilotPlan:
         return plan("refuse", refusal)
     notes = [link] if link else []
     if os.path.islink(path):
-        return plan("refuse", f"{path} is a symlink; this tool writes a real file there, not through a link")
+        return plan(
+            "refuse", f"{path} is a symlink; this tool writes a real file there, not through a link"
+        )
     if os.path.lexists(path):
         if not os.path.isfile(path):
             return plan("refuse", f"{path} exists and is not a regular file")
@@ -5667,9 +5686,7 @@ def plan_copilot(paths: Paths, *, follow_symlinks: bool = False) -> CopilotPlan:
         foreign = _copilot_foreign(cfg.doc, paths)
         if foreign:
             return plan("refuse", f"{path}: {foreign}; left alone")
-        cp = plan(
-            "current" if cfg.doc == copilot_expected(paths) else "stale", "", notes
-        )
+        cp = plan("current" if cfg.doc == copilot_expected(paths) else "stale", "", notes)
         cp.raw, cp.mode, cp.exists = cfg.raw, cfg.mode, cfg.exists
         if cp.state != "current" and outside:
             return plan("refuse", outside, notes)
@@ -5719,7 +5736,8 @@ def apply_copilot(
             return Result(
                 "copilot",
                 "refused",
-                "the installed fleet hook fails its probes, so it will not be wired in: " + bad[0].detail,
+                "the installed fleet hook fails its probes, so it will not be wired in: "
+                + bad[0].detail,
             )
     if cp.state == "current":
         return Result("copilot", "unchanged", f"{cp.path} already holds the hook")
@@ -5734,11 +5752,15 @@ def apply_copilot(
             if backup:
                 os.unlink(backup)
             return Result(
-                "copilot", "failed", f"{cp.path} changed while it was being written; nothing written, retry"
+                "copilot",
+                "failed",
+                f"{cp.path} changed while it was being written; nothing written, retry",
             )
         atomic_write(cp.path, cp.text.encode("utf-8"), cp.mode if cp.mode is not None else 0o644)
     except OSError as exc:
-        return Result("copilot", "failed", f"{cp.path} not changed: {type(exc).__name__}: {exc}", backup)
+        return Result(
+            "copilot", "failed", f"{cp.path} not changed: {type(exc).__name__}: {exc}", backup
+        )
     try:
         after = json.loads(_read_bytes(cp.path).decode("utf-8"))
         ok = after == copilot_expected(paths) and bool(locate(after, PLATFORMS["copilot"]))
@@ -5753,7 +5775,10 @@ def apply_copilot(
         except OSError:
             pass
         return Result(
-            "copilot", "failed", f"{cp.path} failed validation after the write; the original was restored", backup
+            "copilot",
+            "failed",
+            f"{cp.path} failed validation after the write; the original was restored",
+            backup,
         )
     detail = cp.path + (f" (backup {backup})" if backup else " (new file)")
     return Result("copilot", "added" if cp.state == "new" else "updated", detail, backup)
@@ -5769,13 +5794,18 @@ def verify_copilot(
         return [Check(t, "platform", "SKIP", "~/.copilot does not exist (platform not installed)")]
     path = paths.copilot_hooks
     if not os.path.lexists(path):
-        return [Check(t, "hooks file", "SKIP", f"not wired: {path} does not exist; run `apply copilot`")]
+        return [
+            Check(t, "hooks file", "SKIP", f"not wired: {path} does not exist; run `apply copilot`")
+        ]
     if os.path.islink(path) or not os.path.isfile(path):
         return [Check(t, "hooks file", "FAIL", f"{path} is not a regular file")]
     out: list[Check] = [Check(t, "hooks file", "PASS", f"{path} is a regular file")]
     out.append(
         _check_shim(
-            t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(read_guard_facts(paths.stable))
+            t,
+            FLEET_HOOK_NAME,
+            paths.fleet_shim,
+            render_fleet_hook_shim(read_guard_facts(paths.stable)),
         )
     )
     try:
@@ -5800,7 +5830,8 @@ def verify_copilot(
                 t,
                 "hooks entry",
                 "FAIL",
-                f"{path}: " + ("; ".join(entries[0].problems) if entries else "no fleet hook under PreToolUse"),
+                f"{path}: "
+                + ("; ".join(entries[0].problems) if entries else "no fleet hook under PreToolUse"),
             )
         )
         return out
@@ -5914,14 +5945,22 @@ def plan_opencode(paths: Paths, *, follow_symlinks: bool = False) -> OpencodePla
         return plan("refuse", str(exc))
     have_plugin = _read_regular(paths.opencode_plugin)
     if have_plugin is None:
-        notes.append(f"{paths.opencode_plugin} is not in the stable dir yet; `apply tools` writes it")
+        notes.append(
+            f"{paths.opencode_plugin} is not in the stable dir yet; `apply tools` writes it"
+        )
         plugin_state = "new"
     elif have_plugin != plugin_text.encode("utf-8"):
-        notes.append(f"{paths.opencode_plugin} is not what this install_tools writes; `apply tools` refreshes it")
+        notes.append(
+            f"{paths.opencode_plugin} is not what this install_tools writes; `apply tools` refreshes it"
+        )
         plugin_state = "stale"
     else:
         plugin_state = "current"
-    state = {"added": "new" if not cfg.exists else "stale", "updated": "stale", "unchanged": "current"}[action]
+    state = {
+        "added": "new" if not cfg.exists else "stale",
+        "updated": "stale",
+        "unchanged": "current",
+    }[action]
     if state == "current" and plugin_state != "current":
         state = "stale"
     if state != "current":
@@ -5946,7 +5985,8 @@ def plan_opencode(paths: Paths, *, follow_symlinks: bool = False) -> OpencodePla
             )
         if cfg.exists and cfg.mode is not None and not cfg.mode & 0o200:
             return plan(
-                "refuse", f"{config} is read-only (mode {cfg.mode:04o}); not overriding the owner's choice"
+                "refuse",
+                f"{config} is read-only (mode {cfg.mode:04o}); not overriding the owner's choice",
             )
     op = plan(state, "", notes)
     op.cfg = cfg
@@ -6001,7 +6041,8 @@ def apply_opencode(
             return Result(
                 "opencode",
                 "refused",
-                "the installed fleet hook fails its probes, so it will not be wired in: " + bad[0].detail,
+                "the installed fleet hook fails its probes, so it will not be wired in: "
+                + bad[0].detail,
             )
     if op.state == "current":
         return Result("opencode", "unchanged", f"{op.config} already lists the plugin")
@@ -6011,7 +6052,9 @@ def apply_opencode(
         reparsed = json.loads(op.new_text)
         _doc, act = opencode_merge(reparsed, paths)
         if act != "unchanged":
-            return Result("opencode", "refused", "the merged document does not hold the plugin entry")
+            return Result(
+                "opencode", "refused", "the merged document does not hold the plugin entry"
+            )
     except (ValueError, Refused) as exc:
         return Result("opencode", "refused", f"the merged document is not valid: {exc}")
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
@@ -6025,11 +6068,15 @@ def apply_opencode(
             if backup:
                 os.unlink(backup)
             return Result(
-                "opencode", "failed", f"{op.config} changed while it was being merged; nothing written, retry"
+                "opencode",
+                "failed",
+                f"{op.config} changed while it was being merged; nothing written, retry",
             )
         atomic_write(real, op.new_text.encode("utf-8"), cfg.mode if cfg.mode is not None else 0o600)
     except OSError as exc:
-        return Result("opencode", "failed", f"{op.config} not changed: {type(exc).__name__}: {exc}", backup)
+        return Result(
+            "opencode", "failed", f"{op.config} not changed: {type(exc).__name__}: {exc}", backup
+        )
     try:
         after = json.loads(_read_bytes(real).decode("utf-8"))
         _doc, act = opencode_merge(after, paths)
@@ -6045,7 +6092,10 @@ def apply_opencode(
         except OSError:
             pass
         return Result(
-            "opencode", "failed", f"{op.config} failed validation after the write; the original was restored", backup
+            "opencode",
+            "failed",
+            f"{op.config} failed validation after the write; the original was restored",
+            backup,
         )
     detail = op.config + (f" (backup {backup})" if backup else " (new file)")
     return Result("opencode", "added" if not cfg.exists else "updated", detail, backup)
@@ -6059,7 +6109,11 @@ def verify_opencode(
     whether permission.ask denies live are UNVERIFIED and stay a SKIP."""
     t = "opencode"
     if not os.path.isdir(os.path.join(paths.home, ".config", "opencode")):
-        return [Check(t, "platform", "SKIP", "~/.config/opencode does not exist (platform not installed)")]
+        return [
+            Check(
+                t, "platform", "SKIP", "~/.config/opencode does not exist (platform not installed)"
+            )
+        ]
     if not os.path.isfile(paths.opencode_plugin):
         return [
             Check(
@@ -6071,9 +6125,7 @@ def verify_opencode(
         ]
     out: list[Check] = []
     out.append(
-        _check_text(
-            t, "plugin file", paths.opencode_plugin, render_opencode_plugin(), False
-        )
+        _check_text(t, "plugin file", paths.opencode_plugin, render_opencode_plugin(), False)
     )
     plugin_text = (_read_regular(paths.opencode_plugin) or b"").decode("utf-8", "replace")
     for needle, label in (
@@ -6087,18 +6139,27 @@ def verify_opencode(
                 t,
                 label,
                 "PASS" if needle in plugin_text else "FAIL",
-                f"{paths.opencode_plugin} " + ("contains it" if needle in plugin_text else f"does not contain {needle}"),
+                f"{paths.opencode_plugin} "
+                + ("contains it" if needle in plugin_text else f"does not contain {needle}"),
             )
         )
     if "Authorization" in plugin_text or "Bearer" in plugin_text:
         out.append(
-            Check(t, "no credential copy", "FAIL", "the plugin text names an authorization value; it must hold none")
+            Check(
+                t,
+                "no credential copy",
+                "FAIL",
+                "the plugin text names an authorization value; it must hold none",
+            )
         )
     else:
         out.append(Check(t, "no credential copy", "PASS", "the plugin text holds no credential"))
     out.append(
         _check_shim(
-            t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(read_guard_facts(paths.stable))
+            t,
+            FLEET_HOOK_NAME,
+            paths.fleet_shim,
+            render_fleet_hook_shim(read_guard_facts(paths.stable)),
         )
     )
     config = paths.opencode_config
@@ -6123,14 +6184,28 @@ def verify_opencode(
         return out
     plugins = cfg.doc.get("plugin")
     if not isinstance(plugins, list):
-        out.append(Check(t, "plugin entry", "FAIL", f"{config} has no plugin list; the guard plugin is not listed"))
+        out.append(
+            Check(
+                t,
+                "plugin entry",
+                "FAIL",
+                f"{config} has no plugin list; the guard plugin is not listed",
+            )
+        )
         return out
     ours = [e for e in plugins if _is_opencode_ours(e, paths)]
     want = opencode_entry(paths)
     if ours == [want]:
         out.append(Check(t, "plugin entry", "PASS", f"plugin array lists {want} exactly once"))
     elif not ours:
-        out.append(Check(t, "plugin entry", "FAIL", f"no fleet plugin entry in {config}; run `apply opencode`"))
+        out.append(
+            Check(
+                t,
+                "plugin entry",
+                "FAIL",
+                f"no fleet plugin entry in {config}; run `apply opencode`",
+            )
+        )
         return out
     else:
         out.append(

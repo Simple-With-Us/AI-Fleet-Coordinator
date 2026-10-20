@@ -19,7 +19,6 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from fleet_lanes import install_tools as T
 from fleet_lanes import lane_guard_hook as H
@@ -167,7 +166,14 @@ class CopilotTests(World):
         rc, out, err = run_main("plan", *self.base(), "copilot")
         self.assertEqual((rc, err), (0, ""), out)
         self.assertEqual(snapshot(self.tmp), before)
-        for needle in ("[new]", '"version": 1', '"matcher": "Bash"', "timeoutSec", "UNVERIFIED", "OWNER-GATED"):
+        for needle in (
+            "[new]",
+            '"version": 1',
+            '"matcher": "Bash"',
+            "timeoutSec",
+            "UNVERIFIED",
+            "OWNER-GATED",
+        ):
             self.assertIn(needle, out)
         self.assertNotIn(DUMMY_TOKEN, out)
 
@@ -215,7 +221,10 @@ class CopilotTests(World):
                     "version": 1,
                     "hooks": {
                         "PreToolUse": [
-                            {"matcher": "Bash", "hooks": [{"type": "command", "command": "/bin/true"}]}
+                            {
+                                "matcher": "Bash",
+                                "hooks": [{"type": "command", "command": "/bin/true"}],
+                            }
                         ]
                     },
                 }
@@ -250,14 +259,22 @@ class CopilotTests(World):
         checks = T.verify_copilot(self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertEqual([(c.name, c.status) for c in checks], [("hooks file", "SKIP")])
         rc, out, _ = run_main(
-            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "copilot"
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "copilot",
         )
         self.assertEqual(rc, 1, out)
         self.assertRegex(out, r"FAIL\s+copilot\s+hooks file.*named explicitly")
 
 
 class VibeTests(World):
-    CONFIG = 'active_model = "mistral-medium-3.5"\nvim_keybindings = false\n\n[experiment_overrides]\n'
+    CONFIG = (
+        'active_model = "mistral-medium-3.5"\nvim_keybindings = false\n\n[experiment_overrides]\n'
+    )
 
     def setUp(self) -> None:
         super().setUp()
@@ -269,12 +286,14 @@ class VibeTests(World):
 
     def test_the_gate_is_read_and_set_at_the_top_level_only(self) -> None:
         self.assertIsNone(T.vibe_gate(self.CONFIG))
-        self.assertIs(T.vibe_gate("[experiment_overrides]\nenable_experimental_hooks = true\n"), None)
+        self.assertIs(
+            T.vibe_gate("[experiment_overrides]\nenable_experimental_hooks = true\n"), None
+        )
         new = T.vibe_set_gate(self.CONFIG)
         self.assertIs(T.vibe_gate(new), True)
         self.assertIn("[experiment_overrides]", new)
         self.assertLess(new.index("enable_experimental_hooks"), new.index("[experiment_overrides]"))
-        off = T.vibe_set_gate('enable_experimental_hooks = false\nx = 1\n')
+        off = T.vibe_set_gate("enable_experimental_hooks = false\nx = 1\n")
         self.assertTrue(off.startswith("enable_experimental_hooks = true\nx = 1\n"))
 
     def test_the_match_is_vibes_shell_tool_name(self) -> None:
@@ -293,12 +312,14 @@ class VibeTests(World):
             'name = "fleet-lane-guard"',
             'type = "before_tool"',
             'match = "bash"',
-            '--format vibe',
+            "--format vibe",
             "strict = true",
         ):
             self.assertIn(needle, text)
         self.assertIs(T.vibe_gate(self.config.read_text(encoding="utf-8")), True)
-        self.assertIn('active_model = "mistral-medium-3.5"', self.config.read_text(encoding="utf-8"))
+        self.assertIn(
+            'active_model = "mistral-medium-3.5"', self.config.read_text(encoding="utf-8")
+        )
         fields = T.vibe_fields(T.PLATFORMS["vibe"], self.paths)
         self.assertEqual(fields["match"], "bash")
         after = snapshot(self.home)
@@ -322,7 +343,13 @@ class VibeTests(World):
         )
         self.assertPassOrSkip(checks)
         by = {c.name: c for c in checks}
-        for name in ("block", "hooks gate", "deny/login-PATH", "allow/login-PATH", "secret/login-PATH"):
+        for name in (
+            "block",
+            "hooks gate",
+            "deny/login-PATH",
+            "allow/login-PATH",
+            "secret/login-PATH",
+        ):
             self.assertEqual(by[name].status, "PASS", by[name].line())
         self.assertEqual(by["fires"].status, "SKIP")
 
@@ -439,14 +466,23 @@ class OpenCodeTests(World):
         checks = T.verify_opencode(self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertEqual([(c.name, c.status) for c in checks], [("plugin file", "SKIP")])
         rc, out, _ = run_main(
-            "verify", "--home", str(self.home), "--timeout", str(TIMEOUT), "--no-minimal-path", "opencode"
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "opencode",
         )
         self.assertEqual(rc, 1, out)
         self.assertRegex(out, r"FAIL\s+opencode\s+plugin file.*named explicitly")
 
     def test_a_stale_plugin_path_is_updated_in_place(self) -> None:
         doc = json.loads(self.config.read_text(encoding="utf-8"))
-        doc["plugin"] = ["/old/stable/opencode-plugin/fleet-lane-guard.ts", "opencode-mobile@latest"]
+        doc["plugin"] = [
+            "/old/stable/opencode-plugin/fleet-lane-guard.ts",
+            "opencode-mobile@latest",
+        ]
         self.config.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
         new, action = T.opencode_merge(doc, self.paths)
         self.assertEqual(action, "updated")
@@ -463,7 +499,9 @@ class OpenCodeTests(World):
         self.assertEqual(stat.S_IMODE(os.stat(self.config).st_mode), 0o600)
 
     def test_a_plugin_key_that_is_not_a_list_is_refused_and_left_alone(self) -> None:
-        self.config.write_text(json.dumps({"plugin": "not-a-list"}, indent=2) + "\n", encoding="utf-8")
+        self.config.write_text(
+            json.dumps({"plugin": "not-a-list"}, indent=2) + "\n", encoding="utf-8"
+        )
         before = snapshot(self.home)
         r = self.apply("opencode")
         self.assertEqual(r.status, "refused", r)
@@ -491,8 +529,15 @@ class CliRoundTripTests(World):
             rc, out, err = run_main("apply", *self.base(), "--no-verify", key)
             self.assertEqual((rc, err), (0, ""), out)
             self.assertIn(key, out)
-            rc, out, err = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT),
-                                    "--no-minimal-path", key)
+            rc, out, err = run_main(
+                "verify",
+                "--home",
+                str(self.home),
+                "--timeout",
+                str(TIMEOUT),
+                "--no-minimal-path",
+                key,
+            )
             self.assertEqual((rc, err), (0, ""), out)
             self.assertRegex(out, r"verify: \d+ PASS, 0 FAIL, 0 WARN")
             self.assertIn("fires", out)
@@ -512,8 +557,15 @@ class CliRoundTripTests(World):
             json.dumps({"provider": "gateway", "permission_mode": "yolo"}) + "\n", encoding="utf-8"
         )
         run_main("apply", *self.base(), "--no-verify", "copilot", "vibe", "opencode")
-        rc, out, _ = run_main("verify", "--home", str(self.home), "--timeout", str(TIMEOUT),
-                              "--no-minimal-path", "all")
+        rc, out, _ = run_main(
+            "verify",
+            "--home",
+            str(self.home),
+            "--timeout",
+            str(TIMEOUT),
+            "--no-minimal-path",
+            "all",
+        )
         self.assertEqual(rc, 1, out)
         self.assertRegex(out, r"FAIL\s+fx\s+platform")
         for key in ("copilot", "vibe", "opencode"):
@@ -526,7 +578,9 @@ class FxTests(World):
         (self.home / ".fx").mkdir(parents=True)
         self.settings = self.home / ".fx" / "settings.json"
         self.settings.write_text(
-            json.dumps({"provider": "gateway", "permission_mode": "yolo", "yolo_acknowledged": True})
+            json.dumps(
+                {"provider": "gateway", "permission_mode": "yolo", "yolo_acknowledged": True}
+            )
             + "\n",
             encoding="utf-8",
         )

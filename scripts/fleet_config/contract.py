@@ -15,9 +15,8 @@ Pinned rules (design doc, sections 3 and 4):
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
-from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from __future__ import annotations
 
 from .types import (
     CHECK_STATES,
@@ -32,15 +31,15 @@ from .types import (
 )
 
 __all__ = [
-    "SCHEMA_VERSION",
     "FAILING_REASON_CODES",
-    "is_failing",
-    "overall_verdict",
-    "summarize",
-    "expected_to_dict",
-    "observed_to_dict",
-    "result_to_dict",
+    "SCHEMA_VERSION",
     "build_status_envelope",
+    "expected_to_dict",
+    "is_failing",
+    "observed_to_dict",
+    "overall_verdict",
+    "result_to_dict",
+    "summarize",
 ]
 
 # The pinned envelope version.  A contract test asserts this exact value, so a breaking
@@ -49,7 +48,7 @@ SCHEMA_VERSION = 1
 
 # Reason codes that make a result failing even when its state is UNKNOWN.  This set is
 # the fail-closed rule written as data.
-FAILING_REASON_CODES: Tuple[ReasonCode, ...] = (
+FAILING_REASON_CODES: tuple[ReasonCode, ...] = (
     ReasonCode.STALE,
     ReasonCode.ERROR,
     ReasonCode.TIMEOUT,
@@ -69,7 +68,7 @@ def is_failing(result: CheckResult) -> bool:
     return result.reason_code in FAILING_REASON_CODES
 
 
-def overall_verdict(results: Tuple[CheckResult, ...]) -> OverallVerdict:
+def overall_verdict(results: tuple[CheckResult, ...]) -> OverallVerdict:
     """The verdict for a set of results.  An empty run is ``UNKNOWN``, never ``PASS``."""
     if any(is_failing(result) for result in results):
         return OverallVerdict.FAIL
@@ -78,9 +77,9 @@ def overall_verdict(results: Tuple[CheckResult, ...]) -> OverallVerdict:
     return OverallVerdict.UNKNOWN
 
 
-def summarize(results: Tuple[CheckResult, ...]) -> StatusSummary:
+def summarize(results: tuple[CheckResult, ...]) -> StatusSummary:
     """Counts per state (all six keys, always) plus the overall verdict."""
-    by_state: Dict[CheckState, int] = {state: 0 for state in CHECK_STATES}
+    by_state: dict[CheckState, int] = {state: 0 for state in CHECK_STATES}
     for result in results:
         by_state[result.state] = by_state.get(result.state, 0) + 1
     return StatusSummary(
@@ -90,9 +89,9 @@ def summarize(results: Tuple[CheckResult, ...]) -> StatusSummary:
     )
 
 
-def expected_to_dict(expected: ExpectedState) -> Dict[str, object]:
+def expected_to_dict(expected: ExpectedState) -> dict[str, object]:
     """The JSON form of an expectation.  Set fields only, and names and booleans only."""
-    out: Dict[str, object] = {"description": expected.description}
+    out: dict[str, object] = {"description": expected.description}
     if expected.present is not None:
         out["present"] = expected.present
     if expected.sha256 is not None:
@@ -106,9 +105,9 @@ def expected_to_dict(expected: ExpectedState) -> Dict[str, object]:
     return out
 
 
-def observed_to_dict(observed: ObservedState) -> Dict[str, object]:
+def observed_to_dict(observed: ObservedState) -> dict[str, object]:
     """The JSON form of an observation.  Credential entries carry ``stat`` fields only."""
-    out: Dict[str, object] = {}
+    out: dict[str, object] = {}
     if observed.present is not None:
         out["present"] = observed.present
     if observed.sha256 is not None:
@@ -126,7 +125,7 @@ def observed_to_dict(observed: ObservedState) -> Dict[str, object]:
     return out
 
 
-def result_to_dict(result: CheckResult) -> Dict[str, object]:
+def result_to_dict(result: CheckResult) -> dict[str, object]:
     """One result row of the envelope, in the pinned field order."""
     return {
         "ruleId": result.rule_id,
@@ -152,7 +151,7 @@ def result_to_dict(result: CheckResult) -> Dict[str, object]:
     }
 
 
-def build_status_envelope(report: StatusReport) -> Dict[str, object]:
+def build_status_envelope(report: StatusReport) -> dict[str, object]:
     """The pinned ``fleet-config status --json`` envelope for one report.
 
     The top-level keys are ``schemaVersion``, ``tool``, ``command``, ``generatedAt``,
