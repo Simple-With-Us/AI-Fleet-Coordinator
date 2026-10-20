@@ -79,6 +79,12 @@ jobs:
     - name: fleet_knobs tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t . -v
+    # fleet_config (Muster Phase 2):  the desired-state manifest and its validators, the six L0 check
+    # kinds, the L1 and L2 proof machinery, the aggregator's fail-closed verdict math, the plan and the
+    # apply side, and the Touch ID gate.  Every test uses a temp home;  none touches the real Mac.
+    - name: fleet_config tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_config/tests -t . -v
     # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
     # unresolved-reference guard, auth selection, and no secret in argv or error text.
     - name: fleet_secrets tests

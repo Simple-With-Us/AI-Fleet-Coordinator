@@ -34,7 +34,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import contract
 from .checks import (
@@ -112,6 +112,9 @@ class ProofOutcome:
     reason: str
     reason_code: ReasonCode = ReasonCode.PROOF_NOT_RUN
 
+
+# A caller-supplied proof function:  (rule, platform, ctx, prove) -> an outcome.
+ProofRunner = Callable[[Rule, str, CheckContext, bool], object]
 
 def load_registry() -> Tuple[CheckRegistry, Tuple[str, ...]]:
     """The shared check registry plus the check modules that could not be imported.
@@ -208,16 +211,32 @@ def _normalize_proof(value: object) -> ProofOutcome:
     )
 
 
-def _run_proof(rule: Rule, platform: str, ctx: CheckContext, prove: bool) -> ProofOutcome:
+def _run_proof(
+    rule: Rule,
+    platform: str,
+    ctx: CheckContext,
+    prove: bool,
+    runner: Optional[ProofRunner] = None,
+) -> ProofOutcome:
     """Ask the proof machinery what it can prove about one rule.
 
     The seam is one function, ``proof.prove_rule(rule, platform, ctx, prove_l2=prove)``,
     so the proof lane can land without the aggregator changing.  A missing ``proof.py``
     or a missing function is not a crash:  the rule then reads ``UNPROVEN`` with reason
     code ``proof-not-run``, which is never healthy.
+
+    ``runner`` replaces the seam with a caller-supplied function, which is how a test
+    drives the proof path without a real hook.
     """
     if rule.proof_level is ProofLevel.L0:
         return ProofOutcome(ProofLevel.L0, "no proof is required for this rule", ReasonCode.OK)
+    if runner is not None:
+        try:
+            return _normalize_proof(runner(rule, platform, ctx, prove))
+        except CheckError as exc:
+            return ProofOutcome(None, str(exc), exc.reason_code)
+        except Exception as exc:  # noqa: BLE001 - a proof failure is a result, not a crash
+            return ProofOutcome(None, "the proof machinery failed: %s" % exc, ReasonCode.ERROR)
     try:
         from . import proof  # type: ignore[attr-defined]
     except ImportError:
@@ -248,6 +267,7 @@ def _apply_proof(
     platform: str,
     ctx: CheckContext,
     prove: bool,
+    runner: Optional[ProofRunner] = None,
 ) -> CheckResult:
     """Fold the proof outcome into a check result.
 
@@ -264,7 +284,7 @@ def _apply_proof(
     achieved = result.proof_level_achieved
     if achieved is not None and achieved.at_least(required):
         return result
-    outcome = _run_proof(rule, platform, ctx, prove)
+    outcome = _run_proof(rule, platform, ctx, prove, runner)
     if outcome.level is not None and outcome.level.at_least(required):
         return replace(
             result,
@@ -278,6 +298,18 @@ def _apply_proof(
             state=CheckState.DRIFT,
             reason=outcome.reason or "the required proof ran and did not deny the sentinel write",
             reason_code=ReasonCode.PROOF_FAILED,
+            proof_level_achieved=outcome.level if outcome.level is not None else achieved,
+        )
+    if outcome.reason_code in contract.FAILING_REASON_CODES:
+        # The proof machinery itself could not answer:  the hook crashed, timed out, or
+        # said something unreadable.  That is the design's step 4, and step 4 is FAILING.
+        # Folding it into UNPROVEN would make a broken hook look like an unrun proof,
+        # and an unrun proof is not counted against the run.
+        return replace(
+            result,
+            state=CheckState.UNKNOWN,
+            reason=outcome.reason or "the required proof could not be completed",
+            reason_code=outcome.reason_code,
             proof_level_achieved=outcome.level if outcome.level is not None else achieved,
         )
     return replace(
@@ -451,6 +483,7 @@ def run_status(
     home: Optional[str] = None,
     missing_modules: Optional[Sequence[str]] = None,
     include_doctors: bool = False,
+    proof_runner: Optional[ProofRunner] = None,
 ) -> StatusReport:
     """Run every rule in `manifest` and build one ``StatusReport``.
 
@@ -465,8 +498,10 @@ def run_status(
     names the check modules that are known to be absent;  it is discovered by default and
     a caller may set it to say which are missing.  ``include_doctors`` folds the MAC
     level doctors into the report's notes;  it is off by default because it starts a
-    child process.  The report's summary comes from ``contract.summarize``, so the
-    aggregator and the envelope share one definition of failing.
+    child process.  ``proof_runner`` replaces the proof seam with a caller-supplied
+    function, which is how a test drives the proof path without a real hook.  The
+    report's summary comes from ``contract.summarize``, so the aggregator and the
+    envelope share one definition of failing.
     """
     if ctx is None:
         ctx = CheckContext(home=resolve_home(home), now=utc_now(), timeout=DEFAULT_TIMEOUT)
@@ -491,7 +526,7 @@ def run_status(
                 if platform is not None and rule_platform != platform:
                     continue
                 result = _run_check(rule, rule_platform, ctx, registry, missing)
-                result = _apply_proof(result, rule, rule_platform, ctx, prove)
+                result = _apply_proof(result, rule, rule_platform, ctx, prove, proof_runner)
                 results.append(result)
     if include_doctors:
         notes.extend(run_doctors(ctx))

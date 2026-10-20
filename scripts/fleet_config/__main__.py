@@ -54,10 +54,15 @@ __all__ = [
 ]
 
 # The exit codes, named so a consumer can check them without a magic number.
+#
+# These are the codes the design document pins (section 4), and they follow the
+# ``fleet_knobs`` precedent:  3 is the unreachable source, and 2 is the refused run.
+# An UNKNOWN verdict is the unreachable answer, so it is 3, and a refused run (a bad
+# manifest, a bad registry, a declined Touch ID) is 2.
 EXIT_OK = 0
 EXIT_FAIL = 1
-EXIT_UNKNOWN = 2
-EXIT_REFUSED = 3
+EXIT_REFUSED = 2
+EXIT_UNKNOWN = 3
 EXIT_USAGE = 64
 
 # The worst state first,  which is how the human table is ordered.

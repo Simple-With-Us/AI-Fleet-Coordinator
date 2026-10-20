@@ -179,11 +179,90 @@ class AggregatorTests(unittest.TestCase):
         )
         manifest = make_manifest([rule])
         registry = registry_with({CheckType.HOOK_REGISTERED: result_check(CheckState.PASS)})
-        report = aggregator.run_status(manifest, registry=registry, ctx=context())
+        report = aggregator.run_status(
+            manifest,
+            registry=registry,
+            ctx=context(),
+            proof_runner=lambda rule, platform, ctx, prove: aggregator.ProofOutcome(
+                None, "the proof did not run", ReasonCode.PROOF_NOT_RUN
+            ),
+        )
         result = report.results[0]
         self.assertIs(result.state, CheckState.UNPROVEN)
         self.assertIs(result.reason_code, ReasonCode.PROOF_NOT_RUN)
         self.assertIsNot(report.summary.overall_verdict, OverallVerdict.PASS)
+
+    def test_a_proof_that_could_not_complete_is_a_failing_unknown(self):
+        # The design's step 4:  a check that raised, timed out or returned unparseable
+        # output is UNKNOWN and it counts against the run.  A proof that cannot start is
+        # such a check, so it must NOT be folded into the non-failing UNPROVEN.
+        rule = make_rule(
+            "mm-hooks",
+            ConfigKind.HOOKS,
+            check_type=CheckType.HOOK_REGISTERED,
+            proof=ProofLevel.L1,
+        )
+        manifest = make_manifest([rule])
+        registry = registry_with({CheckType.HOOK_REGISTERED: result_check(CheckState.PASS)})
+        report = aggregator.run_status(
+            manifest,
+            registry=registry,
+            ctx=context(),
+            proof_runner=lambda rule, platform, ctx, prove: aggregator.ProofOutcome(
+                None, "the hook could not be started", ReasonCode.ERROR
+            ),
+        )
+        result = report.results[0]
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIs(result.reason_code, ReasonCode.ERROR)
+        self.assertTrue(contract.is_failing(result))
+        self.assertIs(report.summary.overall_verdict, OverallVerdict.FAIL)
+
+    def test_a_proof_that_ran_and_did_not_deny_is_drift(self):
+        # The design's step 7:  the hook ran and let the sentinel write through.
+        rule = make_rule(
+            "mm-hooks",
+            ConfigKind.HOOKS,
+            check_type=CheckType.HOOK_REGISTERED,
+            proof=ProofLevel.L1,
+        )
+        manifest = make_manifest([rule])
+        registry = registry_with({CheckType.HOOK_REGISTERED: result_check(CheckState.PASS)})
+        report = aggregator.run_status(
+            manifest,
+            registry=registry,
+            ctx=context(),
+            proof_runner=lambda rule, platform, ctx, prove: aggregator.ProofOutcome(
+                None, "the hook did not deny the sentinel write", ReasonCode.PROOF_FAILED
+            ),
+        )
+        result = report.results[0]
+        self.assertIs(result.state, CheckState.DRIFT)
+        self.assertIs(result.reason_code, ReasonCode.PROOF_FAILED)
+        self.assertTrue(contract.is_failing(result))
+
+    def test_a_proof_that_achieved_its_level_passes_the_rule(self):
+        # The design's step 8.
+        rule = make_rule(
+            "mm-hooks",
+            ConfigKind.HOOKS,
+            check_type=CheckType.HOOK_REGISTERED,
+            proof=ProofLevel.L1,
+        )
+        manifest = make_manifest([rule])
+        registry = registry_with({CheckType.HOOK_REGISTERED: result_check(CheckState.PASS)})
+        report = aggregator.run_status(
+            manifest,
+            registry=registry,
+            ctx=context(),
+            proof_runner=lambda rule, platform, ctx, prove: aggregator.ProofOutcome(
+                ProofLevel.L1, "the hook denied the sentinel write", ReasonCode.OK
+            ),
+        )
+        result = report.results[0]
+        self.assertIs(result.state, CheckState.PASS)
+        self.assertIs(result.proof_level_achieved, ProofLevel.L1)
+        self.assertIs(report.summary.overall_verdict, OverallVerdict.PASS)
 
     def test_a_rule_that_needs_no_proof_stays_a_pass(self):
         rule = make_rule("mm-instructions", ConfigKind.INSTRUCTIONS)

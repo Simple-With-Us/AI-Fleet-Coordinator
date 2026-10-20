@@ -58,6 +58,7 @@ __all__ = [
     "L1Outcome",
     "L2Outcome",
     "PlatformAdapter",
+    "prove_rule",
     "L2Platform",
     "PLATFORM_ADAPTERS",
     "L2_PLATFORMS",
@@ -211,10 +212,11 @@ class ProofOutcome:
     ``passed`` is true only for a proof that ran to completion and succeeded.
     ``state`` is the check state the proof maps to, and ``reason_code`` is the machine
     token the verdict math reads.  ``detail`` is a short, non-secret note (an exit
-    code, a marker, a timing);  it never carries a transcript or a path.
+    code, a marker, a timing);  it never carries a transcript or a path.  ``level`` is
+    the level that was ACHIEVED, so it is None when no proof ran or the proof failed.
     """
 
-    level: ProofLevel
+    level: Optional[ProofLevel]
     passed: bool
     state: CheckState
     reason: str
@@ -823,6 +825,74 @@ def run_l2_canary(
 
 
 # --------------------------------------------------------------------------- results
+
+
+def prove_rule(
+    rule: Rule,
+    platform: str,
+    ctx: CheckContext,
+    prove_l2: bool = False,
+) -> ProofOutcome:
+    """Prove one rule, at the level the rule requires.
+
+    This is the seam the aggregator calls, and the reason it exists as one function:
+    the aggregator decides WHICH rule needs a proof, and this module decides HOW to
+    get one.  The aggregator reads the answer through ``.level``, ``.reason`` and
+    ``.reason_code``.
+
+    The level the rule requires decides the probe:
+
+      * ``L0`` needs no proof.  The outcome says so and reports the level, which is
+        what the aggregator folds into an already-passing L0 result.
+      * ``L1`` runs the sentinel probe, which is cheap and runs on every status run.
+      * ``L2`` runs the headless canary, and ONLY when ``prove_l2`` is true, because
+        it spends a model turn.  Without it the outcome is "not run", never a pass.
+
+    The outcome carries ``level`` as the level that was ACHIEVED, which is None when
+    no proof ran, and the aggregator turns that into ``UNPROVEN`` with reason code
+    ``proof-not-run``.  A proof that ran and did not deny carries reason code
+    ``proof-failed``, which the contract already treats as failing.
+    """
+    required = rule.proof_level
+    if required is ProofLevel.L0:
+        return ProofOutcome(
+            level=ProofLevel.L0,
+            passed=True,
+            state=CheckState.PASS,
+            reason="no proof is required for this rule",
+            reason_code=ReasonCode.OK,
+            detail="",
+            achieved=ProofLevel.L0,
+        )
+    if required is ProofLevel.L2:
+        if not prove_l2:
+            return ProofOutcome(
+                level=None,
+                passed=False,
+                state=CheckState.UNPROVEN,
+                reason=(
+                    "the L2 canary spends a model turn, so it runs only under --prove l2"
+                ),
+                reason_code=ReasonCode.PROOF_NOT_RUN,
+                detail="L2 not requested",
+                achieved=None,
+            )
+        outcome = run_l2_canary(platform, ctx)
+        return _with_achieved(outcome)
+    outcome = run_l1_probe(platform, ctx)
+    return _with_achieved(outcome)
+
+
+def _with_achieved(outcome: ProofOutcome) -> ProofOutcome:
+    """The outcome with ``level`` set to the level it actually achieved.
+
+    A proof that passed achieved its level;  a proof that failed achieved nothing,
+    so its level is None.  The aggregator reads ``level`` as "achieved", so this is
+    where a failed proof stops looking like a successful one.
+    """
+    if outcome.passed and outcome.state is CheckState.PASS:
+        return replace(outcome, achieved=outcome.level, level=outcome.level)
+    return replace(outcome, achieved=None, level=None)
 
 
 def proof_to_result(
