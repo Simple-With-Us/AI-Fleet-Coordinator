@@ -994,17 +994,19 @@ The gap has to survive the renderer, so the mechanism depends on the destination
 The conversion is a silent no-op when its pattern does not match, and it exits `0` either way.  A run of spaces you wrote may have been normalized on the way to disk — measured twice on 2026-10-18, once collapsed to a single space and once left intact — so **neither form can be trusted to have something to match.**  Match one-or-more and then assert; never post on the strength of the command having run.
 
 ```sh
-perl -CSDA -pe 's/([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+perl -CSDA -pe 's/([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 grep -c '[.!?]  [A-Z"]' body.nbsp.txt    # must be 0 — no gap was left behind
 grep -o ' \xc2\xa0' body.nbsp.txt | wc -l # must be greater than 0
 ```
 
 Both lines matter.  The count alone is not enough: a body that converted only some of its gaps passes it, and ships with the rest of the prose collapsed.  Check the leftovers first, then the count.  Use single quotes for the perl expression — the character class contains a backtick, and inside double quotes bash opens a command substitution and dies with an unmatched-backtick error.
 
+The **markup group** `([*_`)\]"]*)` in both patterns is not decoration.  A sentence end that sits *inside* a markup span is followed by the markup and only then by the space, so a pattern that wants the space right after the sentence end never matches it:  `**Bold sentence.**  Next sentence.` would post with no gap, and neither grep above would catch it, because the file still holds other U+00A0 characters and this shape is not a single space after a sentence end.  The group captures the markup and re-emits it after the gap, so the span survives and the gap lands.
+
 A lookbehind is required if your body contains a numbered list.  CommonMark only starts a list when the character after `1.` is a real space, so converting it to U+00A0 silently stops the list rendering:
 
 ```sh
-perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
 Its cost, known and accepted: a sentence ending in a digit gets no gap, and a capitalised abbreviation (`Dr. Smith`, `e.g. Acme`) is still gapped.  Fix those by hand.
