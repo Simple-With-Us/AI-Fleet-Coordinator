@@ -165,11 +165,17 @@ class GetTests(Base):
         other = "00000000-0000-4000-8000-000000000002"
         self.env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"] = other
         w = self.use(World())
-        self.assertEqual(self.call("get", "ALPHA", "--project", "ai-fleet-coordinator")[:2], (0, VAL_A))
-        self.assertEqual(self.call("names", "--project=ai-fleet-coordinator", "--path", "/fleetlink")[0], 0)
+        self.assertEqual(
+            self.call("get", "ALPHA", "--project", "ai-fleet-coordinator")[:2], (0, VAL_A)
+        )
+        self.assertEqual(
+            self.call("names", "--project=ai-fleet-coordinator", "--path", "/fleetlink")[0], 0
+        )
         self.call("get", "ALPHA")
         ids = [next(a for a in argv if a.startswith("--projectId=")) for argv, _ in w.exports()]
-        self.assertEqual(ids, ["--projectId=" + other, "--projectId=" + other, "--projectId=" + PROJECT])
+        self.assertEqual(
+            ids, ["--projectId=" + other, "--projectId=" + other, "--projectId=" + PROJECT]
+        )
 
     def test_unknown_project_is_a_usage_error_before_any_fetch(self):
         w = self.use(World())

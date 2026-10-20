@@ -54,9 +54,7 @@ ENV_CLI = "AGENT_SYNC_FLEETLINK_CLI"
 CLI_NAME = "fleet-share"
 ENV_TOKEN = "FLEETLINK_TOKEN"
 TOKEN_PREFIX = "FLEETLINK_TOKEN_"
-INFISICAL_PATH = (
-    "/fleetlink"  # folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
-)
+INFISICAL_PATH = "/fleetlink"  # folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
 INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (Fleet-OPS has none)
 INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
