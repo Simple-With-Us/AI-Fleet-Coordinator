@@ -1042,18 +1042,83 @@ class Daemon:
                     "notes-relay-refusal-gave-up", seat=reader.seat, id=key[1], status="refused"
                 )
                 gave_up.append(key[1])
-        if not refused and not gave_up:
-            return
         if refused:
             self.log.write(
                 "notes-relay-refusal-retried",
                 seat=reader.seat,
                 ids=[mid for _, mid in refused],
             )
+        recovered = self._refuse_relay_overflow(reader, reason)
+        if not refused and not gave_up and not recovered:
+            return
         with self.notes_relay_lock:
             self._release_relay_hold(reader)
         if refused:
             reader.advance(max(mid for _, mid in refused))
+        if recovered:
+            reader.advance(recovered)
+
+    def _refuse_relay_overflow(self, reader: SeatRunner, reason: str) -> int:
+        """Refuse the requests past this seat's retry limit, which only the overflow marker remembers.  With no
+        consumer there is no spool, so the refusal is the answer and this pass walks the relay channel from the
+        marker's id on, exactly as `_backfill_relay_overflow` walks it while a consumer runs.  Returns the highest id
+        reached, or 0 when nothing moved (the marker then stays and the next tick tries again)."""
+        with self.notes_relay_lock:
+            marker = self.notes_relay_overflow.get(reader.seat)
+        if marker is None:
+            return 0
+        holder, start = marker
+        anchor = last = start - 1  # after `start - 1`, so `start` is included
+        refused_at: int | None = None
+        for _ in range(self.NOTES_RELAY_BACKFILL_PAGES):
+            try:
+                page = reader.fetch(
+                    [{"operator": "channel", "operand": NR.N.RELAY_CHANNEL}],
+                    anchor=anchor,
+                    after=PAGE,
+                )
+            except Exception:  # noqa: BLE001 - the marker stays;  the next tick tries again
+                break
+            rows = sorted(
+                (m for m in page if isinstance(m.get("id"), int) and m["id"] > last),
+                key=lambda m: m["id"],
+            )
+            for message in rows:
+                if not (NR.in_relay_channel(message) and NR.is_request(message)):
+                    last = message["id"]
+                    continue
+                try:
+                    if not NR.refuse_unconsumed(reader, message, reason, self.log.write):
+                        refused_at = message["id"]
+                        break  # a permanent refusal failure:  no retry could change it
+                except Exception:  # noqa: BLE001 - a retryable error:  the next tick tries again
+                    refused_at = message["id"]
+                    break
+                last = message["id"]
+            if refused_at is not None:
+                break
+            if not rows or len(page) < PAGE:
+                # The channel's newest message has been read:  nothing below is left to refuse.
+                with self.notes_relay_lock:
+                    self.notes_relay_overflow.pop(reader.seat, None)
+                self.log.write(
+                    "notes-relay-overflow-refused",
+                    seat=holder.seat,
+                    reader=reader.seat,
+                    from_id=start,
+                    through=last,
+                )
+                return last
+            anchor = last
+        if last > start - 1:
+            # Progress is kept:  everything below the new marker has been refused, so the hold may move up to it.
+            with self.notes_relay_lock:
+                self.notes_relay_overflow[reader.seat] = (
+                    holder,
+                    refused_at if refused_at is not None else last + 1,
+                )
+            self._release_relay_hold(holder)
+        return 0
 
     def _abandon_relay_holds(self, why: str) -> None:
         """This listener has stopped consuming on purpose, so nothing will spool the requests it was holding the

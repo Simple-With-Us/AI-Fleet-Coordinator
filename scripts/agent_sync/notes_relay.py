@@ -513,6 +513,13 @@ def _refuse_unconsumed_locked(
                 "content": "%s %s" % (prefix, text),
             },
         )
+    except Z.NetworkError as exc:
+        # A refused connection never reached Zulip, so the outcome is definite rather than ambiguous:  leaving the
+        # row `unknown` would make every later pass stop at the guard above and never send, holding the cursor below
+        # this request for ever.  Release the row so a retry may send; a failure that may have landed stays `unknown`.
+        if not exc.maybe_sent:
+            LIVE.write_json(row, {"state": "refused"}, durable=True)
+        raise
     except MalformedResponse as exc:
         log("notes-relay-reply-malformed", id=message_id, error=str(exc)[:120])
         raise  # the reply is part of the result:  the request stays held and the next pass publishes it

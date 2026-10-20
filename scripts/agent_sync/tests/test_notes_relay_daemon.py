@@ -805,6 +805,44 @@ class DaemonRelayTests(DaemonHarness):
         self.assertEqual(runner.cursor, later)
         consumer.stop()
 
+    def test_requests_past_the_retry_limit_are_still_refused_with_no_consumer(self):
+        """Past the retry limit only the overflow marker remembers a request, and with no consumer nothing spools
+        it:  the refusal is the answer, so the tick must walk the relay channel from the marker rather than leave the
+        marker pinned and the cursor below it for ever."""
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNone(daemon.notes_relay, "there is no consumer, so the seat refuses")
+        runner = daemon.seats["CLAUDE"]
+        # Fill the retry map past its limit so a later request can only live in the overflow marker.
+        base = self.fake.messages[-1]["id"] if self.fake.messages else 1
+        for i in range(daemon.NOTES_RELAY_RETRY_LIMIT + 2):
+            daemon._keep_for_relay_retry(runner, {"id": base + 1 + i})
+        self.assertTrue(daemon.notes_relay_overflow, "the map is full, so the marker is in use")
+        mid = self.envelope_message(mention=True, rid="overflow-refuse-2")
+        daemon._keep_for_relay_retry(runner, {"id": mid})
+        self.assertNotIn(
+            (runner.seat, mid),
+            daemon.notes_relay_retry,
+            "this request is past the limit, so only the marker remembers it",
+        )
+        self.assertEqual(
+            daemon.notes_relay_overflow["CLAUDE"][1],
+            base + 1 + daemon.NOTES_RELAY_RETRY_LIMIT,
+            "the marker sits at the lowest id the full map could not track",
+        )
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()
+        self.assertEqual(daemon.notes_relay_overflow, {}, "the marker drains once the refusals land")
+        self.assertTrue(
+            self.wait(
+                lambda: any(
+                    str(m.get("content") or "").startswith("notes-relay refused overflow-refuse-2:")
+                    for m in self.fake.messages
+                )
+            ),
+            "the overflowed request is refused, not merely forgotten",
+        )
+
     def test_an_overflow_backfill_stops_on_a_page_with_no_new_ids(self):
         """A deleted anchor (or a page of ids already seen) must end the pass, not repeat it to the page cap."""
         daemon = self.started_with_relay()
@@ -1171,6 +1209,24 @@ class RefusalBoundaryTests(unittest.TestCase):
             with self.assertRaises(NR.MalformedResponse):
                 NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
             self.assertEqual(len(sends), 1)
+
+    def test_a_refusal_that_never_reached_zulip_is_sent_again(self):
+        """A refused connection never reached Zulip, so the outcome is definite, not ambiguous:  the row must not
+        stay `unknown`, or every retry stops at the reconcile guard and the refusal is never published at all."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            sends = []
+            def post(path, params):
+                if path == "messages":
+                    sends.append(params)
+                    raise Z.NetworkError("connection refused", maybe_sent=False)
+                return {}
+            runner.client.post.side_effect = post
+            for _ in range(3):
+                with self.assertRaises(Z.NetworkError):
+                    NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertEqual(len(sends), 3, "each retry sends again rather than wedging on `unknown`")
 
     def test_malformed_destination_never_posts_message(self):
         import tempfile
