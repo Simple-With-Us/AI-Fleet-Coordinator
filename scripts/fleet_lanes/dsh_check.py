@@ -23,6 +23,7 @@ the profile folders and their `package.json`, and nothing there is written.
 
 Python 3.9 safe.  Tests: fleet_lanes/tests/test_dsh_check.py.
 """
+
 from __future__ import annotations
 
 import json
@@ -30,31 +31,35 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 DEFAULT_TIMEOUT = 120.0
 PATCH_NAME = "cordis.patch.yml"
 
 
-def find_dsh(home: str) -> Optional[str]:
+def find_dsh(home: str) -> str | None:
     """The pinned engine binary of the standalone Clutch clone, or None."""
     cand = os.path.join(home, "apps", "clutch-runtime", "node_modules", ".bin", "dsh")
     return cand if os.path.isfile(cand) and os.access(cand, os.X_OK) else None
 
 
-def profile_names(profiles_dir: str) -> List[str]:
+def profile_names(profiles_dir: str) -> list[str]:
     """Folder names under `profiles` that define a profile (they hold a cordis.yml), never `node_modules`."""
     try:
         names = sorted(os.listdir(profiles_dir))
     except OSError:
         return []
-    return [n for n in names if n != "node_modules" and os.path.isfile(os.path.join(profiles_dir, n, "cordis.yml"))]
+    return [
+        n
+        for n in names
+        if n != "node_modules" and os.path.isfile(os.path.join(profiles_dir, n, "cordis.yml"))
+    ]
 
 
-def patch_reload_modes(profiles_dir: str) -> Dict[str, str]:
+def patch_reload_modes(profiles_dir: str) -> dict[str, str]:
     """Profile name -> its `dsh.profile.patchReload` (`live` or `startup`; `live (default)` when the profile does not
     say, because dsh documents live as the default for a custom profile; `unknown` when package.json cannot be read)."""
-    modes: Dict[str, str] = {}
+    modes: dict[str, str] = {}
     for name in profile_names(profiles_dir):
         try:
             with open(os.path.join(profiles_dir, name, "package.json"), encoding="utf-8") as fh:
@@ -63,7 +68,11 @@ def patch_reload_modes(profiles_dir: str) -> Dict[str, str]:
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             modes[name] = "unknown"
             continue
-        modes[name] = mode if mode in ("live", "startup") else ("live (default)" if mode is None else "unknown")
+        modes[name] = (
+            mode
+            if mode in ("live", "startup")
+            else ("live (default)" if mode is None else "unknown")
+        )
     return modes
 
 
@@ -76,17 +85,20 @@ def reload_note(profiles_dir: str) -> str:
     other = [n for n, m in modes.items() if not m.startswith("live")]
     parts = ["patchReload: " + ", ".join("%s %s" % (n, m) for n, m in modes.items())]
     if live:
-        parts.append("this write reaches the running %s engine at once (it watches the file)" % "/".join(live))
+        parts.append(
+            "this write reaches the running %s engine at once (it watches the file)"
+            % "/".join(live)
+        )
     if other:
         parts.append("%s read it at their next start" % "/".join(other))
     return "; ".join(parts)
 
 
-def unresolved(profiles_dir: str, packages: Sequence[str]) -> List[str]:
+def unresolved(profiles_dir: str, packages: Sequence[str]) -> list[str]:
     """One line per plugin package that does not resolve under `<profiles>/node_modules` (a missing link, or a link
     to a path that is gone).  Empty means every one resolves."""
     root = os.path.join(profiles_dir, "node_modules")
-    out: List[str] = []
+    out: list[str] = []
     for pkg in packages:
         path = os.path.join(root, *pkg.split("/"))
         if os.path.exists(path):
@@ -98,32 +110,72 @@ def unresolved(profiles_dir: str, packages: Sequence[str]) -> List[str]:
     return out
 
 
-def check_patch(dsh_bin: str, patch_text: str, profiles_dir: str, expect: Sequence[str],
-                timeout: float = DEFAULT_TIMEOUT) -> Tuple[bool, str]:
+def check_patch(
+    dsh_bin: str,
+    patch_text: str,
+    profiles_dir: str,
+    expect: Sequence[str],
+    timeout: float = DEFAULT_TIMEOUT,
+) -> tuple[bool, str]:
     """(ok, detail): the plugins must resolve under the real profiles' node_modules, then the patch must merge and
     parse (dump_config).  The detail of a pass ends with when each profile reads the patch."""
     bad = unresolved(profiles_dir, expect)
     if bad:
-        return False, ("%s.  Restart clutch-web first (the engine repairs these links when it starts), check that the "
-                       "links resolve, then run this again" % "; ".join(bad))
+        return False, (
+            "%s.  Restart clutch-web first (the engine repairs these links when it starts), check that the "
+            "links resolve, then run this again" % "; ".join(bad)
+        )
     ok, detail = dump_config(dsh_bin, patch_text, profiles_dir, expect, timeout=timeout)
     return (True, detail + "; " + reload_note(profiles_dir)) if ok else (False, detail)
 
 
-def _env(scratch: str, dsh_home: str) -> Dict[str, str]:
-    """The environment of the scratch run: PATH (node is found through it), a scratch HOME and DSH_HOME, and nothing
-    else, so no inherited DSH_*, CLUTCH_* or credential variable reaches the engine."""
-    return {"PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"), "HOME": os.path.join(scratch, "home"),
-            "DSH_HOME": dsh_home, "NO_COLOR": "1"}
+def _node_path() -> str:
+    """A PATH that can find node even when the caller's PATH cannot.  The pinned dsh is a symlink whose shebang is
+    `#!/usr/bin/env node`, so the engine resolves node only through PATH; a launchd job, a hook or a bot shell may
+    have a PATH with no node on it, and the run then fails with `env: node: No such file or directory` (exit 127).
+    The caller's PATH is kept and the directories that hold node are prepended: the one `shutil.which` finds now,
+    then the fixed fallbacks /opt/homebrew/bin and /usr/local/bin, deduplicated."""
+    dirs: list[str] = []
+    found = shutil.which("node")
+    if found:
+        dirs.append(os.path.dirname(found))
+    dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"])
+    for part in os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin").split(os.pathsep):
+        if part:
+            dirs.append(part)
+    seen: list[str] = []
+    for d in dirs:
+        if d and d not in seen:
+            seen.append(d)
+    return os.pathsep.join(seen)
 
 
-def dump_config(dsh_bin: str, patch_text: str, profiles_dir: str, expect: Sequence[str],
-                timeout: float = DEFAULT_TIMEOUT) -> Tuple[bool, str]:
+def _env(scratch: str, dsh_home: str) -> dict[str, str]:
+    """The environment of the scratch run: PATH (node is found through it; see `_node_path`), a scratch HOME and
+    DSH_HOME, and nothing else, so no inherited DSH_*, CLUTCH_* or credential variable reaches the engine."""
+    return {
+        "PATH": _node_path(),
+        "HOME": os.path.join(scratch, "home"),
+        "DSH_HOME": dsh_home,
+        "NO_COLOR": "1",
+    }
+
+
+def dump_config(
+    dsh_bin: str,
+    patch_text: str,
+    profiles_dir: str,
+    expect: Sequence[str],
+    timeout: float = DEFAULT_TIMEOUT,
+) -> tuple[bool, str]:
     """(ok, detail).  `detail` names the profiles that passed, or the first thing that failed (no engine output).
     Merge-and-parse only:  see the module docstring."""
     profiles = profile_names(profiles_dir)
     if not profiles:
-        return False, "no profile with a cordis.yml under %s, so there is nothing to dump" % profiles_dir
+        return (
+            False,
+            "no profile with a cordis.yml under %s, so there is nothing to dump" % profiles_dir,
+        )
     scratch = tempfile.mkdtemp(prefix="fleet-dsh-check-")
     try:
         dsh_home = os.path.join(scratch, "dsh")
@@ -132,25 +184,37 @@ def dump_config(dsh_bin: str, patch_text: str, profiles_dir: str, expect: Sequen
         shutil.copytree(profiles_dir, os.path.join(dsh_home, "profiles"), symlinks=True)
         with open(os.path.join(dsh_home, PATCH_NAME), "w", encoding="utf-8") as fh:
             fh.write(patch_text)
-        passed: List[str] = []
+        passed: list[str] = []
         for name in profiles:
             try:
-                proc = subprocess.run([dsh_bin, "--profile", name, "--dump-config"], stdin=subprocess.DEVNULL,
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_env(scratch, dsh_home),
-                                      timeout=timeout)
+                proc = subprocess.run(
+                    [dsh_bin, "--profile", name, "--dump-config"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=_env(scratch, dsh_home),
+                    timeout=timeout,
+                )
             except subprocess.TimeoutExpired:
                 return False, "profile %s: dsh --dump-config timed out after %gs" % (name, timeout)
             except OSError as exc:
                 return False, "cannot run %s: %s" % (dsh_bin, exc.strerror or exc)
             if proc.returncode != 0:
                 tail = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
-                return False, "profile %s: dsh --dump-config exited %d (%s)" % (name, proc.returncode, tail[0][:160])
+                return False, "profile %s: dsh --dump-config exited %d (%s)" % (
+                    name,
+                    proc.returncode,
+                    tail[0][:160],
+                )
             text = proc.stdout.decode("utf-8", "replace")
             missing = [e for e in expect if e not in text]
             if missing:
                 return False, "profile %s: the dump does not name %s" % (name, ", ".join(missing))
             passed.append(name)
-        return True, "%s: the patch merges and the dump names %s (a merge-and-parse check, not a plugin load)" % (
-            ", ".join(passed), ", ".join(expect))
+        return (
+            True,
+            "%s: the patch merges and the dump names %s (a merge-and-parse check, not a plugin load)"
+            % (", ".join(passed), ", ".join(expect)),
+        )
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
