@@ -282,12 +282,33 @@ _pin_retry_on() {
   [[ "$_PIN_RETRY" == "1" ]]
 }
 
+# The Shortcuts app has to be running before the shortcut runs.  Its "Find
+# Notes" action is an app intent served by the Shortcuts app itself, and when
+# that app is not running the intent cannot be dispatched: the shortcut fails
+# with "The action 'Find Notes' could not run because an unknown error
+# occurred", for every title, including one that does not exist.  Opening the
+# app in the background costs nothing and does not steal focus.
+_ensure_shortcuts_running() {
+  pgrep -x Shortcuts >/dev/null 2>&1 && return 0
+  open -g -a Shortcuts >/dev/null 2>&1 || return 1
+  local waited=0
+  while (( waited < 20 )); do
+    pgrep -x Shortcuts >/dev/null 2>&1 && return 0
+    sleep 0.25
+    (( waited++ ))
+  done
+  return 1
+}
+
 _run_note_shortcut() {  # $1 = shortcut name
   local listing
   if ! listing="$(shortcuts list 2>/dev/null)"; then
     return 3
   fi
   printf '%s\n' "$listing" | grep -qxF "$1" || return 2
+  #  The Shortcuts app must be up before the run:  its Find Notes action is an app intent
+  #  served by that app,  and a closed app fails the run for every title (AFC-436).
+  _ensure_shortcuts_running || true
   local tmp attempt attempts
   tmp="$(mktemp).txt"
   printf '%s' "$TITLE" > "$tmp"

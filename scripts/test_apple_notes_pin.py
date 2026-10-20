@@ -22,6 +22,10 @@ decision block are cut out of scripts/apple-notes-coding.sh and run in a harness
 PATH, so the assertions cover the shipped text and not a copy of it.  Nothing here touches Notes, and it
 runs anywhere bash and python3 exist.
 
+AFC-436 adds the Shortcuts-app precondition to the same harness:  `open` and `pgrep` are stubbed as well, so
+the test records that the app was asked to open in the background, and never launches the real app on the
+host.  The precondition was live-only until AFC-436, and the AFC-431 rewrite of _run_note_shortcut dropped it.
+
 Run:  cd scripts && python3 -m unittest test_apple_notes_pin
 """
 
@@ -58,6 +62,21 @@ printf x >> "$STUB_COUNTER.knob"
 printf '%s\\n' "${STUB_KNOB}"
 """
 
+#  a stand-in for `pgrep -x Shortcuts`,  which tells the script whether the Shortcuts app is up.
+#  Without this stub the test would find the real Shortcuts app on the host and skip the open.
+PGREP_STUB = """#!/bin/bash
+if [ "${STUB_SHORTCUTS_RUNNING:-0}" = "1" ]; then exit 0; fi
+if [ -f "$STUB_COUNTER.running" ]; then exit 0; fi
+exit 1
+"""
+
+#  a stand-in for `open -g -a Shortcuts`,  which records the request and marks the app as up
+OPEN_STUB = """#!/bin/bash
+printf '%s\\n' "$*" >> "$STUB_COUNTER.open"
+: > "$STUB_COUNTER.running"
+exit 0
+"""
+
 HARNESS = """set -uo pipefail
 TITLE="AFC test note"
 MODE="${HARNESS_MODE:-update}"
@@ -81,12 +100,18 @@ def _extract(source: str) -> tuple[str, str]:
     """
     knob = re.search(r"^_PIN_RETRY=\"\"\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
     fn = re.search(r"^_run_note_shortcut\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
+    #  the Shortcuts-app precondition is optional:  it was live-only until AFC-436 put it in the
+    #  canonical script,  so the extraction still works against a script that does not have it
+    ensure = re.search(r"^_ensure_shortcuts_running\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
     assert fn, "the _run_note_shortcut function is gone from apple-notes-coding.sh"
     assert knob, "the _pin_retry_on knob resolver is gone from apple-notes-coding.sh"
     start = source.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.")
     want = source.index('if [[ "$WANT_PIN" != "1" ]]; then')
     end = source.index("\nfi\n", want) + len("\nfi\n")
-    return knob.group(0) + fn.group(0), source[start:end]
+    parts = knob.group(0)
+    if ensure:
+        parts += ensure.group(0)
+    return parts + fn.group(0), source[start:end]
 
 
 def _extract_unpin(source: str) -> str:
@@ -118,6 +143,12 @@ class PinDecisionTests(unittest.TestCase):
             stub = bindir / "shortcuts"
             stub.write_text(STUB)
             stub.chmod(0o700)
+            #  the script opens the Shortcuts app in the background before the run,  so `open` and
+            #  `pgrep` are stubbed too:  the test must never launch the real app on the host
+            for name, body in (("pgrep", PGREP_STUB), ("open", OPEN_STUB)):
+                side = bindir / name
+                side.write_text(body)
+                side.chmod(0o700)
             if "STUB_KNOB" in env:
                 #  the script reads the knob through the fleet_knobs package next to it and the
                 #  python3 that runs it:  both live here, so `python3 -m fleet_knobs get` is the stub
@@ -152,12 +183,36 @@ class PinDecisionTests(unittest.TestCase):
             runs = int(counter.read_text()) if counter.exists() else 0
             marker = Path(str(counter) + ".knob")
             self.knob_reads = len(marker.read_text()) if marker.exists() else 0
+            opened = Path(str(counter) + ".open")
+            self.opens = opened.read_text().splitlines() if opened.exists() else []
             return p, runs
 
     def test_a_working_shortcut_pins_the_note_on_the_first_try(self):
         p, runs = self.run_block()
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("pinned: yes", p.stdout)
+        self.assertEqual(runs, 1)
+
+    def test_the_shortcuts_app_is_opened_in_the_background_when_it_is_not_running(self):
+        """The Find Notes action is an app intent served by the Shortcuts app itself.
+
+        With that app closed the intent cannot be dispatched, and the shortcut fails for every
+        title, including one that does not exist.  The app is opened with `open -g`, so it does
+        not steal focus.  This precondition was live-only until AFC-436 put it in the canonical
+        script, and the AFC-431 rewrite of _run_note_shortcut dropped it.
+        """
+        p, runs = self.run_block()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pinned: yes", p.stdout)
+        self.assertTrue(self.opens, "the Shortcuts app was never opened")
+        self.assertIn("-g", self.opens[0])
+        self.assertIn("Shortcuts", self.opens[0])
+
+    def test_the_shortcuts_app_is_not_opened_when_it_is_already_running(self):
+        p, runs = self.run_block(STUB_SHORTCUTS_RUNNING="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pinned: yes", p.stdout)
+        self.assertEqual(self.opens, [], "the app was opened although it was already up")
         self.assertEqual(runs, 1)
 
     def test_a_failed_first_run_is_retried_and_the_note_ends_up_pinned(self):
