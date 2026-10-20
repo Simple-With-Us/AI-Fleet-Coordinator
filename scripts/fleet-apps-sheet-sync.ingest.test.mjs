@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import {
   registryIngestArgs, summarizeIngest, ingestFailureDetail, buildMarkdownMirror,
-  MIRROR_MD_PATH, REGISTRY_INGEST_SOURCE
+  MIRROR_MD_PATH, FLEET_HOME, REGISTRY_INGEST_SOURCE
 } from "./fleet-apps-sheet-sync.mjs";
 
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
@@ -66,6 +66,26 @@ test("the mirror body carries no timestamp, so the ingest's hash skip can match"
   assert.equal(first, second, "two mirrors of the same data are byte-identical");
   assert.doesNotMatch(first, /^\*\*Last Synced:\*\*/m, "the mirror body has no volatile timestamp");
   assert.doesNotMatch(first, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, "the mirror body has no ISO timestamp");
+});
+
+test("the ingest child's home is the one the mirror is written into", () => {
+  // The write target is pinned to the fleet account's apps dir, but sources.py resolves APPS_DIR
+  // from the INGEST CHILD's home (Path.home() reads the inherited $HOME).  If the child keeps an
+  // ambient HOME -- sudo -H, a wrapper, a CI job -- the two sides disagree and the mirror is
+  // written outside the tree the doc source globs, which is the silent no-op this PR fixes.
+  // So the ingest call pins HOME to the fleet home; assert the pairing holds by construction.
+  assert.equal(
+    MIRROR_MD_PATH,
+    `${FLEET_HOME}/apps/FLEET-APPS-REGISTRY.md`,
+    "the mirror lands in the fleet home's apps dir"
+  );
+  assert.notEqual(FLEET_HOME, "", "the fleet home is a real path, not the empty ambient $HOME");
+  assert.ok(FLEET_HOME.startsWith("/"), "the fleet home is absolute");
+
+  // And the child really is spawned with that HOME, rather than only exporting the constant.
+  const source = read("scripts/fleet-apps-sheet-sync.mjs");
+  assert.match(source, /env: \{ \.\.\.process\.env, HOME: FLEET_HOME \}/,
+    "the ingest child inherits the pinned fleet home");
 });
 
 test("summarizeIngest reads the ingest report and never fakes a success", () => {

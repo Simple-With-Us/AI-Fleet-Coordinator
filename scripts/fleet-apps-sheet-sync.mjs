@@ -65,6 +65,13 @@ const LAST_RUN_PATH = "/Users/jay/apps/fleet-ops-sheet/last-run-registry.json";
 // Deriving it from the ios-fleet checkout keeps the write target and the source that ingests it
 // from ever diverging, and it keeps the mirror where the nightly Mac ingest will find it again.
 const FLEET_APPS_DIR = dirname(IOS_FLEET);
+// The doc source resolves its dir from the INGEST CHILD's home, not from this script's constants:
+// sources.py does  HOME = pathlib.Path.home();  APPS_DIR = HOME / "apps",  and Path.home()
+// reads the environment the child inherits.  So pinning only the write path is not enough --  under
+// a different $HOME (sudo -H, a wrapper or CI job that overrides HOME) the mirror would be written
+// outside the tree the ingest globs, and the step would silently ingest nothing again.  Exporting
+// the fleet home lets the ingest call pin the child to the same tree it writes the mirror into.
+export const FLEET_HOME = dirname(FLEET_APPS_DIR);
 export const MIRROR_MD_PATH = join(FLEET_APPS_DIR, "FLEET-APPS-REGISTRY.md");
 
 const TAB_RULES = "RULES & STANDARDS";
@@ -857,6 +864,9 @@ function exportMarkdownMirror(markdown) {
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 8 * 1024 * 1024,
       timeout: INGEST_TIMEOUT_MS,
+      // Pin the child's home to the fleet account's, so the doc source globs the same apps dir
+      // this mirror was just written into no matter what $HOME the sync inherited.
+      env: { ...process.env, HOME: FLEET_HOME },
     });
     console.log(`   Fleet RAG ingested: ${summarizeIngest(out)}`);
   } catch (err) {
