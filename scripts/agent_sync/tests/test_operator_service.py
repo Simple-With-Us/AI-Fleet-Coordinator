@@ -251,8 +251,10 @@ class HostNotesAcceptanceTests(unittest.TestCase):
     def test_missing_pins_or_owner_fail_closed(self):
         for pins in ({}, dict(ENV, OPERATOR_ZULIP_USER_ID=""), dict(ENV, OPERATOR_ZULIP_EMAIL="")):
             self.tools.agent.rt.env = pins
-            self.assertFalse(self.tools._relay_consumer(OPERATOR_BOT_ID))
-            self.assertIsNone(self.tools._relay_consumer_id())
+            with self.assertRaisesRegex(Z.CredentialError, "OPERATOR_ZULIP_USER_ID"):
+                self.tools._relay_consumer(OPERATOR_BOT_ID)
+            with self.assertRaisesRegex(Z.CredentialError, "OPERATOR_ZULIP_USER_ID"):
+                self.tools._relay_consumer_id()
         self.tools.agent.rt.env = ENV
         self.tools.owner_user_id = 0
         self.assertFalse(self.tools._relay_consumer(OPERATOR_BOT_ID))
