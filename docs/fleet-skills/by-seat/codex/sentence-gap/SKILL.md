@@ -79,10 +79,10 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
+perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Matching one *or more* is half the fix.  The **markup group** ``([*_`)\]"\x{27}\x{2019}\x{201D}]*)``
+Matching one *or more* is half the fix.  The **markup group** ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)``
 is the other half:  a sentence end that sits *inside* a markup span is followed by the markup and
 only then by the space, so a pattern that wants the space right after the sentence end never
 matches it.  `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two
@@ -135,8 +135,8 @@ exits 0, so a failed run is silent.  And a count above zero is *not* on its own 
 partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
 
 ```sh
-grep -o $'[.!?][]*_`)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE $'[^0-9][.!?][]*_`)"\'’”]* +[A-Z"\'“‘]' body.nbsp.txt  # must be 0 — a leftover gap
+grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt  # must be 0 — a leftover gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -151,9 +151,9 @@ after a markup span is emitted as `<punctuation><markup><U+00A0><space>`, so a c
 for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a
 space straight after the punctuation cannot see the one that was missed.  The `]` is written
 first in the class because a POSIX bracket expression ends at the first unquoted `]`, and there
-is no backslash escape inside one:  ``[]*_`)"'’”]`` is the set {`]`, `*`, `_`,
-`` ` ``, `)`, `"`, `'`, `’`, `”`}.  In the perl pattern the same set is written
-``([*_`)\]"\x{27}\x{2019}\x{201D}]*)``, where `\]` does escape.  A backslash inside a POSIX
+is no backslash escape inside one:  ``[]*_`~)"'’”]`` is the set {`]`, `*`, `_`,
+`` ` ``, `~`, `)`, `"`, `'`, `’`, `”`}.  In the perl pattern the same set is written
+``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)``, where `\]` does escape.  A backslash inside a POSIX
 bracket expression is a literal member and not an escape, so one written there widens the set
 and makes the leftover check fire on a body that is clean.
 
@@ -161,11 +161,15 @@ The straight quote is the one member that needs a backslash on the way in and mu
 on the way out.  Inside bash's `$'...'` the class writes it `\'`, which bash turns into a plain
 `'` before grep ever sees the pattern —  and grep must see a plain `'`, because a backslash inside
 a bracket expression is a literal member, which is the very trap the paragraph above describes.
-So the class is ``[]*_`)"\'’”]`` in the shell and ``[]*_`)"'’”]`` in the pattern grep runs.
+So the class is ``[]*_`~)"\'’”]`` in the shell and ``[]*_`~)"'’”]`` in the pattern grep runs.
 That is also why the leftover check moved to `$'...'`:  in single quotes a `'` cannot be written at
 all, and the follower class needs one —  a gap that was missed before a quoted sentence reads
 ``Second. 'Quoted``, and a follower class of ``[A-Z"]`` cannot see the `'`.  The follower class
-therefore carries the opening quotes too:  ``[A-Z"\'“‘]``.
+therefore carries the converter's whole lookahead, the opening quotes and the rest of it:
+``[A-Z0-9"*`#@\'‘“]``.  A follower class narrower than the converter's own lookahead is
+the same defect one level up:  a body already carrying one real U+00A0 and still holding a
+missed gap before a digit, a `*`, a backtick, `#` or `@` reads as converted, and the check
+that exists to catch exactly that returns 0.
 
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.

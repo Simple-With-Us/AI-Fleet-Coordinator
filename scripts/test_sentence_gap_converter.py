@@ -31,13 +31,13 @@ ONE_HOME = ROOT / "docs" / "fleet-skills" / "sentence-gap" / "SKILL.md"
 _PATTERN_RE = re.compile(r"perl -CSDA -pe '(s/.*?/g)'")
 
 # The markup group:  the characters that may sit between a sentence end and the space.
-_MARKUP_GROUP = r'([*_`)\]"\x{27}\x{2019}\x{201D}]*)'
+_MARKUP_GROUP = r'([*_`~)\]"\x{27}\x{2019}\x{201D}]*)'
 
 # The markup group as the POSIX class the assertions write:  the ] comes first, because a
 # POSIX bracket expression ends at the first unquoted ].  The straight quote is written
 # \' for bash, which turns it into a plain ' before grep sees the pattern --  grep must
 # see a plain ', because a backslash inside a bracket expression is a literal member.
-_ASSERT_MARKUP_GROUP = "[]*_`)\"\\'’”]"
+_ASSERT_MARKUP_GROUP = "[]*_`~)\"\\'’”]"
 
 # The assertion patterns, extracted from the text that holds them.  A count check and a
 # leftover check, each in the shape the fleet writes it.  Both are written in bash's
@@ -169,6 +169,7 @@ PROTOCOL_REGION_END = "### Verify, don't assume"
 SHAPES = (
     ("Plain sentence.  Next sentence.", True),
     ("**Bold sentence.**  Next sentence.", True),
+    ("~~Deleted sentence.~~  Next sentence.", True),
     ("*Italic sentence.*  Next sentence.", True),
     ("`Code sentence.`  Next sentence.", True),
     ("(**Paren sentence.**)  Next sentence.", True),
@@ -550,6 +551,28 @@ class AssertionCommandTests(unittest.TestCase):
                     blind,
                     0,
                     "the quote-blind check is expected to miss it -- that is the defect",
+                )
+
+    def test_the_leftover_check_catches_a_missed_gap_before_any_converter_follower(self) -> None:
+        """The follower class has to be the converter's own lookahead.
+
+        A body that already holds one real gap and still holds a plain-space gap before a
+        follower the converter accepts reads as converted, so a narrower follower class
+        returned 0 on exactly the partly-converted body the check exists to catch.
+        """
+        for follower in ("4", "*", "`", "#", "@"):
+            with self.subTest(follower=follower):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = self._write(
+                        tmp,
+                        "Converted." + NBSP + " Next sentence. %sBold next.**" % follower,
+                    )
+                    leftover = run_grep(self._leftover_command(path))
+                self.assertGreater(
+                    leftover,
+                    0,
+                    "the check cannot see a missed gap before %r:  %s"
+                    % (follower, self.leftover_pattern),
                 )
 
     def test_every_live_guidance_file_writes_the_leftover_check_in_the_ansi_form(self) -> None:

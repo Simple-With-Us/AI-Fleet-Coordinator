@@ -927,9 +927,9 @@ These bind every message, bot-to-bot included.
 - **Sentence gap.**  A real U+00A0 plus a space between sentences in every Zulip post, DM included, from the CLI or the raw API, and in GitHub titles, bodies, and comments (owner ruling Thu, Oct 8, which supersedes the Wed, Oct 7 finding that two literal ASCII spaces rendered the same).  Never type the HTML entity for a non-breaking space.  You cannot type U+00A0 in chat, and a double space you emit into a tool call **sometimes** arrives collapsed to a single space.  That collapse is intermittent, not deterministic — on 2026-10-18, same machine and same tool, a ~3 KB PR body kept all eight of its double spaces while a ~3 KB Zulip body lost every one.  So generate the gap in the shell.  The pattern must match one *or more* spaces so it is correct in both states:
 
   ```
-  perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
-  grep -o $'[.!?][]*_`)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
-  grep -cE $'[^0-9][.!?][]*_`)"\'’”]* +[A-Z"\'“‘]' body.nbsp.txt   # must be 0 — a leftover gap
+  perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
+  grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
+  grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt   # must be 0 — a leftover gap
   chmod 600 body.nbsp.txt                       # agent-sync post --body-file refuses other modes
   agent-sync post --topic "<ID> <subject>" --body-file body.nbsp.txt
   ```
