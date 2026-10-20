@@ -934,13 +934,15 @@ fi
 #   Receive Text from Share Sheet → Find Note (Name contains Shortcut Input,
 #   Folder is Coding, limit 1) → Add Note to pinned notes.
 # Set APPLE_NOTES_PIN=0 to skip pinning entirely.
+# _pin_rc: 0 pinned, 1 the run failed, 2 the Shortcut is not installed,
+# 3 pinning was disabled (APPLE_NOTES_PIN=0).  These are different problems
+# and must not be reported as one (AFC-431).
+_pin_rc=3
 if [[ "${APPLE_NOTES_PIN:-}" != "0" ]]; then
   # Settle delay: a just-created/updated note may not be visible to the
   # Shortcut's Find yet (index race) — a miss pops a note picker on the
   # owner's screen. Two seconds reliably clears it (observed 2026-08-10).
   [[ "$MODE" == "create" || "$MODE" == "update" ]] && sleep 2
-  # 0 pinned, 1 the run failed, 2 the Shortcut is not installed.  The two
-  # failures are different problems and must not be reported as one (AFC-431).
   _pin_rc=0
   _run_note_shortcut "Pin Coding Note" || _pin_rc=$?
   if [[ "$_pin_rc" == "0" ]]; then
@@ -957,11 +959,11 @@ fi
 # Requires show+activate + menu click — steals focus. Skipped unless
 # --pin / --pin-only / APPLE_NOTES_PIN=1.
 if [[ "$WANT_PIN" != "1" ]]; then
-  if [[ "${_pin_rc:-0}" == "2" ]]; then
-    echo "pinned: skipped ('Pin Coding Note' shortcut is not installed; pass --pin for GUI pin, which steals focus)"
-  else
-    echo "pinned: skipped ('Pin Coding Note' shortcut run failed; pass --pin for GUI pin, which steals focus)"
-  fi
+  case "$_pin_rc" in
+    2) echo "pinned: skipped ('Pin Coding Note' shortcut is not installed; pass --pin for GUI pin, which steals focus)" ;;
+    3) echo "pinned: skipped (pinning is disabled; APPLE_NOTES_PIN=0)" ;;
+    *) echo "pinned: skipped ('Pin Coding Note' shortcut run failed; pass --pin for GUI pin, which steals focus)" ;;
+  esac
   exit 0
 fi
 
