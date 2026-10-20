@@ -79,8 +79,9 @@ class UnitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as real:
             home = str(Path(real, "link"))
             os.symlink(real, home)
-            with self.assertRaises(ValueError):
-                systemd.install({}, home, io.StringIO())
+            for spelling in (home, home + os.sep):
+                with self.assertRaises(ValueError):
+                    systemd.install({}, spelling, io.StringIO())
             self.assertFalse(Path(systemd.unit_path(home)).exists())
         # The guard still covers the directory chain the unit is created below.
         with tempfile.TemporaryDirectory() as real, tempfile.TemporaryDirectory() as outside:

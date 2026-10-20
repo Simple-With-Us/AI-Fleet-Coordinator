@@ -161,6 +161,7 @@ def install(
     program: str | None = None,
     err: TextIO | None = None,
 ) -> int:
+    home = os.path.abspath(home)
     target = unit_path(home)
     root = os.path.abspath(
         os.path.expanduser(env.get(L.ENV_STATE_DIR) or os.path.join(home, ".agent-sync"))
