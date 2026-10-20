@@ -16,15 +16,16 @@ load once, keep the last-known-good, names only in logs).
 
 Auth, first match wins, the same order as ``fleet-secrets`` (scripts/fleet_secrets/core.py):
 ``INFISICAL_TOKEN`` already in the environment;  else the universal-auth machine identity in
-the login Keychain, then in the System keychain, logged in through fleet-secrets' own helper;
-else the CLI's own login session.  The machine identity matters for pm2:  pm2 runs as the
+the login Keychain, then in the System keychain, then the automation pair in the environment
+on the Hetzner server, logged in through fleet-secrets' own helper;  else the CLI's own login
+session.  The machine identity matters for pm2:  pm2 runs as the
 system LaunchDaemon ``com.pm2.daemon``, in the launchd System session, where the login
 Keychain (and so the CLI's session) is unreachable, and a session-only fetch there exits 1 or
 hangs.  The helper is loaded opportunistically (``FLEET_SECRETS_HOME``, then a sibling
 ``fleet_secrets`` package, then ``~/.local/share/fleet-secrets``);  when none is found this
 module falls back to the CLI session, so it stays stdlib-only and standalone.  The access
 token goes only into the child's environment:  it is never logged, never in an argument
-list and never written to disk.
+list and never written to disk, and neither do the automation credentials it was derived from.
 """
 
 from __future__ import annotations
@@ -35,9 +36,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from types import ModuleType
 
 PROJECT_ID = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator
@@ -62,6 +64,14 @@ UNRESOLVED_REFERENCE = re.compile(r"^\$\{[^}]+\}$")
 
 
 ENV_TOKEN = "INFISICAL_TOKEN"
+# The server's own universal-auth identity (Linux only).  The helper reads the pair out of the
+# environment to log in, but the export child never carries it:  a readonly fetch needs only the
+# token that login resolves from it.
+ENV_AUTOMATION_ID = "INFISICAL_AUTOMATION_CLIENT_ID"
+ENV_AUTOMATION_SECRET = "INFISICAL_AUTOMATION_CLIENT_SECRET"
+# The modes fleet-secrets' helper can log in with, mirrored from its MACHINE_MODES so this module
+# stays stdlib-only and never imports the helper for a constant.
+MACHINE_MODES = ("keychain", "system-keychain", "automation-env")
 ENV_HELPER_HOME = "FLEET_SECRETS_HOME"
 # FLEET_KNOBS_AUTH=session skips the machine identity and uses only the CLI's own session (the
 # old behaviour).  For hermetic tests that run a fake CLI in a subprocess on a Mac whose System
@@ -226,36 +236,60 @@ _HELPER_CACHE: dict = {}
 HELPER_LOADER: Callable[[], ModuleType | None] = _load_helper
 
 
+def _without_automation(env: Mapping[str, str]) -> dict[str, str]:
+    """The child environment: the caller's, minus the automation credentials it was read with.
+
+    The pair is resolved to an access token by the helper's login and never travels to the
+    export subprocess, which is a readonly call that has no use for it."""
+    out = dict(env)
+    out.pop(ENV_AUTOMATION_ID, None)
+    out.pop(ENV_AUTOMATION_SECRET, None)
+    return out
+
+
+def _incomplete_reason(env: Mapping[str, str]) -> str:
+    """Which machine identity was left half-filled.  On Linux that is the automation pair and
+    there is no keychain to blame, so it keeps its own reason token for triage."""
+    if sys.platform.startswith("linux") and (
+        bool((env.get(ENV_AUTOMATION_ID) or "").strip())
+        != bool((env.get(ENV_AUTOMATION_SECRET) or "").strip())
+    ):
+        return "automation-env-incomplete"
+    return "keychain-incomplete"
+
+
 def child_env() -> dict[str, str]:
     """The environment for one CLI call, with a machine-identity token when one is available.
 
     ``INFISICAL_TOKEN`` already set wins.  Otherwise fleet-secrets' helper picks the mode;  a
-    keychain machine identity is logged in and its token put in the returned dict only.  With
-    no helper or no identity (mode ``session``) the CLI's own login session is used, as before.
-    Raises FetchFailed (``keychain-incomplete``, ``login-failed``) when an identity exists but
-    cannot be used, rather than quietly trying a session that cannot work under launchd."""
+    machine identity (keychain, System keychain, or the automation pair in the environment on the
+    server) is logged in and its token put in the returned dict only, which never carries the
+    automation credentials themselves.  With no helper or no identity (mode ``session``) the CLI's
+    own login session is used, as before.  Raises FetchFailed (``keychain-incomplete``,
+    ``automation-env-incomplete``, ``login-failed``) when an identity exists but cannot be used,
+    rather than quietly trying a session that cannot work under launchd."""
     env = dict(os.environ)
     env["INFISICAL_DISABLE_UPDATE_CHECK"] = "true"
     if (env.get(ENV_TOKEN) or "").strip():
-        return env
+        return _without_automation(env)
     env.pop(ENV_TOKEN, None)
     if (env.get(ENV_AUTH) or "").strip().lower() == "session":
-        return env
+        return _without_automation(env)
     try:
         helper = HELPER_LOADER()
     except Exception:  # noqa: BLE001 - optional helper
         helper = None
     if helper is None:
-        return env
+        return _without_automation(env)
     try:
         mode = helper.auth_mode(env)
-    except Exception:  # noqa: BLE001 - half-filled keychain
+    except Exception:  # noqa: BLE001 - half-filled identity, never its text
         _raise_if_out_of_time()
-        raise FetchFailed("keychain-incomplete") from None
+        raise FetchFailed(_incomplete_reason(env)) from None
     # A lookup the budget cut short answers "absent", which would look like mode "session".
     _raise_if_out_of_time()
-    if mode not in ("keychain", "system-keychain"):
-        return env
+    if mode not in MACHINE_MODES:
+        return _without_automation(env)
     cli = find_cli()
     if not cli:
         raise FetchFailed("cli-missing")
@@ -268,7 +302,7 @@ def child_env() -> dict[str, str]:
     if not isinstance(token, str) or not token.strip():
         raise FetchFailed("login-failed")
     env[ENV_TOKEN] = token
-    return env
+    return _without_automation(env)
 
 
 def _raise_if_out_of_time() -> None:
