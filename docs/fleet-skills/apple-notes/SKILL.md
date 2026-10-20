@@ -1,7 +1,7 @@
 ---
 name: apple-notes
 description: >-
-  Write owner-facing Apple Notes in the `Coding` folder (local on this Mac) — plans, designs, reviews, handoffs, rollouts, living Completion notes. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Title [TEAM_KEY, SEAT_TAG] Topic (Title Case) with a refreshed timestamp.
+  Write owner-facing Apple Notes in the `Coding` folder (local on this Mac) — plans, designs, reviews, handoffs, rollouts, living Completion notes. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Title [TEAM_KEY, SEAT_TAG] Topic with a refreshed timestamp:  uppercase team keys, the exact uppercase seat tag for this call, then the topic in Title Case.
 ---
 
 # Apple Notes (Universal)
@@ -33,7 +33,7 @@ Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do
 [TEAM_KEY, SEAT_TAG] Topic
 ```
 
-- Team key first, then your seat tag, both capitals, then the topic in Title Case (owner 2026-10-19:  never the app's long name, never the seat's long name).
+- Team key first, then your seat tag, both uppercase, then the topic in Title Case (owner 2026-10-19:  never the app's long name, never the seat's long name).  Use the exact uppercase seat tag resolved for this call, such as `CLAUDE` or `GB-FIXER`;  display names and case variants are refused.
 - Multi-app: `[ST, CT, SEAT_TAG] …` (impact order).
 - No date in the title.  No word "session".  Do not repeat the title as an H1 in the body.
 
