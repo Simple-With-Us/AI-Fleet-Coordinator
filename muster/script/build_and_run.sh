@@ -80,10 +80,15 @@ identities = re.findall(
 )
 requested = os.environ.get("MUSTER_SIGNING_IDENTITY")
 if requested:
-    identities = [item for item in identities if requested == item[0] or requested == item[1]]
+    normalized = requested.replace(":", "").upper()
+    identities = [
+        item for item in identities
+        if normalized == item[0].upper() or requested == item[1]
+    ]
 if len(identities) != 1:
     sys.exit("Expected exactly one matching valid Developer ID Application identity; "
-             "select one with MUSTER_SIGNING_IDENTITY.")
+             "set MUSTER_SIGNING_IDENTITY to the certificate SHA-1 (colons optional) "
+             "or the full 'Developer ID Application: <name> (<TEAM>)' label.")
 fingerprint, _, team = identities[0]
 print(fingerprint, team)
 PY
