@@ -17,6 +17,7 @@
 #   apple-notes-coding.sh --pin-only "Exact Note Title"
 #   apple-notes-coding.sh --unpin-only "Exact Note Title"
 #   APPLE_NOTES_PIN=0 apple-notes-coding.sh "Title" ...        # skip pinning
+#   APPLE_NOTES_PIN_RETRY=0 apple-notes-coding.sh "Title" ...  # pin Shortcut: one attempt, no retry
 #   APPLE_NOTES_ACTIVATE=1 apple-notes-coding.sh "Title" ... # bring Notes to front
 #
 # Session id (AFC-361, owner 2026-10-19):  create and update stamp the writer's session id into the note, so a
@@ -257,27 +258,88 @@ else
 fi
 
 # Run a headless pin/unpin Shortcut with the note title as a text-file input.
-# Returns 0 on success. First-ever run of each shortcut shows a one-time
+# Returns 0 on success, 2 when the Shortcut is not installed, 1 when the run
+# itself failed, 3 when the Shortcut list could not be read.  A failed list
+# lookup is its own case:  it is not proof that the Shortcut is missing, and
+# sending an operator to recreate a Shortcut that exists is worse than saying
+# the list did not read.  First-ever run of each shortcut shows a one-time
 # "Allow ... to share with Notes?" dialog — choose Always Allow.
+#
+# Whether a failed pin or unpin Shortcut is retried is the APPLE_NOTES_PIN_RETRY fleet knob (Infisical,
+# through scripts/fleet_knobs), resolved once per process through the package next to this script
+# (a source checkout) or the managed stable copy at ~/apps/needs-owner (the live helper).  APPLE_NOTES_PIN_RETRY
+# in the environment is only a narrowing override:  it can turn the retry off, never on.  With no fleet_knobs
+# on this host, or an unreachable Infisical with no last-known-good copy, the registered default (on) applies,
+# narrowed by that override.
+_PIN_RETRY=""
+_pin_retry_on() {
+  #  A local value may only narrow, so it is read first:  an operator who sets it to off gets a
+  #  decision without a knob lookup that can reach the network, and the lookup cannot widen it later.
+  case "${APPLE_NOTES_PIN_RETRY:-}" in
+    false|0|no|off) return 1 ;;
+  esac
+  if [[ -z "${_PIN_RETRY:-}" ]]; then
+    local knob="" here candidate
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    for candidate in "$here" "$HOME/apps/needs-owner" "${AGENT_SYNC_RUNTIME:-$HOME/apps/lanes/_managed/fleet/agent-sync-runtime}/scripts"; do
+      if [[ -n "$candidate" && -d "$candidate/fleet_knobs" ]] && command -v python3 >/dev/null 2>&1; then
+        knob="$(cd "$candidate" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
+        [[ -n "$knob" ]] && break
+      fi
+    done
+    case "$knob" in
+      false|0|no|off) _PIN_RETRY=0 ;;
+      *) _PIN_RETRY=1 ;;
+    esac
+  fi
+  [[ "$_PIN_RETRY" == "1" ]]
+}
+
 _run_note_shortcut() {  # $1 = shortcut name
-  shortcuts list 2>/dev/null | grep -qxF "$1" || return 2
-  local tmp
+  local listing
+  if ! listing="$(shortcuts list 2>/dev/null)"; then
+    return 3
+  fi
+  printf '%s\n' "$listing" | grep -qxF "$1" || return 2
+  local tmp attempt attempts
   tmp="$(mktemp).txt"
   printf '%s' "$TITLE" > "$tmp"
-  if shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
-    rm -f "$tmp"
-    return 0
-  fi
+  # A just-written note may not be visible to the Shortcut's Find step yet, and
+  # that miss fails the run (observed 2026-10-20).  Retry once before giving up,
+  # so a timing race does not leave a coding note unpinned.  A miss can also pop
+  # a note picker on the owner's screen, so the retry is gated by the
+  # APPLE_NOTES_PIN_RETRY knob:  set it to false, or APPLE_NOTES_PIN_RETRY=0 in the
+  # environment, for a single attempt, which is what a caller wants when it would
+  # rather not risk a second Shortcut invocation.  The retry runs 3 s later than
+  # the first attempt, so the note index has had more time to catch up and the
+  # retry is the less likely of the two to miss it.
+  attempt=1
+  while :; do
+    if shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
+      rm -f "$tmp"
+      return 0
+    fi
+    if [[ "$attempt" -ge 2 ]] || ! _pin_retry_on; then break; fi
+    attempt=2
+    sleep 3
+  done
   rm -f "$tmp"
   return 1
 }
 
 if [[ "$MODE" == "unpin" ]]; then
-  if _run_note_shortcut "Unpin Coding Note"; then
+  # Capture the code once:  $? read after a failed [[ ]] is the [[ ]]'s own 1,
+  # so an elif chain on $? can never reach the 3 (list unreadable) arm (AFC-431).
+  _unpin_rc=0
+  _run_note_shortcut "Unpin Coding Note" || _unpin_rc=$?
+  if [[ "$_unpin_rc" == "0" ]]; then
     echo "unpinned: yes (headless via 'Unpin Coding Note' shortcut)"
     exit 0
-  elif [[ $? -eq 2 ]]; then
+  elif [[ "$_unpin_rc" == "2" ]]; then
     echo "unpinned: no — 'Unpin Coding Note' shortcut not found. Create it: duplicate 'Pin Coding Note', rename, switch the last action's Add to Remove." >&2
+    exit 4
+  elif [[ "$_unpin_rc" == "3" ]]; then
+    echo "unpinned: no — the Shortcut list could not be read, so it is unknown whether 'Unpin Coding Note' exists" >&2
     exit 4
   else
     echo "unpinned: no — 'Unpin Coding Note' shortcut run failed" >&2
@@ -940,16 +1002,27 @@ fi
 #   Receive Text from Share Sheet → Find Note (Name contains Shortcut Input,
 #   Folder is Coding, limit 1) → Add Note to pinned notes.
 # Set APPLE_NOTES_PIN=0 to skip pinning entirely.
+# _pin_rc: 0 pinned, 1 the run failed, 2 the Shortcut is not installed,
+# 3 the Shortcut list could not be read, 4 pinning was disabled
+# (APPLE_NOTES_PIN=0).  These are different problems and must not be reported
+# as one (AFC-431).
+_pin_rc=4
 if [[ "${APPLE_NOTES_PIN:-}" != "0" ]]; then
   # Settle delay: a just-created/updated note may not be visible to the
   # Shortcut's Find yet (index race) — a miss pops a note picker on the
   # owner's screen. Two seconds reliably clears it (observed 2026-08-10).
   [[ "$MODE" == "create" || "$MODE" == "update" ]] && sleep 2
-  if _run_note_shortcut "Pin Coding Note"; then
+  _pin_rc=0
+  _run_note_shortcut "Pin Coding Note" || _pin_rc=$?
+  if [[ "$_pin_rc" == "0" ]]; then
     echo "pinned: yes (headless via 'Pin Coding Note' shortcut)"
     exit 0
-  elif [[ $? -eq 1 ]]; then
-    echo "pinned: shortcut run failed; falling back to GUI path if requested" >&2
+  elif [[ "$_pin_rc" == "1" ]]; then
+    echo "pinned: the 'Pin Coding Note' shortcut ran but did not complete; falling back to GUI path if requested" >&2
+  elif [[ "$_pin_rc" == "2" ]]; then
+    echo "pinned: the 'Pin Coding Note' shortcut is not installed; falling back to GUI path if requested" >&2
+  else
+    echo "pinned: the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; falling back to GUI path if requested" >&2
   fi
 fi
 
@@ -957,7 +1030,12 @@ fi
 # Requires show+activate + menu click — steals focus. Skipped unless
 # --pin / --pin-only / APPLE_NOTES_PIN=1.
 if [[ "$WANT_PIN" != "1" ]]; then
-  echo "pinned: skipped ('Pin Coding Note' shortcut unavailable; pass --pin for GUI pin, which steals focus)"
+  case "$_pin_rc" in
+    2) echo "pinned: skipped ('Pin Coding Note' shortcut is not installed; pass --pin for GUI pin, which steals focus)" ;;
+    3) echo "pinned: skipped (the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; pass --pin for GUI pin, which steals focus)" ;;
+    4) echo "pinned: skipped (pinning is disabled; APPLE_NOTES_PIN=0)" ;;
+    *) echo "pinned: skipped ('Pin Coding Note' shortcut run failed; pass --pin for GUI pin, which steals focus)" ;;
+  esac
   exit 0
 fi
 

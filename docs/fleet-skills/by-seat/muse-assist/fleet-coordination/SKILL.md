@@ -5,7 +5,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Lanes `~/apps/lanes/<Repo>/muse-assist-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM):  use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
@@ -85,17 +85,9 @@ Every agent session must start with systematic orientation before touching code:
 
 ---
 
-## 2. Lanes (Where You Work)
+## 2. Durable VM Checkout
 
-**Strict Rule:** NEVER work directly in `/Users/jay/Code/<Repo>` root checkouts.  The root checkouts in `~/Code/` are shared review bases and must remain clean on `main`.
-
-Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.
-
-Always work in your own lane.  Make it with `lane new` (owner 2026-10-07, `docs/protocols/lane-map.md`; `AGENT_SEAT` must be set to your seat tag):
-```bash
-~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<Repo>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
-```
-Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they retire; do not create new ones.
+Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  Reuse this durable VM checkout across tasks; do not invoke the Mac lane tool or create Mac lane directories.
 
 ---
 
@@ -104,7 +96,7 @@ Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they ret
 Before starting substantial work, reserve your lane on two durable surfaces:
 
 1. **Linear issue (`board claim`):**
-   - `board list --app <app>`, then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>"`.  If nothing exists, `board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
+   - `board list --app <app>`, then `board claim <id> --by "$AGENT_SEAT" --env cloud --where "$(pwd -P) @ $(git branch --show-current)"`.  If nothing exists, `board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
    - Branch `<seat>/<id>-<slug>` (`muse-assist/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
    - Linear is the only writable work tracker.  There is no separate GitHub issue leg or effort-log row; effort logs are archived history and must not be edited.
 2. **Zulip `#agent-sync`, work topic (`<ID> <subject>`, at most 58 characters):**
@@ -156,7 +148,7 @@ Visibly wider gap (two visible spaces) after terminal punctuation (`.`, `!`, `?`
 
 | Surface | Syntax | Why |
 | :--- | :--- | :--- |
-| **Markdown chat panes** (Claude Code desktop Code tab, owner-verified 2026-10-08; other panes by ruling, unverified) | `&nbsp;` plus normal space after each sentence, outside code spans (`Sentence one.&nbsp; Sentence two.`) | The renderer decodes the entity; a raw U+00A0 from the model arrives as a plain space |
+| **Other Markdown chat panes** (excludes MiniMax Code; Claude Code desktop Code tab owner-verified 2026-10-08, other panes by ruling unverified) | `&nbsp;` plus normal space after each sentence, outside code spans (`Sentence one.&nbsp; Sentence two.`) | The renderer decodes the entity; a raw U+00A0 from the model arrives as a plain space |
 | **MiniMax Code chat pane** (owner-verified 2026-10-20) | a real U+00A0, the nbsp character, then a normal space, outside code spans | Jay:  "I think you need to do nbsp for chats or something" and "I have confirmed this before with agents and knew you needed nbsp already".  Two ASCII spaces collapse in this pane, and the `&nbsp;` entity renders as the six literal characters, which is worse than no gap.  The 2026-10-18 entry for this pane was wrong and is corrected here. |
 | **GitHub PR and issue titles, bodies and comments, Zulip posts, other rendered tool output** | A real U+00A0 plus a space (never the entity) | Tools preserve the character; the entity would show literally in a plain-text squash commit |
 | **Terminal TUI chat, source files** (docs, commit messages, code comments, config) | Two literal ASCII spaces | Read in raw text editors / terminals; an entity would print literally |

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { STYLE, STYLE_HASH, PAGE_CSP, SENTENCE_GAP, REFERRER_POLICY, escapeHtml, ownerTime, consentPage, adminPage, errorPage, noConnectionPage, withReferrerPolicy } from "../src/pages.js";
+import { STYLE, STYLE_HASH, PAGE_CSP, SENTENCE_GAP, REFERRER_POLICY, escapeHtml, ownerTime, consentPage, adminPage, errorPage, gapped, noConnectionPage, withReferrerPolicy } from "../src/pages.js";
 import { sameOriginPost } from "../src/policy.js";
 import { browserPostOrigin, ISSUER } from "./helpers.mjs";
 
@@ -51,6 +51,18 @@ test("arming notice and error pages", async () => {
   assert.match(await nc.text(), /No Connection Expected/);
   const err = errorPage("This Page Expired", "One.  Two.", 400);
   assert.ok((await err.text()).includes(`One.${SENTENCE_GAP}Two.`));
+});
+
+test("a quoted sentence opener keeps its gap after escaping", () => {
+  // `escapeHtml` rewrites `"` and the backtick to `&#34;`/`&#96;`, so a lookahead
+  // that runs after escaping never sees either admitted opener (Codex P2, fixed
+  // 2026-10-20).  gapped() gaps the raw text first, as every peer surface does.
+  assert.equal(gapped('Done. "Next"'), `Done.${SENTENCE_GAP}&#34;Next&#34;`);
+  assert.equal(gapped("Done. `Next`"), `Done.${SENTENCE_GAP}&#96;Next&#96;`);
+  // Still escaped exactly once, and still left alone where the lookahead says so:
+  // `'` is not an admitted opener, and `e.g.` is not a sentence boundary.
+  assert.equal(gapped("Done. 'Next'"), "Done. &#39;Next&#39;");
+  assert.equal(gapped("e.g. tools"), "e.g. tools");
 });
 
 test("admin page renders state and escapes refusal-log values", async () => {

@@ -405,7 +405,7 @@ Owner ruling 2026-08-13.  Canonical: `~/apps/AGENT-SYNC.md` § iOS agent build l
 - **Do not hand-edit** `.pbxproj`, `.xcodeproj/`, `.xcworkspace/`, `.xib`, `.storyboard`, `.entitlements`.  New `.swift` files: create the file and report target membership.  XcodeGen apps: edit `project.yml` then `xcodegen generate`.
 - Claude seats: copy `scripts/block-xcode-project-writes.py` to `.claude/hooks/` and the PreToolUse snippet from `github-workflows-template/claude-ios-settings.json`.
 - Per-app annotated tree: `ios/CLAUDE.md` (or `clients/ios/CLAUDE.md` / `native/ios/CLAUDE.md`).
-- `@Observable` + `@MainActor`; `NavigationStack`; light theme default.
+- `@Observable` + `@MainActor`; `NavigationStack`; system theme default (follow the OS, owner ruling 2026-09-19).
 - **Debug vs TestFlight (owner 2026-08-21):** do Xcode-console debug autonomously via `bash ~/apps/ios-fleet/ios-debug.sh <app>`.  Simulator `--console` is the default.  Device `--logs-only` keeps TestFlight.  `--target device --install-debug` replaces TestFlight for that bundle — say so.  Ask the owner to press Run in Xcode only for LLDB / a paste of the IDE console.  Canonical: `~/apps/AGENT-SYNC.md` § iOS agent build loop.
 
 ## Fleet UI copy (web + iOS)

@@ -226,6 +226,12 @@ jobs:
       run: |
         cd scripts && python3 -m unittest test_session_ids_parity test_apple_notes_session
         cd .. && python3 scripts/linear-board/test_board.py SessionIdTests
+    # AFC-431:  the pin Shortcut must be retried once, so a timing race does not leave a coding note
+    # unpinned, and a failed run must not be reported as a missing Shortcut.  The test drives the real
+    # pin block out of the script with a stub `shortcuts` on PATH, so it touches no Notes and runs here.
+    - name: Notes pin decision (AFC-431)
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_pin
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
@@ -282,6 +288,12 @@ jobs:
       run: node --test scripts/pr_sweep/tests/claude_adapter.test.mjs
     - name: PR Autofix reusable workflow contract
       run: node --test .github/pr-autofix-reusable.node-test.mjs
+    # The shared auto-merge armer against a fake `gh`:  a merge queue refuses
+    # --delete-branch, and the armer has to arm again without the flag instead of
+    # failing every PR in the repo (AFC-413).  No network:  the fake records its
+    # arguments and answers what the test tells it to.
+    - name: Auto-merge reusable workflow contract
+      run: python3 scripts/test_auto_merge_reusable.py
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
     # network:  the tests import the script, which runs main() only as an entry point.
     - name: Fleet Reference Sheet registry sync tests
