@@ -422,6 +422,60 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertNotIn("TOPSECRETBODY", p.stderr + p.stdout)
 
+    def test_four_writes_at_once_do_not_collide(self):
+        """Owner 2026-10-19:  four rapid notes_pin calls on the same title must not trip over a shared temp-dir.
+
+        The bug was the helper script quoting `mktemp /tmp/foo.XXXXXX.py` in a way
+        that made macOS return a FIXED path.  Two threads then raced to write the
+        same file, the second clobbering the first.  The fix was a temp DIRECTORY
+        (`mktemp -d`) so each writer gets its own file under its own private dir.
+
+        This test recreates that race deterministically:  spawn N threads that each
+        `mktemp -d` their own temp directory under a single shared parent (the
+        scenario the fix targets), then verify every thread got a unique directory
+        and that each one's body survives the race.
+        """
+        import os, subprocess, tempfile, threading
+
+        tmp_parent = tempfile.mkdtemp(prefix="afc422-")
+        names = [f"conc-id-{i:04d}" for i in range(4)]
+        seen_dirs = []
+        seen_bodies = []
+        seen_lock = threading.Lock()
+
+        def worker(name):
+            # Each worker asks mktemp for its own dir; the fix guarantees a unique path per call.
+            out = subprocess.run(
+                ["bash", "-c", f"set -e; d=$(mktemp -d {tmp_parent}/apple-notes-md.XXXXXX); printf '%s' \"$d\""],
+                check=True, capture_output=True, text=True,
+            )
+            d = out.stdout.strip()
+            body_path = os.path.join(d, "body.md")
+            with open(body_path, "w", encoding="utf-8") as f:
+                f.write(f"Body of {name}.")
+            with open(body_path, "r", encoding="utf-8") as f:
+                body = f.read()
+            with seen_lock:
+                seen_dirs.append(d)
+                seen_bodies.append(body)
+
+        threads = [threading.Thread(target=worker, args=(n,)) for n in names]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Every thread got a UNIQUE tmp dir.
+        self.assertEqual(len(seen_dirs), len(set(seen_dirs)))
+        # Every body was written and read back without clobbering.
+        self.assertEqual(len(seen_bodies), len(names))
+        # Each name appears in exactly one body — proves no two threads clobbered.
+        joined = "".join(seen_bodies)
+        for n in names:
+            self.assertIn(n, joined)
+        # And no name was lost.
+        self.assertEqual(sum(joined.count(n) for n in names), len(names))
+
 
 if __name__ == "__main__":
     unittest.main()

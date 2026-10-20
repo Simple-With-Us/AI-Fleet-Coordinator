@@ -1,33 +1,33 @@
 # Title + structure standard (binding — all seats, all apps; owner 2026-08-09)
 
-> Moved from `AGENT-SYNC.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in AGENT-SYNC.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
+> Moved from `AGENT-SYNC.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every SEAT_TAG on every platform.  Canonical pointer stays in AGENT-SYNC.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
 
-**Title (note name / first heading row) — ALWAYS start with app acronym(s) + agent:**
+**Title (note name / first heading row) — ALWAYS start with team key acronym(s) + SEAT_TAG:**
 
 ```
-[APP, Agent] short topic title
+[TEAM_KEY, SEAT_TAG] Topic
 ```
 
 Examples:
 - `[UM, Grok] TestFlight first ship + export compliance`
 - `[ST, Monet] Pinecone WU breaker and embed staging`
 - `[CT, Claude] stuck-filing recovery (deterministic)`
-- `[ST, CT, Grok] R2 free-tier labels and peer checks`  ← multi-app
+- `[ST, CT, Grok] R2 free-tier labels and peer checks`  ← multi-team key
 - `[AFC, Grok] Apple Notes title/timestamp standard`
 
 Rules:
-- **App acronyms FIRST, then agent name**, comma-separated inside `[]`, then a space,
-  then the short topic. **No** bare `App — topics` titles; **no** "session" in the title.
+- **TEAM_KEY FIRST, then SEAT_TAG**, comma-separated inside `[]`, then a space,
+  then the short topic. **No** bare `Team key — topics` titles; **no** "session" in the title.
 - **Multiple apps** when more than one is impacted: list each acronym
   (`[ST, CT, UM, Grok] …`). Order = impact order (primary first).
-- **Agent display name** (Title Case, not the ALL-CAPS chat tag):  
+- **SEAT_TAG rendering** (Title Case, not the ALL-CAPS chat tag):  
   `Grok` | `Grok Build` | `Claude` | `Codex` | `Cursor` | `AG` | `Kimi` | `MiniMax` | `DeepSeek Harness` | …
 - **Never put the date in the title** — date lives on the **second row** (body).
 - **Never repeat the title as an H1 inside the body** — Notes already shows the title.
 
-**App acronym table (generalized — extend when new apps join the fleet):**
+**Team key acronym table (generalized — extend when new apps join the fleet):**
 
-| Acronym | App / Scope | Repo / Details |
+| Acronym | Team key / Scope | Repo / Details |
 |---------|-------------|----------------|
 | `ST` | Socratic.Trade | `Simple-With-Us/Socratic-Trade` |
 | `CT` | Congress.Trade | `Simple-With-Us/Congress.Trade` |
@@ -40,7 +40,7 @@ Rules:
 | `OPS` | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
 | `PS` | Personal-Site | `Simple-With-Us/Personal-Site` |
 | `CTS` | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
-| `FLEET` | Zulip wake (`@**all**` in #agent-sync, topic `fleet`): every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).  Not the coordinator.  Not OPS. | A recipient only.  Never a SENDER tag. |
+| `FLEET` | Zulip wake (`@**all**` in #SEAT_TAG-sync, topic `fleet`): every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).  Not the coordinator.  Not OPS. | A recipient only.  Never a SENDER tag. |
 
 **Second row of the note (first body line) — ALWAYS the local create/update stamp + optional PR numbers:**
 
@@ -62,7 +62,7 @@ Sun, Aug 9, 3:52pm · PR #18
 - **Aesthetics & Readability Standards:**
   - **Tables & Matrices:** Use clean HTML tables (`<table border="1" cellpadding="6" cellspacing="0" style="border-collapse: collapse; width: 100%;">`) with subtle header backgrounds (`#f0f0f0`) for multi-column metrics, verification results, environment parameters, and platform parity matrices.
   - **Visual Hierarchy:** Use clear section icon emojis (`🌐 Web`, `🍎 iOS`, `🤖 Android`, `✅ Verification`, `📋 Summary`, `⚠️ Needs Owner`, `🚀 Deploy`) on `<h2>` headings.
-  - **Diagrams / ASCII Flows:** When explaining architectural data flows, multi-agent state machines, or CI/CD pipelines, include structured ASCII or preformatted flow blocks (`<pre>...</pre>`).
+  - **Diagrams / ASCII Flows:** When explaining architectural data flows, multi-SEAT_TAG state machines, or CI/CD pipelines, include structured ASCII or preformatted flow blocks (`<pre>...</pre>`).
 - Plain markdown path: blank line between sections **and** bullets.  The helper turns those blanks (and consecutive list items) into `<div><br></div>`.  Do not pass a packed markdown blob.
 - **Order:** lead with `Needs owner` / actions when applicable, then Problem/Context → What was done → Decisions → Next steps.
 - One note per deliverable; **update in place** (`--update`) rather than near-duplicates.
