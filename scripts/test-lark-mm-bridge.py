@@ -580,6 +580,34 @@ class BridgeTests(unittest.TestCase):
         )
         self.assertEqual(bridge.turns.qsize(), 1)
 
+    def test_malformed_events_are_dropped_before_they_reach_the_queue(self):
+        """A frame the socket delivered is not shaped like a Python dict.
+
+        _handle runs on the event loop with no try around it, so a content that
+        arrived as an object raised out of the call and the finally in run()
+        shut the whole bridge down.
+        """
+        bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+        bridge.args = make_args(["--allow-sender", "ou_ok"])
+        bridge.rows = {}
+        bridge.seen_lock = threading.Lock()
+        bridge.turns = bridge_mod.queue.Queue()
+        bridge._handle("not an object")
+        bridge._handle(
+            {"message_id": {"nested": "om_x"}, "chat_id": "oc_1", "content": "hi"}
+        )
+        bridge._handle({"message_id": "om_x", "chat_id": 17, "content": "hi"})
+        bridge._handle({"message_id": "om_x", "chat_id": "oc_1", "content": {"text": "hi"}})
+        self.assertTrue(bridge.turns.empty())
+
+    def test_a_malformed_mentions_field_is_not_an_authorisation(self):
+        """A mentions this bridge cannot read leaves the bot quiet."""
+        bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+        bridge.args = make_args(["--bot-open-id", "ou_bot"])
+        self.assertFalse(bridge._mentioned({"chat_type": "group", "mentions": "ou_bot"}))
+        self.assertFalse(bridge._mentioned({"chat_type": "group", "mentions": ["ou_bot"]}))
+        self.assertTrue(bridge._mentioned({"chat_type": "group", "mentions": [{"id": "ou_bot"}]}))
+
     def test_p2p_needs_no_mention(self):
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
         bridge.args = make_args(["--allow-sender", "ou_ok", "--bot-open-id", "ou_bot"])

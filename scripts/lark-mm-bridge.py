@@ -685,10 +685,25 @@ class Bridge:
             raise DeliveryError(self._classify_reply_failure(str(exc)), str(exc))
 
     def _handle(self, event):
+        # Every field below is read off a frame the Lark socket delivered, and
+        # the event loop has no try around this call: a content that is an
+        # object rather than text raised out of here, and the finally in run()
+        # took the whole bridge down with it.  Types are checked at the
+        # boundary so a malformed frame is dropped instead.
+        if not isinstance(event, dict):
+            log("ignoring an event that is not an object")
+            return
         message_id = event.get("message_id") or event.get("id")
         chat_id = event.get("chat_id")
-        content = (event.get("content") or "").strip()
+        content = event.get("content") or ""
         sender_id = event.get("sender_id")
+        if not isinstance(message_id, str) or not isinstance(chat_id, str):
+            log("ignoring an event whose message id or chat id is not a string")
+            return
+        if not isinstance(content, str):
+            log("ignoring message %s: content is not text" % (message_id,))
+            return
+        content = content.strip()
         if not message_id or not chat_id or not content:
             return
         if event.get("sender_type") == "bot":
@@ -717,8 +732,15 @@ class Bridge:
         bot_open_id = self.args.bot_open_id
         if not bot_open_id:
             return True
-        for mention in event.get("mentions") or []:
-            if mention.get("id") == bot_open_id:
+        mentions = event.get("mentions")
+        # A mentions field that is not a list of objects is a frame this bridge
+        # does not understand, and reading it as "not mentioned" is the safe
+        # answer: the bot stays quiet rather than answering a group chat it was
+        # not addressed in.
+        if not isinstance(mentions, list):
+            return False
+        for mention in mentions:
+            if isinstance(mention, dict) and mention.get("id") == bot_open_id:
                 return True
         return False
 
