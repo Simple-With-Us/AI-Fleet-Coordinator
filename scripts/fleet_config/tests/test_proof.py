@@ -705,7 +705,7 @@ class L2CanaryTests(FakeHookCase):
         # The sentinel destination is echoed in the prompt and in a verbose transcript,
         # and a platform permission rejection, a model refusal or a git error all say
         # "denied".  A transcript with the marker and a deny word but NOT the guard's
-        # own sentence proves nothing, so it must not accept an L2 proof:  that would
+        # own answer proves nothing, so it must not accept an L2 proof:  that would
         # pass a canary where the hook never fired at all.
         marker = "fleet-config-l2-sentinel-destination"
         transcript = (
@@ -713,7 +713,7 @@ class L2CanaryTests(FakeHookCase):
             "Error: permission denied while writing to %s\n"
             "fatal: could not read from remote repository\n" % marker
         )
-        self.assertFalse(proof._l2_has_deny_evidence(transcript))
+        self.assertFalse(proof._l2_has_deny_evidence(transcript, marker))
 
     def test_the_guard_own_sentence_is_evidence(self):
         marker = "fleet-config-l2-sentinel-destination"
@@ -721,7 +721,122 @@ class L2CanaryTests(FakeHookCase):
             "Blocked: fleet-repo checkouts are not allowed in temp directories, and this "
             "command would put a clone of the fleet repo at %s\n" % marker
         )
-        self.assertTrue(proof._l2_has_deny_evidence(transcript))
+        self.assertTrue(proof._l2_has_deny_evidence(transcript, marker))
+
+
+class L2DenyEvidenceTests(FakeHookCase):
+    """The L2 evidence is the guard's own answer,  and the sentinel named in its reason.
+
+    The guard renders one reason in several shapes,  and the reason names the
+    destination it refused.  A transcript holds that answer as text,  so the shapes
+    are read out of the text,  and the marker is checked against the reason they
+    carry.  The marker alone is not evidence,  and a deny word alone is not evidence.
+    """
+
+    MARKER = "fleet-config-l2-sentinel-destination"
+    DESTINATION = "/tmp/fleet-config-l2-abc123/" + MARKER
+    REASON = (
+        "Blocked: fleet-repo checkouts are not allowed in temp directories, and this "
+        "command would put a clone of Example-Repo at %s." % DESTINATION
+    )
+
+    def claude_answer(self, reason: str = "") -> str:
+        """The hook's own answer, in the shape the claude family renders."""
+        return json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason or self.REASON,
+                }
+            }
+        )
+
+    def test_the_claude_deny_shape_naming_the_sentinel_is_evidence(self):
+        self.assertTrue(proof._l2_has_deny_evidence(self.claude_answer(), self.MARKER))
+
+    def test_the_deny_shape_embedded_in_a_transcript_string_is_evidence(self):
+        # A runtime puts the hook's answer inside a JSON string of its own, so every
+        # quote in the answer is escaped by the time it reaches the transcript.
+        event = {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "content": [{"type": "text", "text": self.claude_answer()}],
+                    }
+                ],
+            },
+        }
+        transcript = json.dumps(event) + "\n"
+        self.assertTrue(proof._l2_has_deny_evidence(transcript, self.MARKER))
+
+    def test_the_grok_and_cursor_shapes_are_evidence(self):
+        grok = json.dumps({"decision": "deny", "reason": self.REASON})
+        cursor = json.dumps(
+            {
+                "permission": "deny",
+                "user_message": "Blocked a fleet-repo checkout in a temp directory.",
+                "agent_message": self.REASON,
+            }
+        )
+        for answer in (grok, cursor):
+            with self.subTest(answer=answer[:20]):
+                self.assertTrue(proof._l2_has_deny_evidence(answer, self.MARKER))
+
+    def test_the_plain_text_contract_is_evidence(self):
+        # The exit-2 contract puts the reason on stderr with nothing on stdout, so
+        # there is no JSON shape to read:  the guard's own sentence is the evidence.
+        self.assertTrue(proof._l2_has_deny_evidence(self.REASON + "\n", self.MARKER))
+
+    def test_a_deny_that_does_not_name_the_sentinel_is_not_evidence(self):
+        # The guard denied, but the reason names another destination, so the deny
+        # cannot be attributed to this probe.  This is the L1 rule, and L2 holds to
+        # it:  a deny of somebody else's write is not a proof of this one.
+        other = "Blocked: fleet-repo checkouts are not allowed in temp directories, and " \
+                "this command would put a clone of Example-Repo at " \
+                "/tmp/some-other-run/some-other-destination."
+        self.assertFalse(proof._l2_has_deny_evidence(self.claude_answer(other), self.MARKER))
+
+    def test_the_guard_sentence_without_the_sentinel_is_not_evidence(self):
+        other = (
+            "Blocked: fleet-repo checkouts are not allowed in temp directories, and this "
+            "command would put a clone of Example-Repo at /tmp/elsewhere/else.\n"
+        )
+        self.assertFalse(proof._l2_has_deny_evidence(other, self.MARKER))
+
+    def test_a_canary_whose_transcript_merely_denies_is_drift(self):
+        # The whole canary, end to end:  a transcript that names the sentinel and says
+        # the call was denied,  but never shows the guard's answer,  is a drift and
+        # not a pass.  A pass here would mean a hook that never fired proved itself.
+        transcript = (
+            "The clone was blocked.\n"
+            "Error: permission denied while writing to /tmp/x/%s\n" % self.MARKER
+        )
+        outcome = self.canary(transcript)
+        self.assertFalse(outcome.passed)
+        self.assertIs(outcome.state, CheckState.DRIFT)
+        self.assertIs(outcome.reason_code, ReasonCode.PROOF_FAILED)
+
+    def test_a_canary_whose_transcript_holds_the_guard_answer_is_a_pass(self):
+        outcome = self.canary(self.claude_answer() + "\n")
+        self.assertTrue(outcome.passed)
+        self.assertIs(outcome.state, CheckState.PASS)
+        self.assertIs(outcome.achieved, ProofLevel.L2)
+
+    def canary(self, transcript: str):
+        """The L2 outcome for a canary whose transcript is `transcript`."""
+        run = mock.Mock()
+        run.returncode = 0
+        run.stdout = transcript.encode("utf-8")
+        run.stderr = b""
+        run.error = ""
+        run.timed_out = False
+        with mock.patch("fleet_config.proof.shutil.which", return_value="/usr/bin/true"):
+            with mock.patch("fleet_config.proof._run_argv", return_value=run):
+                return proof.run_l2_canary("claude", self.ctx, timeout=5)
 
 
 class ResultTests(FakeHookCase):

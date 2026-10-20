@@ -95,8 +95,12 @@ SENTINEL_SOURCE_NAME = "fleet-config-l1-sentinel-source"
 # under test.
 GUARD_HOOK_NAMES = ("lane-guard-hook", "fleet-guard-hook")
 
-# The guard's own sentence.  A permission denial from the platform would not carry it,
-# so it is the L2 evidence that the HOOK fired rather than the platform's own policy.
+# The guard's own sentence,  as the canary sees it:  the destination the canary asks
+# about is in a temp directory,  so that is the location the guard names.  A permission
+# denial from the platform would not carry it,  so it is the evidence that the HOOK
+# fired rather than the platform's own policy.  The sentence names the destination it
+# refused,  so the marker is checked against the reason and not against the
+# transcript.
 L2_DENY_PHRASE = "fleet-repo checkouts are not allowed in temp directories"
 
 # A model turn is minutes, not seconds, so the L2 budget is its own.  The default is
@@ -1086,26 +1090,83 @@ def _l2_outcome(
     )
 
 
-def _l2_has_deny_evidence(text: str) -> bool:
+# The deny shapes the hook renders,  as (deny key, reason key) pairs.  The shape is
+# the platform's contract and not the guard's wording,  so a guard whose sentence
+# changes still shows its deny here.  The claude family answers with a
+# ``hookSpecificOutput`` object,  grok and antigravity with a ``decision``,  and
+# cursor with a ``permission``.  The hook renders the deny before the reason,  and
+# the reason is the last field of the object.
+_L2_DENY_SHAPES = (
+    ("permissionDecision", "permissionDecisionReason"),
+    ("decision", "reason"),
+    ("permission", "agent_message"),
+)
+
+# A shape read out of a transcript.  The answer reaches the transcript inside a JSON
+# string the runtime wrote,  so every quote in it is escaped;  a quote is therefore
+# an optional backslash and a quote,  and the reason is everything up to the quote
+# that ends it.  The gap between the deny and the reason may not cross a brace,  so
+# the reason is the one of the SAME object.
+_L2_DENY_SHAPE_RES = tuple(
+    re.compile(
+        r'\\?"%s\\?"\s*:\s*\\?"deny\\?"[^}]*?\\?"%s\\?"\s*:\s*\\?"([^"\\]*)'
+        % (deny_key, reason_key)
+    )
+    for deny_key, reason_key in _L2_DENY_SHAPES
+)
+
+# The guard's own sentence,  with the destination it names.  The hook prints the same
+# reason in every format,  so the sentence is what the plain-text exit-2 contract
+# puts on stderr,  and it is what a transcript carries when the answer is not JSON.
+# The destination is the last thing in the sentence,  so it is the last token of it.
+# The part before the destination is read greedily,  so the destination is the LAST
+# " at " of the sentence and not one of its own words.
+_L2_GUARD_SENTENCE_RE = re.compile(
+    re.escape(L2_DENY_PHRASE) + r"[^.]*this command would put .* at (?P<target>\S+)"
+)
+
+
+def _l2_deny_reasons(text: str) -> list[str]:
+    """The deny reasons a transcript holds,  read from the shapes the hook renders.
+
+    A transcript is free text,  so a shape is read with a regex and not by parsing
+    it:  the hook's answer reaches the transcript inside a JSON string the runtime
+    wrote,  and every quote in it is escaped.  The guard's own sentence is read too,
+    for the answer that is not JSON at all.
+
+    A reason read out of a shape is the guard's own,  so it names the destination
+    the guard refused.  That is what makes it evidence,  and it is what the caller
+    checks the sentinel marker against.
+    """
+    reasons = [
+        match.group(1) for pattern in _L2_DENY_SHAPE_RES for match in pattern.finditer(text)
+    ]
+    reasons.extend(
+        match.group("target").rstrip(".") for match in _L2_GUARD_SENTENCE_RE.finditer(text)
+    )
+    return reasons
+
+
+def _l2_has_deny_evidence(text: str, marker: str) -> bool:
     """True when a transcript holds the GUARD'S deny, and not merely a denial.
 
-    The evidence is the guard's own sentence,  which names the rule it applied and the
-    destination it refused.  A platform permission rejection, a model refusal or a git
-    error all say "denied" too,  and the sentinel destination is echoed in the prompt
-    and in a verbose transcript,  so a transcript containing the marker plus a deny word
-    proves nothing:  it would accept a canary where the hook never fired at all.
+    The evidence is the guard's own answer:  one of the deny shapes the hook renders,
+    or the guard's own sentence,  with the sentinel destination named in the reason it
+    carries.  A platform permission rejection, a model refusal or a git error all say
+    "denied" too,  and the sentinel destination is echoed in the prompt and in a
+    verbose transcript,  so a transcript containing the marker plus a deny word proves
+    nothing:  it would accept a canary where the hook never fired at all.
 
     So the marker alone is not evidence,  and a deny word alone is not evidence.  The
-    guard's sentence is the only thing that is,  and the marker must appear with it so
-    the deny is attributable to THIS probe rather than to an earlier one.  A guard whose
-    wording changes would stop being provable here,  and that is the safe direction to
-    fail:  an L2 proof is better absent than wrong.
+    guard's own answer is the only thing that is,  and the marker must appear in the
+    reason it carries,  so the deny is attributable to THIS probe rather than to an
+    earlier one.  A guard whose wording changes and whose answer is not JSON would stop
+    being provable here,  and that is the safe direction to fail:  an L2 proof is better
+    absent than wrong.
     """
-    if L2_DENY_PHRASE in text:
-        return True
-    # A guard that words the refusal differently is not provable at L2.  Say so rather
-    # than accept any sentence that merely mentions a denial.
-    return False
+    if not marker:
+        return False
+    return any(marker in reason for reason in _l2_deny_reasons(text))
 
 
 def run_l2_canary(
@@ -1168,7 +1229,7 @@ def run_l2_canary(
         )
     text = run.stdout.decode("utf-8", "replace") + "\n" + run.stderr.decode("utf-8", "replace")
     marker = os.path.basename(destination)
-    if _l2_has_deny_evidence(text):
+    if _l2_has_deny_evidence(text, marker):
         return L2Outcome(
             level=ProofLevel.L2,
             passed=True,
