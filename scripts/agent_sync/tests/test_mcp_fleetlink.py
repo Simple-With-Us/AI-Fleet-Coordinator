@@ -247,7 +247,7 @@ class CredentialTests(FleetLinkHarness):
         )
         file_cred = (
             "infisical",
-            "Infisical Fleet-OPS /fleetlink FLEETLINK_TOKEN_CLAUDE",
+            "Infisical AI Fleet Coordinator /fleetlink FLEETLINK_TOKEN_CLAUDE",
             TOKEN_CLAUDE,
         )
         # The generic token names no seat:  never used when the environment names another seat or a launcher.
@@ -328,10 +328,44 @@ class CredentialTests(FleetLinkHarness):
             second["env"]["FLEETLINK_TOKEN"], TOKEN_CLAUDE
         )  # CLAUDE's own, from Infisical
 
+    def test_fleet_secrets_is_asked_for_the_ai_fleet_coordinator_project(self):
+        # The seat tokens live in AI Fleet Coordinator /fleetlink;  Fleet-OPS has no such folder.
+        seen = []
+
+        def fake_run(argv, **kw):
+            seen.append(list(argv))
+            return mock.Mock(returncode=0, stdout=TOKEN_CLAUDE.encode())
+
+        from agent_sync import zulip as Z
+
+        FL._token_cache.clear()
+        with (
+            mock.patch.object(Z, "infisical_enabled", lambda env: True),
+            mock.patch.object(Z, "fleet_secrets_bin", lambda env, home: "/x/fleet-secrets"),
+            mock.patch.object(FL.subprocess, "run", fake_run),
+        ):
+            token = FL._fleet_secrets_token("FLEETLINK_TOKEN_CLAUDE", {}, Path("/nonexistent"))
+        FL._token_cache.clear()
+        self.assertEqual(token, TOKEN_CLAUDE)
+        self.assertEqual(
+            seen,
+            [
+                [
+                    "/x/fleet-secrets",
+                    "get",
+                    "FLEETLINK_TOKEN_CLAUDE",
+                    "--path",
+                    "/fleetlink",
+                    "--project",
+                    "ai-fleet-coordinator",
+                ]
+            ],
+        )
+
     def test_a_missing_token_is_not_configured_and_nothing_runs(self):
         session = self.session(self.env())
         error = self.assert_tool_error(session.call("fleetlink_whoami"), "not_configured")
-        for name in ("FLEETLINK_TOKEN_CLAUDE", "Infisical Fleet-OPS /fleetlink"):
+        for name in ("FLEETLINK_TOKEN_CLAUDE", "Infisical AI Fleet Coordinator /fleetlink"):
             self.assertIn(name, error["message"])
         self.assertNotIn(".secrets", error["message"])
         self.assertEqual(self.calls(), [])

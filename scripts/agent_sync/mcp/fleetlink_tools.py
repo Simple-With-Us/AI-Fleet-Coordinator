@@ -14,7 +14,7 @@ in order:
      names this same seat, so one connection acting as several bots never lends one bot's token to another;  the
      server sets AGENT_SEAT to the seat it resolved from --as or --default-seat when the environment named none, so
      a seat that came from a flag is as binding as one from the environment;
-  3. FLEETLINK_TOKEN_<SEAT> in Infisical Fleet-OPS /fleetlink, read through `fleet-secrets get` (AFC-359:  the old
+  3. FLEETLINK_TOKEN_<SEAT> in Infisical AI Fleet Coordinator /fleetlink, read through `fleet-secrets get` (AFC-359:  the old
      per-seat FleetLink env file is retired and never read), held in memory and handed to the child as
      FLEETLINK_TOKEN.
 
@@ -55,8 +55,10 @@ CLI_NAME = "fleet-share"
 ENV_TOKEN = "FLEETLINK_TOKEN"
 TOKEN_PREFIX = "FLEETLINK_TOKEN_"
 INFISICAL_PATH = (
-    "/fleetlink"  # Fleet-OPS folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
+    "/fleetlink"  # folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
 )
+INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (Fleet-OPS has none)
+INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
 TIMEOUT_S = 120.0
 OUTPUT_LIMIT = (
@@ -189,7 +191,7 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
         child.setdefault("PATH", os.environ.get("PATH") or os.defpath)
         try:
             proc = subprocess.run(
-                [binary, "get", name, "--path", INFISICAL_PATH],
+                [binary, "get", name, "--path", INFISICAL_PATH, "--project", INFISICAL_PROJECT],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=15,
@@ -222,11 +224,11 @@ def resolve_credential(seat: str, env: Mapping[str, str], home: Path) -> tuple[s
         return "env", ENV_TOKEN, token
     token = _default_token_fetch(own, env, home)
     if token and not any(ch in token for ch in "\r\n\x00"):
-        return "infisical", "Infisical Fleet-OPS %s %s" % (INFISICAL_PATH, own), token
+        return "infisical", "%s %s %s" % (INFISICAL_LABEL, INFISICAL_PATH, own), token
     raise FleetLinkFailure(
         "not_configured",
-        "FleetLink has no credential for %s here:  set %s, or store %s in Infisical Fleet-OPS %s.  "
-        "Every other tool still works." % (seat, own, own, INFISICAL_PATH),
+        "FleetLink has no credential for %s here:  set %s, or store %s in %s %s.  "
+        "Every other tool still works." % (seat, own, own, INFISICAL_LABEL, INFISICAL_PATH),
     )
 
 
