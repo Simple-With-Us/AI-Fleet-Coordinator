@@ -451,15 +451,19 @@ class SessionIdTests(unittest.TestCase):
         results = {}
 
         def worker(name):
-            env = dict(os.environ, APPLE_NOTES_PRINT_HTML="1", AGENT_SESSION="conc-test-session-0001")
+            env = dict(
+                os.environ, APPLE_NOTES_PRINT_HTML="1", AGENT_SESSION="conc-test-session-0001"
+            )
             cmd = ["bash", "-x", script, f"[AFC, Claude] Notes {name}", f"Body of {name}."]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env
+            )
             with lock:
                 live.add(proc)
             try:
                 out, err = proc.communicate(timeout=180)
                 rc = proc.returncode
-            except BaseException:  # noqa: BLE001 - a Ctrl-C must still reap the child
+            except BaseException:
                 proc.terminate()
                 try:
                     proc.communicate(timeout=10)
@@ -479,7 +483,7 @@ class SessionIdTests(unittest.TestCase):
                 t.start()
             for t in threads:
                 t.join()
-        except BaseException:  # noqa: BLE001 - stop every sibling worker before unwinding
+        except BaseException:
             with lock:
                 stopping = list(live)
             for proc in stopping:
@@ -504,7 +508,9 @@ class SessionIdTests(unittest.TestCase):
             self.assertIn(f"Body of {name}.", out)
             # The trace names the directory once per reference;  one call means one directory.
             found = set(converter_re.findall(err))
-            self.assertEqual(len(found), 1, f"{name} used {len(found)} converter directories: {found}")
+            self.assertEqual(
+                len(found), 1, f"{name} used {len(found)} converter directories: {found}"
+            )
             paths.extend(found)
 
         # Every call used its OWN directory.  A shared one is the original bug.
@@ -515,7 +521,10 @@ class SessionIdTests(unittest.TestCase):
         # (The directory itself is removed too, but Finder drops a .DS_Store into new /tmp
         # subdirectories and `rmdir` cannot clear that;  that is /tmp litter, not the collision fix.)
         for path in set(paths):
-            self.assertFalse(os.path.exists(os.path.join(path, "convert.py")), f"{path}/convert.py was left behind")
+            self.assertFalse(
+                os.path.exists(os.path.join(path, "convert.py")),
+                f"{path}/convert.py was left behind",
+            )
 
 
 class TitleSecretScanTests(unittest.TestCase):
