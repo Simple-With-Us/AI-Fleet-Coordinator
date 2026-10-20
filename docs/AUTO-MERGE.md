@@ -47,10 +47,15 @@ GitHub refuses `--delete-branch` when a repository has a merge queue enabled:
 the flag asks GitHub to delete the head branch when the pull request merges,
 and a merge queue cannot accept that request on the auto-merge.  The armer
 arms again without the flag when the queue is what refused it, so a repo that
-turns a queue on keeps arming without a caller change.  The queue's own "delete
-head branches" setting owns branch cleanup from that point on.  A caller can
-also turn the flag off directly with the `delete_branch` input, which is what
-Socratic-Trade does (ST-4566).
+turns a queue on keeps arming without a caller change.  Branch cleanup in a
+queued repo is the repository-level "Automatically delete head branches"
+setting (API `delete_branch_on_merge`) under Settings > General > Pull
+Requests — the merge queue's own panel exposes merge method, build
+concurrency, status check timeout and merge limits, not a branch-deletion
+control — so that setting must be enabled for a merged head branch to
+disappear; the armer never sets it, so a queue repo has to have it on
+already.  A caller can also turn the flag off directly with the `delete_branch`
+input, which is what Socratic-Trade does (ST-4566).
 
 Contract: `python3 scripts/test_auto_merge_reusable.py` runs the arm step's
 own shell against a fake `gh`, so the retry is exercised rather than
