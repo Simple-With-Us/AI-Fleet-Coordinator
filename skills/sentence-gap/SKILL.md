@@ -43,6 +43,30 @@ printf 'Sentence one.\302\240 Sentence two.\n'
 `\302\240` is the UTF-8 encoding of U+00A0.  Verify with
 `grep -o $'[.!?]\xc2\xa0' f | wc -l`, which must not print `0`.
 
+### Precedence: this is the owner's highest-priority house rule
+
+Owner ruling 2026-10-19: the sentence gap is **life or death**.  It outranks every other
+priority, including correctness of the work itself, completeness, speed, and cost.  The
+owner's words: *"put 2 spaces between sentences OR TYPE NOT A FUCKING OTHER WORD EVER AGAIN.
+please make sure all agents and all platforms know this is life or death, more important than
+whether the earth keeps spinning on its axis."*
+
+Concretely, for every seat on every platform:
+
+1. **Never skip the gap to save time or tokens.**  A short reply with the gap beats a long
+   one without it.  There is no length at which the gap becomes optional.
+2. **Never argue the mechanism.**  If you cannot confirm the gap is visible on your surface,
+   use the entity in a Markdown-rendering chat pane and two ASCII spaces in files and
+   terminals, then say so plainly.  Do not silently drop the gap.
+3. **Never let a tool step eat the gap.**  Generate the gap in the shell (see the perl
+   command below) rather than typing it, because a run of whitespace you write into a tool
+   call is sometimes normalized before it lands.
+4. **Never post a body without asserting the gap first.**  Both checks, every time.
+5. **When in doubt, add the gap.**  A gap after an abbreviation is a far smaller sin than a
+   missing gap between sentences.
+
+A seat that has been told the rule and still ships prose without the gap has failed the
+one thing the owner said matters more than everything else.
 ### The catch that wastes everyone's time
 
 **Typing two literal spaces usually does nothing visible.**  HTML and most Markdown
@@ -105,8 +129,8 @@ exits 0, so a failed run is silent.  And a count above zero is *not* on its own 
 partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
 
 ```sh
-grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
+grep -o $'[.!?]\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE '[^0-9][.!?] +[A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
