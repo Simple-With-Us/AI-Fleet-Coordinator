@@ -59,14 +59,19 @@ Concretely, for every seat on every platform:
 1. **Never skip the gap to save time or tokens.**  A short reply with the gap beats a long
    one without it.  There is no length at which the gap becomes optional.
 2. **Never argue the mechanism.**  If you cannot confirm the gap is visible on your surface,
-   use the entity in a Markdown-rendering chat pane and two ASCII spaces in files and
-   terminals, then say so plainly.  Do not silently drop the gap.
-3. **Never let a tool step eat the gap.**  Generate the gap in the shell (see the perl
-   command below) rather than typing it, because a run of whitespace you write into a tool
-   call is sometimes normalized before it lands.
-4. **Never post a body without asserting the gap first.**  Both checks, every time.
-5. **When in doubt, add the gap.**  A gap after an abbreviation is a far smaller sin than a
-   missing gap between sentences.
+   use the mechanism the surface table below assigns to that destination:  the entity in a
+   Markdown-rendering chat pane, except the MiniMax Code pane, which needs a real U+00A0, and
+   two ASCII spaces in files and terminals.  Then say so plainly.  Do not silently drop the gap.
+3. **Never let a tool step eat the gap.**  For text bound for GitHub, Zulip, or any other
+   renderer, generate the gap in the shell (see the perl command below) rather than typing it,
+   because a run of whitespace you write into a tool call is sometimes normalized before it
+   lands.  Source files, commits, and terminals take two literal ASCII spaces and never the
+   conversion.
+4. **Never post a body without asserting the gap first.**  For a renderer-bound body, both
+   checks below, every time.  On an entity surface, confirm that the entity rendered instead.
+5. **When in doubt, add the gap.**  A gap after a real sentence end is a far smaller sin than a
+   missing gap between sentences; a non-terminal abbreviation still takes no gap, per the rule
+   above.
 
 A seat that has been told the rule and still ships prose without the gap has failed the
 one thing the owner said matters more than everything else.
@@ -129,11 +134,12 @@ it, and do not widen the pattern to chase it.
 
 **Assert before you post — both checks, every time.**  A conversion that matches nothing still
 exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
-partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
+partly-converted body can have real U+00A0 and still carry a leftover ASCII gap of one or more
+spaces.
 
 ```sh
 grep -o $'[.!?]\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE '[^0-9][.!?] +[A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
+grep -cE '[^0-9][.!?] +[A-Z"]' body.nbsp.txt         # must be 0 — a leftover ASCII gap (one or more spaces)
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
