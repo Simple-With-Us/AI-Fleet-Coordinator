@@ -206,3 +206,26 @@ class ProtocolTests(Harness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AbsoluteDeadlineTests(unittest.TestCase):
+    def test_rate_limit_retry_cannot_reset_absolute_deadline(self):
+        import io
+        import urllib.error
+        from unittest import mock
+
+        now = [0.0]
+        sleeps = []
+        def sleep(seconds):
+            sleeps.append(seconds)
+            now[0] += seconds
+        client = Z.ZulipClient(Z.Credentials("bot@example.test", "fixture-key", "https://realm.example.test", "fixture"), "https://realm.example.test", sleep=sleep)
+        client._opener = mock.Mock()
+        client._opener.open.side_effect = urllib.error.HTTPError("https://realm.example.test", 429, "limited", {"Retry-After": "60"}, io.BytesIO(b"{}"))
+        with mock.patch.object(Z.time, "monotonic", side_effect=lambda: now[0]):
+            with self.assertRaises(Z.NetworkError) as caught:
+                client.get("messages", deadline=5.0)
+        self.assertFalse(caught.exception.maybe_sent)
+        self.assertEqual(sleeps, [5.0])
+        self.assertEqual(client._opener.open.call_count, 1)
+        self.assertEqual(client._opener.open.call_args.kwargs["timeout"], 5.0)
