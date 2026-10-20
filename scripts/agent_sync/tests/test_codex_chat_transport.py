@@ -199,15 +199,26 @@ class TransportTests(unittest.TestCase):
     def test_pre_enqueue_failure_is_retryable_not_stranded(self):
         # A failure before thread/queue/add enqueued nothing, so the wake stays retryable
         # instead of picking a permanent hold_reason in chat_nudges.
+        outer = self
+        state = {"reads": 0}
+
         class FailingRPC:
             def request(self, method, params):
-                raise OSError("app-server vanished")
+                outer.calls.append((method, params))
+                if method == "thread/read":
+                    state["reads"] += 1
+                    if state["reads"] > 1:
+                        # The second read is the one inside send(), after preflight said "ready".
+                        raise OSError("app-server vanished")
+                    return {"thread": outer.thread}
+                return {"data": []}
 
             def close(self):
                 pass
 
         self.adapter.rpc_factory = FailingRPC
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
+        self.assertNotIn("thread/queue/add", [m for m, _ in self.calls])
 
     def test_rpc_close_swallows_teardown_errors(self):
         # Cleanup runs from callers' finally blocks; a raise there would replace an
