@@ -415,13 +415,19 @@ def check_policy(plugin: dict) -> dict:
             uncovered.append(tool_name)
             covering = [fallback]
         denied = False
+        startup_error = None
+        configuration_error = None
         for handler in covering:
             try:
                 command = shlex.split(handler["command"])
             except ValueError as exc:
-                return _stage_fail(f"the hook command is not a parseable argv: {exc}")
+                configuration_error = (
+                    configuration_error or f"the hook command is not a parseable argv: {exc}"
+                )
+                continue
             if not command:
-                return _stage_fail("the hook command is empty")
+                configuration_error = configuration_error or "the hook command is empty"
+                continue
             try:
                 proc = subprocess.run(
                     command,
@@ -433,9 +439,11 @@ def check_policy(plugin: dict) -> dict:
                     env=_hook_env(),
                 )
             except subprocess.TimeoutExpired:
-                return _stage_error("the hook command timed out after 30s")
+                startup_error = startup_error or "the hook command timed out after 30s"
+                continue
             except (OSError, subprocess.SubprocessError) as exc:
-                return _stage_error(f"could not run the hook command: {exc}")
+                startup_error = startup_error or f"could not run the hook command: {exc}"
+                continue
             out = (proc.stdout or "") + (proc.stderr or "")
             if DENY_SHAPE.search(out):
                 denied = True
@@ -448,7 +456,32 @@ def check_policy(plugin: dict) -> dict:
                 # the JSON, so it is searched for the deny shape but never parsed.
                 denied_for[tool_name] = (proc.stdout or "").strip()
                 break
+            if proc.returncode != 0:
+                # The hook never reached its policy.  The installed command runs the guard
+                # through `/usr/bin/env python3` and `_hook_env`'s PATH carries no Homebrew,
+                # pyenv or conda interpreter, so on such a seat the command exits 127 with
+                # no deny JSON at all.  Reporting that as a guard that let the canary
+                # through sends the operator to fix a guard that was never exercised.
+                #
+                # Recorded rather than returned, because every matching handler runs in a
+                # live session and one of them denying is enough to block the call.  An
+                # immediate return would make the verdict a function of the order the
+                # groups happen to be declared in - `[crashing, denying]` would error
+                # while `[denying, crashing]` passed for the same configuration.
+                if startup_error is None:
+                    startup_error = (
+                        f"the hook command exited {proc.returncode}: "
+                        f"{(proc.stderr or '').strip()[-200:]}"
+                    )
+                continue
         if not denied:
+            # No handler denied, so a handler that never started is the real answer: the
+            # guard was not exercised, which is a stage that could not be evaluated
+            # rather than a policy that let the canary through.
+            if configuration_error is not None:
+                return _stage_fail(configuration_error)
+            if startup_error is not None:
+                return _stage_error(startup_error)
             missed.append(tool_name)
     ok = not missed
     full = next(iter(denied_for.values()), "")
@@ -586,7 +619,12 @@ def _completed_tool_calls(text: str) -> list[dict]:
     caller turns that into an unrunnable check rather than into a verdict about the
     guard.
     """
-    if len(text.encode("utf-8")) > MAX_SESSION_BYTES:
+    # The cheap character count first: UTF-8 spends at least one byte per character, so a
+    # string this long is already over the byte limit, and the runtime-controlled
+    # transcript is never encoded into a second whole-blob copy just to be measured.  The
+    # encode still runs whenever the cheap check passes, to catch the multibyte streams
+    # that are under the character count and over the byte limit.
+    if len(text) > MAX_SESSION_BYTES or len(text.encode("utf-8")) > MAX_SESSION_BYTES:
         raise ValueError("the live session output exceeds the byte limit")
     calls = []
     for line in _iter_session_lines(text):
