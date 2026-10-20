@@ -203,6 +203,12 @@ export function loadConfig(env) {
     throw new Error("config: NOTES_RELAY_CONSUMER must be a seat name such as CLAUDE");
   }
 
+  const operatorZulipUserId = Number(env.OPERATOR_ZULIP_USER_ID);
+  const operatorZulipEmail = String(env.OPERATOR_ZULIP_EMAIL ?? "").trim().toLowerCase();
+  if (notesRelayConsumer === "OPERATOR" && (!Number.isSafeInteger(operatorZulipUserId) || operatorZulipUserId <= 0 || !/^[^@\s]+@[^@\s]+$/.test(operatorZulipEmail))) {
+    throw new Error("config: OPERATOR requires OPERATOR_ZULIP_USER_ID and OPERATOR_ZULIP_EMAIL");
+  }
+
   // MCP Events callback hosts (src/events.js).  Unset means the compiled
   // default;  a malformed entry fails closed like every other var.
   const eventCallbackHosts = env.EVENT_CALLBACK_HOSTS === undefined || env.EVENT_CALLBACK_HOSTS === "" ? [...DEFAULT_CALLBACK_HOSTS] : parseList(env, "EVENT_CALLBACK_HOSTS").map((h) => h.toLowerCase());
@@ -241,6 +247,8 @@ export function loadConfig(env) {
     ownerClients: Object.freeze(ownerClients),
     botEmails: Object.freeze(botEmails),
     notesRelayConsumer,
+    operatorZulipUserId,
+    operatorZulipEmail,
     eventCallbackHosts: Object.freeze(eventCallbackHosts),
   });
 }

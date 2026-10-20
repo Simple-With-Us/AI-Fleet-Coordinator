@@ -12,9 +12,9 @@ Run it in your own terminal:
 
 Credentials (AFC-359:  the owner's key is not needed, nothing prompts, no credential folder is read):
 it signs in only as the realm-admin bot (role 200, administrator).  Each of
-REALM_ADMIN_ZULIP_EMAIL and REALM_ADMIN_ZULIP_KEY is read from the environment first, then
-from Infisical Fleet-OPS folder /zulipadmin through `fleet-secrets get NAME --path /zulipadmin`
-(binary:  env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets).  REALM_ADMIN_ZULIP_SITE is
+ZULIP_OPERATOR_EMAIL and ZULIP_OPERATOR_API_KEY is read from the environment first, then
+from Infisical Fleet-OPS folder /zulip_operator through `fleet-secrets get NAME --path /zulip_operator`
+(binary:  env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets).  ZULIP_OPERATOR_SITE is
 read the same way and defaults to the realm when absent.  A fleet-secrets failure stops the
 run with a message naming the folder and the key, never the value.
 
@@ -59,7 +59,7 @@ import urllib.parse
 import urllib.request
 
 REALM = "https://simplewithus.zulipchat.com"
-ADMIN_FOLDER = "/zulipadmin"
+ADMIN_FOLDER = "/zulip_operator"
 DEFAULT_OUT_DIR = "~/.agent-sync/provisioned"
 ROLE_OWNER, ROLE_ADMIN = 100, 200
 
@@ -69,7 +69,7 @@ def fleet_secrets_bin():
 
 
 def admin_secret(name, required=True):
-    """A realm-admin value:  env var of that name first, then fleet-secrets /zulipadmin.
+    """A realm-admin value:  env var of that name first, then fleet-secrets /zulip_operator.
 
     Never prints a value or the tool's stderr.  Returns "" for a missing optional value and
     exits with a message naming the folder and key for a missing required one.
@@ -181,10 +181,10 @@ def call(email, key, method, path, data=None):
 
 
 def credentials():
-    """(email, key, source):  the realm-admin bot, from env else Infisical /zulipadmin."""
-    email = admin_secret("REALM_ADMIN_ZULIP_EMAIL")
-    key = admin_secret("REALM_ADMIN_ZULIP_KEY")
-    site = admin_secret("REALM_ADMIN_ZULIP_SITE", required=False) or REALM
+    """(email, key, source):  the realm-admin bot, from env else Infisical /zulip_operator."""
+    email = admin_secret("ZULIP_OPERATOR_EMAIL")
+    key = admin_secret("ZULIP_OPERATOR_API_KEY")
+    site = admin_secret("ZULIP_OPERATOR_SITE", required=False) or REALM
     if urllib.parse.urlparse(site).hostname != urllib.parse.urlparse(REALM).hostname:
         raise SystemExit(f"credential is for {site}, expected {REALM}")
     return email, key, f"realm-admin bot (env, else Infisical {ADMIN_FOLDER})"

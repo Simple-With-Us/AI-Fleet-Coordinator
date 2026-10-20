@@ -31,6 +31,7 @@ from agent_sync import adapters as A
 from agent_sync import config as C
 from agent_sync import launchd
 from agent_sync import live as L
+from agent_sync import service_identity as S
 from agent_sync.tests.fake_routine import FakeRoutine
 from agent_sync.tests.harness import write_rc
 from agent_sync.tests.listener_harness import ListenerHarness
@@ -1237,9 +1238,10 @@ class PartitionTests(ServerHarness):
         )
         self.assertEqual({s for s, v in bf.items() if v == "none"}, bf_names - {"BF-DIRECTOR"})
         self.assertEqual(
-            {s for s, v in partition.items() if v == "mac"},
+            {s for s, v in partition.items() if v == "mac"} - S.SERVICE_SEATS,
             set(launchd.READER_SEATS),
-            "the Mac holds every Mac seat (owner, Thu, Oct 8)",
+            "the Mac holds every Mac seat (owner, Thu, Oct 8), the deterministic service "
+            "identities excepted (they hold no reader seat)",
         )
         for seat in ["MA", "JET", "GROK-WEB", "ECHO", "WISE"]:
             self.assertEqual(partition.get(seat), "server", "%s is a cloud seat" % seat)

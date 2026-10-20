@@ -14,6 +14,8 @@ from agent_sync.tests.fake_zulip import BOT_EMAIL
 from agent_sync.tests.harness import TAG, Harness, write_rc
 
 FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
+FAKE_PROJECT_ID = "11111111-2222-3333-4444-555555555555"
+OTHER_FAKE_PROJECT_ID = "66666666-7777-8888-9999-000000000000"
 
 
 class CredentialOrderTests(Harness):
@@ -243,6 +245,9 @@ class InfisicalFallbackTests(Harness):
         return {
             "HOME": str(self.home),
             "PATH": os.environ.get("PATH", ""),
+            # the real binary resolves its project from the env or the home file and fails closed
+            # without one;  the cache keys the fetches per project, so every env here names one.
+            Z.ENV_INFISICAL_PROJECT: FAKE_PROJECT_ID,
             "FLEET_SECRETS_BIN": str(binary or FAKE_FLEET_SECRETS),
             "FAKE_FLEET_SECRETS_FILE": str(data),
         }
@@ -363,6 +368,43 @@ class InfisicalFallbackTests(Harness):
             Z._fetch_from_fleet_secrets(Z.infisical_key_names("CODEX"), env, self.home)
         got = Z._fetch_from_fleet_secrets(Z.infisical_key_names("CLAUDE"), env, self.home)
         self.assertEqual(sorted(got), sorted(Z.infisical_key_names("CLAUDE")))
+
+    def test_one_binary_keeps_two_projects_apart(self) -> None:
+        # One `fleet-secrets` serves both the AFC /zulip the Notes service reads and the Fleet-OPS
+        # /zulip the seats read:  values, names and outages are keyed by project, never by binary.
+        env = self.fake_fleet_secrets({"SHARED": "from-fleet-ops", "ONLY_FLEET_OPS": "x"})
+        other = dict(env)
+        other[Z.ENV_INFISICAL_PROJECT] = OTHER_FAKE_PROJECT_ID
+        other_data = self.tmp / "other-project.json"
+        other_data.write_text(json.dumps({"/zulip": {"SHARED": "from-afc", "ONLY_AFC": "y"}}))
+        other["FAKE_FLEET_SECRETS_FILE"] = str(other_data)
+        self.assertEqual(Z._fetch_from_fleet_secrets(("SHARED",), env, self.home), {"SHARED": "from-fleet-ops"})
+        self.assertEqual(Z._fetch_from_fleet_secrets(("SHARED",), other, self.home), {"SHARED": "from-afc"})
+        self.assertEqual(sorted(Z._list_from_fleet_secrets(env, self.home)), ["ONLY_FLEET_OPS", "SHARED"])
+        self.assertEqual(sorted(Z._list_from_fleet_secrets(other, self.home)), ["ONLY_AFC", "SHARED"])
+        Path(env["FAKE_FLEET_SECRETS_FILE"]).write_text("{", encoding="utf-8")  # that store is down
+        with mock.patch.object(Z, "INFISICAL_CACHE_TTL", 0.0):
+            with self.assertRaises(Z.CredentialError) as ctx:  # never held:  it raises
+                Z._fetch_from_fleet_secrets(("NEVER_HELD",), env, self.home)
+            self.assertIn("fetch-or-auth-failure", str(ctx.exception))
+            with self.assertRaises(Z.CredentialError) as ctx:
+                Z._fetch_from_fleet_secrets(("NEVER_HELD",), env, self.home)
+            self.assertIn("not retried", str(ctx.exception))
+            # the healthy project's fetch is not refused by the other store's outage
+            self.assertEqual(Z._fetch_from_fleet_secrets(("SHARED",), other, self.home), {"SHARED": "from-afc"})
+
+    def test_an_unresolvable_project_fails_closed_and_is_never_cached(self) -> None:
+        env = self.fake_fleet_secrets({"A": "1"})
+        del env[Z.ENV_INFISICAL_PROJECT]  # and no ~/.agent-sync/fleet-ops-project-id
+        for call in (
+            lambda: Z._fetch_from_fleet_secrets(("A",), env, self.home),
+            lambda: Z._list_from_fleet_secrets(env, self.home),
+        ):
+            with self.assertRaises(Z.CredentialError) as ctx:
+                call()
+            self.assertIn(Z.ENV_INFISICAL_PROJECT, str(ctx.exception))
+        self.assertEqual(Z._value_cache, {})
+        self.assertEqual(Z._names_cache, {})
 
     def test_the_old_default_file_under_home_is_never_read(self) -> None:
         # AFC-359:  ~/.secrets/Zulip is retired.  A file there, with no override and nothing in Infisical, is ignored.

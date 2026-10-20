@@ -4,6 +4,7 @@ Nothing here reaches Infisical, Cloudflare or wrangler:  the helpers of install_
 the tests check that nothing is ever written to Infisical, that the value is validated against fleet-apps.json, and
 that wrangler is called only with --apply and gets the value on standard input.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -58,25 +59,44 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("NOTES_RELAY_CONSUMER=CLAUDE", out)
         self.assertEqual(install.wrangler_calls, [])
-        self.assertEqual({method for method, _ in install.requests}, {"POST", "GET"}, "login and one read, no write")
-        self.assertIn("secretPath=%2F", install.requests[1][1], "the knob lives at the project root")
+        self.assertEqual(
+            {method for method, _ in install.requests},
+            {"POST", "GET"},
+            "login and one read, no write",
+        )
+        self.assertIn(
+            "secretPath=%2F", install.requests[1][1], "the knob lives at the project root"
+        )
 
     def test_apply_puts_the_value_on_stdin_to_the_binding_of_the_same_name(self):
         install = FakeInstall({"NOTES_RELAY_CONSUMER": " claude \n"})
         code, out = run(install, "--apply")
         self.assertEqual(code, 0)
-        self.assertEqual(install.wrangler_calls, [(["secret", "put", "NOTES_RELAY_CONSUMER"], "CLAUDE")])
+        self.assertEqual(
+            install.wrangler_calls, [(["secret", "put", "NOTES_RELAY_CONSUMER"], "CLAUDE")]
+        )
         self.assertIn("installed", out)
+
+    def test_operator_is_explicit_service_not_roster(self):
+        install = FakeInstall({"NOTES_RELAY_CONSUMER": "OPERATOR"})
+        code, _ = run(install, "--apply")
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            install.wrangler_calls, [(["secret", "put", "NOTES_RELAY_CONSUMER"], "OPERATOR")]
+        )
 
     def test_a_wrangler_failure_is_the_exit_code(self):
         code, _ = run(FakeInstall({"NOTES_RELAY_CONSUMER": "CLAUDE"}, code=1), "--apply")
         self.assertEqual(code, 1)
 
     def test_a_missing_empty_or_bad_value_installs_nothing(self):
-        for secrets, fragment in (({}, "is not set in Infisical"), ({"NOTES_RELAY_CONSUMER": "  "}, "is not set"),
-                                  ({"NOTES_RELAY_CONSUMER": "not a seat!"}, "not a seat tag"),
-                                  ({"NOTES_RELAY_CONSUMER": "MONET"}, "not a live seat"),
-                                  ({"NOTES_RELAY_CONSUMER": "NOBODY"}, "not a live seat")):
+        for secrets, fragment in (
+            ({}, "is not set in Infisical"),
+            ({"NOTES_RELAY_CONSUMER": "  "}, "is not set"),
+            ({"NOTES_RELAY_CONSUMER": "not a seat!"}, "not a seat tag"),
+            ({"NOTES_RELAY_CONSUMER": "MONET"}, "not a live seat"),
+            ({"NOTES_RELAY_CONSUMER": "NOBODY"}, "not a live seat"),
+        ):
             with self.subTest(secrets=secrets):
                 install = FakeInstall(secrets)
                 with self.assertRaises(SystemExit) as caught:
