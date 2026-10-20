@@ -42,6 +42,7 @@ from typing import Any
 
 from . import __version__, secretscan
 from . import adapters as A
+from . import chat_fanout as FAN
 from . import chat_nudges as CN
 from . import chat_transport as CT
 from . import config as C
@@ -120,10 +121,24 @@ class RoleRefused(Z.AgentSyncError):
     exit_code = 3
 
 
-def role_refused(person: Mapping[str, Any]) -> bool:
-    """True for an admin or owner bot (or an unknown role):  the listener refuses those keys."""
+def role_refused(person: Mapping[str, Any], admin_ok: bool = False) -> bool:
+    """True for an admin or owner bot (or an unknown role):  the listener refuses those keys.  With
+    admin_ok (see admin_allowed) an administrator (200) is accepted, never an owner."""
+    if admin_ok and person.get("role") == 200 and not person.get("is_owner"):
+        return False
     return bool(
         person.get("is_admin") or person.get("is_owner") or person.get("role") not in FLEET_ROLES
+    )
+
+
+def admin_allowed(config: Any, seat_cfg: Any) -> bool:
+    """Only the [notes_relay] seat, and only while it is inbox-only, may hold an administrator key (AFC-331,
+    owner 2026-10-18).  That seat runs deterministic code (the notes relay) and never wakes a model;  every
+    other seat keeps the member-only rule.  A fixed rule, not a setting, so nothing can be misconfigured."""
+    return bool(
+        getattr(config, "notes_relay_enabled", False)
+        and seat_cfg.seat == getattr(config, "notes_relay_seat", None)
+        and seat_cfg.wake == "inbox"
     )
 
 
@@ -208,6 +223,7 @@ class SeatRunner:
         self.creds: Z.Credentials | None = None
         self.client: Z.ZulipClient | None = None
         self.me: R.SeatIdentity | None = None
+        self.me_person: dict[str, Any] = {}  # users/me at connect:  the role a reload re-checks
         self.queue: Z.EventQueue | None = None
         cursor = L.read_json(self.paths.cursor).get("last_id")
         self.cursor: int | None = cursor if isinstance(cursor, int) else None
@@ -250,7 +266,8 @@ class SeatRunner:
 
     # ---- connection -------------------------------------------------------------------------
     def load_credentials(self) -> None:
-        # One file per seat, or (creds = "env", server instance) the variables the seat names:
+        # Each seat's own bot in Infisical /zulip (or its file in the explicit override directory), or
+        # (creds = "env", server instance) the variables the seat names:
         # never ZULIP_RC or the CLI's triple, so seats cannot alias one bot.  The realm is never
         # taken from the credential:  its site must match AGENT_SYNC_REALM (or the default).
         try:
@@ -282,8 +299,9 @@ class SeatRunner:
             raise RoleRefused(
                 "users/me for seat %s answered as a different user; refusing it" % self.seat
             )
-        if role_refused(me):
+        if role_refused(me, admin_allowed(self.daemon.config, self.cfg)):
             raise RoleRefused(role_refusal(self.seat, role))
+        self.me_person = dict(me)
         bot_type = me.get("bot_type", R.GENERIC_BOT)
         if bot_type != R.GENERIC_BOT and not (
             bot_type == 3 and self.seat in self.daemon.config.outgoing_webhook_seats
@@ -558,9 +576,8 @@ class Daemon:
         self.root = root or L.state_root(self.env)
         self.clock = clock or Clock()
         self.realm = Z.realm_url(self.env)
-        self.secrets_dir = os.path.expanduser(
-            self.env.get(Z.ENV_SECRETS_DIR) or os.path.join(self.home, ".secrets", "Zulip")
-        )
+        # Only the explicit AGENT_SYNC_SECRETS_DIR override;  seats read Infisical /zulip (AFC-359).
+        self.secrets_dir = Z.override_secrets_dir(self.env)
         self.hidden: list[str] = []
         self.hidden_lock = threading.Lock()
         self.stdout = stdout or sys.stdout
@@ -613,6 +630,9 @@ class Daemon:
         self.seats: dict[str, SeatRunner] = {}
         self.chat_nudges = CN.ChatNudges(self.root, "GROK", recover=False)
         self._chat_queues = {"GROK": self.chat_nudges}
+        self._fanout_lock = threading.Lock()
+        # Bounded:  the ids only have to outlive one message's routing, so the daemon never grows without limit.
+        self._fanout_seen: collections.deque[int] = collections.deque(maxlen=RING_LIMIT)
         self.coalescer = W.Coalescer(
             window=self.config.coalesce_seconds,
             max_window=self.config.coalesce_max_seconds,
@@ -785,6 +805,7 @@ class Daemon:
                     % (len(cfg.errors), "" if len(cfg.errors) == 1 else "s"),
                     kind="config",
                 )
+        self._notify_seat_config(cfg)
         self.coalescer.window = cfg.coalesce_seconds
         self.coalescer.max_window = cfg.coalesce_max_seconds
         self.coalescer.owner_window = cfg.owner_coalesce_seconds
@@ -797,6 +818,46 @@ class Daemon:
             gone = self.seats.pop(seat)
             gone.stop.set()  # its poller and wake worker exit instead of reconnecting
             gone.disconnect()
+        for runner in self.seats.values():
+            # A reload can take the admin exception away (the relay turned off or moved, or the seat's wake changed):
+            # an administrator key then loses its queue at once, the same as a promotion (AFC-331).
+            person = (
+                runner.users.get(runner.me.user_id) if runner.me else None
+            ) or runner.me_person
+            if runner.connected and person and role_refused(person, admin_allowed(cfg, runner.cfg)):
+                self._refuse(runner, role_refusal(runner.seat, person.get("role")))
+
+    def _notify_seat_config(self, cfg: C.Config) -> None:
+        """A seat whose wake config is wrong keeps capturing (AFC-358), so nothing about the seat looks
+        broken from outside:  its mentions queue and nothing wakes.  Say so once a day per seat,
+        naming the first problem, the way a stale pin is said.  A seat the config could not load at
+        all (a bad instance, credential or environment name) gets the sharper message."""
+        for seat, seat_cfg in sorted(cfg.seats.items()):
+            if not seat_cfg.config_problems:
+                continue
+            self.notifier.notify(
+                seat,
+                "agent-sync %s" % seat,
+                "%s wake config problem, so %s wakes are inbox-only (messages still queue): %s"
+                % (seat, seat, self.scrub(seat_cfg.config_problems[0])),
+                kind="config-wake",
+                key="config-wake:%s" % seat,
+                note="%d problem%s in listener.toml for this seat; agent-sync status lists them"
+                % (
+                    len(seat_cfg.config_problems),
+                    "" if len(seat_cfg.config_problems) == 1 else "s",
+                ),
+            )
+        for seat, problems in sorted(cfg.skipped_seats.items()):
+            self.notifier.notify(
+                seat,
+                "agent-sync %s" % seat,
+                "%s is NOT loaded, so nothing is captured for it: %s"
+                % (seat, self.scrub(problems[0] if problems else "config problem")),
+                kind="config-seat",
+                key="config-seat:%s" % seat,
+                note="fix listener.toml, then agent-sync daemon reload",
+            )
 
     def _configure_outgoing_webhook(self) -> None:
         """Start the optional receiver using only tokens for explicitly allowlisted seats."""
@@ -1460,7 +1521,11 @@ class Daemon:
             capable = (
                 claude
                 and lease.get("wake_capable") is not False
-                and self.config.rewake_verified
+                and L.rewake_verified_for(
+                    self.config.rewake_verified_cli,
+                    self.config.rewake_verified_desktop,
+                    L.surface_of(lease.get("entrypoint")),
+                )
                 and not L.paused(self.root, runner.seat)
                 and L.watcher_alive(runner.paths, lease_id)
             )
@@ -1563,7 +1628,9 @@ class Daemon:
                             runner.me is not None
                             and uid == runner.me.user_id
                             and event.get("op") != "remove"
-                            and role_refused(runner.users[uid])
+                            and role_refused(
+                                runner.users[uid], admin_allowed(self.config, runner.cfg)
+                            )
                         ):
                             # The seat's own bot was promoted to admin or owner:  drop the queue now,
                             # not when it next expires (owner decision 2026-10-07).
@@ -1850,6 +1917,8 @@ class Daemon:
             classes=c.labels(),
             decision=d.describe(),
         )
+        if c.owner and c.everyone and not c.dm and not c.stale:
+            self.start_fanout(message, c)
         if (
             c.owner
             and c.dm
@@ -2265,6 +2334,22 @@ class Daemon:
                 "then `--pin`.  It is never re-pinned automatically:  the pin records "
                 "that a person checked this build's wake contract."
                 % (recorded, current, runner.seat),
+                trigger_ids=pending.trigger_ids,
+            )
+            return
+        if reason in ("no_claude", "no_muse"):
+            # The binary the seat's wake needs is not there:  a typo'd path, a missing install or a PATH
+            # that lost it.  Every wake drops until it is fixed, so the notice names the setting.
+            tool = "claude" if reason == "no_claude" else "muse"
+            self.notifier.notify(
+                runner.seat,
+                "agent-sync %s" % runner.seat,
+                "no %s binary found, so %s wakes are inbox-only until it is installed or "
+                "seat.%s.%s names it" % (tool, runner.seat, runner.seat, tool),
+                kind="wake-" + reason,
+                key="wake:%s:%s" % (runner.seat, reason),
+                note="messages still queue in the seat inbox; fix listener.toml or the install, then "
+                "agent-sync daemon reload",
                 trigger_ids=pending.trigger_ids,
             )
             return
@@ -3091,10 +3176,102 @@ class Daemon:
             return
         self._surface(runner, pending, listed, lost, finished)
 
+    def start_fanout(self, message: Mapping[str, Any], c: R.Classes) -> None:
+        """The owner's channel-wide mention reaches the recently active chats (chat_fanout), once per message
+        whichever seat saw it first.  The catalog walk can take seconds, so it runs off the event thread."""
+        message_id = message.get("id")
+        if not isinstance(message_id, int):
+            return
+        with self._fanout_lock:
+            if message_id in self._fanout_seen:
+                return
+            self._fanout_seen.append(message_id)
+        where = FAN.scope(R.outside_code(str(message.get("content") or "")), c.topic)
+        threading.Thread(
+            target=self.fanout,
+            args=(message_id, c.channel, c.topic, where),
+            name="chat-fanout",
+            daemon=True,
+        ).start()
+
+    def fanout(
+        self, message_id: int, channel: str, topic: str, where: FAN.Scope, places: Any = None
+    ) -> dict[str, Any]:
+        """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform."""
+        result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}}
+        try:
+            # The catalog's own TTL decides when a rescan is due:  a burst of alerts reuses one walk instead of each
+            # forcing one, and never holds the scan lock longer than an ordinary wake's refresh would.
+            rows = self.chat_catalog().discover(
+                wait_grok=True, grok_timeout=CT.discovery_wait_budget()
+            )
+            chosen = FAN.select(rows, self.clock.time(), where, places or FAN.ChatPlaces())
+        except Exception as exc:
+            self.log.write("fanout-error", id=message_id, error=self.scrub(str(exc))[:200])
+            return dict(result, error="catalog")
+        for row in chosen:
+            platform = str(row.get("platform") or "")
+            runner = self.seats.get(str(row.get("seat") or ""))
+            if platform not in CN.SUPPORTED_PLATFORMS or runner is None or not runner.cfg.enabled:
+                result["no_transport"][platform] = result["no_transport"].get(platform, 0) + 1
+                continue
+            # A busy chat is queued too:  the nudge queue's preflight holds it until the chat is idle, so a chat
+            # that was picked is never silently dropped.
+            binding = {
+                key: str(row.get(key) or "") for key in ("platform", "host", "session_id", "cwd")
+            }
+            binding.update(channel=channel, topic=topic)
+            try:
+                added = self.chat_queue(runner.seat).enqueue_target(
+                    binding, message_id, self.clock.time(), owner=True
+                )
+            except ValueError as exc:
+                # The transport was vetted above, so a refusal here is a bad binding or an unreadable state
+                # file:  an error to log and count, not a platform with nowhere to send.
+                result["failed"] = result.get("failed", 0) + 1
+                self.log.write(
+                    "fanout-chat-error",
+                    id=message_id,
+                    platform=platform,
+                    error=self.scrub(str(exc))[:200],
+                )
+                continue
+            except Exception as exc:  # one chat's failure never stops the rest of the alert
+                result["failed"] = result.get("failed", 0) + 1
+                self.log.write(
+                    "fanout-chat-error",
+                    id=message_id,
+                    platform=platform,
+                    error=self.scrub(str(exc))[:200],
+                )
+                continue
+            result["queued" if added else "already"] += 1
+        self.log.write(
+            "fanout",
+            id=message_id,
+            repos=sorted(where.repos) if where.repos else "all",
+            issues=sorted(where.issues),
+            chosen=len(chosen),
+            **{k: v for k, v in result.items() if v},
+        )
+        return result
+
+    def chat_catalog(self) -> Any:
+        # Fanout threads race here, so the check and the construction are one guarded step.
+        with self._fanout_lock:
+            if not hasattr(self, "_chat_catalog"):
+                from .chat_catalog import ChatCatalog
+
+                self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
+            return self._chat_catalog
+
     def chat_queue(self, seat: str) -> CN.ChatNudges:
-        if seat not in self._chat_queues:
-            self._chat_queues[seat] = CN.ChatNudges(self.root, seat, recover=False)
-        return self._chat_queues[seat]
+        # Fanout threads reach this from a background thread, so the check and the construction are
+        # one guarded step, exactly like chat_catalog() above.
+        with self._fanout_lock:
+            if seat not in self._chat_queues:
+                self._chat_queues[seat] = CN.ChatNudges(self.root, seat, recover=False)
+            return self._chat_queues[seat]
 
     def chat_context(
         self, runner: SeatRunner, pending: W.Pending, history: list[dict[str, Any]] | None = None
@@ -3103,13 +3280,9 @@ class Daemon:
         if runner.cfg.wake != "muse" or not pending.trigger_ids or pending.route_tagged:
             return []
         try:
-            if not hasattr(self, "_chat_catalog"):
-                from .chat_catalog import ChatCatalog
-
-                self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
             # One leader walk, not one timeout per page.  A still-pending leader is an
             # unavailable catalog row, so this wake continues instead of stalling intake.
-            rows = self._chat_catalog.discover(
+            rows = self.chat_catalog().discover(
                 wait_grok=True, grok_timeout=CT.discovery_wait_budget()
             )
             # Every direct message or explicit bot mention may wake Muse.  Its trigger is
@@ -4729,6 +4902,11 @@ class Daemon:
                     "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
                     % (muse_pin["muse"], muse_pin["pinned_muse"], seat)
                 )
+            for problem in runner.cfg.config_problems:
+                red.append(
+                    "config problem, so wakes are inbox-only (mentions still queue): %s"
+                    % self.scrub(problem)
+                )
             quota = None
             if runner.cfg.wake in ("claude", "muse"):
                 quota = A.provider_quota(runner.cfg.provider or "", now)
@@ -4791,6 +4969,10 @@ class Daemon:
                     else "inactive"
                 ),
             },
+            "skipped_seats": {
+                seat: [self.scrub(p) for p in problems]
+                for seat, problems in sorted(self.config.skipped_seats.items())
+            },
             "config_errors": [
                 self.scrub(e) for e in self.config.errors + self.refusal + self.reload_refused
             ],
@@ -4798,6 +4980,8 @@ class Daemon:
             "chat_nudges": all_nudges,
             "loop_guard": self.loopguard.holding(now),
             "rewake_verified": self.config.rewake_verified,
+            "rewake_verified_cli": self.config.rewake_verified_cli,
+            "rewake_verified_desktop": self.config.rewake_verified_desktop,
             "pause": L.read_json(pause_path(self.root)),
             "seats": seats,
         }
@@ -5161,6 +5345,21 @@ class Daemon:
         os.ftruncate(lock_fd, 0)
         os.write(lock_fd, str(os.getpid()).encode())
         self.install_excepthooks()
+        # One Infisical fetch for every seat's /zulip names (AFC-359), so the seat threads below read
+        # this process's in-memory copy instead of each starting its own fetch.  Never raises.  The daemon
+        # is not interactive, so it waits longer for fleet-secrets than a CLI command does.
+        Z.FLEET_SECRETS_TIMEOUT = max(Z.FLEET_SECRETS_TIMEOUT, Z.DAEMON_FLEET_SECRETS_TIMEOUT)
+        Z.prefetch_infisical(
+            (),
+            self.env,
+            Path(self.home),
+            stems=[
+                runner.cfg.bot
+                for runner in self.seats.values()
+                if runner.cfg.creds == "infisical"
+                or (runner.cfg.creds == "file" and not self.secrets_dir)
+            ],
+        )
         self.log.write(
             "started",
             pid=os.getpid(),

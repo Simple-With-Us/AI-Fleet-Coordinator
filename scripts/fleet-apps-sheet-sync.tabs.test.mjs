@@ -76,7 +76,7 @@ test("credential cells carry names and paths only", () => {
   for (const r of seatsRows.slice(1)) {
     const cell = String(r[7] || "");
     if (!cell) continue;
-    assert.match(cell, /^(~\/\.secrets\/Zulip\/[A-Za-z-]+-zuliprc|Infisical )/, cell);
+    assert.match(cell, /^Infisical /, cell);
     assert.doesNotMatch(cell, /=/, "no KEY=value");
   }
   assert.equal(zulipFileCode("BF-COMPILER"), "BF-Compiler");

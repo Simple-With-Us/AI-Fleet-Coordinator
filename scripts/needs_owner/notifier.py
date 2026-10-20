@@ -26,6 +26,7 @@ NEEDS_OWNER_NOTIFY_PAUSED, or Jay's verified `pause` in any OWNER topic, for 24 
 only, and their notes wait.  One run at a time (a lock).  The log is ids and reason words, never a question, an
 option, a message or an answer.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -34,19 +35,17 @@ import io as iolib
 import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from . import items as itemsmod
-from . import ledger
+from . import ledger, records, replies, safety
 from . import links as linkmod
 from . import notify as notifymod
-from . import records
-from . import replies
-from . import safety
 from . import text as T
 from .errors import BoardFailed, NeedsOwnerError, Refusal
-from .items import Item, NOTIFIER_SEAT
+from .items import NOTIFIER_SEAT, Item
 from .proc import Runner
 
 SEAT = NOTIFIER_SEAT
@@ -73,15 +72,18 @@ class NotifierStop(NeedsOwnerError):
 
 # ---- the knobs ----------------------------------------------------------------------------------
 
+
 class FleetKnobs:
     """The K1 knobs through `fleet_knobs` (Infisical, with its last-known-good copy).  The stable copy carries the package."""
 
     def __init__(self) -> None:
         try:
-            from fleet_knobs import knobs  # noqa: PLC0415 - only the notifier needs it
+            from fleet_knobs import knobs
         except ImportError as exc:
-            raise NotifierStop("fleet_knobs is missing from this copy of needs-owner (%s);  run scripts/needs_owner/install.sh --apply"
-                               % type(exc).__name__) from None
+            raise NotifierStop(
+                "fleet_knobs is missing from this copy of needs-owner (%s);  run scripts/needs_owner/install.sh --apply"
+                % type(exc).__name__
+            ) from None
         self._knobs = knobs
 
     def get(self, name: str) -> Any:
@@ -108,11 +110,14 @@ def read_settings(knobs: Any) -> Settings:
     except NotifierStop:
         raise
     except Exception as exc:  # noqa: BLE001 - a refused environment or an odd knob stops the run, loudly and without a send
-        raise NotifierStop("the knobs cannot be read (%s):  nothing was sent" % type(exc).__name__) from None
+        raise NotifierStop(
+            "the knobs cannot be read (%s):  nothing was sent" % type(exc).__name__
+        ) from None
     return Settings(paused, caps, owner, stale)
 
 
 # ---- events ---------------------------------------------------------------------------------------
+
 
 class Events:
     """What happened, as ids and words.  One line each on stdout (the LaunchAgent's log), or one JSON document at the end."""
@@ -136,7 +141,9 @@ class Events:
         row.update({k: self._safe(v) for k, v in ids.items() if v is not None})
         self.rows.append(row)
         if not self.json_mode:
-            parts = [self.now().isoformat(timespec="seconds"), word] + ([row["id"]] if ident else [])
+            parts = [self.now().isoformat(timespec="seconds"), word] + (
+                [row["id"]] if ident else []
+            )
             parts += ["%s=%s" % (k, v) for k, v in row.items() if k not in ("event", "id")]
             self.out.write("  ".join(str(p) for p in parts) + "\n")
             self.out.flush()
@@ -147,12 +154,13 @@ class Events:
 
 # ---- the run ---------------------------------------------------------------------------------------
 
+
 def router_owner_topic(name: str) -> bool:
     """A topic that starts `OWNER ` (any case, with or without Zulip's resolved check mark):  the router's rule, kept in step by a test."""
     text = str(name or "").strip()
     for mark in ("\u2714\ufe0f", "\u2714"):
         if text.startswith(mark):
-            text = text[len(mark):].lstrip()
+            text = text[len(mark) :].lstrip()
             break
     return text.casefold().startswith("owner ")
 
@@ -162,12 +170,23 @@ def parse_time(raw: object) -> dt.datetime | None:
         stamp = dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except ValueError:
         return None
-    return stamp if stamp.tzinfo else stamp.replace(tzinfo=dt.timezone.utc)
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=dt.UTC)
 
 
 class Notifier:
-    def __init__(self, io: Any, runner: Runner, state: ledger.State, settings: Settings, now: Callable[[], dt.datetime],
-                 events: Events, directory: str, owner_id: int | None, dry_run: bool, lock: ledger.Lock | None) -> None:
+    def __init__(
+        self,
+        io: Any,
+        runner: Runner,
+        state: ledger.State,
+        settings: Settings,
+        now: Callable[[], dt.datetime],
+        events: Events,
+        directory: str,
+        owner_id: int | None,
+        dry_run: bool,
+        lock: ledger.Lock | None,
+    ) -> None:
         self.io = io
         self.runner = runner
         self.state = state
@@ -216,8 +235,20 @@ class Notifier:
         return self.runner.agent_sync(verb, "--as", SEAT, "--session", SESSION, *args, stdin=stdin)
 
     # ---- reading Zulip ----------------------------------------------------------------------
-    def read(self, topic: str, *, since: int | None = None, limit: int = READ_LIMIT) -> list[dict] | None:
-        argv = ["read", "--json", "--channel", CHANNEL, "--topic", topic, "--include-self", "--limit", str(limit)]
+    def read(
+        self, topic: str, *, since: int | None = None, limit: int = READ_LIMIT
+    ) -> list[dict] | None:
+        argv = [
+            "read",
+            "--json",
+            "--channel",
+            CHANNEL,
+            "--topic",
+            topic,
+            "--include-self",
+            "--limit",
+            str(limit),
+        ]
         if since:
             argv += ["--since", str(since)]
         result = self.agent_sync(*argv)
@@ -229,14 +260,28 @@ class Notifier:
                 row = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(row, dict) and isinstance(row.get("id"), int) and not isinstance(row.get("id"), bool):
+            if (
+                isinstance(row, dict)
+                and isinstance(row.get("id"), int)
+                and not isinstance(row.get("id"), bool)
+            ):
                 rows.append(row)
         return sorted(rows, key=lambda r: r["id"])
 
     def verify(self, message_id: int, topic: str, after: int) -> bool | None:
         """True when `agent-sync verify-owner-msg` verifies the message, False when it says it is not the owner's, None when
         it could not say (the network, a missing owner pin)."""
-        result = self.agent_sync("verify-owner-msg", str(message_id), "--channel", CHANNEL, "--topic", topic, "--after", str(after), "--json")
+        result = self.agent_sync(
+            "verify-owner-msg",
+            str(message_id),
+            "--channel",
+            CHANNEL,
+            "--topic",
+            topic,
+            "--after",
+            str(after),
+            "--json",
+        )
         if result.code == 0 and not result.timed_out:
             return True
         if result.code == 7:
@@ -245,7 +290,11 @@ class Notifier:
 
     def stream_id(self) -> int | None:
         cached = self.state.data.get("stream_id")
-        if isinstance(cached, dict) and self.ts() - float(cached.get("at", 0)) < STREAM_ID_TTL and isinstance(cached.get("id"), int):
+        if (
+            isinstance(cached, dict)
+            and self.ts() - float(cached.get("at", 0)) < STREAM_ID_TTL
+            and isinstance(cached.get("id"), int)
+        ):
             return cached["id"]
         result = self.agent_sync("channels", "--json")
         if not result.ok:
@@ -255,7 +304,11 @@ class Notifier:
         except ValueError:
             return None
         for row in rows if isinstance(rows, list) else []:
-            if isinstance(row, dict) and str(row.get("name") or "").casefold() == CHANNEL and isinstance(row.get("stream_id"), int):
+            if (
+                isinstance(row, dict)
+                and str(row.get("name") or "").casefold() == CHANNEL
+                and isinstance(row.get("stream_id"), int)
+            ):
                 self.state.data["stream_id"] = {"id": row["stream_id"], "at": self.ts()}
                 self.state.dirty = True
                 return row["stream_id"]
@@ -283,8 +336,13 @@ class Notifier:
         if not item.seat_verified:
             return "seat_not_verified"
         try:
-            safety.check_fields({"the question": b.question, "the context": b.context,
-                                 **{"option %d" % n: o for n, o in enumerate(b.options, 1)}})
+            safety.check_fields(
+                {
+                    "the question": b.question,
+                    "the context": b.context,
+                    **{"option %d" % n: o for n, o in enumerate(b.options, 1)},
+                }
+            )
         except Refusal:
             return "unsafe_text"
         if not b.hash_matches_uid():
@@ -316,7 +374,12 @@ class Notifier:
     def run(self) -> None:
         if self.state.reset:
             self.events.add("state-reset")
-        self.events.add("start", paused=self.paused_by, stale_knobs=self.settings.stale or None, dry_run=self.dry_run or None)
+        self.events.add(
+            "start",
+            paused=self.paused_by,
+            stale_knobs=self.settings.stale or None,
+            dry_run=self.dry_run or None,
+        )
         try:
             self.items, self.truncated = itemsmod.load(self.runner)
         except (BoardFailed, NeedsOwnerError) as exc:
@@ -338,7 +401,7 @@ class Notifier:
             fn()
         except NotifierStop:
             raise
-        except Exception as exc:  # noqa: BLE001 - one phase failing never stops the others, and never prints a traceback
+        except Exception as exc:
             if self.io.environ.get("NEEDS_OWNER_DEBUG"):
                 raise
             self.events.add("error", phase=name.replace(" ", "-"), kind=type(exc).__name__)
@@ -355,12 +418,14 @@ class Notifier:
                 continue
             try:
                 if item.state == "notify_pending":
-                    self.linear_answer(item)  # no OWNER topic yet, but the issue is in Jay's Linear view
+                    self.linear_answer(
+                        item
+                    )  # no OWNER topic yet, but the issue is in Jay's Linear view
                 else:
                     self.look_for_an_answer(item)
             except NotifierStop:
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if self.io.environ.get("NEEDS_OWNER_DEBUG"):
                     raise
                 self.events.add("error", item.identifier, kind=type(exc).__name__)
@@ -382,7 +447,11 @@ class Notifier:
         return self.owner_id is None or message.get("sender_id") == self.owner_id
 
     def typed_answer(self, item: Item, topic: str, notice_id: int, messages: list[dict]) -> bool:
-        candidates = [m for m in messages if m["id"] > notice_id and m.get("is_bot") is False and self.is_owner_sender(m)]
+        candidates = [
+            m
+            for m in messages
+            if m["id"] > notice_id and m.get("is_bot") is False and self.is_owner_sender(m)
+        ]
         decided = self.state.data["decided"]
         asked = 0
         for message in candidates:
@@ -435,9 +504,23 @@ class Notifier:
         if verdict.kind == "answer":
             return self.record_reply(item, "reaction", notice_id, option=taps[0])
         if verdict.kind == "conflict":
-            self.nudges.append((item, "ask-again", "ask:%s:%s" % (item.identifier, ",".join(map(str, taps))), replies.ask_again_text(taps)))
+            self.nudges.append(
+                (
+                    item,
+                    "ask-again",
+                    "ask:%s:%s" % (item.identifier, ",".join(map(str, taps))),
+                    replies.ask_again_text(taps),
+                )
+            )
         elif verdict.kind == "risky":
-            self.nudges.append((item, "typed-reply", "typed:%s:%d" % (item.identifier, taps[0]), replies.typed_reply_text(taps[0])))
+            self.nudges.append(
+                (
+                    item,
+                    "typed-reply",
+                    "typed:%s:%d" % (item.identifier, taps[0]),
+                    replies.typed_reply_text(taps[0]),
+                )
+            )
         return False
 
     def linear_answer(self, item: Item) -> bool:
@@ -450,8 +533,12 @@ class Notifier:
             author = str(comment.get("author_id") or "").lower()
             if author != wanted or comment.get("author_app") is not False:
                 continue  # not the owner's account, or an app (an app's comment is never the owner)
-            if (records.parse_notified(text) or records.parse_pending(text) or records.parse_reply(text)
-                    or records.is_block_comment(text)):
+            if (
+                records.parse_notified(text)
+                or records.parse_pending(text)
+                or records.parse_reply(text)
+                or records.is_block_comment(text)
+            ):
                 continue
             mine.append(comment)
         if not mine:
@@ -486,7 +573,9 @@ class Notifier:
     def notices_phase(self, *, urgent: bool) -> None:
         if self.paused:
             return
-        pending = [i for i in self.items if i.state == "notify_pending" and (i.severity == "P1") == urgent]
+        pending = [
+            i for i in self.items if i.state == "notify_pending" and (i.severity == "P1") == urgent
+        ]
         for item in sorted(pending, key=lambda i: (i.created_at or "", i.identifier)):
             if item.pending == "held":
                 continue  # adopted with --no-notify:  the filer decided not to announce it yet
@@ -522,7 +611,9 @@ class Notifier:
                 self.state.record_send("notice", item.identifier, urgent)
             self.state.succeeded(item.identifier)
             item.notified = (notice.msg_id, notice.topic)
-            self.events.add("notified", item.identifier, msg=notice.msg_id, recorded=notice.recorded)
+            self.events.add(
+                "notified", item.identifier, msg=notice.msg_id, recorded=notice.recorded
+            )
             return
         fails = self.state.failed(item.identifier)
         self.events.add("notice-failed", item.identifier, reason=notice.reason, fails=fails)
@@ -538,7 +629,9 @@ class Notifier:
                 self.events.add("note-dropped", ident, why="item_closed_or_unrecorded")
                 continue
             target = self.target_seat(item)
-            if target == SEAT:  # a mention of yourself wakes nobody:  leave it for the next CLAUDE session
+            if (
+                target == SEAT
+            ):  # a mention of yourself wakes nobody:  leave it for the next CLAUDE session
                 self.add_pending_claude(item, row)
                 self.state.drop_note(ident)
                 continue
@@ -556,7 +649,9 @@ class Notifier:
             self.events.add("would-note", item.identifier, to=target)
             return
         body = replies.note_text(item.identifier, item.url, row["kind"], str(row["id"]))
-        sent, message_id = self.post(item.topic or T.topic_for(item.identifier, item.block.question), body, to=target)
+        sent, message_id = self.post(
+            item.topic or T.topic_for(item.identifier, item.block.question), body, to=target
+        )
         if sent:
             self.state.record_send("note", item.identifier)
             self.state.drop_note(item.identifier)
@@ -572,12 +667,21 @@ class Notifier:
             self.events.add("note-failed", item.identifier, to=target, tries=row["tries"])
 
     def add_pending_claude(self, item: Item, row: dict) -> None:
-        entry = {"identifier": item.identifier, "url": item.url, "kind": row["kind"], "id": str(row["id"]),
-                 "option": row.get("option"), "topic": item.topic, "recorded_at": self.now().isoformat(timespec="seconds")}
+        entry = {
+            "identifier": item.identifier,
+            "url": item.url,
+            "kind": row["kind"],
+            "id": str(row["id"]),
+            "option": row.get("option"),
+            "topic": item.topic,
+            "recorded_at": self.now().isoformat(timespec="seconds"),
+        }
         if self.dry_run:
             self.events.add("would-file-pending-claude", item.identifier)
             return
-        self.pending_claude = [r for r in self.pending_claude if r.get("identifier") != item.identifier] + [entry]
+        self.pending_claude = [
+            r for r in self.pending_claude if r.get("identifier") != item.identifier
+        ] + [entry]
         self.pending_claude_changed = True
         self.events.add("pending-claude", item.identifier, kind=row["kind"])
 
@@ -609,7 +713,9 @@ class Notifier:
         """The recent topics of #agent-sync (`agent-sync topics --json`), fetched once a run.  None when it failed."""
         if not self._topic_rows_read:
             self._topic_rows_read = True
-            result = self.agent_sync("topics", "--json", "--channel", CHANNEL, "--limit", str(TOPIC_LIST_LIMIT))
+            result = self.agent_sync(
+                "topics", "--json", "--channel", CHANNEL, "--limit", str(TOPIC_LIST_LIMIT)
+            )
             rows = None
             if result.ok:
                 try:
@@ -617,8 +723,14 @@ class Notifier:
                 except ValueError:
                     parsed = None
                 if isinstance(parsed, list):
-                    rows = [r for r in parsed if isinstance(r, dict) and isinstance(r.get("name"), str)
-                            and isinstance(r.get("max_id"), int) and not isinstance(r.get("max_id"), bool)]
+                    rows = [
+                        r
+                        for r in parsed
+                        if isinstance(r, dict)
+                        and isinstance(r.get("name"), str)
+                        and isinstance(r.get("max_id"), int)
+                        and not isinstance(r.get("max_id"), bool)
+                    ]
             if rows is None:
                 self.events.add("topics-failed")
             self._topic_rows = rows
@@ -631,7 +743,10 @@ class Notifier:
         rows = self.topic_rows()
         if rows is None:
             return
-        owner_topics = sorted(((r["name"], r["max_id"]) for r in rows if router_owner_topic(r["name"])), key=lambda r: r[1])
+        owner_topics = sorted(
+            ((r["name"], r["max_id"]) for r in rows if router_owner_topic(r["name"])),
+            key=lambda r: r[1],
+        )
         seen = self.state.data["ctl"]
         if not self.state.data.get("ctl_ready"):
             for name, max_id in owner_topics:
@@ -641,7 +756,9 @@ class Notifier:
             return
         fresh = [row for row in owner_topics if seen.get(row[0]) != row[1]]
         for name, max_id in fresh[:CONTROL_READS_PER_RUN]:
-            previous = seen.get(name)  # None for a topic opened since the last run:  read it from its start
+            previous = seen.get(
+                name
+            )  # None for a topic opened since the last run:  read it from its start
             messages = self.read(name, since=previous or 1, limit=30)
             if messages is None:
                 break  # the same ground again next run
@@ -668,7 +785,11 @@ class Notifier:
         """The GB seat that sent `message`, only when it is a bot whose email is exactly that persona's
         (`<role>-grok-bot@<this realm>`) and the registry puts the seat in the grok-bot app."""
         seat = message.get("seat")
-        if message.get("is_bot") is not True or not isinstance(seat, str) or not _GB_SEAT.fullmatch(seat):
+        if (
+            message.get("is_bot") is not True
+            or not isinstance(seat, str)
+            or not _GB_SEAT.fullmatch(seat)
+        ):
             return None
         if message.get("seat_app") != "grok-bot":
             return None
@@ -703,7 +824,9 @@ class Notifier:
             made += 1 if outcome == "mirrored" else 0
             if outcome != "retry":
                 # A topic a persona did not open is never a request topic, so it is not read again for this.
-                self.state.data["topics"][name] = NEVER if outcome == "not_a_persona_topic" else max_id
+                self.state.data["topics"][name] = (
+                    NEVER if outcome == "not_a_persona_topic" else max_id
+                )
                 self.state.dirty = True
             self.touch()
             if made >= MIRRORS_PER_RUN:
@@ -717,7 +840,9 @@ class Notifier:
         if opener is None:
             return "not_a_persona_topic"
         problems: list[tuple[int, str]] = []
-        for message in messages:  # a corrected request posted after a wrong one is the one that counts
+        for (
+            message
+        ) in messages:  # a corrected request posted after a wrong one is the one that counts
             if self.gb_sender(message) != opener:
                 continue
             try:
@@ -748,17 +873,32 @@ class Notifier:
         return result.ok, (notifymod._message_id(result) if result.ok else None)
 
     def mirror(self, topic: str, message_id: int, request: replies.Request) -> str:
-        link = linkmod.make_topic_link(topic, message_id, stream_id=self.stream_id(), environ=self.env)
+        link = linkmod.make_topic_link(
+            topic, message_id, stream_id=self.stream_id(), environ=self.env
+        )
         if self.dry_run:
             self.events.add("would-mirror", msg=message_id, seat=request.seat)
             return "mirrored"
-        from . import verbs  # noqa: PLC0415 - verbs imports this module's siblings
+        from . import verbs
 
-        context = "for %s" % request.seat + (": %s" % request.context if request.context else "")  # clean_text keeps single spaces
+        context = "for %s" % request.seat + (
+            ": %s" % request.context if request.context else ""
+        )  # clean_text keeps single spaces
         args = argparse.Namespace(
-            by=SEAT, app=MIRROR_APP, question=request.question, option=list(request.options),
-            low_stakes=[str(n) for n in request.low_stakes], recommend=request.recommend, parent=None, context=context,
-            urgent=request.urgent, again=False, mirror_of=link, dry_run=False, json=True)
+            by=SEAT,
+            app=MIRROR_APP,
+            question=request.question,
+            option=list(request.options),
+            low_stakes=[str(n) for n in request.low_stakes],
+            recommend=request.recommend,
+            parent=None,
+            context=context,
+            urgent=request.urgent,
+            again=False,
+            mirror_of=link,
+            dry_run=False,
+            json=True,
+        )
         out, err = iolib.StringIO(), iolib.StringIO()
         try:
             code = verbs.run_file(args, verbs.Streams(self.io.environ, out, err))
@@ -782,7 +922,13 @@ class Notifier:
         self.state.dirty = True
         if record.get("linkback") == "ok":
             self.state.record_send("mirror", ident or "-", request.urgent)
-        self.events.add("mirrored", ident or None, msg=message_id, seat=request.seat, linkback=record.get("linkback"))
+        self.events.add(
+            "mirrored",
+            ident or None,
+            msg=message_id,
+            seat=request.seat,
+            linkback=record.get("linkback"),
+        )
         return "mirrored"
 
     # ---- housekeeping ---------------------------------------------------------------------------------
@@ -803,18 +949,19 @@ class Notifier:
 
 # ---- entry point ----------------------------------------------------------------------------------------
 
+
 def make_clock(io: Any) -> Callable[[], dt.datetime]:
     if getattr(io, "clock", None):
         return io.clock
     pinned = io.environ.get("NEEDS_OWNER_TEST_NOW")
     if pinned:
-        fixed = parse_time(pinned) or dt.datetime.now(dt.timezone.utc)
+        fixed = parse_time(pinned) or dt.datetime.now(dt.UTC)
         return lambda: fixed
-    return lambda: dt.datetime.now(dt.timezone.utc)
+    return lambda: dt.datetime.now(dt.UTC)
 
 
 def run(args: argparse.Namespace, io: Any, seat: str) -> int:
-    from .verbs import emit_json  # noqa: PLC0415
+    from .verbs import emit_json
 
     now = make_clock(io)
     knobs = io.knobs if getattr(io, "knobs", None) is not None else FleetKnobs()
@@ -832,6 +979,9 @@ def run(args: argparse.Namespace, io: Any, seat: str) -> int:
             return 0
     try:
         runner = Runner(seat, io.environ)
+        # The notifier is a daemon, so no agent session stands behind its board comments;  `board comment` needs
+        # a session id from every seat but the single-thread ones (AFC-361), and this label is its own.
+        runner.env.setdefault("AGENT_SESSION", SESSION)
         state = ledger.State(directory, lambda: now().timestamp())
         state.load()
         probe = runner.agent_sync("whoami", "--as", SEAT, "--session", SESSION, "--json")
@@ -839,10 +989,16 @@ def run(args: argparse.Namespace, io: Any, seat: str) -> int:
         if probe.ok:
             try:
                 value = json.loads(probe.out).get("owner_user_id")
-                owner_id = value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+                owner_id = (
+                    value
+                    if isinstance(value, int) and not isinstance(value, bool) and value > 0
+                    else None
+                )
             except (ValueError, AttributeError):
                 owner_id = None
-        notifier = Notifier(io, runner, state, settings, now, events, directory, owner_id, bool(args.dry_run), lock)
+        notifier = Notifier(
+            io, runner, state, settings, now, events, directory, owner_id, bool(args.dry_run), lock
+        )
         if not probe.ok:
             events.add("whoami-failed", code=probe.code)
         notifier.run()
@@ -852,7 +1008,17 @@ def run(args: argparse.Namespace, io: Any, seat: str) -> int:
         if lock:
             lock.release()
     if args.json:
-        emit_json(io, {"ok": True, "dry_run": bool(args.dry_run), "paused": notifier.paused_by, "stale_knobs": settings.stale,
-                       "caps": settings.caps, "sent_last_hour": state.sent_within(3600), "sent_last_day": state.sent_within(86400),
-                       "events": events.rows})
+        emit_json(
+            io,
+            {
+                "ok": True,
+                "dry_run": bool(args.dry_run),
+                "paused": notifier.paused_by,
+                "stale_knobs": settings.stale,
+                "caps": settings.caps,
+                "sent_last_hour": state.sent_within(3600),
+                "sent_last_day": state.sent_within(86400),
+                "events": events.rows,
+            },
+        )
     return 0

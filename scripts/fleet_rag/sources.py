@@ -5,7 +5,7 @@ orchestrator chunks, scrubs, embeds and upserts.  Generators never write anywher
 print; they raise on a hard failure so the orchestrator can record the source as errored.
 
 Sources (payload `source` value):
-  board          ~/apps/mac-collab/findings.db   (read-only sqlite; findings + comments)
+  board          ~/apps/_retired/mac-collab-20261019/findings.db   (frozen read-only sqlite; findings + comments)
   effort-log     ~/apps/*-EFFORT-LOG.md + EFFORT-LOG-PROTOCOL.md
   doc            markdown in fleet app repos (README/AGENTS/STATUS/CLAUDE + docs/**/*.md),
                  AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only when an
@@ -24,6 +24,7 @@ Generators cannot reach the ingest report directly, so a non-fatal degradation (
 fallback) is appended to the module-level `WARNINGS` list; the orchestrator drains it with
 `take_warnings()` after each source and copies the messages into the run report.
 """
+
 from __future__ import annotations
 
 import datetime as _dt
@@ -35,14 +36,24 @@ import pathlib
 import re
 import sqlite3
 import subprocess
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Iterator
 
 HOME = pathlib.Path.home()
 APPS_DIR = HOME / "apps"
 CODE_DIR = HOME / "Code"
-BOARD_DB = APPS_DIR / "mac-collab" / "findings.db"
-BOARD_URL = "https://mac.jays.services/board"
+# THE BOARD was retired 2026-10-19 (AFC-363);  the database is frozen here and still ingested so the
+# resolved findings stay searchable.  FLEET_RAG_BOARD_DB overrides the path.
+BOARD_DB = pathlib.Path(
+    os.environ.get("FLEET_RAG_BOARD_DB")
+    or APPS_DIR / "_retired" / "mac-collab-20261019" / "findings.db"
+)
+# Every board row was imported into Linear;  the migration left board_id -> Linear URL in this TSV
+# (columns board_id, source_key, team, linear_identifier, linear_url, linear_id).  FLEET_RAG_BOARD_MAP overrides.
+BOARD_MAP = pathlib.Path(
+    os.environ.get("FLEET_RAG_BOARD_MAP")
+    or HOME / ".local" / "share" / "linear-migration" / "data" / "board-to-linear.tsv"
+)
 FLEET_REPO = CODE_DIR / "AI-Fleet-Coordinator"
 FLEET_OPS_REPO = CODE_DIR / "fleet-ops"
 GROK_HOME = HOME / ".grok"
@@ -50,8 +61,12 @@ GROK_SESSIONS = GROK_HOME / "sessions"
 CURSOR_PROJECTS = HOME / ".cursor" / "projects"
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
 GEMINI_HOME = HOME / ".gemini"
-EXTRA_DOCS = (APPS_DIR / "AGENT-SYNC.md", APPS_DIR / "MAC-LOCAL-PROCESSES.md",
-              APPS_DIR / "FLEET-UI-COPY.md", HOME / ".claude" / "CLAUDE.md")
+EXTRA_DOCS = (
+    APPS_DIR / "AGENT-SYNC.md",
+    APPS_DIR / "MAC-LOCAL-PROCESSES.md",
+    APPS_DIR / "FLEET-UI-COPY.md",
+    HOME / ".claude" / "CLAUDE.md",
+)
 SKILL_DIRS = (HOME / ".claude" / "skills", HOME / ".cursor" / "skills", GROK_HOME / "skills")
 CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 CODEX_MEMORIES = HOME / ".codex" / "memories"
@@ -62,15 +77,34 @@ JSONL_LINE_MAX = 200_000
 
 # Restricted walk for product app repos (fleet coordinator / fleet-ops keep a broader walk).
 DOC_ROOT_NAMES = ("README.md", "AGENTS.md", "STATUS.md", "CLAUDE.md")
-DOC_SKIP_DIR_NAMES = frozenset({
-    "node_modules", ".git", "backups", "dist", "build", "vendor", ".secrets",
-})
+DOC_SKIP_DIR_NAMES = frozenset(
+    {
+        "node_modules",
+        ".git",
+        "backups",
+        "dist",
+        "build",
+        "vendor",
+        ".secrets",
+    }
+)
 DOC_APP_REPOS = (
-    "Socratic.Trade", "Congress.Trade", "congress-trading-shared",
-    "API-usage-monitor", "Usage-Monitor", "DealDex", "Personal-Site",
-    "BotFleet", "BotFleet/openmausbot", "openmausbot",
-    "ContactLogo", "AutoRotate", "Autorotate",
-    "AI-Fleet-Coordinator", "fleet-ops", "agentic-trading",
+    "Socratic.Trade",
+    "Congress.Trade",
+    "congress-trading-shared",
+    "API-usage-monitor",
+    "Usage-Monitor",
+    "DealDex",
+    "Personal-Site",
+    "BotFleet",
+    "BotFleet/openmausbot",
+    "openmausbot",
+    "ContactLogo",
+    "AutoRotate",
+    "Autorotate",
+    "AI-Fleet-Coordinator",
+    "fleet-ops",
+    "agentic-trading",
 )
 
 # Doc-walk mirror rules (2026-09-02).  The same text used to be ingested several times over:
@@ -80,10 +114,10 @@ DOC_APP_REPOS = (
 # build the live AGENT-SYNC.md.  mirror_skip_reason() names the
 # rule that drops a file; iter_docs logs a per-rule summary through warn().
 SKILL_TREE_DIRS = frozenset({".claude", ".cursor", ".grok"})
-SKIP_APPS_MIRROR = "apps-mirror"            # (a) live ~/apps copy is canonical
-SKIP_SKILL_COPY = "skill-copy"              # (b) covered by the skill source
-SKIP_EFFORT_LOG = "effort-log-mirror"       # (c) covered by the effort-log source
-SKIP_HANDBOOK_MIRROR = "handbook-mirror"    # (d) Fleet-OPS generated/ and public handbook pages: any ingested AGENT-SYNC.md
+SKIP_APPS_MIRROR = "apps-mirror"  # (a) live ~/apps copy is canonical
+SKIP_SKILL_COPY = "skill-copy"  # (b) covered by the skill source
+SKIP_EFFORT_LOG = "effort-log-mirror"  # (c) covered by the effort-log source
+SKIP_HANDBOOK_MIRROR = "handbook-mirror"  # (d) Fleet-OPS generated/ and public handbook pages: any ingested AGENT-SYNC.md
 DOC_SKIPS: list[tuple[str, str]] = []
 
 
@@ -112,29 +146,62 @@ def take_warnings() -> list[str]:
     WARNINGS.clear()
     return out
 
+
 # App slug normalisation shared by every source.
 APP_ALIASES = {
-    "api-usage-monitor": "usage-monitor", "usage-monitor": "usage-monitor", "um": "usage-monitor",
-    "socratic-trade": "socratic-trade", "st": "socratic-trade",
-    "congress-trade": "congress-trade", "ct": "congress-trade",
-    "congress-shared": "congress-trading-shared", "congress-trading-shared": "congress-trading-shared",
+    "api-usage-monitor": "usage-monitor",
+    "usage-monitor": "usage-monitor",
+    "um": "usage-monitor",
+    "socratic-trade": "socratic-trade",
+    "st": "socratic-trade",
+    "congress-trade": "congress-trade",
+    "ct": "congress-trade",
+    "congress-shared": "congress-trading-shared",
+    "congress-trading-shared": "congress-trading-shared",
     "cts": "congress-trading-shared",
-    "fleet": "fleet", "fleet-infra": "fleet", "ai-fleet-coordinator": "fleet", "afl": "fleet",
+    "fleet": "fleet",
+    "fleet-infra": "fleet",
+    "ai-fleet-coordinator": "fleet",
+    "afl": "fleet",
     "fleet-ops": "fleet-ops",
-    "botfleet": "botfleet", "bf": "botfleet", "openmausbot": "botfleet",
-    "dealdex": "dealdex", "dd": "dealdex",
-    "contactlogo": "contactlogo", "cl": "contactlogo",
-    "autorotate": "autorotate", "ar": "autorotate",
-    "personal-site": "personal-site", "ps": "personal-site",
-    "trading": "trading", "agentic-trading": "trading", "trading-live": "trading",
-    "clutch": "clutch", "ck": "clutch", "minimax-remote": "clutch", "harness": "clutch",
+    "botfleet": "botfleet",
+    "bf": "botfleet",
+    "openmausbot": "botfleet",
+    "dealdex": "dealdex",
+    "dd": "dealdex",
+    "contactlogo": "contactlogo",
+    "cl": "contactlogo",
+    "autorotate": "autorotate",
+    "ar": "autorotate",
+    "personal-site": "personal-site",
+    "ps": "personal-site",
+    "trading": "trading",
+    "agentic-trading": "trading",
+    "trading-live": "trading",
+    "clutch": "clutch",
+    "ck": "clutch",
+    "minimax-remote": "clutch",
+    "harness": "clutch",
 }
 
 SEAT_ALIASES = {
-    "grok": "GROK", "monet": "MONET", "claude": "CLAUDE", "codex": "CODEX", "antigravity": "AG",
-    "ag": "AG", "cursor": "CURSOR", "kimi": "KIMI", "owner": "OWNER", "jay": "OWNER",
-    "gemini": "AG", "deepseek": "DSH", "dsh": "DSH", "renoir": "RENOIR", "fleet": "FLEET",
-    "minimax": "MM", "mm": "MM",
+    "grok": "GROK",
+    "monet": "MONET",
+    "claude": "CLAUDE",
+    "codex": "CODEX",
+    "antigravity": "AG",
+    "ag": "AG",
+    "cursor": "CURSOR",
+    "kimi": "KIMI",
+    "owner": "OWNER",
+    "jay": "OWNER",
+    "gemini": "AG",
+    "deepseek": "DSH",
+    "dsh": "DSH",
+    "renoir": "RENOIR",
+    "fleet": "FLEET",
+    "minimax": "MM",
+    "mm": "MM",
 }
 
 
@@ -155,6 +222,7 @@ class Doc:
 
 
 # --------------------------------------------------------------------------- helpers
+
 
 def app_slug(raw: str | None, default: str = "fleet") -> str:
     if not raw:
@@ -187,7 +255,7 @@ def parse_ts_ms(value: str | None) -> int:
     except ValueError:
         return 0
     if d.tzinfo is None:
-        d = d.astimezone()          # naive stamps are local (Notes, git-less files)
+        d = d.astimezone()  # naive stamps are local (Notes, git-less files)
     return int(d.timestamp() * 1000)
 
 
@@ -210,7 +278,7 @@ def first_heading(md: str, fallback: str) -> str:
     return fallback
 
 
-_FRONT = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
+_FRONT = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
 def frontmatter(md: str) -> tuple[dict[str, str], str]:
@@ -223,7 +291,7 @@ def frontmatter(md: str) -> tuple[dict[str, str], str]:
         km = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_\-]*):\s*(.*?)\s*$", line)
         if km and km.group(2):
             meta.setdefault(km.group(1).lower(), km.group(2).strip().strip('"').strip("'"))
-    return meta, md[m.end():]
+    return meta, md[m.end() :]
 
 
 # --------------------------------------------------------------------------- git helpers
@@ -236,6 +304,7 @@ _git_cache: dict[str, dict] = {}
 # spelling it was given, so path-keyed dedupe walked the checkout twice and doc_from_file could
 # not make the file relative to git's (canonical) toplevel.  Dedupe on (st_dev, st_ino) and
 # spell every repo path the way the disk does.
+
 
 def fs_key(p: pathlib.Path) -> tuple:
     """Identity of the file behind `p`: (st_dev, st_ino), falling back to the resolved path.
@@ -299,7 +368,9 @@ def canonical_path(p: pathlib.Path | str, *, resolve: bool = True) -> pathlib.Pa
 
 def _git(args: list[str], cwd: pathlib.Path) -> str | None:
     try:
-        p = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, timeout=60, check=False)
+        p = subprocess.run(
+            ["git", *args], cwd=str(cwd), capture_output=True, timeout=60, check=False
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if p.returncode != 0:
@@ -323,9 +394,11 @@ def repo_info(path: pathlib.Path) -> dict | None:
     m = re.search(r"github\.com[:/]([^/]+)/([^/\s]+?)(?:\.git)?$", origin)
     if m:
         info["owner"], info["repo"] = m.group(1), m.group(2)
-    head = (_git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], pathlib.Path(top)) or "").strip()
+    head = (
+        _git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], pathlib.Path(top)) or ""
+    ).strip()
     if head.startswith("origin/"):
-        info["branch"] = head[len("origin/"):]
+        info["branch"] = head[len("origin/") :]
     # One log walk gives the latest commit time of every path (first occurrence wins).
     log = _git(["log", "--format=%ct", "--name-only", "--", "."], pathlib.Path(top)) or ""
     cur = 0
@@ -352,10 +425,12 @@ _EFFORT_KEY = re.compile(r"<!--\s*effort-key:[^>]*-->\s*")
 
 
 def _board_markdown(row: dict, comments: list[dict]) -> str:
-    def clean(v) -> str:  # noqa: ANN001
+    def clean(v) -> str:
         # The effort-board writeback stamps issue bodies with `<!-- effort-key: <sha1> -->`;
         # it is machine metadata and gitleaks reads it as a credential, so drop it.
-        return _EFFORT_KEY.sub("", v).strip() if isinstance(v, str) else ("" if v is None else str(v))
+        return (
+            _EFFORT_KEY.sub("", v).strip() if isinstance(v, str) else ("" if v is None else str(v))
+        )
 
     parts = [f"# {clean(row.get('title')) or 'Untitled finding'}", ""]
     meta = [f"Status: {clean(row.get('status')) or 'open'}"]
@@ -377,35 +452,71 @@ def _board_markdown(row: dict, comments: list[dict]) -> str:
     if people:
         parts.append("- " + " · ".join(people))
     where = []
-    for k, label in (("source", "Source"), ("repo", "Repo"), ("location", "Location"),
-                     ("env", "Env"), ("source_url", "Link")):
+    for k, label in (
+        ("source", "Source"),
+        ("repo", "Repo"),
+        ("location", "Location"),
+        ("env", "Env"),
+        ("source_url", "Link"),
+    ):
         if clean(row.get(k)):
             where.append(f"{label}: {clean(row[k])}")
     if where:
         parts.append("- " + " · ".join(where))
     parts.append(f"- Board id: {clean(row.get('id'))}")
-    for k, label in (("description", "Description"), ("recommended_fix", "Recommended fix"),
-                     ("resolution", "Resolution")):
+    for k, label in (
+        ("description", "Description"),
+        ("recommended_fix", "Recommended fix"),
+        ("resolution", "Resolution"),
+    ):
         if clean(row.get(k)):
             parts += ["", f"## {label}", "", clean(row[k])]
     if comments:
         parts += ["", "## Comments"]
         for c in comments:
-            parts += ["", f"### {clean(c.get('author')) or '?'} — {clean(c.get('created_at'))}", "",
-                      clean(c.get("text"))]
+            parts += [
+                "",
+                f"### {clean(c.get('author')) or '?'} — {clean(c.get('created_at'))}",
+                "",
+                clean(c.get("text")),
+            ]
     return "\n".join(parts).rstrip() + "\n"
 
 
-def iter_board(db_path: pathlib.Path | str = BOARD_DB, limit: int | None = None) -> Iterator[Doc]:
+def load_board_url_map(path: pathlib.Path | str | None = None) -> dict[str, str]:
+    """board row id -> Linear issue URL, from the migration's TSV.  Empty when the file is missing or unreadable,
+    so a board finding never gets a link at all rather than a dead one."""
+    path = pathlib.Path(BOARD_MAP if path is None else path)
+    out: dict[str, str] = {}
+    try:
+        with path.open(encoding="utf-8") as fh:
+            next(fh, None)  # header
+            for line in fh:
+                cols = line.rstrip("\n").split("\t")
+                if len(cols) >= 5 and cols[0].strip() and cols[4].startswith("https://linear.app/"):
+                    out[cols[0].strip()] = cols[4].strip()
+    except OSError:
+        return {}
+    return out
+
+
+def iter_board(
+    db_path: pathlib.Path | str = BOARD_DB,
+    limit: int | None = None,
+    url_map: dict[str, str] | None = None,
+) -> Iterator[Doc]:
     db_path = pathlib.Path(db_path)
+    if url_map is None:
+        url_map = load_board_url_map()
     if not db_path.exists():
         raise FileNotFoundError(f"board db not found: {db_path}")
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     con.row_factory = sqlite3.Row
     try:
         comments: dict[str, list[dict]] = {}
-        for c in con.execute("SELECT finding_id, author, text, created_at FROM comments "
-                             "ORDER BY created_at, rowid"):
+        for c in con.execute(
+            "SELECT finding_id, author, text, created_at FROM comments ORDER BY created_at, rowid"
+        ):
             comments.setdefault(c["finding_id"], []).append(dict(c))
         q = "SELECT * FROM findings ORDER BY created_at, rowid"
         if limit:
@@ -414,22 +525,28 @@ def iter_board(db_path: pathlib.Path | str = BOARD_DB, limit: int | None = None)
             row = dict(r)
             cs = comments.get(row["id"], [])
             created = parse_ts_ms(row.get("created_at"))
-            updated = max([parse_ts_ms(row.get("updated_at"))] + [parse_ts_ms(c["created_at"]) for c in cs])
+            updated = max(
+                [parse_ts_ms(row.get("updated_at"))] + [parse_ts_ms(c["created_at"]) for c in cs]
+            )
             resolved = bool((row.get("resolution") or "").strip())
             app = app_slug(row.get("app"))
             yield Doc(
                 doc_id=f"board/{row['id']}",
                 title=(row.get("title") or "").strip() or f"Finding {row['id'][:8]}",
                 text_markdown=_board_markdown(row, cs),
-                source="board", app=app,
+                source="board",
+                app=app,
                 category="lesson" if resolved else "finding",
                 seat=seat_tag(row.get("addressed_by") or row.get("reported_by")),
-                url=f"{BOARD_URL}?app={app}",
+                url=url_map.get(str(row["id"]), ""),
                 path=str(db_path),
                 created_at_ms=created or updated,
                 updated_at_ms=updated or created,
-                extra={"status": row.get("status"), "severity": row.get("severity"),
-                       "source_kind": row.get("source_kind")},
+                extra={
+                    "status": row.get("status"),
+                    "severity": row.get("severity"),
+                    "source_kind": row.get("source_kind"),
+                },
             )
     finally:
         con.close()
@@ -437,7 +554,10 @@ def iter_board(db_path: pathlib.Path | str = BOARD_DB, limit: int | None = None)
 
 # --------------------------------------------------------------------------- effort logs
 
-def iter_effort_logs(apps_dir: pathlib.Path | str = APPS_DIR, limit: int | None = None) -> Iterator[Doc]:
+
+def iter_effort_logs(
+    apps_dir: pathlib.Path | str = APPS_DIR, limit: int | None = None
+) -> Iterator[Doc]:
     apps_dir = pathlib.Path(apps_dir)
     files = sorted(apps_dir.glob("*-EFFORT-LOG.md"))
     proto = apps_dir / "EFFORT-LOG-PROTOCOL.md"
@@ -456,12 +576,23 @@ def iter_effort_logs(apps_dir: pathlib.Path | str = APPS_DIR, limit: int | None 
         md = read_text(p)
         ts = mtime_ms(p)
         n += 1
-        yield Doc(doc_id=f"effort-log/{key}", title=first_heading(md, p.name), text_markdown=md,
-                  source="effort-log", app=app, category="lesson", seat="FLEET", url="",
-                  path=str(p), created_at_ms=ts, updated_at_ms=ts)
+        yield Doc(
+            doc_id=f"effort-log/{key}",
+            title=first_heading(md, p.name),
+            text_markdown=md,
+            source="effort-log",
+            app=app,
+            category="lesson",
+            seat="FLEET",
+            url="",
+            path=str(p),
+            created_at_ms=ts,
+            updated_at_ms=ts,
+        )
 
 
 # --------------------------------------------------------------------------- docs
+
 
 def _skip_doc(p: pathlib.Path) -> bool:
     parts = set(p.parts)
@@ -478,7 +609,11 @@ def _skip_doc(p: pathlib.Path) -> bool:
 
 
 def _is_effort_log_name(name: str) -> bool:
-    return name == "EFFORT-LOG.md" or name.endswith("-EFFORT-LOG.md") or name == "EFFORT-LOG-PROTOCOL.md"
+    return (
+        name == "EFFORT-LOG.md"
+        or name.endswith("-EFFORT-LOG.md")
+        or name == "EFFORT-LOG-PROTOCOL.md"
+    )
 
 
 def _under(p: pathlib.Path, roots: Iterable[pathlib.Path]) -> bool:
@@ -538,10 +673,14 @@ def handbook_page_is_public(p: pathlib.Path, rel: pathlib.PurePath) -> bool:
     return False
 
 
-def mirror_skip_reason(p: pathlib.Path, *, fleet_repos: Iterable[pathlib.Path] = (),
-                       live_basenames: Iterable[str] = (),
-                       ops_repos: Iterable[pathlib.Path] = (),
-                       agent_sync_ingested: bool | None = None) -> str | None:
+def mirror_skip_reason(
+    p: pathlib.Path,
+    *,
+    fleet_repos: Iterable[pathlib.Path] = (),
+    live_basenames: Iterable[str] = (),
+    ops_repos: Iterable[pathlib.Path] = (),
+    agent_sync_ingested: bool | None = None,
+) -> str | None:
     """Why the doc walk drops this file, or None to keep it.
 
     (a) SKIP_APPS_MIRROR: a file inside the fleet coordinator checkout whose basename is also a
@@ -584,7 +723,11 @@ def mirror_skip_reason(p: pathlib.Path, *, fleet_repos: Iterable[pathlib.Path] =
         if rel is not None and rel.parts:
             if rel.parts[0] == "generated":
                 return SKIP_HANDBOOK_MIRROR
-            if rel.parts[0] == "handbook" and name.endswith(".md") and handbook_page_is_public(p, rel):
+            if (
+                rel.parts[0] == "handbook"
+                and name.endswith(".md")
+                and handbook_page_is_public(p, rel)
+            ):
                 return SKIP_HANDBOOK_MIRROR
     return None
 
@@ -656,8 +799,9 @@ def _dedupe_docs(files: Iterable[pathlib.Path]) -> list[pathlib.Path]:
     return out
 
 
-def _unique_repo_dirs(code_dir: pathlib.Path,
-                      names: Iterable[str] = DOC_APP_REPOS) -> list[pathlib.Path]:
+def _unique_repo_dirs(
+    code_dir: pathlib.Path, names: Iterable[str] = DOC_APP_REPOS
+) -> list[pathlib.Path]:
     """The distinct checkouts named by `names`, in order, each spelled as on disk.
 
     Two entries that are one directory (os.path.samefile: AutoRotate / Autorotate on APFS, or
@@ -681,11 +825,14 @@ def _samefile(a: pathlib.Path, b: pathlib.Path) -> bool:
         return False
 
 
-def _doc_files(fleet_repo: pathlib.Path, fleet_ops: pathlib.Path,
-               extra: Iterable[pathlib.Path],
-               code_dir: pathlib.Path | None = None,
-               apps_dir: pathlib.Path | None = None,
-               grok_home: pathlib.Path | None = None) -> list[pathlib.Path]:
+def _doc_files(
+    fleet_repo: pathlib.Path,
+    fleet_ops: pathlib.Path,
+    extra: Iterable[pathlib.Path],
+    code_dir: pathlib.Path | None = None,
+    apps_dir: pathlib.Path | None = None,
+    grok_home: pathlib.Path | None = None,
+) -> list[pathlib.Path]:
     """Every markdown file the doc source ingests, mirror rules applied (see mirror_skip_reason).
 
     Skipped files are appended to DOC_SKIPS as (rule, path); iter_docs turns them into one
@@ -716,21 +863,37 @@ def _doc_files(fleet_repo: pathlib.Path, fleet_ops: pathlib.Path,
             files += sorted(docs.rglob("*.md"))
     # Only a live file that the walk will really ingest can stand in for its mirrors:  one that is missing, or
     # rejected by _skip_doc (over DOC_MAX_BYTES, in a skipped directory), would leave the mirror as the only copy.
-    live_basenames = {p.name for p in live
-                      if p.is_file() and not _is_effort_log_name(p.name) and not _skip_doc(p)}
+    live_basenames = {
+        p.name for p in live if p.is_file() and not _is_effort_log_name(p.name) and not _skip_doc(p)
+    }
+
     # The handbook's public pages stand down for an AGENT-SYNC.md that the walk will really ingest:  the live file, or
     # (on a host without one) the coordinator's mirror, which rule (a) keeps when there is no live copy.
     def _ingestable_mirror(f: pathlib.Path) -> bool:
         try:
-            return f.name == "AGENT-SYNC.md" and f.is_file() and not _skip_doc(f) and _under(f, fleet_repos)
-        except OSError:      # unreadable:  _dedupe_docs drops it too, so it cannot stand in for the pages
+            return (
+                f.name == "AGENT-SYNC.md"
+                and f.is_file()
+                and not _skip_doc(f)
+                and _under(f, fleet_repos)
+            )
+        except (
+            OSError
+        ):  # unreadable:  _dedupe_docs drops it too, so it cannot stand in for the pages
             return False
 
-    agent_sync_ingested = "AGENT-SYNC.md" in live_basenames or any(_ingestable_mirror(f) for f in files)
+    agent_sync_ingested = "AGENT-SYNC.md" in live_basenames or any(
+        _ingestable_mirror(f) for f in files
+    )
     kept: list[pathlib.Path] = []
     for f in _unique_paths(files):
-        reason = mirror_skip_reason(f, fleet_repos=fleet_repos, live_basenames=live_basenames, ops_repos=ops_repos,
-                                    agent_sync_ingested=agent_sync_ingested)
+        reason = mirror_skip_reason(
+            f,
+            fleet_repos=fleet_repos,
+            live_basenames=live_basenames,
+            ops_repos=ops_repos,
+            agent_sync_ingested=agent_sync_ingested,
+        )
         if reason:
             DOC_SKIPS.append((reason, str(f)))
             continue
@@ -738,8 +901,14 @@ def _doc_files(fleet_repo: pathlib.Path, fleet_ops: pathlib.Path,
     return _dedupe_docs(kept)
 
 
-def doc_from_file(p: pathlib.Path, source: str = "doc", category: str | None = None,
-                  app: str = "fleet", seat: str = "FLEET", doc_prefix: str = "doc") -> Doc:
+def doc_from_file(
+    p: pathlib.Path,
+    source: str = "doc",
+    category: str | None = None,
+    app: str = "fleet",
+    seat: str = "FLEET",
+    doc_prefix: str = "doc",
+) -> Doc:
     info = repo_info(p)
     rel = ""
     if info:
@@ -761,20 +930,36 @@ def doc_from_file(p: pathlib.Path, source: str = "doc", category: str | None = N
         created = mtime_ms(p)
     md = read_text(p)
     cat = category or ("runbook" if p.name == "SKILL.md" else "doc")
-    return Doc(doc_id=doc_id, title=first_heading(md, p.name), text_markdown=md, source=source,
-               app=app, category=cat, seat=seat, url=url, path=str(p),
-               created_at_ms=created, updated_at_ms=max(mtime_ms(p), created))
+    return Doc(
+        doc_id=doc_id,
+        title=first_heading(md, p.name),
+        text_markdown=md,
+        source=source,
+        app=app,
+        category=cat,
+        seat=seat,
+        url=url,
+        path=str(p),
+        created_at_ms=created,
+        updated_at_ms=max(mtime_ms(p), created),
+    )
 
 
-def iter_docs(fleet_repo: pathlib.Path | str = FLEET_REPO, fleet_ops: pathlib.Path | str = FLEET_OPS_REPO,
-              extra: Iterable[pathlib.Path] = EXTRA_DOCS, limit: int | None = None,
-              code_dir: pathlib.Path | str | None = CODE_DIR,
-              apps_dir: pathlib.Path | str | None = APPS_DIR,
-              grok_home: pathlib.Path | str | None = GROK_HOME) -> Iterator[Doc]:
+def iter_docs(
+    fleet_repo: pathlib.Path | str = FLEET_REPO,
+    fleet_ops: pathlib.Path | str = FLEET_OPS_REPO,
+    extra: Iterable[pathlib.Path] = EXTRA_DOCS,
+    limit: int | None = None,
+    code_dir: pathlib.Path | str | None = CODE_DIR,
+    apps_dir: pathlib.Path | str | None = APPS_DIR,
+    grok_home: pathlib.Path | str | None = GROK_HOME,
+) -> Iterator[Doc]:
     ops = pathlib.Path(fleet_ops)
     DOC_SKIPS.clear()
     files = _doc_files(
-        pathlib.Path(fleet_repo), ops, extra,
+        pathlib.Path(fleet_repo),
+        ops,
+        extra,
         code_dir=None if code_dir is None else pathlib.Path(code_dir),
         apps_dir=None if apps_dir is None else pathlib.Path(apps_dir),
         grok_home=None if grok_home is None else pathlib.Path(grok_home),
@@ -809,6 +994,7 @@ def _home_rel(path: str) -> str:
 
 # --------------------------------------------------------------------------- skills
 
+
 def skill_tree(skill_dir: pathlib.Path) -> str:
     """'~/.claude/skills' -> 'claude', '~/.cursor/skills' -> 'cursor', '/x/claude' -> 'claude'."""
     d = pathlib.Path(skill_dir)
@@ -817,7 +1003,9 @@ def skill_tree(skill_dir: pathlib.Path) -> str:
     return tree or "local"
 
 
-def iter_skills(skill_dirs: Iterable[pathlib.Path] = SKILL_DIRS, limit: int | None = None) -> Iterator[Doc]:
+def iter_skills(
+    skill_dirs: Iterable[pathlib.Path] = SKILL_DIRS, limit: int | None = None
+) -> Iterator[Doc]:
     """One Doc per SKILL.md.  doc_id is unique per tree (skill/claude/<name>, skill/cursor/<name>);
     a byte-identical copy in a later tree is skipped (the first tree wins) so the same content is
     not chunked twice under two ids."""
@@ -840,32 +1028,60 @@ def iter_skills(skill_dirs: Iterable[pathlib.Path] = SKILL_DIRS, limit: int | No
             name = meta.get("name") or p.parent.name
             ts = mtime_ms(p)
             n += 1
-            yield Doc(doc_id=f"skill/{tree}/{p.parent.name}", title=name, text_markdown=md, source="skill",
-                      app="fleet", category="runbook", seat="FLEET", url="", path=str(p),
-                      created_at_ms=ts, updated_at_ms=ts)
+            yield Doc(
+                doc_id=f"skill/{tree}/{p.parent.name}",
+                title=name,
+                text_markdown=md,
+                source="skill",
+                app="fleet",
+                category="runbook",
+                seat="FLEET",
+                url="",
+                path=str(p),
+                created_at_ms=ts,
+                updated_at_ms=ts,
+            )
 
 
 # --------------------------------------------------------------------------- memory
 
-_MEMORY_TYPES = {"user": "preference", "feedback": "preference", "project": "lesson",
-                 "reference": "infrastructure"}
+_MEMORY_TYPES = {
+    "user": "preference",
+    "feedback": "preference",
+    "project": "lesson",
+    "reference": "infrastructure",
+}
 
 
 def project_slug(dirname: str) -> str:
     s = dirname
     for prefix in ("-Users-jay-", "-Users-jay"):
         if s.startswith(prefix):
-            s = s[len(prefix):]
+            s = s[len(prefix) :]
             break
     s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()
     return s or "home"
 
 
 def app_from_project(slug: str) -> str:
-    for key in ("congress-trading-shared", "socratic-trade", "congress-trade", "usage-monitor",
-                "api-usage-monitor", "botfleet", "openmausbot", "dealdex", "autorotate", "contactlogo",
-                "personal-site", "agentic-trading", "trading-live", "trading", "ai-fleet-coordinator",
-                "fleet-ops"):
+    for key in (
+        "congress-trading-shared",
+        "socratic-trade",
+        "congress-trade",
+        "usage-monitor",
+        "api-usage-monitor",
+        "botfleet",
+        "openmausbot",
+        "dealdex",
+        "autorotate",
+        "contactlogo",
+        "personal-site",
+        "agentic-trading",
+        "trading-live",
+        "trading",
+        "ai-fleet-coordinator",
+        "fleet-ops",
+    ):
         if key in slug:
             return app_slug(key)
     return "fleet"
@@ -896,12 +1112,26 @@ def _memory_doc(p: pathlib.Path, seat: str, doc_id: str, app: str) -> Doc:
     title = meta.get("name") or first_heading(md, p.stem)
     ts = mtime_ms(p)
     upd = parse_ts_ms(meta.get("modified")) or ts
-    return Doc(doc_id=doc_id, title=title, text_markdown=md, source="memory", app=app, category=cat,
-               seat=seat, url="", path=str(p), created_at_ms=min(ts, upd) or ts, updated_at_ms=max(ts, upd))
+    return Doc(
+        doc_id=doc_id,
+        title=title,
+        text_markdown=md,
+        source="memory",
+        app=app,
+        category=cat,
+        seat=seat,
+        url="",
+        path=str(p),
+        created_at_ms=min(ts, upd) or ts,
+        updated_at_ms=max(ts, upd),
+    )
 
 
-def iter_memory(claude_projects: pathlib.Path | str = CLAUDE_PROJECTS,
-                codex_memories: pathlib.Path | str = CODEX_MEMORIES, limit: int | None = None) -> Iterator[Doc]:
+def iter_memory(
+    claude_projects: pathlib.Path | str = CLAUDE_PROJECTS,
+    codex_memories: pathlib.Path | str = CODEX_MEMORIES,
+    limit: int | None = None,
+) -> Iterator[Doc]:
     n = 0
     cp = pathlib.Path(claude_projects)
     if cp.exists():
@@ -913,7 +1143,9 @@ def iter_memory(claude_projects: pathlib.Path | str = CLAUDE_PROJECTS,
                 if limit and n >= limit:
                     return
                 n += 1
-                yield _memory_doc(p, "CLAUDE", f"memory/claude/{slug}/{p.name}", app_from_project(slug))
+                yield _memory_doc(
+                    p, "CLAUDE", f"memory/claude/{slug}/{p.name}", app_from_project(slug)
+                )
     cm = pathlib.Path(codex_memories)
     if cm.exists():
         for p in sorted(cm.glob("*.md")):
@@ -949,7 +1181,9 @@ def parse_note_title(title: str) -> tuple[str, str]:
     return app, seat
 
 
-def iter_apple_notes(records: Iterable[dict] | None = None, limit: int | None = None, log=None) -> Iterator[Doc]:
+def iter_apple_notes(
+    records: Iterable[dict] | None = None, limit: int | None = None, log=None
+) -> Iterator[Doc]:
     """Docs from `notes_export.export_notes()` (or pre-fetched records for tests).
 
     When Notes.app cannot be driven (`NotesUnavailable`) the cached records are served instead;
@@ -958,6 +1192,7 @@ def iter_apple_notes(records: Iterable[dict] | None = None, limit: int | None = 
     if records is None:
         from . import notes_export
         from .core import eprint
+
         log = log or eprint
         try:
             records = notes_export.export_notes(log=log)
@@ -967,12 +1202,13 @@ def iter_apple_notes(records: Iterable[dict] | None = None, limit: int | None = 
             log(f"[apple-note] WARNING {msg}")
             warn(msg)
     from .notes_export import strip_title_line
+
     n = 0
     for rec in records:
         title = (rec.get("name") or "").strip()
         text = strip_title_line(rec.get("text") or "", title)
         if len(text.strip()) < 20:
-            continue                      # empty "New Note" shells
+            continue  # empty "New Note" shells
         if limit and n >= limit:
             return
         n += 1
@@ -980,38 +1216,93 @@ def iter_apple_notes(records: Iterable[dict] | None = None, limit: int | None = 
         created = parse_ts_ms(rec.get("created"))
         updated = parse_ts_ms(rec.get("modified")) or created
         nid = rec.get("id", "")
-        yield Doc(doc_id="note/" + nid.replace("x-coredata://", ""), title=title or "Untitled note",
-                  text_markdown=text, source="apple-note", app=app, category="note", seat=seat,
-                  url="", path="", created_at_ms=created or updated, updated_at_ms=updated)
+        yield Doc(
+            doc_id="note/" + nid.replace("x-coredata://", ""),
+            title=title or "Untitled note",
+            text_markdown=text,
+            source="apple-note",
+            app=app,
+            category="note",
+            seat=seat,
+            url="",
+            path="",
+            created_at_ms=created or updated,
+            updated_at_ms=updated,
+        )
 
 
 # --------------------------------------------------------------------------- chat logs
 
 CHAT_SEATS = {
-    "claude": "CLAUDE", "grok": "GROK", "cursor": "CURSOR", "codex": "CODEX",
+    "claude": "CLAUDE",
+    "grok": "GROK",
+    "cursor": "CURSOR",
+    "codex": "CODEX",
     "gemini": "AG",
 }
-CHAT_SKIP_NAMES = frozenset({
-    "events.jsonl", "updates.jsonl", "rewind_points.jsonl", "signals.json",
-    "journal.jsonl", "system_prompt.txt", "permission.toml", "permissions.toml",
-    "summary.json", "prompt_context.json", "announcement_state.json",
-    "resources_state.json", "transcript_full.jsonl",
-})
-CHAT_SKIP_TYPES = frozenset({
-    "queue-operation", "mode", "permission-mode", "attachment", "progress",
-    "system", "file-history-snapshot", "bridge-session", "last-prompt",
-    "tool_result", "tool-result", "reasoning", "function_call",
-    "function_call_output", "turn_context", "session_meta", "event_msg",
-    "GENERIC",
-})
-_TEXT_BLOCK_TYPES = frozenset({
-    "text", "input_text", "output_text", "inputtext", "outputtext",
-})
-_SKIP_BLOCK_TYPES = frozenset({
-    "tool_use", "tool_result", "tool-result", "tool_call", "function_call",
-    "function_call_output", "image", "image_url", "thinking", "reasoning",
-    "redacted_thinking",
-})
+CHAT_SKIP_NAMES = frozenset(
+    {
+        "events.jsonl",
+        "updates.jsonl",
+        "rewind_points.jsonl",
+        "signals.json",
+        "journal.jsonl",
+        "system_prompt.txt",
+        "permission.toml",
+        "permissions.toml",
+        "summary.json",
+        "prompt_context.json",
+        "announcement_state.json",
+        "resources_state.json",
+        "transcript_full.jsonl",
+    }
+)
+CHAT_SKIP_TYPES = frozenset(
+    {
+        "queue-operation",
+        "mode",
+        "permission-mode",
+        "attachment",
+        "progress",
+        "system",
+        "file-history-snapshot",
+        "bridge-session",
+        "last-prompt",
+        "tool_result",
+        "tool-result",
+        "reasoning",
+        "function_call",
+        "function_call_output",
+        "turn_context",
+        "session_meta",
+        "event_msg",
+        "GENERIC",
+    }
+)
+_TEXT_BLOCK_TYPES = frozenset(
+    {
+        "text",
+        "input_text",
+        "output_text",
+        "inputtext",
+        "outputtext",
+    }
+)
+_SKIP_BLOCK_TYPES = frozenset(
+    {
+        "tool_use",
+        "tool_result",
+        "tool-result",
+        "tool_call",
+        "function_call",
+        "function_call_output",
+        "image",
+        "image_url",
+        "thinking",
+        "reasoning",
+        "redacted_thinking",
+    }
+)
 _SECRET_TOKEN_RE = re.compile(r"(ghp_|github_pat_|sk-ant-|xoxb-|xoxp-|xoxa-)")
 _OWNER_RULING_RE = re.compile(
     r"(?i)\b(?:owner\s+(?:ruling|preference|directive)|owner\s+prefers|"
@@ -1022,9 +1313,9 @@ _INFRA_POLICY_RE = re.compile(
     r"(?i)\b(?:qdrant|tei-bge|coolify|infisical|tailscale|cx43|"
     r"fleet-agents|embed(?:ding)?\s+space|ingest\.lock)\b"
 )
-_USER_REQUEST_RE = re.compile(r"<USER_REQUEST>(.*?)</USER_REQUEST>", re.S)
+_USER_REQUEST_RE = re.compile(r"<USER_REQUEST>(.*?)</USER_REQUEST>", re.DOTALL)
 _MODE_ONLY_RE = re.compile(
-    r"^(?:plan|default|acceptEdits|bypassPermissions|dontAsk|don't ask)$", re.I
+    r"^(?:plan|default|acceptEdits|bypassPermissions|dontAsk|don't ask)$", re.IGNORECASE
 )
 _GROK_MD_HEAD = re.compile(
     r"(?im)^(?:#{1,3}\s*)?(?:\*\*)?(user|assistant|human|grok|owner)(?:\*\*)?\s*:?\s*$"
@@ -1113,8 +1404,9 @@ def _add_turn(turns: list[tuple[str, str]], role: str, text: str) -> None:
     turns.append((role, text))
 
 
-def _docs_from_turns(turns: list[tuple[str, str]], *, platform: str, stable_id: str,
-                     path: pathlib.Path, app: str) -> Iterator[Doc]:
+def _docs_from_turns(
+    turns: list[tuple[str, str]], *, platform: str, stable_id: str, path: pathlib.Path, app: str
+) -> Iterator[Doc]:
     """Owner 2026-09-02: chat mining is a rare infra/policy scan, not a lesson dump.
 
     Only user turns that look like an owner ruling or infra/policy shift become Docs.
@@ -1140,9 +1432,16 @@ def _docs_from_turns(turns: list[tuple[str, str]], *, platform: str, stable_id: 
             title = title[:77].rstrip() + "..."
         yield Doc(
             doc_id=f"chat/{platform}/{stable_id}#ruling{n}",
-            title=title, text_markdown=body + "\n", source="chat-log", app=app,
-            category=cat, seat="OWNER", url="", path=str(path),
-            created_at_ms=ts, updated_at_ms=ts,
+            title=title,
+            text_markdown=body + "\n",
+            source="chat-log",
+            app=app,
+            category=cat,
+            seat="OWNER",
+            url="",
+            path=str(path),
+            created_at_ms=ts,
+            updated_at_ms=ts,
             extra={"platform": platform, "ruling": n},
         )
 
@@ -1245,7 +1544,7 @@ def _parse_gemini_jsonl(path: pathlib.Path) -> list[tuple[str, str]]:
             m = _USER_REQUEST_RE.search(text)
             if m:
                 text = m.group(1)
-            text = re.sub(r"<ADDITIONAL_METADATA>.*", "", text, flags=re.S)
+            text = re.sub(r"<ADDITIONAL_METADATA>.*", "", text, flags=re.DOTALL)
             _add_turn(turns, "user", text)
         elif typ in ("PLANNER_RESPONSE", "MODEL_RESPONSE", "assistant", "ASSISTANT"):
             raw = obj.get("content")
@@ -1357,12 +1656,14 @@ def _gemini_stable_id(path: pathlib.Path) -> str:
     return path.stem
 
 
-def iter_chat_logs(claude_projects: pathlib.Path | str | None = CLAUDE_PROJECTS,
-                   grok_sessions: pathlib.Path | str | None = GROK_SESSIONS,
-                   cursor_projects: pathlib.Path | str | None = CURSOR_PROJECTS,
-                   codex_sessions: pathlib.Path | str | None = CODEX_SESSIONS,
-                   gemini_home: pathlib.Path | str | None = GEMINI_HOME,
-                   limit: int | None = None) -> Iterator[Doc]:
+def iter_chat_logs(
+    claude_projects: pathlib.Path | str | None = CLAUDE_PROJECTS,
+    grok_sessions: pathlib.Path | str | None = GROK_SESSIONS,
+    cursor_projects: pathlib.Path | str | None = CURSOR_PROJECTS,
+    codex_sessions: pathlib.Path | str | None = CODEX_SESSIONS,
+    gemini_home: pathlib.Path | str | None = GEMINI_HOME,
+    limit: int | None = None,
+) -> Iterator[Doc]:
     """User + assistant turns from local agent transcripts.  Roots are injectable for tests."""
     n = 0
 
@@ -1389,8 +1690,9 @@ def iter_chat_logs(claude_projects: pathlib.Path | str | None = CLAUDE_PROJECTS,
             app = app_from_path(p)
             if p.suffix == ".md":
                 turns = _parse_grok_transcript_md(p)
-                yield from emit(_docs_from_turns(
-                    turns, platform="grok", stable_id=stable, path=p, app=app))
+                yield from emit(
+                    _docs_from_turns(turns, platform="grok", stable_id=stable, path=p, app=app)
+                )
             else:
                 yield from emit(_yield_chat(p, "grok", stable, app))
     if cursor_projects is not None:

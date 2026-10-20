@@ -39,16 +39,16 @@ Canonical design doc: [`docs/RAG-FLEET-INFRA.md`](RAG-FLEET-INFRA.md).
 | Cursor cloud, Codex cloud, Claude Code Cloud, Grok Bot | remote MCP — `https://recall.jays.services/mcp` (preferred) or `https://agents.jays.services/mcp` | Cloudflare Access service token **+** a bearer |
 | iOS, phone, anything that can HTTP | REST — `https://recall.jays.services/recall/{stats,search,contribute}` | same |
 
-**Credential names** (values live in Infisical shared/prod and `~/.secrets/`, never here):
+**Credential names** (values live in Infisical, never here):
 
 - `RECALL_API_TOKEN` — bearer for `recall.jays.services` (Infisical shared/prod).
-- `SEAT_MCP_TOKEN` — bearer for `agents.jays.services` (`~/.secrets/seat-mcp.env` on the Mac).
+- `SEAT_MCP_TOKEN` — bearer for `agents.jays.services` (Infisical Fleet-OPS `/seat-mcp` on the Mac, `fleet-secrets get SEAT_MCP_TOKEN --path /seat-mcp`).
 - `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` — Cloudflare Access service token
-  (`~/.secrets/agents-jays-services-access-service-token.env` on the Mac).  Both hostnames sit
+  (Infisical Fleet-OPS root `AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_ID` / `..._SECRET` on the Mac).  Both hostnames sit
   behind the same Access application, so one service token covers them.
 
 **Cloud seat without these?  Run the setup script — it provisions them.**  A fresh sandbox has
-no `~/.secrets` files, so the old answer ("ask a Mac seat") left every cloud seat blocked
+no local credential files, so the old answer ("ask a Mac seat") left every cloud seat blocked
 at the Cloudflare Access login page.  It no longer applies:
 
 ```bash

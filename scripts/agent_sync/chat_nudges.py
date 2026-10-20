@@ -77,6 +77,10 @@ class ChatNudges:
 
     def _read(self) -> dict[str, Any]:
         data = L.read_json(self.path)
+        if not data and os.path.exists(self.path):
+            # A lock-free reader can miss a file that is being created and then see it exist:  read it once more
+            # before calling it unreadable (writes are atomic, so a second read sees the whole file).
+            data = L.read_json(self.path)
         if not data:
             if os.path.exists(self.path):
                 raise ValueError("chat nudge state is unreadable")

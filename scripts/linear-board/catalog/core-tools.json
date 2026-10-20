@@ -455,6 +455,11 @@
             "pattern": "^[A-Za-z0-9_:-]+$",
             "type": "string"
           },
+          "session": {
+            "description": "Your session id, for the seat tag line.",
+            "maxLength": 100,
+            "type": "string"
+          },
           "status": {
             "enum": [
               "open",

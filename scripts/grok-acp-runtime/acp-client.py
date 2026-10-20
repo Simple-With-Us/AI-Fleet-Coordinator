@@ -13,6 +13,7 @@ run_terminal_command can finish.  Unknown server methods get JSON-RPC
 
 Never prints GROK_AGENT_SECRET or MCP env/header values.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,27 +28,36 @@ import uuid
 from pathlib import Path
 
 import websockets
-
 from mcp_catalog import CatalogError, expand_names
 
 HOST = "127.0.0.1"
 PORT = 12419
 WS_PATH = "/ws"
-SECRET_FILE = Path.home() / ".secrets" / "grok-acp.env"
 DEFAULT_OUTPUT_LIMIT = 1_048_576
+FLEET_SECRETS = os.environ.get("FLEET_SECRETS_BIN") or str(
+    Path.home() / ".local" / "bin" / "fleet-secrets"
+)
 
 
 def load_secret() -> str:
-    if not SECRET_FILE.is_file():
-        sys.exit(f"missing {SECRET_FILE}")
-    secret = ""
-    for line in SECRET_FILE.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.startswith("GROK_AGENT_SECRET="):
-            secret = line.split("=", 1)[1].strip().strip("'\"")
-            break
+    """GROK_AGENT_SECRET from the environment, else Infisical Fleet-OPS /grok-acp (`fleet-secrets get`)."""
+    secret = os.environ.get("GROK_AGENT_SECRET", "").strip()
     if not secret:
-        sys.exit("GROK_AGENT_SECRET empty")
+        try:
+            proc = subprocess.run(
+                [FLEET_SECRETS, "get", "GROK_AGENT_SECRET", "--path", "/grok-acp"],
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                timeout=60,
+            )
+            if proc.returncode == 0:
+                secret = proc.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            secret = ""
+    if not secret:
+        sys.exit("GROK_AGENT_SECRET missing in Infisical /grok-acp")
     return secret
 
 
@@ -263,17 +273,21 @@ class AcpClient:
         req_id = msg.get("id")
         params = msg.get("params") or {}
         if method == "session/request_permission":
-            await self._send({"jsonrpc": "2.0", "id": req_id, "result": pick_permission_result(params)})
+            await self._send(
+                {"jsonrpc": "2.0", "id": req_id, "result": pick_permission_result(params)}
+            )
             return
         if method == "terminal/create":
             try:
                 result = self.terminals.create(params)
             except Exception as exc:
-                await self._send({
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32602, "message": str(exc)},
-                })
+                await self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32602, "message": str(exc)},
+                    }
+                )
                 return
             await self._send({"jsonrpc": "2.0", "id": req_id, "result": result})
             return
@@ -281,11 +295,13 @@ class AcpClient:
             try:
                 result = self.terminals.output(params)
             except Exception as exc:
-                await self._send({
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32602, "message": str(exc)},
-                })
+                await self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32602, "message": str(exc)},
+                    }
+                )
                 return
             await self._send({"jsonrpc": "2.0", "id": req_id, "result": result})
             return
@@ -298,22 +314,28 @@ class AcpClient:
             try:
                 result = self.terminals.kill(params)
             except Exception as exc:
-                await self._send({
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32602, "message": str(exc)},
-                })
+                await self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32602, "message": str(exc)},
+                    }
+                )
                 return
             await self._send({"jsonrpc": "2.0", "id": req_id, "result": result})
             return
         if method == "terminal/release":
-            await self._send({"jsonrpc": "2.0", "id": req_id, "result": self.terminals.release(params)})
+            await self._send(
+                {"jsonrpc": "2.0", "id": req_id, "result": self.terminals.release(params)}
+            )
             return
-        await self._send({
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "error": {"code": -32601, "message": f"method not found: {method}"},
-        })
+        await self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32601, "message": f"method not found: {method}"},
+            }
+        )
 
     async def _wait_term(self, req_id, params: dict) -> None:
         loop = asyncio.get_event_loop()
@@ -461,13 +483,18 @@ async def run(args):
         try:
             init = await client.initialize()
             if args.cmd == "handshake":
-                print(json.dumps({
-                    "ok": True,
-                    "listen": f"127.0.0.1:{PORT}",
-                    "path": WS_PATH,
-                    "protocolVersion": init.get("protocolVersion"),
-                    "agent": (init.get("agentInfo") or init.get("agent") or {}),
-                }, indent=2))
+                print(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "listen": f"127.0.0.1:{PORT}",
+                            "path": WS_PATH,
+                            "protocolVersion": init.get("protocolVersion"),
+                            "agent": (init.get("agentInfo") or init.get("agent") or {}),
+                        },
+                        indent=2,
+                    )
+                )
                 return
             cwd = args.cwd or os.getcwd()
             timeout = float(getattr(args, "timeout", 900) or 900)
@@ -476,61 +503,73 @@ async def run(args):
                 sessions = listed.get("sessions") or []
                 slim = []
                 for s in sessions:
-                    slim.append({
-                        "sessionId": s.get("sessionId"),
-                        "cwd": s.get("cwd"),
-                        "title": s.get("title"),
-                        "updatedAt": s.get("updatedAt"),
-                    })
+                    slim.append(
+                        {
+                            "sessionId": s.get("sessionId"),
+                            "cwd": s.get("cwd"),
+                            "title": s.get("title"),
+                            "updatedAt": s.get("updatedAt"),
+                        }
+                    )
                 print(json.dumps({"ok": True, "count": len(slim), "sessions": slim}, indent=2))
                 return
             if args.cmd == "new":
                 sess = await client.session_new(cwd, mcp_servers)
                 session_id = sess.get("sessionId")
-                emit_event({
-                    "event": "session",
-                    "sessionId": session_id,
-                    "cwd": cwd,
-                    "mcpCount": len(mcp_servers),
-                    "mcpNames": [s.get("name") for s in mcp_servers],
-                })
+                emit_event(
+                    {
+                        "event": "session",
+                        "sessionId": session_id,
+                        "cwd": cwd,
+                        "mcpCount": len(mcp_servers),
+                        "mcpNames": [s.get("name") for s in mcp_servers],
+                    }
+                )
                 text = ""
                 if args.prompt:
                     _, text = await client.session_prompt(session_id, args.prompt, timeout=timeout)
-                emit_event({
-                    "event": "done",
-                    "sessionId": session_id,
-                    "cwd": cwd,
-                    "mcpCount": len(mcp_servers),
-                    "mcpNames": [s.get("name") for s in mcp_servers],
-                    "text": text,
-                })
+                emit_event(
+                    {
+                        "event": "done",
+                        "sessionId": session_id,
+                        "cwd": cwd,
+                        "mcpCount": len(mcp_servers),
+                        "mcpNames": [s.get("name") for s in mcp_servers],
+                        "text": text,
+                    }
+                )
                 return
             if args.cmd == "load":
                 if not args.session_id:
                     sys.exit("--session-id required")
                 loaded = await client.session_load(args.session_id, cwd, mcp_servers)
-                emit_event({
-                    "event": "session",
-                    "ok": True,
-                    "sessionId": args.session_id,
-                    "cwd": cwd,
-                    "mcpCount": len(mcp_servers),
-                    "mcpNames": [s.get("name") for s in mcp_servers],
-                    "loaded": {k: loaded.get(k) for k in ("sessionId", "cwd") if k in loaded},
-                })
+                emit_event(
+                    {
+                        "event": "session",
+                        "ok": True,
+                        "sessionId": args.session_id,
+                        "cwd": cwd,
+                        "mcpCount": len(mcp_servers),
+                        "mcpNames": [s.get("name") for s in mcp_servers],
+                        "loaded": {k: loaded.get(k) for k in ("sessionId", "cwd") if k in loaded},
+                    }
+                )
                 text = ""
                 if args.prompt:
-                    _, text = await client.session_prompt(args.session_id, args.prompt, timeout=timeout)
-                emit_event({
-                    "event": "done",
-                    "ok": True,
-                    "sessionId": args.session_id,
-                    "cwd": cwd,
-                    "mcpCount": len(mcp_servers),
-                    "mcpNames": [s.get("name") for s in mcp_servers],
-                    "text": text,
-                })
+                    _, text = await client.session_prompt(
+                        args.session_id, args.prompt, timeout=timeout
+                    )
+                emit_event(
+                    {
+                        "event": "done",
+                        "ok": True,
+                        "sessionId": args.session_id,
+                        "cwd": cwd,
+                        "mcpCount": len(mcp_servers),
+                        "mcpNames": [s.get("name") for s in mcp_servers],
+                        "text": text,
+                    }
+                )
                 return
             if args.cmd == "prompt":
                 if not args.session_id:
@@ -538,8 +577,12 @@ async def run(args):
                 if not args.prompt:
                     sys.exit("--prompt required")
                 emit_event({"event": "session", "sessionId": args.session_id})
-                result, text = await client.session_prompt(args.session_id, args.prompt, timeout=timeout)
-                emit_event({"event": "done", "sessionId": args.session_id, "text": text, "result": result})
+                result, text = await client.session_prompt(
+                    args.session_id, args.prompt, timeout=timeout
+                )
+                emit_event(
+                    {"event": "done", "sessionId": args.session_id, "text": text, "result": result}
+                )
                 return
         finally:
             client.terminals.close_all()

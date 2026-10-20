@@ -66,7 +66,7 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 
 | Source | Where it comes from | Notes |
 |---|---|---|
-| `board` | `~/apps/mac-collab/findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (read-only after the Linear cutover; a `linear` source reading Linear through the read-only Fleet Reader app is planned) | category `lesson` when resolved, else `finding`; url is the board |
+| `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`;  a `linear` source reading Linear through the read-only Fleet Reader app is planned) | category `lesson` when resolved, else `finding`; url is the board |
 | `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[APP, Agent]` title convention |
 | `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
@@ -160,7 +160,7 @@ a rare infra/policy scan of owner rulings only.
 
 The `fleet-recall` MCP server is registered in every CLI's global MCP config by
 `scripts/install-fleet-rag.sh` (stdio, `python3 ~/apps/fleet-rag/fleet-recall-mcp.py`, no
-tokens in any config file).  OpenCode, Kimi Code, Copilot CLI, Muse Code, MiniMax and fx have their own formats, so the same script
+tokens in any config file).  OpenCode, Kimi Code, Muse Code, MiniMax and fx have their own formats, so the same script
 calls `python3 -m fleet_lanes.install_mcp` for them (each tool's native shape, a tool that is not installed is skipped, a
 hand-registered entry is left alone).  Clutch is not in the list: it carries `fleet-recall` as a native agent preset
 (`~/.clutch/dsh/.agent-presets/fleet-recall`), and a second copy would double the tools.  Tools:
@@ -169,7 +169,7 @@ hand-registered entry is left alone).  Clutch is not in the list: it carries `fl
 - `recall_contribute(text, category, app="fleet", seat, title?, url?)`
 - `recall_stats()`
 
-The CLI is `recall`, on PATH through `~/.local/bin/recall` (and `~/apps/mac-collab/recall`) like `board`:
+The CLI is `recall`, on PATH through `~/.local/bin/recall` like `board` (the old `~/apps/mac-collab/recall` symlink was retired on 2026-10-19):
 
 ```bash
 recall "pm2 orphan holds port"                       # ranked hits with source, date, board id / url
@@ -227,7 +227,7 @@ surfaces now route every call through `public_fallback.call_with_fallback`, whic
    `CF_ACCESS_CLIENT_SECRET` (the Cloudflare Access service token).  A value already in the
    environment wins; otherwise `RECALL_API_TOKEN` comes from `fleet-secrets get RECALL_API_TOKEN` (the flat
    file `global-api-keys` is no longer read, OPS-818), and the Access pair from
-   `~/.secrets/agents-jays-services-access-service-token.env` -- so the fallback works from the
+   `fleet-secrets get AGENTS_JAYS_SERVICES_ACCESS_SERVICE_TOKEN_CF_ACCESS_CLIENT_ID` / `..._SECRET` -- so the fallback works from the
    stock `python3 fleet-recall-mcp.py` MCP registration with no shell wrapper and no MCP config
    changes on any platform.  See *Credentials* and `docs/RECALL-ACCESS-CHECK.md`.  The request
    also carries a real `User-Agent` (`fleet-recall-fallback/<version>`): `core.http_json` sends

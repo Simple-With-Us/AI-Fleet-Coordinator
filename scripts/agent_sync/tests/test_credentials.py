@@ -6,11 +6,14 @@ import json
 import os
 import secrets
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from agent_sync import zulip as Z
 from agent_sync.tests.fake_zulip import BOT_EMAIL
 from agent_sync.tests.harness import TAG, Harness, write_rc
+
+FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
 
 
 class CredentialOrderTests(Harness):
@@ -230,25 +233,151 @@ class InfisicalFallbackTests(Harness):
             )
         self.assertNotIn("secret-looking", str(ctx.exception))
 
-    def test_default_fetch_passes_the_resolved_project_id_and_only_this_seats_names(self) -> None:
-        from fleet_knobs import source
+    def fake_fleet_secrets(self, folder: dict, *, binary: Path | None = None) -> dict:
+        """An env whose FLEET_SECRETS_BIN is the fixture fake, serving `folder` as /zulip."""
+        data = self.tmp / "fake-fleet-secrets.json"
+        data.write_text(json.dumps({"/zulip": folder}), encoding="utf-8")
+        for cache in (Z._value_cache, Z._names_cache, Z._failures):
+            cache.clear()
+            self.addCleanup(cache.clear)
+        return {
+            "HOME": str(self.home),
+            "PATH": os.environ.get("PATH", ""),
+            "FLEET_SECRETS_BIN": str(binary or FAKE_FLEET_SECRETS),
+            "FAKE_FLEET_SECRETS_FILE": str(data),
+        }
 
-        fake_id = "11111111-2222-3333-4444-555555555555"
-        seen: dict = {}
+    def test_default_fetch_asks_fleet_secrets_for_only_these_names_in_one_call(self) -> None:
+        env = self.fake_fleet_secrets({"A": "1", "B": "2", "C": "3", "OTHER": "never"})
+        self.assertEqual(
+            Z._fetch_from_fleet_secrets(("A", "B", "C"), env, self.home),
+            {"A": "1", "B": "2", "C": "3"},
+        )
 
-        def fetch_named(names, *, project_id, path):
-            seen.update(names=tuple(names), project_id=project_id, path=path)
-            return {}
-
-        with (
-            mock.patch.object(source, "fetch_named", fetch_named),
-            mock.patch.object(source, "environment_refusal", lambda: None),
-        ):
-            got = Z._fetch_from_infisical_cli(
-                ("A", "B", "C"), {"INFISICAL_FLEET_OPS_PROJECT_ID": fake_id}, self.home
+    def test_default_fetch_is_cached_per_process_and_keeps_the_last_good_values(self) -> None:
+        env = self.fake_fleet_secrets({"A": "1", "B": "2"})
+        self.assertEqual(
+            Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"}
+        )
+        Path(env["FAKE_FLEET_SECRETS_FILE"]).write_text(
+            "{}", encoding="utf-8"
+        )  # Infisical now fails
+        self.assertEqual(
+            Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"}
+        )
+        with mock.patch.object(
+            Z, "INFISICAL_CACHE_TTL", 0.0
+        ):  # stale:  refetch fails, the held values win
+            self.assertEqual(
+                Z._fetch_from_fleet_secrets(("A", "B"), env, self.home), {"A": "1", "B": "2"}
             )
-        self.assertEqual(got, {})
-        self.assertEqual(seen, {"names": ("A", "B", "C"), "project_id": fake_id, "path": "/zulip"})
+        with self.assertRaises(
+            Z.CredentialError
+        ) as ctx:  # never held:  fails closed with a reason token
+            Z._fetch_from_fleet_secrets(("C",), env, self.home)
+        self.assertIn("key-absent", str(ctx.exception))
+
+    def test_default_fetch_failure_names_a_reason_never_output(self) -> None:
+        env = self.fake_fleet_secrets({})
+        env["FLEET_SECRETS_BIN"] = str(self.tmp / "no-such-fleet-secrets")
+        with self.assertRaises(Z.CredentialError) as ctx:
+            Z._fetch_from_fleet_secrets(("A",), env, self.home)
+        self.assertIn("cannot-start", str(ctx.exception))
+
+    def test_names_listing_never_offers_the_owner_the_realm_admin_or_an_integration_bot(
+        self,
+    ) -> None:
+        folder = {}
+        for prefix in (
+            "CLAUDE",
+            "BF_PLUMBER",
+            "GROK_BUILD",
+            "JAY",
+            "REALM_ADMIN",
+            "SENTRY",
+            "LINEAR",
+            "HALF",
+        ):
+            for part in ("EMAIL", "KEY", "SITE"):
+                if not (prefix == "HALF" and part == "SITE"):
+                    folder["%s_ZULIP_%s" % (prefix, part)] = "v"
+        env = self.fake_fleet_secrets(folder)
+        with mock.patch.object(Z, "_default_infisical_names", Z._list_from_fleet_secrets):
+            self.assertEqual(
+                sorted(Z.infisical_seats(env, self.home)), ["BF-PLUMBER", "CLAUDE", "GROK"]
+            )
+            self.assertFalse(Z.infisical_has("JAY", env, self.home))
+
+    def test_an_infisical_outage_costs_one_names_fetch_for_every_identity_candidate(self) -> None:
+        from agent_sync import identities as X
+
+        log = self.tmp / "calls.log"
+        wrapper = self.tmp / "counting-fleet-secrets"
+        wrapper.write_text(
+            '#!/bin/sh\necho "$1" >> "%s"\nexit 4\n' % log
+        )  # every call fails like an outage
+        wrapper.chmod(0o755)
+        env = self.fake_fleet_secrets({}, binary=wrapper)
+        with mock.patch.object(Z, "_default_infisical_names", Z._list_from_fleet_secrets):
+            found = X.allowed_identities(env, self.home)
+            self.assertEqual(found, {})
+            X.allowed_identities(env, self.home)  # again, inside the backoff:  still no new fetch
+        self.assertEqual(log.read_text().split(), ["names"])
+        with self.assertRaises(Z.CredentialError) as ctx:
+            Z._fetch_from_fleet_secrets(("A",), env, self.home)
+        self.assertIn("fetch-or-auth-failure", str(ctx.exception))
+        with self.assertRaises(
+            Z.CredentialError
+        ) as ctx:  # the same values inside the backoff:  no new call
+            Z._fetch_from_fleet_secrets(("A",), env, self.home)
+        self.assertIn("not retried", str(ctx.exception))
+        self.assertEqual(log.read_text().split(), ["names", "run"])
+
+    def test_an_outage_on_the_prefetch_fails_every_later_seat_at_once(self) -> None:
+        log = self.tmp / "calls.log"
+        wrapper = self.tmp / "hanging-fleet-secrets"
+        wrapper.write_text(
+            '#!/bin/sh\necho "$1" >> "%s"\nexit 4\n' % log
+        )  # an auth or fetch failure
+        wrapper.chmod(0o755)
+        env = self.fake_fleet_secrets({}, binary=wrapper)
+        with mock.patch.object(Z, "_default_infisical_fetch", Z._fetch_from_fleet_secrets):
+            Z.prefetch_infisical(
+                ("CLAUDE", "CODEX", "MM"), env, self.home
+            )  # the daemon's one call fails
+            for seat in ("CLAUDE", "CODEX", "MM"):
+                with self.assertRaises(Z.CredentialError) as ctx:
+                    Z.infisical_credentials(seat, env=env, home=self.home)
+                self.assertIn("not retried", str(ctx.exception))
+        self.assertEqual(log.read_text().split(), ["run"])  # one call in all, not one per seat
+
+    def test_a_missing_key_does_not_block_other_seats(self) -> None:
+        env = self.fake_fleet_secrets(
+            {
+                "CLAUDE_ZULIP_EMAIL": BOT_EMAIL,
+                "CLAUDE_ZULIP_KEY": self.key,
+                "CLAUDE_ZULIP_SITE": self.fake.url,
+            }
+        )
+        with self.assertRaises(Z.CredentialError):
+            Z._fetch_from_fleet_secrets(Z.infisical_key_names("CODEX"), env, self.home)
+        got = Z._fetch_from_fleet_secrets(Z.infisical_key_names("CLAUDE"), env, self.home)
+        self.assertEqual(sorted(got), sorted(Z.infisical_key_names("CLAUDE")))
+
+    def test_the_old_default_file_under_home_is_never_read(self) -> None:
+        # AFC-359:  ~/.secrets/Zulip is retired.  A file there, with no override and nothing in Infisical, is ignored.
+        write_rc(
+            self.home / ".secrets" / "Zulip" / "Claude-zuliprc",
+            email=BOT_EMAIL,
+            key=self.key,
+            site=self.fake.url,
+        )
+        self.assertIsNone(Z.default_rc_path("CLAUDE", {"HOME": str(self.home)}, self.home))
+        result = self.run_cli("whoami", env=self.env(AGENT_SYNC_SECRETS_DIR=None))
+        self.assertEqual(result.code, 3, result.out)
+        self.assertNotIn(".secrets", result.err)
+        self.assertIn("CLAUDE_ZULIP_KEY", result.err)
+        self.assertEqual(self.fake.requests, [])
 
     def test_key_names_follow_the_credential_file_stem(self) -> None:
         for seat, prefix in (

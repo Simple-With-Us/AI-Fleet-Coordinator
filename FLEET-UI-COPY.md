@@ -81,8 +81,8 @@ when the string is not a full sentence — not Title Case:
   bot-to-bot) is the owner's clock: **12-hour, with am or pm**, on every agent, bot,
   and platform.  That clock is Central.  Do not type CDT, CST, or CT.  Write `3:15am`,
   not `3:15am CDT` and not `08:15Z`.  When the day matters, write
-  `Sun, Oct 5, 2026 at 3:15am`.  Name a zone only when the time is not that clock.
-  The usual case is UTC, after the local time.  `00:00 UTC` is 7:00pm the previous
+  `Sun, Oct 5, 2026 at 3:15am`.  Give only the Central time:  convert UTC and every
+  other zone first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00pm the previous
   calendar day during daylight saving, and 6:00pm the previous calendar day after
   the fall-back.  See `/Users/jay/apps/AGENT-SYNC.md` § Timestamps: Central Time.
 
@@ -198,12 +198,32 @@ destination:
   outside code spans, as in `Sentence one.&nbsp; Sentence two.`  The renderer decodes it into
   a real gap.  Two ASCII spaces collapse, and a raw U+00A0 typed by the model arrives as a
   plain space (the verified reply held 0 NBSPs).
+- **Chat reply in the MiniMax Code chat pane** (owner-verified 2026-10-20):  a REAL U+00A0, the
+  nbsp character, right after the period, then a normal space, outside code spans.  Jay:  "I
+  think you need to do nbsp for chats or something", and "I have confirmed this before with
+  agents and knew you needed nbsp already".  Two ASCII spaces collapse in that pane, and the
+  `&nbsp;` ENTITY renders as the six literal characters, which is worse than no gap at all.
+  The earlier 2026-10-18 note for this pane, entity plus a space, was wrong, and it is
+  corrected here.
+  **Generate the character in the shell; do not type it.**  A model that emits U+00A0
+  directly can have it normalized back to a plain space, which is the same invisible
+  failure the entity causes.  Write the reply to a file and verify that file, never one
+  left over from an earlier turn:
+
+  ```sh
+  printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
+  grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l    # must be above 0
+  grep -cE '[^0-9][.!?] +[A-Z"]' reply.txt      # must print 0: no gap left unconverted
+  ```
+
+  A normal one-space gap is the failure this bullet exists to prevent, so treat a
+  collapsed reply as a bug in the emitting step rather than as a rendering quirk.
 - **Chat reply in any other Markdown-rendering agent chat pane** (Codex, Cursor,
-  Antigravity, Grok, Kimi, MiniMax, DeepSeek, Fx, Muse): the same entity plus a space, by
-  owner ruling 2026-10-08.  Not individually verified.  If the owner ever sees the six
-  characters, stop using the entity on that surface, report it in #agent-sync, and treat
-  that surface's mechanism as unknown until tested.  Using a working mechanism needs no
-  confirmation.
+  Antigravity, Grok, Kimi, DeepSeek, Fx, Muse): the same entity plus a space, by
+  owner ruling 2026-10-08, unless that surface has been individually verified otherwise.
+  If the owner ever sees the six characters, stop using the entity on that surface, report
+  it in #agent-sync, and treat that surface's mechanism as unknown until tested.  Using a
+  working mechanism needs no confirmation.
 - **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode):
   two literal ASCII spaces, unverified.  A terminal would print the entity as literal text.
 - **Cloud / BotFleet / OpenMausBot chat:** two literal ASCII spaces.  The backend maps them
@@ -212,8 +232,17 @@ destination:
   (anything a tool writes that a Markdown or HTML renderer then shows): a real U+00A0 plus a
   space (owner ruling 2026-10-08).  Never the entity there, because GitHub can copy a PR body
   into a plain-text squash commit, where it would show literally.  You cannot type U+00A0 in
-  chat, so write two ASCII spaces and convert with
-  `perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g'`, then check the result holds a U+00A0.
+  chat, and a double space you emit into a tool call *sometimes* arrives collapsed to a single
+  space — intermittently, not deterministically, so never diagnose it and always verify.  So
+  generate the gap in the shell, matching one *or more* spaces so it works in both states:
+  `perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g'`.  Then run both checks before posting:
+  `grep -o $'\xc2\xa0' body.nbsp.txt | wc -l` must be `> 0`, and `grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt`
+  must be `0`, because a partly converted body can hold real U+00A0 and still carry one leftover
+  single-space gap.  A conversion that matched nothing still exits 0, so a failed run is silent.
+  `agent-sync post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
+  so `chmod 600` it first.  Source files (Swift, TypeScript, shell, and markdown read as source)
+  are not affected and keep two literal ASCII spaces; never put a U+00A0 into a committed source
+  file, which is a real defect rather than a fix.
 - **Files read as source and other plain text** (repo markdown and text, commit messages,
   code comments, config, Linear issue text, terminal output): two LITERAL ASCII
   spaces.  An entity would appear as literal text.
@@ -231,8 +260,11 @@ renderer), use its working mechanism without asking; confirmation is no longer n
 surface.
 
 **What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
-(normalized away in the view, even though copy-paste showed two spaces -- do not be fooled by
-copy-paste); app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
+in the **Claude Code Code tab** (normalized away in the view, even though copy-paste showed
+two spaces -- do not be fooled by copy-paste).  That measurement is surface-specific and is
+NOT the MiniMax ruling: in the MiniMax Code pane the working mechanism IS a real U+00A0,
+generated in the shell as shown above, because the entity fails there instead.  Also not
+worth trying: app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
 headless `claude -p` only, `axScreenReader` only drops borders); patching the client (the CLI is
 a ~277MB compiled Mach-O binary, the desktop app is a signed native bundle -- patching breaks
 code signing and is wiped by auto-update; do not attempt).  (Two literal ASCII spaces in chat

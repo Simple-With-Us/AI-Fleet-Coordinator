@@ -223,10 +223,9 @@ class SpecializeTests(unittest.TestCase):
         with open(GAP, encoding="utf-8") as f:
             src = f.read()
         out = specialize_from_monet(src, SEATS["cursor"], skill_name="sentence-gap")
-        self.assertTrue(
-            "Monet portable" in out or "Monet's portable" in out,
-            out[:600],
-        )
+        #  The protocol attribution is generic, never the retired Monet seat (Kody rule 13).
+        self.assertIn("the canonical portable protocol", out)
+        self.assertNotIn("Monet", out[:600])
 
     def test_quoted_description_folds_for_fx(self) -> None:
         out = specialize_from_monet(_session(), SEATS["codex"], skill_name="session-start")
@@ -257,6 +256,43 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn("description: >-", out)
         self.assertIn('Guides Cloudflare One "Zero Trust" work.', out)
         self.assertNotIn('description: "', out)
+
+    def test_fold_quotes_description_containing_a_colon(self) -> None:
+        """A plain scalar holding ': ' cannot parse, so it must be folded.
+
+        The sentence-gap description grew a "Mechanism by surface:" clause and
+        the fold only ever looked for quotes, so every rendered tree shipped
+        front matter no YAML parser could read.  PyYAML is not a dependency of
+        this suite, so assert the structure rather than parsing it.
+        """
+        from fleet_skill_identity import fold_yaml_description
+
+        src = (
+            "---\n"
+            "name: sentence-gap\n"
+            "description: Always use a gap. Mechanism by surface: two spaces here.\n"
+            "---\n\n"
+            "# Sentence gap\n"
+        )
+        out = fold_yaml_description(src)
+        self.assertIn("description: >-", out)
+        self.assertIn("  Always use a gap. Mechanism by surface: two spaces here.", out)
+        self.assertNotIn("description: Always use a gap.", out)
+        self.assertTrue(out.endswith("# Sentence gap\n"))
+
+    def test_fold_leaves_a_plain_safe_description_alone(self) -> None:
+        from fleet_skill_identity import fold_yaml_description
+
+        src = (
+            "---\n"
+            "name: cloudflare-one\n"
+            "description: Guides Cloudflare One Zero Trust work.\n"
+            "---\n\n"
+            "# Cloudflare One\n"
+        )
+        out = fold_yaml_description(src)
+        self.assertIn("description: Guides Cloudflare One Zero Trust work.", out)
+        self.assertNotIn("description: >-", out)
 
 
 DOCS = os.path.join(ROOT, "docs", "fleet-skills")
@@ -830,7 +866,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         self.assertNotIn("Catalog copy", out)
         self.assertIn("clutch/<slug>", out)
         self.assertIn("clutch-bot@simplewithus.zulipchat.com", out)
-        self.assertIn("~/.secrets/Zulip/Clutch-zuliprc", out)
+        self.assertIn("`CLUTCH_ZULIP_KEY`", out)
         self.assertIn("[CLUTCH·session8]", out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
         self.assertNotIn("DSH·session8", out)
@@ -1177,10 +1213,10 @@ class RepoPlatformCopiesTests(unittest.TestCase):
             "`[MM·session8]`",
             "minimax/",
             "mm-bot@simplewithus.zulipchat.com",
-            "MM-zuliprc",
+            "MM_ZULIP_KEY",
         ):
             self.assertIn(wanted, text, wanted)
-        for foreign in ("CLAUDE", "CURSOR", "Claude-zuliprc", "`[CLAUDE·session8]`"):
+        for foreign in ("CLAUDE", "CURSOR", "CLAUDE_ZULIP_KEY", "`[CLAUDE·session8]`"):
             self.assertNotIn(foreign, text, foreign)
         self.assertIn("minimax/afc-123-zulip-cutover", text)
         self.assertNotIn("claude/afc-123-zulip-cutover", text)

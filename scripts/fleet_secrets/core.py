@@ -11,9 +11,11 @@ Contract (same family as ``fleet_knobs/source.py`` and ``fleet_rag/infisical_set
   command and names the key, never the value.
 * Auth, first match wins:  ``INFISICAL_TOKEN`` already in the environment ("token"), a
   universal-auth machine identity whose id and secret are in the login Keychain ("keychain"),
-  or the Infisical CLI's own login session ("session").  A machine-identity secret travels to
-  the CLI by environment variable and is never put in an argument list.  The access token it
-  returns goes to the export call by ``INFISICAL_TOKEN`` for the same reason.
+  the same pair in the System keychain ("system-keychain", for pm2 and other boot-time jobs
+  that run in the launchd System session, where the login Keychain is unreachable), or the
+  Infisical CLI's own login session ("session").  A machine-identity secret travels to the CLI
+  by environment variable and is never put in an argument list.  The access token it returns
+  goes to the export call by ``INFISICAL_TOKEN`` for the same reason.
 
 Stdlib only, so a stable copy run with ``python3 -I`` needs nothing beside this package.
 """
@@ -25,6 +27,8 @@ import os
 import re
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
@@ -34,6 +38,15 @@ CLI_NAME = "infisical"
 FALLBACK_DIRS = ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin")
 SECURITY_BIN = "/usr/bin/security"
 EXPORT_TIMEOUT = 30.0
+API_BASE = "https://app.infisical.com/api"
+ENV_API = "FLEET_SECRETS_API"
+API_TIMEOUT = 30.0
+MAX_VALUE_BYTES = 256 * 1024
+# What `set` may write:  (folder, name pattern) pairs, and nothing else.  This list is code on purpose:
+# widening it takes a reviewed change, never a flag, an environment variable or a config file.  A general
+# write command would let any agent on this Mac overwrite any Fleet-OPS secret with the shared automation
+# identity.  CACHE_<APP> in /linear is the minted Linear token that `board` stores there (AFC-359).
+WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (("/linear", r"^CACHE_[A-Z0-9_]+$"),)
 LOGIN_TIMEOUT = 30.0
 KEYCHAIN_TIMEOUT = 10.0
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -42,6 +55,7 @@ ENV_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 PROJECT_FILE = ".agent-sync/fleet-ops-project-id"
 ENV_NAMES = ("INFISICAL_ENVIRONMENT", "INFISICAL_ENV")
 
+SYSTEM_KEYCHAIN = "/Library/Keychains/System.keychain"
 KEYCHAIN_SERVICE = "fleet-secrets"
 KEYCHAIN_CLIENT_ID = "infisical-client-id"
 KEYCHAIN_CLIENT_SECRET = "infisical-client-secret"
@@ -178,13 +192,39 @@ def _base_env(env: Mapping[str, str]) -> dict[str, str]:
 # --------------------------------------------------------------------------- authentication
 
 
-def keychain_item(account: str) -> str | None:
-    """The generic-password value for service fleet-secrets, or None when absent.  Captured, never echoed."""
-    if not os.path.exists(SECURITY_BIN):
+def login_keychain() -> str | None:
+    """Path of the user's login keychain file, or None when there is none.
+
+    Always searched by explicit path:  the default search list also holds the System keychain, so a
+    path-less lookup would find System items and report `keychain` instead of `system-keychain`, or mix
+    one item from each.  In the launchd System session the file exists but is locked, so the lookup simply
+    fails and the System keychain is used."""
+    base = os.path.expanduser("~/Library/Keychains")
+    for name in ("login.keychain-db", "login.keychain"):
+        candidate = os.path.join(base, name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def keychain_item(account: str, keychain: str | None) -> str | None:
+    """The generic-password value for service fleet-secrets in ONE keychain file, or None when absent
+    (`keychain` None means there is no such keychain).  Captured, never echoed."""
+    if not keychain or not os.path.exists(SECURITY_BIN):
         return None
+    argv = [
+        SECURITY_BIN,
+        "find-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        account,
+        "-w",
+        keychain,
+    ]
     try:
         proc = subprocess.run(
-            [SECURITY_BIN, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", account, "-w"],
+            argv,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=KEYCHAIN_TIMEOUT,
@@ -201,26 +241,43 @@ def keychain_item(account: str) -> str | None:
     return value or None
 
 
-def auth_mode(env: Mapping[str, str]) -> str:
-    """ "token", "keychain" or "session".  Raises on a half-filled Keychain rather than downgrade."""
-    if (env.get(ENV_TOKEN) or "").strip():
-        return "token"
-    have_id = keychain_item(KEYCHAIN_CLIENT_ID) is not None
-    have_secret = keychain_item(KEYCHAIN_CLIENT_SECRET) is not None
+def keychain_presence(keychain: str | None) -> tuple[bool, bool]:
+    """(client id present, client secret present) in one keychain.  Booleans only."""
+    return (
+        keychain_item(KEYCHAIN_CLIENT_ID, keychain) is not None,
+        keychain_item(KEYCHAIN_CLIENT_SECRET, keychain) is not None,
+    )
+
+
+def _complete_or_none(label: str, keychain: str | None) -> bool:
+    have_id, have_secret = keychain_presence(keychain)
     if have_id and have_secret:
-        return "keychain"
+        return True
     if have_id or have_secret:
         raise SecretsError(
-            "keychain-incomplete:  service %s needs both accounts %s and %s, or neither"
-            % (KEYCHAIN_SERVICE, KEYCHAIN_CLIENT_ID, KEYCHAIN_CLIENT_SECRET)
+            "keychain-incomplete:  %s needs both accounts %s and %s under service %s, or neither"
+            % (label, KEYCHAIN_CLIENT_ID, KEYCHAIN_CLIENT_SECRET, KEYCHAIN_SERVICE)
         )
+    return False
+
+
+def auth_mode(env: Mapping[str, str]) -> str:
+    """ "token", "keychain", "system-keychain" or "session".  Raises on a half-filled keychain rather
+    than downgrade."""
+    if (env.get(ENV_TOKEN) or "").strip():
+        return "token"
+    if _complete_or_none("the login Keychain", login_keychain()):
+        return "keychain"
+    if _complete_or_none("the System keychain", SYSTEM_KEYCHAIN):
+        return "system-keychain"
     return "session"
 
 
-def machine_token(cli: str, env: Mapping[str, str]) -> str:
-    """Log in with the Keychain's machine identity and return the access token (in memory only)."""
-    client_id = keychain_item(KEYCHAIN_CLIENT_ID)
-    client_secret = keychain_item(KEYCHAIN_CLIENT_SECRET)
+def machine_token(cli: str, env: Mapping[str, str], mode: str = "keychain") -> str:
+    """Log in with the mode's machine identity and return the access token (in memory only)."""
+    keychain = SYSTEM_KEYCHAIN if mode == "system-keychain" else login_keychain()
+    client_id = keychain_item(KEYCHAIN_CLIENT_ID, keychain)
+    client_secret = keychain_item(KEYCHAIN_CLIENT_SECRET, keychain)
     if not client_id or not client_secret:
         raise SecretsError("keychain-incomplete")
     child = _base_env(env)
@@ -312,8 +369,8 @@ def fetch_all(path: str, env: Mapping[str, str]) -> dict[str, str]:
         raise SecretsError("cli-missing:  the infisical CLI is not installed")
     mode = auth_mode(env)
     child = _base_env(env)
-    if mode == "keychain":
-        child[ENV_TOKEN] = machine_token(cli, env)
+    if mode in ("keychain", "system-keychain"):
+        child[ENV_TOKEN] = machine_token(cli, env, mode)
     if mode != "token":
         for var in (ENV_CLIENT_ID, ENV_CLIENT_SECRET):
             child.pop(var, None)
@@ -406,3 +463,103 @@ def injectable(name: str) -> bool:
         and not name.startswith(NOT_INJECTED_PREFIXES)
         and not name.upper().startswith("INFISICAL_")
     )
+
+
+def _api(method: str, path: str, token: str, body: dict | None, env: Mapping[str, str]) -> int:
+    """One Infisical REST call.  Returns the HTTP status;  the response body is never read into a message.
+    The token travels in a header, never in an argument list."""
+    base = (env.get(ENV_API) or API_BASE).rstrip("/")
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        base + path,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+            "User-Agent": "fleet-secrets",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return 0
+    finally:
+        data = None
+
+
+def check_writable(name: str, path: str) -> None:
+    """Raise SecretsError (exit 2) unless (path, name) is on the built-in write allowlist."""
+    for folder, pattern in WRITE_ALLOWLIST:
+        if path == folder and re.match(pattern, name):
+            return
+    raise SecretsError(
+        "set refused:  %s at %s is not on the built-in write allowlist (%s);  widening it needs a code change"
+        % (name, path, ", ".join("%s %s" % (f, p) for f, p in WRITE_ALLOWLIST)),
+        2,
+    )
+
+
+def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
+    """Create or update one Fleet-OPS prod secret at `path`, and return "created" or "updated".
+
+    Only names on WRITE_ALLOWLIST are accepted.  Needs a machine identity (token, keychain or system-keychain):  the CLI's own login session
+    cannot hand its token to a REST call, so mode `session` is refused.  The value never appears in an argument list, a message or a log."""
+    refusal = environment_refusal(env)
+    if refusal:
+        raise SecretsError(refusal, 2)
+    check_name(name)
+    check_path(path)
+    check_writable(name, path)
+    if "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
+        raise SecretsError("value is empty-unsafe or larger than %d bytes" % MAX_VALUE_BYTES, 2)
+    project = infisical_project_id(env, home_dir(env))
+    cli = find_cli(env)
+    if not cli:
+        raise SecretsError("cli-missing:  the infisical CLI is not installed")
+    mode = auth_mode(env)
+    if mode == "session":
+        raise SecretsError(
+            "write-needs-machine-identity:  set needs a keychain machine identity or INFISICAL_TOKEN",
+            4,
+        )
+    token = env[ENV_TOKEN].strip() if mode == "token" else machine_token(cli, env, mode)
+    body = {
+        "workspaceId": project,
+        "environment": ENVIRONMENT,
+        "secretPath": path,
+        "secretValue": value,
+        "type": "shared",
+    }
+    try:
+        quoted = urllib.request.quote(name, safe="")
+        # `set` never creates folders:  the allowlist names a folder that already exists.  A missing folder
+        # (404 on a listing of it) is an error and nothing is written.
+        probe = _api(
+            "GET",
+            "/v3/secrets/raw?workspaceId=%s&environment=%s&secretPath=%s&recursive=false&include_imports=false"
+            % (project, ENVIRONMENT, urllib.request.quote(path, safe="/")),
+            token,
+            None,
+            env,
+        )
+        if probe == 404:
+            raise SecretsError(
+                "folder-missing:  %s does not exist in Fleet-OPS;  nothing was written" % path, 4
+            )
+        if probe != 200:
+            raise SecretsError("write-failed:  folder-check http-%d" % probe, 4)
+        status = _api("PATCH", "/v3/secrets/raw/" + quoted, token, body, env)
+        if status in (200, 201):
+            return "updated"
+        if status in (404, 400):
+            status = _api("POST", "/v3/secrets/raw/" + quoted, token, body, env)
+            if status in (200, 201):
+                return "created"
+        raise SecretsError("write-failed:  http-%d" % status)
+    finally:
+        body = {}
+        token = ""

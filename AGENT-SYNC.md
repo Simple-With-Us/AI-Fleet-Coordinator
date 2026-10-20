@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:39ac8a1515b20c881cc28b74d3b845950e0ef2a32a7c284e1d4784b4a01dc01e -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:c18e0f8950eda24de7994570751275f3b4db696b702666da934d08a71a54ef0d -->
 # AGENT-SYNC — Fleet Coordination Protocol
 
 This is the protocol every AI agent seat follows when it works on the owner's apps:  who each seat is, how work is claimed, landed, and closed out in Linear, how seats talk in Zulip, and the standing rules for secrets, delegation, owner-facing writing, and the Mac.  It exists so parallel seats never collide on, duplicate, or silently drop the same work.
@@ -57,11 +57,13 @@ The owner rulings and defaults that shaped this rewrite, in one place so Jay can
 
 ### Owner Rulings
 
+- **Times are Central** (owner 2026-10-18, reaffirming 2026-08-09):  every time a human reads is on the owner's clock, `America/Chicago`, 12-hour with am or pm, with no zone label and no UTC stamp beside it.  Times from logs, APIs and CI are converted before they are written.  Binding for every agent, bot and platform ([Timestamps](#timestamps)).
+- **Zulip linkifiers** (owner 2026-10-16 and 2026-10-18;  `AFC-336`):  FleetLink links are lowercase `fl/<path>`, for example `fl/zulip` for the Zulip folder, so they never read as the FL app acronym (`FL/zulip` stays plain text;  the long form `fleetlink/<path>` still works).  `CC#n` means CodeCaps (`CAPS#n` is an alias;  `CLUTCH#n` and legacy `CK#n` are Clutch), Clutch's Linear ids are `C-n`, and PagerDuty incidents are spelled out as `PagerDuty#n`.  The rules, examples and how to change them live in the [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md) (Current Linkifiers);  this list does not repeat them.
 - **Agent-sync naming** (owner 2026-10-11;  documented in `OPS-925`):  the string `agent-sync` names four different things (the #agent-sync channel, the CLI, the listener, and the Agent-Sync MCP server).  Renaming any live id is out of scope;  prose uses the qualified names in [Agent-Sync Names](#agent-sync-names).
 - **Seat aliases** (owner 2026-10-14):  WISE is the canonical key for Wise; `Wise-Instinct`, `Echo-Instinct` and legacy `Instinct` resolve to WISE.  `Rob` and `Rob-Muse` resolve to MA, alongside `Muse-Assist`.  Seat-aware tools accept these spellings as inputs and emit the canonical key.
 - **Grok seats** (owner 2026-10-08):  terminal Grok, GROK and GROK-BUILD are one seat that signs `GROK`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (e.g. GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it wherever a seat name is accepted, resolve it to GROK, and sign GROK (labels, `--by`, `grok/` branches, `grok-<slug>` lanes).  The bot's display name is `Grok`.  Grok on the web and iOS is a separate cloud seat, `GROK-WEB`.  The hosted agent-sync MCP endpoint will live at `agent-sync.jays.services`.
 - **Seat precedence** (owner 2026-10-09, confirming the 2026-10-08 direction):  a seat BotFleet or another trusted launcher assigns survives any engine, and ordinary sessions take their platform's default (CLAUDE for Claude Code, CODEX for Codex, and so on) instead of asking.  This supersedes the 2026-10-07 "ask, never default to CLAUDE" default, which existed because MONET and RENOIR shared the Claude account.  Tools verify the authenticated bot before any fleet action.  Jet stays a separate identity.  BotFleet's ten role bots are seats `BF-<ROLE>`, each with its own bot, and post only through BotFleet's native Zulip; the engines it runs keep loading the owner's user config, made launcher-aware.  Any process on the shared Mac user can read any seat's rc file, which is accepted for now:  the CLI checks stop accidental mis-signing, and brokers (BotFleet native, the hosted agent-sync MCP) keep keys away from engines ([Identity Rules](#identity-rules)).
-- **Linear replaced THE BOARD** (owner 2026-10-08; the cutover was ordered 2026-10-10 and announced in #agent-sync › fleet).  Linear is the system of record for claims, status and closeouts, through the same `board` command.  Every seat has its OWN Linear app named for its seat bot (seat tag on the first line of each post), never Jay's account or a connector bound to him;  a seat whose app does not exist yet falls back to the shared `Fleet` app and says so in `board whoami` (owner 2026-10-10;  verified live Thu, Oct 15, 2026:  MM's viewer is its own app, `MiniMax (MM)`, with `writes: enabled`).  **Never write to Linear through Jay's connector, for reads or writes**:  it always acts as Jay and may be disconnected at any time, so a record that names him when a bot wrote it is worse than no record.  The operating manual is the [Linear Fleet Guide](docs/protocols/linear-fleet-guide.md), published at https://fleetlink.online/linear/linear-fleet-guide.md.  Workspace `Simple With Us`, slug `simple-with-us`, one team per app, ids like `BF-123`.  The migration plan is `docs/protocols/linear-migration.md`.  The effort logs, `mac-collab-sync`, `mac-collab-writeback` and `effort-issues-sync` are retired ([Retired Mechanisms](#retired-mechanisms)).  The old board is a read-only archive until about day 30.  **One exception** (owner 2026-10-10):  Grok on the web and iOS (GROK-WEB) has no shell, so it uses its own Linear connector, which acts under Jay's login.  Every Linear comment and issue body it writes starts with `[GROK-WEB·<session>]` on its own first line, and it claims with the `claimed:GROK-WEB` label and a `CLAIMED` comment.  No other seat may use a connector bound to Jay.  If attribution becomes a problem, the replacement is Linear tools on the hosted Agent-Sync bridge that act as the Fleet app and stamp the seat on the server (`docs/protocols/linear-migration.md`, section 2).
+- **Linear replaced THE BOARD** (owner 2026-10-08; the cutover was ordered 2026-10-10 and announced in #agent-sync › fleet).  Linear is the system of record for claims, status and closeouts, through the same `board` command.  Every seat has its OWN Linear app named for its seat bot (seat tag on the first line of each post), never Jay's account or a connector bound to him;  a seat whose app does not exist yet falls back to the shared `Fleet` app and says so in `board whoami` (owner 2026-10-10;  verified live Thu, Oct 15, 2026:  MM's viewer is its own app, `MiniMax (MM)`, with `writes: enabled`).  **Never write to Linear through Jay's connector, for reads or writes**:  it always acts as Jay and may be disconnected at any time, so a record that names him when a bot wrote it is worse than no record.  The operating manual is the [Linear Fleet Guide](docs/protocols/linear-fleet-guide.md), published at https://fleetlink.online/linear/linear-fleet-guide.md.  Workspace `Simple With Us`, slug `simple-with-us`, one team per app, ids like `BF-123`.  The migration plan is `docs/protocols/linear-migration.md`.  The effort logs, `mac-collab-sync`, `mac-collab-writeback` and `effort-issues-sync` are retired ([Retired Mechanisms](#retired-mechanisms)).  The old board server is retired (2026-10-19, AFC-363;  [Retired Mechanisms](#retired-mechanisms)).  **One exception** (owner 2026-10-10):  Grok on the web and iOS (GROK-WEB) has no shell, so it uses its own Linear connector, which acts under Jay's login.  Every Linear comment and issue body it writes starts with `[GROK-WEB·<session>]` on its own first line, and it claims with the `claimed:GROK-WEB` label and a `CLAIMED` comment.  No other seat may use a connector bound to Jay.  If attribution becomes a problem, the replacement is Linear tools on the hosted Agent-Sync bridge that act as the Fleet app and stamp the seat on the server (`docs/protocols/linear-migration.md`, section 2).
 - Full rewrite of this document, chosen over patching it.
 - Slack is retired with a hard cut.  Zulip (`https://simplewithus.zulipchat.com`) is the only agent chat.
 - Every chat detail (channels, topics, the envelope, the roster, credentials, listening, wakes, the gates topic, the alerts format, linkifiers, chat writing rules) lives in the [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md), published at https://fleetlink.online/zulip/zulip-fleet-guide.md?raw=1.  This document keeps only the duties (post, read, wake, the claim and closeout leg) and links there.  It never duplicates the guide's mechanics.
@@ -82,7 +84,7 @@ Proposed to Jay with no objection.  Each is marked "(default 2026-10-07)" where 
 3. Claim and closeout cover the Linear issue (through `board`) and a status post in the work's Zulip topic, and the PR links the issue with `Fixes <ID>` or `Refs <ID>`.  There is no effort-log mirror row and no separate GitHub issue leg ([Claim](#claim); changed at the cutover, see [Retired Mechanisms](#retired-mechanisms)).
 4. `repo:` stays in claim and closeout status blocks.  Elsewhere the topic names the app ([Message Shape](#message-shape)).
 5. Force-push:  never to main.  On your own unmerged branch, only after the owner confirms ([Commit Without Being Asked](#commit-without-being-asked)).
-6. Workflow-file pushes extract only `GITHUB_TOKEN` from the handoff file.  Never `source` the whole file ([Pushing Workflow Files](#pushing-workflow-files)).
+6. Workflow-file pushes fetch only `GITHUB_TOKEN` with `fleet-secrets get`.  Never dump the whole key set ([Pushing Workflow Files](#pushing-workflow-files)).
 7. `gating now` and `gate clear` posts go to #builds › `gates` ([Serialize Full Local Gates](#serialize-full-local-gates)).
 8. The Sentry Slack alert workflow moves to Zulip #alerts ([Alert Workflows](#alert-workflows)).
 9. The GitHub outbox bridge posts to Zulip as the seat's own bot ([Chat: The Zulip Contract](#chat-the-zulip-contract)).
@@ -305,7 +307,7 @@ Parallel agents need a real-time channel to avoid colliding on, or duplicating, 
 - **Only Jay creates bots.**  Agents never create accounts, on Zulip or anywhere else.
 - **Never post as Jay** (owner 2026-10-07, confirmed).  No agent posts, DMs, or reacts through Jay's Zulip account.  Never use Composio, or any connector bound to Jay's account, for agent identity or chat.
 - **Roles.**  Every bot, the CLAUDE bot included, is a Zulip member (role 400), and Jay is the only owner and admin (owner 2026-10-09, checked live Fri, Oct 9;  it supersedes the 2026-10-07 moderator ruling for CLAUDE).  The always-on listener refuses admin and owner keys and accepts moderator and member keys.  Anything that needs an admin (linkifiers, roles, bot users, realm settings) goes to Jay.
-- **Credentials.**  Mac seats use `~/.secrets/Zulip/<file code>-zuliprc`, mode 600.  Cloud seats with no Mac filesystem use env `ZULIP_EMAIL`, `ZULIP_API_KEY`, and `ZULIP_SITE`.  A key is its own seat's bot credential and nobody else's:  never print, echo, paste, or share it, never use another seat's key, and never hand a key to another agent.  Details:  [Credentials and Key Handling](docs/protocols/zulip-fleet-guide.md#credentials-and-key-handling).
+- **Credentials.**  Mac seats get their credential from Infisical Fleet-OPS (`fleet-secrets get <SEAT>_ZULIP_KEY --path /zulip`, with `_EMAIL` and `_SITE` beside it), which the `agent-sync` CLI does itself;  there is no `zuliprc` file to read and nothing reads `~/.secrets` (owner 2026-10-18, AFC-359).  Cloud seats with no Mac filesystem use env `ZULIP_EMAIL`, `ZULIP_API_KEY`, and `ZULIP_SITE`.  A key is its own seat's bot credential and nobody else's:  never print, echo, paste, or share it, never use another seat's key, and never hand a key to another agent.  Details:  [Credentials and Key Handling](docs/protocols/zulip-fleet-guide.md#credentials-and-key-handling).
 - **The agent-sync CLI** (command name `agent-sync`) is the one tool for chat.  It is AFC `scripts/agent_sync`, zero-dependency, on PATH as `~/.local/bin/agent-sync`:  `post` (new topic), `reply` (existing topic), `read`, `wait`, `listen`, `inbox`, `topics`, `follow`, `mute`, `resolve`, and `react`.  Cloud seats without a checkout follow the guide's [Core Actions](docs/protocols/zulip-fleet-guide.md#core-actions) over plain HTTP.  Reference:  [The agent-sync CLI](docs/protocols/zulip-fleet-guide.md#the-agent-sync-cli).
 - **Retired chat tooling.**  The CLI replaces `agent-sync-websocket.py` (including its one-shot `--post` helper), `agent-sync-poll.py`, the pm2 `agent-sync-push` relay with its tunnel endpoint, `consumer.mjs`, `slack-sync.sh`, the `slack-collab` MCP, and `~/.secrets/agent-sync.env`.  Never use them, or the Slack tokens they read ([Appendix D](#slack-era-retired-2026-10-07)).
 - **Bridges.**
@@ -409,7 +411,7 @@ Linear is the system of record for fleet work, for every agent, seat, and app (o
 
 ### What Linear Is
 
-- Workspace Simple With Us (`https://linear.app/simple-with-us`), one public team per app, team key = the app acronym:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CLUTCH, FL, CC, SWU ([App Acronyms and Repos](#app-acronyms-and-repos)).  Issue ids carry the app (`BF-123`) and are the id everywhere:  topics, branches, PRs, Notes.
+- Workspace Simple With Us (`https://linear.app/simple-with-us`), one public team per app, team key = the app acronym:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, FL, CC, SWU ([App Acronyms and Repos](#app-acronyms-and-repos)).  The one exception is Clutch:  its app acronym is CLUTCH, but its Linear team key is `C`, so its issues are `C-123` (checked live Sun, Oct 18, 2026).  Issue ids carry the app (`BF-123`) and are the id everywhere:  topics, branches, PRs, Notes.
 - Everything the old board held is in Linear:  review findings, every app's effort-board rows, and every repo's GitHub issues, with their original dates.  An imported row keeps its old board id as its Linear UUID, so a full old id or its first 8 hex characters still resolves in `board`.
 - Linear is the system of record and the only write surface.  Nothing is mirrored to or from the effort logs or GitHub Issues.
 - Humans use Linear in the browser.  Agents use `board`, which acts as the shared `Fleet` Linear app and puts the seat tag on the first line of every issue and comment it writes.  Never write to Linear as Jay, through the claude.ai Linear connector, through Composio, or with a personal API key.
@@ -421,7 +423,7 @@ Linear is the system of record for fleet work, for every agent, seat, and app (o
 
 These existed until the cutover and are gone.  Do not use, revive or hand-edit them.
 
-- THE BOARD server (`mac-collab`, `mac.jays.services/board`, `MAC_COLLAB_TOKEN` for board writes) is a read-only archive for 14 days after the cutover, with litestream still replicating `findings.db`, and is retired at about day 30.  `board-legacy` and `BOARD_BACKEND=mac-collab` run the old CLI against it for rollback only.
+- THE BOARD server (`mac-collab`, `mac.jays.services/board`, `MAC_COLLAB_TOKEN` for board writes) was a read-only archive after the cutover and was retired on 2026-10-19 (AFC-363):  the pm2 jobs `mac-collab` and `mac-collab-litestream` are deleted, the `mac.jays.services` tunnel ingress is removed (the hostname answers 404), and `board.jays.services` now redirects to Linear.  `board-legacy` and `BOARD_BACKEND=mac-collab` (the rollback) were removed the same day.  The database copy is `~/apps/_retired/mac-collab-20261019/findings.db`.
 - `mac-collab-sync` and `mac-collab-writeback` (pm2) are stopped and removed.  Nothing ingests effort logs or GitHub Issues, and nothing writes a status back to a file or an issue.
 - The live effort logs (`~/apps/*-EFFORT-LOG.md`) and each repo's `docs/EFFORT-LOG.md` are archived, each with an "Archived" header that names the app's Linear team.  Nobody edits them, and no PR needs a mirror row.  `EFFORT-LOG-PROTOCOL.md` is a retired stub.
 - The `effort-issues-sync` GitHub workflow and `scripts/sync-effort-issues.py` are disabled in every repo that had them.
@@ -437,7 +439,7 @@ These existed until the cutover and are gone.  Do not use, revive or hand-edit t
 - Never paste the Fleet app's client secret or a Linear key into a curl.  There is no raw REST fallback for agents:  a seat with no Mac filesystem runs `python3 scripts/linear-board/board` from an AI-Fleet-Coordinator checkout.
 - Invoke the CLI literally:  `board stats`, not `B=…/board; $B stats`.  Claude Code only offers "Always Allow" when a Bash command reduces to a stable prefix rule.  `$(…)` substitution, a pipe, a shell variable, or chained `&&`/`;` has no safe prefix, so you get "Allow Once" forever in any permission mode.  That is the command's shape, not a settings bug.
 - Do not use the old secret-safety dance (read a token into a variable, pipe output through `sed` to redact).  It produces exactly that un-allowlistable shape.
-- Humans use https://linear.app/simple-with-us.  The short link https://board.jays.services still reaches the read-only archive until the owner repoints it at a saved Linear view.
+- Humans use https://linear.app/simple-with-us.  The short link https://board.jays.services is a Cloudflare redirect to Linear (https://linear.app/simple-with-us);  the old read-only archive behind it was retired on 2026-10-19.
 - Identity is the seat tag in the issue or comment text plus the `claimed:` and `seat:` labels, because every seat shares the one `Fleet` app.  Per-seat Linear apps come later only if attribution becomes a problem (owner 2026-10-08).
 
 ### Claim
@@ -608,10 +610,11 @@ git diff origin/main...HEAD    # three-dot: remaining unique work vs merge-base
 ### Pushing Workflow Files
 
 - The default injected agent `GH_TOKEN` (an OAuth App token starting `gho_`) is rejected by GitHub for pushes to `.github/workflows/`, even with the `workflow` scope, because of OAuth App restrictions.
-- Push workflow changes with the Personal Access Token.  Extract only `GITHUB_TOKEN` from the handoff file and override `GH_TOKEN` inline for that one push.  Never `source` the whole file, and never echo the value (default 2026-10-07):
+- Push workflow changes with the Personal Access Token.  Fetch only `GITHUB_TOKEN` with `fleet-secrets get` and override `GH_TOKEN` inline for that one push.  Never dump the whole key set, and never echo the value (default 2026-10-07, command updated 2026-10-18):
 
 ```bash
-env GH_TOKEN="$(grep -m1 '^GITHUB_TOKEN=' /Users/jay/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')" git push
+token="$(fleet-secrets get GITHUB_TOKEN)" || exit $?
+env GH_TOKEN="$token" git push
 ```
 
 - Never use `ci-pending/` staging workarounds for workflow files.
@@ -791,13 +794,12 @@ Every deny message carries the tier guidance and tells you to delegate more, not
 - When an app needs a cross-app key at runtime (for example ST sending a peer-subject Pushover digest with CT and UM logos), copy it into the consuming app's Infisical project, store to store and never printed.  Never teach an app to read the handoff file.
 - Cloud seats that need runtime secrets use Infisical for the app they are working on.
 
-### The Handoff File
+### The Handoff File (Retired)
 
-- "Global api keys", "the global api keys file" and "the handoff file" all mean exactly one file: `/Users/jay/.secrets/global-api-keys`, no extension (owner 2026-08-19).  The Coolify tokens live there too.
-- It is the agent handoff and operator convenience copy only.  No app depends on it at runtime, and it may go stale.
-- To add a handoff copy of a key, add it to that one file.  Never recreate a `.env`-suffixed sibling.  The retired sibling is renamed `~/.secrets/global-api-keys.env.SUPERSEDED-2026-08-19-stale-do-not-use` as a recovery net; never read or restore it.
-- Local seats read the handoff file directly, with a names-only grep and one value loaded into a shell variable ([Reading Keys Safely](#reading-keys-safely)).
-- Key names only, never values, are readable by any agent at `GET https://mac.jays.services/files/key-names` with `Authorization: Bearer $MAC_COLLAB_TOKEN`.  The `X-Mac-Collab-Token` header is no longer accepted.  The handoff file itself is never served over HTTP.
+- "Global api keys", "the global api keys file" and "the handoff file" all meant one flat file: `/Users/jay/.secrets/global-api-keys`, no extension (owner 2026-08-19).  Owner 2026-10-18 (OPS-818):  nothing reads that file any more, whether code, a test, a doc or an agent by hand.  It stays on disk only until an owner-gated cutover removes it, and only the Mac sync script writes it.
+- Every key that was in it lives in Infisical, project Fleet-OPS, prod, under the same name.  The Coolify tokens are there too.  Read them with the `fleet-secrets` CLI ([Reading Keys Safely](#reading-keys-safely)).
+- To add a copy of a key for agents, put it in Infisical Fleet-OPS.  Never recreate a flat file or a `.env`-suffixed sibling.  The older retired sibling is renamed `~/.secrets/global-api-keys.env.SUPERSEDED-2026-08-19-stale-do-not-use` as a recovery net;  never read or restore it.
+- Key names only, never values, are readable on a Mac seat with `fleet-secrets names`.  The old `GET https://mac.jays.services/files/key-names` endpoint was retired on 2026-10-19 (AFC-363) with the rest of `mac-collab`;  a cloud seat has no endpoint now and asks a Mac seat or the owner.  The old flat file is never served over HTTP.
 - Zulip bot keys follow these rules too.  Where each seat's key lives and how to rotate it: [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md#credentials-and-key-handling).
 
 ### Owner-to-Agent Handoff
@@ -809,36 +811,35 @@ Every deny message carries the tier guidance and tells you to delegate more, not
 
 ### Reading Keys Safely
 
-The handoff-file grep-trap rules (2026-08-14) and the loaded-key rules (2026-09-17) bind every agent.  `~/.secrets/global-api-keys`, any other `chmod 600` handoff file, any `.env`, and any Infisical dump is a multi-secret file.  A tool result that contains even one `KEY=value` line has already leaked into the transcript.
+The grep-trap rules (2026-08-14) and the loaded-key rules (2026-09-17) bind every agent.  `~/.secrets/global-api-keys`, any other `chmod 600` handoff file, any `.env`, and any Infisical dump is a multi-secret file.  A tool result that contains even one `KEY=value` line has already leaked into the transcript.
 
-Forbidden on the handoff file (these print values, not names):
-
-```bash
-grep '^[A-Z0-9_]+=' ~/.secrets/global-api-keys     # every line, values included
-grep '^ADMIN' ~/.secrets/global-api-keys           # matching lines include values
-rg ADMIN ~/.secrets/global-api-keys                # same
-rg -n 'TOKEN|KEY|SECRET' ~/.secrets/               # same leak, whole directory
-cat ~/.secrets/global-api-keys                     # never
-xxd ~/.secrets/global-api-keys                     # a byte-dump of the file is cat
-# any Read / open-file / less / bat on that path   # never
-```
-
-`grep PATTERN file` without `-o` extracting only the name is a leak, even when you only wanted to see which keys exist.
-
-Allowed:
+Nothing reads `~/.secrets/global-api-keys` any more (owner 2026-10-18, OPS-818).  Use `fleet-secrets`, which reads Infisical Fleet-OPS prod and never writes a value to disk or a log:
 
 ```bash
-# names only; -o is mandatory so the value never appears
-grep -oE '^[A-Z][A-Z0-9_]*' ~/.secrets/global-api-keys | sort -u
+# names only
+fleet-secrets names
 
-# one key into a variable; never echo it
-TOKEN="$(grep -m1 '^ADMIN_REINDEX_TOKEN=' ~/.secrets/global-api-keys | cut -d= -f2- | tr -d '"')"
+# one key into a variable; never echo it (exit 3 when absent)
+TOKEN="$(fleet-secrets get ADMIN_REINDEX_TOKEN)" || exit $?
+
+# run a command with only the keys it needs as environment variables
+fleet-secrets run --only KEY_A,KEY_B -- ./job.sh
 
 # redact it out of any later command output
 some-command 2>&1 | sed "s/${TOKEN}/[REDACTED]/g"
 ```
 
-The file's values are quote-wrapped, so keep the `tr -d '"'`; without it the server answers 401 as if the token were revoked (owner-verified 2026-09-17).
+A key missing at the Fleet-OPS root may sit in its `/global-api-keys` folder:  add `--path /global-api-keys`.  Run `fleet-secrets doctor` to check the install.  A script reads the environment first and calls `fleet-secrets get NAME` as its fallback.  Code that also runs in the cloud keeps the environment as its only source.
+
+Forbidden (these print values, not names):
+
+```bash
+fleet-secrets run -- env                           # prints every value
+fleet-secrets run -- printenv KEY                  # prints one value
+cat ~/.secrets/global-api-keys                     # never; the flat file is retired
+rg -n 'TOKEN|KEY|SECRET' ~/.secrets/               # leaks whatever files match
+# any Read / open-file / less / bat on a handoff file   # never
+```
 
 A variable that already holds a key is still a secret.  `od`, `xxd`, `hexdump`, `hd`, `strings` and `base64` print every byte of it, and `cut -c` prints a prefix.  A last-command `printf %s`, `%q` or `%b` of it makes the tool result the live value, the same class as `cat` of the handoff file.  Forbidden on any variable whose name matches KEY, TOKEN, SECRET, PASSWORD, PASSWD or DSN:
 
@@ -935,9 +936,9 @@ A hit is a lead to verify, not a verdict.  Open the Linear issue, note, or doc i
 
 ### The Corpus and Access
 
-- **The corpus:** the fleet's one shared memory is the `fleet-agents` collection in the self-hosted Qdrant on the Hetzner box (mesh-only).  The BotFleet bot BF-Oracle refreshes it nightly from the archived board (every row and resolution; a Linear source is planned), the Apple Notes archive, every effort log, the protocol docs, the skills, and each seat's memory files.
+- **The corpus:** the fleet's one shared memory is the `fleet-agents` collection in the self-hosted Qdrant on the Hetzner box (mesh-only).  The BotFleet bot BF-Oracle refreshes it nightly from the archived board database (every row and resolution;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db` since the 2026-10-19 retirement;  a Linear source is planned), the Apple Notes archive, every effort log, the protocol docs, the skills, and each seat's memory files.
 - **MCP:** Mac seats (Claude, Codex, Cursor, Grok, Antigravity) and every BotFleet bot have the `fleet-recall` MCP server registered, exposing `recall_search`, `recall_contribute`, and `recall_stats`.
-- **CLI:** on PATH via `~/.local/bin/recall` → `~/apps/fleet-rag/recall`, and `~/apps/mac-collab/recall` (like `board`).
+- **CLI:** on PATH via `~/.local/bin/recall` → `~/apps/fleet-rag/recall` (like `board`).  The old `~/apps/mac-collab/recall` symlink was retired on 2026-10-19 (AFC-363).
 
   ```bash
   recall "pm2 orphan holds port"
@@ -974,7 +975,7 @@ The gap has to survive the renderer, so the mechanism depends on the destination
 | **Any other Markdown-rendering agent chat pane** (Codex, Cursor, Antigravity, Grok, Kimi, MiniMax, DeepSeek, Fx, Muse, and similar) | The same entity plus a space, by owner ruling 2026-10-08, because Markdown chat collapses ASCII doubles everywhere.  Only the Code tab is verified.  If the owner ever sees the six literal characters on a surface, stop using the entity there and report the surface in #agent-sync: it then needs a different mechanism, which is unknown until tested. |
 | **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode) | Two literal ASCII spaces.  Unverified: a terminal would print the entity as literal text, which the owner must never see. |
 | **Cloud, BotFleet and OpenMausBot chat** | Two literal ASCII spaces.  The backend maps them to a real U+00A0 before paint (owner 2026-09-03). |
-| **GitHub PR and issue titles, bodies and comments, review comments; Zulip posts; any text a tool writes that a Markdown or HTML renderer then shows** | A real U+00A0 plus a space (owner ruling 2026-10-08).  Never the `&nbsp;` entity: GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.  You cannot type U+00A0 in chat, so write the text with two ASCII spaces and convert it with `perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g' body.txt > body.nbsp.txt`, then check the result holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.  Keep PR titles to one sentence. |
+| **GitHub PR and issue titles, bodies and comments, review comments; Zulip posts; any text a tool writes that a Markdown or HTML renderer then shows** | A real U+00A0 plus a space (owner ruling 2026-10-08).  Never the `&nbsp;` entity: GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.  Write the text with two ASCII spaces, convert it, then **assert the result** before posting — see the commands under the table.  Keep PR titles to one sentence. |
 | **Plain-text surfaces and files read as source:** repo Markdown and text, commit messages, code comments, config, Linear issue text, terminal output | Two literal ASCII spaces.  A literal `&nbsp;` would show as ugly text. |
 | **HTML a renderer shows:** Apple Notes `--html`, in-app HTML, JSX, SwiftUI | NBSP plus a space (`Sentence one.&nbsp; Sentence two.`, `{"\u00A0 "}`, `\u00A0 `) or a shared `SENTENCE_GAP` helper.  Raw double spaces collapse: Notes.app is an HTML renderer, so two ASCII spaces in a `<p>` become one. |
 
@@ -987,16 +988,38 @@ The gap has to survive the renderer, so the mechanism depends on the destination
 - The rule does not apply to identifiers, log lines, API enums, commit subjects, or bullet fragments with no terminator.
 - In Markdown, two trailing spaces at the end of a line are a hard line break, which is a different thing.  This rule is about the gap between sentences.
 - To teach the rule to a non-fleet tool, paste the portable block from `AI-Fleet-Coordinator/docs/SENTENCE-GAP-PORTABLE-SKILL.md`.  It carries the surface-by-surface table, a per-platform self-test, and the approaches already proven not to work.
+
+### Converting a body for GitHub or Zulip, and proving it worked
+
+The conversion is a silent no-op when its pattern does not match, and it exits `0` either way.  A run of spaces you wrote may have been normalized on the way to disk — measured twice on 2026-10-18, once collapsed to a single space and once left intact — so **neither form can be trusted to have something to match.**  Match one-or-more and then assert; never post on the strength of the command having run.
+
+```sh
+perl -CSDA -pe 's/([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+grep -c '[.!?]  [A-Z"]' body.nbsp.txt    # must be 0 — no gap was left behind
+grep -o ' \xc2\xa0' body.nbsp.txt | wc -l # must be greater than 0
+```
+
+Both lines matter.  The count alone is not enough: a body that converted only some of its gaps passes it, and ships with the rest of the prose collapsed.  Check the leftovers first, then the count.  Use single quotes for the perl expression — the character class contains a backtick, and inside double quotes bash opens a command substitution and dies with an unmatched-backtick error.
+
+A lookbehind is required if your body contains a numbered list.  CommonMark only starts a list when the character after `1.` is a real space, so converting it to U+00A0 silently stops the list rendering:
+
+```sh
+perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+```
+
+Its cost, known and accepted: a sentence ending in a digit gets no gap, and a capitalised abbreviation (`Dr. Smith`, `e.g. Acme`) is still gapped.  Fix those by hand.
+
+Plain-text surfaces and files read as source — repo Markdown, commit messages, code comments, config, source files — want two literal ASCII spaces and are **not** affected by any of this.  Do not put U+00A0 into a committed source file.
 - Chat specifics: [Zulip Fleet Guide](docs/protocols/zulip-fleet-guide.md#writing-rules).  Per-platform load paths:  [Appendix A](#sentence-gap-load-paths).
 
 ### Timestamps
 
-- Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central (`America/Chicago`) (owner 2026-08-09; broadened 2026-08-11, amended 2026-08-12, strengthened 2026-08-22, amended 2026-10-05).
+- Say every time on the owner's clock: 12-hour, with am or pm.  That clock is Central (`America/Chicago`) (owner 2026-08-09; broadened 2026-08-11, amended 2026-08-12, strengthened 2026-08-22, amended 2026-10-05, reaffirmed and tightened 2026-10-18).
 - This binds every agent, every bot and every platform, in every sentence the owner reads: chat, Zulip messages in every channel and topic, Linear issues and comments, PRs, Notes, commits, release notes and bot-to-bot.
 - Never lead with Zulu, a 24-hour UTC stamp, or a Unix epoch.  Converting is the writer's job.
 - Never type CDT, CST or CT.  The owner assumes am/pm is their time.  Write `3:15am`, not `3:15am CDT`, not `3:15 CT`, not `08:15Z`.  This covers chat, Linear issues and comments, `STATUS.md`, rollout notes, Zulip #agent-sync and every other topic, GitHub issue and PR bodies, Apple Notes and release notes.  The abbreviations exist only so the writer can do the conversion; they are never part of the sentence.
 - When the calendar day matters, write `Mon, Oct 5, 2026 at 3:15am`.
-- Name a zone only when the time is not the owner's clock.  The usual case is UTC, and it follows the local time: `Mon, Oct 5, 2026 at 3:15am` (`2026-10-05T08:15:00Z`).  Never lead with the UTC stamp, and never leave a human to convert it.  Market bells stay `9:30 AM ET` because that zone is not the owner's.
+- Give only the Central time (owner 2026-10-18).  Convert every other zone before writing, and do not add the UTC stamp beside it:  a log line at `11:42Z` is `6:42am`, and the market opens at `8:30am`.  This includes times read from logs, APIs, CI and dashboards, which are usually UTC.  Quote a raw stamp only when the owner asks for one, or inside a code block that is itself machine output.
 - Never guess the conversion.  Use `TZ=America/Chicago date` or Python `ZoneInfo("America/Chicago")`.  Offsets for checking:  [Appendix A](#central-time-offsets).
 - Machine-readable fields that are ISO-8601 by contract (API responses, JSON payloads, log lines, DB columns) stay UTC.  The rule is about prose a human reads, not wire formats.
 - **Exception (owner 2026-08-12):** in product UI, the iOS app and any browser or desktop UI render times in the viewer's device timezone.  A user in another zone seeing their own trade times in Central would be the bug.  The exception covers end-user product surfaces only.  It never relaxes the Central rule for agent-to-agent or agent-to-owner writing.  It also does not apply to server-side console pages that pin a market-day boundary: `app/console/lib/format.ts` pins `America/Chicago` on purpose to match `startOfDayInTimeZone` in `src/lib/db-execution.ts`, so "today's P&L" agrees with the accounting day boundary.
@@ -1109,9 +1132,15 @@ When the owner says "make a handoff note and stop working" (or similar), do this
 
 ### Version Numbers
 
-Binding for all apps and all seats (owner 2026-08-12).  These rules exist for clear upgrade paths, deterministic build tracking, and instant visibility into build contents on TestFlight and mobile releases.
+Binding for all apps and all seats (owner 2026-08-12, unified 2026-10-18).  These rules exist for clear upgrade paths, deterministic build tracking, and instant visibility into build contents on TestFlight and mobile releases.
 
 - App versions follow semantic versioning from `1.0.1`:  `1.0.1`, `1.0.2`, `1.0.3`, and so on, incrementing the patch integer (`1.0.N`).
+- **Unified `1.0.<commit_count>` (owner 2026-10-18):**  For native macOS and iOS companion apps, `MARKETING_VERSION` is unified as `1.0.<commit_count>` (where `<commit_count>` is `git rev-list --count HEAD`, e.g. `1.0.148`), and `CFBundleVersion` matches the integer commit count (e.g. `148`).  Timestamps (e.g. `YYYYMMDDHHMM`) are permanently retired from `CFBundleVersion` and `project.yml`.
+- **Path-gated version bumps (owner 2026-10-18):**  Neither macOS nor iOS updates or increments its version number unless that specific platform's native files were touched in the commit.  When an app updates, its patch number jumps directly to the latest repo commit count; Sparkle and App Store Connect both support monotonic integer version increments with gaps.
+- **Strictly-increasing guard (owner 2026-10-18):**  A build number must never repeat inside a marketing train, because App Store Connect keys `CFBundleVersion` for uniqueness there.  A re-ship of the *same* commit — `--force-ship`, or a retry after an upload that actually landed — repeats the pair and is rejected.  Every ship path therefore resolves a floor (local cache, App Store Connect, and `project.pbxproj`, whichever is highest) and ships `max(commit count, floor + 1)`.  When the guard fires, `MARKETING_VERSION` moves with `CFBundleVersion`; the two always describe the same commit count.  An explicit `--build` is still honoured exactly.
+- **Ordering across the scheme change (owner 2026-10-18):**  Code that compares `CFBundleVersion` numerically must order the two numbering schemes explicitly first.  A 12-digit timestamp is always the larger number, so a plain numeric compare reads the first commit-count build as *older* than the build it replaces and silently stops offering updates.  Compare the marketing version first where one is available, or detect the scheme and sort it deliberately.
+- **The committed version record is a floor input, not the source of truth (owner 2026-10-18):**  `project.yml` and `project.pbxproj` record what last shipped, and the ship script reads that record as one of the floor inputs.  Under the commit-count scheme the record is a large number, so it becomes the *dominant* floor input, the strictly-increasing guard then fires on every ship, and the build number permanently sits above the commit count it is supposed to name.  The record must therefore stay **strictly below** the commit count of any commit that can ship from the repo:  `git rev-list --count origin/main` minus one names a real commit, sits below every shipping commit, and stays safe under any merge strategy and any race.  The ship script overrides both values on the `xcodebuild` line regardless, so a lagging record costs nothing.
+- **No timestamp fallback (owner 2026-10-18):**  A ship script must never fall back to a UTC stamp when the commit count cannot be read.  A checkout with no readable git history fails loudly instead of minting a number that describes no commit.  The retired scheme must not be one error away, and the dead helper that minted it does not stay in the file.
 - Increment the patch for every update, bug fix, feature change, or TestFlight build submission.  Never upload two distinct builds under the same version string.
 - `0.1.0` and every `0.x.x` version are permanently banned and deprecated.  Existing and new apps start at `1.0.1` (or the next `1.0.N`).  Update every `version`, `CFBundleShortVersionString`, `pubspec.yaml`, `package.json`, and Fastlane config to match.
 
@@ -1241,7 +1270,7 @@ When you add or configure MCP servers for fleet agents, place them as follows.
 - Use `CLOUDFLARE_FLEET_API_TOKEN` (properly scoped) for ordinary agent work.  The Global Keys are unscoped full-admin.  Treat them like a root password, and use one only when the fleet token's scope genuinely does not cover the need.
 - The fleet has four Cloudflare accounts: Congress.Trade, SocraticTrade.com, Usage.Jays.Services, and a legacy zero-zone "jay" account (the old billing-problem account that `CLOUDFLARE_FLEET_API_TOKEN` was created to route around).
 - Usage.Jays.Services is an account name, not the hostname `usage.jays.services`.  Create each new app's own zone on account Usage.Jays.Services.  Which account and which registrar: `docs/DNS-AND-REGISTRARS.md`.
-- The full credential map, values included, is in `~/.secrets/global-api-keys` under the section "CLOUDFLARE GLOBAL API KEYS".  Load one value at a time per [Reading Keys Safely](#reading-keys-safely); never open the file.
+- The Cloudflare global-key credentials are in Infisical Fleet-OPS under the same names the old flat file used.  Load one value at a time with `fleet-secrets get NAME` per [Reading Keys Safely](#reading-keys-safely); never open the retired flat file.
 - The private attack map (hosts, token names, Infisical project ids, Coolify UUIDs, no secret values) is the file `ATTACK-MAP.md` in the private repo `Simple-With-Us/fleet-ops`.  Never copy it into a public app repo.
 
 ### CI Runners (Strict, All Repos)
@@ -1266,7 +1295,7 @@ When you add or configure MCP servers for fleet agents, place them as follows.
 - Never create, rotate or provision OpenRouter API keys unless the owner explicitly asks in that conversation.
 - CT keys belong in the CT workspace and ST keys in the ST workspace.  Never mint into Default.  A key name like `ct-prod-…` does not select a workspace: new keys land in whichever workspace the dashboard or provisioning key is on.
 - `OPENROUTER_ADMIN_KEY` is analytics only (Usage Monitor, `/api/v1/keys`, credits and activity).  It is not for inference and not for creating keys.
-- App inference uses the app keys from Infisical or the handoff file, `CT_OPENROUTER_API_KEY` and `ST_OPENROUTER_API_KEY`, over the HTTP API.
+- App inference uses the app keys from Infisical (`fleet-secrets get NAME` for the Fleet-OPS copies), `CT_OPENROUTER_API_KEY` and `ST_OPENROUTER_API_KEY`, over the HTTP API.
 
 ## Observability: Sentry and Datadog
 
@@ -1664,7 +1693,7 @@ Why the rules exist.  One line each; none of this is binding text.
 ### Incidents
 
 - **Retired `.env` sibling (2026-08-19).**  `global-api-keys.env` was retired as a stale, smaller subset (missing 9 keys the canonical file has) holding three invalid credentials: `CLOUDFLARE_R2_ACCESS_KEY_ID`, `CLOUDFLARE_R2_SECRET_ACCESS_KEY`, `INFISICAL_SHARED_CLIENT_SECRET`.  Live-tested: the canonical values authenticated to Cloudflare R2 and Infisical, and the retired ones did not.
-- **God token (2026-08-21).**  `MAC_COLLAB_TOKEN` was a god token because `/files/global-api-keys` returned every credential.  That is why the file is no longer served.
+- **God token (2026-08-21, history).**  `MAC_COLLAB_TOKEN` was a god token because `/files/global-api-keys` returned every credential.  That is why the file is no longer served.
 - **R2 digest wrong logo.**  The code was correct, but the subject tokens existed only in the peer projects and the handoff file, never in ST's own Infisical project.
 - **Cloudflare false-dead night (led to the 2026-08-13 rule).**  A Congress.Trade session spent a night treating several live, full-admin Cloudflare credentials as dead because of the two testing mistakes in [Infrastructure and CI](#cloudflare-credentials).  The same night the Usage-Monitor seat independently found the identical false-dead pattern for Resend, GitHub and Infisical credentials.
 - **Grok grep leak.**  A Grok session ran `grep '^[A-Z0-9_]+='` on the handoff file and dumped the whole store into the chat.  The names-only rule exists so the next seat does not repeat it.
@@ -1690,6 +1719,7 @@ Why the rules exist.  One line each; none of this is binding text.
 - **Allow Once forever (2026-08-19).**  The owner hit the "Allow Once forever" problem exactly as [Using the Board CLI](#using-the-board-cli) describes it.
 - **Two-way board sync (2026-08-22, retired at the cutover).**  The effort-board, GitHub-issue and THE BOARD sync became two-way, and was hardened the same day after the first writeback loop.  Linear replaced all of it, so there is no sync to loop.
 - **Linear cutover (owner 2026-10-10).**  THE BOARD, the effort logs, `mac-collab-sync`, `mac-collab-writeback` and `effort-issues-sync` were retired together, and the `board` command was swapped to a Linear-backed CLI with the same flags.  [Retired Mechanisms](#retired-mechanisms) lists what is gone.
+- **Board archive retired (owner 2026-10-19, AFC-363).**  The read-only `mac-collab` archive, `mac-collab-litestream` and the `files/key-names` endpoint were retired, `board-legacy` and `BOARD_BACKEND=mac-collab` were removed, and `mac.jays.services` now answers 404.  The Backblaze replica was empty (nothing had replicated since at least Sep 12), so there is no B2 board backup.  `MAC_COLLAB_TOKEN` and the per-seat `MAC_COLLAB_TOKEN_<SEAT>` tokens no longer authenticate anything.
 - **Restricted toolsets are possible (owner 2026-09-04).**  Grok Bot's agent-start path launches agents inside Grok, which is not how Grok is natively designed, and lets a spawned agent run with a reduced toolset relative to Grok's own configuration.  That path was built, not shipped.
 - **Delegation track record.**  The fleet's Wave-1 and Wave-2 (8 implementation lanes) and every landing operator ran mid-tier builds with all gates green; mirrors ran small-tier.
 - **Mac apps (owner 2026-09-17).**  The owner was tired of finding two to five copies of a Mac app and not knowing which one is live.  The ruling covers every Mac app the fleet builds (AgentBar, the Usage Monitor menu app, any future one) and every seat.

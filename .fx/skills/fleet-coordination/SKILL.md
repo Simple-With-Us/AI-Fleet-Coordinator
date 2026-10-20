@@ -5,7 +5,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Lanes `~/apps/lanes/<Repo>/fx-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential file `~/.secrets/Zulip/FX-zuliprc` (mode 600).  Session tag `[FX·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Lanes `~/apps/lanes/<Repo>/fx-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`FX_ZULIP_EMAIL`, `FX_ZULIP_KEY`, `FX_ZULIP_SITE`).  Session tag `[FX·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Runtime (fx).** Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
 
@@ -117,6 +117,8 @@ Before starting substantial work, reserve your lane on two durable surfaces:
    ```
    Via the CLI:  `agent-sync post --topic "AFC-123 claim title" $'repo:  <Project>  |  CLAIMED\nwork: <one line>'`.  A directed ask adds `--to Codex`, which @-mentions that bot — the bracket label alone wakes nobody.
 
+**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
+
 *(Reserve `@**all**` in #agent-sync topic `fleet` strictly for urgent wakes that every seat must spend time on.  The coordinator posts as CLAUDE and nothing signs `[AFC]` or `[FLEET]`.)*
 
 ---
@@ -133,7 +135,7 @@ NEVER print, `cat`, `grep`, `rg`, or `view_file` lines matching `KEY=value` from
   ```bash
   fleet-secrets names
   ```
-  *(Or via cloud API: `GET https://mac.jays.services/files/key-names` with Bearer auth).*
+  *(Cloud seats have no names endpoint now:  the old `mac.jays.services/files/key-names` was retired 2026-10-19, so ask a Mac seat or the owner).*
 - **Extraction into single variable (Never echo):**
   ```bash
   SECRET_VAL="$(fleet-secrets get TARGET_KEY)" || exit $?
@@ -155,6 +157,7 @@ Visibly wider gap (two visible spaces) after terminal punctuation (`.`, `!`, `?`
 | Surface | Syntax | Why |
 | :--- | :--- | :--- |
 | **Markdown chat panes** (Claude Code desktop Code tab, owner-verified 2026-10-08; other panes by ruling, unverified) | `&nbsp;` plus normal space after each sentence, outside code spans (`Sentence one.&nbsp; Sentence two.`) | The renderer decodes the entity; a raw U+00A0 from the model arrives as a plain space |
+| **MiniMax Code chat pane** (owner-verified 2026-10-20) | a real U+00A0, the nbsp character, then a normal space, outside code spans | Jay:  "I think you need to do nbsp for chats or something" and "I have confirmed this before with agents and knew you needed nbsp already".  Two ASCII spaces collapse in this pane, and the `&nbsp;` entity renders as the six literal characters, which is worse than no gap.  The 2026-10-18 entry for this pane was wrong and is corrected here. |
 | **GitHub PR and issue titles, bodies and comments, Zulip posts, other rendered tool output** | A real U+00A0 plus a space (never the entity) | Tools preserve the character; the entity would show literally in a plain-text squash commit |
 | **Terminal TUI chat, source files** (docs, commit messages, code comments, config) | Two literal ASCII spaces | Read in raw text editors / terminals; an entity would print literally |
 | **HTML / JSX / SwiftUI product copy** | A real U+00A0 plus a space, or `SENTENCE_GAP` | Raw doubles collapse in HTML |
@@ -176,6 +179,7 @@ All plans, design docs, rollouts, audits, and completion notes for owner review 
    # To update in place:
    /Users/jay/apps/apple-notes-coding.sh --update "Title" "Updated body"
    ```
+5. **Session id:** `apple-notes-coding.sh` and the `notes_create` / `notes_update` tools refuse without one.  Pass your session id (section 3) with `--session <id>`, or let the helper read `AGENT_SESSION` or your platform's variable.
 
 ---
 

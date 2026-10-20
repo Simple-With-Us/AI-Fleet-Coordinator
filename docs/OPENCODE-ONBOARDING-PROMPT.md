@@ -21,8 +21,7 @@ prefix, own lane token.  A launcher's seat still wins, so a BotFleet bot that ru
   If yours does, the pasted prompt outranks the file:  Jay naming your seat in the conversation is the first rule of
   AGENT-SYNC § Identity Rules.
 - Zulip bot `opencode-bot@simplewithus.zulipchat.com` (display name OpenCode, a realm member, role 400), credential
-  `~/.secrets/Zulip/OpenCode-zuliprc` at mode 600.  The name breaks the Title Case rule (it would give
-  `Opencode-zuliprc`), so `SEAT_FILE_OVERRIDES` in `scripts/agent_sync/zulip.py` carries it.
+  in Infisical Fleet-OPS `/zulip` (`OPENCODE_ZULIP_EMAIL` / `_KEY` / `_SITE`).
 - `agent-sync`, `board` and `recall` are on PATH (`~/.local/bin`) and need no MCP.  No `opencode.json` exists, so no MCP
   server is registered yet.
 - No deny hook is installed for OpenCode.  Nothing stops a bad command for you, so the destructive-operation pause is

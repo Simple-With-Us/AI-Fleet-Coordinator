@@ -166,10 +166,12 @@ const GEO_CAP = 50;
 
 // D5 budgets, per seat.  `write` is post and reply, `react` is reactions,
 // `recall` is recall_contribute (spec 1.1;  it takes the write spacing too).
+// Owner 2026-10-19:  every bot gets 120 writes an hour and 720 a day, and Linear writes
+// have their own allowance of the same size (they no longer share Zulip's).
 export const BUDGETS = Object.freeze({
   write: Object.freeze([
-    { windowMs: HOUR_MS, limit: 20 },
-    { windowMs: DAY_MS, limit: 120 },
+    { windowMs: HOUR_MS, limit: 120 },
+    { windowMs: DAY_MS, limit: 720 },
   ]),
   react: Object.freeze([{ windowMs: HOUR_MS, limit: 60 }]),
   recall: Object.freeze([
@@ -177,7 +179,7 @@ export const BUDGETS = Object.freeze({
     { windowMs: DAY_MS, limit: 40 },
   ]),
   read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
-  linear_write: Object.freeze([{ windowMs: HOUR_MS, limit: 20 }, { windowMs: DAY_MS, limit: 120 }]),
+  linear_write: Object.freeze([{ windowMs: HOUR_MS, limit: 120 }, { windowMs: DAY_MS, limit: 720 }]),
   linear_read: Object.freeze([{ windowMs: HOUR_MS, limit: 300 }]),
   // FleetLink writes (AFC-328):  shares, files, upload URLs.  Own lane, read spacing.
   fleetlink: Object.freeze([{ windowMs: HOUR_MS, limit: 60 }, { windowMs: DAY_MS, limit: 300 }]),
@@ -199,8 +201,12 @@ export async function reserve(store, { kind, policy }, now = Date.now()) {
   if (Number.isFinite(cooldown) && cooldown > now) {
     return { ok: false, code: "rate_limited", retryAfterS: Math.max(1, Math.ceil((cooldown - now) / 1000)) };
   }
+  // A seat's policy only ever raises a default (owner 2026-10-19):  each window is the larger of the two.
+  const atLeast = (windowMs, limit) => Math.max(limit, BUDGETS[kind].find((w) => w.windowMs === windowMs)?.limit ?? 0);
   const windows = policy
-    ? [{ windowMs: HOUR_MS, limit: policy.hour }, ...(policy.day ? [{ windowMs: DAY_MS, limit: policy.day }] : [])]
+    ? [{ windowMs: HOUR_MS, limit: atLeast(HOUR_MS, policy.hour) },
+      ...(policy.day ? [{ windowMs: DAY_MS, limit: atLeast(DAY_MS, policy.day) }]
+        : BUDGETS[kind].filter((w) => w.windowMs === DAY_MS))]
     : BUDGETS[kind];
   const longest = Math.max(...windows.map((w) => w.windowMs));
   const stamp = (entry) => Array.isArray(entry) ? entry[0] : entry;

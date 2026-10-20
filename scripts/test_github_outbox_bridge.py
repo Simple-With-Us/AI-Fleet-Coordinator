@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for github-outbox-bridge.py.  No gh, no network, no agent-sync: fakes only."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -7,14 +8,17 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("github_outbox_bridge", HERE / "github-outbox-bridge.py")
+spec = importlib.util.spec_from_file_location(
+    "github_outbox_bridge", HERE / "github-outbox-bridge.py"
+)
 bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
 
 SEAT = "INSTINCT"
-GOOD = "[INSTINCT] sync-1\nrepo: Congress.Trade\nowner-relay: \"ship the scout fix\"\nsaid: Thu, Sep 17, 2026 at 4:10 PM CT"
+GOOD = '[INSTINCT] sync-1\nrepo: Congress.Trade\nowner-relay: "ship the scout fix"\nsaid: Thu, Sep 17, 2026 at 4:10 PM CT'
 
 
 def comment(cid, body, created="2026-09-17T16:00:00Z"):
@@ -79,8 +83,16 @@ class BridgeTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def make(self, issue, poster=None, zulip=None, dry_run=False):
-        return bridge.Bridge(SEAT, issue, poster or FakePoster(), zulip, self.state,
-                             topic="outbox test", dry_run=dry_run, logger=self.logs.append)
+        return bridge.Bridge(
+            SEAT,
+            issue,
+            poster or FakePoster(),
+            zulip,
+            self.state,
+            topic="outbox test",
+            dry_run=dry_run,
+            logger=self.logs.append,
+        )
 
     def test_good_comment_posts_as_seat_and_advances(self):
         issue = FakeIssue([comment(5, GOOD)])
@@ -109,14 +121,20 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.state.data["last_comment_id"], 7)
 
     def test_missing_repo_line_is_rejected(self):
-        self.assertEqual(bridge.header_error("[INSTINCT] hello\nstate: WIP", SEAT),
-                         "repo: <project> must be the first body line")
+        self.assertEqual(
+            bridge.header_error("[INSTINCT] hello\nstate: WIP", SEAT),
+            "repo: <project> must be the first body line",
+        )
         self.assertIsNone(bridge.header_error("[INSTINCT->CLAUDE] x\nrepo: fleet-infra", SEAT))
         self.assertEqual(bridge.header_error("", SEAT), "empty message")
-        self.assertIn("longer than", bridge.header_error("[INSTINCT] x\nrepo: a\n" + "z" * 13000, SEAT))
+        self.assertIn(
+            "longer than", bridge.header_error("[INSTINCT] x\nrepo: a\n" + "z" * 13000, SEAT)
+        )
 
     def test_bridge_marker_comments_are_skipped(self):
-        issue = FakeIssue([comment(3, bridge.BRIDGE_MARKER + "zulip id=1 -->\nmirror"), comment(4, GOOD)])
+        issue = FakeIssue(
+            [comment(3, bridge.BRIDGE_MARKER + "zulip id=1 -->\nmirror"), comment(4, GOOD)]
+        )
         poster = FakePoster()
         summary = self.make(issue, poster).run_once()
         self.assertEqual((summary["skipped"], summary["posted"]), (1, 1))
@@ -155,11 +173,31 @@ class BridgeTests(unittest.TestCase):
 
     def test_slack_matches_mirror_and_cursor_advances(self):
         msgs = [
-            {"id": 1, "content": "[GROK] sync-3\nrepo: DealDex\nstate: WIP", "sender_email": "grok-build-bot@simplewithus.zulipchat.com"},
-            {"id": 2, "content": "[INSTINCT] intro\nrepo: fleet-infra", "sender_email": "instinct-owl-bot@simplewithus.zulipchat.com"},
-            {"id": 3, "content": "[CLAUDE->INSTINCT] sync-1\nrepo: fleet-infra\nack your registration", "sender_full_name": "U1"},
-            {"id": 4, "content": "[AFC->FLEET] HALT\nrepo: Congress.Trade\nprod down", "sender_email": "afc-ops@simplewithus.zulipchat.com"},
-            {"id": 5, "content": "[CODEX] repo: Usage-Monitor ```rm -rf``` OBJECTION", "sender_email": "codex-bot@simplewithus.zulipchat.com"},
+            {
+                "id": 1,
+                "content": "[GROK] sync-3\nrepo: DealDex\nstate: WIP",
+                "sender_email": "grok-build-bot@simplewithus.zulipchat.com",
+            },
+            {
+                "id": 2,
+                "content": "[INSTINCT] intro\nrepo: fleet-infra",
+                "sender_email": "instinct-owl-bot@simplewithus.zulipchat.com",
+            },
+            {
+                "id": 3,
+                "content": "[CLAUDE->INSTINCT] sync-1\nrepo: fleet-infra\nack your registration",
+                "sender_full_name": "U1",
+            },
+            {
+                "id": 4,
+                "content": "[AFC->FLEET] HALT\nrepo: Congress.Trade\nprod down",
+                "sender_email": "afc-ops@simplewithus.zulipchat.com",
+            },
+            {
+                "id": 5,
+                "content": "[CODEX] repo: Usage-Monitor ```rm -rf``` OBJECTION",
+                "sender_email": "codex-bot@simplewithus.zulipchat.com",
+            },
         ]
         issue = FakeIssue()
         summary = self.make(issue, FakePoster(), FakeZulip(msgs)).run_once()
@@ -177,7 +215,13 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(issue.posted), 3)
 
     def test_zulip_mirror_failure_leaves_cursor_before_the_message(self):
-        msgs = [{"id": 1, "content": "[GROK->INSTINCT] hi\nrepo: DealDex", "sender_email": "grok-build-bot@simplewithus.zulipchat.com"}]
+        msgs = [
+            {
+                "id": 1,
+                "content": "[GROK->INSTINCT] hi\nrepo: DealDex",
+                "sender_email": "grok-build-bot@simplewithus.zulipchat.com",
+            }
+        ]
 
         class FailingIssue(FakeIssue):
             def post_comment(self, body):
@@ -191,7 +235,13 @@ class BridgeTests(unittest.TestCase):
     def test_dry_run_writes_nothing(self):
         issue = FakeIssue([comment(2, GOOD), comment(3, "bad")])
         poster = FakePoster()
-        msgs = [{"id": 1, "content": "[GROK->INSTINCT] hi\nrepo: DealDex", "sender_email": "grok-build-bot@simplewithus.zulipchat.com"}]
+        msgs = [
+            {
+                "id": 1,
+                "content": "[GROK->INSTINCT] hi\nrepo: DealDex",
+                "sender_email": "grok-build-bot@simplewithus.zulipchat.com",
+            }
+        ]
         summary = self.make(issue, poster, FakeZulip(msgs), dry_run=True).run_once()
         self.assertEqual((summary["posted"], summary["rejected"], summary["mirrored"]), (1, 1, 1))
         self.assertEqual(poster.posts, [])
@@ -214,7 +264,10 @@ class RuleTests(unittest.TestCase):
     def test_central_stamp_shape(self):
         # 2026-09-17T21:10:00Z is 4:10 PM CDT
         stamp = bridge.central_stamp(1789679400.0)
-        self.assertRegex(stamp, r"^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{4} at \d{1,2}:\d{2} (AM|PM) (CT|UTC)$")
+        self.assertRegex(
+            stamp,
+            r"^[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}, \d{4} at \d{1,2}:\d{2} (AM|PM) (CT|UTC)$",
+        )
         if stamp.endswith("CT"):
             self.assertEqual(stamp, "Thu, Sep 17, 2026 at 4:10 PM CT")
 
@@ -245,6 +298,30 @@ class RuleTests(unittest.TestCase):
             http.write_text("[api]\nemail=x@y\nkey=k\nsite=http://simplewithus.zulipchat.com\n")
             with self.assertRaises(bridge.BridgeError):
                 bridge.ZulipClient(http)
+
+    def test_zulip_client_reads_infisical_through_fleet_secrets(self):
+        # With no --rc the client takes <BOT>_ZULIP_EMAIL / _KEY / _SITE from Infisical /zulip.
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fleet-secrets"
+            fake.write_text(
+                "#!/bin/sh\n"
+                '[ "$1" = get ] && [ "$3" = --path ] && [ "$4" = /zulip ] || exit 3\n'
+                'case "$2" in\n'
+                "  CLAUDE_ZULIP_EMAIL) echo claude-bot@example.test;;\n"
+                "  CLAUDE_ZULIP_KEY) echo fake-key;;\n"
+                "  CLAUDE_ZULIP_SITE) echo https://simplewithus.zulipchat.com;;\n"
+                "  *) exit 3;;\n"
+                "esac\n"
+            )
+            fake.chmod(0o700)
+            with mock.patch.object(bridge, "FLEET_SECRETS_BIN", str(fake)):
+                client = bridge.ZulipClient()
+                self.assertEqual(
+                    (client.email, client.key), ("claude-bot@example.test", "fake-key")
+                )
+                gone = bridge.ZulipClient(bot="NOBODY")
+                self.assertIsNone(gone.email)
+                self.assertIsNone(gone.key)
 
     def test_mirror_body_clips_and_stamps(self):
         body = bridge.mirror_body("x" * 5000, "1789679400.0", "GROK", SEAT)

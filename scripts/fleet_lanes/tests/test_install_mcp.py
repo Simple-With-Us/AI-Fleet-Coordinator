@@ -3,7 +3,7 @@
     cd scripts && python3 -m unittest fleet_lanes.tests.test_install_mcp -v
 
 Every test works in a throwaway fake home and never touches the real one.  The shapes asserted here were
-written by the tools' own `mcp add` commands (OpenCode 2.0.21, Copilot CLI 1.0.68) or copied from an entry the
+written by the tools' own `mcp add` commands (OpenCode 2.0.21) or copied from an entry the
 tool already holds (Muse Code, MiniMax, fx), on a throwaway home, on 2026-10-10.
 """
 from __future__ import annotations
@@ -68,7 +68,7 @@ class HomeCase(unittest.TestCase):
         return os.path.join(self.home, ".local", "bin", "agent-sync")
 
 
-TOOL_DIRS = {"opencode": ".config/opencode", "kimi": ".kimi-code", "copilot": ".copilot", "muse": ".config/muse",
+TOOL_DIRS = {"opencode": ".config/opencode", "kimi": ".kimi-code", "muse": ".config/muse",
              "minimax": ".minimax", "fx": ".fx", "clutch": ".clutch/dsh"}
 
 
@@ -80,7 +80,6 @@ class ShapeTests(HomeCase):
         return {
             ".config/opencode/opencode.json": {"mcp": {"servers": {"fleet-recall": {"type": "local", "command": ["python3", r]}}}},
             ".kimi-code/mcp.json": {"mcpServers": {"fleet-recall": {"command": "python3", "args": [r]}}},
-            ".copilot/mcp-config.json": {"mcpServers": {"fleet-recall": {"tools": ["*"], "type": "local", "command": "python3", "args": [r]}}},
             ".config/muse/settings.json": {"mcpServers": {"fleet-recall": {"type": "stdio", "command": "python3", "args": [r], "mode": "optional"}}},
             ".minimax/mcp.json": {"mcpServers": {"fleet-recall": {"type": "stdio", "enabled": True, "configured": True,
                                                                  "builtin": False, "command": "python3", "args": [r]}}},
@@ -98,7 +97,7 @@ class ShapeTests(HomeCase):
             with self.subTest(rel=rel):
                 self.assertEqual(self.load(rel), want)
                 self.assertEqual(stat.S_IMODE(os.stat(self.path(rel)).st_mode), 0o600, "a new config is owner-only")
-        self.assertIn("Summary: 6 files changed.", out)
+        self.assertIn("Summary: 5 files changed.", out)
         # a second apply changes nothing and writes no backup
         before = {rel: self.read(rel) for rel in self.expect()}
         code, out, _ = self.run_cli("apply", *keys)
@@ -248,11 +247,11 @@ class ExistingConfigTests(HomeCase):
     def test_invalid_json_is_never_rewritten(self) -> None:
         for body in ("{not json", "[1, 2]"):
             with self.subTest(body=body):
-                self.write(".copilot/mcp-config.json", body)
-                code, out, _ = self.run_cli("apply", "copilot")
+                self.write(".kimi-code/mcp.json", body)
+                code, out, _ = self.run_cli("apply", "kimi")
                 self.assertEqual(code, M.EXIT_OK)
                 self.assertIn("skipped-invalid-json", out)
-                self.assertEqual(self.read(".copilot/mcp-config.json"), body)
+                self.assertEqual(self.read(".kimi-code/mcp.json"), body)
 
     def test_a_servers_container_that_is_not_an_object_is_left_alone(self) -> None:
         text = json.dumps({"mcpServers": ["oops"]}) + "\n"
@@ -309,7 +308,7 @@ class AgentSyncTests(HomeCase):
                 argv = ([entry["command"]] + entry["args"]) if isinstance(entry["command"], str) else entry["command"]
                 self.assertEqual(argv, [self.agent_sync, "mcp", "--default-seat", seat])
                 self.assertNotIn("env", entry, "never a pinned AGENT_SEAT")
-        for key, rel in (("kimi", ".kimi-code/mcp.json"), ("copilot", ".copilot/mcp-config.json")):
+        for key, rel in (("kimi", ".kimi-code/mcp.json"),):
             with self.subTest(key=key):
                 self.assertNotIn("agent-sync", self.read(rel), "a tool with no default seat has no seat to register")
 
@@ -538,12 +537,12 @@ class ClutchTests(HomeCase):
 
 class VerifyTests(HomeCase):
     def test_verify_fails_before_and_passes_after_apply(self) -> None:
-        self.mkdir(".fx", ".copilot")
-        code, out, _ = self.run_cli("verify", "fx", "copilot")
+        self.mkdir(".fx", ".kimi-code")
+        code, out, _ = self.run_cli("verify", "fx", "kimi")
         self.assertEqual(code, M.EXIT_FAILED)
         self.assertIn("FAIL", out)
-        self.run_cli("apply", "fx", "copilot")
-        code, out, _ = self.run_cli("verify", "fx", "copilot")
+        self.run_cli("apply", "fx", "kimi")
+        code, out, _ = self.run_cli("verify", "fx", "kimi")
         self.assertEqual(code, M.EXIT_OK, out)
         self.assertEqual(out.count("PASS"), 2)
 
@@ -741,8 +740,8 @@ class CliTests(HomeCase):
         self.assertEqual(M.main(["plan", "--home", "/nonexistent-dir-xyz"], out=out, err=err), M.EXIT_USAGE)
 
     def test_aliases(self) -> None:
-        self.assertEqual(M._resolve_targets(["muse-code", "mm", "kimi-code", "copilot-cli", "dsh"], True),
-                         ["muse", "minimax", "kimi", "copilot", "clutch"])
+        self.assertEqual(M._resolve_targets(["muse-code", "mm", "kimi-code", "dsh"], True),
+                         ["muse", "minimax", "kimi", "clutch"])
 
 
 class MarkedBlockTests(unittest.TestCase):

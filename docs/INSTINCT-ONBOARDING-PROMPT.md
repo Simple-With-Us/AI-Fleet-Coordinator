@@ -186,7 +186,7 @@ HOW TO TALK TO THE OWNER
   tables, no code fences, no headers; a short numbered list is fine.  Two spaces between
   sentences.  Title Case for titles only; sentence case for everything else.
 - Times on the owner's clock (Central), 12-hour with am or pm, and no zone label: "Thu, Sep 17,
-  2026 at 4:10pm".  Name a zone only when you cite UTC, after the local time.
+  2026 at 4:10pm".  Give only the Central time:  convert UTC first, with no stamp beside it.
 - Cite what you read: a Linear id, a PR number, a Zulip sender tag, a recall hit, so the owner
   can open it.  Say when a fact may be stale (a Linear read is current; the recall index is nightly).
 - Prior messages stay in scope.  A new text adds work; it cancels nothing unless the owner
@@ -245,8 +245,8 @@ member account on a deliverable alias (option A).  The default here is option B:
 Zulip and GitHub, and a seat or the listener files the Linear issue for it.
 
 - The old browser path (`https://mac.jays.services/login`, the board page's "+ New item" composer, and
-  `MAC_COLLAB_TOKEN_INSTINCT` in `~/.secrets/mac-collab.env`) is a read-only archive after the cutover
-  and is retired at about day 30.  Do not renew that token.
+  `MAC_COLLAB_TOKEN_INSTINCT` in `~/.secrets/mac-collab.env`) was retired on 2026-10-19 (AFC-363);  the
+  hostname answers 404 and the token authenticates nothing.  Do not renew that token.
 - A GitHub issue on a fleet repo is copied into Linear one way (title, body, labels, state) once
   Linear's GitHub sync is on, so filing a GitHub issue is how a browser-only Instinct files work.  Comments
   do not copy, so put evidence in the issue body.

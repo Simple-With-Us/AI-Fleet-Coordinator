@@ -1,6 +1,7 @@
 """The Sentry Crons heartbeat against a fake Sentry ingest server on loopback:  the envelope (monitor slug,
 interval, margin, status), degraded becoming `error` with one reasoned event, the DSN never reaching a log,
 the status file or an error, backoff after a failure, and the heartbeat staying off without a DSN."""
+
 from __future__ import annotations
 
 import json
@@ -10,6 +11,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from agent_sync import heartbeat as HB
 from agent_sync.tests.listener_harness import FakeClock, ListenerHarness
@@ -27,10 +29,12 @@ class FakeSentry:
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:  # noqa: N802
+            def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length)
-                outer.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})
+                outer.requests.append(
+                    {"path": self.path, "headers": dict(self.headers), "body": body}
+                )
                 self.send_response(outer.status)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -71,11 +75,20 @@ class PureTests(unittest.TestCase):
     def test_parse_dsn(self) -> None:
         dsn = HB.parse_dsn("https://%s@o123.ingest.us.sentry.io/%s" % (KEY, PROJECT))
         assert dsn is not None
-        self.assertEqual(dsn.envelope_url, "https://o123.ingest.us.sentry.io/api/%s/envelope/" % PROJECT)
+        self.assertEqual(
+            dsn.envelope_url, "https://o123.ingest.us.sentry.io/api/%s/envelope/" % PROJECT
+        )
         self.assertNotIn(KEY, repr(dsn))
         self.assertNotIn(KEY, str(dsn))
-        for bad in ("", "nope", "https://o123.ingest.us.sentry.io/%s" % PROJECT, "https://%s@host/" % KEY,
-                    "https://%s@host/abc" % KEY, "http://%s@sentry.example.com/1" % KEY, "ftp://%s@host/1" % KEY):
+        for bad in (
+            "",
+            "nope",
+            "https://o123.ingest.us.sentry.io/%s" % PROJECT,
+            "https://%s@host/" % KEY,
+            "https://%s@host/abc" % KEY,
+            "http://%s@sentry.example.com/1" % KEY,
+            "ftp://%s@host/1" % KEY,
+        ):
             self.assertIsNone(HB.parse_dsn(bad), bad)
         self.assertIsNotNone(HB.parse_dsn("http://%s@127.0.0.1:9000/1" % KEY))
 
@@ -84,14 +97,61 @@ class PureTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            (home / ".secrets").mkdir()
-            path = home / ".secrets" / "agent-sync.env"
-            path.write_text('SLACK_BOT_TOKEN=xoxb-never-read\nexport SENTRY_FLEET_DSN="https://k@h/1"\n# c\n')
-            self.assertEqual(HB.resolve_dsn({}, str(home)), "https://k@h/1")
-            self.assertEqual(HB.resolve_dsn({"AGENT_SYNC_SENTRY_DSN": "https://e@h/2"}, str(home)), "https://e@h/2")
-            self.assertEqual(HB.resolve_dsn({"SENTRY_FLEET_DSN": "https://f@h/3"}, str(home)), "https://f@h/3")
+            path = home / "agent-sync.env"
+            path.write_text(
+                'SLACK_BOT_TOKEN=xoxb-never-read\nexport SENTRY_FLEET_DSN="https://k@h/1"\n# c\n'
+            )
+            explicit = {"AGENT_SYNC_SENTRY_ENV_FILE": str(path)}
+            self.assertEqual(HB.resolve_dsn(explicit, str(home)), "https://k@h/1")
+            self.assertEqual(
+                HB.resolve_dsn({**explicit, "AGENT_SYNC_SENTRY_DSN": "https://e@h/2"}, str(home)),
+                "https://e@h/2",
+            )
+            self.assertEqual(
+                HB.resolve_dsn({"SENTRY_FLEET_DSN": "https://f@h/3"}, str(home)), "https://f@h/3"
+            )
             self.assertEqual(HB.read_env_file(str(path)), {"SENTRY_FLEET_DSN": "https://k@h/1"})
-            self.assertEqual(HB.resolve_dsn({}, str(home / "nowhere")), "")
+            self.assertEqual(
+                HB.resolve_dsn({"AGENT_SYNC_SENTRY_ENV_FILE": str(home / "nowhere")}, str(home)), ""
+            )
+
+    def test_resolve_dsn_reads_infisical_agent_sync_and_never_a_default_file(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            old_default = home / ".secrets"
+            old_default.mkdir()
+            (old_default / "agent-sync.env").write_text("SENTRY_FLEET_DSN=https://old@h/9\n")
+            asked: list = []
+            with mock.patch.object(
+                HB, "_default_dsn_fetch", lambda env, h: asked.append(h) or "https://i@h/4"
+            ):
+                self.assertEqual(HB.resolve_dsn({}, str(home)), "https://i@h/4")
+                self.assertEqual(HB.resolve_dsn({"AGENT_SYNC_INFISICAL": "0"}, str(home)), "")
+            self.assertEqual(asked, [str(home)])
+            with mock.patch.object(HB, "_default_dsn_fetch", lambda env, h: ""):
+                self.assertEqual(HB.resolve_dsn({}, str(home)), "")  # the old file is never read
+
+    def test_the_default_dsn_fetch_asks_fleet_secrets_for_one_name_in_agent_sync(self) -> None:
+        import json
+        import os
+        import tempfile
+
+        fake = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp) / "f.json"
+            data.write_text(
+                json.dumps({"/agent-sync": {"SENTRY_FLEET_DSN": "https://a@h/5", "OTHER": "x"}})
+            )
+            env = {
+                "FLEET_SECRETS_BIN": str(fake),
+                "FAKE_FLEET_SECRETS_FILE": str(data),
+                "PATH": os.environ["PATH"],
+            }
+            self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "https://a@h/5")
+            data.write_text(json.dumps({"/agent-sync": {}}))
+            self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "")
 
     def test_monitor_slug_per_instance(self) -> None:
         self.assertEqual(HB.monitor_slug("mac"), "agent-sync-listener-mac")
@@ -101,15 +161,31 @@ class PureTests(unittest.TestCase):
     def test_degraded_reasons(self) -> None:
         healthy = {"owner_user_id": 12, "config_errors": [], "seats": {"CLAUDE": {"red": []}}}
         self.assertEqual(HB.degraded_reasons(healthy), [])
-        sick = {"owner_user_id": 0, "config_errors": ["bad\nline"],
-                "seats": {"CLAUDE": {"red": ["down for 31 minutes"]}, "OK": {"red": []}}}
+        sick = {
+            "owner_user_id": 0,
+            "config_errors": ["bad\nline"],
+            "seats": {"CLAUDE": {"red": ["down for 31 minutes"]}, "OK": {"red": []}},
+        }
         reasons = HB.degraded_reasons(sick, scrub=lambda s: s.replace("31", "NN"))
-        self.assertEqual(reasons, ["seat CLAUDE red: down for NN minutes", "owner not pinned",
-                                   "1 config error(s): bad line"])
+        self.assertEqual(
+            reasons,
+            [
+                "seat CLAUDE red: down for NN minutes",
+                "owner not pinned",
+                "1 config error(s): bad line",
+            ],
+        )
 
     def test_envelope_shape(self) -> None:
-        body = HB.build_envelope(slug="agent-sync-listener-server", instance="server", environment="production",
-                                 ok=False, reasons=["owner not pinned"], send_event=True, now=1_790_000_000)
+        body = HB.build_envelope(
+            slug="agent-sync-listener-server",
+            instance="server",
+            environment="production",
+            ok=False,
+            reasons=["owner not pinned"],
+            send_event=True,
+            now=1_790_000_000,
+        )
         lines = body.decode().splitlines()
         self.assertEqual(len(lines), 5)
         self.assertEqual(json.loads(lines[1])["length"], len(lines[2].encode()))
@@ -133,17 +209,61 @@ class BeatTests(unittest.TestCase):
         self.addCleanup(self.sentry.stop)
         self.clock = FakeClock(1_790_000_000)
         self.logs: list[tuple[str, dict[str, Any]]] = []
-        self.status: dict[str, Any] = {"instance": "mac", "owner_user_id": 12, "config_errors": [],
-                                       "seats": {"CLAUDE": {"red": []}}}
+        self.status: dict[str, Any] = {
+            "instance": "mac",
+            "owner_user_id": 12,
+            "config_errors": [],
+            "seats": {"CLAUDE": {"red": []}},
+        }
 
     def heartbeat(self, **kw: Any) -> HB.SentryHeartbeat:
         env = {"AGENT_SYNC_SENTRY_DSN": self.sentry.dsn}
         env.update(kw.pop("env", {}))
-        return HB.SentryHeartbeat(env=env, home="/nonexistent", clock=self.clock.time,
-                                  log=lambda event, **f: self.logs.append((event, f)), background=False, **kw)
+        return HB.SentryHeartbeat(
+            env=env,
+            home="/nonexistent",
+            clock=self.clock.time,
+            log=lambda event, **f: self.logs.append((event, f)),
+            background=False,
+            **kw,
+        )
 
     def beat(self, hb: HB.SentryHeartbeat) -> bool:
         return hb.tick(lambda: self.status)
+
+    def test_the_infisical_dsn_is_read_once_and_a_failure_backs_off(self) -> None:
+        calls: list[str] = []
+        answer = {"dsn": ""}
+
+        def fetch(env, home):
+            calls.append(home)
+            return answer["dsn"]
+
+        with mock.patch.object(HB, "_default_dsn_fetch", fetch):
+            hb = HB.SentryHeartbeat(
+                env={},
+                home="/nonexistent",
+                clock=self.clock.time,
+                log=lambda event, **f: self.logs.append((event, f)),
+                background=False,
+            )
+            self.assertFalse(
+                self.beat(hb)
+            )  # Infisical failed:  off, and not asked again on every tick
+            for _ in range(3):
+                self.clock.advance(150)  # 450 seconds in all, inside the backoff
+                self.beat(hb)
+            self.assertEqual(len(calls), 1)
+            answer["dsn"] = self.sentry.dsn
+            self.clock.advance(HB.DSN_RETRY_SECONDS)
+            self.assertTrue(
+                self.beat(hb)
+            )  # retried after the backoff, then kept for the process's life
+            for _ in range(3):
+                self.clock.advance(300)
+                self.assertTrue(self.beat(hb))
+            self.assertEqual(len(calls), 2)
+        self.assertEqual(len(self.sentry.requests), 4)
 
     def test_checkin_payload_and_interval(self) -> None:
         hb = self.heartbeat()
@@ -154,9 +274,14 @@ class BeatTests(unittest.TestCase):
         self.assertEqual(request["headers"]["Content-Type"], "application/x-sentry-envelope")
         self.assertNotIn(KEY.encode(), request["body"])
         check_in = self.sentry.checkin()
-        self.assertEqual((check_in["monitor_slug"], check_in["status"], check_in["environment"]),
-                         ("agent-sync-listener-mac", "ok", "production"))
-        self.assertEqual(check_in["monitor_config"]["schedule"], {"type": "interval", "value": 5, "unit": "minute"})
+        self.assertEqual(
+            (check_in["monitor_slug"], check_in["status"], check_in["environment"]),
+            ("agent-sync-listener-mac", "ok", "production"),
+        )
+        self.assertEqual(
+            check_in["monitor_config"]["schedule"],
+            {"type": "interval", "value": 5, "unit": "minute"},
+        )
         self.assertEqual(self.sentry.events(), [])
         # Not due again until five minutes pass, then one beat per interval.
         self.clock.advance(299)
@@ -164,14 +289,19 @@ class BeatTests(unittest.TestCase):
         self.clock.advance(2)
         self.assertTrue(self.beat(hb))
         self.assertEqual(len(self.sentry.requests), 2)
-        self.assertEqual([e for e, _ in self.logs if e == "sentry-heartbeat-ok"], ["sentry-heartbeat-ok"])
+        self.assertEqual(
+            [e for e, _ in self.logs if e == "sentry-heartbeat-ok"], ["sentry-heartbeat-ok"]
+        )
 
     def test_server_instance_slug_and_environment_override(self) -> None:
         self.status["instance"] = "server"
         hb = self.heartbeat(env={"AGENT_SYNC_SENTRY_ENVIRONMENT": "staging"})
         self.beat(hb)
         check_in = self.sentry.checkin()
-        self.assertEqual((check_in["monitor_slug"], check_in["environment"]), ("agent-sync-listener-server", "staging"))
+        self.assertEqual(
+            (check_in["monitor_slug"], check_in["environment"]),
+            ("agent-sync-listener-server", "staging"),
+        )
 
     def test_degraded_is_error_and_one_event_per_distinct_problem(self) -> None:
         self.status["owner_user_id"] = 0
@@ -226,17 +356,17 @@ class BeatTests(unittest.TestCase):
     def test_a_failed_send_does_not_count_as_a_beat_seen(self) -> None:
         self.status["owner_user_id"] = 0
         hb = self.heartbeat()
-        self.beat(hb)                    # delivered:  seen
+        self.beat(hb)  # delivered:  seen
         self.sentry.status = 500
         self.clock.advance(300)
-        self.beat(hb)                    # carries the event but fails
+        self.beat(hb)  # carries the event but fails
         self.assertEqual(len(self.sentry.events()), 1)
         self.sentry.status = 200
         self.clock.advance(30)
-        self.beat(hb)                    # retried with the event again
+        self.beat(hb)  # retried with the event again
         self.assertEqual(len(self.sentry.events()), 1)
         self.clock.advance(300)
-        self.beat(hb)                    # delivered once:  no more
+        self.beat(hb)  # delivered once:  no more
         self.assertEqual(self.sentry.events(), [])
 
     def test_backoff_then_recovery_and_rate_limited_failure_log(self) -> None:
@@ -259,7 +389,16 @@ class BeatTests(unittest.TestCase):
         self.assertEqual(hb.failures, 0)
         self.assertEqual(int(hb.next_at - self.clock.time()), 300)
         ok = [f for e, f in self.logs if e == "sentry-heartbeat-ok"]
-        self.assertEqual(ok, [{"monitor": "agent-sync-listener-mac", "state": "ok", "recovered_after_failures": True}])
+        self.assertEqual(
+            ok,
+            [
+                {
+                    "monitor": "agent-sync-listener-mac",
+                    "state": "ok",
+                    "recovered_after_failures": True,
+                }
+            ],
+        )
         # An hour of failures logs again after the rate-limit window.
         self.sentry.status = 503
         for _ in range(12):
@@ -277,8 +416,13 @@ class BeatTests(unittest.TestCase):
         self.assertNotIn("127.0.0.1", json.dumps(failed))
 
     def test_no_dsn_is_off_and_says_so_once(self) -> None:
-        hb = HB.SentryHeartbeat(env={}, home="/nonexistent", clock=self.clock.time, background=False,
-                                log=lambda event, **f: self.logs.append((event, f)))
+        hb = HB.SentryHeartbeat(
+            env={},
+            home="/nonexistent",
+            clock=self.clock.time,
+            background=False,
+            log=lambda event, **f: self.logs.append((event, f)),
+        )
         for _ in range(3):
             self.assertFalse(self.beat(hb))
             self.clock.advance(300)
@@ -302,11 +446,16 @@ class BeatTests(unittest.TestCase):
             release.wait(5)
             return 200
 
-        hb = HB.SentryHeartbeat(env={"AGENT_SYNC_SENTRY_DSN": self.sentry.dsn}, home="/nonexistent",
-                                clock=self.clock.time, log=lambda *a, **k: None, send=slow)
-        self.assertTrue(self.beat(hb))          # returns at once, the send is on its own thread
+        hb = HB.SentryHeartbeat(
+            env={"AGENT_SYNC_SENTRY_DSN": self.sentry.dsn},
+            home="/nonexistent",
+            clock=self.clock.time,
+            log=lambda *a, **k: None,
+            send=slow,
+        )
+        self.assertTrue(self.beat(hb))  # returns at once, the send is on its own thread
         self.clock.advance(400)
-        self.assertFalse(self.beat(hb))         # the first is still in flight
+        self.assertFalse(self.beat(hb))  # the first is still in flight
         release.set()
         hb.wait()
         self.assertEqual(len(calls), 1)
@@ -338,8 +487,10 @@ class DaemonTests(ListenerHarness):
         daemon.tick()
         daemon.heartbeat.wait()
         self.assertEqual(len(self.sentry.requests), 1)
-        self.assertEqual((self.sentry.checkin()["monitor_slug"], self.sentry.checkin()["status"]),
-                         ("agent-sync-listener-mac", "ok"))
+        self.assertEqual(
+            (self.sentry.checkin()["monitor_slug"], self.sentry.checkin()["status"]),
+            ("agent-sync-listener-mac", "ok"),
+        )
         written = self.everything_written(daemon)
         self.assertNotIn(KEY, written)
         self.assertNotIn(self.sentry.dsn, written)
@@ -359,19 +510,16 @@ class DaemonTests(ListenerHarness):
         daemon.heartbeat.wait()
         self.assertIn("owner not pinned", self.sentry.events()[0]["message"])
 
-    def test_dsn_from_the_secrets_file_and_no_dsn_means_silence(self) -> None:
+    def test_dsn_from_infisical_and_no_dsn_means_silence(self) -> None:
         daemon = self.daemon()
         daemon.tick()
         daemon.heartbeat.wait()
         self.assertEqual(self.sentry.requests, [])
         self.assertIn("sentry-heartbeat-off", self.everything_written(daemon))
-        secrets = self.home / ".secrets"
-        secrets.mkdir()
-        (secrets / "agent-sync.env").write_text("SENTRY_FLEET_DSN=%s\n" % self.sentry.dsn)
-        (secrets / "agent-sync.env").chmod(0o600)
-        daemon = self.daemon()
-        daemon.tick()
-        daemon.heartbeat.wait()
+        with mock.patch.object(HB, "_default_dsn_fetch", lambda env, home: self.sentry.dsn):
+            daemon = self.daemon()
+            daemon.tick()
+            daemon.heartbeat.wait()
         self.assertEqual(len(self.sentry.requests), 1)
 
 

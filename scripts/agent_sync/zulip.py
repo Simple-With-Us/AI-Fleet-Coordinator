@@ -3,11 +3,16 @@
 Credential order (first hit wins, nothing is merged):
   1. --rc PATH
   2. env ZULIP_RC=PATH
-  3. <secrets dir>/<Title>-zuliprc  (default ~/.secrets/Zulip, override with AGENT_SYNC_SECRETS_DIR)
-  4. env ZULIP_EMAIL + ZULIP_API_KEY + ZULIP_SITE  (cloud seats with no file)
-  5. Infisical Fleet-OPS /zulip  (prod), the resolved seat's own three keys only, when no file exists
-     (off with AGENT_SYNC_INFISICAL=0;  OPS-818)
-A .env file, ./zuliprc and ~/.zuliprc are never read.
+  3. $AGENT_SYNC_SECRETS_DIR/<Title>-zuliprc, only when that variable is set (an explicit override
+     directory;  there is no default directory any more)
+  4. env ZULIP_EMAIL + ZULIP_API_KEY + ZULIP_SITE  (cloud seats)
+  5. Infisical Fleet-OPS /zulip  (prod), the resolved seat's own three keys <BOT>_ZULIP_EMAIL, _KEY and
+     _SITE, read through `fleet-secrets` (off with AGENT_SYNC_INFISICAL=0;  OPS-818, AFC-359)
+No credential folder is read (AFC-359:  the old folder is retired).  A .env file, ./zuliprc and
+~/.zuliprc are never read either.  Values fetched from Infisical stay in this process's memory only
+(never on disk), are fetched once per process and reused for INFISICAL_CACHE_TTL seconds, and a
+failed refresh falls back to the values this process already holds.  A failure with nothing held is
+remembered for INFISICAL_FAILURE_BACKOFF seconds, so an outage costs one timeout, not one per seat.
 
 The API key lives only in `Credentials.key` (hidden from repr) and in the Authorization header.
 Every error message that leaves this module is scrubbed of the key and of the base64 token, so
@@ -25,18 +30,22 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
+import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from .identity import canonical_seat
-from .textfmt import sentence_gap
+from .textfmt import fix_outbound
 
 __all__ = [
     "DEFAULT_CHANNEL",
@@ -55,16 +64,24 @@ __all__ = [
     "credential_file_name",
     "default_rc_path",
     "env_credentials",
+    "fleet_secrets_bin",
     "infisical_credentials",
+    "infisical_has",
     "infisical_key_names",
+    "infisical_key_names_for_stem",
+    "infisical_names",
     "infisical_project_id",
+    "infisical_seats",
     "message_channel",
     "message_topic",
     "normalise_seat",
     "outbound_params",
+    "override_secrets_dir",
+    "prefetch_infisical",
     "read_zuliprc",
     "realm_url",
     "resolve_credentials",
+    "seat_from_infisical_prefix",
     "seat_from_rc_path",
     "session_tag",
     "verify_realm",
@@ -79,6 +96,33 @@ ENV_INFISICAL = "AGENT_SYNC_INFISICAL"  # 0, false, off or no turns the Infisica
 ENV_INFISICAL_PROJECT = "INFISICAL_FLEET_OPS_PROJECT_ID"
 INFISICAL_PROJECT_FILE = ".agent-sync/fleet-ops-project-id"
 INFISICAL_PATH = "/zulip"
+# The fleet's Infisical reader (scripts/fleet_secrets, installed as ~/.local/bin/fleet-secrets).  Tests point
+# FLEET_SECRETS_BIN at a fake.  Its auth chain (System keychain machine identity) works under launchd and pm2.
+ENV_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
+FLEET_SECRETS_TIMEOUT = (
+    15.0  # interactive commands wait at most this long for one fleet-secrets call
+)
+# The listener is not interactive, and it starts right after a runtime update, often while the Mac's load
+# average is above 100:  a 15 second cap left two seats refused for five minutes on Mon, Oct 19 (AFC-359).
+DAEMON_FLEET_SECRETS_TIMEOUT = 90.0
+INFISICAL_CACHE_TTL = 600.0
+# After a failed fetch with nothing held, the same request fails at once for this long instead of paying the
+# timeout again (an Infisical outage must not cost every seat or every identity candidate its own timeout).
+INFISICAL_FAILURE_BACKOFF = 120.0
+# Key-name prefixes in /zulip that are never a seat:  the owner's own account and the integration bots.
+NOT_SEAT_PREFIXES = frozenset(
+    {
+        "JAY",
+        "OWNER",
+        "REALM_ADMIN",
+        "ZULIPADMIN",
+        "BETTERSTACK",
+        "DATADOG",
+        "LINEAR",
+        "PAGERDUTY",
+        "SENTRY",
+    }
+)
 DEFAULT_CHANNEL = "agent-sync"
 MAX_TOPIC_LENGTH = 60
 USER_AGENT = "agent-sync/1 (fleet)"
@@ -329,24 +373,57 @@ def env_credentials(
     )
 
 
-def default_rc_path(seat: str, env: Mapping[str, str], home: Path) -> Path:
-    """The third credential source:  <secrets dir>/<Title>-zuliprc for the seat.  The secrets dir
-    is env AGENT_SYNC_SECRETS_DIR or ~/.secrets/Zulip."""
-    secrets_dir = Path(env.get(ENV_SECRETS_DIR) or (home / ".secrets" / "Zulip")).expanduser()
-    return secrets_dir / credential_file_name(seat)
+def override_secrets_dir(env: Mapping[str, str]) -> str | None:
+    """The explicit credential-file directory (env AGENT_SYNC_SECRETS_DIR), or None.  There is no
+    default:  the old per-seat file folder is retired (AFC-359), and seats read Infisical instead."""
+    value = (env.get(ENV_SECRETS_DIR) or "").strip()
+    return os.path.expanduser(value) if value else None
+
+
+def default_rc_path(seat: str, env: Mapping[str, str], home: Path | None = None) -> Path | None:
+    """<AGENT_SYNC_SECRETS_DIR>/<Title>-zuliprc for the seat, or None when that override is not set.
+    `home` is unused (kept for callers);  no path under the home directory is ever implied."""
+    directory = override_secrets_dir(env)
+    if directory is None:
+        return None
+    return Path(directory) / credential_file_name(seat)
 
 
 def infisical_enabled(env: Mapping[str, str]) -> bool:
     return (env.get(ENV_INFISICAL) or "").strip().lower() not in ("0", "false", "off", "no")
 
 
+def infisical_prefix_for_stem(stem: str) -> str:
+    """Grok-Build -> GROK_BUILD, BF-Builder -> BF_BUILDER:  the credential file stem in upper case with
+    hyphens as underscores, the prefix of the bot's /zulip key names."""
+    return re.sub(r"[^A-Z0-9]", "_", stem.upper())
+
+
+def infisical_key_names_for_stem(stem: str) -> tuple[str, str, str]:
+    prefix = infisical_prefix_for_stem(stem)
+    return tuple("%s_ZULIP_%s" % (prefix, part) for part in ("EMAIL", "KEY", "SITE"))  # type: ignore[return-value]
+
+
 def infisical_key_names(seat: str) -> tuple[str, str, str]:
     """The seat's three Fleet-OPS /zulip secret names (EMAIL, KEY, SITE):  the credential file stem
     in upper case with hyphens as underscores, so CLAUDE -> CLAUDE_ZULIP_EMAIL, GROK -> GROK_BUILD_ZULIP_KEY
     (the GROK bot's file is Grok-Build), BF-BUILDER -> BF_BUILDER_ZULIP_SITE."""
-    stem = credential_file_name(seat)[: -len("-zuliprc")]
-    prefix = stem.upper().replace("-", "_")
-    return tuple("%s_ZULIP_%s" % (prefix, part) for part in ("EMAIL", "KEY", "SITE"))  # type: ignore[return-value]
+    return infisical_key_names_for_stem(credential_file_name(seat)[: -len("-zuliprc")])
+
+
+def seat_from_infisical_prefix(prefix: str) -> str | None:
+    """The inverse of infisical_key_names:  GROK_BUILD -> GROK, BF_PLUMBER -> BF-PLUMBER, None for a
+    prefix that is never a seat (NOT_SEAT_PREFIXES:  the owner's account and the integration bots)."""
+    prefix = prefix.upper()
+    if not re.match(r"^[A-Z0-9][A-Z0-9_]{0,31}$", prefix) or prefix in NOT_SEAT_PREFIXES:
+        return None
+    for known, stem in SEAT_FILE_OVERRIDES.items():
+        if infisical_prefix_for_stem(stem) == prefix:
+            return known
+    try:
+        return normalise_seat(prefix.replace("_", "-"))
+    except UsageError:
+        return None
 
 
 _UUID_RE = re.compile(
@@ -356,7 +433,8 @@ _UUID_RE = re.compile(
 
 def infisical_project_id(env: Mapping[str, str], home: Path) -> str:
     """The Fleet-OPS Infisical project id, from env INFISICAL_FLEET_OPS_PROJECT_ID or the first line of
-    ~/.agent-sync/fleet-ops-project-id.  Fails closed, naming both, and never echoes a malformed value."""
+    ~/.agent-sync/fleet-ops-project-id.  Fails closed, naming both, and never echoes a malformed value.
+    (fleet-secrets reads the same two places itself;  this copy is for messages and callers.)"""
     value = (env.get(ENV_INFISICAL_PROJECT) or "").strip()
     if not value:
         try:
@@ -383,27 +461,241 @@ def infisical_project_id(env: Mapping[str, str], home: Path) -> str:
     return value
 
 
-def _fetch_from_infisical_cli(
+def fleet_secrets_bin(env: Mapping[str, str], home: Path) -> str | None:
+    """env FLEET_SECRETS_BIN, else ~/.local/bin/fleet-secrets, else `fleet-secrets` on PATH."""
+    explicit = (env.get(ENV_FLEET_SECRETS_BIN) or "").strip()
+    if explicit:
+        return os.path.expanduser(explicit)
+    candidate = home / ".local" / "bin" / "fleet-secrets"
+    if os.access(candidate, os.X_OK):
+        return str(candidate)
+    return shutil.which("fleet-secrets", path=env.get("PATH") or os.defpath)
+
+
+# fleet-secrets exit codes (scripts/fleet_secrets/cli.py) as reason tokens:  its stderr is never read out.
+_FLEET_SECRETS_EXITS = {
+    2: "refused-configuration",
+    3: "key-absent",
+    4: "fetch-or-auth-failure",
+    5: "unresolved-reference",
+    126: "cannot-start",
+    127: "cannot-start",
+}
+# Run by `fleet-secrets run --only ...`:  prints just the named variables, as JSON, to the pipe we read.
+_PRINT_NAMED_ENV = (
+    "import json,os,sys;json.dump({n:os.environ.get(n,'') for n in sys.argv[1:]},sys.stdout)"
+)
+
+_cache_lock = threading.Lock()
+_value_cache: dict[tuple[str, str], tuple[float, str]] = {}  # (bin, name) -> (fetched at, value)
+_names_cache: dict[str, tuple[float, frozenset[str]]] = {}  # bin -> (fetched at, names)
+_failures: dict[
+    tuple[str, ...], tuple[float, str]
+] = {}  # (bin, what...) -> (failed at, reason), memory only
+
+
+def _recent_failure(key: tuple[str, ...], now: float) -> str | None:
+    held = _failures.get(key)
+    if held is not None and now - held[0] < INFISICAL_FAILURE_BACKOFF:
+        return held[1]
+    return None
+
+
+def _child_env(env: Mapping[str, str]) -> dict[str, str]:
+    child = {k: v for k, v in env.items() if k not in ("ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_RC")}
+    child.setdefault("PATH", os.environ.get("PATH") or os.defpath)
+    return child
+
+
+def _run_fleet_secrets(argv: list[str], env: Mapping[str, str]) -> bytes:
+    """Run fleet-secrets, return its stdout.  Raises CredentialError with a reason token, never output."""
+    try:
+        proc = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=FLEET_SECRETS_TIMEOUT,
+            cwd="/",
+            env=_child_env(env),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise CredentialError("fleet-secrets timeout") from None
+    except OSError:
+        raise CredentialError("fleet-secrets cannot-start") from None
+    if proc.returncode != 0:
+        raise CredentialError(
+            "fleet-secrets %s (exit %d)"
+            % (_FLEET_SECRETS_EXITS.get(proc.returncode, "failed"), proc.returncode)
+        )
+    return proc.stdout
+
+
+def _fetch_from_fleet_secrets(
     names: tuple[str, ...], env: Mapping[str, str], home: Path
 ) -> Mapping[str, str]:
-    """Ask the infisical CLI (scripts/fleet_knobs, prod only) for just these names.  Raises
-    CredentialError with a reason token, never output."""
-    project_id = infisical_project_id(env, home)
-    try:
-        from fleet_knobs import source as knob_source
-    except ImportError:
-        raise CredentialError("fleet_knobs is not on this host") from None
-    refusal = knob_source.environment_refusal()
-    if refusal:
-        raise CredentialError(refusal)
-    try:
-        return knob_source.fetch_named(names, project_id=project_id, path=INFISICAL_PATH)
-    except knob_source.FetchFailed as exc:
-        raise CredentialError("infisical %s" % exc.reason) from None
+    """Just these /zulip names, through `fleet-secrets run --only` (one Infisical call for all of them).
+    Cached in memory for INFISICAL_CACHE_TTL;  a failed refresh returns the values this process already
+    holds.  Raises CredentialError with a reason token, never output."""
+    wanted = tuple(sorted(set(names)))
+    binary = fleet_secrets_bin(env, home)
+    if not binary:
+        raise CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
+    now = time.monotonic()
+    with _cache_lock:
+        held = {n: _value_cache.get((binary, n)) for n in wanted}
+        if all(v is not None and now - v[0] < INFISICAL_CACHE_TTL for v in held.values()):
+            return {n: v[1] for n, v in held.items() if v is not None}
+        failure_key = (binary, "values", *wanted)
+        # A timeout or an auth or fetch failure is about Infisical, not about these names:  it is remembered
+        # per binary, so the seats after a failed prefetch fail at once instead of each waiting out the cap.
+        # A missing key stays a failure of this request only.
+        outage_key = (binary, "outage")
+        recent = _recent_failure(failure_key, now) or _recent_failure(outage_key, now)
+        if recent is not None and not all(v is not None for v in held.values()):
+            raise CredentialError(
+                "%s (not retried for %d seconds)" % (recent, INFISICAL_FAILURE_BACKOFF)
+            )
+        argv = [
+            binary,
+            "run",
+            "--path",
+            INFISICAL_PATH,
+            "--only",
+            ",".join(wanted),
+            "--",
+            sys.executable,
+            "-I",
+            "-c",
+            _PRINT_NAMED_ENV,
+            *wanted,
+        ]
+        try:
+            out = _run_fleet_secrets(argv, env)
+            try:
+                payload = json.loads(out.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                raise CredentialError("fleet-secrets bad-output") from None
+            finally:
+                out = b""
+            if not isinstance(payload, dict):
+                raise CredentialError("fleet-secrets bad-output")
+            got = {n: payload[n] for n in wanted if isinstance(payload.get(n), str)}
+        except CredentialError as exc:
+            _failures[failure_key] = (now, str(exc))
+            if "key-absent" not in str(exc):
+                _failures[outage_key] = (now, str(exc))
+            if all(v is not None for v in held.values()):
+                return {
+                    n: v[1] for n, v in held.items() if v is not None
+                }  # last known good, memory only
+            raise
+        _failures.pop(failure_key, None)
+        _failures.pop(outage_key, None)
+        for n, v in got.items():
+            _value_cache[(binary, n)] = (now, v)
+        return got
 
 
-# The name tests replace (agent_sync/tests/__init__.py), so none can reach the real CLI.
-_default_infisical_fetch = _fetch_from_infisical_cli
+def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[str]:
+    """The key NAMES in /zulip (`fleet-secrets names`:  no value reaches this process).  Cached like values."""
+    binary = fleet_secrets_bin(env, home)
+    if not binary:
+        raise CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
+    now = time.monotonic()
+    with _cache_lock:
+        held = _names_cache.get(binary)
+        if held is not None and now - held[0] < INFISICAL_CACHE_TTL:
+            return held[1]
+        failure_key = (binary, "names")
+        recent = _recent_failure(failure_key, now)
+        if recent is not None and held is None:
+            raise CredentialError(
+                "%s (not retried for %d seconds)" % (recent, INFISICAL_FAILURE_BACKOFF)
+            )
+        try:
+            out = _run_fleet_secrets([binary, "names", "--path", INFISICAL_PATH], env)
+        except CredentialError as exc:
+            _failures[failure_key] = (now, str(exc))
+            if held is not None:
+                return held[1]
+            raise
+        _failures.pop(failure_key, None)
+        try:
+            text = out.decode("utf-8")
+        except UnicodeDecodeError:
+            raise CredentialError("fleet-secrets bad-output") from None
+        names = frozenset(
+            line.strip()
+            for line in text.splitlines()
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", line.strip())
+        )
+        _names_cache[binary] = (now, names)
+        return names
+
+
+# The names tests replace (agent_sync/tests/__init__.py), so none can reach the real fleet-secrets.
+_default_infisical_fetch = _fetch_from_fleet_secrets
+_default_infisical_names = _list_from_fleet_secrets
+
+
+def infisical_names(
+    env: Mapping[str, str] | None = None, home: Path | None = None
+) -> frozenset[str]:
+    """Every key name in Fleet-OPS /zulip, or an empty set when Infisical is off or cannot be read
+    (a presence check must never fail a command;  opening the identity reports the reason)."""
+    env = env if env is not None else os.environ
+    if not infisical_enabled(env):
+        return frozenset()
+    try:
+        return frozenset(
+            _default_infisical_names(
+                env, home if home is not None else Path(env.get("HOME") or os.path.expanduser("~"))
+            )
+        )
+    except Exception:
+        return frozenset()
+
+
+def infisical_seats(
+    env: Mapping[str, str] | None = None, home: Path | None = None
+) -> frozenset[str]:
+    """Every seat whose three /zulip names are all present (never the owner or an integration bot)."""
+    names = infisical_names(env, home)
+    seats = set()
+    for name in names:
+        if name.endswith("_ZULIP_KEY"):
+            seat = seat_from_infisical_prefix(name[: -len("_ZULIP_KEY")])
+            if seat and all(n in names for n in infisical_key_names(seat)):
+                seats.add(seat)
+    return frozenset(seats)
+
+
+def infisical_has(
+    seat: str, env: Mapping[str, str] | None = None, home: Path | None = None
+) -> bool:
+    return seat.upper() in infisical_seats(env, home)
+
+
+def prefetch_infisical(
+    seats: Iterable[str], env: Mapping[str, str], home: Path, *, stems: Iterable[str] = ()
+) -> None:
+    """Warm this process's cache with every listed seat's (and bot stem's) names in ONE fetch, so a
+    daemon holding several seats makes one Infisical call at start, not one per seat.  Never raises;
+    each seat still reports its own failure when it opens."""
+    if not infisical_enabled(env) or _default_infisical_fetch is not _fetch_from_fleet_secrets:
+        return
+    names: list[str] = []
+    for seat in seats:
+        names.extend(infisical_key_names(seat))
+    for stem in stems:
+        names.extend(infisical_key_names_for_stem(stem))
+    if not names:
+        return
+    try:
+        _fetch_from_fleet_secrets(tuple(names), env, home)
+    except Exception:
+        pass
 
 
 def infisical_credentials(
@@ -412,19 +704,24 @@ def infisical_credentials(
     env: Mapping[str, str] | None = None,
     home: Path | None = None,
     fetch: Callable[[tuple[str, ...]], Mapping[str, str]] | None = None,
+    stem: str | None = None,
 ) -> Credentials:
     """One seat's credentials from Infisical Fleet-OPS /zulip, held in memory only.  Only this seat's
-    three names are requested.  Every failure names the folder and the key names, never a value."""
-    names = infisical_key_names(seat)
+    three names are requested (`stem`, a listener `bot =` value, picks the names when given).  Every
+    failure names the folder and the key names, never a value."""
+    names = infisical_key_names_for_stem(stem) if stem else infisical_key_names(seat)
     where = "Infisical Fleet-OPS %s (prod) keys %s" % (INFISICAL_PATH, ", ".join(names))
+    env = env if env is not None else os.environ
+    if not infisical_enabled(env):
+        raise CredentialError("cannot read %s: AGENT_SYNC_INFISICAL turns Infisical off" % where)
     try:
         got = (
             fetch(names)
             if fetch is not None
             else _default_infisical_fetch(
                 names,
-                env if env is not None else os.environ,
-                home if home is not None else Path.home(),
+                env,
+                home if home is not None else Path(env.get("HOME") or os.path.expanduser("~")),
             )
         )
     except CredentialError as exc:
@@ -460,8 +757,8 @@ def resolve_credentials(
     infisical_fetch: Callable[[tuple[str, ...]], Mapping[str, str]] | None = None,
 ) -> Credentials:
     """Apply the credential order.  An explicit --rc or ZULIP_RC that cannot be read is an error;
-    it never falls through to the next source.  Infisical is the last resort, only for a seat with no
-    file and no env triple, and its failure is an error naming the folder and key names (OPS-818)."""
+    it never falls through to the next source.  Infisical /zulip is the primary source for a seat
+    (AFC-359), and its failure is an error naming the folder and key names, never a value."""
     home = home if home is not None else Path(env.get("HOME") or os.path.expanduser("~"))
     if rc_arg:
         return read_zuliprc(Path(rc_arg).expanduser())
@@ -470,9 +767,10 @@ def resolve_credentials(
     tried: list[str] = []
     if seat:
         candidate = default_rc_path(seat, env, home)
-        tried.append(str(candidate))
-        if candidate.exists():
-            return read_zuliprc(candidate)
+        if candidate is not None:
+            tried.append(str(candidate))
+            if candidate.exists():
+                return read_zuliprc(candidate)
     triple = {
         name: (env.get(name) or "").strip()
         for name in ("ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE")
@@ -492,6 +790,8 @@ def resolve_credentials(
             return infisical_credentials(seat, env=env, home=home, fetch=infisical_fetch)
         except CredentialError as exc:
             fallback = "; %s" % exc
+    elif seat:
+        fallback = "; Infisical is off (AGENT_SYNC_INFISICAL)"
     raise CredentialError(
         "no Zulip credentials found%s%s; or set ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_SITE "
         "(missing: %s), or pass --rc PATH" % (where, fallback, ", ".join(missing))
@@ -558,7 +858,7 @@ def outbound_params(
         and isinstance(params.get("content"), str)
         and _OUTBOUND_TEXT_PATH.fullmatch(path.strip("/"))
     ):
-        return {**params, "content": sentence_gap(params["content"])}
+        return {**params, "content": fix_outbound(params["content"], limit=10000)[0]}
     return params
 
 

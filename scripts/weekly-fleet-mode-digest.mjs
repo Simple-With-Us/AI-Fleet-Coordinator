@@ -36,7 +36,7 @@
 //
 // SECRETS: USAGE_READ_TOKEN and SENTRY_AUTH_TOKEN_FULLSCOPE are loaded
 // value-blind from environment first, then `fleet-secrets get NAME` (OPS-818;
-// the flat file ~/.secrets/global-api-keys is retired).  Neither value is
+// the old flat secrets file is retired, AFC-359).  Neither value is
 // ever printed, logged, or included in the composed message.
 //
 // Install the LaunchAgent (every Monday 8:00 AM Central, matches system tz):
@@ -403,7 +403,7 @@ function composeMessage({ umResult, sentryResult, now = new Date() }) {
 
 function postToZulip(text) {
   // Posts through the agent-sync CLI as the CLAUDE seat, which resolves that
-  // seat's own ~/.secrets/Zulip/Claude-zuliprc.  No token is read here.
+  // seat's own Zulip credential (Infisical /zulip).  No token is read here.
   // Zulip needs a channel AND a topic on every message, so the topic is passed
   // explicitly rather than left to the transport.
   const result = spawnSync(

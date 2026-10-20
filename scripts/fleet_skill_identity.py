@@ -2,8 +2,8 @@
 """Specialize Monet-canonical fleet SKILL.md text for a destination seat.
 
 docs/fleet-skills stays the Monet / Claude.app upload pack.  Every other
-platform install must rewrite Zulip identity (the seat's bot, its zuliprc
-path, and its `[SEAT·session8]` tag), Notes names, branch prefixes,
+platform install must rewrite Zulip identity (the seat's bot, its Infisical
+`<BOT>_ZULIP_*` names, and its `[SEAT·session8]` tag), Notes names, branch prefixes,
 worktree suffixes, and reader-facing Claude/Monet voice, or that seat will
 sign as Monet.  Skills that are meaningless on a harness are skipped, not
 rewritten into a Claude-voiced copy.
@@ -161,7 +161,7 @@ class Seat:
     seat_key: str = ""
     # Zulip identity (owner 2026-10-07).  `zulip_bot` is the
     # bot's email local part; the realm is simplewithus.zulipchat.com for all of
-    # them.  `zulip_rc` is the credential file code under ~/.secrets/Zulip/.
+    # them.  `zulip_rc` is the credential code the Infisical `<BOT>_ZULIP_*` names derive from (AFC-359).
     # Both are fixed per bot in the guide's roster — take them from there, never
     # derive one from the other or from the display name.
     zulip_bot: str = ""
@@ -171,13 +171,14 @@ class Seat:
     retired: bool = False
 
 
-def zulip_credential_path(seat: Seat) -> str:
-    """The seat's own zuliprc path.  Never another seat's file."""
-    return f"~/.secrets/Zulip/{seat.zulip_rc or seat.tag}-zuliprc"
+def zulip_credential_ref(seat: Seat) -> str:
+    """Where the seat's own Zulip credential lives:  Infisical Fleet-OPS `/zulip` names.  Never another seat's."""
+    prefix = re.sub(r"[^A-Za-z0-9]+", "_", seat.zulip_rc or seat.tag).strip("_").upper()
+    return f"Infisical Fleet-OPS `/zulip` (`{prefix}_ZULIP_EMAIL`, `{prefix}_ZULIP_KEY`, `{prefix}_ZULIP_SITE`)"
 
 
 def zulip_identity_sentence(seat: Seat) -> str:
-    """One sentence naming the bot and its credential file.
+    """One sentence naming the bot and where its credential lives.
 
     `zulip_bot` holds the local part WITHOUT the `-bot` suffix, because Zulip
     appends it itself (owner-confirmed Wed, Oct 7): entering `mm-bot` would
@@ -189,8 +190,8 @@ def zulip_identity_sentence(seat: Seat) -> str:
     if not local.endswith("-bot"):
         local = f"{local}-bot"
     return (
-        f"Zulip bot `{local}@simplewithus.zulipchat.com`, credential file "
-        f"`{zulip_credential_path(seat)}` (mode 600).  Session tag "
+        f"Zulip bot `{local}@simplewithus.zulipchat.com`, credential in "
+        f"{zulip_credential_ref(seat)}.  Session tag "
         f"`[{seat.tag}·session8]`, and the `agent-sync` CLI writes it for you."
     )
 
@@ -1132,11 +1133,35 @@ def _unstash_identity(text: str, seat: Seat) -> str:
     return text
 
 
+def _plain_scalar_is_safe(value: str) -> bool:
+    """True when `value` is safe to emit as an inline YAML plain scalar.
+
+    A plain scalar cannot carry a mapping indicator or start a comment, so any
+    value holding ": " or " #" (or ending in a bare ":") makes the whole block
+    fail to parse with "mapping values are not allowed in this context".  That
+    silently took out the sentence-gap skill in every rendered tree when its
+    description grew a "Mechanism by surface:" clause, because the fold below
+    only ever looked for quotes.
+    """
+    if not value:
+        return False
+    if value[0] in "-?:,[]{}#&*!|>'\"%@`":
+        return False
+    if ": " in value or value.endswith(":"):
+        return False
+    if " #" in value:
+        return False
+    return True
+
+
 def fold_yaml_description(text: str) -> str:
     """Rewrite SKILL.md `description` to a `>-` block when quotes would break fx.
 
     fx's skill metadata parser rejects inline `"` / `'` in YAML descriptions
     (`malformed_quote`).  A folded `>-` block is the documented fix.
+
+    It also folds when the inline value would not parse as a plain scalar at
+    all, so a description that merely contains a colon stays loadable.
     """
     if not text.startswith("---\n"):
         return text
@@ -1174,7 +1199,7 @@ def fold_yaml_description(text: str) -> str:
                     inner = inner.replace('\\"', '"')
                 value = inner
             i += 1
-        if '"' in value or "'" in value or "${" in value:
+        if '"' in value or "'" in value or "${" in value or not _plain_scalar_is_safe(value):
             out.append("description: >-")
             out.append("  " + value)
         else:
@@ -1408,7 +1433,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         "Use your own Zulip session "
         "tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-FIXER]`, "
         "`[DSH·session8]`, `[MM·session8]`), your seat's own bot and "
-        "`~/.secrets/Zulip/<file code>-zuliprc`, branch "
+        "`<BOT>_ZULIP_*` names in Infisical Fleet-OPS `/zulip`, branch "
         "prefix (`<seat>/<slug>`), lane (`~/apps/lanes/<Repo>/<seat>-<slug>`), and Apple "
         "Notes name (`Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, "
         "`Monet`, `DeepSeek Harness`, `MiniMax`, `Fx`, or the GB role in "

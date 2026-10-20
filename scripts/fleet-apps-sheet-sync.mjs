@@ -33,18 +33,20 @@
  *     how the retired "IGNORE old ST" record and stray duplicates stay visible.
  *   • Facts no registry file carries live in scripts/fleet-apps-sheet-facts.json, never in the sheet.
  *
- * Auth: Google service account ~/.secrets/google-sheets-sa.json; ASC via ios-fleet/asc-api.mjs.
+ * Auth: Google service account from GOOGLE_SHEETS_SA (env) or Infisical /google-sheets-sa via
+ * fleet-secrets; ASC via ios-fleet/asc-api.mjs (env, else Infisical /asc).
  * Neither prints credentials.
  */
 
 import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 const SPREADSHEET_ID = "1fyp76U-GnlRbm5GeevnPY5WxPekxualMiZW5M-5VlSY";
 const IOS_FLEET = "/Users/jay/apps/ios-fleet";
-const SA_KEY_PATH = "/Users/jay/.secrets/google-sheets-sa.json";
 const APPS_JSON_PATH = `${IOS_FLEET}/apps.json`;
 const ICON_REPORT_PATH = `${IOS_FLEET}/artifacts/icon-audit.json`;
 const ASC_API_SCRIPT = `${IOS_FLEET}/asc-api.mjs`;
@@ -73,9 +75,27 @@ function base64url(input) {
   return Buffer.from(input).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+// AFC-359: the service account JSON comes from GOOGLE_SHEETS_SA in the environment, else
+// Infisical Fleet-OPS /google-sheets-sa through fleet-secrets.  Never written to disk or printed.
+function loadServiceAccount() {
+  let raw = process.env.GOOGLE_SHEETS_SA || "";
+  if (!raw) {
+    const bin = process.env.FLEET_SECRETS || join(homedir(), ".local", "bin", "fleet-secrets");
+    try {
+      raw = execFileSync(bin, ["get", "GOOGLE_SHEETS_SA", "--path", "/google-sheets-sa"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"]
+      }).replace(/\n$/, "");
+    } catch {
+      raw = "";
+    }
+  }
+  if (!raw) throw new Error("Google service account missing: set GOOGLE_SHEETS_SA or add it to Infisical /google-sheets-sa");
+  return JSON.parse(raw);
+}
+
 async function getGoogleAccessToken() {
-  if (!existsSync(SA_KEY_PATH)) throw new Error(`Google service account key not found at ${SA_KEY_PATH}`);
-  const sa = JSON.parse(readFileSync(SA_KEY_PATH, "utf8"));
+  const sa = loadServiceAccount();
   const now = Math.floor(Date.now() / 1000);
   const signingInput = `${base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.${base64url(JSON.stringify({
     iss: sa.client_email,
@@ -514,7 +534,7 @@ export function buildSeatsTab({ fleetApps, partition, serverSeats, seatAppNames,
   };
   const credFor = (tag, instance, fileCode) => {
     const parts = [];
-    if (fileCode) parts.push(`~/.secrets/Zulip/${fileCode}-zuliprc`);
+    if (fileCode) parts.push(`Infisical Fleet-OPS, prod, /zulip:  ${fileCode.toUpperCase().replace(/-/g, "_")}_ZULIP_KEY`);
     if (instance === "server") parts.push(`Infisical AI Fleet Coordinator, prod, /zulip:  ${zulipEnvNames(tag)}`);
     return parts.join(";  ");
   };

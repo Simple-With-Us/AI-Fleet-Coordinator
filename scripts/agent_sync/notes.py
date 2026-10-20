@@ -17,6 +17,10 @@ An envelope is one fenced JSON block in a message:
      "request_id":"nr0123456789abcdef0123","identity":"CLAUDE"}
     ```
 
+A create or update also carries `"session":"<id>"` (AFC-361, session_ids.py):  the writer's session id, which the script
+stamps in the note as a `Session:` line so a headless resume can find the session.  It is left out for the single-thread
+identities that need none.
+
 A body too large for one message goes up as an attached `.md` file and the envelope names it
 (`markdown_url`, `markdown_bytes`, `markdown_sha256`, `markdown` empty).
 
@@ -28,9 +32,11 @@ own name).
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -40,10 +46,14 @@ import sys
 import tempfile
 import threading
 import uuid
+from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import identity as I
+from . import session_ids as SID
 
 RELAY_CHANNEL = "notes-relay"
 ENVELOPE_VERSION = 1
@@ -72,7 +82,17 @@ _FENCE_CLOSE = "\n```"
 # Script exit codes (scripts/apple-notes-coding.sh header).
 EXIT_USAGE, EXIT_NOT_FOUND, EXIT_UNPIN = 2, 3, 4
 # The environment the script gets:  nothing that holds a credential.
-CHILD_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "USER", "LOGNAME", "SHELL")
+CHILD_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+)
 
 # Reactions the listener sets and `notes_status` reads (Zulip unicode codes and the names tried to set them).
 DONE_EMOJI = ("check", "white_check_mark")
@@ -104,6 +124,7 @@ class NotesError(Exception):
 # Titles, flags, request ids
 # --------------------------------------------------------------------------------------------
 
+
 def check_title(raw: Any) -> str:
     """The title as the script will see it, or NotesError.  It must start `[`, so a title can never read
     as a flag or an empty note name, and holds no character that is special inside AppleScript source."""
@@ -113,12 +134,20 @@ def check_title(raw: Any) -> str:
     if not title:
         raise NotesError("invalid_argument", "argument 'title' must not be empty")
     if len(title) > TITLE_MAX:
-        raise NotesError("invalid_argument", "argument 'title' is %d characters; at most %d" % (len(title), TITLE_MAX))
+        raise NotesError(
+            "invalid_argument",
+            "argument 'title' is %d characters; at most %d" % (len(title), TITLE_MAX),
+        )
     if not title.startswith("["):
-        raise NotesError("invalid_argument", "argument 'title' must start with [APP, Agent], such as \"[AFC, Claude] topic\"")
+        raise NotesError(
+            "invalid_argument",
+            "argument 'title' must start with [APP, Agent], such as \"[AFC, Claude] topic\"",
+        )
     if _TITLE_BAD_RE.search(title):
-        raise NotesError("invalid_argument", "argument 'title' must not hold a double quote, a backslash or a control "
-                         "character")
+        raise NotesError(
+            "invalid_argument",
+            "argument 'title' must not hold a double quote, a backslash or a control character",
+        )
     return title
 
 
@@ -128,9 +157,16 @@ def check_flags(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     flags = dict(raw or {})
     unknown = [name for name in flags if name not in FLAG_NAMES]
     if unknown:
-        raise NotesError("invalid_argument", "unknown flag %s; flags are %s" % (
-            "'%s'" % unknown[0] if re.fullmatch(r"[A-Za-z0-9_]{1,40}", str(unknown[0])) else "(name not shown)",
-            ", ".join(FLAG_NAMES)))
+        raise NotesError(
+            "invalid_argument",
+            "unknown flag %s; flags are %s"
+            % (
+                "'%s'" % unknown[0]
+                if re.fullmatch(r"[A-Za-z0-9_]{1,40}", str(unknown[0]))
+                else "(name not shown)",
+                ", ".join(FLAG_NAMES),
+            ),
+        )
     out: dict[str, Any] = {}
     for name in ("pin", "notify", "needs_owner", "html"):
         if name in flags:
@@ -139,15 +175,25 @@ def check_flags(raw: Mapping[str, Any] | None) -> dict[str, Any]:
             out[name] = flags[name]
     if "summary" in flags and flags["summary"] is not None:
         summary = flags["summary"]
-        if not isinstance(summary, str) or len(summary) > SUMMARY_MAX or _TITLE_BAD_RE.search(summary):
-            raise NotesError("invalid_argument", "flag 'summary' must be text of at most %d characters with no double "
-                             "quote, backslash or control character" % SUMMARY_MAX)
+        if (
+            not isinstance(summary, str)
+            or len(summary) > SUMMARY_MAX
+            or _TITLE_BAD_RE.search(summary)
+        ):
+            raise NotesError(
+                "invalid_argument",
+                "flag 'summary' must be text of at most %d characters with no double "
+                "quote, backslash or control character" % SUMMARY_MAX,
+            )
         if summary:
             out["summary"] = summary
     if "pr" in flags and flags["pr"] is not None:
         pr = flags["pr"]
         if not isinstance(pr, str) or not _PR_RE.match(pr):
-            raise NotesError("invalid_argument", "flag 'pr' must be pull request numbers such as \"46\" or \"46, 47\"")
+            raise NotesError(
+                "invalid_argument",
+                'flag \'pr\' must be pull request numbers such as "46" or "46, 47"',
+            )
         if pr.strip():
             out["pr"] = pr.strip()
     return out
@@ -158,7 +204,10 @@ def text_fields(envelope: Mapping[str, Any]) -> dict[str, str]:
     summary reaches the script on its command line (--summary has no other channel in the script) and the
     owner's notification, so the scan is its guard."""
     flags = envelope.get("flags") or {}
-    fields = {"title": str(envelope.get("title") or ""), "markdown": str(envelope.get("markdown") or "")}
+    fields = {
+        "title": str(envelope.get("title") or ""),
+        "markdown": str(envelope.get("markdown") or ""),
+    }
     for name in ("summary", "pr"):
         if flags.get(name):
             fields[name] = str(flags[name])
@@ -168,7 +217,9 @@ def text_fields(envelope: Mapping[str, Any]) -> dict[str, str]:
 DIRECT_TTL = 24 * 3600.0
 
 
-def direct_once(store: Any, envelope: Mapping[str, Any], send: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+def direct_once(
+    store: Any, envelope: Mapping[str, Any], send: Callable[[], dict[str, Any]]
+) -> dict[str, Any]:
     """Run `send` (the direct runner) once per request_id, under the persistent idempotency rows every stdio
     writer of this seat shares (idem.IdemStore).  A repeat of a finished request returns its first result with
     duplicate true.  A request that may have written (a timeout, a crash) is never repeated:  it is refused as
@@ -177,14 +228,19 @@ def direct_once(store: Any, envelope: Mapping[str, Any], send: Callable[[], dict
     key = "k:notes-direct:%s" % envelope["request_id"]
     verdict, row = store.begin(key, DIRECT_TTL, {"tool": "notes_direct"})
     if verdict == "busy":
-        raise NotesError("unavailable", "the same request is already in flight in another session of this seat")
+        raise NotesError(
+            "unavailable", "the same request is already in flight in another session of this seat"
+        )
     if verdict == "duplicate" and row is not None:
         return dict(row.get("result") or {}, duplicate=True)
     if verdict == "reconcile":
         store.set(key, state="unknown")
-        raise NotesError("outcome_unknown", "an earlier direct %s with this request_id may have been interrupted, so the "
-                         "note may or may not have been written.  Check the Coding folder, then send it again with a new "
-                         "request_id." % envelope["action"])
+        raise NotesError(
+            "outcome_unknown",
+            "an earlier direct %s with this request_id may have been interrupted, so the "
+            "note may or may not have been written.  Check the Coding folder, then send it again with a new "
+            "request_id." % envelope["action"],
+        )
     try:
         result = send()
     except NotesError as exc:
@@ -206,7 +262,9 @@ def new_request_id() -> str:
 
 def check_request_id(raw: Any) -> str:
     if not isinstance(raw, str) or not REQUEST_ID_RE.match(raw):
-        raise NotesError("invalid_argument", "argument 'request_id' must be 8 to 64 letters, digits, - or _")
+        raise NotesError(
+            "invalid_argument", "argument 'request_id' must be 8 to 64 letters, digits, - or _"
+        )
     return raw
 
 
@@ -241,7 +299,9 @@ def _knob_resolver(local: str | None, refresh: bool) -> tuple[str, str, bool]:
     return str(knob.value), label, bool(knob.local_ignored)
 
 
-def relay_consumer(local_seat: str | None = None, *, refresh: bool = False) -> tuple[str, str, bool]:
+def relay_consumer(
+    local_seat: str | None = None, *, refresh: bool = False
+) -> tuple[str, str, bool]:
     """(seat, label, local_ignored):  the seat whose bot is the Notes relay consumer, from the NOTES_RELAY_CONSUMER
     fleet knob (Infisical, through scripts/fleet_knobs).  `local_seat` is the listener.toml `[notes_relay] seat`:
     a str knob cannot be narrowed, so a local seat that differs is ignored (`local_ignored`) and Infisical's wins.
@@ -257,7 +317,10 @@ def relay_consumer(local_seat: str | None = None, *, refresh: bool = False) -> t
 # The Agent in a title
 # --------------------------------------------------------------------------------------------
 
-def _notes_names(identity: str, registry_path: str | None, env: Mapping[str, str] | None) -> set[str]:
+
+def _notes_names(
+    identity: str, registry_path: str | None, env: Mapping[str, str] | None
+) -> set[str]:
     """Every spelling of `identity`'s Agent name a title may carry, case folded:  its fleet-apps.json
     `notesName` (Claude, Grok Web, Muse Assist), the tag itself (CLAUDE, GROK-WEB, BF-DEPLOYER, GB-FIXER)
     and the tag with spaces for hyphens."""
@@ -269,7 +332,11 @@ def _notes_names(identity: str, registry_path: str | None, env: Mapping[str, str
     except (OSError, ValueError):
         return names
     for row in data.get("seats") or []:
-        if isinstance(row, dict) and str(row.get("tag") or "").upper() == identity and isinstance(row.get("notesName"), str):
+        if (
+            isinstance(row, dict)
+            and str(row.get("tag") or "").upper() == identity
+            and isinstance(row.get("notesName"), str)
+        ):
             names.add(row["notesName"].strip().casefold())
     return names
 
@@ -289,14 +356,19 @@ def title_agent(title: str) -> tuple[str, str] | None:
     return apps, agent.strip()
 
 
-def title_problem(title: str, identity: str, *, registry_path: str | None = None,
-                  env: Mapping[str, str] | None = None) -> str | None:
+def title_problem(
+    title: str,
+    identity: str,
+    *,
+    registry_path: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str | None:
     """None when the title's Agent is `identity`'s own name, else why not."""
     parts = title_agent(title)
     if parts is None:
-        return "the title must read \"[APP, Agent] topic\" with the app acronyms in capitals"
+        return 'the title must read "[APP, Agent] topic" with the app acronyms in capitals'
     if parts[1].casefold() not in _notes_names(identity, registry_path, env):
-        return "the title names agent \"%s\", which is not %s" % (parts[1][:40], identity)
+        return 'the title names agent "%s", which is not %s' % (parts[1][:40], identity)
     return None
 
 
@@ -304,14 +376,42 @@ def title_problem(title: str, identity: str, *, registry_path: str | None = None
 # Envelopes
 # --------------------------------------------------------------------------------------------
 
-def make_envelope(action: str, title: str, markdown: str, flags: Mapping[str, Any], request_id: str,
-                  identity: str) -> dict[str, Any]:
+
+def check_session(raw: Any) -> str:
+    """The envelope's session id (AFC-361), or NotesError.  The id is not secret:  it goes on the script's command line."""
+    try:
+        return SID.check(raw, "the envelope's session")
+    except ValueError as exc:
+        raise NotesError("invalid_argument", str(exc)) from None
+
+
+def make_envelope(
+    action: str,
+    title: str,
+    markdown: str,
+    flags: Mapping[str, Any],
+    request_id: str,
+    identity: str,
+    session: str | None = None,
+) -> dict[str, Any]:
+    """The envelope for one request.  `session` (AFC-361) is the writer's session id, stamped in the note so a
+    headless resume can find the session;  it is left out when None (an exempt single-thread identity, or a pin)."""
     if action not in ACTIONS:
         raise NotesError("invalid_argument", "action must be one of %s" % ", ".join(ACTIONS))
     if isinstance(markdown, str) and len(markdown) > MARKDOWN_MAX:
         raise NotesError("invalid_argument", BODY_TOO_LONG % MARKDOWN_MAX)
-    return {"v": ENVELOPE_VERSION, "action": action, "title": check_title(title), "markdown": markdown,
-            "flags": check_flags(flags), "request_id": check_request_id(request_id), "identity": identity}
+    envelope = {
+        "v": ENVELOPE_VERSION,
+        "action": action,
+        "title": check_title(title),
+        "markdown": markdown,
+        "flags": check_flags(flags),
+        "request_id": check_request_id(request_id),
+        "identity": identity,
+    }
+    if session is not None:
+        envelope["session"] = check_session(session)
+    return envelope
 
 
 def envelope_json(envelope: Mapping[str, Any]) -> str:
@@ -355,13 +455,24 @@ def parse_message(content: Any) -> dict[str, Any]:
     if start < 0 or end <= start:
         raise EnvelopeError("the message holds no ```json fence")
     try:
-        raw = json.loads(content[start + len(_FENCE_OPEN): end])
+        raw = json.loads(content[start + len(_FENCE_OPEN) : end])
     except (ValueError, RecursionError):
         raise EnvelopeError("the fenced JSON does not parse") from None
     if not isinstance(raw, dict):
         raise EnvelopeError("the fenced JSON is not an object")
-    allowed = {"v", "action", "title", "markdown", "flags", "request_id", "identity", "markdown_url",
-               "markdown_bytes", "markdown_sha256"}
+    allowed = {
+        "v",
+        "action",
+        "title",
+        "markdown",
+        "flags",
+        "request_id",
+        "identity",
+        "markdown_url",
+        "markdown_bytes",
+        "markdown_sha256",
+        "session",
+    }
     extra = [key for key in raw if key not in allowed]
     if extra:
         raise EnvelopeError("the envelope has a field this relay does not know")
@@ -373,13 +484,29 @@ def parse_message(content: Any) -> dict[str, Any]:
             raise NotesError("invalid_argument", "the envelope names no identity")
         markdown = raw.get("markdown", "")
         if not isinstance(markdown, str) or len(markdown) > MARKDOWN_MAX:
-            raise NotesError("invalid_argument", "the envelope's markdown must be text of at most %d characters" % MARKDOWN_MAX)
-        envelope = make_envelope(str(raw.get("action")), raw.get("title"), markdown, raw.get("flags") or {},
-                                 raw.get("request_id"), identity)
+            raise NotesError(
+                "invalid_argument",
+                "the envelope's markdown must be text of at most %d characters" % MARKDOWN_MAX,
+            )
+        envelope = make_envelope(
+            str(raw.get("action")),
+            raw.get("title"),
+            markdown,
+            raw.get("flags") or {},
+            raw.get("request_id"),
+            identity,
+            raw.get("session"),
+        )
         if "markdown_url" not in raw and ("markdown_bytes" in raw or "markdown_sha256" in raw):
-            raise NotesError("invalid_argument", "markdown_bytes and markdown_sha256 need a markdown_url")
+            raise NotesError(
+                "invalid_argument", "markdown_bytes and markdown_sha256 need a markdown_url"
+            )
         if "markdown_url" in raw:
-            url, size, digest = raw.get("markdown_url"), raw.get("markdown_bytes"), raw.get("markdown_sha256")
+            url, size, digest = (
+                raw.get("markdown_url"),
+                raw.get("markdown_bytes"),
+                raw.get("markdown_sha256"),
+            )
             if not isinstance(url, str) or not UPLOAD_PATH_RE.match(url) or ".." in url:
                 raise NotesError("invalid_argument", "markdown_url must be a /user_uploads/ path")
             if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= UPLOAD_MAX:
@@ -387,7 +514,9 @@ def parse_message(content: Any) -> dict[str, Any]:
             if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
                 raise NotesError("invalid_argument", "markdown_sha256 must be 64 hex characters")
             if markdown:
-                raise NotesError("invalid_argument", "an envelope with markdown_url carries no inline markdown")
+                raise NotesError(
+                    "invalid_argument", "an envelope with markdown_url carries no inline markdown"
+                )
             envelope.update(markdown_url=url, markdown_bytes=size, markdown_sha256=digest)
     except NotesError as exc:
         raise EnvelopeError(exc.message) from None
@@ -400,9 +529,13 @@ def resolve_upload(envelope: Mapping[str, Any], fetch: Callable[[str], bytes]) -
         return dict(envelope)
     data = fetch(str(envelope["markdown_url"]))
     if len(data) != envelope.get("markdown_bytes") or len(data) > UPLOAD_MAX:
-        raise NotesError("invalid_argument", "the attached markdown is not the size the envelope names")
+        raise NotesError(
+            "invalid_argument", "the attached markdown is not the size the envelope names"
+        )
     if hashlib.sha256(data).hexdigest() != envelope.get("markdown_sha256"):
-        raise NotesError("invalid_argument", "the attached markdown does not match the envelope's digest")
+        raise NotesError(
+            "invalid_argument", "the attached markdown does not match the envelope's digest"
+        )
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
@@ -417,7 +550,9 @@ def resolve_upload(envelope: Mapping[str, Any], fetch: Callable[[str], bytes]) -
 # --------------------------------------------------------------------------------------------
 
 Runner = Callable[..., "subprocess.CompletedProcess[bytes]"]
-_RUN_LOCK = threading.Lock()  # one osascript at a time:  Notes.app is a single shared document store
+_RUN_LOCK = (
+    threading.Lock()
+)  # one osascript at a time:  Notes.app is a single shared document store
 
 
 def script_candidates(env: Mapping[str, str], home: Path) -> list[Path]:
@@ -438,8 +573,13 @@ def find_script(env: Mapping[str, str], home: Path) -> Path | None:
     return None
 
 
-def direct_available(env: Mapping[str, str], home: Path, *, platform: str | None = None,
-                     which: Callable[[str], str | None] = shutil.which) -> Path | None:
+def direct_available(
+    env: Mapping[str, str],
+    home: Path,
+    *,
+    platform: str | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> Path | None:
     """The script's path when this host can run it:  macOS, osascript on PATH and the script found."""
     if (platform or sys.platform) != "darwin":
         return None
@@ -448,7 +588,9 @@ def direct_available(env: Mapping[str, str], home: Path, *, platform: str | None
     return find_script(env, home)
 
 
-def build_argv(script: Path, envelope: Mapping[str, Any], html_path: str | None) -> tuple[list[str], dict[str, str]]:
+def build_argv(
+    script: Path, envelope: Mapping[str, Any], html_path: str | None
+) -> tuple[list[str], dict[str, str]]:
     """The command line and the extra environment for one request.  The title, mode and flags are the only
     text on the command line;  `html_path` is a file path, never the body."""
     action = envelope["action"]
@@ -474,6 +616,15 @@ def build_argv(script: Path, envelope: Mapping[str, Any], html_path: str | None)
             argv += ["--html", html_path]
         if flags.get("pin") is False:
             extra["APPLE_NOTES_PIN"] = "0"
+    if envelope.get("session") and action in ("create", "update"):
+        argv += [
+            "--session",
+            str(envelope["session"]),
+        ]  # AFC-361:  not secret, so argv;  the script stamps the Session line
+    if envelope.get("identity"):
+        # The identity the request was verified for (the tool's seat, or the relay sender's bot):  the script decides
+        # its single-thread exemption from this and from nothing the caller typed.  CHILD_ENV_KEYS strips AGENT_SEAT.
+        extra["AGENT_SEAT"] = str(envelope["identity"])
     argv += ["--title", envelope["title"]]
     return argv, extra
 
@@ -489,8 +640,61 @@ def _note_id(stdout: str) -> str | None:
     return match.group(1)[:200] if match else None
 
 
-def run_direct(envelope: Mapping[str, Any], script: Path, *, env: Mapping[str, str],
-               runner: Runner | None = None, timeout: float = SCRIPT_TIMEOUT_S) -> dict[str, Any]:
+PROVENANCE_SITE = "https://simplewithus.zulipchat.com"
+
+
+def with_provenance(
+    envelope: dict, identity: str, message_id: int, site: str = PROVENANCE_SITE
+) -> dict:
+    """The envelope with a footer saying who asked for the note and where (AFC-331, owner 2026-10-18).
+
+    Apple Notes has no authorship, so a title like `[APP, Agent]` is only text.  The relay stamps every note it
+    creates or updates with the requesting bot and a permalink to its #notes-relay message, so any relayed note can
+    be checked against Zulip, and a note without the footer is visibly unverified.  Pin and unpin carry no body."""
+    if envelope.get("action") not in ("create", "update"):
+        return envelope
+    url = "%s/#narrow/id/%d" % (site.rstrip("/"), int(message_id))
+    now = datetime.now(ZoneInfo("America/Chicago"))
+    when = "%s %d, %d" % (now.strftime("%a, %b"), now.day, now.year)  # no %-d:  not portable
+    if (envelope.get("flags") or {}).get("html"):
+        footer = (
+            '<hr><p><i>Relayed for %s by the notes relay on %s:  <a href="%s">request message</a>.</i></p>'
+            % (html.escape(identity), when, url)
+        )
+    else:
+        footer = "\n\n---\n\n*Relayed for %s by the notes relay on %s:  [request message](%s).*" % (
+            re.sub(r"([\\*_\[\]`])", r"\\\1", identity),
+            when,
+            url,
+        )
+        return dict(
+            envelope, markdown=recover_newlines(str(envelope.get("markdown") or "")) + footer
+        )
+    return dict(envelope, markdown=str(envelope.get("markdown") or "") + footer)
+
+
+def recover_newlines(text: str) -> str:
+    """The Markdown recovery apple-notes-coding.sh applies to a body with few newlines, done here first.
+
+    The script restores a body that arrived with literal `\\n` escapes, and splits a collapsed one-line body
+    at its headings and bullets, but only while the body has (almost) no newlines.  The provenance footer adds
+    newlines, which would switch that recovery off, so the relay applies it before appending the footer."""
+    if "\n" not in text and r"\n" in text:
+        text = text.replace(r"\n", "\n")
+    if text.count("\n") < 3:
+        text = re.sub(r"(?<=\S)\s+(#{1,4}\s+)", r"\n\n\1", text)
+        text = re.sub(r"(?<=\S)\s+([-\*]\s+)", r"\n\1", text)
+    return text
+
+
+def run_direct(
+    envelope: Mapping[str, Any],
+    script: Path,
+    *,
+    env: Mapping[str, str],
+    runner: Runner | None = None,
+    timeout: float = SCRIPT_TIMEOUT_S,
+) -> dict[str, Any]:
     """Run the script for `envelope` (markdown already inline).  Returns {"status": "done", "note_id": ...}
     or raises NotesError.  The body goes on stdin (markdown) or in a mode-600 temporary file (HTML);  never
     on the command line."""
@@ -514,15 +718,28 @@ def run_direct(envelope: Mapping[str, Any], script: Path, *, env: Mapping[str, s
         argv, extra = build_argv(script, envelope, html_file)
         try:
             with _RUN_LOCK:
-                proc = (runner or subprocess.run)(argv, input=stdin_data if stdin_data is not None else b"", capture_output=True,
-                              timeout=timeout, env=child_env(env, extra), check=False)
+                proc = (runner or subprocess.run)(
+                    argv,
+                    input=stdin_data if stdin_data is not None else b"",
+                    capture_output=True,
+                    timeout=timeout,
+                    env=child_env(env, extra),
+                    check=False,
+                )
         except subprocess.TimeoutExpired:
             # A timeout does not prove nothing was written (the script may have created the note and then hung),
             # so it is an unknown outcome, never a safe failure that a retry may repeat.
-            raise NotesError("outcome_unknown", "the notes script did not finish within %d seconds, so the note may or may not "
-                             "have been written.  Check the Coding folder before sending it again." % int(timeout)) from None
+            raise NotesError(
+                "outcome_unknown",
+                "the notes script did not finish within %d seconds, so the note may or may not "
+                "have been written.  Check the Coding folder before sending it again."
+                % int(timeout),
+            ) from None
         except OSError as exc:
-            raise NotesError("unavailable", "could not start the notes script (%s)" % (exc.strerror or type(exc).__name__)) from None
+            raise NotesError(
+                "unavailable",
+                "could not start the notes script (%s)" % (exc.strerror or type(exc).__name__),
+            ) from None
     finally:
         if html_file:
             try:
@@ -539,9 +756,18 @@ def run_direct(envelope: Mapping[str, Any], script: Path, *, env: Mapping[str, s
             result["note_id"] = note_id
         return result
     if code == EXIT_USAGE:
-        raise NotesError("invalid_argument", "the notes script refused the request:  %s" % (stderr or "bad arguments"))
+        raise NotesError(
+            "invalid_argument",
+            "the notes script refused the request:  %s" % (stderr or "bad arguments"),
+        )
     if code == EXIT_NOT_FOUND:
         raise NotesError("not_found", "no note with that title in the Coding folder")
     if code == EXIT_UNPIN:
-        raise NotesError("unavailable", "the note could not be unpinned:  the Unpin Coding Note shortcut is missing or failed")
-    raise NotesError("internal", "the notes script exited with code %d%s" % (code, (":  " + stderr) if stderr else ""))
+        raise NotesError(
+            "unavailable",
+            "the note could not be unpinned:  the Unpin Coding Note shortcut is missing or failed",
+        )
+    raise NotesError(
+        "internal",
+        "the notes script exited with code %d%s" % (code, (":  " + stderr) if stderr else ""),
+    )

@@ -4,6 +4,7 @@ Exists for browsers whose password manager cannot fill the native Basic dialog
 (browser-only seats such as Instinct).  Never asserts on token values in any
 response body -- those must stay secret.
 """
+
 import http.client
 import importlib.util
 import os
@@ -16,7 +17,9 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 HERE = Path(__file__).resolve().parent
-spec = importlib.util.spec_from_file_location("mac_collab_server_login", HERE / "mac-collab-server.py")
+spec = importlib.util.spec_from_file_location(
+    "mac_collab_server_login", HERE / "mac-collab-server.py"
+)
 server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
 
@@ -28,13 +31,14 @@ class TestLoginForm(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.secrets = Path(cls.tmp.name) / "mac-collab.env"
-        cls.secrets.write_text(
-            'MAC_COLLAB_TOKEN="%s"\nMAC_COLLAB_TOKEN_INSTINCT="%s"\n' % (ROOT_TOKEN, SEAT_TOKEN),
-            encoding="utf-8",
+        # The tokens come from a stubbed Infisical read (AFC-359);  nothing touches the real fleet-secrets.
+        cls._orig = (
+            server._fetch_vault_tokens,
+            server.AUDIT_LOG,
+            os.environ.get("MAC_COLLAB_TOKEN"),
         )
-        cls._orig = (server.SECRETS, server.AUDIT_LOG, os.environ.get("MAC_COLLAB_TOKEN"))
-        server.SECRETS = cls.secrets
+        server._fetch_vault_tokens = lambda: {ROOT_TOKEN: None, SEAT_TOKEN: "INSTINCT"}
+        server._reset_vault()
         server.AUDIT_LOG = Path(cls.tmp.name) / "audit.log"
         server._LOGGED_FILE_WINS = False
         os.environ.pop("MAC_COLLAB_TOKEN", None)
@@ -47,7 +51,8 @@ class TestLoginForm(unittest.TestCase):
     def tearDownClass(cls):
         cls.httpd.shutdown()
         cls.httpd.server_close()
-        server.SECRETS, server.AUDIT_LOG, env_was = cls._orig
+        server._fetch_vault_tokens, server.AUDIT_LOG, env_was = cls._orig
+        server._reset_vault()
         server._LOGGED_FILE_WINS = False
         if env_was is not None:
             os.environ["MAC_COLLAB_TOKEN"] = env_was
@@ -69,8 +74,13 @@ class TestLoginForm(unittest.TestCase):
     def post_login(self, token):
         body = urlencode({"username": "board", "token": token})
         return self.request(
-            "POST", "/login", body=body,
-            headers={"Content-Type": "application/x-www-form-urlencoded", "Content-Length": str(len(body))},
+            "POST",
+            "/login",
+            body=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Length": str(len(body)),
+            },
         )
 
     def test_get_login_page_is_a_fillable_form(self):
@@ -119,7 +129,9 @@ class TestLoginForm(unittest.TestCase):
 
     def test_wrong_content_type_is_415(self):
         status, _, _ = self.request(
-            "POST", "/login", body='{"token":"x"}',
+            "POST",
+            "/login",
+            body='{"token":"x"}',
             headers={"Content-Type": "application/json", "Content-Length": "13"},
         )
         self.assertEqual(status, 415)

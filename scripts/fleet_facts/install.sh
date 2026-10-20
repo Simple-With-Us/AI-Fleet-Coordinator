@@ -13,7 +13,7 @@
 #                         and the allowed-apps list through it (imported only then)
 # and $HOME/.local/bin/fleet-facts is a symlink to the entry script.
 #
-# It touches nothing else:  no LaunchAgent, no pm2, no network, and nothing under ~/.secrets.  Every path is
+# It touches nothing else:  no LaunchAgent, no pm2, no network, and no credential files.  Every path is
 # built from $HOME, so a test can point HOME at a temp folder.  Run it from a checkout of the repository
 # (a lane or the managed runtime checkout), never from the human tree under ~/Code.
 set -eu

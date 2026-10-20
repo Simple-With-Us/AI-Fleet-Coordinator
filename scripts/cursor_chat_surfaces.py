@@ -35,13 +35,9 @@ DSH_RUNTIME = Path.home() / "apps" / "dsh-runtime"
 SHELLULAR_AGENTS = Path.home() / ".shellular" / "agents.json"
 ACP_SESSIONS = Path.home() / ".cursor" / "acp-sessions"
 API_KEY_NAMES = ("CURSOR_API_KEY", "CURSOR_SYNC_API_KEY")
-SECRET_FILES = (
-    Path.home() / ".secrets" / "cursor-api-key",
-    Path.home() / ".secrets" / "cursor-api.env",
-)
 FLEET_SECRETS_BIN = (
     Path.home() / ".local" / "bin" / "fleet-secrets"
-)  # OPS-818:  replaces the flat global-api-keys file
+)  # OPS-818:  Fleet-OPS in Infisical
 REPO_SCRIPTS = Path(__file__).resolve().parent
 LIVE_FILES = (
     "cursor_chat_surfaces.py",
@@ -59,34 +55,11 @@ def state_path(*parts: str) -> Path:
     return STATE_DIR.joinpath(*parts)
 
 
-def _strip_secret(value: str) -> str:
-    return value.strip().strip("'").strip('"')
-
-
 def _env_api_key() -> str | None:
     for name in API_KEY_NAMES:
         value = os.environ.get(name, "").strip()
         if value:
             return value
-    return None
-
-
-def _named_keys_from_text(text: str) -> str | None:
-    found: dict[str, str] = {}
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        name, value = stripped.split("=", 1)
-        name = name.strip()
-        if name not in API_KEY_NAMES:
-            continue
-        value = _strip_secret(value)
-        if value:
-            found[name] = value
-    for name in API_KEY_NAMES:
-        if name in found:
-            return found[name]
     return None
 
 
@@ -109,21 +82,10 @@ def _fleet_secrets_key() -> str | None:
 
 
 def load_api_key() -> str | None:
+    """CURSOR_API_KEY or CURSOR_SYNC_API_KEY from the environment, else Infisical Fleet-OPS (`fleet-secrets get`)."""
     env = _env_api_key()
     if env:
         return env
-    for path in SECRET_FILES:
-        if not path.is_file():
-            continue
-        text = path.read_text(encoding="utf-8")
-        named = _named_keys_from_text(text)
-        if named:
-            return named
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" in stripped:
-                continue
-            return stripped
     return _fleet_secrets_key()
 
 
@@ -472,8 +434,8 @@ def cmd_status() -> int:
         + (
             "present"
             if key
-            else "MISSING (CURSOR_SYNC_API_KEY via `fleet-secrets get`, "
-            "or ~/.secrets/cursor-api-key / CURSOR_API_KEY)"
+            else "MISSING (CURSOR_SYNC_API_KEY in Infisical Fleet-OPS via `fleet-secrets get`, "
+            "or CURSOR_API_KEY in the environment)"
         )
     )
     print(f"  My Machines worker: {'up' if worker_running() else 'down'}")
@@ -666,8 +628,7 @@ def cmd_install(shellular: bool) -> int:
         print("restart Shellular to pick up the spawn: pm2 restart shellular")
     if not load_api_key():
         print(
-            "Still need CURSOR_SYNC_API_KEY (`fleet-secrets get CURSOR_SYNC_API_KEY`) "
-            "(or ~/.secrets/cursor-api-key).  "
+            "Still need CURSOR_SYNC_API_KEY (`fleet-secrets get CURSOR_SYNC_API_KEY`).  "
             "Without it the Cursor bridge execs local cursor-agent acp and iOS cannot see those chats."
         )
         return 2

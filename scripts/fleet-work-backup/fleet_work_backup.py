@@ -2790,8 +2790,8 @@ def fleet_secrets_path(cfg: Config) -> str:
 
 
 def read_credentials(cfg: Config) -> dict[str, str]:
-    """The credentials this job uses that ``fleet-secrets`` can supply (OPS-818;  the flat file
-    ~/.secrets/global-api-keys is retired), from one Infisical fetch.  Callers overlay the environment
+    """The credentials this job uses that ``fleet-secrets`` can supply (OPS-818;  the old flat
+    credentials file is retired), from one Infisical fetch.  Callers overlay the environment
     on top.  A missing command or any failure is an empty dict, so the caller reports the missing NAMES.
     Skipped when the environment already holds all four job credentials.  Values stay in this process."""
     if all(os.environ.get(n) for n in CRED_NAMES.values()):
