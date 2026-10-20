@@ -170,6 +170,15 @@ U+00A0 from the model arrives as a plain space (0 NBSPs in the verified reply), 
 ASCII spaces collapse.  Owner-verified 2026-10-08 with a screenshot.  The 2026-09-04 ASCII
 ruling is withdrawn.
 
+**2026-10-20 update — MiniMax Code chat pane superseded.**  Chat advice has now reversed
+three times (2026-08-19 entity → 2026-09-04 ASCII for the Code tab → 2026-10-08 entity for
+the Code tab).  The MiniMax Code chat pane went the other way: the 2026-10-18 entity entry for
+that pane was wrong and is superseded by a real U+00A0 plus a space (owner-verified 2026-10-20),
+because the entity renders there as the six literal characters.  Do not re-run these tests.
+Owner ruling 2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or
+HTML renderer), use its working mechanism without asking; confirmation is no longer needed per
+surface.
+
 **Terminal CLI — no newer ruling.**  Last checked 2026-08-19/20; not re-verified since.
 Default to two literal ASCII spaces there, and do not use the `&nbsp;` entity on a terminal
 TUI, which would print it literally.

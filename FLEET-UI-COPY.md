@@ -239,12 +239,13 @@ destination:
   Native SwiftUI `Text` does not decode HTML entities; use two literal spaces or Unicode
   `\u{00A0}` in Swift strings.
 
-**Rendering trap — history (chat advice reversed twice):** the 2026-08-19 entity advice for
+**Rendering trap — history (chat advice reversed three times):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was
-superseded on 2026-10-08 by the entity again.  Do not re-run these tests.  Owner ruling
-2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or HTML
-renderer), use its working mechanism without asking; confirmation is no longer needed per
-surface.
+superseded on 2026-10-08 by the entity again.  The MiniMax Code chat pane went the other way:
+the 2026-10-18 entity entry for that pane was wrong and is superseded on 2026-10-20 by a real
+U+00A0 plus a space (owner-verified).  Do not re-run these tests.  Owner ruling 2026-10-08: when
+a surface is known to collapse two typed spaces (any Markdown or HTML renderer), use its working
+mechanism without asking; confirmation is no longer needed per surface.
 
 **What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
 (normalized away in the view, even though copy-paste showed two spaces -- do not be fooled by
