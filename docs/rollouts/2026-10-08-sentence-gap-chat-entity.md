@@ -59,9 +59,15 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 > sits *inside* a markup span:  `**Bold sentence.**  Next sentence.` has its space after the
 > closing `**`, not after the period, and the gap is missed.  Neither check catches it, because
 > the file still holds other U+00A0 characters and this shape is not a single space after a
-> sentence end.  The live pattern adds the markup group `([*_`)\]"]*)`, which captures the markup
+> sentence end.  The live pattern adds the markup group ``([*_`)\]"]*)``, which captures the markup
 > after the sentence end and re-emits it after the gap, so the span survives and the gap lands:
-> `perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt`.
+> ``perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt``.
+> The two checks carry the same markup group, because the gap they have to see is emitted as
+> <punctuation><markup><U+00A0><space>:  a check that looks for the U+00A0 straight after the
+> punctuation cannot see that gap, and a check that looks for a space straight after the
+> punctuation cannot see the one that was missed.  Before posting run both checks:
+> ``grep -o $'[.!?][]*_`)\"]*\xc2\xa0' body.nbsp.txt | wc -l`` must be `> 0`, and
+> ``grep -cE '[^0-9][.!?][]*_`)\"]* +[A-Z"]' body.nbsp.txt`` must be `0`.
 > The 2026-10-08 and 2026-10-18 commands are left as they were written;  the one home is
 > `docs/fleet-skills/sentence-gap/SKILL.md`.
 

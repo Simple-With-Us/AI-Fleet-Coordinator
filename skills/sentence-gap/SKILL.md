@@ -56,7 +56,7 @@ perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g
 ```
 
 Matching one *or more* is half the fix.  The other half is the **markup group**
-`([*_`)\]"]*)`:  a sentence end that sits *inside* a markup span is followed by the markup and
+``([*_`)\]"]*)``:  a sentence end that sits *inside* a markup span is followed by the markup and
 only then by the space, so a pattern that wants the space right after the sentence end never
 matches it.  `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two
 greps below would catch it, because the file has other U+00A0 characters and this shape is not a
@@ -89,8 +89,8 @@ exits 0, so a failed run is silent.  And a count above zero is *not* on its own 
 partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
 
 ```sh
-grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
+grep -o $'[.!?][]*_`)\"]*\xc2\xa0' body.nbsp.txt | wc -l   # must be > 0, and plausibly large for the body size
+grep -cE '[^0-9][.!?][]*_`)\"]* +[A-Z"]' body.nbsp.txt      # must be 0 — a leftover gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -99,6 +99,14 @@ and still ships a wrong gap.  `[^0-9]` in front is deliberate, so a legitimate n
 marker (`1. Item`) is not mistaken for an unconverted gap — the same reason the conversion
 carries `(?<![0-9])`.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
 read them and confirm they are abbreviations rather than real sentences.
+
+Both checks carry the same markup group as the converter, and they have to:  a gap that sits
+after a markup span is emitted as `<punctuation><markup><U+00A0><space>`, so a check that looks
+for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a
+space straight after the punctuation cannot see the one that was missed.  The `]` is written
+first in the class because a POSIX bracket expression ends at the first unquoted `]`, and there
+is no backslash escape inside one:  ``[]*_`)\"]`` is the set {`]`, `*`, `_`, `` ` ``, `)`, `"`}.
+In the perl pattern the same set is written ``([*_`)\]"]*)``, where `\]` does escape.
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or

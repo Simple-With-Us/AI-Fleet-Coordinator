@@ -58,7 +58,7 @@ matches one *or more* spaces, so it is correct in both states:
 perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Matching one *or more* is half the fix.  The **markup group** `([*_`)\]"]*)` is the other half:  a
+Matching one *or more* is half the fix.  The **markup group** ``([*_`)\]"]*)`` is the other half:  a
 sentence end that sits *inside* a markup span is followed by the markup and only then by the
 space, so a pattern that wants the space right after the sentence end never matches it.
 `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two checks below
@@ -92,8 +92,8 @@ exits 0, so a failed run is silent.  And a count above zero is *not* on its own 
 partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
 
 ```sh
-grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
+grep -o $'[.!?][]*_`)\"]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE '[^0-9][.!?][]*_`)\"]* +[A-Z"]' body.nbsp.txt         # must be 0 — a leftover gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
