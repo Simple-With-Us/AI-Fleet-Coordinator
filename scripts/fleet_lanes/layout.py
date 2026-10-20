@@ -424,7 +424,7 @@ def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, s
     for item in raw_apps if isinstance(raw_apps, list) else []:
         if not isinstance(item, dict):
             continue
-        repo = _as_str(item.get("repo")) or _as_str(item.get("name"))
+        repo = _as_str(item.get("repo")) or _as_str(item.get("name")) or _as_str(item.get("codeDir"))
         if not repo:
             continue
         apps.append(App(

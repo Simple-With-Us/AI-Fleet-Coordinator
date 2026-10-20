@@ -140,8 +140,23 @@ class MinimaxHookTests(unittest.TestCase):
             empty = copy.copy(ctx)
             empty.registry = registry
             for tool in ("Read", "Write", "Edit"):
-                reason = mm.decide(self.payload(tool, "Code/BotFleet/file.py"), empty)[0]
+                reason = mm.decide(self.payload(tool, "Code/ExampleRepo/file.py"), empty)[0]
                 self.assertIn("registry is unavailable or invalid", reason)
+
+    def test_shell_alternate_fields_and_trailing_process_command_are_guarded(self):
+        for field in ("command", "cmd", "CommandLine", "commandLine", "script"):
+            payload = {"tool_name": "bash", "tool_input": {field: self.fleet_clone_into_temp()}}
+            self.assertIsNotNone(mm.decide(payload)[0])
+        self.assertIsNotNone(mm.decide({"tool_name": "Bash", "command": self.fleet_clone_into_temp()})[0])
+        for command in ("true; ps", "true && ps", "true\nps"):
+            self.assertIsNotNone(mm.decide({"tool_name": "Bash", "tool_input": {"command": command}})[0])
+
+    def test_code_directory_only_registry_preserves_integration_policy(self):
+        import copy
+        ctx = copy.copy(guard.make_context(self.env, home=self.home))
+        ctx.registry = mm.layout.parse_registry({"apps": [{"codeDir": "ExampleRepo"}]}, source="synthetic")
+        reason = mm.decide(self.payload("Write", "Code/ExampleRepo/file.py"), ctx)[0]
+        self.assertIn("integration tree", reason)
 
     def test_native_fallback_names_and_fields(self):
         for tool in ("read", "write", "edit"):

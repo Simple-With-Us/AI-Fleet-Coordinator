@@ -112,16 +112,19 @@ def decide(payload: dict, ctx=None, secret_guard=None):
     seat is refused; the host's restricted environment cannot attest launcher identity.
     """
     if payload.get("tool_name") in ("Bash", "bash"):
-        args = payload.get("tool_input")
-        if isinstance(args, dict) and isinstance(args.get("command"), str):
-            # Shared policy currently misses bare ps (requires trailing whitespace).
-            normalized = dict(
-                payload,
-                tool_name="Bash",
-                tool_input=dict(args, command=args["command"] + " " if args["command"].strip() == "ps" else args["command"]),
-            )
-            return fleet.decide(normalized, secret_guard)
-        return None, ""
+        extracted = guard._extract(payload)
+        if extracted is None:
+            return None, ""
+        command, cwd, _scratch = extracted
+        normalized = dict(payload, tool_name="Bash", tool_input={"command": command}, cwd=cwd)
+        denial = fleet.decide(normalized, secret_guard)
+        if denial[0]:
+            return denial
+        # Check a final bare process-list command without growing the command
+        # past the shared guard's maximum accepted size.
+        if re.search(r"(?:^|[;&|\n(])\s*ps\s*$", command):
+            return "MiniMax shell tool blocked process argument listing.", ""
+        return denial
     try:
         return file_reason(payload, ctx, secret_guard), ""
     except Exception:
