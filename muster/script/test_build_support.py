@@ -40,13 +40,17 @@ class BuildSupportTests(unittest.TestCase):
     def test_copied_bytes_and_rename_directories_are_synced(self):
         events = []
         replace = support.os.replace
+
         def rename(source, destination):
             events.append(("rename", Path(source).name))
             replace(source, destination)
-        with mock.patch.object(support, "fsync_tree", side_effect=lambda path: events.append(("tree", path.name))):
-            with mock.patch.object(support, "fsync_path", side_effect=lambda path: events.append(("directory", path))):
-                with mock.patch.object(support.os, "replace", side_effect=rename):
-                    support.install_bundle(self.staged, self.installed, lambda _: None)
+
+        with mock.patch.object(
+            support, "fsync_tree", side_effect=lambda path: events.append(("tree", path.name))
+        ), mock.patch.object(
+            support, "fsync_path", side_effect=lambda path: events.append(("directory", path))
+        ), mock.patch.object(support.os, "replace", side_effect=rename):
+            support.install_bundle(self.staged, self.installed, lambda _: None)
         tree = events.index(("tree", "new.app"))
         first_rename = next(i for i, event in enumerate(events) if event[0] == "rename")
         self.assertLess(tree, first_rename)
