@@ -88,7 +88,8 @@ class RPC:
                 },
             )
             self.write({"method": "initialized"})
-        except Exception:
+        except BaseException:
+            # An interrupt during the handshake must not leak the spawned app-server.
             self.close()
             raise
 
@@ -142,20 +143,28 @@ class RPC:
         raise TimeoutError("Codex RPC timeout")
 
     def close(self):
+        # Cleanup is total: a raise here would escape the caller's finally and replace an
+        # acknowledged outcome, so every teardown step is guarded.
         self.selector.close()
         try:
             # Unbuffered stdin has no pending Python buffer to flush while closing.
             self.proc.stdin.close()
             self.proc.wait(timeout=1)
         except (OSError, subprocess.TimeoutExpired):
-            self.proc.terminate()
             try:
+                self.proc.terminate()
                 self.proc.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=1)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
         finally:
-            self.proc.stdout.close()
+            try:
+                self.proc.stdout.close()
+            except OSError:
+                pass
 
 
 def exact_text_input(value, text):
@@ -348,7 +357,9 @@ class CodexChatTransport:
                 return "unknown"
             return "accepted"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
-            return "unknown" if sent else "failed"
+            # Nothing reached thread/queue/add, so the wake is still safe to retry: only a
+            # failure after the add is uncertain.
+            return "unknown" if sent else "deferred"
         finally:
             if rpc:
                 rpc.close()

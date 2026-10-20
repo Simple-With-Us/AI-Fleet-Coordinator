@@ -390,7 +390,12 @@ class ChatCatalog:
         for entry in _jsonl(self.home / ".codex" / "session_index.jsonl"):
             sid = entry.get("id")
             title = entry.get("thread_name")
-            if not isinstance(sid, str) or not isinstance(title, str) or not title.strip():
+            if (
+                not isinstance(sid, str)
+                or not sid.strip()
+                or not isinstance(title, str)
+                or not title.strip()
+            ):
                 continue
             stamp = _timestamp(entry.get("updated_at"))
             if sid not in names or stamp >= names[sid][0]:

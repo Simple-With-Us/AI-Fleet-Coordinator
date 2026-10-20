@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 from agent_sync import codex_chat_transport as module
@@ -168,6 +169,7 @@ class TransportTests(unittest.TestCase):
     def test_full_native_queue_is_busy_before_send(self):
         self.queued = [{"clientUserMessageId": str(i)} for i in range(module.QUEUE_CAPACITY)]
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
+        # The probe must count the whole queue; a partial page would under-report a full one.
         self.assertEqual(
             [p["limit"] for m, p in self.calls if m == "thread/queue/list"],
             [module.QUEUE_CAPACITY],
@@ -184,6 +186,44 @@ class TransportTests(unittest.TestCase):
         self.fail = "thread/queue/add"
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "unknown")
         self.assertEqual(sum(method == "thread/queue/add" for method, _ in self.calls), 1)
+
+    def test_pre_enqueue_failure_is_retryable_not_stranded(self):
+        # A failure before thread/queue/add enqueued nothing, so the wake stays retryable
+        # instead of picking a permanent hold_reason in chat_nudges.
+        class FailingRPC:
+            def request(self, method, params):
+                raise OSError("app-server vanished")
+
+            def close(self):
+                pass
+
+        self.adapter.rpc_factory = FailingRPC
+        self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
+
+    def test_rpc_close_swallows_teardown_errors(self):
+        # Cleanup runs from callers' finally blocks; a raise there would replace an
+        # acknowledged outcome, so every teardown step is guarded.
+        script = self.home / "fake-codex"
+        script.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n")
+        script.chmod(0o700)
+        with patch.object(RPC, "request", autospec=True, return_value={}):
+            rpc = RPC(str(script))
+        broken = mock.Mock()
+        broken.wait.side_effect = subprocess.TimeoutExpired("codex", 1)
+        broken.kill.side_effect = subprocess.TimeoutExpired("codex", 1)
+        broken.terminate.side_effect = ProcessLookupError("gone")
+        broken.stdin.close.side_effect = OSError("closed")
+        broken.stdout.close.side_effect = OSError("closed")
+        real = rpc.proc
+        rpc.proc = broken
+        try:
+            rpc.close()
+        finally:
+            real.kill()
+            real.wait(timeout=5)
+            real.stdin.close()
+            real.stdout.close()
+        rpc.proc.kill.assert_called()
 
     def test_receipt_queue_client_id_or_exact_user_text_only(self):
         self.queued = [
