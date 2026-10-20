@@ -22,10 +22,11 @@ extend-exclude = [
 "scripts/fleet_lanes/**" = "py39"
 
 [lint.per-file-ignores]
-# py39 does not turn these off:  UP006/UP035 still fire at py39 (collections.abc / builtin generics in
-# runtime positions break on 3.9).  The rest are listed as well so the package stays 3.9 safe even if the
-# target version above is dropped.  Keep every other rule on.  See AFC-425.
-# RUF100:  existing `# noqa: UP0xx` markers in the package are unused once those rules are off.
+# A guard, not an active filter today:  ruff's default rule set (E4, E7, E9, F) is the whole `select` here,
+# so none of these codes is raised.  They are kept so that widening `select` to `UP`/pyupgrade cannot quietly
+# break the 3.9 package:  UP006/UP035 fire at py39 (collections.abc / builtin generics in runtime positions
+# break on 3.9), and RUF100 flags the existing `# noqa: UP0xx` markers once those rules are off.
+# Keep every other rule on.  See AFC-425.
 "scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
 
 [format]
