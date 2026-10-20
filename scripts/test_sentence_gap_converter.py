@@ -31,7 +31,7 @@ ONE_HOME = ROOT / "docs" / "fleet-skills" / "sentence-gap" / "SKILL.md"
 _PATTERN_RE = re.compile(r"perl -CSDA -pe '(s/.*?/g)'")
 
 # The markup group:  the characters that may sit between a sentence end and the space.
-_MARKUP_GROUP = r'([*_`~)\]"\x{27}\x{2019}\x{201D}]*)'
+_MARKUP_GROUP = r'((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*)'
 
 # The markup group as the POSIX class the assertions write:  the ] comes first, because a
 # POSIX bracket expression ends at the first unquoted ].  The straight quote is written
@@ -44,7 +44,7 @@ _ASSERT_MARKUP_GROUP = "[]*_`~)\"\\'’”]"
 # ANSI-C form, because that is the only form that can carry a straight quote, and the
 # class needs one -- so the extraction has to read the escaped quote instead of stopping
 # at it.
-_COUNT_RE = re.compile(r"grep -o\s+\$'(?P<ansi>(?:[^'\\]|\\.)*)'")
+_COUNT_RE = re.compile(r"grep -oE?\s+\$'(?P<ansi>(?:[^'\\]|\\.)*)'")
 _LEFTOVER_RE = re.compile(r"grep -cE\s+(?:\$'(?P<ansi>(?:[^'\\]|\\.)*)'|'(?P<plain>[^']*)')")
 
 # The check the fleet used to write, before the markup group.  It cannot see a gap that
@@ -59,18 +59,10 @@ _QUOTE_BLIND_LEFTOVER = r'[^0-9][.!?][]*_`)"]* +[A-Z"]'
 # in.  The live procedure is in the one home;  a record is not a copy of it.
 DATED_RECORDS = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
 
-# Generated mirrors.  These are built from Fleet-OPS handbook/ and this repository cannot
-# change them:  scripts/check-generated-mirror.py refuses any edit from a branch that is
-# not handbook-sync/mirror, so the pattern reaches one only when the upstream handbook page
-# changes and the sync job rewrites the mirror.  The checkout-wide sweep below skips them
-# for the same reason DATED_RECORDS is skipped -- not a copy this repository may edit --
-# and check-generated-mirror.py is the gate that holds them honest in the meantime.
-#
-# The mirror is the file every seat reads first, so it does not stay a blind exemption:
-# the assertion that compares it with the one home lands in the pull request that carries
-# the mirror itself, because the mirror cannot hold the canonical converter before the
-# handbook merge that produces it.  Until then the sweep skips it and the follow-up
-# assertion is what keeps it honest.
+# Generated mirrors can only be updated by the Fleet-OPS handbook publisher.
+# Draft PR #755 owns exact converter/assertion parity after that publication; its
+# explicit comparison is kept out of this consolidated PR to avoid duplicate gates.
+# Canonical source: Fleet-OPS handbook/owner/writing-for-owner.md.  Never hand-edit the mirror.
 GENERATED_MIRRORS = ("AGENT-SYNC.md",)
 
 # This file holds the checks themselves, so the sweep below finds its own command
@@ -81,10 +73,8 @@ CHECKER_FILES = ("scripts/test_sentence_gap_converter.py",)
 # pattern.  The one home is the source;  the rest are checked against it.
 #
 # The list is derived from the seat registry rather than named by hand, so a new seat
-# cannot be forgotten and a retired one cannot be kept.  A retired seat keeps its catalog
-# copy as history and gets no new tracked tree -- the registry says so, and the installer
-# already skips retired seats -- so it is not a copy that can ship a body with no gap, and
-# it is not a target for new work.
+# cannot be forgotten.  Catalog packs, including retired seats, remain generated
+# outputs; only active seats receive platform and tool-home installations.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fleet_skill_identity as _identity
@@ -107,9 +97,8 @@ def _active_by_seat_copies() -> tuple[str, ...]:
 def _retired_by_seat_copies() -> tuple[str, ...]:
     """The by-seat upload packs of the retired seats.
 
-    A retired seat keeps no tracked tree and no tool home, but its catalog pack is a
-    committed output like any other, so the installer re-renders it from the one home
-    and the sweeps below read it.
+    Their catalog packs remain committed generated outputs and track the one home;
+    retired seats still receive no active tool-home or platform installation.
     """
     return tuple(
         "docs/fleet-skills/by-seat/%s/sentence-gap/SKILL.md" % (seat.seat_key or seat.tag.lower())
@@ -172,6 +161,8 @@ PROTOCOL_REGION_END = "### Verify, don't assume"
 # ones are the ones a body can hold without anyone noticing the missing gap in the render.
 SHAPES = (
     ("Plain sentence.  Next sentence.", True),
+    ("[Sentence.](https://example.com) Next sentence.", True),
+    ("**[Sentence.](https://example.com/path?q=one#two)** Next sentence.", True),
     ("**Bold sentence.**  Next sentence.", True),
     ("~~Deleted sentence.~~  Next sentence.", True),
     ("*Italic sentence.*  Next sentence.", True),
@@ -439,11 +430,15 @@ class OneSourceOfTruthTests(unittest.TestCase):
     def test_no_live_file_holds_a_converter_without_the_markup_group(self) -> None:
         """A copy that drifts is a body that ships with no gap, so every converter in the
         checkout carries the markup group.  A dated record of a ruling keeps the form it
-        was written in and is listed as such, and the generated mirror is asserted on its
-        own, with a pointer to the handbook sync."""
+        was written in and is listed as such, and generated-mirror parity belongs to
+        draft PR #755 after the publisher updates the mirror."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
+            if (
+                rel in DATED_RECORDS
+                or rel in GENERATED_MIRRORS
+                or rel in CHECKER_FILES
+            ):
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -478,7 +473,7 @@ class AssertionCommandTests(unittest.TestCase):
         self.pattern = one_home_patterns()[0]
 
     def _count_command(self, path: Path) -> str:
-        return "grep -o $'%s' '%s' | wc -l" % (self.count_pattern, path)
+        return "grep -oE $'%s' '%s' | wc -l" % (self.count_pattern, path)
 
     def _leftover_command(self, path: Path) -> str:
         return "grep -cE $'%s' '%s'" % (self.leftover_pattern, path)
@@ -633,7 +628,7 @@ class AssertionCommandTests(unittest.TestCase):
                 count, leftover = assertion_patterns(text)
                 self.assertTrue(count, "%s holds no count assertion" % rel)
                 self.assertTrue(leftover, "%s holds no leftover assertion" % rel)
-                got_count = run_grep("grep -o $'%s' '%s' | wc -l" % (count, path))
+                got_count = run_grep("grep -oE $'%s' '%s' | wc -l" % (count, path))
                 got_leftover = run_grep("grep -cE $'%s' '%s'" % (leftover, path))
                 self.assertGreater(
                     got_count,
@@ -654,11 +649,15 @@ class AssertionCommandTests(unittest.TestCase):
 
     def test_no_live_file_holds_a_blind_leftover_check(self) -> None:
         """No live file may hold the check that cannot see a gap after a markup span.
-        A dated record of a ruling keeps the form it was written in and is skipped, and
-        the generated mirror is asserted on its own."""
+        A dated record of a ruling keeps the form it was written in and is skipped;
+        draft PR #755 owns the generated mirror's explicit parity assertion."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
+            if (
+                rel in DATED_RECORDS
+                or rel in GENERATED_MIRRORS
+                or rel in CHECKER_FILES
+            ):
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -671,6 +670,47 @@ class AssertionCommandTests(unittest.TestCase):
                     pattern,
                     "%s holds a blind leftover check:  %s" % (rel, pattern),
                 )
+
+
+@unittest.skipUnless(HAVE_BASH and HAVE_PERL, "bash and perl are required")
+class DocumentationExecutionTests(unittest.TestCase):
+    def test_actual_documented_grep_blocks_execute_as_copied(self):
+        canonical = one_home_patterns()[0]
+        for rel in ("FLEET-UI-COPY.md",) + PROTOCOL_FILES:
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            blocks = re.findall(r"(?m)^([ ]{0,3})```sh\n(.*?)^\1```", text, re.S)
+            checked = 0
+            for indent, block in blocks:
+                if "grep -cE" not in block:
+                    continue
+                checked += 1
+                script = "\n".join(line[len(indent):] if line.startswith(indent) else line
+                                   for line in block.splitlines())
+                with tempfile.TemporaryDirectory() as tmp:
+                    body = convert(canonical, "[Sentence.](https://example.com) Next sentence.\n")
+                    for name in ("reply.txt", "body.nbsp.txt"):
+                        (Path(tmp) / name).write_text(body, encoding="utf-8")
+                    proc = subprocess.run(["bash", "-c", script], cwd=tmp, capture_output=True,
+                                          text=True, timeout=30, check=False)
+                    self.assertIn(proc.returncode, (0, 1), rel + ": " + proc.stderr)
+                    self.assertEqual(proc.stderr, "", rel)
+                    self.assertTrue(all(line.strip().isdigit() for line in proc.stdout.splitlines()), rel)
+            self.assertGreater(checked, 0, rel + " has no executable assertion block")
+
+    def test_link_conversion_and_both_assertions_agree(self):
+        text = ONE_HOME.read_text(encoding="utf-8")
+        count, leftover = assertion_patterns(text)
+        for suffix in ("", "**", "’"):
+            raw = "**[Sentence.](https://example.com/path?q=one#two)" + suffix + " Next sentence.\n"
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "body.txt"
+                path.write_text(raw, encoding="utf-8")
+                self.assertGreater(run_grep("grep -cE $'%s' '%s'" % (leftover, path)), 0)
+                fixed = convert(one_home_patterns()[0], raw)
+                path.write_text(fixed, encoding="utf-8")
+                self.assertGreater(run_grep("grep -oE $'%s' '%s' | wc -l" % (count, path)), 0)
+                self.assertEqual(run_grep("grep -cE $'%s' '%s'" % (leftover, path)), 0)
+                self.assertIn("https://example.com/path?q=one#two)", fixed)
 
 
 class ProtocolContentTests(unittest.TestCase):
