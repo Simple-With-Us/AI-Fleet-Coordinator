@@ -152,6 +152,27 @@ class TransportTests(unittest.TestCase):
         self.adapter.loaded = lambda _: False
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
 
+    def test_missing_local_prerequisites_stay_busy_not_unsupported(self):
+        # Recoverable local state must never strand a queued nudge on a permanent hold.
+        self.binary.chmod(0o600)
+        self.assertEqual(self.adapter.preflight(self.binding), "busy")
+        self.assertEqual(self.calls, [])
+        self.binary.chmod(0o700)
+        (self.home / ".codex/queue_1.sqlite").unlink()
+        self.assertEqual(self.adapter.preflight(self.binding), "busy")
+        self.assertEqual(self.calls, [])
+        (self.home / ".codex/queue_1.sqlite").touch()
+        self.assertEqual(self.adapter.preflight(self.binding), "ready")
+
+    def test_full_native_queue_is_busy_before_send(self):
+        self.queued = [{"clientUserMessageId": str(i)} for i in range(module.QUEUE_CAPACITY)]
+        self.assertEqual(self.adapter.preflight(self.binding), "busy")
+        self.calls.clear()
+        self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
+        self.assertNotIn("thread/queue/add", [x[0] for x in self.calls])
+        self.queued = self.queued[:-1]
+        self.assertEqual(self.adapter.preflight(self.binding), "ready")
+
     def test_timeout_before_send_deferred_after_add_unknown(self):
         self.fail = "thread/read"
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")

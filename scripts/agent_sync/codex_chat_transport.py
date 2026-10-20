@@ -18,6 +18,9 @@ MAX_RESPONSE = 2 * 1024 * 1024
 DESKTOP_EXECUTABLE = (
     "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
 )
+# Native thread queues reject thread/queue/add past this many submissions, so preflight
+# must count the whole queue rather than a page of it.  A full queue drains on its own.
+QUEUE_CAPACITY = 100
 _LOADED_CACHE = (0.0, frozenset())
 
 
@@ -229,17 +232,27 @@ class CodexChatTransport:
             return "invalid"
         rpc = None
         try:
+            # A missing binary or queue database is a recoverable local state (app not
+            # installed yet, updated, or restarted), so it stays queued as "busy".  Only
+            # an unsupported host or platform is permanently unavailable, and _valid
+            # already rejects those as "invalid" before this point.
             if (
                 not os.access(self.binary, os.X_OK)
                 or not (self.home / ".codex/queue_1.sqlite").is_file()
             ):
-                return "unsupported"
+                return "busy"
             rpc = self.rpc_factory()
             self._thread(rpc, binding)
             rows = rpc.request(
-                "thread/queue/list", {"threadId": binding["session_id"], "limit": 10}
+                "thread/queue/list",
+                {"threadId": binding["session_id"], "limit": QUEUE_CAPACITY},
             )
-            return "ready" if isinstance(rows.get("data"), list) else "busy"
+            data = rows.get("data")
+            if not isinstance(data, list):
+                return "busy"
+            # A full queue rejects the next add outright; treat it as busy so the nudge
+            # is retried after the queue drains rather than stranded as uncertain.
+            return "busy" if len(data) >= QUEUE_CAPACITY else "ready"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
             return "busy"
         finally:
