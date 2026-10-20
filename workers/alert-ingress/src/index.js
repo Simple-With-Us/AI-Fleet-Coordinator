@@ -93,13 +93,31 @@ function authorized(request, env) {
   return !!env.INGRESS_SHARED_TOKEN && safeEqual(token, env.INGRESS_SHARED_TOKEN);
 }
 
+/**
+ * Every key under a prefix, following the cursor to the end.
+ * KV's `list` returns at most 1000 keys plus a cursor when more remain, so
+ * reading one page and calling the result complete silently drops the tail --
+ * a sweep would promote only the alerts that happen to sort first, and /status
+ * would report a partial inventory with nothing marking it stale.
+ */
+async function listKeys(env, prefix) {
+  const names = [];
+  let cursor;
+  for (;;) {
+    const page = await env.ALERT_STATE.list(cursor ? { prefix, cursor } : { prefix });
+    for (const { name } of page.keys) names.push(name);
+    if (!page.cursor) return names;
+    cursor = page.cursor;
+  }
+}
+
 /** All tracked states for one topic, with their service labels resolved. */
 async function collectStates(env, channel, topic) {
   const prefix = `idx:${channel}:${topic}:`;
-  const keys = await env.ALERT_STATE.list({ prefix });
+  const keys = await listKeys(env, prefix);
   // Parallel reads: serial get pairs cost 2N KV round-trips per call.
   const fetched = await Promise.all(
-    keys.keys.map(async ({ name }) => {
+    keys.map(async (name) => {
       const key = name.slice(prefix.length);
       const raw = await env.ALERT_STATE.get(stateKey(key), "json");
       if (!raw) return null;
@@ -114,8 +132,7 @@ async function collectStates(env, channel, topic) {
 async function collectTopics(env) {
   const prefix = `topic:${DEFAULT_CHANNEL}:`;
   const seen = new Set();
-  const keys = await env.ALERT_STATE.list({ prefix });
-  for (const { name } of keys.keys) {
+  for (const name of await listKeys(env, prefix)) {
     const topic = name.slice(prefix.length);
     if (topic) seen.add(topic);
   }
@@ -251,10 +268,10 @@ async function handleEvent(source, payload, env) {
 async function runSweep(env) {
   const now = Date.now();
   const minOpenMs = Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS;
-  const all = await env.ALERT_STATE.list({ prefix: "state:" });
+  const all = await listKeys(env, "state:");
   let promoted = 0;
   const dirtyTopics = new Set();
-  for (const { name } of all.keys) {
+  for (const name of all) {
     const key = name.slice("state:".length);
     const prev = await env.ALERT_STATE.get(name, "json");
     const s = sweep(prev, now, { minOpenMs });
@@ -275,9 +292,16 @@ async function runSweep(env) {
     dirtyTopics.add(service);
   }
   // One status refresh per topic, however many incidents promoted in it, and
-  // all in parallel instead of one rebuild per incident.
-  await Promise.all([...dirtyTopics].map((topic) => refreshStatus(env, DEFAULT_CHANNEL, topic)));
-  return { promoted, checked: all.keys.length };
+  // all in parallel instead of one rebuild per incident.  Topics are
+  // independent, so a refresh that fails (Zulip or KV down) must not abort the
+  // rest of the batch and lose the other topics' status rewrite; the next
+  // sweep or event rebuilds whichever topic was skipped.
+  await Promise.all(
+    [...dirtyTopics].map((topic) =>
+      refreshStatus(env, DEFAULT_CHANNEL, topic).catch(() => null),
+    ),
+  );
+  return { promoted, checked: all.length };
 }
 
 const json = (body, status = 200) =>
@@ -363,6 +387,7 @@ export const __testing = {
   runSweep,
   collectStates,
   collectTopics,
+  listKeys,
   safeEqual,
   stateKey,
   statusKey,

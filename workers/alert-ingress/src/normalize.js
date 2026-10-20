@@ -46,7 +46,14 @@ export function fromDatadog(payload) {
   );
   const title = oneLine(first(payload.alert_title, payload.event_title, payload.title));
   // "error" is an active alert state too; without it an erroring monitor reads as recovered.
-  const firing = alertType === "triggered" || alertType === "warning" || alertType === "error";
+  // alert_transition_type is the authoritative transition ("Triggered" | "Recovered" |
+  // "Reopened"); prefer it when present, since alert_type's vocabulary varies by
+  // monitor and does not always distinguish a re-fire from a first fire.  A
+  // "Reopened" monitor is firing again, not recovered.
+  const transition = strip(payload.alert_transition_type).toLowerCase();
+  const firing = transition
+    ? transition !== "recovered"
+    : alertType === "triggered" || alertType === "warning" || alertType === "error";
 
   const key = monitorId ? `datadog:${monitorId}` : `datadog:${title.toLowerCase()}`;
   const service = tag || title || `datadog-${monitorId || "monitor"}`;
@@ -99,10 +106,13 @@ export function fromGeneric(payload) {
   const service = oneLine(first(alert.service, alert.monitor, alert.name, alert.source, "alert"));
   const status = strip(first(alert.status, alert.state, alert.alert_type)).toLowerCase();
   // Anchor the recovery words: an unanchored /ok|up|.../ reads "broken" or
-  // "disrupted" as recovered and closes a live incident.  Unknown statuses stay
-  // firing, which is the safe direction.
+  // "disrupted" as recovered and closes a live incident.  The anchor must not
+  // cost real recovery inflections the unanchored form used to accept
+  // ("okay", "recovers", "recovery", "clears") -- dropping those leaves a
+  // resolved incident firing forever.  Unknown statuses stay firing, which is
+  // the safe direction.
   const firing = status
-    ? !/^(ok|up|recover(?:ed|ing)?|resolv(?:ed|es)|clear(?:ed)?)$/.test(status)
+    ? !/^(ok(?:ay)?|up|recover(?:ed|ing|ies|y|s)?|resolv(?:ed|es|ing)|clear(?:ed|ing|s)?)$/.test(status)
     : alert.firing === true;
   return {
     source: strip(payload.source) || "generic",

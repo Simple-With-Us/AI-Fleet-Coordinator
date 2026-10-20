@@ -105,9 +105,35 @@ test("datadog error is an active alert, not a recovery", () => {
   assert.equal(fromDatadog({ alert_type: "Error", monitor_id: 1 }).firing, true);
 });
 
+test("the datadog transition wins over alert_type, and reopened is firing", () => {
+  // A monitor that recovered and fires again arrives as "Reopened" -- firing,
+  // not recovered, even though alert_type still reads "triggered".
+  const reopened = fromDatadog({
+    alert_type: "Triggered",
+    alert_transition_type: "Reopened",
+    monitor_id: 5,
+  });
+  assert.equal(reopened.firing, true);
+
+  const recovered = fromDatadog({
+    alert_type: "Warning",
+    alert_transition_type: "Recovered",
+    monitor_id: 5,
+  });
+  assert.equal(recovered.firing, false, "a recovered transition must not read as firing on alert_type");
+});
+
 test("generic never reads a non-recovery word as recovered", () => {
   for (const status of ["broken", "disrupted", "ookup", "clearance"]) {
     assert.equal(fromGeneric({ alert: { status } }).firing, true, status);
+  }
+});
+
+test("anchoring the recovery words kept the real inflections", () => {
+  // The anchored form must not cost the inflections the unanchored one
+  // accepted -- an unrecognized recovery leaves the incident firing forever.
+  for (const status of ["okay", "recovers", "recovery", "clears", "resolves", "resolving", "clearing"]) {
+    assert.equal(fromGeneric({ alert: { status } }).firing, false, status);
   }
 });
 
