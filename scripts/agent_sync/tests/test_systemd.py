@@ -3,6 +3,7 @@
 import io
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,6 +44,48 @@ class UnitTests(unittest.TestCase):
             self.assertFalse(Path(systemd.unit_path(home)).exists())
             self.assertTrue(config.exists())
 
+    def test_sample_supports_owner_initialization(self):
+        from agent_sync.listener_cli import _rewrite_pins
+        result = _rewrite_pins(systemd.sample_config(), 42, [11])
+        self.assertIn("owner_user_id = 42", result)
+        self.assertIn("eligible_user_ids = [11]", result)
+
+    def test_custom_config_and_state_are_pinned_in_service(self):
+        with tempfile.TemporaryDirectory() as home:
+            state = str(Path(home, "custom state"))
+            config = str(Path(home, "config", "listener.toml"))
+            systemd.install({"AGENT_SYNC_STATE_DIR": state, "AGENT_SYNC_CONFIG": config}, home, io.StringIO())
+            unit = Path(systemd.unit_path(home)).read_text()
+            self.assertIn('"AGENT_SYNC_STATE_DIR=' + state + '"', unit)
+            self.assertIn('"AGENT_SYNC_CONFIG=' + config + '"', unit)
+            self.assertTrue(Path(config).is_file())
+            self.assertFalse(Path(home, ".agent-sync/listener.toml").exists())
+
+    def test_service_directory_is_private_and_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as home:
+            systemd.install({}, home, io.StringIO())
+            directory = Path(systemd.unit_path(home)).parent
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as outside:
+            directory = Path(systemd.unit_path(home)).parent
+            directory.parent.mkdir(parents=True)
+            directory.symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                systemd.install({}, home, io.StringIO())
+            self.assertEqual(list(Path(outside).iterdir()), [])
+
+    def test_missing_interpreter_falls_back_or_warns_and_control_home_is_rejected(self):
+        with tempfile.TemporaryDirectory() as home:
+            original = systemd.os.access
+            with patch.object(systemd.os, "access", side_effect=lambda path, mode: False if path == systemd.DEFAULT_PYTHON else original(path, mode)):
+                systemd.install({}, home, io.StringIO())
+            self.assertIn(systemd.quote(sys.executable), Path(systemd.unit_path(home)).read_text())
+            out = io.StringIO()
+            systemd.install({}, home, out, python="/not-an-interpreter")
+            self.assertIn("is not executable", out.getvalue())
+        with self.assertRaises(ValueError):
+            systemd.unit_text("/home/bad\nRestart=no", "/usr/bin/python3", "/tool")
+
     def test_dry_run_writes_nothing(self):
         with tempfile.TemporaryDirectory() as home:
             systemd.install({}, home, io.StringIO(), dry_run=True)
@@ -58,6 +101,11 @@ class UnitTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs["timeout"], 3)
         with patch.object(systemd.subprocess, "run", side_effect=OSError("private")):
             self.assertEqual(systemd.status("/nonexistent")["active_state"], "unknown")
+        for error, expected in ((FileNotFoundError("private"), 127), (subprocess.TimeoutExpired("systemctl", 3), 124)):
+            with patch.object(systemd.subprocess, "run", side_effect=error):
+                info = systemd.status("/nonexistent")
+                self.assertEqual(info["query_exit_code"], expected)
+                self.assertNotIn("private", json.dumps(info))
 
 
 class DispatchTests(ListenerHarness):

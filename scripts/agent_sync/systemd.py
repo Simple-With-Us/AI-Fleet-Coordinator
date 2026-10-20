@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+import tempfile
 from collections.abc import Mapping
 from typing import TextIO
 
@@ -29,8 +31,11 @@ def quote(value: str) -> str:
     )
 
 
-def unit_text(home: str, python: str, program: str) -> str:
-    root = os.path.join(home, ".agent-sync")
+def unit_text(
+    home: str, python: str, program: str, *, root: str | None = None, config: str | None = None
+) -> str:
+    root = root or os.path.join(home, ".agent-sync")
+    config = config or os.path.join(root, L.CONFIG_NAME)
 
     # Environment= and path directives do not expand dollar signs like ExecStart does.
     def literal(value: str) -> str:
@@ -48,6 +53,7 @@ def unit_text(home: str, python: str, program: str) -> str:
             "Environment=" + literal("HOME=" + home),
             "Environment=" + literal("AGENT_SYNC_STATE_DIR=" + root),
             'Environment="AGENT_SYNC_INSTANCE=mac"',
+            "Environment=" + literal("AGENT_SYNC_CONFIG=" + config),
             "Environment="
             + literal("PATH=" + os.path.join(home, ".local/bin") + ":/usr/local/bin:/usr/bin:/bin"),
             # No EnvironmentFile:  a service must not read credentials from a local file.  Seats read the
@@ -69,7 +75,7 @@ def sample_config() -> str:
         "# Linux listener sample.  Contains no secrets and enables no seats.\n"
         "# Configure only seats assigned to the interactive mac partition in the fleet partition.\n"
         "# Approved authentication and init precede activation; headless wakes require a probe.\n"
-        '[daemon]\ninstance = "mac"\nowner_user_id = 0\nnotify_banners = false\n'
+        '[daemon]\ninstance = "mac"\nowner_user_id = 0\neligible_user_ids = []\nnotify_banners = false\n'
     )
 
 
@@ -83,27 +89,48 @@ def install(
     program: str | None = None,
 ) -> int:
     target = unit_path(home)
-    config = os.path.join(home, ".agent-sync", L.CONFIG_NAME)
-    data = unit_text(home, python or DEFAULT_PYTHON, program or launchd.program_path(home))
+    root = os.path.abspath(
+        os.path.expanduser(env.get(L.ENV_STATE_DIR) or os.path.join(home, ".agent-sync"))
+    )
+    config = os.path.abspath(L.config_path(root, env))
+    python = python or (DEFAULT_PYTHON if os.access(DEFAULT_PYTHON, os.X_OK) else sys.executable)
+    if not os.access(python, os.X_OK):
+        out.write(f"note: {python} is not executable; pass --python PATH (3.11 or newer)\n")
+    data = unit_text(home, python, program or launchd.program_path(home), root=root, config=config)
+    unit_dir = os.path.dirname(target)
+    probe = unit_dir
+    while probe != os.path.dirname(home):
+        if os.path.islink(probe):
+            raise ValueError("refusing symlink in service directory")
+        if probe == home or probe == os.path.dirname(probe):
+            break
+        probe = os.path.dirname(probe)
     if not dry_run:
-        L.private_dir(L.listener_dir(os.path.join(home, ".agent-sync")))
+        L.private_dir(L.listener_dir(root))
     if os.path.exists(config):
-        out.write("config already present, left as it is: %s\n" % config)
+        out.write(f"config already present, left as it is: {config}\n")
     else:
         out.write(
-            "%swrite sample config %s (mode 600; no seats enabled)\n"
-            % ("would: " if dry_run else "", config)
+            "{}write sample config {} (mode 600; no seats enabled)\n".format(
+                "would: " if dry_run else "", config
+            )
         )
         if not dry_run:
             launchd.write_private(config, sample_config())
-    out.write("%swrite user service %s\n" % ("would: " if dry_run else "", target))
+    out.write("{}write user service {}\n".format("would: " if dry_run else "", target))
     if not dry_run:
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        temporary = target + ".tmp"
-        with open(temporary, "w", encoding="utf-8") as fh:
+        L.private_dir(unit_dir)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=unit_dir, delete=False
+        ) as fh:
+            temporary = fh.name
             fh.write(data)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, target)
+        try:
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     out.write(
         "This command does not run systemctl or provision credentials.  Provision the authorized authentication source before activation.\n"
     )
@@ -111,8 +138,7 @@ def install(
         "The unit reads no credential file:  seats read the service environment first, then fleet-secrets / Infisical.\n"
     )
     out.write(
-        "After authentication, configuration and wake verification:\n  systemctl --user daemon-reload\n  systemctl --user enable --now %s\n"
-        % UNIT
+        f"After authentication, configuration and wake verification:\n  systemctl --user daemon-reload\n  systemctl --user enable --now {UNIT}\n"
     )
     if dry_run:
         out.write("dry run: nothing was changed\n")
@@ -121,12 +147,11 @@ def install(
 
 def uninstall(home: str, out: TextIO, *, dry_run: bool = False) -> int:
     out.write(
-        "This command does not run systemctl.  Stop the listener first:\n  systemctl --user disable --now %s\n"
-        % UNIT
+        f"This command does not run systemctl.  Stop the listener first:\n  systemctl --user disable --now {UNIT}\n"
     )
     target = unit_path(home)
     if os.path.exists(target):
-        out.write("%sremove %s\n" % ("would: " if dry_run else "", target))
+        out.write("{}remove {}\n".format("would: " if dry_run else "", target))
         if not dry_run:
             os.unlink(target)
     out.write("State in ~/.agent-sync is kept.  Afterwards run: systemctl --user daemon-reload\n")
@@ -143,6 +168,7 @@ def status(home: str) -> dict:
             capture_output=True,
             text=True,
             timeout=3,
+            check=False,
         )
         state = result.stdout.strip()
         if result.returncode == 0 and state in {
@@ -155,6 +181,10 @@ def status(home: str) -> dict:
             "maintenance",
         }:
             info["active_state"] = state
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    except FileNotFoundError:
+        info["query_exit_code"] = 127
+    except subprocess.TimeoutExpired:
+        info["query_exit_code"] = 124
+    except OSError:
+        info["query_exit_code"] = 1
     return info
