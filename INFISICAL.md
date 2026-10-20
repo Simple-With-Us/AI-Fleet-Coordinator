@@ -165,6 +165,7 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `LANE_SWEEP_CAPS` | C5 | caps | `lane_retires_per_run=10,report_posts_per_run=12` | no | only lower a number | sweep action caps |
 | `LANE_SWEEP_OPTIN_REPOS` | C5 | list | empty | no | only remove entries | money-path repos the sweep may act on;  empty means none |
 | `NOTES_RELAY_CONSUMER` | N1 | str | `CLAUDE` | no | nothing | seat whose bot is the Apple Notes relay consumer (the Mac listener's [notes_relay] seat);  notes_status trusts a mark or a refusal reply only from it;  a local [notes_relay] seat that differs is ignored and the listener does not consume;  the Worker gets the same value as a binding at deploy |
+| `APPLE_NOTES_PIN_RETRY` | N1 | bool | `true` | no | only set it to `false` | true lets apple-notes-coding.sh run the pin or unpin Shortcut a second time when the first run misses the note index;  false keeps the single attempt;  the APPLE_NOTES_PIN_RETRY environment variable is only a local narrowing override and can turn the retry off, never on |
 | `CONSULT_ENABLED` | C7 | bool | `false` | no | only set it to `false` | false refuses every consult verb |
 
 <!-- fleet-knobs:end -->
@@ -293,7 +294,7 @@ Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.sec
 | Old file or folder | Infisical folder (Fleet-OPS, prod) |
 |---|---|
 | `Zulip/<Bot>-zuliprc` | `/zulip`, keys `<BOT>_ZULIP_EMAIL`, `_KEY`, `_SITE` |
-| `ZulipAdmin/realm-admin.zuliprc` | `/zulipadmin`, `REALM_ADMIN_ZULIP_*` (the realm-admin bot, role administrator) |
+| `ZulipAdmin/realm-admin.zuliprc` | `/zulip_operator`, `ZULIP_OPERATOR_*` (the realm-admin bot, role administrator) |
 | `Linear/<SEAT>.env` | `/linear`, `<SEAT>_LINEAR_CLIENT_ID` and `_CLIENT_SECRET` |
 | `appstore-connect.env`, `AuthKey_*.p8` | `/asc` (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`);  per-key `.p8` folders `/authkey-<id>-p8` |
 | `ios-distribution.p12`, `ios-dist-p12-pass`, `apple-certs` | `/mac-certs` (`IOS_DISTRIBUTION_P12_BASE64`, `IOS_DIST_P12_PASSWORD`), root `IOS_DIST_P12_PASS` |
@@ -317,7 +318,7 @@ The names for every other file match its name (lower case, dashes), with one fol
 3. `bash scripts/retire-secrets-dir.sh archive --rename`  copies the folder into an AES-256 encrypted disk image in `~/Documents` (you type the passphrase twice), verifies the image by mounting it read-only and comparing it with the folder, then renames the folder to `~/.secrets.retired-<stamp>`.  `rollback` puts it back and re-enables the writer.
 4. After a quiet day, delete the renamed folder yourself.  The script prints the command and never runs it.
 
-**fleet-work-backup is retired (owner ruling 2026-10-19).**  It was never installed on this Mac and its restic repository has zero snapshots, so OPS-907's backup never ran.  The B2 bucket `jays-fleet-work-backup` is left in place and empty, and the code stays in the repo (`scripts/fleet-work-backup/`) with nothing scheduling it.  Do not describe backups as working.
+**fleet-work-backup is retired (owner ruling 2026-10-19).**  It was never installed on this Mac and its restic repository has zero snapshots, so OPS-907's backup never ran.  The B2 bucket named by `B2_FLEET_WORK_BUCKET_NAME` is left in place and empty, and the code stays in the repo (`scripts/fleet-work-backup/`) with nothing scheduling it.  Do not describe backups as working.
 
 ## Hosted CLAUDE Zulip identity (AFC-296)
 

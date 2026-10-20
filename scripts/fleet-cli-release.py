@@ -83,6 +83,8 @@ EXACT = frozenset(
         "docs/FLEET-MODE.md",
         # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `agent-sync mcp` reads it at startup.
         "scripts/agent_sync/mcp/fleetlink-tools.json",
+        # AFC-412 PR2:  the operator registry outbox exporter, shipped as a data file beside the Python modules.
+        "scripts/agent_sync/operator_sheets_export.mjs",
     }
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained

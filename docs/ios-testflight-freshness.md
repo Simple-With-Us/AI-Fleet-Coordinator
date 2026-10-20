@@ -40,6 +40,16 @@ node ~/apps/ios-fleet/ios_testflight_freshness.mjs --ship-behind --alert     # w
 From a lane, `node scripts/ios-fleet/ios_testflight_freshness.mjs` works the same way (it finds
 `asc-api.mjs` in `~/apps/ios-fleet`).  A full run takes about 20 seconds.
 
+Every App Store Connect call is one `asc-api.mjs` child, and each child signs in to Infisical
+through `fleet-secrets` (three `get`s, each a login plus an export).  The check runs at most two
+children at once, retries a child that was killed by its 120 second timeout, and stops spawning
+after three kills in a row.  A report line that says `asc-api.mjs killed by SIGTERM after the 120s
+timeout, host load N` means the Mac was overloaded (the 2026-10-20 2:20pm and 4:20pm runs failed
+this way at load 100 to 200 with memory thrashing), not that App Store Connect or the credentials
+are wrong:  find what is saturating the Mac (`top -o cpu`, the Housekeeper) and re-run.  A real
+credential problem reads `HTTP 401` or `Missing ASC_KEY_ID`.  Before 2026-10-20 a killed child
+was printed as `asc-api.mjs exit ?`.
+
 Exit codes:  **0** every checked app is current;  **1** something is behind, or a catch-up ship is
 still running or processing;  **2** the check itself failed (App Store Connect or GitHub
 unreachable, an unknown `--app`, a registry row that matches no commit).

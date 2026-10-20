@@ -159,6 +159,10 @@ class Seat:
     extra_banner: str = ""
     write_home: bool = True
     seat_key: str = ""
+    # The banner's lane clause.  Empty means the Mac default
+    # `~/apps/lanes/<Repo>/<suffix>-<slug>`; a cloud seat whose checkout is its
+    # lane says so here instead (MA).
+    lane_clause: str = ""
     # Zulip identity (owner 2026-10-07).  `zulip_bot` is the
     # bot's email local part; the realm is simplewithus.zulipchat.com for all of
     # them.  `zulip_rc` is the credential code the Infisical `<BOT>_ZULIP_*` names derive from (AFC-359).
@@ -196,14 +200,18 @@ def zulip_identity_sentence(seat: Seat) -> str:
     )
 
 
-def _banner(tag: str, notes: str, prefix: str, suffix: str, zulip: str = "") -> str:
+def _banner(
+    tag: str, notes: str, prefix: str, suffix: str, zulip: str = "", lanes: str = ""
+) -> str:
     inherit = "a shared template"
     if tag == "MONET":
         inherit = "another seat's upload pack"
+    if not lanes:
+        lanes = f"Lanes `~/apps/lanes/<Repo>/{suffix}-<slug>`."
     return (
         f"> **This install is for `{tag}`.**  Chat tag `[{tag}·session8]`.  "
         f"Notes `{notes}`.  "
-        f"Branches `{prefix}/`.  Lanes `~/apps/lanes/<Repo>/{suffix}-<slug>`.  Do not inherit "
+        f"Branches `{prefix}/`.  {lanes}  Do not inherit "
         f"another seat's tag from {inherit}."
         f"{zulip}\n\n"
     )
@@ -687,7 +695,9 @@ SEATS: dict[str, Seat] = {
         "exclusive",
         "This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  "
         "Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` "
-        "(historical `muse/<slug>`).  No lane on the Mac (cloud VM).  "
+        "(historical `muse/<slug>`).  No Mac lane (cloud VM):  use your durable VM checkout, "
+        "one per repo named `muse-assist-<repo>`, so never create `~/apps/lanes` or run "
+        "`~/apps/lane`.  "
         "Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly "
         "distinguish from Muse Code (`[MC]`).  Pin `AGENT_SEAT=MA` / `AGENT_TAG=MA`.",
         extra_banner=MUSE_ASSIST_BANNER,
@@ -695,6 +705,10 @@ SEATS: dict[str, Seat] = {
         seat_key="muse-assist",
         zulip_bot="muse-assist-bot",
         zulip_rc="MA",
+        lane_clause=(
+            "No Mac lane (cloud VM):  use the durable VM checkout "
+            "`muse-assist-<repo>`, one per repo."
+        ),
     ),
     # The shared Claude Code skill home.  CLAUDE is the only Claude seat, so it
     # renders as CLAUDE.  It is a second home for the `claude` pack, not a
@@ -770,6 +784,10 @@ NEVER_INSTALL = frozenset({"ios-ship"})
 # the body is GitHub review-thread triage for every seat that lands PRs.
 # `mac-cleanup` is Mac disk cleanup; omit from cloud Grok Bot.
 SKILL_SEAT_ALLOWLIST: dict[str, frozenset[str]] = {
+    # The sweep launcher provisions and retires Mac lanes; MA has no such runtime.
+    "pr-sweep": frozenset(
+        seat.seat_key or seat.tag.lower() for seat in SEATS.values() if seat.tag != "MA"
+    ),
     "mac-cleanup": frozenset(
         {
             "cursor",
@@ -1133,11 +1151,35 @@ def _unstash_identity(text: str, seat: Seat) -> str:
     return text
 
 
+def _plain_scalar_is_safe(value: str) -> bool:
+    """True when `value` is safe to emit as an inline YAML plain scalar.
+
+    A plain scalar cannot carry a mapping indicator or start a comment, so any
+    value holding ": " or " #" (or ending in a bare ":") makes the whole block
+    fail to parse with "mapping values are not allowed in this context".  That
+    silently took out the sentence-gap skill in every rendered tree when its
+    description grew a "Mechanism by surface:" clause, because the fold below
+    only ever looked for quotes.
+    """
+    if not value:
+        return False
+    if value[0] in "-?:,[]{}#&*!|>'\"%@`":
+        return False
+    if ": " in value or value.endswith(":"):
+        return False
+    if " #" in value:
+        return False
+    return True
+
+
 def fold_yaml_description(text: str) -> str:
     """Rewrite SKILL.md `description` to a `>-` block when quotes would break fx.
 
     fx's skill metadata parser rejects inline `"` / `'` in YAML descriptions
     (`malformed_quote`).  A folded `>-` block is the documented fix.
+
+    It also folds when the inline value would not parse as a plain scalar at
+    all, so a description that merely contains a colon stays loadable.
     """
     if not text.startswith("---\n"):
         return text
@@ -1175,7 +1217,7 @@ def fold_yaml_description(text: str) -> str:
                     inner = inner.replace('\\"', '"')
                 value = inner
             i += 1
-        if '"' in value or "'" in value or "${" in value:
+        if '"' in value or "'" in value or "${" in value or not _plain_scalar_is_safe(value):
             out.append("description: >-")
             out.append("  " + value)
         else:
@@ -1214,6 +1256,112 @@ def _launcher_aware_prose(text: str) -> str:
         ),
         text,
     )
+
+
+def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
+    """Replace Mac lane operations while retaining identity and safety sections."""
+    vm = (
+        "Use the existing durable muse-assist-<repo> checkout on the VM, outside scratch directories.  "
+        "Require a clean checkout before switching branches.  For a new task, run git fetch origin "
+        "and git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main, then publish with "
+        "git push -u origin HEAD.  For a follow-up, switch to the existing task branch instead; "
+        "never reset it or discard previous work.  Reuse this durable VM checkout across tasks; do not invoke "
+        "the Mac lane tool or create Mac lane directories.\n\n"
+    )
+    for command in (
+        "muse-assist-<repo>",
+        "git fetch origin",
+        "git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main",
+        "git push -u origin HEAD",
+    ):
+        vm = vm.replace(command, chr(96) + command + chr(96))
+    # Board claims identify the actual cloud checkout, never a nonexistent Mac lane.
+    text = text.replace("--env Mac", "--env cloud")
+    text = re.sub(r'--where "[^"\n]*"', '--where "$(pwd -P) @ $(git branch --show-current)"', text)
+    text = text.replace("<lane path>", "<durable VM checkout path>")
+    if skill_name == "session-start":
+        # Retitle the section and swap only the Mac lane command block.  The
+        # app/acronym table and the scratch-checkout ban below it are
+        # seat-independent and must survive (AFC-723).
+        text = re.sub(
+            r"^## 3\. Pick the lane.*$",
+            "## 3. Use The Durable VM Checkout",
+            text,
+            flags=re.MULTILINE,
+        )
+        text = re.sub(
+            r"^Make one lane per task.*?^```$",
+            vm.rstrip("\n"),
+            text,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+        # Keep app/repo/acronym metadata, but omit the Mac-only lane column.
+        rows = []
+        in_apps = False
+        for line in text.splitlines(keepends=True):
+            if line.startswith("| App |") and "Lane folder" in line:
+                in_apps = True
+            if in_apps and line.startswith("|"):
+                cells = line.rstrip("\n").split("|")
+                if len(cells) == 6:
+                    line = "|".join(cells[:4] + [""]) + "\n"
+            elif in_apps:
+                in_apps = False
+            rows.append(line)
+        text = "".join(rows)
+        # The retained paragraph explains the Mac lane tool as the fallback when
+        # it is missing; on the VM that tool is what MA must never run.  The
+        # fallback runs to the end of its line: the command it names
+        # (`fleet_lanes.lane`) carries periods of its own (AFC-723).
+        text = re.sub(
+            r"If `~/apps/lane` is missing.*$",
+            "The `~/apps/lane` tool is Mac-only: if MA needs a new repo checkout, ask the owner for the VM path rather than running the lane tool or hand-making a lane.",
+            text,
+            flags=re.MULTILINE,
+        )
+        text = re.sub(
+            r"^Machine-infra issues file to.*$",
+            "Machine-infra issues file to the `OPS` team (`board file --app fleet-infra` routes there).  Use the actual durable VM checkout path and task branch in every cloud claim; never report a Mac lane path.",
+            text,
+            flags=re.MULTILINE,
+        )
+    elif skill_name == "unstick-pr":
+        text = re.sub(
+            r'^cd "\$\(~/apps/lane path [^\n]+$',
+            'cd "<durable VM checkout path>"   # existing per-repo VM checkout',
+            text,
+            flags=re.MULTILINE,
+        )
+        text = text.replace("in your lane", "in your durable VM checkout")
+    elif skill_name == "fleet-coordination":
+        text = re.sub(
+            r"^## 2\. Lanes.*?(?=^## 3\.)",
+            "## 2. Durable VM Checkout\n\n" + vm + "---\n\n",
+            text,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+    elif skill_name == "land-lane":
+        text = re.sub(
+            r"^1\. You are in your lane.*$",
+            "1. You are on the intended task branch in your durable VM checkout; see session-start.",
+            text,
+            flags=re.MULTILINE,
+        )
+        # The after-merge step retires a Mac lane; the VM checkout is kept.
+        text = re.sub(
+            r"^- Retire the lane once the PR is merged:.*$",
+            "- Keep the durable `muse-assist-<repo>` VM checkout for the next task; do not run the Mac lane retire or prune tools.",
+            text,
+            flags=re.MULTILINE,
+        )
+    elif skill_name == "closeout":
+        text = re.sub(
+            r"^## 7\. Retire.*?(?=^## 8\.)",
+            "## 7. Retain The Durable VM Checkout\n\nAfter merge, verify the remote result and keep the per-repo VM checkout for the next task.  Do not run Mac lane retirement or delete local work.\n\n",
+            text,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+    return text
 
 
 def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
@@ -1303,12 +1451,19 @@ def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     text = _unprotect(text)
     text = _rewrite_reader_voice(text, seat)
     text = _launcher_aware_prose(text)
+    if seat.tag == "MA":
+        text = _muse_assist_vm_steps(text, skill_name)
 
     banners = ""
     if skill_name in IDENTITY_SKILL_NAMES and not seat.retired:
         zulip = zulip_identity_sentence(seat)
         banners += _banner(
-            seat.tag, seat.notes, seat.prefix, seat.suffix, f"  {zulip}" if zulip else ""
+            seat.tag,
+            seat.notes,
+            seat.prefix,
+            seat.suffix,
+            f"  {zulip}" if zulip else "",
+            seat.lane_clause,
         )
     banners += seat.extra_banner
     if banners:

@@ -8,14 +8,18 @@ Run: python3 scripts/test-lark-mm-bridge.py
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import re
 import signal
+import sys
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parent / "lark-mm-bridge.py"
 spec = importlib.util.spec_from_file_location("lark_mm_bridge", SCRIPT)
@@ -48,6 +52,9 @@ def make_args(argv=None, **overrides):
     from the real parser keeps the two honest.
     """
     args = bridge_mod.build_parser().parse_args(argv or [])
+    # The mirror posts to the real Zulip, so the suite never does it unless a
+    # test asks for it by name.
+    args.zulip_mirror = False
     for key, value in overrides.items():
         setattr(args, key, value)
     return args
@@ -276,12 +283,12 @@ class BridgeTests(unittest.TestCase):
         bridge.seen_lock = threading.Lock()
         self.assertFalse(bridge._claim("om_x"))
 
-    def test_a_pending_delivery_may_be_retried(self):
+    def test_legacy_pending_delivery_without_safe_job_is_held(self):
         """Its last reply provably never left, so a retry cannot double-post."""
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
         bridge.rows = {"om_x": "pending"}
         bridge.seen_lock = threading.Lock()
-        self.assertTrue(bridge._claim("om_x"))
+        self.assertFalse(bridge._claim("om_x"))
 
     def test_bot_sender_is_ignored(self):
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
@@ -289,6 +296,7 @@ class BridgeTests(unittest.TestCase):
         bridge.rows = {}
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
+        bridge.state_file = Path(self.state_dir.name) / "state.json"
         bridge._handle(
             {
                 "message_id": "om_bot",
@@ -306,6 +314,7 @@ class BridgeTests(unittest.TestCase):
         bridge.rows = {}
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
+        bridge.state_file = Path(self.state_dir.name) / "state.json"
         bridge._handle(
             {
                 "message_id": "om_no",
@@ -410,8 +419,64 @@ class BridgeTests(unittest.TestCase):
         session.buffer_lock = threading.Lock()
         self.assertEqual(session._collect_text({}), "snake_case answer and a flat one")
 
+    def test_a_non_object_acp_frame_does_not_stop_the_pump(self):
+        """A scalar frame is dropped, and the ones after it still land."""
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+        for frame in (7, None, "nope", [1, 2]):
+            session._handle_message(frame)
+        session._handle_message(update("agent_message_chunk", "still here"))
+        self.assertEqual(session._collect_text({}), "still here")
+
+    def test_a_frame_that_raises_does_not_stop_the_pump(self):
+        """One unroutable frame is logged and the stream carries on.
+
+        _pump is the session's only reader, so an exception out of one frame
+        used to end the thread and leave every later _call waiting for a
+        response that could not arrive until the prompt timed out.
+        """
+        lines = [
+            json.dumps(update("agent_message_chunk", "first")),
+            "not json at all",
+            json.dumps({"method": "session/update", "params": "not an object"}),
+            json.dumps(update("agent_message_chunk", "second")),
+        ]
+
+        class FakeStdout:
+            def __iter__(self):
+                return iter(lines)
+
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.process = type("P", (), {"stdout": FakeStdout()})()
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+
+        seen = []
+        original = session._handle_message
+
+        def route(message):
+            seen.append(message)
+            if len(seen) == 1:
+                raise ValueError("unroutable frame")
+            original(message)
+
+        session._handle_message = route
+        session._pump()
+        self.assertEqual(len(seen), 3)
+        # The reader survives routing errors.  The collector rejects the malformed
+        # update explicitly instead of silently treating a damaged turn as complete.
+        self.assertIsInstance(session._collect_text({}), str)
+        self.assertEqual(session._collect_text({}), "")
+
     def test_thought_chunks_are_not_answered_to_lark(self):
-        """Private reasoning never reaches the chat surface."""
+        """Private reasoning never reaches the chat surface.
+
+        The flat params shape is asserted here too: the private-reasoning
+        exclusion must hold on the branch where update is params itself, or a
+        later simplification would stream the seat's thinking into Lark with
+        this suite still green.
+        """
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
         session.buffer = [
             {
@@ -421,6 +486,20 @@ class BridgeTests(unittest.TestCase):
                         "sessionUpdate": "agent_thought_chunk",
                         "content": {"type": "text", "text": "thinking about it"},
                     }
+                },
+            },
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "private reasoning"},
+                },
+            },
+            {
+                "method": "session/update",
+                "params": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "the owner's own words"},
                 },
             },
             {
@@ -531,6 +610,7 @@ class BridgeTests(unittest.TestCase):
         bridge.sessions = {}
         bridge.sessions_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
+        bridge.state_file = Path(self.state_dir.name) / "state.json"
         bridge.rows = {"om_seen": "ok"}
         bridge.seen_lock = threading.Lock()
         bridge.state_file = Path(self.state_dir.name) / "state.json"
@@ -582,6 +662,7 @@ class BridgeTests(unittest.TestCase):
         bridge.rows = {}
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
+        bridge.state_file = Path(self.state_dir.name) / "state.json"
         bridge._handle(
             {
                 "message_id": "om_g1",
@@ -619,6 +700,7 @@ class BridgeTests(unittest.TestCase):
         bridge.rows = {}
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
+        bridge.state_file = Path(self.state_dir.name) / "state.json"
         bridge._handle("not an object")
         bridge._handle({"message_id": {"nested": "om_x"}, "chat_id": "oc_1", "content": "hi"})
         bridge._handle({"message_id": "om_x", "chat_id": 17, "content": "hi"})
@@ -639,6 +721,7 @@ class BridgeTests(unittest.TestCase):
         bridge.rows = {}
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
+        bridge.state_file = Path(self.state_dir.name) / "state.json"
         bridge._handle(
             {
                 "message_id": "om_p1",
@@ -708,7 +791,7 @@ class BridgeTests(unittest.TestCase):
         )
         self.assertEqual(bridge_mod.sentence_gap("Version 3.14 ships."), "Version 3.14 ships.")
 
-    def test_answer_request_answers_a_permission_request_with_allow(self):
+    def test_answer_request_cancels_permission_without_trusted_approval(self):
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
         session.process = FakeProcess(FakeSessionScript())
         session.stdin_lock = threading.Lock()
@@ -727,9 +810,9 @@ class BridgeTests(unittest.TestCase):
         )
         payload = json.loads(session.process.stdin.written[0])
         self.assertEqual(payload["id"], 7)
-        self.assertEqual(payload["result"]["outcome"]["optionId"], "allow_once")
+        self.assertEqual(payload["result"]["outcome"], {"outcome": "cancelled"})
 
-    def test_answer_request_prefers_allow_once_over_allow_always(self):
+    def test_answer_request_does_not_infer_approval_from_offered_options(self):
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
         session.process = FakeProcess(FakeSessionScript())
         session.stdin_lock = threading.Lock()
@@ -746,7 +829,7 @@ class BridgeTests(unittest.TestCase):
             }
         )
         payload = json.loads(session.process.stdin.written[0])
-        self.assertEqual(payload["result"]["outcome"]["optionId"], "allow_once")
+        self.assertEqual(payload["result"]["outcome"], {"outcome": "cancelled"})
 
     def test_answer_request_answers_an_unknown_request_so_the_turn_does_not_hang(self):
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
@@ -823,8 +906,22 @@ class BridgeTests(unittest.TestCase):
             bridge_mod.run = original
 
     def test_lark_env_prepends_cli_prefix(self):
-        env = bridge_mod.lark_env()
-        self.assertIn(os.path.expanduser("~/.local/npm-global/bin"), env.get("PATH", ""))
+        # lark_env prepends the prefix only when it exists, so the assertion
+        # needs one.  Point HOME at a temporary directory instead of depending
+        # on the install layout of whichever machine runs the suite.
+        with tempfile.TemporaryDirectory() as home:
+            prefix = Path(home) / ".local" / "npm-global" / "bin"
+            prefix.mkdir(parents=True)
+            previous = os.environ.get("HOME")
+            os.environ["HOME"] = home
+            try:
+                env = bridge_mod.lark_env()
+            finally:
+                if previous is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = previous
+        self.assertIn(str(prefix), env.get("PATH", ""))
 
     def fake_session(self, script):
         """A MiniMaxSession wired to a FakeProcess, ready for _start()."""
@@ -865,8 +962,11 @@ class BridgeTests(unittest.TestCase):
         cases = [
             # (failure detail, state, whether the turn asks to be retried)
             ("lark-cli could not start: [Errno 2] No such file", "pending", True),
-            ("lark-cli failed: connection reset by peer", "pending", True),
+            ("lark-cli failed: connection reset by peer", "unknown", False),
+            ("lark-cli failed: broken pipe", "unknown", False),
+            ("lark-cli failed: connection refused", "pending", True),
             ("lark-cli failed: 400 invalid message_id", "refused", False),
+            ("lark-cli failed: HTTP 429 rate limited", "pending", True),
             ("lark-cli timed out after 120s", "unknown", False),
         ]
         for detail, expected, retried in cases:
@@ -1013,17 +1113,19 @@ class BridgeTests(unittest.TestCase):
     def test_start_refuses_to_run_without_a_pinned_sender(self):
         """No pinned owner means every Lark user can drive the seat."""
         parser = bridge_mod.build_parser()
-        with self.assertRaises(SystemExit):
+        errors = io.StringIO()
+        with self.assertRaises(SystemExit), redirect_stderr(errors):
             bridge_mod.main(
                 [
                     "--lark-cli",
-                    "/bin/true",
+                    sys.executable,
                     "--mcode",
-                    "/bin/true",
+                    sys.executable,
                     "--state-dir",
                     self.state_dir.name,
                 ]
             )
+        self.assertIn("--allow-sender is required", errors.getvalue())
         args = parser.parse_args(["--allow-sender", "ou_owner"])
         self.assertEqual(args.allowed_sender, ["ou_owner"])
 
@@ -1042,6 +1144,260 @@ class BridgeTests(unittest.TestCase):
         args.state_dir = link
         with self.assertRaises(ValueError):
             bridge_mod.Bridge(args)
+
+    def test_group_without_a_pinned_bot_id_does_not_answer(self):
+        bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+        bridge.args = make_args(["--allow-sender", "ou_ok"])
+        self.assertFalse(bridge._mentioned({"chat_type": "group", "mentions": []}))
+        self.assertTrue(bridge._mentioned({"chat_type": "p2p"}))
+
+    def test_flat_private_and_user_chunks_are_not_replies(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer_lock = threading.Lock()
+        session.buffer = [
+            {"method": "session/update", "params": {"session_update": kind, "content": content}}
+            for kind, content in (
+                ("agent_thought_chunk", "private reasoning"),
+                ("user_message_chunk", {"text": "echoed question"}),
+                ("agent_message_chunk", "answer one"),
+                ("agent_message_chunk", {"text": " and two"}),
+            )
+        ]
+        self.assertEqual(session._collect_text({}), "answer one and two")
+        self.assertEqual(session.buffer, [])
+
+    def test_notification_sections_and_discriminator_fail_closed_on_wrong_types(self):
+        for params in (
+            None,
+            [],
+            "not-an-object",
+            {"update": []},
+            {"update": None},
+            {"sessionUpdate": 7},
+            {"session_update": False},
+        ):
+            session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+            session.buffer_lock = threading.Lock()
+            session.buffer = [{"method": "session/update", "params": params}]
+            self.assertEqual(session._collect_text({}), "")
+
+    def test_signal_handlers_are_restored_even_when_reader_cleanup_fails(self):
+        for failure in (None, "events", "stop"):
+            args = make_args(["--allow-sender", "ou_ok"], state_dir=self.state_dir.name)
+            bridge = bridge_mod.Bridge(args)
+            session = mock.Mock()
+            bridge.sessions["chat"] = session
+            reader = mock.Mock()
+            reader.events.return_value = iter(())
+            if failure == "events":
+                reader.events.side_effect = RuntimeError("fake reader failed")
+            if failure == "stop":
+                reader.stop.side_effect = RuntimeError("fake reader stop failed")
+            old_term = signal.getsignal(signal.SIGTERM)
+            old_int = signal.getsignal(signal.SIGINT)
+            with (
+                mock.patch.object(bridge_mod, "LarkEventReader", return_value=reader),
+                mock.patch.object(bridge_mod.threading, "Thread"),
+                mock.patch.object(bridge_mod.signal, "signal") as install,
+            ):
+                if failure:
+                    with self.assertRaises(RuntimeError):
+                        bridge.run()
+                else:
+                    bridge.run()
+            self.assertEqual(
+                install.call_args_list[-2:],
+                [mock.call(signal.SIGTERM, old_term), mock.call(signal.SIGINT, old_int)],
+            )
+            session.close.assert_called_once()
+            self.assertTrue(bridge.stopping.is_set())
+
+    def test_redelivery_cannot_replace_durable_cached_reply(self):
+        bridge = self.bare_bridge()
+        bridge.rows["om_1"] = "pending"
+        job = {"stage": "reply", "reply": "cached", "attempt": 1, "cwd": bridge.args.cwd}
+        bridge.jobs = {"om_1": job.copy()}
+        bridge.active_ids = set()
+        self.assertFalse(bridge._claim("om_1"))
+        self.assertEqual(bridge.jobs["om_1"], job)
+
+    def test_duplicate_event_during_pending_turn_is_not_queued_twice(self):
+        bridge = self.bare_bridge()
+        bridge.turns = bridge_mod.queue.Queue()
+        bridge.state_file = Path(self.state_dir.name) / "state.json"
+        event = {
+            "message_id": "om_1",
+            "chat_id": "chat",
+            "chat_type": "p2p",
+            "sender_id": "ou_ok",
+            "sender_type": "user",
+            "content": "hello",
+        }
+        bridge._handle(event)
+        bridge._handle(event)
+        self.assertEqual(bridge.turns.qsize(), 1)
+        self.assertEqual(bridge.rows["om_1"], "pending")
+
+    def test_crash_after_lark_acceptance_preserves_unknown_and_prevents_replay(self):
+        bridge = self.bare_bridge()
+        bridge.rows["om_1"] = "pending"
+
+        def accepted_then_crashed(message_id, text):
+            saved = json.loads(bridge.state_file.read_text())["messages"]
+            self.assertEqual(saved[message_id], "unknown")
+            raise KeyboardInterrupt("simulate process interruption after acceptance")
+
+        bridge._reply = accepted_then_crashed
+        with self.assertRaises(KeyboardInterrupt):
+            bridge._send("om_1", "reply")
+        restarted = self.bare_bridge()
+        restarted._load_state()
+        self.assertEqual(restarted.rows["om_1"], "unknown")
+        self.assertFalse(restarted._claim("om_1"))
+
+    def test_persistence_failure_never_calls_lark(self):
+        bridge = self.bare_bridge()
+        bridge._reply = mock.Mock()
+        with mock.patch.object(bridge_mod.os, "replace", side_effect=OSError("fake disk failure")):
+            self.assertTrue(bridge._send("om_1", "reply"))
+        bridge._reply.assert_not_called()
+        self.assertEqual(bridge.rows["om_1"], "pending")
+
+    def test_reply_retry_uses_durable_answer_without_running_model_again(self):
+        args = make_args(["--allow-sender", "ou_ok"], state_dir=self.state_dir.name)
+        bridge = bridge_mod.Bridge(args)
+        bridge._handle(
+            {
+                "message_id": "once",
+                "chat_id": "chat",
+                "sender_id": "ou_ok",
+                "content": "do one task",
+            }
+        )
+        session = mock.Mock()
+        session.prompt.return_value = "Task finished."
+        bridge._session_for = mock.Mock(return_value=session)
+        bridge._reply = mock.Mock(side_effect=[bridge_mod.DeliveryError("retryable", "429"), None])
+        self.assertFalse(bridge._turn("once", "chat", "do one task", 0))
+        bridge._save_state()
+        restored = bridge_mod.Bridge(args)
+        restored._session_for = mock.Mock(side_effect=AssertionError("model rerun"))
+        restored._reply = mock.Mock()
+        self.assertTrue(restored._turn("once", "chat", "do one task", 1))
+        session.prompt.assert_called_once_with("do one task")
+        restored._reply.assert_called_once_with("once", "Task finished.")
+
+    def test_queued_turns_survive_restart_but_running_turns_are_held(self):
+        args = make_args(["--allow-sender", "ou_ok"], state_dir=self.state_dir.name)
+        bridge = bridge_mod.Bridge(args)
+        for mid in ("first", "second"):
+            bridge._handle(
+                {
+                    "message_id": mid,
+                    "chat_id": "chat",
+                    "sender_id": "ou_ok",
+                    "content": "queued task",
+                }
+            )
+        bridge.jobs["first"]["stage"] = "running"
+        self.assertTrue(bridge._save_state())
+        restored = bridge_mod.Bridge(args)
+        self.assertEqual(restored.turns.qsize(), 1)
+        self.assertEqual(restored.turns.get()[0], "second")
+        self.assertFalse(restored._claim("first"))
+        self.assertEqual(restored.jobs["first"]["content"], "queued task")
+
+    def test_canonical_fleet_secret_formats_are_refused(self):
+        bridge = self.bare_bridge()
+        bridge.args.lark_cli = "/bin/true"
+        for text in (
+            "lin_api_" + "a" * 24,
+            "st." + "a" * 8 + "." + "b" * 8 + "." + "c" * 8,
+            "AKIA" + "A" * 16,
+            "API_KEY=" + "a" * 24,
+            "eyJ" + "a" * 16 + ".eyJ" + "b" * 16 + "." + "c" * 16,
+        ):
+            with mock.patch.object(bridge_mod, "run") as execute:
+                with self.assertRaises(bridge_mod.SecretRefusal):
+                    bridge._reply("secret", text)
+                execute.assert_not_called()
+
+    def test_invalid_acp_method_and_id_types_are_not_routed(self):
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer, session.buffer_lock = [], threading.Lock()
+        session._answer_request = mock.Mock()
+        for frame in ({"method": []}, {"method": "permission", "id": True}, {"id": {"nested": 1}}):
+            session._handle_message(frame)
+        self.assertEqual(session.buffer, [])
+        session._answer_request.assert_not_called()
+
+    def test_restored_jobs_do_not_cross_working_directory_binding(self):
+        args = make_args(["--allow-sender", "ou_ok"], state_dir=self.state_dir.name)
+        bridge = bridge_mod.Bridge(args)
+        bridge._handle(
+            {
+                "message_id": "bound",
+                "chat_id": "chat",
+                "sender_id": "ou_ok",
+                "content": "queued task",
+            }
+        )
+        args.cwd = args.cwd + "/different"
+        restored = bridge_mod.Bridge(args)
+        self.assertTrue(restored.turns.empty())
+        self.assertFalse(restored._claim("bound"))
+
+    def test_restart_resets_only_safe_pending_reply_budget(self):
+        args = make_args(["--allow-sender", "ou_ok"], state_dir=self.state_dir.name)
+        bridge = bridge_mod.Bridge(args)
+        bridge._handle(
+            {"message_id": "retry", "chat_id": "chat", "sender_id": "ou_ok", "content": "one task"}
+        )
+        bridge.jobs["retry"].update(
+            stage="reply", reply="Already generated.", attempt=bridge_mod.MAX_REPLY_ATTEMPTS
+        )
+        self.assertTrue(bridge._save_state())
+        restored = bridge_mod.Bridge(args)
+        self.assertEqual(restored.turns.get()[-1], 0)
+        restored._session_for = mock.Mock(side_effect=AssertionError("model rerun"))
+        restored._reply = mock.Mock()
+        self.assertTrue(restored._turn("retry", "chat", "one task", 0))
+        restored._reply.assert_called_once_with("retry", "Already generated.")
+
+    def test_dry_run_never_loads_or_changes_delivery_state_or_starts_model(self):
+        state = Path(self.state_dir.name) / "state.json"
+        state.write_text('{"messages":{"existing":"pending"}}')
+        before = state.read_bytes()
+        reader = mock.Mock()
+        reader.events.return_value = iter(
+            [{"message_id": "preview", "sender_id": "ou_ok", "content": "one task"}]
+        )
+        with (
+            mock.patch.object(bridge_mod, "LarkEventReader", return_value=reader),
+            mock.patch.object(
+                bridge_mod, "Bridge", side_effect=AssertionError("dry run loaded bridge")
+            ),
+            mock.patch.object(
+                bridge_mod, "MiniMaxSession", side_effect=AssertionError("model started")
+            ),
+        ):
+            self.assertEqual(
+                bridge_mod.main(
+                    [
+                        "--dry-run",
+                        "--allow-sender",
+                        "ou_ok",
+                        "--lark-cli",
+                        sys.executable,
+                        "--mcode",
+                        sys.executable,
+                        "--state-dir",
+                        self.state_dir.name,
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(state.read_bytes(), before)
 
 
 if __name__ == "__main__":

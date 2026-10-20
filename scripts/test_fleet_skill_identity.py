@@ -223,10 +223,9 @@ class SpecializeTests(unittest.TestCase):
         with open(GAP, encoding="utf-8") as f:
             src = f.read()
         out = specialize_from_monet(src, SEATS["cursor"], skill_name="sentence-gap")
-        self.assertTrue(
-            "Monet portable" in out or "Monet's portable" in out,
-            out[:600],
-        )
+        #  The protocol attribution is generic, never the retired Monet seat (Kody rule 13).
+        self.assertIn("the canonical portable protocol", out)
+        self.assertNotIn("Monet", out[:600])
 
     def test_quoted_description_folds_for_fx(self) -> None:
         out = specialize_from_monet(_session(), SEATS["codex"], skill_name="session-start")
@@ -257,6 +256,43 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn("description: >-", out)
         self.assertIn('Guides Cloudflare One "Zero Trust" work.', out)
         self.assertNotIn('description: "', out)
+
+    def test_fold_quotes_description_containing_a_colon(self) -> None:
+        """A plain scalar holding ': ' cannot parse, so it must be folded.
+
+        The sentence-gap description grew a "Mechanism by surface:" clause and
+        the fold only ever looked for quotes, so every rendered tree shipped
+        front matter no YAML parser could read.  PyYAML is not a dependency of
+        this suite, so assert the structure rather than parsing it.
+        """
+        from fleet_skill_identity import fold_yaml_description
+
+        src = (
+            "---\n"
+            "name: sentence-gap\n"
+            "description: Always use a gap. Mechanism by surface: two spaces here.\n"
+            "---\n\n"
+            "# Sentence gap\n"
+        )
+        out = fold_yaml_description(src)
+        self.assertIn("description: >-", out)
+        self.assertIn("  Always use a gap. Mechanism by surface: two spaces here.", out)
+        self.assertNotIn("description: Always use a gap.", out)
+        self.assertTrue(out.endswith("# Sentence gap\n"))
+
+    def test_fold_leaves_a_plain_safe_description_alone(self) -> None:
+        from fleet_skill_identity import fold_yaml_description
+
+        src = (
+            "---\n"
+            "name: cloudflare-one\n"
+            "description: Guides Cloudflare One Zero Trust work.\n"
+            "---\n\n"
+            "# Cloudflare One\n"
+        )
+        out = fold_yaml_description(src)
+        self.assertIn("description: Guides Cloudflare One Zero Trust work.", out)
+        self.assertNotIn("description: >-", out)
 
 
 DOCS = os.path.join(ROOT, "docs", "fleet-skills")
@@ -1533,6 +1569,73 @@ class AgentSyncRosterTests(unittest.TestCase):
             self.assertIsNotNone(row, f"{tag} missing from the Retired list")
             self.assertIn("2026-10-07", row, tag)
             self.assertNotRegex(text, rf"(?m)^\| {tag} \|", tag)
+
+
+class VMSeatLaneTests(unittest.TestCase):
+    def test_vm_steps_replace_mac_lane_commands_and_keep_identity(self):
+        for name in ("session-start", "fleet-coordination", "land-lane", "closeout"):
+            source = Path(ROOT, "docs", "fleet-skills", name, "SKILL.md").read_text()
+            rendered = specialize_from_monet(source, SEATS["muse-assist"], skill_name=name)
+            self.assertIn(
+                "durable VM checkout" if name in ("land-lane", "closeout") else "durable", rendered
+            )
+            self.assertNotRegex(rendered, r"(?m)^\s*~/apps/lane (?:new|retire|prune)")
+            self.assertNotIn("Make one lane per task", rendered)
+            self.assertNotIn("lane.lane new", rendered)
+            self.assertNotIn("create the lane by hand", rendered)
+            self.assertNotIn("checkout is the lane", rendered)
+            self.assertIn("MA", rendered)
+        ordinary = specialize_from_monet(_session(), SEATS["codex"], skill_name="session-start")
+        self.assertIn("~/apps/lane new", ordinary)
+
+    def test_ma_app_table_keeps_repository_metadata_without_mac_paths(self):
+        rendered = specialize_from_monet(
+            _load_skill("session-start"), SEATS["muse-assist"], skill_name="session-start"
+        )
+        table = [line for line in rendered.splitlines() if line.startswith("|")]
+        self.assertTrue(any("AI-Fleet-Coordinator" in row and "AFC" in row for row in table))
+        self.assertFalse(any("~/apps/lanes/" in row for row in table))
+        self.assertFalse(any("Lane folder" in row for row in table))
+
+    def test_ma_claims_use_cloud_and_actual_durable_checkout(self):
+        for name in ("session-start", "fleet-coordination", "board-ops"):
+            rendered = specialize_from_monet(
+                _load_skill(name), SEATS["muse-assist"], skill_name=name
+            )
+            self.assertNotIn("--env Mac", rendered, name)
+            self.assertNotIn('where "~/apps/lanes/', rendered, name)
+            self.assertIn("--env cloud", rendered, name)
+            for location in re.findall(r'--where "([^"\n]*)"', rendered):
+                self.assertEqual(location, "$(pwd -P) @ $(git branch --show-current)", name)
+        ordinary = specialize_from_monet(
+            _load_skill("board-ops"), SEATS["codex"], skill_name="board-ops"
+        )
+        self.assertIn("--env Mac", ordinary)
+
+    def test_ma_unstick_keeps_diagnostics_without_mac_lane_lookup(self):
+        rendered = specialize_from_monet(
+            _load_skill("unstick-pr"), SEATS["muse-assist"], skill_name="unstick-pr"
+        )
+        self.assertNotIn("~/apps/lane path", rendered)
+        self.assertIn('cd "<durable VM checkout path>"', rendered)
+        self.assertIn("git merge-tree --write-tree", rendered)
+        self.assertIn("DealDex's hosted Actions ship stays", rendered)
+
+    def test_mac_sweep_launcher_is_not_installed_to_ma(self):
+        self.assertFalse(skill_allowed_for_seat("pr-sweep", SEATS["muse-assist"]))
+        for key, seat in SEATS.items():
+            if seat.tag != "MA":
+                self.assertTrue(skill_allowed_for_seat("pr-sweep", seat), key)
+
+    def test_every_installed_ma_skill_avoids_mac_lane_invocations(self):
+        docs = Path(ROOT, "docs", "fleet-skills")
+        for name in catalog_skill_names(str(docs)):
+            if not skill_allowed_for_seat(name, SEATS["muse-assist"]):
+                continue
+            rendered = specialize_from_monet(
+                _load_skill(name), SEATS["muse-assist"], skill_name=name
+            )
+            self.assertNotIn("~/apps/lane ", rendered, name)
 
 
 if __name__ == "__main__":
