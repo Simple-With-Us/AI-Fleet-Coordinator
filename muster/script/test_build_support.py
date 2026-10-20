@@ -193,9 +193,14 @@ class ProcessInspectionTests(unittest.TestCase):
 
     def test_nonblocking_inspection_failure_never_trusts_a_partial_path(self):
         with (
-            mock.patch.object(support.subprocess, "run", side_effect=[
-                self.result("12\n"), self.result("p12\nn" + str(self.binary) + "\n", status=1)
-            ]),
+            mock.patch.object(
+                support.subprocess,
+                "run",
+                side_effect=[
+                    self.result("12\n"),
+                    self.result("p12\nn" + str(self.binary) + "\n", status=1),
+                ],
+            ),
             mock.patch.object(support.os, "kill", return_value=None) as probe,
         ):
             with self.assertRaises(RuntimeError):
