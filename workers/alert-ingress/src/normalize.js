@@ -45,7 +45,8 @@ export function fromDatadog(payload) {
     payload.scope,
   );
   const title = oneLine(first(payload.alert_title, payload.event_title, payload.title));
-  const firing = alertType === "triggered" || alertType === "warning";
+  // "error" is an active alert state too; without it an erroring monitor reads as recovered.
+  const firing = alertType === "triggered" || alertType === "warning" || alertType === "error";
 
   const key = monitorId ? `datadog:${monitorId}` : `datadog:${title.toLowerCase()}`;
   const service = tag || title || `datadog-${monitorId || "monitor"}`;
@@ -101,8 +102,11 @@ export function fromGeneric(payload) {
   const alert = payload && payload.alert ? payload.alert : payload || {};
   const service = oneLine(first(alert.service, alert.monitor, alert.name, alert.source, "alert"));
   const status = strip(first(alert.status, alert.state, alert.alert_type)).toLowerCase();
+  // Anchor the recovery words: an unanchored /ok|up|.../ reads "broken" or
+  // "disrupted" as recovered and closes a live incident.  Unknown statuses stay
+  // firing, which is the safe direction.
   const firing = status
-    ? !/ok|up|recover|resolved|clear/.test(status)
+    ? !/^(ok|up|recover(?:ed|ing)?|resolv(?:ed|es)|clear(?:ed)?)$/.test(status)
     : alert.firing === true;
   return {
     source: strip(payload.source) || "generic",
@@ -128,7 +132,14 @@ export function normalize(source, payload) {
   const hint = strip(source).toLowerCase();
   const parser = PARSERS[hint] || fromGeneric;
   const event = parser(payload || {});
-  return event.source === "generic" && hint ? { ...event, source: hint } : event;
+  // Generic routes: the route name is the only authority for the state-key
+  // namespace.  A payload claiming source:"datadog" on /webhook/<other> must
+  // not overwrite a real datadog incident's state.
+  if (!PARSERS[hint] && hint) {
+    const tail = event.key.includes(":") ? event.key.split(":").slice(1).join(":") : event.key;
+    return { ...event, source: hint, key: `${hint}:${tail}` };
+  }
+  return event;
 }
 
 export const __testing = { oneLine, first };
