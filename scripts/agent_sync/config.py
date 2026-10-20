@@ -1174,8 +1174,14 @@ def load_partition(path: str) -> tuple[dict[str, str] | None, str | None]:
 
 def fleet_tags(partition: Mapping[str, str] | None) -> frozenset[str]:
     """Every seat tag whose bot is an eligible sender:  each seat the partition lists, whatever its
-    instance (`none` seats such as the BF role bots and GROK-BUILD count too), plus FLEET_SEATS."""
-    return frozenset(FLEET_SEATS) | frozenset(str(seat).upper() for seat in (partition or {}))
+    instance (`none` seats such as the BF role bots and GROK-BUILD count too), plus FLEET_SEATS.
+    The partition also lists the deterministic service identities (service_identity.SERVICE_SEATS,
+    such as OPERATOR); those hold no agent and never wake one, so they stay out of the eligible set
+    and out of every `route.seat`."""
+    from .service_identity import SERVICE_SEATS
+
+    listed = frozenset(FLEET_SEATS) | frozenset(str(seat).upper() for seat in (partition or {}))
+    return listed - SERVICE_SEATS
 
 
 _DEFAULT_ENV_RE = re.compile(r"^ZULIP_([A-Z0-9_]+)_(EMAIL|API_KEY)$")
