@@ -41,7 +41,6 @@ import json
 import os
 import queue
 import re
-import shlex
 import signal
 import subprocess
 import sys
@@ -350,7 +349,7 @@ class MiniMaxSession:
     def _collect_text(self, result):
         """Pull the assistant text out of a prompt result and its updates."""
         text = ""
-        for block in ((result or {}).get("content") or []):
+        for block in (result or {}).get("content") or []:
             if block.get("type") == "text" and block.get("text"):
                 text += block["text"]
         if text:
@@ -447,7 +446,9 @@ class Bridge:
         with self.sessions_lock:
             session = self.sessions.get(chat_id)
             if session is None:
-                session = MiniMaxSession(self.args.mcode, self.args.cwd, self.args.timeout, self.env)
+                session = MiniMaxSession(
+                    self.args.mcode, self.args.cwd, self.args.timeout, self.env
+                )
                 self.sessions[chat_id] = session
             return session
 
@@ -576,7 +577,9 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Bridge a Lark chat to a MiniMax Code seat.")
     parser.add_argument("--lark-cli", dest="lark_cli", default=DEFAULT_LARK_CLI)
     parser.add_argument("--mcode", dest="mcode", default=DEFAULT_MCODE)
-    parser.add_argument("--cwd", dest="cwd", default=DEFAULT_CWD, help="working directory for the seat")
+    parser.add_argument(
+        "--cwd", dest="cwd", default=DEFAULT_CWD, help="working directory for the seat"
+    )
     parser.add_argument("--state-dir", dest="state_dir", default=DEFAULT_STATE_DIR)
     parser.add_argument(
         "--event-log-dir",
@@ -598,7 +601,9 @@ def build_parser():
         default=None,
         help="the bot's own open_id; in a group chat the bot answers only when mentioned",
     )
-    parser.add_argument("--dry-run", dest="dry_run", action="store_true", help="log messages, do not answer")
+    parser.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", help="log messages, do not answer"
+    )
     return parser
 
 

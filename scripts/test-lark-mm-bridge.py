@@ -11,7 +11,6 @@ import importlib.util
 import json
 import os
 import re
-import sys
 import threading
 import unittest
 from pathlib import Path
@@ -75,6 +74,7 @@ class FakeStdin:
             if response is None:
                 continue
             self.process.stdout.emit(response(request))
+
     def flush(self):
         pass
 
@@ -367,7 +367,9 @@ class BridgeTests(unittest.TestCase):
         used = sorted(set(re.findall(r"self\.args\.([a-z_]+)", source)))
         args = bridge_mod.build_parser().parse_args([])
         missing = [name for name in used if not hasattr(args, name)]
-        self.assertEqual(missing, [], "the bridge reads args the parser never defines: %s" % missing)
+        self.assertEqual(
+            missing, [], "the bridge reads args the parser never defines: %s" % missing
+        )
 
     def test_allow_sender_flag_reaches_allowed_sender_attribute(self):
         args = bridge_mod.build_parser().parse_args(
