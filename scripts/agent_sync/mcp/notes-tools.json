@@ -4,7 +4,7 @@
     {
       "name": "notes_create",
       "title": "Notes Create",
-      "description": "Create an Apple Note in the owner's Coding folder, pinned by default.  On a Mac it is written directly (status done);  anywhere else a request is posted to #notes-relay and the Mac listener writes it (status queued, then notes_status).  The title must read \"[TEAM_KEY, SEAT_TAG] Topic\" and Agent must be the identity you act as, or the relay refuses it.  A session id is required (see the session argument) unless the identity is a single-thread one.",
+      "description": "Create an Apple Note in the owner's Coding folder, pinned by default.  On a Mac it is written directly (status done);  anywhere else a request is posted to #notes-relay and the Mac listener writes it (status queued, then notes_status).  The title must read \"[TEAM_KEY, SEAT_TAG] Topic\" and the SEAT_TAG must be the identity you act as, or the relay refuses it.  A session id is required (see the session argument) unless the identity is a single-thread one.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -17,7 +17,7 @@
             "minLength": 1,
             "maxLength": 200,
             "pattern": "^\\[[^\"\\\\\\x00-\\x1f\\x7f]+$",
-            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\" such as \"[AFC, Claude] relay rollout\".  Agent is the name of the identity the call acts as.  It must start with [ and hold no double quote or backslash."
+            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\" such as \"[AFC, Claude] relay rollout\".  The SEAT_TAG is the seat the call acts as, in Title Case.  The whole scope is validated:  capitalised team keys, a seat tag, then a non-empty topic, holding no double quote, backslash or control character."
           },
           "markdown": {
             "type": "string",
@@ -141,7 +141,7 @@
             "minLength": 1,
             "maxLength": 200,
             "pattern": "^\\[[^\"\\\\\\x00-\\x1f\\x7f]+$",
-            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\" such as \"[AFC, Claude] relay rollout\".  Agent is the name of the identity the call acts as.  It must start with [ and hold no double quote or backslash."
+            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\" such as \"[AFC, Claude] relay rollout\".  The SEAT_TAG is the seat the call acts as, in Title Case.  The whole scope is validated:  capitalised team keys, a seat tag, then a non-empty topic, holding no double quote, backslash or control character."
           },
           "markdown": {
             "type": "string",
@@ -265,7 +265,7 @@
             "minLength": 1,
             "maxLength": 200,
             "pattern": "^\\[[^\"\\\\\\x00-\\x1f\\x7f]+$",
-            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\" such as \"[AFC, Claude] relay rollout\".  Agent is the name of the identity the call acts as.  It must start with [ and hold no double quote or backslash."
+            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\" such as \"[AFC, Claude] relay rollout\".  The SEAT_TAG is the seat the call acts as, in Title Case.  The whole scope is validated:  capitalised team keys, a seat tag, then a non-empty topic, holding no double quote, backslash or control character."
           },
           "request_id": {
             "type": "string",
@@ -348,7 +348,7 @@
             "minLength": 1,
             "maxLength": 200,
             "pattern": "^\\[[^\"\\\\\\x00-\\x1f\\x7f]+$",
-            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\" such as \"[AFC, Claude] relay rollout\".  Agent is the name of the identity the call acts as.  It must start with [ and hold no double quote or backslash."
+            "description": "The note title, \"[TEAM_KEY, SEAT_TAG] Topic\" such as \"[AFC, Claude] relay rollout\".  The SEAT_TAG is the seat the call acts as, in Title Case.  The whole scope is validated:  capitalised team keys, a seat tag, then a non-empty topic, holding no double quote, backslash or control character."
           },
           "request_id": {
             "type": "string",

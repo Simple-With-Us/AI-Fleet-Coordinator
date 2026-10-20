@@ -347,8 +347,8 @@ def _notes_names(
 
 
 def title_agent(title: str) -> tuple[str, str] | None:
-    """(apps, agent) from `[APP, APP2, Agent] topic`, or None when the title has no such shape.  The
-    apps are the capitalised acronyms before the last comma, the agent is what follows it."""
+    """(team keys, seat) from `[TEAM_KEY, SEAT_TAG] topic`, or None when the title has no such shape.
+    The keys are the capitalised acronyms before the last comma;  the seat tag is what follows it."""
     match = _BRACKET_RE.match(title)
     if not match:
         return None
