@@ -41,6 +41,20 @@ jobs:
   PR head.
 - Hold labels and ineligible PRs actively disable any already-armed merge.
 
+## Merge queues
+
+GitHub refuses `--delete-branch` when a repository has a merge queue enabled:
+the flag flips the repository's delete-branch-on-merge setting, and a queue
+cannot have both.  The armer arms again without the flag when the queue is
+what refused it, so a repo that turns a queue on keeps arming without a
+caller change.  The queue's own "delete head branches" setting owns branch
+cleanup from that point on.  A caller can also turn the flag off directly
+with the `delete_branch` input, which is what Socratic-Trade does (ST-4566).
+
+Contract: `python3 scripts/test_auto_merge_reusable.py` runs the arm step's
+own shell against a fake `gh`, so the retry is exercised rather than
+described.
+
 ## Credentials
 
 Long-term identity is a single GitHub App installed org-wide (owner action,

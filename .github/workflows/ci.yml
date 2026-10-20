@@ -240,6 +240,12 @@ jobs:
       run: node --test scripts/pr_sweep/tests/claude_adapter.test.mjs
     - name: PR Autofix reusable workflow contract
       run: node --test .github/pr-autofix-reusable.node-test.mjs
+    # The shared auto-merge armer against a fake `gh`:  a merge queue refuses
+    # --delete-branch, and the armer has to arm again without the flag instead of
+    # failing every PR in the repo (AFC-413).  No network:  the fake records its
+    # arguments and answers what the test tells it to.
+    - name: Auto-merge reusable workflow contract
+      run: python3 scripts/test_auto_merge_reusable.py
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
     # network:  the tests import the script, which runs main() only as an entry point.
     - name: Fleet Reference Sheet registry sync tests
