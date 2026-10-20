@@ -367,7 +367,7 @@ def title_problem(
     parts = title_agent(title)
     if parts is None:
         return 'the title must read "[TEAM_KEY, SEAT_TAG] topic" with the team key and seat tag in capitals'
-    if parts[1].casefold() not in _notes_names(identity, registry_path, env):
+    if parts[1] != identity:
         return 'the title names agent "%s", which is not %s' % (parts[1][:40], identity)
     return None
 

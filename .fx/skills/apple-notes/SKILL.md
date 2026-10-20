@@ -1,7 +1,7 @@
 ---
 name: apple-notes
 description: >-
-  Write owner-facing Apple Notes in the `Coding` folder (local on this Mac) — plans, designs, reviews, handoffs, rollouts, living Completion notes. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Title [TEAM_KEY, SEAT_TAG] … with a refreshed timestamp.
+  Write owner-facing Apple Notes in the `Coding` folder (local on this Mac) — plans, designs, reviews, handoffs, rollouts, living Completion notes. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Title [TEAM_KEY, FX] … with a refreshed timestamp.
 ---
 
 # Apple Notes (Universal)
@@ -30,16 +30,16 @@ Also: `--notify` / `--pushover`, `--needs-owner` / `--action-required`, `--summa
 
 Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do not `APPLE_NOTES_ACTIVATE=1` unless the owner is sitting at the Mac.
 
-**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a stamped `Session: <id>` line under the timestamp, with no second date (owner 2026-10-19).
+**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
 
 ## Title
 
 ```
-[TEAM_KEY, SEAT_TAG] Topic
+[TEAM_KEY, FX] Topic
 ```
 
 - Team key first, then your seat tag, both in capitals, then the topic in Title Case (owner 2026-10-19:  never the app's long name, never the seat's long name).
-- Multi-app: `[ST, CT, MM] …` (impact order).
+- Multi-app: `[ST, CT, FX] …` (impact order).
 - No date in the title.  No word "session".  Do not repeat the title as an H1 in the body.
 
 | Acronym | App |
@@ -100,7 +100,7 @@ Background-jobs inventory note is `⭐️ Background Jobs Master List` — refre
 
 ### Handoff Reports (Immediate & Living)
 When generating a handoff report for a peer agent to take over (e.g. before hitting quota or upon owner stop request):
-- **Title Format:** `⭐️ [TEAM_KEY, SEAT_TAG] HANDOFF REPORT: Short topic` (or `*** [TEAM_KEY, SEAT_TAG] HANDOFF REPORT: Short topic`)
+- **Title Format:** `⭐️ [TEAM_KEY, FX] HANDOFF REPORT: Short topic` (or `*** [TEAM_KEY, FX] HANDOFF REPORT: Short topic`)
 - **6-Section Body:**
   1. Executive Summary & Objective
   2. Current Work State & Artifacts (worktree path, branch, commit SHA, PR status, dirty/stashed files)

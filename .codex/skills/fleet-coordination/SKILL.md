@@ -17,7 +17,7 @@ This skill governs how autonomous AI agents collaborate across the entire applic
 
 ## Canonical Fleet App Acronyms
 
-Use these canonical acronyms in Apple Notes titles (`[TEAM_KEY, SEAT_TAG] topic`), commit messages, PRs, and Zulip `#agent-sync` topics:
+Use these canonical acronyms in Apple Notes titles (`[TEAM_KEY, CODEX] topic`), commit messages, PRs, and Zulip `#agent-sync` topics:
 
 | Acronym | App / Scope | Repository |
 | :--- | :--- | :--- |
@@ -35,7 +35,7 @@ Use these canonical acronyms in Apple Notes titles (`[TEAM_KEY, SEAT_TAG] topic`
 
 ## FLEET is not an app acronym
 
-`FLEET` is **not** an application, **not** a repository, and **not** this coordinator's name.  Do not put `FLEET` in Apple Notes `[TEAM_KEY, SEAT_TAG]` titles as if it were ST/CT/UM.
+`FLEET` is **not** an application, **not** a repository, and **not** this coordinator's name.  Do not put `FLEET` in Apple Notes `[TEAM_KEY, CODEX]` titles as if it were ST/CT/UM.
 
 - **Repo acronym:** `AFC` is the AI-Fleet-Coordinator repo (Linear team `AFC`, topics `AFC-123`, links `AFC#n`), not a seat, bot, sender or signature (owner 2026-10-16).  The coordinator is CLAUDE and posts as the CLAUDE bot;  `agent-sync` writes the seat tag, so never hand-sign `[AFC]` or `[FLEET]`.
 - **Sibling repo acronym:** `OPS` is the Fleet-OPS repo (`OPS-123`, `OPS#n`), likewise not a voice.  Fleet operations work is filed under whichever of `AFC` and `OPS` it logically fits.
@@ -115,7 +115,7 @@ Before starting substantial work, reserve your lane on two durable surfaces:
    ```
    Via the CLI:  `agent-sync post --topic "AFC-123 claim title" $'repo:  <Project>  |  CLAIMED\nwork: <one line>'`.  A directed ask adds `--to Codex`, which @-mentions that bot — the bracket label alone wakes nobody.
 
-**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a stamped `Session: <id>` line under the timestamp, with no second date (owner 2026-10-19).
+**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
 
 *(Reserve `@**all**` in #agent-sync topic `fleet` strictly for urgent wakes that every seat must spend time on.  The coordinator posts as CLAUDE and nothing signs `[AFC]` or `[FLEET]`.)*
 
@@ -168,7 +168,7 @@ Visibly wider gap (two visible spaces) after terminal punctuation (`.`, `!`, `?`
 All plans, design docs, rollouts, audits, and completion notes for owner review must be created in Apple Notes:
 
 1. **Folder:** folder **`Coding`** (local folder on this Mac, intentionally non-iCloud).
-2. **Title Format:** `[TEAM_KEY, SEAT_TAG] Topic` (e.g. `[ST, AG] Market Data Cascade`).  Team key FIRST, seat tag SECOND, both in capitals, topic in Title Case, NO date in title (owner 2026-10-19).
+2. **Title Format:** `[TEAM_KEY, CODEX] Topic` (e.g. `[ST, AG] Market Data Cascade`).  Team key FIRST, seat tag SECOND, both in capitals, topic in Title Case, NO date in title (owner 2026-10-19).
 3. **Second Line:** Timestamp `Day, Mon D, h:mmam|pm · PR #<num>`.
 4. **Helper Script:**
    ```bash

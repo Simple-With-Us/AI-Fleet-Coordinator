@@ -586,10 +586,10 @@ if [[ "$SKIP_BODY" == "0" ]]; then
 fi
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
-# Title: "[APP, Agent] topic" — multi-app OK. Body first line: "Sun, Aug 9, 3:52pm".
+# Title: "[TEAM_KEY, SEAT_TAG] Topic" — multi-app OK. Body first line: "Sun, Aug 9, 3:52pm".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
-  echo "warning: title should start with [APP, Agent] e.g. \"[UM, Grok] topic\" (got: $TITLE)" >&2
+  echo "warning: title should start with [TEAM_KEY, SEAT_TAG] e.g. \"[UM, GROK] Topic\" (got: $TITLE)" >&2
 fi
 if printf '%s' "$TITLE" | grep -Eiq 'session'; then
   echo "warning: do not put 'session' in Apple Note titles" >&2
@@ -706,10 +706,20 @@ if m:
 # AFC-361, owner 2026-10-19:  the writer's session id is the small row under the timestamp, with no second date.
 # An update rewrites the whole body, so a Session row the caller echoed back from the old body is dropped
 # wherever it sat (under the timestamp, or at the end, where a version of 2026-10-19 put it) and the current one is
-# stamped.
-_SESSION_ROW = r'(?:<p>)?\s*(?:<span[^>]*>)?\s*Session:\s*[^<\n]*(?:</span>)?\s*(?:</p>)?'
-inner = re.sub(r'^' + _SESSION_ROW + r'\s*(?:<div><br\s*/?></div>)?\s*', '', inner, flags=re.I)
-inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*(?:<div><br\s*/?></div>)?\s*' + _SESSION_ROW + r'\s*$', '', inner, flags=re.I)
+# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts "Session:" is not a row
+# and stays.  A spacer after the row belongs to it, so a stale row at the end goes with every spacer it left behind
+# (an old note can end on more than one of them, so the row must not have to be the last characters of the body).
+_SESSION_ROW = (
+    r'(?:<p>\s*)?(?:<span[^>]*>\s*)?\s*Session:\s*'
+    r'[A-Za-z0-9][A-Za-z0-9._:-]{3,127}'
+    # A row from before Oct 19 carried a second date after the id (' - Mon, Oct 19, 9:40pm').  Only that exact
+    # shape is taken, so prose that merely begins with 'Session:' ('Session: claude-code resumed') stays.
+    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{4})?(?:, \d{1,2}:\d{2}[ap]m)?)?'
+    r'\s*(?:</span>\s*)?</p>'
+)
+_SPACER = r'(?:<div><br\s*/?></div>\s*)*'
+inner = re.sub(r'^' + _SESSION_ROW + r'\s*' + _SPACER + r'\s*', '', inner, flags=re.I)
+inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*' + _SPACER + r'\s*' + _SESSION_ROW + r'\s*' + _SPACER + r'\s*$', '', inner, flags=re.I)
 session_p = ''
 if note_session:
     session_p = '<p><span style=\"font-size: 11px;\">' + html.escape('Session: ' + note_session) + '</span></p>'
@@ -722,16 +732,38 @@ stamp_p = '<p>' + html.escape(stamp) + '</p>' + session_p + '<div><br></div>'
 from zoneinfo import ZoneInfo
 _CENTRAL = ZoneInfo('America/Chicago')
 _ISO = re.compile(
-    r'(?<![\w/.:-])(\d{4})-(\d{2})-(\d{2})'
-    r'(?:[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?(?![\w/-])'
+    #  A date is a token of its own:  a name or a query string that merely contains one (backup-2026-10-19.tar,
+    #  ?d=2026-10-19) keeps it.  A dot after the date is the end of a sentence, so only a dot followed by a word
+    #  character keeps the date whole.
+    r'(?<![\w/.:=?&-])(\d{4})-(\d{2})-(\d{2})'
+    # A +HH:MM / -HH:MM offset is only an offset on the ISO T form.  On the space form (2026-10-19 10:30) a bare
+    # -11:00 after the minutes is the end of a time range, not a UTC offset, and taking it as one moves the hour
+    # and drops the range end.  That range end is a second local time, so it is captured and rendered in the
+    # fleet form too:  a note must not keep a 24-hour clock it rewrote everything else away from.
+    r'(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?'
+    r'| (\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z)?(?:-(\d{2}):(\d{2}))?)?'
+    r'(?![\w/-]|\.[A-Za-z0-9])'
 )
 
 def _fleet_day(d):
     out = d.strftime('%a, %b ') + str(d.day)
     return out + (', ' + str(d.year) if d.year != now.year else '')
 
+def _fleet_clock(when):
+    return str(when.hour % 12 or 12) + when.strftime(':%M') + when.strftime('%p').lower()
+
+_changes = {'dates': [], 'gaps': 0}
+
 def _fleet_date(m):
-    y, mo, d, hh, mm, zone = m.groups()
+    new = _fleet_date_text(m)
+    if new != m.group(0):
+        _changes['dates'].append((m.group(0), new))
+    return new
+
+def _fleet_date_text(m):
+    y, mo, d, t_hh, t_mm, t_zone, hh, mm, zone, r_hh, r_mm = m.groups()
+    if t_hh is not None:
+        hh, mm, zone = t_hh, t_mm, t_zone
     try:
         if hh is None:
             return _fleet_day(datetime(int(y), int(mo), int(d)))
@@ -739,8 +771,13 @@ def _fleet_date(m):
         if zone:
             offset = '+00:00' if zone == 'Z' else (zone if ':' in zone else zone[:3] + ':' + zone[3:])
             when = datetime.fromisoformat(when.isoformat() + offset).astimezone(_CENTRAL)
-        h12 = when.hour % 12 or 12
-        return _fleet_day(when) + ', ' + str(h12) + when.strftime(':%M') + when.strftime('%p').lower()
+        out = _fleet_day(when) + ', ' + _fleet_clock(when)
+        if r_hh is not None:
+            end = datetime(int(y), int(mo), int(d), int(r_hh), int(r_mm))
+            if zone:  # the range end is in the same zone as its start, so it converts the same way
+                end = datetime.fromisoformat(end.isoformat() + offset).astimezone(_CENTRAL)
+            out += '-' + _fleet_clock(end)
+        return out
     except ValueError:
         return m.group(0)
 
@@ -754,12 +791,39 @@ def fleet_dates(markup):
                 depth += -1 if part.startswith('</') else 1
                 depth = max(depth, 0)
         elif depth == 0:
-            parts[i] = _ISO.sub(_fleet_date, part)
+            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part))
     return ''.join(parts)
+
+# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as agent-sync's textfmt.single_gaps), so
+# a note reads the same whoever wrote it.  Known abbreviations, dotted words, initials and list markers are skipped.
+_ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq'.split())
+_GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#])')
+_WORD = re.compile(r'([A-Za-z][A-Za-z.]*)\Z')
+
+def _one_space_gaps(segment):
+    def repl(m):
+        if m.group(1).startswith('.'):
+            before = _WORD.search(segment[max(0, m.start() - 40):m.start()])
+            word = before.group(1).casefold().rstrip('.') if before else ''
+            if before and (word in _ABBREV or len(word) == 1 or '.' in word):
+                return m.group(0)
+            if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
+                return m.group(0)
+        _changes['gaps'] += 1
+        return m.group(1) + '  '
+    return _GAP1.sub(repl, segment)
 
 inner = fleet_dates(inner)
 if summary_text:
     summary_text = fleet_dates(summary_text)
+
+# Tell the writer what was reformatted, on stderr, so the agent learns the fleet format (owner 2026-10-19).
+if _changes['dates']:
+    shown = ', '.join(a + ' to ' + b for a, b in _changes['dates'][:5]) + (' and more' if len(_changes['dates']) > 5 else '')
+    sys.stderr.write('notes: reformatted:  dates rewritten in the fleet format (' + shown + ');  write dates that way' + chr(10))
+if _changes['gaps']:
+    n = _changes['gaps']
+    sys.stderr.write('notes: reformatted:  ' + str(n) + ' sentence gap' + ('' if n == 1 else 's') + ' had one space and ' + ('was' if n == 1 else 'were') + ' widened;  put two spaces after a sentence' + chr(10))
 
 extra_blocks = ''
 if needs_owner:
