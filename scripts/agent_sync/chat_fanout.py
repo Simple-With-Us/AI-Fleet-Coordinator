@@ -90,8 +90,12 @@ _SCOPE_RE = re.compile(
     r"(?<![\w])@\*{0,2}(?:all|everyone|channel|stream)\*{0,2}\s+for\s+([^\n]{1,120}?):(?=\s|$)",
     re.IGNORECASE,
 )
+# Only the names in front of the mention, on its own sentence, count (`ST @all go`).  A mention that starts a
+# sentence after prose ("the ST deploy is stuck.  @all") is a fleet alert:  an acronym in the sentence before it
+# is a passing word, not a scope.  A dot inside a word (`github.com/...`) does not end a sentence.
 _PREFIX_RE = re.compile(
-    r"(?m)^\s*([^\n@]{1,200}?)\s*@\*{0,2}(?:all|everyone|channel|stream)\*{0,2}(?![\w*])",
+    r"(?m)(?:^|(?<=[.!?])[ \t]*)((?:[^.!?@\n]|\.(?=[A-Za-z0-9])){1,200}?)"
+    r"\s*@\*{0,2}(?:all|everyone|channel|stream)\*{0,2}(?![\w*])",
     re.IGNORECASE,
 )
 
@@ -108,6 +112,9 @@ class Scope:
 def scope(visible: str, topic: str) -> Scope:
     """The scope of an owner's channel-wide mention:  the explicit `@all for X:` names, or `X @all` (the names just
     before the mention, starting the line), else the work topic's repo, else everyone."""
+    # A `for X:` that names no app is ordinary prose ("@all for the record:", "@all for today:"), not a scope, so the
+    # alert keeps its everyone reach rather than silently reaching nobody (owner's call, Tue, Oct 20).  A typo of an
+    # app name therefore reminds every platform's few recent chats, which only tells them to read Zulip.
     for regex in (_SCOPE_RE, _PREFIX_RE):
         match = regex.search(visible)
         named = named_repos(match.group(1)) if match else None
@@ -231,7 +238,9 @@ def select(
         for r in rows
         if not r.get("stale")
         and r.get("status") != "unavailable"
-        and r.get("session_id")
+        # A malformed session id is not a chat to wake:  fail closed rather than queue a reminder for it.
+        and isinstance(r.get("session_id"), str)
+        and bool(r["session_id"].strip())
         and _recent(r, now)
     ]
     if where.repos is None:
