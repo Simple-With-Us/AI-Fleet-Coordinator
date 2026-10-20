@@ -50,11 +50,11 @@ copy of the same name:
 ```sh
 grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' reply.txt | wc -l     # must be above 0
 grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' reply.txt  # must print 0: no gap left unconverted
+```
 
 These are the canonical pair, run on the file you just produced.  They carry the same
 markup group the converter does, so a gap that sits after a markup span is counted and a
 missed one is caught.
-```
 
 ### Precedence: this is the owner's highest-priority house rule
 

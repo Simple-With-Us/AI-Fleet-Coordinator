@@ -46,7 +46,7 @@ printf 'Sentence one.\302\240 Sentence two.\n'
 ```
 
 `\302\240` is the UTF-8 encoding of U+00A0.  On the MiniMax pane, verify with
-`grep -o $'[.!?]\xc2\xa0' f | wc -l`, which must not print `0`.
+``grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' f | wc -l``, which must not print `0`.
 
 ### Precedence: this is the owner's highest-priority house rule
 

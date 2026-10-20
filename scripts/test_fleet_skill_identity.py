@@ -1111,10 +1111,6 @@ class CatalogMatchesFreshRenderTests(unittest.TestCase):
         for seat in catalog_seats():
             key = seat.seat_key or seat.tag.lower()
             expected_dirs.add(key)
-            if seat.retired:
-                # A retired seat's pack is history:  the installer does not re-render it,
-                # so it stays at the text it had, and this freshness check skips it.
-                continue
             for name in catalog_skill_names(DOCS):
                 if name in FROZEN_RENDERS:
                     continue

@@ -65,6 +65,12 @@ DATED_RECORDS = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
 # changes and the sync job rewrites the mirror.  The checkout-wide sweep below skips them
 # for the same reason DATED_RECORDS is skipped -- not a copy this repository may edit --
 # and check-generated-mirror.py is the gate that holds them honest in the meantime.
+#
+# The mirror is the file every seat reads first, so it does not stay a blind exemption:
+# the assertion that compares it with the one home lands in the pull request that carries
+# the mirror itself, because the mirror cannot hold the canonical converter before the
+# handbook merge that produces it.  Until then the sweep skips it and the follow-up
+# assertion is what keeps it honest.
 GENERATED_MIRRORS = ("AGENT-SYNC.md",)
 
 # This file holds the checks themselves, so the sweep below finds its own command
@@ -101,8 +107,9 @@ def _active_by_seat_copies() -> tuple[str, ...]:
 def _retired_by_seat_copies() -> tuple[str, ...]:
     """The by-seat upload packs of the retired seats.
 
-    The repository keeps them as the record of what those seats had, so the installer
-    does not re-render them and the sweeps below do not read them.
+    A retired seat keeps no tracked tree and no tool home, but its catalog pack is a
+    committed output like any other, so the installer re-renders it from the one home
+    and the sweeps below read it.
     """
     return tuple(
         "docs/fleet-skills/by-seat/%s/sentence-gap/SKILL.md" % (seat.seat_key or seat.tag.lower())
@@ -128,12 +135,9 @@ RENDERED_COPIES = (
         ".cursor/rules/sentence-gap.mdc",
     )
     + _active_by_seat_copies()
+    + _retired_by_seat_copies()
     + _platform_copies()
 )
-
-# The retired seats' by-seat packs.  The repository keeps them as history, so the
-# installer does not re-render them and the sweeps do not read them.
-RETIRED_COPIES = _retired_by_seat_copies()
 
 # The live guidance that quotes the pattern for a reader to copy.
 GUIDANCE = (
@@ -232,6 +236,7 @@ def run_grep(command: str) -> int:
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
     if proc.returncode not in (0, 1):
         raise AssertionError("command failed: %s\n%s" % (command, proc.stderr.strip()))
@@ -434,15 +439,14 @@ class OneSourceOfTruthTests(unittest.TestCase):
     def test_no_live_file_holds_a_converter_without_the_markup_group(self) -> None:
         """A copy that drifts is a body that ships with no gap, so every converter in the
         checkout carries the markup group.  A dated record of a ruling keeps the form it
-        was written in and is listed as such, a generated mirror is built elsewhere and
-        cannot be edited here, and a retired seat's pack is history."""
+        was written in and is listed as such, and the generated mirror is asserted on its
+        own, with a pointer to the handbook sync."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
             if (
                 rel in DATED_RECORDS
                 or rel in GENERATED_MIRRORS
                 or rel in CHECKER_FILES
-                or rel in RETIRED_COPIES
             ):
                 continue
             try:
@@ -654,15 +658,14 @@ class AssertionCommandTests(unittest.TestCase):
 
     def test_no_live_file_holds_a_blind_leftover_check(self) -> None:
         """No live file may hold the check that cannot see a gap after a markup span.
-        A dated record of a ruling keeps the form it was written in and is skipped, and a
-        retired seat's pack is history and is skipped."""
+        A dated record of a ruling keeps the form it was written in and is skipped, and
+        the generated mirror is asserted on its own."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
             if (
                 rel in DATED_RECORDS
                 or rel in GENERATED_MIRRORS
                 or rel in CHECKER_FILES
-                or rel in RETIRED_COPIES
             ):
                 continue
             try:
