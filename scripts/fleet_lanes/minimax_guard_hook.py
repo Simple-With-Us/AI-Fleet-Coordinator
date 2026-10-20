@@ -52,7 +52,7 @@ def file_reason(payload: dict, ctx=None, secret_guard=None) -> str | None:
             return reason
     if table_error:
         return "MiniMax file tool refused: SECRET_FILE_PATTERNS is unavailable or invalid."
-    if ctx.registry.source == "fallback":
+    if ctx.registry.source == "fallback" or not ctx.registry.registered_apps:
         return "MiniMax file tool refused: required FLEET_APPS_JSON registry is unavailable or invalid."
     return None
 
@@ -116,7 +116,9 @@ def decide(payload: dict, ctx=None, secret_guard=None):
         if isinstance(args, dict) and isinstance(args.get("command"), str):
             # Shared policy currently misses bare ps (requires trailing whitespace).
             normalized = dict(
-                payload, tool_name="Bash", tool_input=dict(args, command=args["command"] + " ")
+                payload,
+                tool_name="Bash",
+                tool_input=dict(args, command=args["command"] + " " if args["command"].strip() == "ps" else args["command"]),
             )
             return fleet.decide(normalized, secret_guard)
         return None, ""

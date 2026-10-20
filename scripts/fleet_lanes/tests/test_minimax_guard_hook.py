@@ -124,6 +124,25 @@ class MinimaxHookTests(unittest.TestCase):
             self.assertEqual(mm.main(stdin=io.StringIO(raw), stdout=out), 0)
             self.assertEqual(out.getvalue(), "")
 
+    def test_maximum_length_command_preserves_shared_guard_denial(self):
+        command = self.fleet_clone_into_temp()
+        command += " " * (guard.MAX_COMMAND_CHARS - len(command))
+        for tool in ("Bash", "bash"):
+            payload = {"tool_name": tool, "tool_input": {"command": command}}
+            self.assertIsNotNone(mm.decide(payload)[0])
+
+    def test_structurally_empty_registry_refuses_file_tools(self):
+        import copy
+
+        ctx = guard.make_context(self.env, home=self.home)
+        for data in ({}, {"apps": []}, {"apps": "invalid"}, {"apps": [{}]}):
+            registry = mm.layout.parse_registry(data, source="/synthetic/registry.json")
+            empty = copy.copy(ctx)
+            empty.registry = registry
+            for tool in ("Read", "Write", "Edit"):
+                reason = mm.decide(self.payload(tool, "Code/BotFleet/file.py"), empty)[0]
+                self.assertIn("registry is unavailable or invalid", reason)
+
     def test_native_fallback_names_and_fields(self):
         for tool in ("read", "write", "edit"):
             args = {"file_path" if tool == "edit" else "path": ".secrets/dummy"}
