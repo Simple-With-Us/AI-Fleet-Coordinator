@@ -12,7 +12,7 @@ from agent_sync.mcp import guide as G
 from agent_sync.tests.harness import SESSION, Harness
 from agent_sync.tests.test_notes import FakeRun
 
-TITLE = "[AFC, Claude] cli check"
+TITLE = "[AFC, CLAUDE] cli check"
 
 
 class NotesCliTests(Harness):
@@ -307,9 +307,9 @@ class NotesCliTests(Harness):
         with a, b:
             self.assertEqual(self.run_cli("notes", "create", "no bracket", stdin="x").code, 2)
             self.assertEqual(
-                self.run_cli("notes", "create", '[AFC, Claude] "q"', stdin="x").code, 2
+                self.run_cli("notes", "create", '[AFC, CLAUDE] "q"', stdin="x").code, 2
             )
-            wrong = self.run_cli("notes", "create", "[AFC, Codex] not mine", stdin="x")
+            wrong = self.run_cli("notes", "create", "[AFC, CODEX] not mine", stdin="x")
             self.assertEqual(wrong.code, 2)
             self.assertIn("Agent in the title", wrong.err)
             leak = self.run_cli("notes", "create", TITLE, stdin="token " + "ghp_" + "EXAMPLE0" * 5)

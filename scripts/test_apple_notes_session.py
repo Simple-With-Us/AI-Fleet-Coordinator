@@ -438,64 +438,88 @@ class SessionIdTests(unittest.TestCase):
         """
         import os
         import re
-        import shutil
         import subprocess
         import tempfile
         import threading
 
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple-notes-coding.sh")
-        tmp_parent = tempfile.mkdtemp(prefix="afc422-")
+        import signal
+
+        temporary = tempfile.TemporaryDirectory(prefix="afc422-")
+        self.addCleanup(temporary.cleanup)
         names = [f"conc-id-{i:04d}" for i in range(4)]
         live = set()
         lock = threading.Lock()
+        cancelled = threading.Event()
         results = {}
 
+        def stop(proc):
+            # A shell may exit while its converter still holds the pipes.  The
+            # private process group lets interruption clean up both processes.
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait(timeout=5)
+
         def worker(name):
-            env = dict(
-                os.environ, APPLE_NOTES_PRINT_HTML="1", AGENT_SESSION="conc-test-session-0001"
-            )
-            cmd = ["bash", "-x", script, f"[AFC, Claude] Notes {name}", f"Body of {name}."]
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env
-            )
+            env = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "HOME": temporary.name,
+                "APPLE_NOTES_PRINT_HTML": "1",
+                "AGENT_SESSION": name,
+                "AGENT_SEAT": "CLAUDE",
+                "LANG": "en_US.UTF-8",
+            }
+            cmd = ["bash", "-x", script, f"[AFC, CLAUDE] Notes {name}", f"Body of {name}."]
             with lock:
+                if cancelled.is_set():
+                    return
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                )
                 live.add(proc)
             try:
-                out, err = proc.communicate(timeout=180)
-                rc = proc.returncode
+                out, err = proc.communicate(timeout=60)
+                with lock:
+                    results[name] = (proc.returncode, out, err)
             except BaseException:
-                proc.terminate()
-                try:
-                    proc.communicate(timeout=10)
-                except BaseException:  # noqa: BLE001
-                    proc.kill()
-                    proc.communicate()
+                stop(proc)
+                raise
+            finally:
                 with lock:
                     live.discard(proc)
-                raise
-            with lock:
-                live.discard(proc)
-                results[name] = (rc, out, err)
 
-        threads = [threading.Thread(target=worker, args=(n,)) for n in names]
+        threads = [threading.Thread(target=worker, args=(name,), daemon=True) for name in names]
         try:
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
-        except BaseException:
-            with lock:
-                stopping = list(live)
-            for proc in stopping:
-                proc.terminate()
-            raise
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=70)
+                self.assertFalse(thread.is_alive(), "concurrent note helper did not finish")
         finally:
             with lock:
-                stopping = list(live)
-            for proc in stopping:
-                proc.kill()
-                proc.communicate()
-            self.addCleanup(shutil.rmtree, tmp_parent, True)
+                cancelled.set()
+                pending = list(live)
+            for proc in pending:
+                stop(proc)
+            for thread in threads:
+                if thread.ident is not None:
+                    thread.join(timeout=5)
 
         self.assertEqual(sorted(results), sorted(names))
 
@@ -506,6 +530,7 @@ class SessionIdTests(unittest.TestCase):
             self.assertEqual(rc, 0, f"{name} exited {rc}: {err[-400:]}")
             # The body that went in is the body that came out:  no clobbering.
             self.assertIn(f"Body of {name}.", out)
+            self.assertIn("Session: " + name, out)
             # The trace names the directory once per reference;  one call means one directory.
             found = set(converter_re.findall(err))
             self.assertEqual(

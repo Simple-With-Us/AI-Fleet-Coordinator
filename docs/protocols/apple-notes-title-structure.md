@@ -9,19 +9,18 @@
 ```
 
 Examples:
-- `[UM, Grok] TestFlight first ship + export compliance`
-- `[ST, Monet] Pinecone WU breaker and embed staging`
-- `[CT, Claude] stuck-filing recovery (deterministic)`
-- `[ST, CT, Grok] R2 free-tier labels and peer checks`  ← multi-team key
-- `[AFC, Grok] Apple Notes title/timestamp standard`
+- `[UM, GROK] TestFlight first ship + export compliance`
+- `[ST, CODEX] Pinecone WU breaker and embed staging`
+- `[CT, CLAUDE] stuck-filing recovery (deterministic)`
+- `[ST, CT, GROK] R2 free-tier labels and peer checks`  ← multi-team key
+- `[AFC, GROK] Apple Notes title/timestamp standard`
 
 Rules:
 - **TEAM_KEY FIRST, then SEAT_TAG**, comma-separated inside `[]`, then a space,
   then the short topic. **No** bare `Team key — topics` titles; **no** "session" in the title.
 - **Multiple apps** when more than one is impacted: list each acronym
-  (`[ST, CT, UM, Grok] …`). Order = impact order (primary first).
-- **SEAT_TAG rendering** (Title Case, not the ALL-CAPS chat tag):  
-  `Claude` | `Codex` | `Cursor` | `AG` | `MiniMax` | `Grok` | `Grok Web` | `Clutch` | `Muse Code` | `Muse Assist` | `Fx` | `OpenCode` | `Wise` | `Echo` | `Jet` | `Grok Bot` | …
+  (`[ST, CT, UM, GROK] …`). Order = impact order (primary first).
+- **SEAT_TAG rendering:** use the exact uppercase seat tag resolved for this call, such as `CLAUDE`, `CODEX`, `MM`, `GROK-WEB`, `GB-FIXER` or `BF-DEPLOYER`.  Display names and case variants are refused.
 - **Never put the date in the title** — date lives on the **second row** (body).
 - **Never repeat the title as an H1 inside the body** — Notes already shows the title.
 

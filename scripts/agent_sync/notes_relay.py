@@ -14,7 +14,7 @@ A request runs only when ALL of these hold, checked here and nowhere else:
      the integration bots (Sentry, Datadog, Linear, PagerDuty, BetterStack) and retired seats are not;
   2. the message holds one well-formed envelope (notes.parse_message);
   3. envelope.identity is the sender's own identity (not merely an allowed one);
-  4. the title's Agent is the sender's own name (notes.title_problem);
+  4. the title's uppercase seat tag exactly matches the sender (notes.title_problem);
   4b. a create or update carries a session id (envelope `session`, AFC-361) unless the sender is a single-thread
      identity (session_ids.is_exempt:  Grok bots, Rob, Jet, Wise, Echo);
   5. the request_id was never run before for that sender (a duplicate gets the earlier outcome's reaction

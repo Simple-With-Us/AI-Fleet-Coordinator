@@ -34,7 +34,7 @@ Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do
 ```
 
 - Team key first, then your seat tag, both capitals, then the topic in Title Case (owner 2026-10-19:  never the app's long name, never the seat's long name).
-- Multi-app: `[ST, CT, MM] …` (impact order).
+- Multi-app: `[ST, CT, SEAT_TAG] …` (impact order).
 - No date in the title.  No word "session".  Do not repeat the title as an H1 in the body.
 
 | Acronym | App |

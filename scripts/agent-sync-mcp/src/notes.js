@@ -42,8 +42,7 @@ const CHECK_NAMES = Object.freeze({
 const REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const UPLOAD_PATH_RE = /^\/user_uploads\/[A-Za-z0-9_./-]{1,200}$/;
 const TITLE_BAD_RE = /["\\\u0000-\u001f\u007f\u0085\u2028\u2029]/;
-const TITLE_SCOPE_RE = /^\[([^\]]+)\] \S/;
-const TEAM_KEYS_RE = /^[A-Z0-9]+(?:, [A-Z0-9]+)*$/;
+const TITLE_SCOPE_RE = /^\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\] \S.*$/;
 
 // The title shape `[TEAM_KEY, SEAT_TAG] Topic`:  one or more capitalised team keys, then the
 // seat tag, then a non-empty topic.  A leading-bracket test alone lets `[AFC` and `[]` reach
@@ -51,13 +50,7 @@ const TEAM_KEYS_RE = /^[A-Z0-9]+(?:, [A-Z0-9]+)*$/;
 export function titleScope(title) {
   const match = TITLE_SCOPE_RE.exec(title);
   if (!match) return null;
-  const inner = match[1];
-  const cut = inner.lastIndexOf(", ");
-  if (cut < 0) return null;
-  const keys = inner.slice(0, cut);
-  const seat = inner.slice(cut + 2).trim();
-  if (!TEAM_KEYS_RE.test(keys) || !seat) return null;
-  return { keys, seat };
+  return { keys: match[1], seat: match[2] };
 }
 const PR_RE = /^[0-9#, ]{1,40}$/;
 const FENCE_OPEN = "```json\n";

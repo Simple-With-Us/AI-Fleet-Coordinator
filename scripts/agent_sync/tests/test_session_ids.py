@@ -139,17 +139,17 @@ class RuleTests(unittest.TestCase):
 class EnvelopeTests(unittest.TestCase):
     def test_a_session_rides_the_envelope_round_trips_and_is_checked(self):
         env = N.make_envelope(
-            "create", "[AFC, Claude] t", "body", {}, "requestid-0001", "CLAUDE", SID
+            "create", "[AFC, CLAUDE] t", "body", {}, "requestid-0001", "CLAUDE", SID
         )
         self.assertEqual(env["session"], SID)
         self.assertEqual(N.parse_message(N.render_message(env)), env)
         self.assertNotIn(
             "session",
-            N.make_envelope("create", "[AFC, Claude] t", "body", {}, "requestid-0001", "CLAUDE"),
+            N.make_envelope("create", "[AFC, CLAUDE] t", "body", {}, "requestid-0001", "CLAUDE"),
         )
         with self.assertRaises(N.NotesError) as bad:
             N.make_envelope(
-                "create", "[AFC, Claude] t", "body", {}, "requestid-0001", "CLAUDE", "no"
+                "create", "[AFC, CLAUDE] t", "body", {}, "requestid-0001", "CLAUDE", "no"
             )
         self.assertEqual(bad.exception.code, "invalid_argument")
         with self.assertRaises(N.EnvelopeError):
@@ -180,10 +180,10 @@ class DirectRunnerTests(unittest.TestCase):
     def test_the_script_gets_the_session_on_argv_and_the_verified_identity_in_its_environment(self):
         call = self.run_direct(
             N.make_envelope(
-                "create", "[AFC, Claude] t", "body", {}, "requestid-0001", "CLAUDE", SID
+                "create", "[AFC, CLAUDE] t", "body", {}, "requestid-0001", "CLAUDE", SID
             )
         )
-        self.assertEqual(call["argv"][1:], ["--session", SID, "--title", "[AFC, Claude] t"])
+        self.assertEqual(call["argv"][1:], ["--session", SID, "--title", "[AFC, CLAUDE] t"])
         self.assertEqual(
             call["env"]["AGENT_SEAT"],
             "CLAUDE",
@@ -192,11 +192,11 @@ class DirectRunnerTests(unittest.TestCase):
         self.assertNotIn("ZULIP_API_KEY", call["env"])
         update = self.run_direct(
             N.make_envelope(
-                "update", "[AFC, Claude] t", "body", {}, "requestid-0002", "CLAUDE", SID
+                "update", "[AFC, CLAUDE] t", "body", {}, "requestid-0002", "CLAUDE", SID
             )
         )
         self.assertEqual(
-            update["argv"][1:], ["--update", "--session", SID, "--title", "[AFC, Claude] t"]
+            update["argv"][1:], ["--update", "--session", SID, "--title", "[AFC, CLAUDE] t"]
         )
 
     def test_no_session_means_no_flag_and_pin_and_unpin_never_carry_one(self):
@@ -206,7 +206,7 @@ class DirectRunnerTests(unittest.TestCase):
         self.assertNotIn("--session", call["argv"])
         self.assertEqual(call["env"]["AGENT_SEAT"], "JET")
         pin = self.run_direct(
-            N.make_envelope("pin", "[AFC, Claude] t", "", {}, "requestid-0004", "CLAUDE", SID)
+            N.make_envelope("pin", "[AFC, CLAUDE] t", "", {}, "requestid-0004", "CLAUDE", SID)
         )
         self.assertNotIn("--session", pin["argv"])
         self.assertEqual(pin["env"]["AGENT_SEAT"], "CLAUDE")
@@ -277,7 +277,7 @@ class ToolTests(TI.IdentityHarness):
             self.assert_structured(
                 tool,
                 self.session(env).call(
-                    tool, {"title": "[AFC, Claude] t", "transport": "relay"}, identity="CLAUDE"
+                    tool, {"title": "[AFC, CLAUDE] t", "transport": "relay"}, identity="CLAUDE"
                 ),
             )
         self.assertEqual([e["action"] for e in self.posted()], ["pin", "unpin"])
@@ -288,14 +288,14 @@ class ToolTests(TI.IdentityHarness):
         self.assert_tool_error(self.write(env=env), "session_required")
         # CURSOR acts through this CLAUDE-launched server:  CLAUDE_CODE_SESSION_ID is not CURSOR's variable
         error = self.assert_tool_error(
-            self.write(identity="CURSOR", title="[AFC, Cursor] t"), "session_required"
+            self.write(identity="CURSOR", title="[AFC, CURSOR] t"), "session_required"
         )
         self.assertIn("CURSOR_CONVERSATION_ID", error["message"])
         # The server's environment is CLAUDE's, so it is not lent to CURSOR even when it holds CURSOR's variable.
         self.assert_tool_error(
             self.write(
                 identity="CURSOR",
-                title="[AFC, Cursor] t",
+                title="[AFC, CURSOR] t",
                 env=self.mcp_env(CURSOR_CONVERSATION_ID="cursor-conv-0001"),
             ),
             "session_required",
@@ -305,7 +305,7 @@ class ToolTests(TI.IdentityHarness):
             "notes_create",
             self.write(
                 identity="CURSOR",
-                title="[AFC, Cursor] t",
+                title="[AFC, CURSOR] t",
                 env=self.mcp_env(
                     AGENT_SEAT="CURSOR",
                     CLAUDE_CODE_SESSION_ID=None,
@@ -356,7 +356,7 @@ class ToolTests(TI.IdentityHarness):
                 "notes_create", self.write(transport="auto", request_id="direct-request-0001")
             )
         call = run.calls[0]
-        self.assertEqual(call["argv"][-4:], ["--session", SESSION, "--title", "[AFC, Claude] t"])
+        self.assertEqual(call["argv"][-4:], ["--session", SESSION, "--title", "[AFC, CLAUDE] t"])
         self.assertEqual(call["env"]["AGENT_SEAT"], "CLAUDE")
 
 
@@ -373,7 +373,7 @@ class CliTests(Harness):
             mock.patch.object(N.subprocess, "run", run),
         ):
             return run, self.run_cli(
-                "notes", "create", "[AFC, Claude] cli t", *argv, stdin="body\n", env=environ
+                "notes", "create", "[AFC, CLAUDE] cli t", *argv, stdin="body\n", env=environ
             )
 
     def test_the_cli_reads_the_environment_and_a_flag_beats_it(self):
@@ -420,7 +420,7 @@ class RelayTests(TR.RelayHarness):
     ):
         for action in ("create", "update"):
             message = self.send(
-                "CURSOR", "[AFC, Cursor] t", action=action, rid="no-session-" + action
+                "CURSOR", "[AFC, CURSOR] t", action=action, rid="no-session-" + action
             )
             self.assert_refused(message, "session id is required")
             self.assertIn("`session` argument", self.client.replies[-1])
@@ -428,20 +428,20 @@ class RelayTests(TR.RelayHarness):
             self.assertNotIn("hello body", self.client.replies[-1])
 
     def test_the_session_runs_and_reaches_the_script(self):
-        message = self.send("CURSOR", "[AFC, Cursor] t", SID)
+        message = self.send("CURSOR", "[AFC, CURSOR] t", SID)
         self.assertEqual(self.process(message), "done")
         self.assertEqual(
-            self.calls[0]["argv"][-4:], ["--session", SID, "--title", "[AFC, Cursor] t"]
+            self.calls[0]["argv"][-4:], ["--session", SID, "--title", "[AFC, CURSOR] t"]
         )
         self.assertEqual(self.calls[0]["env"]["AGENT_SEAT"], "CURSOR")
 
     def test_exempt_senders_need_none_and_pin_never_does(self):
         titles = {
-            "GB-FIXER": "[AFC, gb-fixer] t",
+            "GB-FIXER": "[AFC, GB-FIXER] t",
             "JET": "[AFC, JET] t",
             "WISE": "[AFC, WISE] t",
             "ECHO": "[AFC, ECHO] t",
-            "MA": "[AFC, Muse Assist] t",
+            "MA": "[AFC, MA] t",
             "GROK-BOT": "[AFC, GROK-BOT] t",
         }
         for identity, title in titles.items():
@@ -457,7 +457,7 @@ class RelayTests(TR.RelayHarness):
         before = len(self.calls)
         self.assertEqual(
             self.process(
-                self.send("CURSOR", "[AFC, Cursor] t", action="pin", rid="pin-no-session-1")
+                self.send("CURSOR", "[AFC, CURSOR] t", action="pin", rid="pin-no-session-1")
             ),
             "done",
         )
@@ -466,13 +466,13 @@ class RelayTests(TR.RelayHarness):
     def test_the_exemption_is_the_senders_bot_never_a_claim_in_the_envelope(self):
         # CURSOR's bot claims to be GB-FIXER (exempt):  refused for the identity, so the exemption never applies
         envelope = N.make_envelope(
-            "create", "[AFC, gb-fixer] t", "x", {}, "spoof-request-01", "GB-FIXER"
+            "create", "[AFC, GB-FIXER] t", "x", {}, "spoof-request-01", "GB-FIXER"
         )
         message = self.message(TR.SENDERS["CURSOR"], N.render_message(envelope))
         self.assert_refused(message, "is not the sender")
 
     def test_validate_names_the_session_refusal_code(self):
-        message = self.send("GROK-WEB", "[AFC, Grok Web] t")
+        message = self.send("GROK-WEB", "[AFC, GROK-WEB] t")
         with self.assertRaises(NR.Refusal) as caught:
             NR.validate(message, TR.USERS[12])
         self.assertEqual(caught.exception.code, "session")

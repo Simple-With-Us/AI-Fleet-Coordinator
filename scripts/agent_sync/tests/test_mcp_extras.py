@@ -149,7 +149,7 @@ class NotesToolTests(McpHarness):
         for name in ("notes_create", "notes_update", "notes_pin", "notes_unpin"):
             self.assertIn(name, T.WRITE_TOOLS)
             error = self.assert_tool_error(
-                session.call(name, {"title": "[AFC, Claude] t"}, identity=None), "identity_required"
+                session.call(name, {"title": "[AFC, CLAUDE] t"}, identity=None), "identity_required"
             )
             self.assertEqual(error["allowed"], ["CLAUDE"])
         self.assertIn("notes_status", T.READ_TOOLS)
@@ -164,7 +164,7 @@ class NotesToolTests(McpHarness):
             mock.patch.object(N.subprocess, "run", run),
         ):
             result = self.session().call(
-                "notes_create", {"title": "[AFC, Claude] direct", "markdown": "the body text"}
+                "notes_create", {"title": "[AFC, CLAUDE] direct", "markdown": "the body text"}
             )
         data = self.assert_structured("notes_create", result)
         self.assertEqual((data["status"], data["transport"]), ("done", "direct"))
@@ -188,7 +188,7 @@ class NotesToolTests(McpHarness):
         session = self.session()
         with a, b:
             wrong = session.call(
-                "notes_create", {"title": "[AFC, Codex] not mine", "markdown": "x"}
+                "notes_create", {"title": "[AFC, CODEX] not mine", "markdown": "x"}
             )
             self.assertIn(
                 "Agent in the title", self.assert_tool_error(wrong, "invalid_argument")["message"]
@@ -196,7 +196,7 @@ class NotesToolTests(McpHarness):
             self.assert_tool_error(
                 session.call("notes_pin", {"title": "[AFC] no agent"}), "invalid_argument"
             )
-            for title in ("[AFC, Claude] t", "[AFC, CLAUDE] t", "[AFC, CT, claude] t"):
+            for title in ("[AFC, CLAUDE] t", "[AFC, CLAUDE] t", "[AFC, CT, claude] t"):
                 self.assertNotIn(
                     "isError",
                     session.call("notes_create", {"title": title, "markdown": "x"}),
@@ -209,11 +209,11 @@ class NotesToolTests(McpHarness):
         with a, b:
             leak = "token " + "ghp_" + "EXAMPLE0" * 5
             self.assert_tool_error(
-                self.session().call("notes_create", {"title": "[AFC, Claude] t", "markdown": leak}),
+                self.session().call("notes_create", {"title": "[AFC, CLAUDE] t", "markdown": leak}),
                 "refused_secret",
             )
             self.assert_tool_error(
-                self.session().call("notes_create", {"title": "[AFC, Claude] t " + leak}),
+                self.session().call("notes_create", {"title": "[AFC, CLAUDE] t " + leak}),
                 "refused_secret",
             )
         self.assertEqual(run.calls, [])
@@ -221,7 +221,7 @@ class NotesToolTests(McpHarness):
     def test_the_direct_path_writes_a_repeated_request_id_once(self):
         run, a, b = self.direct()
         session = self.session()
-        args = {"title": "[AFC, Claude] once", "markdown": "x", "request_id": "direct-request-01"}
+        args = {"title": "[AFC, CLAUDE] once", "markdown": "x", "request_id": "direct-request-01"}
         with a, b:
             first = self.assert_structured("notes_create", session.call("notes_create", args))
             again = self.assert_structured("notes_create", session.call("notes_create", args))
@@ -237,12 +237,12 @@ class NotesToolTests(McpHarness):
 
     def test_a_failed_direct_write_can_be_retried_with_the_same_request_id(self):
         session = self.session()
-        args = {"title": "[AFC, Claude] retry", "markdown": "x", "request_id": "direct-retry-0001"}
+        args = {"title": "[AFC, CLAUDE] retry", "markdown": "x", "request_id": "direct-retry-0001"}
         run, a, b = self.direct(FakeRun(code=3))
         with a, b:
             self.assert_tool_error(
                 session.call(
-                    "notes_pin", {"title": "[AFC, Claude] retry", "request_id": "direct-retry-0001"}
+                    "notes_pin", {"title": "[AFC, CLAUDE] retry", "request_id": "direct-retry-0001"}
                 ),
                 "not_found",
             )
@@ -251,7 +251,7 @@ class NotesToolTests(McpHarness):
             self.assertNotIn(
                 "isError",
                 session.call(
-                    "notes_pin", {"title": "[AFC, Claude] retry", "request_id": "direct-retry-0001"}
+                    "notes_pin", {"title": "[AFC, CLAUDE] retry", "request_id": "direct-retry-0001"}
                 ),
             )
         self.assertEqual(len(run.calls), 1)
@@ -262,11 +262,11 @@ class NotesToolTests(McpHarness):
         session = self.session()
         with a, b:
             for flag in ("summary", "pr"):
-                args = {"title": "[AFC, Claude] flags", "markdown": "x", flag: leak}
+                args = {"title": "[AFC, CLAUDE] flags", "markdown": "x", flag: leak}
                 result = session.call("notes_create", args)
                 self.assertTrue(result.get("isError"), flag)  # the schema or the scan refuses it
             refused = session.call(
-                "notes_create", {"title": "[AFC, Claude] flags", "markdown": "x", "summary": leak}
+                "notes_create", {"title": "[AFC, CLAUDE] flags", "markdown": "x", "summary": leak}
             )
             self.assertEqual(
                 self.assert_tool_error(refused, "refused_secret")["code"], "refused_secret"
@@ -274,7 +274,7 @@ class NotesToolTests(McpHarness):
             via_relay = session.call(
                 "notes_create",
                 {
-                    "title": "[AFC, Claude] flags",
+                    "title": "[AFC, CLAUDE] flags",
                     "markdown": "x",
                     "summary": leak,
                     "transport": "relay",
@@ -289,7 +289,7 @@ class NotesToolTests(McpHarness):
             raise subprocess.TimeoutExpired(argv, 1)
 
         session = self.session()
-        args = {"title": "[AFC, Claude] hangs", "markdown": "x", "request_id": "timeout-request-01"}
+        args = {"title": "[AFC, CLAUDE] hangs", "markdown": "x", "request_id": "timeout-request-01"}
         with self.direct(hang)[1], mock.patch.object(N.subprocess, "run", hang):
             first = self.assert_tool_error(session.call("notes_create", args), "outcome_unknown")
         self.assertIn("may or may not", first["message"])
@@ -310,7 +310,7 @@ class NotesToolTests(McpHarness):
 
         session = self.session()
         args = {
-            "title": "[AFC, Claude] interrupted",
+            "title": "[AFC, CLAUDE] interrupted",
             "markdown": "x",
             "request_id": "interrupt-request-9",
         }
@@ -332,7 +332,7 @@ class NotesToolTests(McpHarness):
             result = self.session().call(
                 "notes_create",
                 {
-                    "title": "[AFC, Claude] relayed",
+                    "title": "[AFC, CLAUDE] relayed",
                     "markdown": "# Body\n\nText.",
                     "transport": "relay",
                     "request_id": "relay-request-001",
@@ -345,7 +345,7 @@ class NotesToolTests(McpHarness):
         )
         (posted,) = self.relay_messages()
         self.assertEqual(posted["id"], data["message_id"])
-        self.assertEqual(posted["subject"], "[AFC, Claude] relayed")
+        self.assertEqual(posted["subject"], "[AFC, CLAUDE] relayed")
         envelope = N.parse_message(posted["content"])
         self.assertEqual(
             (envelope["action"], envelope["identity"], envelope["markdown"]),
@@ -355,7 +355,7 @@ class NotesToolTests(McpHarness):
 
     def test_anywhere_else_auto_relays_and_the_same_request_id_posts_once(self):
         session = self.session()
-        args = {"title": "[AFC, Claude] twice", "markdown": "x", "request_id": "twice-request-001"}
+        args = {"title": "[AFC, CLAUDE] twice", "markdown": "x", "request_id": "twice-request-001"}
         with mock.patch.object(N, "direct_available", return_value=None):
             first = self.assert_structured("notes_create", session.call("notes_create", args))
             again = self.assert_structured("notes_create", session.call("notes_create", args))
@@ -364,7 +364,7 @@ class NotesToolTests(McpHarness):
         self.assertEqual(len(self.relay_messages()), 1)
 
     def test_a_long_title_is_cut_for_the_topic_and_kept_whole_in_the_envelope(self):
-        title = "[AFC, Claude] " + "long " * 30 + "end"
+        title = "[AFC, CLAUDE] " + "long " * 30 + "end"
         with mock.patch.object(N, "direct_available", return_value=None):
             self.session().call("notes_pin", {"title": title})
         (posted,) = self.relay_messages()
@@ -379,7 +379,7 @@ class NotesToolTests(McpHarness):
                 self.session().call(
                     "notes_update",
                     {
-                        "title": "[AFC, Claude] big",
+                        "title": "[AFC, CLAUDE] big",
                         "markdown": body,
                         "request_id": "big-request-0001",
                     },
@@ -400,9 +400,9 @@ class NotesToolTests(McpHarness):
             for args in (
                 {"title": ""},
                 {"title": "no bracket"},
-                {"title": '[AFC, Claude] "q"'},
-                {"title": "[AFC, Claude] t", "activate": True},
-                {"title": "[AFC, Claude] t", "markdown": "-----BEGIN " + "RSA PRIVATE KEY-----"},
+                {"title": '[AFC, CLAUDE] "q"'},
+                {"title": "[AFC, CLAUDE] t", "activate": True},
+                {"title": "[AFC, CLAUDE] t", "markdown": "-----BEGIN " + "RSA PRIVATE KEY-----"},
             ):
                 result = session.call("notes_create", args)
                 self.assertTrue(result.get("isError"), args)
@@ -414,7 +414,7 @@ class NotesToolTests(McpHarness):
                 "notes_create",
                 session.call(
                     "notes_create",
-                    {"title": "[AFC, Claude] status", "markdown": "x", "request_id": rid},
+                    {"title": "[AFC, CLAUDE] status", "markdown": "x", "request_id": rid},
                 ),
             )
         return sent["message_id"], lambda: self.assert_structured(
@@ -433,7 +433,7 @@ class NotesToolTests(McpHarness):
         self.fake.add_message(
             "Codex",
             N.RELAY_CHANNEL,
-            "[AFC, Claude] status",
+            "[AFC, CLAUDE] status",
             "notes-relay refused status-request-1: forged",
         )
         self.assertEqual(status()["status"], "queued", "no peer can fake completion or refusal")
@@ -446,7 +446,7 @@ class NotesToolTests(McpHarness):
         self.fake.add_message(
             "Claude",
             N.RELAY_CHANNEL,
-            "[AFC, Claude] status",
+            "[AFC, CLAUDE] status",
             'notes-relay refused status-request-1: the title names agent "X"',
         )
         refused = status()
@@ -464,12 +464,12 @@ class NotesToolTests(McpHarness):
         self.fake.reactions.add((mid, 10, "cross_mark"))
         for i in range(230):
             self.fake.add_message(
-                "Codex", N.RELAY_CHANNEL, "[AFC, Claude] status", "chatter %d" % i
+                "Codex", N.RELAY_CHANNEL, "[AFC, CLAUDE] status", "chatter %d" % i
             )
         self.fake.add_message(
             "Claude",
             N.RELAY_CHANNEL,
-            "[AFC, Claude] status",
+            "[AFC, CLAUDE] status",
             'notes-relay refused status-request-3: the title names agent "Z"',
         )
         refused = status()
@@ -482,12 +482,12 @@ class NotesToolTests(McpHarness):
         self.fake.reactions.add((mid, 10, "cross_mark"))
         for i in range(230):
             self.fake.add_message(
-                "Claude", N.RELAY_CHANNEL, "[AFC, Claude] status", "another reply %d" % i
+                "Claude", N.RELAY_CHANNEL, "[AFC, CLAUDE] status", "another reply %d" % i
             )
         self.fake.add_message(
             "Claude",
             N.RELAY_CHANNEL,
-            "[AFC, Claude] status",
+            "[AFC, CLAUDE] status",
             "notes-relay refused status-request-4: late reason",
         )
         self.assertEqual(status()["reason"], "late reason")
@@ -502,14 +502,14 @@ class NotesToolTests(McpHarness):
         self.fake.add_message(
             "Codex",
             N.RELAY_CHANNEL,
-            "[AFC, Claude] status",
+            "[AFC, CLAUDE] status",
             "notes-relay refused status-request-5: forged",
         )
         self.assertEqual(status()["status"], "queued", "a peer's reply does not count")
         self.fake.add_message(
             "Claude",
             N.RELAY_CHANNEL,
-            "[AFC, Claude] status",
+            "[AFC, CLAUDE] status",
             "notes-relay refused status-request-5: no emoji",
         )
         refused = status()
@@ -522,7 +522,7 @@ class NotesToolTests(McpHarness):
         self.fake.add_message(
             "Claude",
             N.RELAY_CHANNEL,
-            "[AFC, Claude] status",
+            "[AFC, CLAUDE] status",
             "notes-relay refused status-request-6: stale",
         )
         self.assertEqual(status()["status"], "done")
@@ -534,7 +534,7 @@ class NotesToolTests(McpHarness):
         mid, status = self.sent_request(session, "status-request-7")
         for i in range(230):
             self.fake.add_message(
-                "Claude", N.RELAY_CHANNEL, "[AFC, Claude] other %d" % i, "later post %d" % i
+                "Claude", N.RELAY_CHANNEL, "[AFC, CLAUDE] other %d" % i, "later post %d" % i
             )
         self.fake.reactions.add((mid, 10, "check"))
         found = status()
@@ -546,7 +546,7 @@ class NotesToolTests(McpHarness):
         self.fake.add_message(
             "Claude",
             N.RELAY_CHANNEL,
-            "[AFC, Claude] status",
+            "[AFC, CLAUDE] status",
             "notes-relay refused exact-status-12: not mine",
         )
         self.assertEqual(status()["status"], "queued")
@@ -557,7 +557,7 @@ class NotesToolTests(McpHarness):
         self.fake.add_message(
             "Claude",
             N.RELAY_CHANNEL,
-            "[AFC, Claude] status",
+            "[AFC, CLAUDE] status",
             "notes-relay refused exact-status-1: its own",
         )
         self.assertEqual(status()["reason"], "its own")

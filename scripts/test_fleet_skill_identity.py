@@ -1571,5 +1571,16 @@ class AgentSyncRosterTests(unittest.TestCase):
             self.assertNotRegex(text, rf"(?m)^\| {tag} \|", tag)
 
 
+class NotesTitleArchiveTests(unittest.TestCase):
+    def test_committed_notes_archive_matches_canonical_title_source(self):
+        source = Path(NOTES).read_bytes()
+        with zipfile.ZipFile(Path(ROOT, "docs", "fleet-skills", "apple-notes.zip")) as archive:
+            packed = archive.read("apple-notes/SKILL.md")
+        self.assertEqual(packed, source)
+        self.assertIn(b"[TEAM_KEY, SEAT_TAG]", packed)
+        self.assertIn(b"[ST, CT, SEAT_TAG]", packed)
+        self.assertNotIn(b"[APP, Agent]", packed)
+
+
 if __name__ == "__main__":
     unittest.main()
