@@ -70,7 +70,8 @@ def _confirmed_too_old(python: str, out: TextIO) -> bool:
         code = probe_failure_exit_code(error)
         raise InterpreterProbeFailure(
             code,
-            "interpreter %s version probe failed (exit %d); pass --python PATH (3.11 or newer)" % (python, code),
+            "interpreter %s version probe failed (exit %d); pass --python PATH (3.11 or newer)"
+            % (python, code),
         ) from error
 
 
