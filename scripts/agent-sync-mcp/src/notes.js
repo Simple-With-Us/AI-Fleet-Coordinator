@@ -139,7 +139,7 @@ export function checkTitle(raw) {
   const title = raw.trim();
   if (!title) throw invalid("argument 'title' must not be empty");
   if (points(title).length > TITLE_MAX) throw invalid(`argument 'title' is ${points(title).length} characters; at most ${TITLE_MAX}`);
-  if (!title.startsWith("[")) throw invalid('argument \'title\' must start with [APP, Agent], such as "[AFC, Claude] topic"');
+  if (!title.startsWith("[")) throw invalid('argument \'title\' must start with [TEAM_KEY, SEAT_TAG], such as "[AFC, MM] Topic"');
   if (TITLE_BAD_RE.test(title)) throw invalid("argument 'title' must not hold a double quote, a backslash or a control character");
   return title;
 }

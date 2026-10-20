@@ -141,7 +141,7 @@ def check_title(raw: Any) -> str:
     if not title.startswith("["):
         raise NotesError(
             "invalid_argument",
-            "argument 'title' must start with [APP, Agent], such as \"[AFC, Claude] topic\"",
+            "argument 'title' must start with [TEAM_KEY, SEAT_TAG], such as \"[AFC, MM] Topic\"",
         )
     if _TITLE_BAD_RE.search(title):
         raise NotesError(
@@ -366,7 +366,7 @@ def title_problem(
     """None when the title's Agent is `identity`'s own name, else why not."""
     parts = title_agent(title)
     if parts is None:
-        return 'the title must read "[APP, Agent] topic" with the app acronyms in capitals'
+        return 'the title must read "[TEAM_KEY, SEAT_TAG] Topic" with the team key in capitals'
     if parts[1].casefold() not in _notes_names(identity, registry_path, env):
         return 'the title names agent "%s", which is not %s' % (parts[1][:40], identity)
     return None
@@ -648,7 +648,7 @@ def with_provenance(
 ) -> dict:
     """The envelope with a footer saying who asked for the note and where (AFC-331, owner 2026-10-18).
 
-    Apple Notes has no authorship, so a title like `[APP, Agent]` is only text.  The relay stamps every note it
+    Apple Notes has no authorship, so a title like `[TEAM_KEY, SEAT_TAG]` is only text.  The relay stamps every note it
     creates or updates with the requesting bot and a permalink to its #notes-relay message, so any relayed note can
     be checked against Zulip, and a note without the footer is visibly unverified.  Pin and unpin carry no body."""
     if envelope.get("action") not in ("create", "update"):
