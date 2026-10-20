@@ -101,7 +101,7 @@ If a body carries one of these, fix that single gap by hand after the run.  Do n
 it.  When a whole *class* of shapes is missed —  a closing quote, a closing bracket, a closing
 span —  widen the class in the converter **and** in both checks together, and never widen the
 converter alone:  a converter the checks cannot see is a converter that fails silently, and a body
-it misses passes both checks and reaches the reader with no gap.  Patching one body by hand is
+it misses passes both checks and reaches the reader with a gap missing.  Patching one body by hand is
 what this rule is for;  a class of shapes belongs in the pattern.
 
 **Assert before you post — both checks, every time.**  A conversion that matches nothing still
