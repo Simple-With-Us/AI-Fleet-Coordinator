@@ -13,6 +13,7 @@ import os
 import re
 import socket
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -178,6 +179,10 @@ class ChatCatalog:
         self._cursor = cursor_transport
         self._clock = clock
         self._records: dict[str, dict[str, Any]] = {}
+        # The daemon's fanout thread and its event thread share one catalog, and `discover`
+        # mutates `_records` in place while reading it, so every record-touching entry point
+        # takes this lock.
+        self._lock = threading.RLock()
         self._expires = 0.0
         self._last_scan = 0.0
         self._availability: dict[str, str] = {}
@@ -211,6 +216,8 @@ class ChatCatalog:
         safe_title = self.scrub(title or "Untitled chat")[:180]
         stable_host = host or self.host
         readable = status not in {"unavailable", "stale", "metadata-only"}
+        # A stale row is never wakeable, so it never advertises an available wake.
+        wake_ok = bool(wake) and status != "stale"
         return {
             "id": _stable_id(stable_host, platform, session_id),
             "platform": platform,
@@ -225,8 +232,10 @@ class ChatCatalog:
             "stale": status == "stale",
             "capabilities": {
                 "read": readable,
-                "wake": bool(wake),
-                "wake_status": "available" if wake else "unsupported",
+                "wake": wake_ok,
+                "wake_status": (
+                    "available" if wake_ok else "stale" if status == "stale" else "unsupported"
+                ),
             },
             "_source": source,
             "_internal_path": internal_path,
@@ -877,6 +886,12 @@ class ChatCatalog:
     def discover(
         self, force: bool = False, *, wait_grok: bool = False, grok_timeout: float | None = None
     ) -> list[dict[str, Any]]:
+        with self._lock:
+            return self._discover(force, wait_grok=wait_grok, grok_timeout=grok_timeout)
+
+    def _discover(
+        self, force: bool = False, *, wait_grok: bool = False, grok_timeout: float | None = None
+    ) -> list[dict[str, Any]]:
         now = self._clock()
         if force or now >= self._expires:
             previous = self._records
@@ -948,11 +963,16 @@ class ChatCatalog:
         """Resolve only an exact ID in this catalog's bounded in-memory cache."""
         if not isinstance(record_id, str):
             return None
-        self.discover()
-        row = self._records.get(record_id)
-        return dict(row) if row is not None else None
+        with self._lock:
+            self.discover()
+            row = self._records.get(record_id)
+            return dict(row) if row is not None else None
 
     def excerpt(self, record_id: str, limit: int = 4) -> list[dict[str, str]]:
+        with self._lock:
+            return self._excerpt(record_id, limit)
+
+    def _excerpt(self, record_id: str, limit: int = 4) -> list[dict[str, str]]:
         row = self.resolve(record_id)
         if row is None:
             return []

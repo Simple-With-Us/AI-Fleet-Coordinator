@@ -1737,6 +1737,9 @@ class _Evaluator:
             and app is not None
             and app.registered
             and app.integration_dir_name
+            # the source repository must be this app's own repo, not a name that merely starts with it
+            and bool(app.owner_repo)
+            and src.owner_repo.casefold() == app.owner_repo.casefold()
             and self.ctx.fold(_norm(target))
             == self.ctx.fold(_join(str(self.ctx.roots.code_root), app.integration_dir_name))
         )

@@ -105,14 +105,30 @@ class Scope:
     issues: frozenset[str] = field(default_factory=frozenset)
 
 
+def _prefix_target(text: str) -> str:
+    """The name right before the mention:  a whole PR URL, or the last token.  Only the last token, so ordinary prose
+    before a plain `@all` cannot narrow an alert to one repo."""
+    url = _PR_URL_RE.search(str(text or ""))
+    if url:
+        return url.group(0)
+    parts = str(text or "").split()
+    return parts[-1] if parts else ""
+
+
 def scope(visible: str, topic: str) -> Scope:
-    """The scope of an owner's channel-wide mention:  the explicit `@all for X:` names, or `X @all` (the names just
+    """The scope of an owner's channel-wide mention:  the explicit `@all for X:` names, or `X @all` (the name right
     before the mention, starting the line), else the work topic's repo, else everyone."""
-    for regex in (_SCOPE_RE, _PREFIX_RE):
-        match = regex.search(visible)
-        named = named_repos(match.group(1)) if match else None
+    match = _SCOPE_RE.search(visible)
+    if match:
+        named = named_repos(match.group(1))
         if named:
             return Scope(named, named_issues(match.group(1)))
+    match = _PREFIX_RE.search(visible)
+    if match:
+        target = _prefix_target(match.group(1))
+        named = named_repos(target)
+        if named:
+            return Scope(named, named_issues(target))
     return Scope(named_repos(topic))
 
 
