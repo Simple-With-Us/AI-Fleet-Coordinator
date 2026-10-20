@@ -470,7 +470,7 @@ class ChatCatalog:
             if not isinstance(cwd, str) or not cwd.startswith("/"):
                 cwd = None
             wake = (
-                item.get("wake") is True
+                item.get("wake") == 1  # JSON true, or a 1 from an older writer
                 and state == "idle"
                 and bool(item.get("turn_ended_at"))
                 and bool(cwd)

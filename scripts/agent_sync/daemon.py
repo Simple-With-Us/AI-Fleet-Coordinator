@@ -3200,8 +3200,10 @@ class Daemon:
         """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform."""
         result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}}
         try:
+            # The catalog's own TTL decides when a rescan is due:  a burst of alerts reuses one walk instead of each
+            # forcing one, and never holds the scan lock longer than an ordinary wake's refresh would.
             rows = self.chat_catalog().discover(
-                force=True, wait_grok=True, grok_timeout=CT.discovery_wait_budget()
+                wait_grok=True, grok_timeout=CT.discovery_wait_budget()
             )
             chosen = FAN.select(rows, self.clock.time(), where, places or FAN.ChatPlaces())
         except Exception as exc:

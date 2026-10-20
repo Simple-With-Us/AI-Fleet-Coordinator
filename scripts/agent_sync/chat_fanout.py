@@ -112,14 +112,12 @@ class Scope:
 def scope(visible: str, topic: str) -> Scope:
     """The scope of an owner's channel-wide mention:  the explicit `@all for X:` names, or `X @all` (the names just
     before the mention, starting the line), else the work topic's repo, else everyone."""
-    explicit = _SCOPE_RE.search(visible)
-    if explicit:
-        # An explicit scope is the owner's decision:  a name that resolves to no repo reaches nobody,
-        # it never widens to every chat (`None` repos means everyone, so an unresolved name is empty).
-        return Scope(named_repos(explicit.group(1)) or frozenset(), named_issues(explicit.group(1)))
-    match = _PREFIX_RE.search(visible)
-    if match:
-        named = named_repos(match.group(1))
+    # A `for X:` that names no app is ordinary prose ("@all for the record:", "@all for today:"), not a scope, so the
+    # alert keeps its everyone reach rather than silently reaching nobody (owner's call, Tue, Oct 20).  A typo of an
+    # app name therefore reminds every platform's few recent chats, which only tells them to read Zulip.
+    for regex in (_SCOPE_RE, _PREFIX_RE):
+        match = regex.search(visible)
+        named = named_repos(match.group(1)) if match else None
         if named:
             return Scope(named, named_issues(match.group(1)))
     return Scope(named_repos(topic))
