@@ -16,8 +16,10 @@ extend-exclude = [
 ]
 
 # The 3.9 contract for scripts/fleet_lanes (the Mac runs it under /usr/bin/python3).  autofix-ci installs the
-# latest ruff and passes no --select, and ruff 0.17's default rule set already includes the UP rules and
-# RUF100 (check with `ruff check --show-settings`), so no `select` is needed here.
+# latest ruff and passes no --select, so the default rule set applies:  E4, E7, E9 and F.  The UP (pyupgrade)
+# rules and RUF100 are NOT in ruff's default selection,  so they only reach these files because a rule that
+# fires on the default set pulls them in,  and the rewrites that broke the 3.9 import came from exactly that
+# path.  The lists below are therefore the whole protection,  not a supplement to a select.
 #
 # per-file-target-version stops every rule that needs a newer Python (UP007, UP045, UP017, UP040, UP041,
 # UP046, B905 and future ones).  It does NOT stop UP006 or UP035, which still fire at py39 and rewrite to
@@ -26,10 +28,17 @@ extend-exclude = [
 # Every other rule stays on.  See AFC-425.
 [per-file-target-version]
 "scripts/fleet_lanes/**" = "py39"
+"scripts/fleet_config/**" = "py39"
 
 [lint.per-file-ignores]
 "scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
 
+# The fleet_config package has the same 3.9 contract:  it runs on the fleet's Macs
+# under /usr/bin/python3,  so it cannot use the 3.11+ spelling of UTC (UP017) or the
+# other newer-Python spellings.  Without this an automated fix rewrites the package
+# into something that no longer imports on the interpreter the fleet runs.  See AFC-425.
+"scripts/fleet_config/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
+
 [format]
 # Whitespace churn and py313-only syntax: the 3.9-run package keeps its hand layout.  See AFC-425.
-exclude = ["scripts/fleet_lanes/**"]
+exclude = ["scripts/fleet_lanes/**", "scripts/fleet_config/**"]

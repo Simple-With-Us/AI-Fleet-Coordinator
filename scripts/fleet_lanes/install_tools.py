@@ -18,8 +18,9 @@ non-zero, times out, or prints nothing is a FAIL.
     python3 -m fleet_lanes.install_tools verify [--home H] [tools | PLATFORM ... | all]
     python3 -m fleet_lanes.install_tools --self-test
 
-PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch or kimi.  The first five get
-a hook entry in their config file.  minimax is a plugin DIRECTORY that this tool owns: MiniMax Code reads no settings
+PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch, kimi, copilot, vibe, opencode
+or fx.  The first five get a hook entry in their config file.  minimax is a plugin DIRECTORY that this tool owns:
+MiniMax Code reads no settings
 file for hooks, it loads them from a real directory under ~/.minimax/plugins/<name>/ (a symlink is skipped), so `apply
 minimax` writes ~/.minimax/plugins/fleet-guard/ (.claude-plugin/plugin.json and hooks/hooks.json: PreToolUse, matcher
 Bash, the fleet hook with --format claude), refuses a directory it did not write, and `verify minimax` runs the command
@@ -32,8 +33,24 @@ never edits Muse's config, and the only muse it runs is `muse plugins validate` 
 found on PATH, with HOME, the XDG dirs, TMPDIR and Muse's credential path inside a throwaway dir, none of the
 caller's XDG_ or MUSE_ variables except the plugin switch, and MUSE_NO_AUTO_UPDATE=1 and MUSE_LOGIN=0 (see
 muse_validate_env).  That is confined, not proven read-only: the launcher still runs from its own install dir.
-`all` is `tools` plus the five config platforms plus minimax (an own directory, no owner step afterwards).  `apply` needs a target; `plan` defaults to all plus muse, clutch
+`all` is `tools` plus the five config platforms plus minimax (an own directory, no owner step afterwards), plus
+copilot, vibe, opencode and fx.  `apply` needs a target; `plan` defaults to all plus muse, clutch
 and kimi, and `verify` the same.
+
+copilot, vibe, opencode and fx (AFC-387).  copilot is a fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json
+(version 1, hooks.PreToolUse, matcher Bash, the fleet hook with --format claude and timeoutSec 5); this tool never
+edits ~/.copilot/settings.json, and whether Copilot fires a preToolUse hook at all is UNVERIFIED on this Mac, so the
+first install is owner-gated and `verify copilot` ends with a SKIP for the live proof.  vibe is a marked [[hooks]]
+block in ~/.vibe/hooks.toml (name fleet-lane-guard, type before_tool, match bash, the fleet hook with --format vibe,
+timeout 5, strict true) plus the gate `enable_experimental_hooks = true` in ~/.vibe/config.toml, without which Vibe
+loads no hooks at all; `match` is bash because that is Vibe's shell tool name, and a wrong exact name would
+silently never fire.  Vibe is an engine-only CLI with no fleet seat, so no seat is claimed for it.  opencode is a
+local TypeScript plugin in the stable dir (opencode-plugin/fleet-lane-guard.ts) listed by absolute path in the
+plugin array of ~/.config/opencode/opencode.json; it inspects tool.execute.before and denies through
+permission.ask, and whether permission.ask is reached for a denied call is UNVERIFIED.  fx has NO hook surface at
+all: `plan fx` prints a prepared compensating control (a static permission.bash deny list over the temp-destination
+shapes, with permission_mode moved off yolo) for the owner to merge by hand, this tool never writes ~/.fx, and
+`verify fx` is a FAIL (UNSUPPORTED) with the blocker recorded until Jay approves that control or an exception.
 
 The fleet hook.  `fleet-guard-hook` (fleet_lanes/fleet_guard_hook.py) is the lane guard AND the secret guard in one
 command:  the lane guard, then the secret guard (scripts/hooks/secret-guard-pretooluse.py, copied into the stable dir
@@ -270,6 +287,20 @@ MINIMAX_HOOK_TIMEOUT_S = (
     10  # seconds, 1 to 10 (MiniMax's range).  A timeout fails OPEN, so the top of the range
 )
 PLATFORM_ALIASES = {"mm": "minimax"}  # the seat tag works as a target
+COPILOT_HOOKS_REL = ".copilot/hooks/fleet-lane-guard.json"  # a fleet-owned file; ~/.copilot/settings.json is not ours
+VIBE_CONFIG_REL = ".vibe/config.toml"  # holds only the enable_experimental_hooks gate for this tool
+VIBE_HOOKS_REL = ".vibe/hooks.toml"
+VIBE_SHELL_TOOL = "bash"  # Vibe's shell tool name; a wrong exact name silently never fires
+OPENCODE_CONFIG_REL = ".config/opencode/opencode.json"
+OPENCODE_PLUGIN_FILE = "opencode-plugin/fleet-lane-guard.ts"  # relative to the stable dir
+OPENCODE_PLUGIN_ID = "fleet-lane-guard"
+FX_BLOCKER = (
+    "UNSUPPORTED: fx has no hook, plugin or extension surface in the CLI (fx --help and the published docs index "
+    "name none), so the lane guard cannot run there.  The only enforcement surface is static permission rules in "
+    "~/.fx/settings.json, which cannot resolve d=$(mktemp -d), cannot read a repo's fleet status, and cannot see "
+    "through a bash -c layer, all of which guard.py handles.  FX stays RED until Jay approves the prepared "
+    "compensating control (plan fx prints it) or approves an exception"
+)
 BLOCK_NAME = "hooks-fleet-guards"
 BLOCK_TOOL = "fleet_lanes.install_tools"
 LANE_NAME = "lane"
@@ -424,6 +455,26 @@ class Paths:
     @property
     def minimax_hooks(self) -> str:
         return os.path.join(self.minimax_bundle, *MINIMAX_HOOKS_FILE.split("/"))
+
+    @property
+    def copilot_hooks(self) -> str:
+        return os.path.join(self.home, *COPILOT_HOOKS_REL.split("/"))
+
+    @property
+    def vibe_config(self) -> str:
+        return os.path.join(self.home, *VIBE_CONFIG_REL.split("/"))
+
+    @property
+    def vibe_hooks(self) -> str:
+        return os.path.join(self.home, *VIBE_HOOKS_REL.split("/"))
+
+    @property
+    def opencode_config(self) -> str:
+        return os.path.join(self.home, *OPENCODE_CONFIG_REL.split("/"))
+
+    @property
+    def opencode_plugin(self) -> str:
+        return os.path.join(self.stable, *OPENCODE_PLUGIN_FILE.split("/"))
 
     @property
     def package_dir(self) -> str:
@@ -1117,6 +1168,387 @@ def render_muse_seat() -> str:
     )
 
 
+def render_opencode_plugin() -> str:
+    """opencode-plugin/fleet-lane-guard.ts in the stable dir.  OpenCode has no config hooks key; it loads a local
+    plugin listed by absolute path in opencode.json's plugin array.  The plugin inspects tool.execute.before (keyed
+    on the presence of a command in the tool args, because OpenCode's shell tool name is not confirmed) and denies
+    through permission.ask, the one explicit deny channel in the plugin SDK.  It runs the stable fleet-guard-hook
+    with a Claude-shaped payload and reads the Claude deny shape back.  The guard path is derived from the plugin's
+    own file, so the text holds no home path and no credential, and this function takes no home to embed: the same
+    text is right in every stable dir.  A permission prompt the plugin cannot rule on is a denial,  not a
+    throw:  OpenCode's default handling of a throw is to allow.  Whether permission.ask is reached for a
+    call that tool.execute.before judged, and whether a throw from tool.execute.before denies, are
+    UNVERIFIED: permission.ask also judges whatever command text its own input carries,  and the throw
+    is only a second belt."""
+    return """// Generated by fleet_lanes.install_tools.  Do not edit; run `python3 -m fleet_lanes.install_tools apply tools`.
+// OpenCode guard plugin: denies fleet-repo checkouts in temp directories and the commands the secret guard blocks.
+// It inspects tool.execute.before and denies through permission.ask, the explicit deny channel.  Both are
+// UNVERIFIED live: no OpenCode session on this Mac has yet shown the deny reaching the tool.
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const guardCommand = join(dirname(fileURLToPath(import.meta.url)), "..", "fleet-guard-hook");
+const deniedCalls = new Map<string, string>();
+
+type AnyRecord = Record<string, unknown>;
+
+// Tool-call data and permission prompts are untrusted and walked recursively, so the walk
+// carries bounds:  a payload that is too large, too deep, too wide, or cyclic is refused
+// before it can exhaust the stack or the CPU ahead of the guard.
+const MAX_COMMAND_INPUT_BYTES = 64 * 1024;
+const MAX_COMMAND_INPUT_DEPTH = 16;
+const MAX_COMMAND_INPUT_NODES = 1000;
+
+// checkInputBounds refuses an untrusted document that is over any of those ceilings:  the
+// walk counts the nodes, measures the depth and finds a cycle, and the byte ceiling
+// measures the whole payload.  Every walk of untrusted input goes through it, so a second
+// caller cannot forget the bounds, and it runs before any field of the document is read.
+function checkInputBounds(value: unknown, label: string): void {
+  const seen = new WeakSet<object>();
+  let nodes = 0;
+  const walk = (current: unknown, depth: number): void => {
+    if (depth > MAX_COMMAND_INPUT_DEPTH) {
+      throw new TypeError(`${label} exceeds the maximum depth`);
+    }
+    if (++nodes > MAX_COMMAND_INPUT_NODES) {
+      throw new TypeError(`${label} exceeds the maximum element count`);
+    }
+    if (!current || typeof current !== "object") return;
+    if (seen.has(current)) {
+      throw new TypeError(`${label} contains a cycle`);
+    }
+    seen.add(current);
+    if (Array.isArray(current)) {
+      for (const item of current) walk(item, depth + 1);
+    } else {
+      const record = current as AnyRecord;
+      for (const key of Object.keys(record)) walk(record[key], depth + 1);
+    }
+    seen.delete(current);
+  };
+  walk(value, 0);
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new TypeError(`${label} is not serializable`);
+  }
+  if (serialized !== undefined && Buffer.byteLength(serialized, "utf8") > MAX_COMMAND_INPUT_BYTES) {
+    throw new TypeError(`${label} exceeds 64 KiB`);
+  }
+}
+
+function commandFrom(value: unknown): string | null {
+  // The bounds are checked first, so the walk below is never handed a document that is
+  // too deep, too wide or cyclic.
+  checkInputBounds(value, "OpenCode command input");
+  const walk = (current: unknown): string | null => {
+    if (typeof current === "string") return current;
+    if (Array.isArray(current)) {
+      return current.every((v) => typeof v === "string") ? current.join(" ") : null;
+    }
+    if (!current || typeof current !== "object") return null;
+    const record = current as AnyRecord;
+    for (const key of ["command", "cmd", "CommandLine", "commandLine", "script"]) {
+      const found = walk(record[key]);
+      if (found) return found;
+    }
+    for (const key of ["tool_input", "toolInput", "input", "args"]) {
+      const found = walk(record[key]);
+      if (found) return found;
+    }
+    return null;
+  };
+  return walk(value);
+}
+
+function cwdFrom(value: unknown, fallback: string): string {
+  if (!value || typeof value !== "object") return fallback;
+  const record = value as AnyRecord;
+  for (const key of ["workdir", "cwd", "Cwd", "working_directory", "directory"]) {
+    if (typeof record[key] === "string" && record[key]) return record[key] as string;
+  }
+  return fallback;
+}
+
+// The guard is the authorization source, so a guard that cannot answer is a denial, not an
+// allow:  a timeout, a guard that will not start, and output we cannot read all reject, so a
+// hung or missing fleet-guard-hook never reads as authorization.  Nothing here resolves null
+// except a guard that answered and did not deny.
+const GUARD_TIMEOUT_MS = 5000;
+
+class GuardFailure extends Error {
+  readonly exitCode: number;
+  constructor(message: string, exitCode: number) {
+    super(message);
+    this.name = "GuardFailure";
+    this.exitCode = exitCode;
+  }
+}
+
+function runGuard(command: string, cwd: string): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    let terminateChild = () => {};
+    try {
+      const child = spawn(guardCommand, ["--format", "claude"], { stdio: ["pipe", "pipe", "ignore"] });
+      let out = "";
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const terminate = () => {
+        if (!child.killed) child.kill("SIGTERM");
+      };
+      terminateChild = terminate;
+      const onParentExit = () => terminate();
+      const cleanup = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        process.off("exit", onParentExit);
+      };
+      const fail = (error: GuardFailure) => {
+        if (settled) return;
+        settled = true;
+        terminate();
+        cleanup();
+        reject(error);
+      };
+      const succeed = (reason: string | null) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(reason);
+      };
+      process.once("exit", onParentExit);
+      timer = setTimeout(() => {
+        fail(new GuardFailure(`fleet guard at ${guardCommand} timed out after ${GUARD_TIMEOUT_MS}ms`, 124));
+      }, GUARD_TIMEOUT_MS);
+      child.on("error", (error: Error) => {
+        const code = (error as NodeJS.ErrnoException).code === "ENOENT" ? 127 : 1;
+        fail(new GuardFailure(`fleet guard at ${guardCommand} failed to start: ${error.message}`, code));
+      });
+      child.stdout.on("data", (chunk: Buffer) => {
+        out += chunk.toString();
+      });
+      child.stdin.on("error", (error: Error) => {
+        fail(new GuardFailure(`fleet guard at ${guardCommand} input failed: ${error.message}`, 1));
+      });
+      child.on("close", () => {
+        if (settled) return;
+        try {
+          const body = JSON.parse(out) as AnyRecord;
+          if (!body || typeof body !== "object" || Array.isArray(body)) {
+            throw new Error("response is not an object");
+          }
+          const hook = body.hookSpecificOutput as AnyRecord | undefined;
+          const reason = hook?.permissionDecisionReason;
+          succeed(
+            hook?.permissionDecision === "deny" && typeof reason === "string" ? reason : null,
+          );
+        } catch (error) {
+          fail(
+            new GuardFailure(
+              `fleet guard at ${guardCommand} returned invalid output: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              1,
+            ),
+          );
+        }
+      });
+      child.stdin.end(JSON.stringify({ tool_name: "Bash", tool_input: { command }, cwd }));
+    } catch (error) {
+      terminateChild();
+      reject(
+        new GuardFailure(
+          `fleet guard at ${guardCommand} failed to start: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          127,
+        ),
+      );
+    }
+  });
+}
+
+// Only command-shaped values are probed.  Free text carried in permission metadata (a title,
+// a path, an ID) is not a shell command, and sending it to the guard both risks denying a
+// call that is not a fleet clone and costs one child process per string.
+const MAX_GUARD_CANDIDATES = 8;
+
+// A permission pattern is a glob that names WHAT may be called,  and a title is prose.
+// Neither is a command,  so neither is probed.  A value is a command candidate when it has
+// something a shell would run in it:  a space,  a slash,  or a shell metacharacter.  A bare
+// word is not probed,  because no guard rule can match on one and the spawn is pure cost.
+const COMMAND_SHAPE = " /;&|<>`$(){}[]'";
+
+function isCommandShaped(value: string): boolean {
+  // A space, a tab, a path separator or a shell metacharacter all mean the value
+  // could be a command.  A tab is tested by its character code because the class
+  // cannot be spelled with a backslash here.
+  if (value.indexOf("\t") >= 0) return true;
+  for (const ch of COMMAND_SHAPE) {
+    if (value.indexOf(ch) >= 0) return true;
+  }
+  return false;
+}
+
+// The shape checks the plugin API documents,  enforced at runtime because a TypeScript
+// annotation is not one.  A hookInput that is not an object,  a pattern that is neither a
+// string nor an array of strings,  or a title that is not a string,  is a malformed
+// permission prompt:  the plugin cannot rule on it,  so it must not be read as if it were
+// well formed.
+function permissionInput(hookInput: unknown): AnyRecord {
+  if (!hookInput || typeof hookInput !== "object" || Array.isArray(hookInput)) {
+    throw new TypeError("the permission hookInput must be an object");
+  }
+  const hook = hookInput as AnyRecord;
+  const pattern = hook.pattern;
+  if (pattern !== undefined && pattern !== null) {
+    if (typeof pattern === "string") {
+      // a string is fine
+    } else if (Array.isArray(pattern)) {
+      for (const item of pattern) {
+        if (typeof item !== "string") {
+          throw new TypeError("every entry of a permission pattern array must be a string");
+        }
+      }
+    } else {
+      throw new TypeError("a permission pattern must be a string or an array of strings");
+    }
+  }
+  if (hook.title !== undefined && hook.title !== null && typeof hook.title !== "string") {
+    throw new TypeError("a permission title must be a string");
+  }
+  if (hook.title === "") {
+    throw new TypeError("a permission title must not be empty");
+  }
+  // The identifiers are the correlation key between a denial and the call that caused
+  // it,  so an identifier that is not a non-empty string is a malformed prompt too:  a
+  // null key would let the call through instead of refusing it.
+  if (typeof hook.sessionID !== "string" || !hook.sessionID) {
+    throw new TypeError("a permission sessionID must be a non-empty string");
+  }
+  if (hook.callID !== undefined && hook.callID !== null) {
+    if (typeof hook.callID !== "string" || !hook.callID) {
+      throw new TypeError("a permission callID must be a non-empty string");
+    }
+  }
+  return hook;
+}
+
+function guardCandidates(hook: AnyRecord): string[] {
+  const candidates: string[] = [];
+  const pattern = hook.pattern;
+  if (typeof pattern === "string") {
+    if (isCommandShaped(pattern)) candidates.push(pattern);
+  } else if (Array.isArray(pattern)) {
+    for (const item of pattern) {
+      if (typeof item === "string" && isCommandShaped(item)) candidates.push(item);
+    }
+  }
+  const metadata = hook.metadata;
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    for (const key of ["command", "cmd", "script"]) {
+      const value = (metadata as AnyRecord)[key];
+      if (typeof value === "string" && isCommandShaped(value)) candidates.push(value);
+    }
+  }
+  return candidates;
+}
+
+function denialKey(sessionID: unknown, callID: unknown): string | null {
+  if (typeof sessionID !== "string" || !sessionID) return null;
+  if (typeof callID !== "string" || !callID) return null;
+  return JSON.stringify([sessionID, callID]);
+}
+
+export const server = async (input: { directory?: string; worktree?: string }) => {
+  const fallbackCwd = input.directory ?? input.worktree ?? "";
+  return {
+    "tool.execute.before": async (
+      hookInput: { tool: string; sessionID: string; callID: string },
+      output: { args: unknown },
+    ) => {
+      let command: string | null;
+      try {
+        command = commandFrom(output.args);
+      } catch {
+        // Malformed or oversized tool input is not something the guard can rule on, and it
+        // is not something to allow either:  no command means no call proceeds.
+        const key = denialKey(hookInput.sessionID, hookInput.callID);
+        if (key) deniedCalls.set(key, "OpenCode command input could not be read");
+        throw new Error("OpenCode command input could not be read");
+      }
+      if (!command) return;
+      let reason: string | null;
+      try {
+        reason = await runGuard(command, cwdFrom(output.args, fallbackCwd));
+      } catch (error) {
+        // The guard could not answer.  Deny: an unavailable guard is not authorization.
+        const message = error instanceof Error ? error.message : String(error);
+        const key = denialKey(hookInput.sessionID, hookInput.callID);
+        if (key) deniedCalls.set(key, message);
+        throw new Error(message);
+      }
+      if (reason) {
+        const key = denialKey(hookInput.sessionID, hookInput.callID);
+        if (key) deniedCalls.set(key, reason);
+        throw new Error(reason);
+      }
+    },
+    "permission.ask": async (
+      hookInput: {
+        type?: string;
+        pattern?: string | string[];
+        sessionID: string;
+        callID?: string;
+        title?: string;
+        metadata?: unknown;
+      },
+      output: { status: "ask" | "deny" | "allow" },
+    ) => {
+      // A prompt the plugin cannot rule on is a denial,  not an error the caller sees:
+      // a malformed,  oversized or cyclic prompt fails closed.  Throwing here would
+      // leave the answer to OpenCode's default handling,  which is to allow.
+      let hook: AnyRecord;
+      try {
+        // The bounds are checked before any field is read,  so a pathological payload
+        // cannot cost unbounded CPU or memory ahead of the validation.
+        checkInputBounds(hookInput, "OpenCode permission input");
+        hook = permissionInput(hookInput);
+      } catch {
+        output.status = "deny";
+        return;
+      }
+      const key = denialKey(hook.sessionID, hook.callID);
+      if (key && deniedCalls.has(key)) {
+        // Answering a denial consumes it, so a long-lived server does not retain one
+        // entry per denied call forever.
+        deniedCalls.delete(key);
+        output.status = "deny";
+        return;
+      }
+      for (const candidate of guardCandidates(hook).slice(0, MAX_GUARD_CANDIDATES)) {
+        let reason: string | null;
+        try {
+          reason = await runGuard(candidate, fallbackCwd);
+        } catch (error) {
+          output.status = "deny";
+          return;
+        }
+        if (reason) {
+          output.status = "deny";
+          return;
+        }
+      }
+    },
+  };
+};
+
+export const FleetLaneGuardPlugin = server;
+export default { id: "fleet-lane-guard", server };
+"""
+
+
 def muse_owner_actions(paths: Paths) -> list:
     """What the OWNER still has to do after `apply tools`.  This tool never runs these commands and never edits
     Muse's config, so it can only say them."""
@@ -1202,6 +1634,7 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
     files[MUSE_SEAT_NAME] = render_muse_seat().encode("utf-8")
     files[MUSE_MANIFEST] = render_muse_manifest(paths.stable).encode("utf-8")
     files[MUSE_WRAPPER] = render_muse_wrapper(paths.stable, facts).encode("utf-8")
+    files[OPENCODE_PLUGIN_FILE] = render_opencode_plugin().encode("utf-8")
     init_text = files[f"{PACKAGE}/__init__.py"].decode("utf-8", "replace")
     version = (
         f"sha={src.sha}\npackage={_package_version(init_text)}\nfiles={len(files)}\n"
@@ -1236,6 +1669,7 @@ _TOP_FILES = (
     HOOK_NAME,
     FLEET_HOOK_NAME,
     CLUTCH_HOOKS_FILE,
+    OPENCODE_PLUGIN_FILE,
 ) + _MUSE_FILES
 
 
@@ -1648,7 +2082,7 @@ def check_deny_output(fmt: str, out: bytes, marker: str = DENY_MARKER) -> str | 
         if hso.get("hookEventName") != "PreToolUse" or hso.get("permissionDecision") != "deny":
             return "hookSpecificOutput is not a PreToolUse deny"
         reason = hso.get("permissionDecisionReason")
-    elif fmt in ("grok", "antigravity"):
+    elif fmt in ("grok", "antigravity", "vibe"):
         if set(body) != {"decision", "reason"} or body.get("decision") != "deny":
             return 'expected exactly {"decision": "deny", "reason": ...}'
         reason = body.get("reason")
@@ -2030,6 +2464,154 @@ PLATFORMS: dict[str, Platform] = {
                 "Whether an already-running MiniMax session picks up a newly written plugin: start a new session.",
             ),
         ),
+        Platform(
+            "copilot",
+            "Copilot CLI (fleet-owned hooks file)",
+            "claude",
+            "claude",
+            "claude",
+            "PreToolUse",
+            "Bash",
+            ".copilot",
+            COPILOT_HOOKS_REL,
+            supported=False,
+            kind="bundle",
+            in_all=True,
+            notes=(
+                "A NEW fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json (a documented user-level load path for "
+                "*.json under ~/.copilot/hooks).  This tool never edits ~/.copilot/settings.json, which the fleet does "
+                "not own, and never touches the existing agent-hook-otlp.json in the same directory.",
+                "The file is version 1 with one hooks.PreToolUse group, matcher Bash (the PascalCase event gets Claude "
+                "matcher semantics and reports the Claude tool name, which is exactly the payload fleet-guard-hook "
+                "--format claude parses), and one type command hook running the fleet hook by absolute path with "
+                "timeoutSec 5.  A command preToolUse hook is fail-closed on exit 2, a crash or any non-zero exit, and "
+                "fails open only on a timeout.",
+                "OWNER-GATED: there is no live preToolUse record on this Mac, so the first install needs Jay to start a "
+                "new Copilot session and ask for a process listing, which must be refused.  `verify copilot` proves the "
+                "command in the written file denies, and ends with a SKIP for that live proof once Copilot is installed "
+                "again;  it never claims it.  "
+                "Copilot CLI itself was retired on 2026-10-20 because it was not being used,  so the target has no "
+                "config to write until it is installed again, and nothing recreates the directory.  Named explicitly, "
+                "the platform is a FAIL (an uninstalled platform reached through `all` is a SKIP):  asking to verify "
+                "a platform that is not there is a mistake worth reporting,  not a healthy state.",
+            ),
+            unverified=(
+                "That Copilot CLI fires a PreToolUse hook from ~/.copilot/hooks/fleet-lane-guard.json at all (only a "
+                "postToolUse firing, from agent-hook-otlp.json, is recorded on this Mac).",
+                "That a running Copilot session picks up the new file: start a new session.",
+            ),
+        ),
+        Platform(
+            "vibe",
+            "Mistral Vibe (hooks.toml plus the experimental-hooks gate)",
+            "vibe",
+            "claude",
+            "claude",
+            "before_tool",
+            VIBE_SHELL_TOOL,
+            ".vibe",
+            VIBE_HOOKS_REL,
+            supported=False,
+            kind="block",
+            in_all=True,
+            notes=(
+                "ONE marked [[hooks]] block in ~/.vibe/hooks.toml: name fleet-lane-guard, type before_tool, match "
+                "bash, the fleet hook with --format vibe (Vibe's deny contract is {decision: deny, reason: ...}), "
+                "timeout 5, strict true, so a hook failure denies too (fail-closed).  Plus `enable_experimental_hooks "
+                "= true` at the top level of ~/.vibe/config.toml: Vibe's hook loader returns no hooks at all while that "
+                "gate is false or absent, which is the only reason Vibe was unguarded.",
+                "match is bash because that is Vibe's shell tool name: the tool's class is `Bash`, `get_name()` "
+                "snake-cases the class name, the live config.toml keys its tool tables by that same name, and a tool "
+                "call only resolves when the name the model sent is the registered one, so the name the hook sees is "
+                "bash.  A wrong exact name silently never fires, so the name is pinned here rather than left as a "
+                "wildcard, and a Vibe that renames the tool would silently stop the hook (the same risk the Kimi "
+                "entry records).",
+                "bash and not * on purpose: strict true turns a hook FAILURE into a deny, so a wildcard would make "
+                "every harmless tool call (read, grep, web_fetch, todo) fail closed whenever the guard process "
+                "misbehaves.  bash keeps that blast radius on the one tool that can run a fleet clone, and the guard "
+                "reads the command from the same payload keys Vibe sends (tool_name, tool_input.command, cwd).",
+                "Vibe is an engine-only CLI with no fleet identity and no seat, so nothing here claims a seat for it; "
+                "this tool only makes the installer able to write the guard and records the state.",
+            ),
+            unverified=(
+                "That Vibe loads a user-level ~/.vibe/hooks.toml and fires a before_tool hook in a live session (the "
+                "mechanism is read from the installed package source, not run): the live proof is a new Vibe session "
+                "asked to run a fleet clone into /tmp, which must be refused.",
+                "That Vibe keeps naming its shell tool `bash`: the name is read from the installed package source and "
+                "the live config.toml, never seen in a live hook firing.  A rename would silently stop the hook.",
+                "That a running Vibe session picks up the new hooks.toml and gate: start a new session.",
+            ),
+        ),
+        Platform(
+            "opencode",
+            "OpenCode (local plugin in the stable dir)",
+            "claude",
+            "claude",
+            "claude",
+            "PreToolUse",
+            None,
+            ".config/opencode",
+            OPENCODE_CONFIG_REL,
+            supported=False,
+            kind="plugin",
+            in_all=True,
+            new_mode=0o600,
+            notes=(
+                "OpenCode's config schema has no hooks key.  `apply tools` writes the guard plugin into the stable dir "
+                f"({OPENCODE_PLUGIN_FILE}); `apply opencode` lists that file by ABSOLUTE path as a string entry in the "
+                "plugin array of ~/.config/opencode/opencode.json (the plugin array is the proven load path; "
+                "~/.config/opencode/plugin directory auto-discovery is UNCONFIRMED and is not relied on).  Nothing else "
+                "in opencode.json is changed: its other keys are never printed, a backup is owner-only (0600) whatever "
+                "the file's mode, and the plugin text holds no credential, so no second copy of any token in that file "
+                "is made.",
+                "The plugin inspects tool.execute.before, keyed on the presence of a command in the tool args rather "
+                "than a tool name (OpenCode's shell tool name is not confirmed), runs the stable fleet-guard-hook with a "
+                "Claude-shaped payload, remembers a deny by session and call id, and denies through permission.ask, "
+                "the one explicit deny channel in the plugin SDK (output.status deny).  A throw from "
+                "tool.execute.before is a second belt only.  A permission prompt the plugin cannot rule on "
+                "(malformed, oversized or cyclic) is a deny and not a throw,  because OpenCode's default handling "
+                "of a throw is to allow.",
+                "OpenCode is the OPENCODE seat (branch prefix opencode/), so this guard is for a real seat.",
+            ),
+            unverified=(
+                "Whether permission.ask is reached for a shell call that tool.execute.before judged, and whether it "
+                "sees the command text (its input is a Permission with type, pattern, title and metadata; the plugin "
+                "judges whatever command text those carry, and a deny remembered from tool.execute.before).",
+                "Whether a throw from tool.execute.before denies or only errors the tool call, which is why "
+                "permission.ask is the primary channel and the throw is not relied on.",
+                "That OpenCode loads an absolute-path local plugin entry in a live session: the live proof is a new "
+                "OpenCode session asked for a process listing, which must be refused.  Only Jay can run that proof.",
+            ),
+        ),
+        Platform(
+            "fx",
+            "fx (no hook surface: UNSUPPORTED)",
+            "claude",
+            "claude",
+            "claude",
+            "PreToolUse",
+            "Bash",
+            ".fx",
+            ".fx/settings.json",
+            supported=False,
+            kind="config",
+            in_all=True,
+            notes=(
+                "Compensating control (prepared, NOT applied): merge the JSON that `plan fx` prints into "
+                "~/.fx/settings.json by hand, after Jay approves it.  It moves permission_mode off yolo to ask and "
+                "adds a static permission.bash deny list over the provable temp-destination shapes (a clone, a gh "
+                "clone, a worktree add or an archive extraction into /tmp, /private/tmp, /var/tmp or "
+                "/private/var/tmp), with a top-level `*` rule that asks for everything else.  This tool never "
+                "writes ~/.fx/settings.json.",
+                "The live ~/.fx/settings.json has permission_mode yolo with no permission block (key names only were "
+                "looked at; no value was printed).",
+            ),
+            unverified=(
+                "The exact wildcard matching fx applies to a permission.bash pattern (the shape is taken from the "
+                "published permissions documentation example).",
+                "That the compensating control, once Jay applies it, is ever exercised: fx stays RED until then.",
+            ),
+        ),
     )
 }
 # What the owner still has to do after a platform was written.  Printed by `apply`.
@@ -2041,6 +2623,14 @@ NEXT_STEPS: dict[str, str] = {
     "kimi": "start a new Kimi Code session, ask it to run `ps`, and expect a refusal",
     "minimax": "start a new MiniMax Code session, ask it to run `ps`, and expect a refusal (a local plugin is enabled by "
     "default: nothing to install or approve)",
+    "copilot": "OWNER STEP (first install): start a new Copilot CLI session, ask it to run a process listing, and "
+    "expect a refusal.  No live preToolUse firing is recorded on this Mac, so until that proof exists the guard is "
+    "written but UNVERIFIED",
+    "vibe": "start a new Vibe session, ask it to clone a fleet repo into /tmp, and expect a refusal",
+    "opencode": "OWNER STEP: start a new OpenCode session, ask it to run a process listing, and expect a refusal.  "
+    "Whether permission.ask denies live is UNVERIFIED until that proof exists",
+    "fx": "no installer step exists: fx stays RED (UNSUPPORTED) until Jay merges the prepared compensating control "
+    "from `plan fx` into ~/.fx/settings.json by hand, or approves an exception",
 }
 PLATFORM_ORDER: tuple[str, ...] = tuple(PLATFORMS)
 SUPPORTED_KEYS: tuple[str, ...] = tuple(k for k in PLATFORM_ORDER if PLATFORMS[k].supported)
@@ -2662,6 +3252,16 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
     path = config_path(paths, plat)
     cmd = hook_command(paths, plat.fmt)
     if plat.kind == "plugin":
+        if plat.key == "opencode":
+            op = plan_opencode(paths, follow_symlinks=follow_symlinks)
+            act = {
+                "new": "add",
+                "stale": "update",
+                "current": "unchanged",
+                "skip": "skip",
+                "refuse": "refuse",
+            }[op.state]
+            return PlatformPlan(plat, op.config, act, op.entry, op.reason, notes=list(op.notes))
         return PlatformPlan(
             plat,
             paths.muse_bundle,
@@ -2671,6 +3271,16 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
             "`apply tools` writes it.  No config file is edited",
         )
     if plat.kind == "bundle":
+        if plat.key == "copilot":
+            cp = plan_copilot(paths, follow_symlinks=follow_symlinks)
+            act = {
+                "new": "add",
+                "stale": "update",
+                "current": "unchanged",
+                "skip": "skip",
+                "refuse": "refuse",
+            }[cp.state]
+            return PlatformPlan(plat, cp.path, act, cp.command, cp.reason, notes=list(cp.notes))
         mp = plan_minimax(paths, follow_symlinks=follow_symlinks)
         act = {
             "new": "add",
@@ -2681,9 +3291,12 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
         }[mp.state]
         return PlatformPlan(plat, mp.bundle, act, mp.command, mp.reason, notes=list(mp.notes))
     if not plat.supported:
-        return PlatformPlan(
-            plat, path, "unsupported", cmd, "no verified hook surface; nothing is written"
+        reason = (
+            FX_BLOCKER + "; nothing is written"
+            if plat.key == "fx"
+            else "no verified hook surface; nothing is written"
         )
+        return PlatformPlan(plat, path, "unsupported", cmd, reason)
     if not os.path.isdir(os.path.join(paths.home, *plat.platform_dir.split("/"))):
         return PlatformPlan(
             plat,
@@ -3010,7 +3623,24 @@ def apply_platform(
     platform's own format right now.  The `apply` command never sets `shim_proven` (it skips those probes):
     `apply tools` proves a staged copy, and an `unchanged` tools result proves nothing about this run.  Only
     callers that have just proven the shim themselves (the self-test, the tests) pass it."""
+    if plat.key == "fx":
+        return Result(
+            plat.key,
+            "skipped",
+            FX_BLOCKER
+            + "; no file was written.  Merge the compensating control from `plan fx` by hand "
+            "only after Jay approves it",
+        )
     if plat.kind == "plugin":
+        if plat.key == "opencode":
+            return apply_opencode(
+                paths,
+                now=now,
+                timeout=timeout,
+                minimal_path=minimal_path,
+                shim_proven=shim_proven,
+                follow_symlinks=follow_symlinks,
+            )
         return apply_muse(paths)
     if plat.kind == "block":
         return apply_block(
@@ -3024,6 +3654,15 @@ def apply_platform(
             check_kimi=check_kimi,
         )
     if plat.kind == "bundle":
+        if plat.key == "copilot":
+            return apply_copilot(
+                paths,
+                now=now,
+                timeout=timeout,
+                minimal_path=minimal_path,
+                shim_proven=shim_proven,
+                follow_symlinks=follow_symlinks,
+            )
         return apply_minimax(
             paths,
             timeout=timeout,
@@ -3403,11 +4042,29 @@ def verify_platform(
     in the config's env block (or, as a warning, in the caller's environment), and for Codex the feature
     flag and the trust record.  Finds the entry through the same event and matcher accessors the merge uses."""
     t = plat.key
+    if plat.key == "fx":
+        if not os.path.isdir(os.path.join(paths.home, *plat.platform_dir.split("/"))):
+            return [
+                Check(
+                    t,
+                    "platform",
+                    "SKIP",
+                    f"~/{plat.platform_dir} does not exist (platform not installed)",
+                )
+            ]
+        return [Check(t, "platform", "FAIL", FX_BLOCKER)]
     if plat.kind == "plugin":
+        if plat.key == "opencode":
+            return verify_opencode(paths, timeout=timeout, minimal_path=minimal_path)
         return verify_muse(paths, timeout=timeout, minimal_path=minimal_path)
     if plat.kind == "block":
         return verify_block(plat, paths, timeout=timeout, minimal_path=minimal_path)
     if plat.kind == "bundle":
+        if plat.key == "copilot":
+            # Copilot CLI is retired on this Mac,  so the platform dir may be absent.  The
+            # per-platform verifier SKIPs that case,  and the dispatch must reach it
+            # rather than answer FAIL for a platform that is simply not installed.
+            return verify_copilot(paths, timeout=timeout, minimal_path=minimal_path)
         return verify_minimax(paths, timeout=timeout, minimal_path=minimal_path)
     if not plat.supported:
         return [
@@ -3908,7 +4565,11 @@ def verify_muse(
 
 
 def block_path(plat: Platform, paths: Paths) -> str:
-    return paths.clutch_patch if plat.key == "clutch" else paths.kimi_config
+    if plat.key == "clutch":
+        return paths.clutch_patch
+    if plat.key == "vibe":
+        return paths.vibe_hooks
+    return paths.kimi_config
 
 
 def block_command(plat: Platform, paths: Paths) -> str:
@@ -3925,6 +4586,16 @@ def block_body(plat: Platform, paths: Paths) -> list[str]:
             "      name: '@deepseek-ai/dsh-hooks-claude-code'",
             "      config:",
             f"        configPath: {json.dumps(paths.clutch_hooks)}",
+        ]
+    if plat.key == "vibe":
+        return [
+            "[[hooks]]",
+            'name = "fleet-lane-guard"',
+            'type = "before_tool"',
+            'match = "%s"' % VIBE_SHELL_TOOL,
+            f"command = {json.dumps(block_command(plat, paths))}",
+            f"timeout = {HOOK_TIMEOUT_S}",
+            "strict = true",
         ]
     return [
         "[[hooks]]",
@@ -3945,6 +4616,143 @@ def kimi_fields(plat: Platform, paths: Paths) -> dict:
     }
 
 
+def vibe_fields(plat: Platform, paths: Paths) -> dict:
+    """The fields of the Vibe `[[hooks]]` entry this tool writes, as values (what a parse of the file gives).  The
+    match is Vibe's shell tool name, `bash`:  the tool's class is `Bash`, `get_name()` snake-cases the class name, the
+    live config.toml keys its tables by that same name, and a tool call only resolves when the name the model sent is
+    the registered one, so the name the hook sees is `bash`.  A wrong exact name silently never fires, so it is
+    pinned here and a rename is called out as UNVERIFIED."""
+    return {
+        "name": "fleet-lane-guard",
+        "type": "before_tool",
+        "match": VIBE_SHELL_TOOL,
+        "command": block_command(plat, paths),
+        "timeout": HOOK_TIMEOUT_S,
+        "strict": True,
+    }
+
+
+def block_fields(plat: Platform, paths: Paths) -> dict:
+    """The `[[hooks]]` fields this tool writes for a TOML block platform (Kimi or Vibe)."""
+    return vibe_fields(plat, paths) if plat.key == "vibe" else kimi_fields(plat, paths)
+
+
+_VIBE_GATE_KEY = "enable_experimental_hooks"
+_VIBE_GATE_RE = re.compile(
+    r"^[ \t]*enable_experimental_hooks[ \t]*=[ \t]*([^#\n]*?)[ \t]*(?:#.*)?$"
+)
+_VIBE_TABLE_RE = re.compile(r"^[ \t]*\[")
+_VIBE_KV_RE = re.compile(r"^[ \t]*([A-Za-z0-9_.-]+)[ \t]*=")
+
+# A top-level TOML key, as the structural check sees it:  a bare name, a quoted name or
+# a single-quoted name, then an equals sign.  It is the line shape a well-formed
+# top-level key/value pair has.
+_TOML_KEY_RE = re.compile(
+    r"^[ \t]*(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*')"
+    r"(?:[ \t]*\.[ \t]*(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*'))*[ \t]*="
+)
+
+
+def _vibe_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | None]:
+    """The bracket depth and the open string delimiter after reading `line`, both carried across lines.  A value may
+    span lines, so `depth` and `quote` are the whole state of a TOML value: inside them the lines are the value's
+    text and not keys or tables of their own."""
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote is not None:
+            if ch == "\\" and quote == '"':
+                i += 2  # an escaped character, whatever it is
+                continue
+            if line.startswith(quote, i):
+                i += len(quote)
+                quote = None
+                continue
+            i += 1
+            continue
+        if line.startswith('"""', i) or line.startswith("'''", i):
+            quote = line[i : i + 3]
+            i += 3
+        elif ch == "#":
+            break  # a comment runs to the end of the line
+        elif ch == '"' or ch == "'":
+            quote = ch
+            i += 1
+        elif ch in "[{":
+            depth += 1
+            i += 1
+        elif ch in "]}":
+            depth -= 1
+            i += 1
+        else:
+            i += 1
+    return depth, quote
+
+
+def _vibe_value_end(lines: list[str], start: int) -> int:
+    """The index just past the value that begins on `lines[start]`: a multi-line array, inline table or
+    triple-quoted string ends on the line that closes it, not on the line its key is on."""
+    depth = 0
+    quote: str | None = None
+    for i in range(start, len(lines)):
+        depth, quote = _vibe_scan(lines[i], depth, quote)
+        if quote is None and depth <= 0:
+            return i + 1
+    return len(lines)
+
+
+def vibe_gate(text: str | None) -> bool | None:
+    """The top-level `enable_experimental_hooks` value in a Vibe config.toml (True, False or None when absent).
+    Only the top level counts: the key under a table belongs to that table, and a line inside a value that spans
+    lines is that value's text rather than a key."""
+    if text is None:
+        return None
+    depth = 0
+    quote: str | None = None
+    for line in text.splitlines():
+        at_top = quote is None and depth <= 0
+        depth, quote = _vibe_scan(line, depth, quote)
+        if not at_top:
+            continue
+        if _VIBE_TABLE_RE.match(line):
+            break
+        m = _VIBE_GATE_RE.match(line)
+        if m:
+            return True if m.group(1) == "true" else (False if m.group(1) == "false" else None)
+    return None
+
+
+def vibe_set_gate(text: str) -> str:
+    """`text` with the top-level gate set to true.  An existing top-level key is replaced in place; a missing one is
+    inserted after the last top-level key, or at the top when there is none.  A key whose value spans lines ends
+    where that value ends, so the gate never lands inside it.  Nothing else is changed."""
+    lines = text.split("\n")
+    depth = 0
+    quote: str | None = None
+    insert_at = 0
+    for i, line in enumerate(lines):
+        at_top = quote is None and depth <= 0
+        depth, quote = _vibe_scan(line, depth, quote)
+        if not at_top:
+            continue
+        if _VIBE_TABLE_RE.match(line):
+            break
+        if _VIBE_GATE_RE.match(line):
+            # The value of the key may span lines,  and replacing only its first line
+            # leaves the rest of it behind as orphan text,  which is not valid TOML.
+            # The value ends where the scan says it ends,  so the whole value goes.
+            # For a single-line value the end is the next line,  so the result is
+            # byte-identical to replacing the line alone.
+            end = _vibe_value_end(lines, i)
+            lines[i:end] = [_VIBE_GATE_KEY + " = true"]
+            return "\n".join(lines)
+        if _VIBE_KV_RE.match(line):
+            insert_at = _vibe_value_end(lines, i)
+    lines.insert(insert_at, _VIBE_GATE_KEY + " = true")
+    out = "\n".join(lines)
+    return out if out.endswith("\n") or not out else out + "\n"
+
+
 @dataclass
 class BlockPlan:
     key: str
@@ -3959,23 +4767,91 @@ class BlockPlan:
     command: str = ""
     body: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    gate_path: str = ""  # vibe: ~/.vibe/config.toml, which holds enable_experimental_hooks
+    gate_action: str = "none"  # vibe: replace when the gate is not already true
+    gate_new_text: str | None = None
+    gate_raw: bytes | None = None
+    gate_mode: int | None = None
+    gate_exists: bool = False
+
+
+def _toml_structure_problem(text: str) -> str | None:
+    """Why `text` is not well-formed TOML, as far as a scanner can tell, or None.
+
+    There is no ``tomllib`` on the minimum Python,  so this is the check that stands in
+    for it.  A scanner cannot check every rule of TOML,  but it catches the corruption a
+    writer like this one can do:  a value or a string that is never closed,  and a line
+    left over from a value that was replaced.
+
+    It reuses ``_vibe_scan``,  which already carries the bracket depth and the open
+    string across lines,  so a line inside a value is that value's text and not a key.
+    """
+    depth = 0
+    quote: str | None = None
+    for lineno, line in enumerate(text.splitlines(), 1):
+        at_top = quote is None and depth <= 0
+        depth, quote = _vibe_scan(line, depth, quote)
+        if not at_top:
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _VIBE_TABLE_RE.match(line):
+            continue
+        if not _TOML_KEY_RE.match(line):
+            return "config.toml line %d is neither a table header nor a key" % lineno
+    if quote is not None:
+        return "config.toml has a string that is never closed"
+    if depth != 0:
+        return "config.toml has a bracket or a brace that is not closed"
+    return None
+
+
+def _has_top_level_key(text: str, name: str) -> bool:
+    """True when `name` is a key at the top level of `text`, not inside a table.
+
+    A key under a table belongs to that table,  and a regex over the whole file cannot
+    tell the two apart:  a table-scoped `hooks` key is perfectly valid,  and refusing it
+    would refuse a good file.  A table header therefore ENDS the top level,  and every
+    key after one belongs to that table until the next header.
+    """
+    depth = 0
+    quote: str | None = None
+    in_table = False
+    pattern = re.compile(r"^[ \t]*%s[ \t]*=" % re.escape(name))
+    for line in text.splitlines():
+        at_top = quote is None and depth <= 0
+        depth, quote = _vibe_scan(line, depth, quote)
+        if at_top and _VIBE_TABLE_RE.match(line):
+            # A table header ends the top level:  the keys under it are that table's.
+            in_table = True
+            continue
+        if at_top and pattern.match(line) and not in_table:
+            return True
+    return False
 
 
 def _toml_problem(text: str) -> str | None:
     """Why `text` would not load as Kimi's config.toml, or None.  With tomllib (Python 3.11+) the new file has to
-    parse; without it the one thing checked is that no top-level `hooks` key exists beside our array of tables."""
+    parse; without it the structure is scanned,  which catches a value that was replaced
+    and left a line behind,  and a value or a string that is never closed.  The one
+    thing checked either way is that no top-level `hooks` key exists beside our array
+    of tables."""
     try:
         import tomllib
     except ImportError:
-        if re.search(r"(?m)^\s*hooks\s*=", text):
-            return (
-                "config.toml has a top-level `hooks =` key, which a [[hooks]] table would redefine"
-            )
-        return None
-    try:
-        tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        return f"the new config.toml would not parse as TOML ({exc})"
+        problem = _toml_structure_problem(text)
+        if problem:
+            return problem
+    else:
+        try:
+            tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            return f"the new config.toml would not parse as TOML ({exc})"
+    # The one thing checked either way:  a top-level `hooks` key would be redefined by
+    # the [[hooks]] table this tool writes.
+    if _has_top_level_key(text, "hooks"):
+        return "config.toml has a top-level `hooks =` key, which a [[hooks]] table would redefine"
     return None
 
 
@@ -4013,6 +4889,46 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
                 f"{path} is read-only (mode {bp.mode:04o}); not overriding the owner's choice",
             )
             return bp
+    if plat.key == "vibe":
+        bp.gate_path = paths.vibe_config
+        if os.path.islink(bp.gate_path):
+            bp.state, bp.reason = "refuse", f"{bp.gate_path} is a symlink; not writing through it"
+            return bp
+        if not os.path.lexists(bp.gate_path):
+            bp.state, bp.reason = (
+                "refuse",
+                f"{bp.gate_path} does not exist, so the enable_experimental_hooks gate cannot be set; "
+                "Vibe looks installed (~/.vibe exists) but not configured",
+            )
+            return bp
+        try:
+            gst = os.stat(bp.gate_path)
+            if not stat.S_ISREG(gst.st_mode):
+                bp.state, bp.reason = "refuse", f"{bp.gate_path} is not a regular file"
+                return bp
+            bp.gate_raw = _read_bytes(bp.gate_path)
+            bp.gate_mode, bp.gate_exists = stat.S_IMODE(gst.st_mode), True
+            gate_text = bp.gate_raw.decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            bp.state, bp.reason = "refuse", f"{bp.gate_path} cannot be read as UTF-8 text ({exc})"
+            return bp
+        gate = vibe_gate(gate_text)
+        bp.gate_action = "none" if gate is True else "replace"
+        bp.gate_new_text = gate_text if gate is True else vibe_set_gate(gate_text)
+        if bp.gate_action != "none" and bp.gate_mode is not None and not bp.gate_mode & 0o200:
+            bp.state, bp.reason = (
+                "refuse",
+                f"{bp.gate_path} is read-only (mode {bp.gate_mode:04o}); not overriding the owner's choice",
+            )
+            return bp
+        bp.notes.append(
+            f"{bp.gate_path}: enable_experimental_hooks is "
+            + (
+                "already true"
+                if gate is True
+                else "not true, so Vibe loads no hooks; apply sets it to true"
+            )
+        )
     try:
         if plat.key == "clutch":
             if text is not None and text.strip() and not CP.is_list_patch(text):
@@ -4025,17 +4941,23 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
         else:
             # Kimi rewrites its config.toml without comments, so the entry is found by what it says, not by markers
             new, bp.action, extra = TH.plan(
-                text, BLOCK_NAME, BLOCK_TOOL, bp.body, kimi_fields(plat, paths), is_ours
+                text, BLOCK_NAME, BLOCK_TOOL, bp.body, block_fields(plat, paths), is_ours
             )
             bp.notes.extend(extra)
     except MB.BlockError as exc:
         bp.state, bp.reason = "refuse", f"{path}: {exc}"
         return bp
     bp.new_text = new
-    if plat.key == "kimi":
+    if plat.key == "vibe" and bp.gate_action != "none" and bp.action == "none":
+        bp.action = "replace"  # the hooks entry is current, but the gate still has to be set
+    if plat.key in ("kimi", "vibe"):
         problem = _toml_problem(new)
         if problem:
             bp.state, bp.reason = "refuse", problem
+    if plat.key == "vibe" and bp.gate_new_text is not None:
+        problem = _toml_problem(bp.gate_new_text)
+        if problem:
+            bp.state, bp.reason = "refuse", f"{bp.gate_path}: {problem}"
     if bp.state == "ok" and bp.exists and not os.access(os.path.dirname(path), os.W_OK | os.X_OK):
         bp.state, bp.reason = "refuse", f"the directory {os.path.dirname(path)} is not writable"
     return bp
@@ -4187,6 +5109,10 @@ def apply_block(
             notes.append(detail)
         else:
             notes.append("the patch was NOT checked with the engine (--no-dsh-check)")
+    elif plat.key == "vibe":
+        notes.append(
+            "both TOML files parse (when tomllib is available); no Vibe binary check is run"
+        )
     else:
         if check_kimi:
             status, detail = _kimi_doctor(bp.new_text, timeout, paths.home)
@@ -4201,6 +5127,82 @@ def apply_block(
             notes.append(detail)
         else:
             notes.append("config.toml was NOT checked with `kimi doctor` (--no-kimi-check)")
+    if plat.key == "vibe":
+        assert bp.gate_new_text is not None
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
+        backups: list[str] = []
+        try:
+            os.makedirs(os.path.dirname(bp.path), exist_ok=True)
+            os.makedirs(os.path.dirname(bp.gate_path), exist_ok=True)
+            if bp.gate_exists and bp.gate_action != "none":
+                assert bp.gate_raw is not None
+                backups.append(_make_backup(bp.gate_path, bp.gate_raw, bp.gate_mode, stamp))
+            if bp.exists:
+                assert bp.raw is not None
+                backups.append(_make_backup(bp.path, bp.raw, bp.mode, stamp))
+            changed = _reread_matches(bp.path, bp.raw or b"", bp.exists) and _reread_matches(
+                bp.gate_path, bp.gate_raw or b"", bp.gate_exists
+            )
+            if not changed:
+                for b in backups:
+                    os.unlink(b)
+                return Result(
+                    plat.key,
+                    "failed",
+                    f"{bp.path} or {bp.gate_path} changed while it was being edited; nothing written, retry",
+                )
+            if bp.gate_action != "none":
+                atomic_write(
+                    bp.gate_path,
+                    bp.gate_new_text.encode("utf-8"),
+                    bp.gate_mode if bp.gate_mode is not None else 0o644,
+                )
+            if bp.new_text.encode("utf-8") != (bp.raw or b""):
+                atomic_write(
+                    bp.path, bp.new_text.encode("utf-8"), bp.mode if bp.mode is not None else 0o644
+                )
+        except OSError as exc:
+            return Result(
+                plat.key,
+                "failed",
+                f"{bp.path} not changed: {type(exc).__name__}: {exc}",
+                backups[0] if backups else None,
+            )
+        again = plan_block(plat, paths)
+        if again.state != "ok" or again.action != "none" or again.gate_action != "none":
+            try:
+                if bp.gate_exists and bp.gate_raw is not None:
+                    atomic_write(
+                        bp.gate_path,
+                        bp.gate_raw,
+                        bp.gate_mode if bp.gate_mode is not None else 0o644,
+                    )
+                elif os.path.lexists(bp.gate_path):
+                    os.unlink(bp.gate_path)
+                if bp.exists and bp.raw is not None:
+                    atomic_write(bp.path, bp.raw, bp.mode if bp.mode is not None else 0o644)
+                elif os.path.lexists(bp.path):
+                    os.unlink(bp.path)
+            except OSError:
+                pass
+            return Result(
+                plat.key,
+                "failed",
+                f"{bp.path} failed validation after the write; the originals were restored",
+                backups[0] if backups else None,
+            )
+        detail = f"{bp.path} and the gate in {bp.gate_path}"
+        if backups:
+            detail += " (backups " + ", ".join(backups) + ")"
+        all_notes = bp.notes + notes
+        if all_notes:
+            detail += "; " + "; ".join(all_notes)
+        return Result(
+            plat.key,
+            "added" if bp.action in ("create", "append") else "updated",
+            detail,
+            backups[0] if backups else None,
+        )
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     backup: str | None = None
     try:
@@ -4262,7 +5264,7 @@ def _block_command_from_file(plat: Platform, paths: Paths, text: str) -> tuple[s
             else (None, f"{paths.clutch_hooks} has no command string")
         )
     try:
-        info = TH.inspect(text, BLOCK_NAME, kimi_fields(plat, paths), is_ours)
+        info = TH.inspect(text, BLOCK_NAME, block_fields(plat, paths), is_ours)
     except MB.BlockError as exc:
         return None, str(exc)
     if not info.ours:
@@ -4314,10 +5316,10 @@ def verify_block(
         ]
     info: TH.Inspection | None = None
     try:
-        if plat.key == "kimi":
+        if plat.key in ("kimi", "vibe"):
             # Kimi rewrites config.toml without comments, so the markers can be gone while the hook is still wired:
             # the entry is found by what it says (see toml_hooks)
-            info = TH.inspect(text, BLOCK_NAME, kimi_fields(plat, paths), is_ours)
+            info = TH.inspect(text, BLOCK_NAME, block_fields(plat, paths), is_ours)
             body = MB.block_body(text, BLOCK_NAME) if info.state == "block" else None
             not_wired = info.state == "none"
         else:
@@ -4432,6 +5434,52 @@ def verify_block(
                 "SKIP",
                 DC.reload_note(os.path.join(paths.home, ".clutch", "dsh", "profiles"))
                 + "; whether the running engine has loaded the plugin is not visible from here",
+            )
+        )
+    elif plat.key == "vibe":
+        problem = _toml_problem(text)
+        out.append(
+            Check(
+                t,
+                "hooks.toml",
+                "FAIL" if problem else "PASS",
+                problem or "parses (or no tomllib to ask)",
+            )
+        )
+        try:
+            gate_text = _read_bytes(paths.vibe_config).decode("utf-8")
+            gate = vibe_gate(gate_text)
+            gate_problem = _toml_problem(gate_text)
+        except (OSError, UnicodeDecodeError) as exc:
+            gate, gate_problem = None, f"{paths.vibe_config} cannot be read ({exc})"
+        if gate_problem:
+            out.append(Check(t, "hooks gate", "FAIL", gate_problem))
+        elif gate is True:
+            out.append(
+                Check(
+                    t,
+                    "hooks gate",
+                    "PASS",
+                    f"{paths.vibe_config} has enable_experimental_hooks = true, so Vibe loads hooks",
+                )
+            )
+        else:
+            out.append(
+                Check(
+                    t,
+                    "hooks gate",
+                    "FAIL",
+                    f"{paths.vibe_config} does not set enable_experimental_hooks = true, so Vibe loads "
+                    "no hooks at all and the block above is inert; re-run `apply vibe`",
+                )
+            )
+        out.append(
+            Check(
+                t,
+                "fires",
+                "SKIP",
+                "whether Vibe fires a before_tool hook is not visible from here (UNVERIFIED); ask a new "
+                "Vibe session to clone a fleet repo into /tmp and expect a refusal",
             )
         )
     else:
@@ -4911,6 +5959,691 @@ def verify_minimax(
     return out
 
 
+# --------------------------------------------------------------------------- Copilot CLI: a fleet-owned hooks file
+
+
+def render_copilot_hooks(paths: Paths) -> str:
+    """~/.copilot/hooks/fleet-lane-guard.json.  Version 1, one PreToolUse group with matcher Bash and one command
+    hook (timeoutSec 5), running the fleet hook in the Claude contract."""
+    doc = {
+        "version": 1,
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": fleet_hook_command(paths, "claude"),
+                            "timeoutSec": HOOK_TIMEOUT_S,
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+    return json.dumps(doc, indent=2) + "\n"
+
+
+def copilot_expected(paths: Paths) -> dict:
+    return json.loads(render_copilot_hooks(paths))
+
+
+def _copilot_foreign(doc: object, paths: Paths) -> str | None:
+    """Why a file at our own hooks path is not one this tool wrote, or None.  A file that holds any hook that is not
+    ours, any other event, or any other top-level key is somebody else's and is left alone."""
+    if not isinstance(doc, dict):
+        return "it is JSON but not an object"
+    if doc == copilot_expected(paths) or doc == {}:
+        return None
+    if set(doc) - {"version", "hooks"}:
+        return (
+            "it holds top-level keys this tool never writes ("
+            + ", ".join(sorted(set(doc) - {"version", "hooks"}))
+            + ")"
+        )
+    hooks = doc.get("hooks")
+    if not isinstance(hooks, dict):
+        return "its hooks value is not an object"
+    if set(hooks) - {"PreToolUse"}:
+        return (
+            "it holds hook events this tool never writes ("
+            + ", ".join(sorted(set(hooks) - {"PreToolUse"}))
+            + ")"
+        )
+    total = 0
+    for group in hooks.get("PreToolUse") or []:
+        inner = group.get("hooks") if isinstance(group, dict) else None
+        if not isinstance(inner, list):
+            return "a PreToolUse group holds no hook list"
+        for hook in inner:
+            total += 1
+            if not isinstance(hook, dict) or not is_ours(hook.get("command")):
+                return "it holds a hook this tool did not write"
+    if total == 0:
+        return "it holds no fleet hook and is not a file this tool wrote"
+    return None
+
+
+@dataclass
+class CopilotPlan:
+    path: str
+    state: str  # new, stale, current, skip, refuse
+    reason: str
+    command: str
+    text: str
+    notes: list[str] = field(default_factory=list)
+    raw: bytes | None = None
+    mode: int | None = None
+    exists: bool = False
+
+
+def plan_copilot(paths: Paths, *, follow_symlinks: bool = False) -> CopilotPlan:
+    """Read-only: what `apply copilot` writes into ~/.copilot/hooks/fleet-lane-guard.json."""
+    path = paths.copilot_hooks
+    cmd = fleet_hook_command(paths, "claude")
+    text = render_copilot_hooks(paths)
+
+    def plan(state: str, reason: str = "", notes: Sequence[str] = ()) -> CopilotPlan:
+        return CopilotPlan(path, state, reason, cmd, text, list(notes))
+
+    if not os.path.isdir(os.path.join(paths.home, ".copilot")):
+        return plan("skip", "~/.copilot does not exist (platform not installed)")
+    refusal, outside, link = _link_check(path, paths.home, COPILOT_HOOKS_REL, follow_symlinks)
+    if refusal:
+        return plan("refuse", refusal)
+    notes = [link] if link else []
+    if os.path.islink(path):
+        return plan(
+            "refuse", f"{path} is a symlink; this tool writes a real file there, not through a link"
+        )
+    if os.path.lexists(path):
+        if not os.path.isfile(path):
+            return plan("refuse", f"{path} exists and is not a regular file")
+        try:
+            cfg = load_config(path)
+        except Refused as exc:
+            return plan("refuse", str(exc))
+        foreign = _copilot_foreign(cfg.doc, paths)
+        if foreign:
+            return plan("refuse", f"{path}: {foreign}; left alone")
+        cp = plan("current" if cfg.doc == copilot_expected(paths) else "stale", "", notes)
+        cp.raw, cp.mode, cp.exists = cfg.raw, cfg.mode, cfg.exists
+        if cp.state != "current" and outside:
+            return plan("refuse", outside, notes)
+        return cp
+    if outside:
+        return plan("refuse", outside, notes)
+    return plan("new", "", notes)
+
+
+def apply_copilot(
+    paths: Paths,
+    *,
+    now: Callable[[], float] = time.time,
+    timeout: float = PROBE_TIMEOUT_S,
+    minimal_path: bool = True,
+    shim_proven: bool = False,
+    follow_symlinks: bool = False,
+) -> Result:
+    """Write the fleet-owned Copilot hooks file, with a backup first, but only if the fleet hook denies right now."""
+    cp = plan_copilot(paths, follow_symlinks=follow_symlinks)
+    if cp.state == "skip":
+        return Result("copilot", "skipped", cp.reason)
+    if cp.state == "refuse":
+        return Result("copilot", "refused", cp.reason)
+    if not shim_proven:
+        if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
+            return Result(
+                "copilot",
+                "refused",
+                f"the fleet hook {paths.fleet_shim} is missing or not executable; run `apply tools` first",
+            )
+        bad = [
+            c
+            for c in probe_command(
+                cp.command,
+                target="copilot",
+                fmt="claude",
+                shape="claude",
+                home=paths.home,
+                timeout=timeout,
+                minimal_path=minimal_path,
+                secret=True,
+            )
+            if c.status == "FAIL"
+        ]
+        if bad:
+            return Result(
+                "copilot",
+                "refused",
+                "the installed fleet hook fails its probes, so it will not be wired in: "
+                + bad[0].detail,
+            )
+    if cp.state == "current":
+        return Result("copilot", "unchanged", f"{cp.path} already holds the hook")
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
+    backup: str | None = None
+    try:
+        os.makedirs(os.path.dirname(cp.path), exist_ok=True)
+        if cp.exists:
+            assert cp.raw is not None
+            backup = _make_backup(cp.path, cp.raw, cp.mode, stamp)
+        if not _reread_matches(cp.path, cp.raw or b"", cp.exists):
+            if backup:
+                os.unlink(backup)
+            return Result(
+                "copilot",
+                "failed",
+                f"{cp.path} changed while it was being written; nothing written, retry",
+            )
+        atomic_write(cp.path, cp.text.encode("utf-8"), cp.mode if cp.mode is not None else 0o644)
+    except OSError as exc:
+        return Result(
+            "copilot", "failed", f"{cp.path} not changed: {type(exc).__name__}: {exc}", backup
+        )
+    try:
+        after = json.loads(_read_bytes(cp.path).decode("utf-8"))
+        ok = after == copilot_expected(paths) and bool(locate(after, PLATFORMS["copilot"]))
+    except (OSError, ValueError):
+        ok = False
+    if not ok:
+        try:
+            if cp.exists and cp.raw is not None:
+                atomic_write(cp.path, cp.raw, cp.mode if cp.mode is not None else 0o644)
+            else:
+                os.unlink(cp.path)
+        except OSError:
+            pass
+        return Result(
+            "copilot",
+            "failed",
+            f"{cp.path} failed validation after the write; the original was restored",
+            backup,
+        )
+    detail = cp.path + (f" (backup {backup})" if backup else " (new file)")
+    return Result("copilot", "added" if cp.state == "new" else "updated", detail, backup)
+
+
+def verify_copilot(
+    paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
+    """Take the command back out of the written hooks file and run it.  What this cannot see is whether Copilot
+    fires a preToolUse hook, which is UNVERIFIED on this Mac and stays a SKIP."""
+    t = "copilot"
+    if not os.path.isdir(os.path.join(paths.home, ".copilot")):
+        return [Check(t, "platform", "SKIP", "~/.copilot does not exist (platform not installed)")]
+    path = paths.copilot_hooks
+    if not os.path.lexists(path):
+        return [
+            Check(t, "hooks file", "SKIP", f"not wired: {path} does not exist; run `apply copilot`")
+        ]
+    if os.path.islink(path) or not os.path.isfile(path):
+        return [Check(t, "hooks file", "FAIL", f"{path} is not a regular file")]
+    out: list[Check] = [Check(t, "hooks file", "PASS", f"{path} is a regular file")]
+    out.append(
+        _check_shim(
+            t,
+            FLEET_HOOK_NAME,
+            paths.fleet_shim,
+            render_fleet_hook_shim(read_guard_facts(paths.stable)),
+        )
+    )
+    try:
+        cfg = load_config(path)
+        entries = locate(cfg.doc, PLATFORMS["copilot"])
+    except Refused as exc:
+        out.append(Check(t, "hooks entry", "FAIL", str(exc)))
+        return out
+    if cfg.doc != copilot_expected(paths):
+        out.append(
+            Check(
+                t,
+                "hooks entry",
+                "FAIL",
+                f"{path} differs from what this install_tools writes; re-run `apply copilot`",
+            )
+        )
+        return out
+    if not entries or entries[0].problems:
+        out.append(
+            Check(
+                t,
+                "hooks entry",
+                "FAIL",
+                f"{path}: "
+                + ("; ".join(entries[0].problems) if entries else "no fleet hook under PreToolUse"),
+            )
+        )
+        return out
+    out.append(Check(t, "hooks entry", "PASS", f"{entries[0].where} command={entries[0].command}"))
+    out.extend(
+        probe_command(
+            entries[0].command,
+            target=t,
+            fmt="claude",
+            shape="claude",
+            home=paths.home,
+            timeout=timeout,
+            minimal_path=minimal_path,
+            secret=True,
+        )
+    )
+    switch, _off = guard_switch()
+    if _is_off(os.environ.get(switch, "")):
+        out.append(
+            Check(
+                t,
+                "guard-switch-env",
+                "WARN",
+                f"{switch}={os.environ.get(switch)!r} is set in the environment this command runs in; the probes scrub it",
+            )
+        )
+    out.append(
+        Check(
+            t,
+            "fires",
+            "SKIP",
+            "whether Copilot CLI fires this PreToolUse hook is UNVERIFIED (no live preToolUse record on this "
+            "Mac); the owner proof is a new Copilot session asked to run a process listing, which must be refused",
+        )
+    )
+    return out
+
+
+# --------------------------------------------------------------------------- OpenCode: a local plugin listed in opencode.json
+
+
+def opencode_entry(paths: Paths) -> str:
+    """The plugin array entry: the stable plugin file by absolute path."""
+    return paths.opencode_plugin
+
+
+def _is_opencode_ours(entry: object, paths: Paths) -> bool:
+    want = opencode_entry(paths)
+    if isinstance(entry, str):
+        return entry == want or entry.endswith("/" + OPENCODE_PLUGIN_FILE)
+    if isinstance(entry, (list, tuple)) and entry and isinstance(entry[0], str):
+        return entry[0] == want or entry[0].endswith("/" + OPENCODE_PLUGIN_FILE)
+    return False
+
+
+def opencode_merge(doc: dict, paths: Paths) -> tuple[dict, str]:
+    """(new document, action): the plugin array holds our absolute path exactly once.  Every other key and entry
+    is preserved as it is; a `plugin` value that is not a list raises ShapeError."""
+    new = copy.deepcopy(doc)
+    plugins = new.get("plugin")
+    if plugins is None:
+        plugins = new["plugin"] = []
+    if not isinstance(plugins, list):
+        raise ShapeError("'plugin' in opencode.json is not a list")
+    want = opencode_entry(paths)
+    ours = [i for i, e in enumerate(plugins) if _is_opencode_ours(e, paths)]
+    if len(ours) == 1 and plugins[ours[0]] == want:
+        return new, "unchanged"
+    if not ours:
+        plugins.append(want)
+        return new, "added"
+    first = ours[0]
+    plugins[first] = want
+    for i in reversed(ours[1:]):
+        del plugins[i]
+    return new, "updated"
+
+
+@dataclass
+class OpencodePlan:
+    config: str
+    entry: str
+    state: str  # new, stale, current, skip, refuse
+    reason: str = ""
+    notes: list[str] = field(default_factory=list)
+    cfg: Loaded | None = None
+    new_text: str | None = None
+    plugin_text: str = ""
+
+
+def plan_opencode(paths: Paths, *, follow_symlinks: bool = False) -> OpencodePlan:
+    """Read-only: what `apply opencode` does to the plugin array of opencode.json.  Only the entry is described;
+    no other key of that file (which holds credential-shaped values) is ever read into the output."""
+    config = paths.opencode_config
+    entry = opencode_entry(paths)
+    plugin_text = render_opencode_plugin()
+
+    def plan(state: str, reason: str = "", notes: Sequence[str] = ()) -> OpencodePlan:
+        return OpencodePlan(config, entry, state, reason, list(notes), plugin_text=plugin_text)
+
+    if not os.path.isdir(os.path.join(paths.home, ".config", "opencode")):
+        return plan("skip", "~/.config/opencode does not exist (platform not installed)")
+    refusal, outside, link = _link_check(config, paths.home, OPENCODE_CONFIG_REL, follow_symlinks)
+    if refusal:
+        return plan("refuse", refusal)
+    notes = [link] if link else []
+    try:
+        cfg = load_config(config)
+        new_doc, action = opencode_merge(cfg.doc, paths)
+    except Refused as exc:
+        return plan("refuse", str(exc))
+    have_plugin = _read_regular(paths.opencode_plugin)
+    if have_plugin is None:
+        notes.append(
+            f"{paths.opencode_plugin} is not in the stable dir yet; `apply tools` writes it"
+        )
+        plugin_state = "new"
+    elif have_plugin != plugin_text.encode("utf-8"):
+        notes.append(
+            f"{paths.opencode_plugin} is not what this install_tools writes; `apply tools` refreshes it"
+        )
+        plugin_state = "stale"
+    else:
+        plugin_state = "current"
+    state = {
+        "added": "new" if not cfg.exists else "stale",
+        "updated": "stale",
+        "unchanged": "current",
+    }[action]
+    if state == "current" and plugin_state != "current":
+        state = "stale"
+    if state != "current":
+        if outside:
+            return plan("refuse", outside, notes)
+        if cfg.unparseable_numbers:
+            return plan(
+                "refuse",
+                f"{config} holds numbers JSON cannot represent ({_first(cfg.unparseable_numbers)}); "
+                "strict parsers reject the file and a rewrite would change them; fix the file first",
+            )
+        if cfg.duplicate_keys:
+            return plan(
+                "refuse",
+                f"{config} has duplicate key(s) {_first(cfg.duplicate_keys)} in one object; a rewrite would "
+                "silently keep only the last value; fix the file first",
+            )
+        if cfg.lossy_numbers:
+            return plan(
+                "refuse",
+                f"{config} holds number(s) a rewrite would change ({_first(cfg.lossy_numbers)}); refusing to touch it",
+            )
+        if cfg.exists and cfg.mode is not None and not cfg.mode & 0o200:
+            return plan(
+                "refuse",
+                f"{config} is read-only (mode {cfg.mode:04o}); not overriding the owner's choice",
+            )
+    op = plan(state, "", notes)
+    op.cfg = cfg
+    op.new_text = dump_config(new_doc, cfg)
+    return op
+
+
+def apply_opencode(
+    paths: Paths,
+    *,
+    now: Callable[[], float] = time.time,
+    timeout: float = PROBE_TIMEOUT_S,
+    minimal_path: bool = True,
+    shim_proven: bool = False,
+    follow_symlinks: bool = False,
+) -> Result:
+    """List the stable plugin by absolute path in opencode.json's plugin array.  A backup is owner-only (0600)
+    whatever the file's mode, so a file that holds a token never gains a second readable copy."""
+    op = plan_opencode(paths, follow_symlinks=follow_symlinks)
+    if op.state == "skip":
+        return Result("opencode", "skipped", op.reason)
+    if op.state == "refuse":
+        return Result("opencode", "refused", op.reason)
+    if _read_regular(paths.opencode_plugin) != render_opencode_plugin().encode("utf-8"):
+        return Result(
+            "opencode",
+            "refused",
+            f"{paths.opencode_plugin} is missing or not current; run `apply tools` first",
+        )
+    if not shim_proven:
+        if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
+            return Result(
+                "opencode",
+                "refused",
+                f"the fleet hook {paths.fleet_shim} is missing or not executable; run `apply tools` first",
+            )
+        bad = [
+            c
+            for c in probe_command(
+                fleet_hook_command(paths, "claude"),
+                target="opencode",
+                fmt="claude",
+                shape="claude",
+                home=paths.home,
+                timeout=timeout,
+                minimal_path=minimal_path,
+                secret=True,
+            )
+            if c.status == "FAIL"
+        ]
+        if bad:
+            return Result(
+                "opencode",
+                "refused",
+                "the installed fleet hook fails its probes, so it will not be wired in: "
+                + bad[0].detail,
+            )
+    if op.state == "current":
+        return Result("opencode", "unchanged", f"{op.config} already lists the plugin")
+    cfg = op.cfg
+    assert cfg is not None and op.new_text is not None
+    try:
+        reparsed = json.loads(op.new_text)
+        _doc, act = opencode_merge(reparsed, paths)
+        if act != "unchanged":
+            return Result(
+                "opencode", "refused", "the merged document does not hold the plugin entry"
+            )
+    except (ValueError, Refused) as exc:
+        return Result("opencode", "refused", f"the merged document is not valid: {exc}")
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
+    backup: str | None = None
+    real = cfg.real
+    try:
+        os.makedirs(os.path.dirname(real), exist_ok=True)
+        if cfg.exists:
+            backup = _make_backup(real, cfg.raw, cfg.mode, stamp)
+        if not _reread_matches(real, cfg.raw, cfg.exists):
+            if backup:
+                os.unlink(backup)
+            return Result(
+                "opencode",
+                "failed",
+                f"{op.config} changed while it was being merged; nothing written, retry",
+            )
+        atomic_write(real, op.new_text.encode("utf-8"), cfg.mode if cfg.mode is not None else 0o600)
+    except OSError as exc:
+        return Result(
+            "opencode", "failed", f"{op.config} not changed: {type(exc).__name__}: {exc}", backup
+        )
+    try:
+        after = json.loads(_read_bytes(real).decode("utf-8"))
+        _doc, act = opencode_merge(after, paths)
+        ok = act == "unchanged"
+    except (OSError, ValueError, Refused):
+        ok = False
+    if not ok:
+        try:
+            if cfg.exists:
+                atomic_write(real, cfg.raw, cfg.mode if cfg.mode is not None else 0o600)
+            else:
+                os.unlink(real)
+        except OSError:
+            pass
+        return Result(
+            "opencode",
+            "failed",
+            f"{op.config} failed validation after the write; the original was restored",
+            backup,
+        )
+    detail = op.config + (f" (backup {backup})" if backup else " (new file)")
+    return Result("opencode", "added" if not cfg.exists else "updated", detail, backup)
+
+
+def verify_opencode(
+    paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
+) -> list[Check]:
+    """The plugin entry is read back out of opencode.json and the plugin file is checked against what this tool
+    writes; the guard command the plugin runs is then probed directly.  Whether OpenCode loads the plugin and
+    whether permission.ask denies live are UNVERIFIED and stay a SKIP."""
+    t = "opencode"
+    if not os.path.isdir(os.path.join(paths.home, ".config", "opencode")):
+        return [
+            Check(
+                t, "platform", "SKIP", "~/.config/opencode does not exist (platform not installed)"
+            )
+        ]
+    if not os.path.isfile(paths.opencode_plugin):
+        return [
+            Check(
+                t,
+                "plugin file",
+                "SKIP",
+                f"not wired: {paths.opencode_plugin} does not exist; run `apply tools`",
+            )
+        ]
+    out: list[Check] = []
+    out.append(
+        _check_text(t, "plugin file", paths.opencode_plugin, render_opencode_plugin(), False)
+    )
+    plugin_text = (_read_regular(paths.opencode_plugin) or b"").decode("utf-8", "replace")
+    for needle, label in (
+        ('"tool.execute.before"', "tool.execute.before hook"),
+        ('"permission.ask"', "permission.ask hook"),
+        ('output.status = "deny"', "permission.ask deny"),
+        ("fleet-guard-hook", "stable fleet hook"),
+    ):
+        out.append(
+            Check(
+                t,
+                label,
+                "PASS" if needle in plugin_text else "FAIL",
+                f"{paths.opencode_plugin} "
+                + ("contains it" if needle in plugin_text else f"does not contain {needle}"),
+            )
+        )
+    if "Authorization" in plugin_text or "Bearer" in plugin_text:
+        out.append(
+            Check(
+                t,
+                "no credential copy",
+                "FAIL",
+                "the plugin text names an authorization value; it must hold none",
+            )
+        )
+    else:
+        out.append(Check(t, "no credential copy", "PASS", "the plugin text holds no credential"))
+    out.append(
+        _check_shim(
+            t,
+            FLEET_HOOK_NAME,
+            paths.fleet_shim,
+            render_fleet_hook_shim(read_guard_facts(paths.stable)),
+        )
+    )
+    config = paths.opencode_config
+    if not os.path.exists(os.path.realpath(config)):
+        out.append(Check(t, "config", "FAIL", f"{config} does not exist; no plugin listed"))
+        return out
+    try:
+        cfg = load_config(config)
+    except Refused as exc:
+        out.append(Check(t, "config", "FAIL", str(exc)))
+        return out
+    if cfg.unparseable_numbers:
+        out.append(
+            Check(
+                t,
+                "config",
+                "FAIL",
+                f"{config} holds numbers JSON cannot represent ({_first(cfg.unparseable_numbers)}); "
+                "the platform's JSON parser rejects the whole file, so no plugin loads",
+            )
+        )
+        return out
+    plugins = cfg.doc.get("plugin")
+    if not isinstance(plugins, list):
+        out.append(
+            Check(
+                t,
+                "plugin entry",
+                "FAIL",
+                f"{config} has no plugin list; the guard plugin is not listed",
+            )
+        )
+        return out
+    ours = [e for e in plugins if _is_opencode_ours(e, paths)]
+    want = opencode_entry(paths)
+    if ours == [want]:
+        out.append(Check(t, "plugin entry", "PASS", f"plugin array lists {want} exactly once"))
+    elif not ours:
+        out.append(
+            Check(
+                t,
+                "plugin entry",
+                "FAIL",
+                f"no fleet plugin entry in {config}; run `apply opencode`",
+            )
+        )
+        return out
+    else:
+        out.append(
+            Check(
+                t,
+                "plugin entry",
+                "FAIL",
+                f"{config} lists the fleet plugin {len(ours)} times or by a stale path; re-run `apply opencode`",
+            )
+        )
+        return out
+    out.extend(
+        probe_command(
+            fleet_hook_command(paths, "claude"),
+            target=t,
+            fmt="claude",
+            shape="claude",
+            home=paths.home,
+            timeout=timeout,
+            minimal_path=minimal_path,
+            secret=True,
+        )
+    )
+    for problem in _switch_warnings(cfg.doc):
+        out.append(Check(t, "hook-switch", "FAIL", f"{config}: {problem}"))
+    out.append(
+        Check(
+            t,
+            "fires",
+            "SKIP",
+            "whether OpenCode loads this local plugin and permission.ask denies a live shell call is "
+            "UNVERIFIED; the owner proof is a new OpenCode session asked to run a process listing, which "
+            "must be refused",
+        )
+    )
+    return out
+
+
+# --------------------------------------------------------------------------- fx: no hook surface (UNSUPPORTED, with a prepared control)
+
+
+def render_fx_compensating_control() -> str:
+    """The prepared fx compensating control, as JSON for the owner to merge into ~/.fx/settings.json by hand.
+    It is a static permission.bash deny list over the temp-destination shapes guard.py proves, plus permission_mode
+    off yolo.  The top-level `*` rule asks for every other call, so the deny list is the only thing that blocks
+    and nothing else is silently allowed.  It cannot resolve d=$(mktemp -d), cannot read a repo's fleet status, and
+    cannot see a bash -c layer."""
+    roots = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp")
+    phrases = ("git clone", "gh repo clone", "git worktree add", "git worktree move", "git archive")
+    bash: dict[str, str] = {}
+    for phrase in phrases:
+        for root in roots:
+            bash[f"*{phrase}* {root}/*"] = "deny"
+    doc = {"permission_mode": "ask", "permission": {"*": "ask", "bash": bash}}
+    return json.dumps(doc, indent=2) + "\n"
+
+
 # --------------------------------------------------------------------------- command line
 
 
@@ -5222,6 +6955,74 @@ def _emit_minimax_plan(
     return False
 
 
+def _emit_copilot_plan(
+    plat: Platform, cp: CopilotPlan, emit: Callable[[str], None], *, explicit: bool
+) -> bool:
+    """Print the plan of the Copilot CLI hooks file.  True when it is a failure."""
+    emit(f"== {plat.key}  {plat.label}  {cp.path}  [{cp.state}]")
+    if cp.state in ("skip", "refuse"):
+        emit(f"   {cp.state.upper()}: {cp.reason}")
+        return cp.state == "refuse" or (explicit and cp.state == "skip")
+    emit(
+        "   Copilot CLI loads *.json under ~/.copilot/hooks.  This is a NEW fleet-owned file; "
+        "~/.copilot/settings.json and agent-hook-otlp.json are never touched."
+    )
+    emit(f"   command: {cp.command}")
+    for ln in cp.text.splitlines():
+        emit(f"     | {ln}")
+    for n in cp.notes:
+        emit(f"   {n}")
+    for n in plat.notes:
+        emit(f"   note: {n}")
+    for u in plat.unverified:
+        emit(f"   UNVERIFIED: {u}")
+    return False
+
+
+def _emit_opencode_plan(
+    plat: Platform, op: OpencodePlan, emit: Callable[[str], None], *, explicit: bool
+) -> bool:
+    """Print the plan of the OpenCode plugin guard.  True when it is a failure."""
+    emit(f"== {plat.key}  {plat.label}  {op.config}  [{op.state}]")
+    if op.state in ("skip", "refuse"):
+        emit(f"   {op.state.upper()}: {op.reason}")
+        return op.state == "refuse" or (explicit and op.state == "skip")
+    emit(
+        "   OpenCode has no config hooks key.  The plugin array entry below is the only change to opencode.json; "
+        "no other key of that file is printed, and a backup is owner-only (0600)."
+    )
+    emit(f"   plugin entry (absolute path): {op.entry}")
+    emit(f"   plugin file in the stable dir: {OPENCODE_PLUGIN_FILE} (written by `apply tools`)")
+    for ln in op.plugin_text.splitlines():
+        emit(f"     | {ln}")
+    for n in op.notes:
+        emit(f"   {n}")
+    for n in plat.notes:
+        emit(f"   note: {n}")
+    for u in plat.unverified:
+        emit(f"   UNVERIFIED: {u}")
+    return False
+
+
+def _emit_fx_plan(plat: Platform, emit: Callable[[str], None]) -> bool:
+    """Print the fx blocker and the prepared compensating control.  Nothing is written, ever."""
+    emit(f"== {plat.key}  {plat.label}  ~/.fx/settings.json  [unsupported]")
+    emit(f"   {FX_BLOCKER}.")
+    emit("   prepared compensating control (reviewable; merge by hand only after Jay approves it):")
+    for ln in render_fx_compensating_control().splitlines():
+        emit(f"     | {ln}")
+    emit(
+        "   apply path: Jay merges that JSON into ~/.fx/settings.json (moving permission_mode off yolo), then "
+        "runs `install_tools verify fx`, which stays FAIL UNSUPPORTED until Jay also approves an exception or a "
+        "real hook surface exists.  This tool never writes ~/.fx."
+    )
+    for n in plat.notes:
+        emit(f"   note: {n}")
+    for u in plat.unverified:
+        emit(f"   UNVERIFIED: {u}")
+    return False
+
+
 def _emit_block_plan(
     plat: Platform, paths: Paths, emit: Callable[[str], None], *, explicit: bool
 ) -> bool:
@@ -5244,6 +7045,11 @@ def _emit_block_plan(
             emit(f"   hooks file {paths.clutch_hooks} (written by `apply tools`):")
             for ln in render_clutch_hooks(paths.stable).splitlines():
                 emit(f"     | {ln}")
+        if plat.key == "vibe":
+            emit(
+                f"   gate {bp.gate_path} [{bp.gate_action}]: enable_experimental_hooks = true "
+                "(only that one top-level key is changed; the rest of config.toml is never printed)"
+            )
     for n in plat.notes:
         emit(f"   note: {n}")
     for u in plat.unverified:
@@ -5337,15 +7143,35 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
                 rc = EXIT_FAIL
             continue
         plat = PLATFORMS[tgt]
+        if plat.key == "fx":
+            _emit_fx_plan(plat, emit)
+            continue
         if plat.kind == "plugin":
-            _emit_muse_plan(plat, plan_muse(src, paths), paths, emit)
+            if plat.key == "opencode":
+                if _emit_opencode_plan(
+                    plat,
+                    plan_opencode(paths, follow_symlinks=args.follow_symlinks),
+                    emit,
+                    explicit=tgt in explicit,
+                ):
+                    rc = EXIT_FAIL
+            else:
+                _emit_muse_plan(plat, plan_muse(src, paths), paths, emit)
             continue
         if plat.kind == "block":
             if _emit_block_plan(plat, paths, emit, explicit=tgt in explicit):
                 rc = EXIT_FAIL
             continue
         if plat.kind == "bundle":
-            if _emit_minimax_plan(
+            if plat.key == "copilot":
+                if _emit_copilot_plan(
+                    plat,
+                    plan_copilot(paths, follow_symlinks=args.follow_symlinks),
+                    emit,
+                    explicit=tgt in explicit,
+                ):
+                    rc = EXIT_FAIL
+            elif _emit_minimax_plan(
                 plat,
                 plan_minimax(paths, follow_symlinks=args.follow_symlinks),
                 paths,
