@@ -1122,3 +1122,62 @@ class DaemonRelayTests(DaemonHarness):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class RefusalBoundaryTests(unittest.TestCase):
+    def runner(self, root):
+        from types import SimpleNamespace as NS
+        client = mock.Mock()
+        message = {"id": 101, "sender_id": 11, "stream_id": 7, "subject": "relay",
+                   "content": N.render_message(make_envelope("create", "[AFC, Codex] Relay", "Body.", {}, "fixture-request", "CODEX"))}
+        client.get.side_effect = lambda path, *args, **kwargs: ({"message": message} if path != "messages" else {"messages": [], "found_newest": False})
+        runner = NS(client=client, me=NS(user_id=10), paths=NS(root=root),
+                    users={11: {"user_id": 11, "email": "codex-bot@zulip.test", "is_bot": True}},
+                    daemon=NS(config=NS(owner_user_id=1)))
+        return runner, message
+
+    def test_empty_forward_scan_and_malformed_pages(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            self.assertFalse(NR.already_replied(runner, message, 101, "refused", lambda *a, **k: None))
+            for payload in ({}, {"messages": None, "found_newest": False}):
+                runner.client.get.side_effect = None
+                runner.client.get.return_value = payload
+                with self.assertRaises(NR.MalformedResponse):
+                    NR.already_replied(runner, message, 101, "refused", lambda *a, **k: None)
+
+    def test_untrusted_sender_is_not_answered(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            runner.users[11]["is_bot"] = False
+            self.assertFalse(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+            runner.client.post.assert_not_called()
+
+    def test_unknown_send_is_not_sent_again(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            sends = []
+            def post(path, params):
+                if path == "messages":
+                    sends.append(params)
+                    raise Z.NetworkError("timed out", maybe_sent=True)
+                return {}
+            runner.client.post.side_effect = post
+            with self.assertRaises(Z.NetworkError):
+                NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            with self.assertRaises(NR.MalformedResponse):
+                NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertEqual(len(sends), 1)
+
+    def test_malformed_destination_never_posts_message(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            runner.client.get.side_effect = None
+            runner.client.get.return_value = {"message": {"stream_id": True, "topic": "relay"}}
+            with self.assertRaises(NR.MalformedResponse):
+                NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertFalse(any(call.args[0] == "messages" for call in runner.client.post.call_args_list))

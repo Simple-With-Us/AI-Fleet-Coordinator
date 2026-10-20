@@ -46,7 +46,7 @@ class FakeClient:
         ] = []  # other people's messages in the topic, newer than the request
         self.message_gets: list[dict] = []
 
-    def get(self, path, params=None):
+    def get(self, path, params=None, **kwargs):
         if (
             path == "messages"
         ):  # the topic after the anchor:  the backlog, then the replies this bot has posted
@@ -994,7 +994,7 @@ class RefusalReplayTests(RelayHarness):
             anchors[1:3], [2099, 2199], "each page continues after the last id of the one before"
         )
 
-    def test_a_scan_that_hits_its_bound_logs_and_answers(self):
+    def test_a_scan_that_hits_its_bound_stays_incomplete(self):
         message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-05")
         self.client.backlog = [
             {"id": 2000 + i, "sender_id": READER_ID, "content": "x"} for i in range(60)
@@ -1003,8 +1003,9 @@ class RefusalReplayTests(RelayHarness):
             mock.patch.object(NR, "REPLY_SCAN_PAGE", 10),
             mock.patch.object(NR, "REPLY_SCAN_PAGES", 3),
         ):
-            self.assertEqual(self.process(message), "refused")
-        self.assertEqual(len(self.client.replies), 1)
+            with self.assertRaises(NR.MalformedResponse):
+                self.process(message)
+        self.assertEqual(len(self.client.replies), 0)
         self.assertEqual(len(self.client.message_gets), 3)
         self.assertIn("notes-relay-reply-scan-capped", [e for e, _ in self.logs])
 

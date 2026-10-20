@@ -999,13 +999,16 @@ class Daemon:
         refusal that lands frees the hold it was holding, and one that keeps failing on a retryable error waits for
         the next tick.  A permanent failure frees the hold too:  nothing a retry could change (the message is gone,
         the channel closed), so the cursor must not be held below it for ever."""
-        seat = self.notes_relay_refuser
-        reader = self.seats.get(seat) if seat else None
+        with self.notes_relay_lock:
+            seat = self.notes_relay_refuser
+            reader = self.seats.get(seat) if seat else None
+            keys = sorted(self.notes_relay_retry, key=lambda item: item[1])[:4]
+            reason = self.notes_relay_refusal_reason
         if reader is None or not reader.connected or reader.client is None:
             return
         refused: list[tuple[str, int]] = []
         gave_up: list[int] = []
-        for key in sorted(self.notes_relay_retry, key=lambda item: item[1]):
+        for key in keys:
             if key[0] != reader.seat:
                 continue
             try:
@@ -1022,16 +1025,18 @@ class Daemon:
                 self.log.write(
                     "notes-relay-refusal-gave-up", seat=reader.seat, id=key[1], status="gone"
                 )
-                del self.notes_relay_retry[key]
+                with self.notes_relay_lock:
+                    self.notes_relay_retry.pop(key, None)
                 gave_up.append(key[1])
                 continue
             try:
                 landed = NR.refuse_unconsumed(
-                    reader, message, self.notes_relay_refusal_reason, self.log.write
+                    reader, message, reason, self.log.write
                 )
             except Exception:  # noqa: BLE001 - a retryable error:  the next tick tries again
                 continue
-            del self.notes_relay_retry[key]
+            with self.notes_relay_lock:
+                self.notes_relay_retry.pop(key, None)
             if landed:
                 refused.append(key)
             else:  # a permanent refusal failure:  nothing a retry could change, so the hold falls
@@ -1047,7 +1052,8 @@ class Daemon:
                 seat=reader.seat,
                 ids=[mid for _, mid in refused],
             )
-        self._release_relay_hold(reader)
+        with self.notes_relay_lock:
+            self._release_relay_hold(reader)
         if refused:
             reader.advance(max(mid for _, mid in refused))
 
@@ -1094,8 +1100,13 @@ class Daemon:
         or ends, and that cursor advances.  Then any overflow is recovered by a backfill of the relay channel."""
         with self.notes_relay_lock:
             relay = self.notes_relay
+            refuse = relay is None or relay.stopped.is_set()
+        if refuse:
+            self._retry_failed_refusals()
+            return
+        with self.notes_relay_lock:
+            relay = self.notes_relay
             if relay is None or relay.stopped.is_set():
-                self._retry_failed_refusals()
                 return
             reader = self.seats.get(relay.seat)
             if reader is None or not reader.connected or reader.client is None:

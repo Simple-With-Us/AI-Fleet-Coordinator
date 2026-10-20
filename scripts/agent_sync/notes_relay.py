@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import queue
@@ -54,6 +55,7 @@ from typing import Any
 from . import identities as X
 from . import identity as I
 from . import notes as N
+from . import live as LIVE
 from . import secretscan
 from . import session_ids as SID
 from . import wakes as W
@@ -76,7 +78,7 @@ NO_SCRIPT_REASON = (
     "this Mac cannot run the notes script, so the note was not written.  "
     "Install apple-notes-coding.sh, then send the request again."
 )
-REPLY_SCAN_PAGES = 20  # at most this many pages (2000 of the bot's own messages in one topic) before it answers anyway
+REPLY_SCAN_PAGES = 20  # at most this many pages (2000 of the bot's own messages in one topic) before returning an incomplete result
 LOCK_FILE = "lock"
 REASON_LIMIT = 300
 STATE_FILE = "processed.json"
@@ -376,7 +378,7 @@ def already_replied(
 ) -> bool:
     """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
     forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
-    after a long backlog is still seen.  The scan is bounded;  past the bound it logs and answers anyway."""
+    after a long backlog is still seen.  The scan is bounded;  past the bound it raises and keeps the request held."""
     me = getattr(runner.me, "user_id", None)
     narrow = json.dumps(
         [
@@ -386,7 +388,11 @@ def already_replied(
         + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else [])
     )
     anchor = message_id
+    deadline = time.monotonic() + 10.0
     for _ in range(REPLY_SCAN_PAGES):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MalformedResponse("refusal reply scan deadline exceeded")
         found = runner.client.get(
             "messages",
             {
@@ -397,7 +403,10 @@ def already_replied(
                 "include_anchor": "false",
                 "apply_markdown": "false",
             },
+            timeout=remaining,
         )
+        if not isinstance(found, Mapping) or not isinstance(found.get("messages"), list):
+            raise MalformedResponse("Zulip messages response must include a list of messages")
         page = [m for m in found.get("messages") or [] if isinstance(m, dict)]
         if any(
             m.get("sender_id") == me and str(m.get("content") or "").startswith(prefix)
@@ -429,7 +438,7 @@ def already_replied(
             raise MalformedResponse("Zulip messages response omitted a valid next anchor")
         anchor = max(ids)
     log("notes-relay-reply-scan-capped", id=message_id, pages=REPLY_SCAN_PAGES)
-    return False
+    raise MalformedResponse("refusal reply scan incomplete")
 
 
 def is_request(message: Mapping[str, Any]) -> bool:
@@ -442,11 +451,13 @@ def is_request(message: Mapping[str, Any]) -> bool:
     return True
 
 
-def refuse_unconsumed(
+def _refuse_unconsumed_locked(
     runner: Any,
     message: Mapping[str, Any],
     reason: str,
     log: Callable[..., None],
+    row: str,
+    unknown: bool,
 ) -> bool:
     """Refuse a relay request that no consumer on this Mac will write (the relay is off, or this host cannot run
     the notes script).  The requester reads the cross mark and the reply, so `notes_status` answers "refused"
@@ -455,6 +466,12 @@ def refuse_unconsumed(
     never the reason text."""
     message_id = message.get("id")
     if not isinstance(message_id, int) or isinstance(message_id, bool):
+        return False
+    try:
+        validate(message, runner.users.get(message.get("sender_id")),
+                 owner_user_id=int(runner.daemon.config.owner_user_id or 0))
+    except Refusal as exc:
+        log("notes-relay-unconsumed-invalid", id=message_id, code=exc.code)
         return False
     request_id: str | None = None
     try:
@@ -468,12 +485,19 @@ def refuse_unconsumed(
     prefix = N.refusal_label(label)
     try:
         react(runner, message_id, N.REFUSED_EMOJI, log)
-        original = (
-            runner.client.get("messages/%d" % message_id, {"apply_markdown": False}).get("message")
-            or {}
-        )
+        response = runner.client.get("messages/%d" % message_id, {"apply_markdown": False})
+        original = response.get("message") if isinstance(response, Mapping) else None
+        if (not isinstance(original, Mapping)
+                or not isinstance(original.get("stream_id"), int)
+                or isinstance(original.get("stream_id"), bool)
+                or not isinstance(original.get("topic", original.get("subject")), str)):
+            raise MalformedResponse("refusal destination must contain stream_id and topic")
         if already_replied(runner, original, message_id, prefix, log):
+            LIVE.write_json(row, {"state": "ok"}, durable=True)
             return True
+        if unknown:
+            raise MalformedResponse("previous refusal outcome is unknown; reconcile before retry")
+        LIVE.write_json(row, {"state": "unknown"}, durable=True)
         text = W.neutralize_mentions(safe_reason(" ".join(reason.split())[:REASON_LIMIT]))
         runner.client.post(
             "messages",
@@ -488,12 +512,32 @@ def refuse_unconsumed(
         log("notes-relay-reply-malformed", id=message_id, error=str(exc)[:120])
         raise  # the reply is part of the result:  the request stays held and the next pass publishes it
     except Z.ApiError as exc:
+        # A server rejection is definite; a retry may send again after the condition clears.
+        LIVE.write_json(row, {"state": "refused"}, durable=True)
         if retryable(exc):
             raise  # the reply is part of the result:  the next pass publishes it
         log("notes-relay-reply-failed", id=message_id, status=exc.status)
         return False
+    LIVE.write_json(row, {"state": "ok"}, durable=True)
     log("notes-relay-unconsumed", id=message_id, code="no_consumer")
     return True
+
+
+def refuse_unconsumed(runner: Any, message: Mapping[str, Any], reason: str,
+                     log: Callable[..., None]) -> bool:
+    """Serialize reconciliation and sending, retaining ambiguous outcomes across restarts."""
+    message_id = message.get("id")
+    if not isinstance(message_id, int) or isinstance(message_id, bool):
+        return False
+    key = hashlib.sha256((str(runner.me.user_id) + ":" + str(message_id)).encode()).hexdigest()
+    row = os.path.join(runner.paths.root, RELAY_DIR, "refusals", key + ".json")
+    with LIVE.locked(row):
+        previous = LIVE.read_json(row)
+        if previous.get("state") == "ok":
+            return True
+        return _refuse_unconsumed_locked(
+            runner, message, reason, log, row, previous.get("state") == "unknown"
+        )
 
 
 class Consumer:
@@ -861,7 +905,7 @@ class Consumer:
     ) -> bool:
         """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
         forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
-        after a long backlog is still seen.  The scan is bounded;  past the bound it logs and answers anyway."""
+        after a long backlog is still seen.  The scan is bounded;  past the bound it raises and keeps the request held."""
         return already_replied(runner, original, message_id, prefix, self.log)
 
     def _download(self, runner: Any, path: str) -> bytes:
