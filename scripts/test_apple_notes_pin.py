@@ -213,6 +213,13 @@ class PinDecisionTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(runs, 1, "the environment widened the knob back to a retry")
 
+    def test_local_disable_narrows_an_enabled_knob(self):
+        result, runs = self.run_block(
+            STUB_FAIL_FIRST="99", HARNESS_APPLE_NOTES_PIN_RETRY="0", STUB_KNOB="true"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(runs, 1)
+
     def test_the_knob_turns_the_retry_on(self):
         """The knob alone decides when the caller names no override."""
         p, runs = self.run_block(

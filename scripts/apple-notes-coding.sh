@@ -268,10 +268,10 @@ _pin_retry_on() {
     case "$knob" in
       true|1|yes|on) _PIN_RETRY=1 ;;
       false|0|no|off) _PIN_RETRY=0 ;;
-      *) case "${APPLE_NOTES_PIN_RETRY:-}" in
-           false|0|no|off) _PIN_RETRY=0 ;;
-           *) _PIN_RETRY=1 ;;
-         esac ;;
+      *) _PIN_RETRY=1 ;;
+    esac
+    case "${APPLE_NOTES_PIN_RETRY:-}" in
+      false|0|no|off) _PIN_RETRY=0 ;;
     esac
   fi
   [[ "$_PIN_RETRY" == "1" ]]
