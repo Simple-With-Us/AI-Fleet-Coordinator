@@ -21,7 +21,7 @@ Rules:
 - **Multiple apps** when more than one is impacted: list each acronym
   (`[ST, CT, UM, Grok] …`). Order = impact order (primary first).
 - **Agent display name** (Title Case, not the ALL-CAPS chat tag):  
-  `Grok` | `Grok Build` | `Monet` | `Claude` | `Codex` | `Cursor` | `AG` | `Kimi` | `Copilot` | `MiniMax` | `DeepSeek Harness` | …
+  `Grok` | `Grok Build` | `Claude` | `Codex` | `Cursor` | `AG` | `Kimi` | `MiniMax` | `DeepSeek Harness` | …
 - **Never put the date in the title** — date lives on the **second row** (body).
 - **Never repeat the title as an H1 inside the body** — Notes already shows the title.
 

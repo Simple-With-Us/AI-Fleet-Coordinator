@@ -73,8 +73,10 @@ stands between that period and the space.  The three quote characters are writte
 because perl reads a command-line program as bytes and a literal `'` would also close the shell's
 own single-quoted expression.  That is the same set the fleet's own outbound converter already
 used —  `agent-sync` runs its own converter on the way out and its closing class carries `'`, `’`
-and `”` —  so the documented converter and the runtime agree now, where before the documented one
-was behind the runtime.  The **lookahead** carries the *opening* quotes for the same reason in the
+and `”` —  so the documented converter now covers those closing quotes too.  The documented converter
+also carries a closing backtick; the runtime protects inline-code spans separately and does not
+convert that boundary.  For a sentence ending inside inline code, generate and verify the gap
+with the documented Perl command before posting.  The **lookahead** carries the *opening* quotes for the same reason in the
 other direction:  in `First.  Second.  'Quoted sentence.'` the gap after `Second.` is followed
 by a quote, so a lookahead that will not accept one leaves that gap unmade.
 
@@ -83,7 +85,7 @@ here as `\s{2}` so this sentence survives its own advice — matched nothing on 
 single-space pattern `([.!?]) (?=...)` is no better, because it matches nothing on text that kept
 its two spaces.  Both exit `0` and post with no gap.  The `(?<![0-9])` lookbehind protects a
 numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tolerates a tab.  The
-lookahead admits `[A-Z0-9"*`#@]` and the three opening quotes — the straight `'`, the left single
+lookahead admits ``[A-Z0-9"*`#@]`` and the three opening quotes — the straight `'`, the left single
 `‘` and the left double `“` — so it skips *every* follower outside that class and not only a
 lowercase one.  `e.g. this` and lower-case domains keep their plain space.
 

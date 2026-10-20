@@ -115,7 +115,7 @@ readme = """Install by hand (nothing here applied itself):
 1. Claude Code: merge claude-settings.json `env` into ~/.claude/settings.json, then restart Claude Code.
 2. Codex: append codex-config-otel.toml to ~/.codex/config.toml, then restart Codex.
 3. Grok CLI: merge grok-telemetry.json `telemetry` into the Grok CLI config, then restart Grok CLI.
-4. Hook shim producers (Cursor/Antigravity/Copilot): point the shim at the relay
+4. Hook shim producers (Cursor/Antigravity): point the shim at the relay
    port 4321 with the RELAY_BEARER_SHIM token when the shim v2 task lands.
 Keep these files private: they carry bearer tokens (mode 0600).
 """

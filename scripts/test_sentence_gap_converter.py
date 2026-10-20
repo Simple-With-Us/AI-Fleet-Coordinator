@@ -352,6 +352,15 @@ class ConverterBehaviourTests(unittest.TestCase):
                     "expected %s, got %r" % ("a gap" if gapped else "no gap", out),
                 )
 
+    def test_each_opening_quote_gets_the_second_gap(self) -> None:
+        for quote in ("'", "‘", "“"):
+            with self.subTest(quote=quote):
+                body = "First.  Second.  " + quote + "Quoted sentence."
+                self.assertEqual(
+                    convert(self.pattern, body),
+                    "First." + NBSP + " Second." + NBSP + " " + quote + "Quoted sentence.",
+                )
+
     def test_the_gap_keeps_the_markup_span_intact(self) -> None:
         out = convert(self.pattern, "**Bold sentence.**  Next sentence.\n")
         self.assertIn("**Bold sentence.**" + NBSP + " Next sentence.", out)
