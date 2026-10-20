@@ -230,6 +230,70 @@ class DaemonRelayTests(DaemonHarness):
         mid = self.fake.add_message("Codex", "notes-relay", "t", "@**Claude** can you check this?")
         self.pump_until(daemon, lambda: any(r["id"] == mid for r in self.inbox()))
 
+    def test_a_request_with_no_consumer_is_refused_instead_of_lost(self):
+        """AFC-407:  with the relay off there is no consumer at all, and the request used to be routed like any
+        chatter:  the cursor moved past it, nothing said a note was lost, and `notes_status` said "queued" for
+        ever.  The consumer seat refuses it instead, so the requester hears back at once."""
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNone(daemon.notes_relay, "the relay is off, so there is no consumer")
+        self.assertEqual(daemon.notes_relay_refuser, "CLAUDE")
+        mid = self.envelope_message(mention=True)
+        self.pump_until(
+            daemon,
+            lambda: (
+                (mid, 10, "cross_mark") in self.fake.reactions
+                or (mid, 10, "x") in self.fake.reactions
+            ),
+        )
+        self.assertTrue(
+            (mid, 10, "cross_mark") in self.fake.reactions or (mid, 10, "x") in self.fake.reactions,
+            "the request carries the cross mark that notes_status reads",
+        )
+        self.assertTrue(
+            self.wait(
+                lambda: any(
+                    m["sender_id"] == 10
+                    and str(m.get("content") or "").startswith(
+                        "notes-relay refused daemon-request-1:"
+                    )
+                    for m in self.fake.messages
+                )
+            ),
+            "the requester is told that nothing was written",
+        )
+        reply = next(
+            m
+            for m in self.fake.messages
+            if m["sender_id"] == 10
+            and str(m.get("content") or "").startswith("notes-relay refused daemon-request-1:")
+        )
+        self.assertIn("no Notes relay consumer is running", reply["content"])
+        self.assertEqual(self.inbox(), [], "a relay request must not become seat inbox work")
+        self.assertEqual(self.ledger(), [], "a relay request must not wake anyone")
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("notes-relay-unconsumed", log)
+
+    def test_a_host_that_is_not_the_consumer_does_not_answer_a_request(self):
+        """AFC-407:  the knob names one consumer.  A host that is not it must leave the request alone:  it
+        belongs to the Mac that is the consumer."""
+        self.notes_knob = "MM"
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNone(daemon.notes_relay)
+        self.assertIsNone(daemon.notes_relay_refuser, "another seat is the consumer")
+        mid = self.envelope_message()
+        self.pump_until(daemon, lambda: daemon.seats["CLAUDE"].cursor >= mid)
+        self.assertFalse(
+            [r for r in self.fake.reactions if r[0] == mid], "this host does not answer the request"
+        )
+        self.assertFalse(
+            [m for m in self.fake.messages if "notes-relay refused" in str(m.get("content") or "")],
+            "this host does not refuse the request either",
+        )
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("notes-relay-unclaimed", log)
+
     def two_seats(self):
         codex_key = secrets.token_hex(16)
         self.extra_keys.append(("codex-bot@zulip.test", codex_key))

@@ -68,6 +68,14 @@ SPOOL_DIR = "spool"
 RETRY_SECONDS = 60.0
 STOP_TIMEOUT = 10.0  # how long a reload waits for the old worker before leaving it the owner
 REPLY_SCAN_PAGE = 100  # messages per page when looking for a refusal this bot already posted
+NO_CONSUMER_REASON = (
+    "no Notes relay consumer is running on this Mac, so the note was not written.  "
+    "Enable [notes_relay] in listener.toml, then send the request again."
+)
+NO_SCRIPT_REASON = (
+    "this Mac cannot run the notes script, so the note was not written.  "
+    "Install apple-notes-coding.sh, then send the request again."
+)
 REPLY_SCAN_PAGES = 20  # at most this many pages (2000 of the bot's own messages in one topic) before it answers anyway
 LOCK_FILE = "lock"
 REASON_LIMIT = 300
@@ -324,6 +332,139 @@ class Spool:
                 pass
 
 
+def in_relay_channel(message: Mapping[str, Any], channel: str = N.RELAY_CHANNEL) -> bool:
+    """Is this a message in the relay channel?  Every seat's runner treats one as consumed (it is not work for
+    any session), whichever seat reads it and whether or not a consumer is running.  Without this, a request that
+    arrived while the relay was off was routed like any chatter and lost with nothing said (AFC-407)."""
+    return (
+        message.get("type") == "stream"
+        and Z.message_channel(message).casefold() == channel.casefold()
+    )
+
+
+def react(runner: Any, message_id: int, names: tuple[str, ...], log: Callable[..., None]) -> None:
+    """Set the first emoji Zulip accepts.  A network failure propagates (the request stays spooled and is
+    published on the retry);  an emoji Zulip does not know falls through to the next name."""
+    for name in names:
+        try:
+            runner.client.post("messages/%d/reactions" % message_id, {"emoji_name": name})
+            return
+        except Z.ApiError as exc:
+            if exc.code == "REACTION_ALREADY_EXISTS":
+                return
+            if unknown_emoji(exc):
+                continue  # this name is not an emoji in this realm:  try the alias
+            if retryable(exc):
+                raise  # 429, 5xx, a permission error:  the request stays spooled and is published on the retry
+            log("notes-relay-reaction-refused", id=message_id, status=exc.status)
+            return  # a permanent refusal (the message is gone):  nothing a retry could change
+    log("notes-relay-no-emoji", id=message_id, names=list(names))
+
+
+def already_replied(
+    runner: Any,
+    original: Mapping[str, Any],
+    message_id: int,
+    prefix: str,
+    log: Callable[..., None],
+) -> bool:
+    """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
+    forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
+    after a long backlog is still seen.  The scan is bounded;  past the bound it logs and answers anyway."""
+    me = getattr(runner.me, "user_id", None)
+    narrow = json.dumps(
+        [
+            {"operator": "channel", "operand": original.get("stream_id")},
+            {"operator": "topic", "operand": Z.message_topic(original)},
+        ]
+        + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else [])
+    )
+    anchor = message_id
+    for _ in range(REPLY_SCAN_PAGES):
+        found = runner.client.get(
+            "messages",
+            {
+                "narrow": narrow,
+                "anchor": anchor,
+                "num_before": 0,
+                "num_after": REPLY_SCAN_PAGE,
+                "include_anchor": "false",
+                "apply_markdown": "false",
+            },
+        )
+        page = [m for m in found.get("messages") or [] if isinstance(m, dict)]
+        if any(
+            m.get("sender_id") == me and str(m.get("content") or "").startswith(prefix)
+            for m in page
+        ):
+            return True
+        ids = [m["id"] for m in page if isinstance(m.get("id"), int) and m["id"] > anchor]
+        if found.get("found_newest") is not False or not ids:
+            return False  # the topic's newest message has been read (or there is nothing newer):  no reply yet
+        anchor = max(ids)
+    log("notes-relay-reply-scan-capped", id=message_id, pages=REPLY_SCAN_PAGES)
+    return False
+
+
+def is_request(message: Mapping[str, Any]) -> bool:
+    """Does this message hold a notes envelope?  A message in the relay channel that is not a request is not work
+    for the consumer, and a refusal must not answer it."""
+    try:
+        N.parse_message(message.get("content"))
+    except Exception:  # noqa: BLE001 - a body that does not parse is not a request
+        return False
+    return True
+
+
+def refuse_unconsumed(
+    runner: Any,
+    message: Mapping[str, Any],
+    reason: str,
+    log: Callable[..., None],
+) -> bool:
+    """Refuse a relay request that no consumer on this Mac will write (the relay is off, or this host cannot run
+    the notes script).  The requester reads the cross mark and the reply, so `notes_status` answers "refused"
+    with the reason instead of "queued" for ever.  The log carries the id and a code, never the reason text."""
+    message_id = message.get("id")
+    if not isinstance(message_id, int) or isinstance(message_id, bool):
+        return False
+    request_id: str | None = None
+    try:
+        parsed = N.parse_message(message.get("content"))
+    except Exception:  # noqa: BLE001 - a body that does not parse has no label
+        parsed = None
+    if isinstance(parsed, dict):
+        candidate = parsed.get("request_id")
+        request_id = candidate if isinstance(candidate, str) and candidate else None
+    label = request_id or "(message %d)" % message_id
+    prefix = N.refusal_label(label)
+    try:
+        react(runner, message_id, N.REFUSED_EMOJI, log)
+        original = (
+            runner.client.get("messages/%d" % message_id, {"apply_markdown": False}).get("message")
+            or {}
+        )
+        if already_replied(runner, original, message_id, prefix, log):
+            return True
+        text = W.neutralize_mentions(safe_reason(" ".join(reason.split())[:REASON_LIMIT]))
+        runner.client.post(
+            "messages",
+            {
+                "type": "stream",
+                "to": original.get("stream_id"),
+                "topic": Z.message_topic(original),
+                "content": "%s %s" % (prefix, text),
+            },
+        )
+    except Z.ApiError as exc:
+        if retryable(exc):
+            raise  # the reply is part of the result:  the next pass publishes it
+        log("notes-relay-reply-failed", id=message_id, status=exc.status)
+        return False
+    log("notes-relay-unconsumed", id=message_id, code="no_consumer")
+    return True
+
+
 class Consumer:
     """One per listener.  `offer(runner, message)` is called from the seat thread that routes the message and
     returns at once;  a worker thread does the rest."""
@@ -370,10 +511,7 @@ class Consumer:
     def in_channel(self, message: Mapping[str, Any]) -> bool:
         """Is this a message in the relay channel?  Every seat's runner treats one as consumed (it is not work
         for any session), whichever seat reads it."""
-        return (
-            message.get("type") == "stream"
-            and Z.message_channel(message).casefold() == self.channel
-        )
+        return in_relay_channel(message, self.channel)
 
     def wants(self, runner: Any, message: Mapping[str, Any]) -> bool:
         """Should this seat's reader take the message?  Only the configured seat.  The reader's own posts are
@@ -648,20 +786,7 @@ class Consumer:
     def _react(self, runner: Any, message_id: int, names: tuple[str, ...]) -> None:
         """Set the first emoji Zulip accepts.  A network failure propagates (the request stays spooled and is
         published on the retry);  an emoji Zulip does not know falls through to the next name."""
-        for name in names:
-            try:
-                runner.client.post("messages/%d/reactions" % message_id, {"emoji_name": name})
-                return
-            except Z.ApiError as exc:
-                if exc.code == "REACTION_ALREADY_EXISTS":
-                    return
-                if unknown_emoji(exc):
-                    continue  # this name is not an emoji in this realm:  try the alias
-                if retryable(exc):
-                    raise  # 429, 5xx, a permission error:  the request stays spooled and is published on the retry
-                self.log("notes-relay-reaction-refused", id=message_id, status=exc.status)
-                return  # a permanent refusal (the message is gone):  nothing a retry could change
-        self.log("notes-relay-no-emoji", id=message_id, names=list(names))
+        react(runner, message_id, names, self.log)
 
     def _answer(
         self, runner: Any, message_id: int, request_id: str | None, *, refused: str
@@ -703,39 +828,7 @@ class Consumer:
         """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
         forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
         after a long backlog is still seen.  The scan is bounded;  past the bound it logs and answers anyway."""
-        me = getattr(runner.me, "user_id", None)
-        narrow = json.dumps(
-            [
-                {"operator": "channel", "operand": original.get("stream_id")},
-                {"operator": "topic", "operand": Z.message_topic(original)},
-            ]
-            + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else [])
-        )
-        anchor = message_id
-        for _ in range(REPLY_SCAN_PAGES):
-            found = runner.client.get(
-                "messages",
-                {
-                    "narrow": narrow,
-                    "anchor": anchor,
-                    "num_before": 0,
-                    "num_after": REPLY_SCAN_PAGE,
-                    "include_anchor": "false",
-                    "apply_markdown": "false",
-                },
-            )
-            page = [m for m in found.get("messages") or [] if isinstance(m, dict)]
-            if any(
-                m.get("sender_id") == me and str(m.get("content") or "").startswith(prefix)
-                for m in page
-            ):
-                return True
-            ids = [m["id"] for m in page if isinstance(m.get("id"), int) and m["id"] > anchor]
-            if found.get("found_newest") is not False or not ids:
-                return False  # the topic's newest message has been read (or there is nothing newer):  no reply yet
-            anchor = max(ids)
-        self.log("notes-relay-reply-scan-capped", id=message_id, pages=REPLY_SCAN_PAGES)
-        return False
+        return already_replied(runner, original, message_id, prefix, self.log)
 
     def _download(self, runner: Any, path: str) -> bytes:
         """The uploaded .md at /user_uploads/..., through the reading bot's own credential:  Zulip hands back a

@@ -660,6 +660,18 @@ class Daemon:
         self.outgoing_webhook_server: OW.OutgoingWebhookServer | None = None
         self.listener_api_server: LAPI.ListenerReadApi | None = None
         self.notes_relay: NR.Consumer | None = None
+        # The seat this host is the consumer for, from the fleet knob:  None when the knob names another seat, so
+        # this host does not act on the relay channel at all.  While it is set, every seat treats a request in the
+        # relay channel as consumed (no inbox row, no wake from an @-mention inside an envelope), exactly as when
+        # the consumer is running.
+        self.notes_relay_consumer_seat: str | None = None
+        # The seat that must answer a request nobody on this Mac will write:  this host's consumer seat when the
+        # relay is off (or the notes script is missing).  It refuses the request instead of letting it vanish into
+        # the routing as chatter, so `notes_status` says "refused" and not "queued" for ever (AFC-407).
+        self.notes_relay_refuser: str | None = None
+        # Why that seat refuses:  the relay is off, or this host cannot run the notes script.  The requester reads
+        # it in the refusal reply, so it says what to fix.
+        self.notes_relay_refusal_reason: str = NR.NO_CONSUMER_REASON
         self.notes_relay_lock = (
             threading.RLock()
         )  # a reload (main thread) and a handover (seat thread) never overlap
@@ -1128,14 +1140,23 @@ class Daemon:
         cfg = self.config
         home = Path(os.path.abspath(self.home))
         available = NOTES.direct_available(self.env, home) is not None
-        consumer, label, differs = (
-            NOTES.relay_consumer(cfg.notes_relay_seat, refresh=True)
-            if cfg.notes_relay_enabled and available
-            else (cfg.notes_relay_seat, "", False)
-        )
+        consumer, label, differs = NOTES.relay_consumer(cfg.notes_relay_seat, refresh=True)
         # The fleet knob (Infisical) names the one consumer seat;  a local config can only agree with it.  A listener
         # whose seat differs does not consume, so two Macs cannot both act as the consumer.
         agrees = not differs and consumer == cfg.notes_relay_seat
+        # What this host does with the relay channel.  It is the knob's consumer when the local seat agrees, and it
+        # can write only while the relay is enabled and the notes script is here.  While it is the consumer it owns
+        # the channel:  every seat treats a request there as consumed, and the consumer seat answers it.  When it
+        # cannot write, the consumer seat refuses it, so the requester hears back instead of waiting on "queued".
+        self.notes_relay_consumer_seat = cfg.notes_relay_seat if agrees else None
+        self.notes_relay_refuser = (
+            cfg.notes_relay_seat
+            if (agrees and not (cfg.notes_relay_enabled and available))
+            else None
+        )
+        self.notes_relay_refusal_reason = (
+            NR.NO_CONSUMER_REASON if available else NR.NO_SCRIPT_REASON
+        )
         if old is not None:
             if (
                 cfg.notes_relay_enabled
@@ -1203,18 +1224,21 @@ class Daemon:
             consumer.resume(runner)
 
     def ensure_notes_channel(self, runner: SeatRunner, why: str) -> None:
-        """The relay seat's bot must be in #notes-relay to see it.  Joins it only when the channel exists and is
-        public (the subscribe API would otherwise create one);  a missing channel is a logged warning."""
-        consumer = self.notes_relay
-        if consumer is None or runner.seat != consumer.seat or runner.client is None:
+        """The relay seat's bot must be in #notes-relay to see it and to answer a request nobody will write.  It
+        joins while this host is the knob's consumer, whether or not the relay is running:  with the relay off the
+        seat still has to refuse what nobody will write.  Joins only when the channel exists and is public (the
+        subscribe API would otherwise create one);  a missing channel is a logged warning."""
+        seat = self.notes_relay_consumer_seat
+        if seat is None or runner.seat != seat or runner.client is None:
             return
+        channel = NOTES.RELAY_CHANNEL
         try:
             public = SUB.public_channels(runner.client)
             found = next(
                 (
                     (sid, name)
                     for sid, name in public.items()
-                    if name.casefold() == consumer.channel
+                    if name.casefold() == channel.casefold()
                 ),
                 None,
             )
@@ -1224,7 +1248,7 @@ class Daemon:
                     seat=runner.seat,
                     why=why,
                     warning="#%s does not exist or is private;  create it, then the next connect joins it"
-                    % consumer.channel,
+                    % channel,
                 )
                 return
             if found[0] in SUB.subscribed_ids(runner.client):
@@ -1738,6 +1762,37 @@ class Daemon:
             return
         runner.ring.add(message_id)
         relay = self.notes_relay
+        if relay is None and NR.in_relay_channel(message) and NR.is_request(message):
+            # No consumer is running on this Mac:  a notes request is still not a message for any session, so it
+            # must not become an inbox row or a wake.  The consumer seat refuses it, so the requester learns at
+            # once that nothing was written instead of waiting on "queued" for ever (AFC-407).  A message in the
+            # channel that is not a request stays an ordinary message, as when the relay has never been set up.
+            if runner.seat == self.notes_relay_refuser:
+                try:
+                    NR.refuse_unconsumed(
+                        runner, message, self.notes_relay_refusal_reason, self.log.write
+                    )
+                except Exception as exc:  # noqa: BLE001 - a refusal must never stop the routing
+                    self.log.write(
+                        "notes-relay-refusal-failed", id=message_id, error=type(exc).__name__
+                    )
+                    runner.ring.discard(message_id)
+                    return  # the cursor stays below it:  the refusal is published on the next pass
+            else:
+                # This host is not the consumer and cannot say who is:  the knob names another seat, or it could
+                # not be read.  It says so in the log rather than letting the request pass in silence, because a
+                # request nobody claims is a request nobody writes.  It does not refuse:  a refusal outranks a
+                # completion in `notes_status`, so a wrong refusal would report a note that another host wrote
+                # as failed.
+                self.log.write(
+                    "notes-relay-unclaimed",
+                    id=message_id,
+                    seat=runner.seat,
+                    consumer=self.notes_relay_consumer_seat,
+                )
+            if advance_cursor:
+                runner.advance(message_id)
+            return
         if relay is not None and relay.in_channel(message):
             # A notes request is not a message for any session:  every seat's runner treats it as consumed (no
             # inbox row, no wake from an @-mention inside an envelope) and only the configured seat acts on it.
