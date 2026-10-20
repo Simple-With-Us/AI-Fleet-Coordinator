@@ -55,16 +55,28 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
+perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Matching one *or more* is half the fix.  The **markup group** ``([*_`)\]"]*)`` is the other half:  a
-sentence end that sits *inside* a markup span is followed by the markup and only then by the
-space, so a pattern that wants the space right after the sentence end never matches it.
-`**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two checks below
-would catch it, because the file still holds other U+00A0 characters and this shape is not a
-single space after a sentence end.  The group captures the markup and re-emits it before the gap,
-so the span survives and the gap lands after the closing markup.
+Matching one *or more* is half the fix.  The **markup group** ``([*_`)\]"\x{27}\x{2019}\x{201D}]*)``
+is the other half:  a sentence end that sits *inside* a markup span is followed by the markup and
+only then by the space, so a pattern that wants the space right after the sentence end never
+matches it.  `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two
+checks below would catch it, because the file still holds other U+00A0 characters and this shape
+is not a single space after a sentence end.  The group captures the markup and re-emits it before
+the gap, so the span survives and the gap lands after the closing markup.
+
+The group carries the **closing quotes** as well, because a quote closes the way a span does:  in
+`'Quoted sentence.'  Next sentence.` the period is *inside* the quote, and the quote is what
+stands between that period and the space.  The three quote characters are written ``\x{27}``
+(straight), ``\x{2019}`` (right single) and ``\x{201D}`` (right double) rather than literally,
+because perl reads a command-line program as bytes and a literal `'` would also close the shell's
+own single-quoted expression.  That is the same set the fleet's own outbound converter already
+used —  `agent-sync` runs its own converter on the way out and its closing class carries `'`, `’`
+and `”` —  so the documented converter and the runtime agree now, where before the documented one
+was behind the runtime.  The **lookahead** carries the *opening* quotes for the same reason in the
+other direction:  in `First.  Second.  'Quoted sentence.'` the gap after `Second.` is followed
+by a quote, so a lookahead that will not accept one leaves that gap unmade.
 
 The old pattern requiring exactly two spaces — written
 here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
@@ -75,7 +87,7 @@ lookahead admits only `[A-Z0-9"*`#@]`, so it skips *every* follower outside that
 only a lowercase one:  `e.g. this` and lower-case domains keep their plain space, and so does a
 follower that is a quote, which is the limitation recorded below.
 
-**Known limitations — the pattern is a heuristic, not a dictionary.**  Three deliberate costs:
+**Known limitations — the pattern is a heuristic, not a dictionary.**  Two deliberate costs:
 
 - It gaps a *capitalised* abbreviation:  `Dr. Smith` and `e.g. Acme` both come out with a U+00A0,
   against the rule above about non-terminal abbreviations.
@@ -84,30 +96,21 @@ follower that is a quote, which is the limitation recorded below.
   parsing as a list, and a body with steps in it renders as one run-on paragraph.  The lookbehind
   skips any period preceded by a digit, which fixes the marker and also protects `v1.2.3`, but it
   costs the gap on a sentence that ends in a digit:  `The answer is 42. Next thing.` gets none.
-- The markup group carries the closing characters it names —  `*`, `_`, `` ` ``, `)`, `]`, `"`.  A
-  sentence end inside a *single*-quoted or curly-quoted span, as in
-  `'Quoted sentence.'  Next sentence.`, is not one of them:  the perl run's group cannot consume
-  the quote, so no gap is made, and neither check below sees it either, because both carry the
-  same group.  The neighbouring shape is missed for the other reason and is just as silent:  in
-  `First.  Second.  'Quoted sentence.'` the follower is a quote, which the perl run's lookahead
-  does not admit and the leftover check's `[A-Z"]` follower class does not either, so only the
-  first gap is made, the count check still prints 1 (> 0, so it passes) and the leftover check
-  still prints 0 (so it passes), and the second gap reaches GitHub missing.  A body with either
-  shape passes both checks and reaches GitHub with no gap, so fix those gaps by hand before
-  `gh pr create` or `gh pr comment`.  The Zulip path needs no hand fix:
-  `agent-sync` runs its own outbound converter on the way out, whose closing class carries `'`
-  and the curly quotes, and that makes the gap.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
-it, and do not widen the pattern to chase it.
+it.  When a whole *class* of shapes is missed —  a closing quote, a closing bracket, a closing
+span —  widen the class in the converter **and** in both checks together, and never widen the
+converter alone:  a converter the checks cannot see is a converter that fails silently, and a body
+it misses passes both checks and reaches the reader with no gap.  Patching one body by hand is
+what this rule is for;  a class of shapes belongs in the pattern.
 
 **Assert before you post — both checks, every time.**  A conversion that matches nothing still
 exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
 partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
 
 ```sh
-grep -o $'[.!?][]*_`)"]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE '[^0-9][.!?][]*_`)"]* +[A-Z"]' body.nbsp.txt         # must be 0 — a leftover gap
+grep -o $'[.!?][]*_`)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE $'[^0-9][.!?][]*_`)"\'’”]* +[A-Z"\'“‘]' body.nbsp.txt  # must be 0 — a leftover gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -122,10 +125,21 @@ after a markup span is emitted as `<punctuation><markup><U+00A0><space>`, so a c
 for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a
 space straight after the punctuation cannot see the one that was missed.  The `]` is written
 first in the class because a POSIX bracket expression ends at the first unquoted `]`, and there
-is no backslash escape inside one:  ``[]*_`)"]`` is the set {`]`, `*`, `_`, `` ` ``, `)`, `"`}.
-In the perl pattern the same set is written ``([*_`)\]"]*)``, where `\]` does escape.
-A backslash inside a POSIX bracket expression is a literal member and not an escape, so one
-written there widens the set and makes the leftover check fire on a body that is clean.
+is no backslash escape inside one:  ``[]*_`)"'’”]`` is the set {`]`, `*`, `_`,
+`` ` ``, `)`, `"`, `'`, `’`, `”`}.  In the perl pattern the same set is written
+``([*_`)\]"\x{27}\x{2019}\x{201D}]*)``, where `\]` does escape.  A backslash inside a POSIX
+bracket expression is a literal member and not an escape, so one written there widens the set
+and makes the leftover check fire on a body that is clean.
+
+The straight quote is the one member that needs a backslash on the way in and must not have one
+on the way out.  Inside bash's `$'...'` the class writes it `\'`, which bash turns into a plain
+`'` before grep ever sees the pattern —  and grep must see a plain `'`, because a backslash inside
+a bracket expression is a literal member, which is the very trap the paragraph above describes.
+So the class is ``[]*_`)"\'’”]`` in the shell and ``[]*_`)"'’”]`` in the pattern grep runs.
+That is also why the leftover check moved to `$'...'`:  in single quotes a `'` cannot be written at
+all, and the follower class needs one —  a gap that was missed before a quoted sentence reads
+``Second. 'Quoted``, and a follower class of ``[A-Z"]`` cannot see the `'`.  The follower class
+therefore carries the opening quotes too:  ``[A-Z"\'“‘]``.
 
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.

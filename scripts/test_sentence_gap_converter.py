@@ -31,20 +31,29 @@ ONE_HOME = ROOT / "docs" / "fleet-skills" / "sentence-gap" / "SKILL.md"
 _PATTERN_RE = re.compile(r"perl -CSDA -pe '(s/.*?/g)'")
 
 # The markup group:  the characters that may sit between a sentence end and the space.
-_MARKUP_GROUP = r"""([*_`)\]"]*)"""
+_MARKUP_GROUP = r'([*_`)\]"\x{27}\x{2019}\x{201D}]*)'
 
 # The markup group as the POSIX class the assertions write:  the ] comes first, because a
-# POSIX bracket expression ends at the first unquoted ].
-_ASSERT_MARKUP_GROUP = "[]*_"
+# POSIX bracket expression ends at the first unquoted ].  The straight quote is written
+# \' for bash, which turns it into a plain ' before grep sees the pattern --  grep must
+# see a plain ', because a backslash inside a bracket expression is a literal member.
+_ASSERT_MARKUP_GROUP = "[]*_`)\"\\'’”]"
 
 # The assertion patterns, extracted from the text that holds them.  A count check and a
-# leftover check, each in the shape the fleet writes it.
-_COUNT_RE = re.compile(r"grep -o\s+\$'([^']*)'")
-_LEFTOVER_RE = re.compile(r"grep -cE\s+'([^']*)'")
+# leftover check, each in the shape the fleet writes it.  Both are written in bash's
+# ANSI-C form, because that is the only form that can carry a straight quote, and the
+# class needs one -- so the extraction has to read the escaped quote instead of stopping
+# at it.
+_COUNT_RE = re.compile(r"grep -o\s+\$'(?P<ansi>(?:[^'\\]|\\.)*)'")
+_LEFTOVER_RE = re.compile(r"grep -cE\s+(?:\$'(?P<ansi>(?:[^'\\]|\\.)*)'|'(?P<plain>[^']*)')")
 
 # The check the fleet used to write, before the markup group.  It cannot see a gap that
 # sits after a markup span, which is the defect these tests exist to hold shut.
 _BLIND_LEFTOVER = r"""[^0-9][.!?] +[A-Z"]"""
+
+# The check the fleet wrote before the quotes joined the class.  It cannot see a missed
+# gap in a quoted sentence, which is the defect the widened class exists to close.
+_QUOTE_BLIND_LEFTOVER = r'[^0-9][.!?][]*_`)"]* +[A-Z"]'
 
 # Files that hold a dated record of a ruling and keep the form that ruling was written
 # in.  The live procedure is in the one home;  a record is not a copy of it.
@@ -164,6 +173,10 @@ SHAPES = (
     ("`Code sentence.`  Next sentence.", True),
     ("(**Paren sentence.**)  Next sentence.", True),
     ('He said "Quoted sentence."  Next sentence.', True),
+    ("'Quoted sentence.'  Next sentence.", True),
+    ("“Curly quoted sentence.”  Next sentence.", True),
+    ("‘Curly single quoted sentence.’  Next sentence.", True),
+    ("First.  Second.  'Quoted sentence.'", True),
     ("1. Numbered marker stays a marker.", False),
     ("The answer is 42. Next thing.", False),
     ("e.g. this keeps its plain space.", False),
@@ -180,11 +193,33 @@ HAVE_GIT = shutil.which("git") is not None
 def assertion_patterns(text: str) -> tuple[str, str]:
     """The count pattern and the leftover pattern a text holds."""
     count = _COUNT_RE.search(text)
-    leftover = _LEFTOVER_RE.search(text)
+    leftovers = leftover_checks(text)
     return (
-        count.group(1) if count else "",
-        leftover.group(1) if leftover else "",
+        count.group("ansi") if count else "",
+        leftovers[0] if leftovers else "",
     )
+
+
+def leftover_checks(text: str) -> list[str]:
+    """Every leftover check a text holds, in either quoting.
+
+    The canonical form is bash's ANSI-C quoting, because it is the only form that can
+    carry a straight quote, and the class needs one.  The plain form is still
+    recognised, so a file that falls back to it is caught rather than skipped.
+    """
+    out = []
+    for match in _LEFTOVER_RE.finditer(text):
+        ansi = match.group("ansi")
+        out.append(ansi if ansi is not None else match.group("plain"))
+    return out
+
+
+def leftover_quoting(text: str) -> str:
+    """The quoting the first leftover check in a text is written in."""
+    match = _LEFTOVER_RE.search(text)
+    if not match:
+        return ""
+    return "ansi" if match.group("ansi") is not None else "plain"
 
 
 def run_grep(command: str) -> int:
@@ -434,7 +469,7 @@ class AssertionCommandTests(unittest.TestCase):
         return "grep -o $'%s' '%s' | wc -l" % (self.count_pattern, path)
 
     def _leftover_command(self, path: Path) -> str:
-        return "grep -cE '%s' '%s'" % (self.leftover_pattern, path)
+        return "grep -cE $'%s' '%s'" % (self.leftover_pattern, path)
 
     def _write(self, tmp: str, body: str) -> Path:
         path = Path(tmp) / "body.nbsp.txt"
@@ -471,10 +506,51 @@ class AssertionCommandTests(unittest.TestCase):
             path = self._write(tmp, "**Bold sentence.** Next sentence.\n")
             leftover = run_grep(self._leftover_command(path))
             blind = run_grep(
-                "grep -cE '%s' '%s'" % (_BLIND_LEFTOVER, path),
+                "grep -cE $'%s' '%s'" % (_BLIND_LEFTOVER, path),
             )
         self.assertGreater(leftover, 0, "the markup-aware check must catch this gap")
         self.assertEqual(blind, 0, "the blind check is expected to miss it -- that is the defect")
+
+    def test_the_leftover_check_sees_a_missed_gap_in_a_quoted_sentence(self) -> None:
+        """The shapes the old class could not see:  a sentence end inside a quote.
+
+        The period sits inside the quote and the quote stands between it and the space,
+        so the check has to carry the quote in the class.  The follower shape matters
+        too:  a gap missed before a quoted sentence reads `Second. 'Quoted`, and the
+        follower class has to carry the opening quote as well.
+        """
+        for line in (
+            "'Quoted sentence.' Next sentence.",
+            "Second. 'Quoted sentence.'",
+            "“Curly quoted sentence.” Next sentence.",
+            "Second. “Curly quoted sentence.”",
+            "‘Curly single quoted sentence.’ Next sentence.",
+            "Second. ‘Curly single quoted sentence.’",
+        ):
+            with self.subTest(line=line):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = self._write(tmp, line + "\n")
+                    leftover = run_grep(self._leftover_command(path))
+                    blind = run_grep(
+                        "grep -cE $'%s' '%s'" % (_QUOTE_BLIND_LEFTOVER, path),
+                    )
+                self.assertGreater(leftover, 0, "the check must see this missed gap")
+                self.assertEqual(
+                    blind,
+                    0,
+                    "the quote-blind check is expected to miss it -- that is the defect",
+                )
+
+    def test_every_live_guidance_file_writes_the_leftover_check_in_the_ansi_form(self) -> None:
+        """The plain form cannot carry a straight quote, and the class needs one."""
+        for rel in GUIDANCE:
+            with open(ROOT / rel, encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertEqual(
+                leftover_quoting(text),
+                "ansi",
+                "%s writes the leftover check outside bash's ANSI-C form" % rel,
+            )
 
     def test_every_live_guidance_file_holds_a_markup_aware_leftover_check(self) -> None:
         for rel in GUIDANCE:
@@ -524,7 +600,7 @@ class AssertionCommandTests(unittest.TestCase):
                 self.assertTrue(count, "%s holds no count assertion" % rel)
                 self.assertTrue(leftover, "%s holds no leftover assertion" % rel)
                 got_count = run_grep("grep -o $'%s' '%s' | wc -l" % (count, path))
-                got_leftover = run_grep("grep -cE '%s' '%s'" % (leftover, path))
+                got_leftover = run_grep("grep -cE $'%s' '%s'" % (leftover, path))
                 self.assertGreater(
                     got_count,
                     0,
@@ -537,7 +613,7 @@ class AssertionCommandTests(unittest.TestCase):
                     % (rel, leftover),
                 )
                 self.assertGreater(
-                    run_grep("grep -cE '%s' '%s'" % (leftover, missed)),
+                    run_grep("grep -cE $'%s' '%s'" % (leftover, missed)),
                     0,
                     "%s holds a leftover check that cannot see a missed gap:  %s" % (rel, leftover),
                 )
@@ -560,7 +636,7 @@ class AssertionCommandTests(unittest.TestCase):
                     text = fh.read()
             except (OSError, UnicodeDecodeError):
                 continue
-            for pattern in _LEFTOVER_RE.findall(text):
+            for pattern in leftover_checks(text):
                 self.assertIn(
                     _ASSERT_MARKUP_GROUP,
                     pattern,
