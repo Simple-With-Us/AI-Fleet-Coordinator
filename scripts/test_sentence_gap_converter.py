@@ -434,11 +434,7 @@ class OneSourceOfTruthTests(unittest.TestCase):
         draft PR #755 after the publisher updates the mirror."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if (
-                rel in DATED_RECORDS
-                or rel in GENERATED_MIRRORS
-                or rel in CHECKER_FILES
-            ):
+            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -653,11 +649,7 @@ class AssertionCommandTests(unittest.TestCase):
         draft PR #755 owns the generated mirror's explicit parity assertion."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if (
-                rel in DATED_RECORDS
-                or rel in GENERATED_MIRRORS
-                or rel in CHECKER_FILES
-            ):
+            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -678,23 +670,33 @@ class DocumentationExecutionTests(unittest.TestCase):
         canonical = one_home_patterns()[0]
         for rel in ("FLEET-UI-COPY.md",) + PROTOCOL_FILES:
             text = (ROOT / rel).read_text(encoding="utf-8")
-            blocks = re.findall(r"(?m)^([ ]{0,3})```sh\n(.*?)^\1```", text, re.S)
+            blocks = re.findall(r"(?m)^([ ]{0,3})```sh\n(.*?)^\1```", text, re.DOTALL)
             checked = 0
             for indent, block in blocks:
                 if "grep -cE" not in block:
                     continue
                 checked += 1
-                script = "\n".join(line[len(indent):] if line.startswith(indent) else line
-                                   for line in block.splitlines())
+                script = "\n".join(
+                    line.removeprefix(indent)
+                    for line in block.splitlines()
+                )
                 with tempfile.TemporaryDirectory() as tmp:
                     body = convert(canonical, "[Sentence.](https://example.com) Next sentence.\n")
                     for name in ("reply.txt", "body.nbsp.txt"):
                         (Path(tmp) / name).write_text(body, encoding="utf-8")
-                    proc = subprocess.run(["bash", "-c", script], cwd=tmp, capture_output=True,
-                                          text=True, timeout=30, check=False)
+                    proc = subprocess.run(
+                        ["bash", "-c", script],
+                        cwd=tmp,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=False,
+                    )
                     self.assertIn(proc.returncode, (0, 1), rel + ": " + proc.stderr)
                     self.assertEqual(proc.stderr, "", rel)
-                    self.assertTrue(all(line.strip().isdigit() for line in proc.stdout.splitlines()), rel)
+                    self.assertTrue(
+                        all(line.strip().isdigit() for line in proc.stdout.splitlines()), rel
+                    )
             self.assertGreater(checked, 0, rel + " has no executable assertion block")
 
     def test_link_conversion_and_both_assertions_agree(self):
