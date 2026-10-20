@@ -85,6 +85,14 @@ jobs:
     - name: fleet_config tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_config/tests -t . -v
+    # No conflict markers anywhere in the tree.  A rebase can merge a file without
+    # reporting a conflict and still leave the markers in it,  so the file does not parse
+    # and the failure looks like a syntax error in whatever module imported it.
+    - name: No conflict markers
+      run: |
+        if grep -rlE '^(<<<<<<<|>>>>>>>|\|\|\|\|\|\|\|)' --include='*.py' --include='*.sh' --include='*.yml' --include='*.json' scripts .github 2>/dev/null | grep .; then
+          echo "conflict markers found:  resolve them before merging"; exit 1
+        fi
     # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
     # unresolved-reference guard, auth selection, and no secret in argv or error text.
     - name: fleet_secrets tests
