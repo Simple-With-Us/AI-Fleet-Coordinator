@@ -20,6 +20,8 @@ def load_bootstrap(path):
         ):
             raise ValueError("bootstrap must be an owned regular file with mode 0600")
         data = json.load(source)
+    if not isinstance(data, dict):
+        raise ValueError("bootstrap must be a JSON object")
     names = ("INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET")
     if not all(isinstance(data.get(k), str) and data[k].strip() for k in names):
         raise ValueError("bootstrap requires both machine credentials")
