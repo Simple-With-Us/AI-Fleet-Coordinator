@@ -75,31 +75,10 @@ from . import layout as L
 from .doctor import redact_text as _redact_urls
 
 __all__ = [
-    "BEGIN_PREFIX",
-    "BLOCK_VERSION",
-    "END_LINE",
-    "EXIT_FAILED",
-    "EXIT_OK",
-    "EXIT_REFUSED",
-    "EXIT_USAGE",
-    "PLATFORMS",
-    "ApplyResult",
-    "Contradiction",
-    "MarkerError",
-    "PlanEntry",
-    "Platform",
-    "VerifyResult",
-    "apply_platform",
-    "atomic_write",
-    "block_lines",
-    "block_text",
-    "build_entry",
-    "compose",
-    "find_block",
-    "find_contradictions",
-    "main",
-    "redact",
-    "verify_platform",
+    "BLOCK_VERSION", "BEGIN_PREFIX", "END_LINE", "PLATFORMS", "Platform", "PlanEntry", "ApplyResult",
+    "VerifyResult", "MarkerError", "Contradiction", "block_lines", "block_text", "compose",
+    "find_block", "find_contradictions", "redact", "build_entry", "apply_platform",
+    "verify_platform", "atomic_write", "main", "EXIT_OK", "EXIT_FAILED", "EXIT_REFUSED", "EXIT_USAGE",
 ]
 
 EXIT_OK = 0
@@ -386,7 +365,7 @@ _LONG_TOKEN = re.compile(r"(?<![\w/.~-])[A-Za-z0-9_-]{40,}(?![\w/.~-])")
 _AWS_SECRET = re.compile(r"(?<![\w/.~+%-])[A-Za-z0-9/+]{40}(?![\w/.~+%-])")
 
 
-def _mask_aws(m: re.Match[str]) -> str:
+def _mask_aws(m: "re.Match[str]") -> str:
     """40 characters of the base64 alphabet that mix digits and both cases: an AWS secret access key (it
     can contain `/` and `+`, which the plain long-token rule cannot see).  Ordinary paths fail a test."""
     t = m.group(0)
@@ -443,9 +422,9 @@ _LANES_PATH = re.compile(
 _OLD_LANE_DIRS = ("_managed", "_review", "_notes", "<prefix>", "<app>")
 _TMP_TOKEN = re.compile(r"(?:/private)?/tmp\b|/var/tmp\b|\$\{?TMPDIR\}?|/var/folders\b|\bmktemp\b")
 _CHECKOUT_WORD = re.compile(
-    r"\b(?:git\s+clone|git\s+worktree|git\s+init|clone[sd]?|cloning|worktrees?|checkouts?)\b", re.IGNORECASE)
+    r"\b(?:git\s+clone|git\s+worktree|git\s+init|clone[sd]?|cloning|worktrees?|checkouts?)\b", re.I)
 _NEGATION = re.compile(
-    r"\b(?:never|don't|dont|do\s+not|not|no|forbidden|forbid|ban|banned|avoid|must\s+not|cannot|can't)\b", re.IGNORECASE)
+    r"\b(?:never|don't|dont|do\s+not|not|no|forbidden|forbid|ban|banned|avoid|must\s+not|cannot|can't)\b", re.I)
 _AGENT_PREFIX = re.compile(r"(?<![\w/.~$@-])agent/[A-Za-z][\w.-]*")
 
 
