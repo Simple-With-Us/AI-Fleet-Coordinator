@@ -53,7 +53,15 @@ DEFAULT_LARK_CLI = os.path.expanduser("~/.local/npm-global/bin/lark-cli")
 DEFAULT_MCODE = os.path.expanduser("~/.local/bin/mcode")
 DEFAULT_STATE_DIR = os.path.expanduser("~/.minimax/lark-mm-bridge")
 DEFAULT_CWD = os.path.expanduser("~/apps")
-DEFAULT_TIMEOUT = 600
+DEFAULT_TIMEOUT = 1200
+# A Lark write is one HTTP call, but lark-cli is a node process and the Mac
+# has been at a load of 190, where it took 54 seconds and then lost the
+# acknowledgement.  A short timeout here loses the reply.
+REPLY_TIMEOUT = 300
+# The owner watches Zulip, so every Lark exchange is mirrored there with the
+# MiniMax session id, which is the thread the answer came from.
+AGENT_SYNC = os.path.expanduser("~/.local/bin/agent-sync")
+ZULIP_TOPIC_PREFIX = "Lark"
 MAX_REPLY_CHARS = 4000
 # How many delivered message ids the dedup state remembers.  Rows that have
 # not reached a final state are kept beyond this window, because dropping one
@@ -87,18 +95,23 @@ ACP_HANDSHAKE_TIMEOUT = 300
 # just 2 spaces".  A real U+00A0 is the mechanism for Markdown panes that
 # collapse spaces (the MiniMax Code pane, GitHub, Zulip), not for Lark.
 SENTENCE_GAP = "  "
+# A Lark plain-text message is rendered literally, so two ASCII spaces already
+# show as a wide gap there, and the owner asked for exactly that on Oct 19,
+# 2026: "No nbsp here please just 2 spaces".  A Markdown pane (Zulip, GitHub)
+# collapses spaces instead, so the wide gap there is a real U+00A0 plus a space.
+ZULIP_SENTENCE_GAP = "\u00a0 "
 _SENTENCE_END = re.compile(r"([A-Za-z]+)([.!?])( +)(?=[\"'(\[A-Z])")
 _ABBREVIATIONS = ("mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "no")
 
 
-def _widen_sentence(match):
+def _widen_sentence(match, gap):
     """Normalise the spaces after a sentence end to the wide gap."""
     if match.group(1).lower() in _ABBREVIATIONS:
         return match.group(0)
-    return match.group(1) + match.group(2) + SENTENCE_GAP
+    return match.group(1) + match.group(2) + gap
 
 
-def sentence_gap(text):
+def sentence_gap(text, gap=SENTENCE_GAP):
     """Widen the gap after a sentence end, leaving code alone.
 
     The seat answers in plain prose, and prose carries one space between
@@ -122,7 +135,9 @@ def sentence_gap(text):
         rebuilt = []
         for i, piece in enumerate(pieces):
             if i % 2 == 0:
-                piece = _SENTENCE_END.sub(_widen_sentence, piece)
+                piece = _SENTENCE_END.sub(
+                    lambda m: _widen_sentence(m, gap), piece
+                )
             rebuilt.append(piece)
         out.append("".join(rebuilt))
     return "\n".join(out)
@@ -181,9 +196,13 @@ def run(command, stdin_text=None, timeout=120, env=None):
     except OSError as exc:
         raise CommandError("%s could not start: %s" % (command[0], exc))
     if completed.returncode != 0:
-        detail = (completed.stderr or "").strip().splitlines()
-        tail = detail[-1] if detail else "exit %s" % completed.returncode
-        raise CommandError("%s failed: %s" % (command[0], tail))
+        # The whole stderr, not just its last line: lark-cli prints a JSON
+        # error, and the last line of that is "}", which told the reader
+        # nothing about what actually went wrong.
+        detail = (completed.stderr or "").strip()
+        if not detail:
+            detail = "exit %s" % completed.returncode
+        raise CommandError("%s failed: %s" % (command[0], detail[-500:]))
     return completed.stdout
 
 
@@ -715,9 +734,43 @@ class Bridge:
             "--text=" + text,
         ]
         try:
-            run(command, timeout=120, env=self.env)
+            run(command, timeout=REPLY_TIMEOUT, env=self.env)
         except CommandError as exc:
             raise DeliveryError(self._classify_reply_failure(str(exc)), str(exc))
+
+    def _mirror(self, chat_id, session_id, question, answer, failed=False):
+        """Post the Lark exchange to Zulip, where the owner is watching.
+
+        Lark is a second surface, not a second seat: the answer comes from
+        the MiniMax session named in the post, so the owner can see which
+        thread it was and can find the same session in Lark.  Without this
+        the Lark conversation is invisible from the fleet side.
+        """
+        topic = "%s %s" % (ZULIP_TOPIC_PREFIX, chat_id[-8:])
+        kind = "failed turn" if failed else "answered"
+        body = sentence_gap(
+            "Lark chat %s (%s)  |  MiniMax session %s  |  %s\n\n"
+            "Owner: %s\n\nMM: %s"
+            % (chat_id, chat_id, session_id or "none", kind, question, answer),
+            gap=ZULIP_SENTENCE_GAP,
+        )
+        env = dict(self.env)
+        env["AGENT_SEAT"] = "MM"
+        if session_id:
+            # The MiniMax session id is a real session id, so the post carries
+            # the same thread the Lark reply came from.
+            env["AGENT_SESSION"] = session_id
+        try:
+            run(
+                [AGENT_SYNC, "post", "--topic", topic, body],
+                timeout=REPLY_TIMEOUT,
+                env=env,
+            )
+            log("mirrored the Lark exchange to Zulip topic %s" % topic)
+        except CommandError as exc:
+            # A mirror that fails must not fail the reply: the owner has the
+            # answer in Lark either way.
+            log("could not mirror the Lark exchange to Zulip: %s" % exc)
 
     def _handle(self, event):
         # Every field below is read off a frame the Lark socket delivered, and
@@ -801,16 +854,23 @@ class Bridge:
     def _turn(self, message_id, chat_id, content, attempt):
         """Run one turn and deliver the reply.  False means run it again."""
         session = self._session_for(chat_id)
+        session_id = session.session_id
         try:
             answer = session.prompt(content)
         except Exception as exc:
             log("turn failed for %s: %s" % (message_id, exc))
-            done = self._send(message_id, "MM could not answer: %s" % exc)
+            note = "MM could not answer: %s" % exc
+            self._mirror(chat_id, session_id, content, note, failed=True)
+            done = self._send(message_id, note)
             with self.sessions_lock:
                 broken = self.sessions.pop(chat_id, None)
             if broken is not None:
                 broken.close()
             return done
+        # Name the thread in the chat itself, so the owner can tell which
+        # MiniMax session answered even when he only has the Lark window.
+        answer = "%s\n\n(MiniMax session %s)" % (answer, session_id or "unknown")
+        self._mirror(chat_id, session_id, content, answer)
         return self._send(message_id, answer, attempt)
 
     def _send(self, message_id, text, attempt=0):

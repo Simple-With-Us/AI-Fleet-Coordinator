@@ -780,6 +780,48 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(answered, [])
         self.assertEqual(len(session.buffer), 1)
 
+    def test_sentence_gap_accepts_a_different_gap(self):
+        out = bridge_mod.sentence_gap("Sentence one. Sentence two.", gap=bridge_mod.ZULIP_SENTENCE_GAP)
+        self.assertEqual(out, "Sentence one.\u00a0 Sentence two.")
+        self.assertEqual(bridge_mod.ZULIP_SENTENCE_GAP, "\u00a0 ")
+
+    def test_mirror_posts_the_exchange_with_the_session_id(self):
+        sent = {}
+
+        def fake_run(command, stdin_text=None, timeout=120, env=None):
+            sent["command"] = command
+            sent["env"] = env
+            return ""
+
+        original = bridge_mod.run
+        bridge_mod.run = fake_run
+        try:
+            bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+            bridge.env = {}
+            bridge._mirror("oc_6ca9549d8ed34274afc4e50108eb1754", "mvs_abc123", "Ping", "Pong")
+        finally:
+            bridge_mod.run = original
+        body = sent["command"][-1]
+        self.assertIn("mvs_abc123", body)
+        self.assertIn("Ping", body)
+        self.assertIn("Pong", body)
+        self.assertIn("Lark", " ".join(sent["command"]))
+        self.assertEqual(sent["env"]["AGENT_SEAT"], "MM")
+        self.assertEqual(sent["env"]["AGENT_SESSION"], "mvs_abc123")
+
+    def test_mirror_failure_does_not_raise(self):
+        def fake_run(command, stdin_text=None, timeout=120, env=None):
+            raise bridge_mod.CommandError("boom")
+
+        original = bridge_mod.run
+        bridge_mod.run = fake_run
+        try:
+            bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+            bridge.env = {}
+            bridge._mirror("oc_1", "mvs_abc123", "Ping", "Pong")
+        finally:
+            bridge_mod.run = original
+
     def test_lark_env_prepends_cli_prefix(self):
         env = bridge_mod.lark_env()
         self.assertIn(os.path.expanduser("~/.local/npm-global/bin"), env.get("PATH", ""))
