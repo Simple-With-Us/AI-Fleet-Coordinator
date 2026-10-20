@@ -1252,28 +1252,28 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
             r"^## 3\..*?(?=^## 4\.)",
             "## 3. Use The Durable VM Checkout\n\n" + vm,
             text,
-            flags=re.M | re.S,
+            flags=re.MULTILINE | re.DOTALL,
         )
     elif skill_name == "fleet-coordination":
         text = re.sub(
             r"^## 2\. Lanes.*?(?=^## 3\.)",
             "## 2. VM Lanes\n\n" + vm + "---\n\n",
             text,
-            flags=re.M | re.S,
+            flags=re.MULTILINE | re.DOTALL,
         )
     elif skill_name == "land-lane":
         text = re.sub(
             r"^1\. You are in your lane.*$",
             "1. You are on the intended task branch in your durable VM checkout; see session-start.",
             text,
-            flags=re.M,
+            flags=re.MULTILINE,
         )
     elif skill_name == "closeout":
         text = re.sub(
             r"^## 7\. Retire.*?(?=^## 8\.)",
             "## 7. Retain The Durable VM Checkout\n\nAfter merge, verify the remote result and keep the per-repo VM checkout for the next task.  Do not run Mac lane retirement or delete local work.\n\n",
             text,
-            flags=re.M | re.S,
+            flags=re.MULTILINE | re.DOTALL,
         )
     return text
 
