@@ -23,6 +23,22 @@ bridge_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge_mod)
 
 
+def update(kind, text):
+    """One ACP session/update notification, as the real server frames it."""
+    return {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": "mvs_test_1",
+            "update": {
+                "sessionId": "mvs_test_1",
+                "sessionUpdate": kind,
+                "content": {"type": "text", "text": text},
+            },
+        },
+    }
+
+
 def make_args(argv=None, **overrides):
     """Build a real Namespace from the bridge's own parser.
 
@@ -42,6 +58,9 @@ class FakeProcess:
 
     def __init__(self, script):
         self.script = script
+        # The script emits its own notifications, so it needs the process it
+        # answers on.
+        script.process = self
         self.stdin = FakeStdin(self)
         self.stdout = FakeStdout(self)
         self.stderr = iter(())
@@ -131,15 +150,32 @@ class FakeSessionScript:
             "result": {"sessionId": "mvs_test_1"},
         }
 
+    def notification(self, kind, text):
+        return {
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "mvs_test_1",
+                "update": {
+                    "sessionId": "mvs_test_1",
+                    "sessionUpdate": kind,
+                    "content": {"type": "text", "text": text},
+                },
+            },
+        }
+
     def session_prompt(self, request):
         self.prompts.append(request["params"]["prompt"][0]["text"])
+        # ACP v1 returns only stopReason and streams the answer as a
+        # session/update.  A fake that invented a result.content made the
+        # only end-to-end test cover a branch the real server never takes.
+        self.process.stdout.emit(
+            self.notification("agent_message_chunk", self.answer)
+        )
         return {
             "jsonrpc": "2.0",
             "id": request["id"],
-            "result": {
-                "stopReason": "end_turn",
-                "content": [{"type": "text", "text": self.answer}],
-            },
+            "result": {"stopReason": "end_turn"},
         }
 
 
@@ -151,12 +187,13 @@ class BridgeTests(unittest.TestCase):
     def test_lark_event_key_is_the_message_event(self):
         self.assertEqual(bridge_mod.LARK_EVENT_KEY, "im.message.receive_v1")
 
-    def test_reply_truncates_and_marks(self):
+    def capture_reply(self, message_id, text, run_result=""):
+        """Run _reply with the child CLI stubbed, and return its argv."""
         sent = {}
 
         def fake_run(command, stdin_text=None, timeout=120, env=None):
             sent["command"] = command
-            return ""
+            return run_result
 
         original = bridge_mod.run
         bridge_mod.run = fake_run
@@ -164,66 +201,94 @@ class BridgeTests(unittest.TestCase):
             bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
             bridge.args = make_args(lark_cli="/bin/true")
             bridge.env = None
-            bridge._reply("om_1", "x" * 5000)
+            bridge._reply(message_id, text)
         finally:
             bridge_mod.run = original
-        text = sent["command"][sent["command"].index("--text") + 1]
+        return sent["command"]
+
+    def reply_body(self, command):
+        return next(part.split("=", 1)[1] for part in command if part.startswith("--text="))
+
+    def test_reply_truncates_and_marks(self):
+        command = self.capture_reply("om_1", "x" * 5000)
+        text = self.reply_body(command)
         self.assertIn("reply truncated", text)
         self.assertLess(len(text), 5000)
 
     def test_reply_uses_reply_command_and_bot_identity(self):
-        sent = {}
-
-        def fake_run(command, stdin_text=None, timeout=120, env=None):
-            sent["command"] = command
-            return ""
-
-        original = bridge_mod.run
-        bridge_mod.run = fake_run
-        try:
-            bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-            bridge.args = make_args(lark_cli="/bin/true")
-            bridge.env = None
-            bridge._reply("om_42", "hello")
-        finally:
-            bridge_mod.run = original
-        command = sent["command"]
+        command = self.capture_reply("om_42", "hello")
         self.assertEqual(command[1:3], ["im", "+messages-reply"])
         self.assertIn("bot", command)
-        self.assertIn("om_42", command)
-        self.assertIn("hello", command)
+        self.assertIn("--message-id=om_42", command)
+        self.assertEqual(self.reply_body(command), "hello")
+
+    def test_reply_passes_values_as_single_option_tokens(self):
+        """A value that looks like an option must not become one.
+
+        Reply bodies are Markdown, so a leading "-" -- a bullet list, a `---`
+        rule -- is ordinary, and a bare "--text" argv element would let the
+        child CLI read it as a flag.
+        """
+        command = self.capture_reply("--not-an-id", "- - --flag-looking body")
+        self.assertEqual(sum(1 for part in command if part.startswith("--message-id")), 1)
+        self.assertEqual(sum(1 for part in command if part.startswith("--text")), 1)
+        self.assertIn("--message-id=--not-an-id", command)
+        self.assertEqual(self.reply_body(command), "- - --flag-looking body")
 
     def test_empty_answer_still_replies(self):
-        sent = {}
+        self.assertIn("no reply", self.reply_body(self.capture_reply("om_9", "   ")))
 
-        def fake_run(command, stdin_text=None, timeout=120, env=None):
-            sent["command"] = command
-            return ""
-
+    def test_reply_refuses_credential_shaped_text(self):
+        """The seat can echo a secret back; that must not reach the chat."""
         original = bridge_mod.run
-        bridge_mod.run = fake_run
+        bridge_mod.run = lambda *a, **kw: self.fail("a secret was sent to Lark")
         try:
             bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
             bridge.args = make_args(lark_cli="/bin/true")
             bridge.env = None
-            bridge._reply("om_9", "   ")
+            for secret in (
+                "here it is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345",
+                "token sk-abcdefghijklmnopqrstuvwx",
+                "Authorization: bearer abcdefghijklmnopqrstuvwxyz.0123456789",
+            ):
+                with self.assertRaises(bridge_mod.SecretRefusal):
+                    bridge._reply("om_secret", secret)
         finally:
             bridge_mod.run = original
-        text = sent["command"][sent["command"].index("--text") + 1]
-        self.assertIn("no reply", text)
+
+    def test_ordinary_prose_is_not_mistaken_for_a_secret(self):
+        self.assertEqual(
+            self.reply_body(self.capture_reply("om_ok", "A normal answer about keys.")),
+            "A normal answer about keys.",
+        )
 
     def test_duplicate_message_id_is_ignored(self):
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-        bridge.seen = set()
+        bridge.rows = {}
         bridge.seen_lock = threading.Lock()
-        self.assertTrue(bridge._mark_seen("om_a"))
-        self.assertFalse(bridge._mark_seen("om_a"))
-        self.assertTrue(bridge._mark_seen("om_b"))
+        self.assertTrue(bridge._claim("om_a"))
+        bridge._record_delivery("om_a", "ok")
+        self.assertFalse(bridge._claim("om_a"))
+        self.assertTrue(bridge._claim("om_b"))
+
+    def test_an_unknown_delivery_is_never_replayed(self):
+        """The reply may already be in the chat, so we must not resend it."""
+        bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+        bridge.rows = {"om_x": "unknown"}
+        bridge.seen_lock = threading.Lock()
+        self.assertFalse(bridge._claim("om_x"))
+
+    def test_a_pending_delivery_may_be_retried(self):
+        """Its last reply provably never left, so a retry cannot double-post."""
+        bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+        bridge.rows = {"om_x": "pending"}
+        bridge.seen_lock = threading.Lock()
+        self.assertTrue(bridge._claim("om_x"))
 
     def test_bot_sender_is_ignored(self):
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-        bridge.args = make_args()
-        bridge.seen = set()
+        bridge.args = make_args(["--allow-sender", "ou_ok"])
+        bridge.rows = {}
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
         bridge._handle(
@@ -240,7 +305,7 @@ class BridgeTests(unittest.TestCase):
     def test_allowed_sender_filter(self):
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
         bridge.args = make_args(["--allow-sender", "ou_ok"])
-        bridge.seen = set()
+        bridge.rows = {}
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
         bridge._handle(
@@ -284,19 +349,25 @@ class BridgeTests(unittest.TestCase):
 
     def test_collect_text_falls_back_to_updates(self):
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
-        session.buffer = [
-            {
-                "method": "session/update",
-                "params": {
-                    "update": {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": "from update"},
-                    }
-                },
-            }
-        ]
+        session.buffer = [update("agent_message_chunk", "from update")]
         session.buffer_lock = threading.Lock()
         self.assertEqual(session._collect_text({}), "from update")
+
+    def test_only_the_answer_chunk_becomes_the_reply(self):
+        """Private reasoning and the echoed question must not leave the seat.
+
+        A session streams more than the answer: the seat re-emits the owner's
+        own words as user_message_chunk and its internal reasoning as
+        agent_thought_chunk.  Taking every text update posted both to Lark.
+        """
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = [
+            update("user_message_chunk", "what is my open id?"),
+            update("agent_thought_chunk", "the owner is probably asking how to rotate it"),
+            update("agent_message_chunk", "here is how you rotate it"),
+        ]
+        session.buffer_lock = threading.Lock()
+        self.assertEqual(session._collect_text({}), "here is how you rotate it")
 
     def test_updates_do_not_carry_into_the_next_turn(self):
         """One turn's updates must not be answered again on the next one.
@@ -306,17 +377,7 @@ class BridgeTests(unittest.TestCase):
         notifications used to survive the turn that produced them.
         """
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
-        session.buffer = [
-            {
-                "method": "session/update",
-                "params": {
-                    "update": {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": "turn one"},
-                    }
-                },
-            }
-        ]
+        session.buffer = [update("agent_message_chunk", "turn one")]
         session.buffer_lock = threading.Lock()
         self.assertEqual(session._collect_text({}), "turn one")
         self.assertEqual(session.buffer, [])
@@ -385,17 +446,7 @@ class BridgeTests(unittest.TestCase):
     def test_collect_text_consumes_updates_even_when_the_result_has_text(self):
         """The result path must clear the updates too, or they build up."""
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
-        session.buffer = [
-            {
-                "method": "session/update",
-                "params": {
-                    "update": {
-                        "sessionUpdate": "agent_message_chunk",
-                        "content": {"type": "text", "text": "leftover"},
-                    }
-                },
-            }
-        ]
+        session.buffer = [update("agent_message_chunk", "leftover")]
         session.buffer_lock = threading.Lock()
         result = {"content": [{"type": "text", "text": "from result"}]}
         self.assertEqual(session._collect_text(result), "from result")
@@ -424,21 +475,7 @@ class BridgeTests(unittest.TestCase):
                 return FakeSessionScript.session_prompt(self, request)
 
         script = CollidingScript(answer="BRIDGE_OK")
-        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
-        session.mcode = "/bin/true"
-        session.cwd = "/tmp"
-        session.timeout = 30
-        session.env = None
-        session.process = None
-        session.session_id = None
-        session.next_id = 1
-        session.buffer = []
-        session.buffer_lock = threading.Lock()
-        session.lock = threading.Lock()
-
-        process = FakeProcess(script)
-        script.process = process
-        session.spawn = lambda command, **kwargs: process
+        session = self.fake_session(script)
         session._start()
         self.assertEqual(session.prompt("hello there"), "BRIDGE_OK")
 
@@ -467,7 +504,7 @@ class BridgeTests(unittest.TestCase):
         bridge.sessions = {}
         bridge.sessions_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
-        bridge.seen = {"om_seen"}
+        bridge.rows = {"om_seen": "ok"}
         bridge.seen_lock = threading.Lock()
         bridge.state_file = Path(self.state_dir.name) / "state.json"
         bridge.stopping = threading.Event()
@@ -491,28 +528,31 @@ class BridgeTests(unittest.TestCase):
 
     def test_acp_handshake_and_prompt_against_fake_process(self):
         script = FakeSessionScript(answer="BRIDGE_OK")
-        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
-        session.mcode = "/bin/true"
-        session.cwd = "/tmp"
-        session.timeout = 30
-        session.env = None
-        session.process = None
-        session.session_id = None
-        session.next_id = 1
-        session.buffer = []
-        session.buffer_lock = threading.Lock()
-        session.lock = threading.Lock()
-        session.spawn = lambda command, **kwargs: FakeProcess(script)
+        session = self.fake_session(script)
         session._start()
         self.assertEqual(session.session_id, "mvs_test_1")
         answer = session.prompt("hello there")
         self.assertEqual(answer, "BRIDGE_OK")
         self.assertEqual(script.prompts, ["hello there"])
 
+    def test_a_turn_answer_arrives_as_a_streamed_notification(self):
+        """ACP v1 returns only stopReason; the text comes in session/update.
+
+        The fake used to invent a result.content, so the one end-to-end ACP
+        test covered a shape the real server never produces and the
+        notification path was never exercised.
+        """
+        script = FakeSessionScript(answer="STREAMED")
+        session = self.fake_session(script)
+        session._start()
+        self.assertEqual(session.prompt("hello there"), "STREAMED")
+        # Nothing but the answer chunk reaches the reply.
+        self.assertEqual(session.buffer, [])
+
     def test_group_requires_mention(self):
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-        bridge.args = make_args(["--bot-open-id", "ou_bot"])
-        bridge.seen = set()
+        bridge.args = make_args(["--allow-sender", "ou_ok", "--bot-open-id", "ou_bot"])
+        bridge.rows = {}
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
         bridge._handle(
@@ -542,8 +582,8 @@ class BridgeTests(unittest.TestCase):
 
     def test_p2p_needs_no_mention(self):
         bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
-        bridge.args = make_args(["--bot-open-id", "ou_bot"])
-        bridge.seen = set()
+        bridge.args = make_args(["--allow-sender", "ou_ok", "--bot-open-id", "ou_bot"])
+        bridge.rows = {}
         bridge.seen_lock = threading.Lock()
         bridge.turns = bridge_mod.queue.Queue()
         bridge._handle(
@@ -618,6 +658,229 @@ class BridgeTests(unittest.TestCase):
     def test_lark_env_prepends_cli_prefix(self):
         env = bridge_mod.lark_env()
         self.assertIn(os.path.expanduser("~/.local/npm-global/bin"), env.get("PATH", ""))
+
+    def fake_session(self, script):
+        """A MiniMaxSession wired to a FakeProcess, ready for _start()."""
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.mcode = "/bin/true"
+        session.cwd = "/tmp"
+        session.timeout = 30
+        session.env = None
+        session.process = None
+        session.session_id = None
+        session.next_id = 1
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+        session.lock = threading.Lock()
+        session.stdin_lock = threading.Lock()
+        session.spawn = lambda command, **kwargs: FakeProcess(script)
+        return session
+
+    def bare_bridge(self, argv=None):
+        """A Bridge wired up for the unit under test, with no state on disk."""
+        bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+        bridge.args = make_args(argv or ["--allow-sender", "ou_ok"])
+        bridge.env = None
+        bridge.rows = {}
+        bridge.seen_lock = threading.Lock()
+        bridge.sessions = {}
+        bridge.sessions_lock = threading.Lock()
+        bridge.state_file = Path(self.state_dir.name) / "state.json"
+        bridge.stopping = threading.Event()
+        return bridge
+
+    def test_reply_outcomes_are_told_apart(self):
+        """A failed send means three different things, not one.
+
+        Retrying an unknown write double-posts a reply the chat may already
+        have, so each failure has to land on its own state.
+        """
+        cases = [
+            # (failure detail, state, whether the turn asks to be retried)
+            ("lark-cli could not start: [Errno 2] No such file", "pending", True),
+            ("lark-cli failed: connection reset by peer", "pending", True),
+            ("lark-cli failed: 400 invalid message_id", "refused", False),
+            ("lark-cli timed out after 120s", "unknown", False),
+        ]
+        for detail, expected, retried in cases:
+            bridge = self.bare_bridge()
+            bridge._reply = self.stub_reply_failure(detail)
+            retry = not bridge._send("om_1", "hello")
+            self.assertEqual(bridge.rows["om_1"], expected, detail)
+            # Only a provably unsent write is worth another attempt; an
+            # unknown one must never come back, since it may already be in
+            # the chat.
+            self.assertEqual(retry, retried, detail)
+
+    def test_refused_credential_is_recorded_as_refused(self):
+        bridge = self.bare_bridge()
+
+        def refuse(message_id, text):
+            raise bridge_mod.SecretRefusal("code=secret field=text")
+
+        bridge._reply = refuse
+        self.assertTrue(bridge._send("om_1", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"))
+        self.assertEqual(bridge.rows["om_1"], "refused")
+
+    def test_a_delivered_reply_is_recorded_as_ok(self):
+        bridge = self.bare_bridge()
+        bridge._reply = lambda message_id, text: None
+        self.assertTrue(bridge._send("om_1", "hello"))
+        self.assertEqual(bridge.rows["om_1"], "ok")
+
+    def test_retryable_send_retries_until_the_attempt_budget_is_spent(self):
+        bridge = self.bare_bridge()
+        bridge._reply = self.stub_reply_failure("lark-cli could not start")
+        for attempt in range(bridge_mod.MAX_REPLY_ATTEMPTS - 1):
+            self.assertFalse(bridge._send("om_1", "hello", attempt=attempt), attempt)
+        self.assertTrue(
+            bridge._send("om_1", "hello", attempt=bridge_mod.MAX_REPLY_ATTEMPTS - 1)
+        )
+        # Left pending either way, so a restart can still claim it.
+        self.assertEqual(bridge.rows["om_1"], "pending")
+
+    def stub_reply_failure(self, detail):
+        def reply(message_id, text):
+            raise bridge_mod.DeliveryError(
+                bridge_mod.Bridge._classify_reply_failure(detail), detail
+            )
+
+        return reply
+
+    def test_corrupt_state_refuses_to_start(self):
+        """A torn state file must not read as "nothing was delivered"."""
+        bridge = self.bare_bridge()
+        bridge.state_file.write_text("{ this is not json")
+        with self.assertRaises(RuntimeError):
+            bridge._load_state()
+
+    def test_state_of_an_unexpected_shape_is_refused(self):
+        bridge = self.bare_bridge()
+        bridge.state_file.write_text(json.dumps({"messages": {"om_1": "maybe"}}))
+        with self.assertRaises(RuntimeError):
+            bridge._load_state()
+
+    def test_the_first_release_state_still_loads(self):
+        bridge = self.bare_bridge()
+        bridge.state_file.write_text(
+            json.dumps({"seen_message_ids": ["om_old", "om_newer"]})
+        )
+        bridge._load_state()
+        self.assertEqual(bridge.rows, {"om_old": "ok", "om_newer": "ok"})
+
+    def test_an_absent_state_file_is_an_empty_history(self):
+        bridge = self.bare_bridge()
+        bridge._load_state()
+        self.assertEqual(bridge.rows, {})
+
+    def test_unresolved_rows_survive_the_dedup_window(self):
+        """The window may age out delivered ids, never an unresolved one."""
+        bridge = self.bare_bridge()
+        bridge.rows = {}
+        for index in range(bridge_mod.DEDUP_WINDOW + 50):
+            bridge.rows["om_%d" % index] = "ok"
+        bridge.rows["om_pending"] = "pending"
+        bridge.rows["om_unknown"] = "unknown"
+        bridge._save_state()
+        saved = json.loads(bridge.state_file.read_text())["messages"]
+        self.assertEqual(saved["om_pending"], "pending")
+        self.assertEqual(saved["om_unknown"], "unknown")
+        # The newest delivered ids are the ones kept, and the oldest go.
+        self.assertIn("om_%d" % (bridge_mod.DEDUP_WINDOW + 49), saved)
+        self.assertNotIn("om_0", saved)
+        self.assertLess(len(saved), bridge_mod.DEDUP_WINDOW + 50)
+
+    def test_a_dead_session_is_replaced_rather_than_reused(self):
+        """A cached session whose child exited cannot answer the next turn."""
+        bridge = self.bare_bridge()
+        bridge.args = make_args(
+            ["--allow-sender", "ou_ok"], mcode="/bin/true", cwd="/tmp", timeout=5
+        )
+        dead = bridge_mod.MiniMaxSession("/bin/true", "/tmp", 5)
+        dead.process = FakeProcess(FakeSessionScript())
+        dead.process.returncode = 1
+        closed = []
+        dead.close = lambda: closed.append(True)
+        bridge.sessions["oc_one"] = dead
+        replacement = bridge._session_for("oc_one")
+        self.assertIsNot(replacement, dead)
+        self.assertEqual(closed, [True])
+
+    def test_a_live_session_is_reused(self):
+        bridge = self.bare_bridge()
+        bridge.args = make_args(
+            ["--allow-sender", "ou_ok"], mcode="/bin/true", cwd="/tmp", timeout=5
+        )
+        live = bridge_mod.MiniMaxSession("/bin/true", "/tmp", 5)
+        live.process = FakeProcess(FakeSessionScript())
+        bridge.sessions["oc_one"] = live
+        self.assertIs(bridge._session_for("oc_one"), live)
+
+    def test_agent_permission_request_is_answered(self):
+        """An unanswered agent request stalls the turn until it times out.
+
+        Nobody is watching Lark to approve a tool call, so the bridge has to
+        decline it itself; otherwise the first turn needing a tool waits out
+        the whole prompt timeout.
+        """
+        script = FakeSessionScript()
+        session = self.fake_session(script)
+        session._start()
+        process = script.process
+
+        session._answer_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "session/request_permission",
+                "params": {"sessionId": "mvs_test_1"},
+            }
+        )
+        self.assertEqual(
+            json.loads(process.stdin.written[-1]),
+            {
+                "jsonrpc": "2.0",
+                "id": 99,
+                "result": {"outcome": {"outcome": "cancelled"}},
+            },
+        )
+        session._answer_request({"jsonrpc": "2.0", "id": 100, "method": "fs/write"})
+        self.assertEqual(
+            json.loads(process.stdin.written[-1])["error"]["code"], -32601
+        )
+
+    def test_start_refuses_to_run_without_a_pinned_sender(self):
+        """No pinned owner means every Lark user can drive the seat."""
+        parser = bridge_mod.build_parser()
+        with self.assertRaises(SystemExit):
+            bridge_mod.main(
+                [
+                    "--lark-cli",
+                    "/bin/true",
+                    "--mcode",
+                    "/bin/true",
+                    "--state-dir",
+                    self.state_dir.name,
+                ]
+            )
+        args = parser.parse_args(["--allow-sender", "ou_owner"])
+        self.assertEqual(args.allowed_sender, ["ou_owner"])
+
+    def test_state_directory_is_private(self):
+        args = make_args(["--allow-sender", "ou_ok"])
+        args.state_dir = Path(self.state_dir.name) / "private"
+        bridge_mod.Bridge(args)
+        self.assertEqual(args.state_dir.stat().st_mode & 0o777, 0o700)
+
+    def test_state_directory_refuses_a_symlink(self):
+        target = Path(self.state_dir.name) / "real"
+        target.mkdir()
+        link = Path(self.state_dir.name) / "link"
+        link.symlink_to(target)
+        args = make_args(["--allow-sender", "ou_ok"])
+        args.state_dir = link
+        with self.assertRaises(ValueError):
+            bridge_mod.Bridge(args)
 
 
 if __name__ == "__main__":

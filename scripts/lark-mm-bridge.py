@@ -55,7 +55,26 @@ DEFAULT_STATE_DIR = os.path.expanduser("~/.minimax/lark-mm-bridge")
 DEFAULT_CWD = os.path.expanduser("~/apps")
 DEFAULT_TIMEOUT = 600
 MAX_REPLY_CHARS = 4000
-BUSY_MARK = "(MM is still working on the previous message.)"
+# How many delivered message ids the dedup state remembers.  Rows that have
+# not reached a final state are kept beyond this window, because dropping one
+# is what makes a restart replay it.
+DEDUP_WINDOW = 2000
+# How many times a reply that provably never left the Mac is retried in one
+# process lifetime before the message is left pending for a restart.
+MAX_REPLY_ATTEMPTS = 3
+# A reply is the one place model output leaves the machine, and the seat has
+# whatever the owner's conversations and its retrieved context hold.  Anything
+# shaped like a credential is refused rather than forwarded.
+SECRET_PATTERN = re.compile(
+    r"(?i)(?:sk-[A-Za-z0-9_-]{16,}"
+    r"|ghp_[A-Za-z0-9]{20,}"
+    r"|gho_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|xoxb-[A-Za-z0-9-]{10,}"
+    r"|AIza[A-Za-z0-9_-]{20,}"
+    r"|bearer[ ]+[A-Za-z0-9._~+/=-]{16,}"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----)"
+)
 # The MiniMax Code ACP server has to start a runtime before it answers
 # initialize.  On a loaded Mac that handshake is slow, and a tight timeout
 # turns a working seat into "could not answer" (AFC-417).
@@ -117,6 +136,32 @@ def log(message):
 
 class CommandError(Exception):
     pass
+
+
+class SecretRefusal(Exception):
+    """The outbound text looked like a credential, so it was not sent."""
+
+
+class DeliveryError(Exception):
+    """A Lark reply that did not land, with what is known about the write.
+
+    outcome is "retryable" when the request provably never reached Lark,
+    "terminal" when Lark refused it outright, and "outcome_unknown" when the
+    write may or may not have been delivered -- the three cases cannot share a
+    handler, because replaying the third can double-post a reply the chat
+    already has.
+    """
+
+    def __init__(self, outcome, detail):
+        super().__init__(detail)
+        self.outcome = outcome
+        self.detail = detail
+
+
+# Durable per-message delivery states.  "pending" means claimed but not yet
+# delivered; "ok" is a delivered reply; "refused" is a definite refusal that
+# will not improve; "unknown" is a write whose outcome we cannot establish.
+DELIVERY_STATES = ("pending", "ok", "refused", "unknown")
 
 
 def run(command, stdin_text=None, timeout=120, env=None):
@@ -186,6 +231,10 @@ class LarkEventReader:
             text=True,
             bufsize=1,
             env=self.env,
+            # Its own session, so shutdown can signal the whole group: the
+            # consumer spawns helpers of its own and terminating only the
+            # leader leaves them holding the event pipe open.
+            start_new_session=True,
         )
         log("lark event consumer started (pid %s)" % self.process.pid)
 
@@ -234,11 +283,11 @@ class LarkEventReader:
             return
         if process.poll() is None:
             try:
-                process.terminate()
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
                 process.wait(timeout=10)
             except Exception:
                 try:
-                    process.kill()
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
                 except Exception:
                     pass
         log("lark event consumer stopped")
@@ -278,9 +327,15 @@ class MiniMaxSession:
             text=True,
             bufsize=1,
             env=self.env,
+            # Its own process group, so close() can take the seat's helpers
+            # down with it instead of leaving them behind.
+            start_new_session=True,
         )
         self.next_id = 1
         self.buffer = []
+        # _call holds self.lock for the whole request, which would deadlock the
+        # pump against it, so stdin writes take their own lock instead.
+        self.stdin_lock = threading.Lock()
         threading.Thread(target=self._pump, daemon=True).start()
         threading.Thread(target=self._pump_stderr, daemon=True).start()
         self._call(
@@ -311,8 +366,40 @@ class MiniMaxSession:
                 message = json.loads(line)
             except ValueError:
                 continue
+            # The agent also talks to the client: a session/request_permission
+            # frame carries both method and id.  Buffering it instead of
+            # answering leaves the turn waiting for a reply that never comes
+            # until session/prompt times out.
+            if "method" in message and "id" in message:
+                self._answer_request(message)
+                continue
             with self.buffer_lock:
                 self.buffer.append(message)
+
+    def _answer_request(self, message):
+        """Answer an agent-to-client request; an unanswered one stalls the turn."""
+        method = message.get("method")
+        request_id = message.get("id")
+        if method == "session/request_permission":
+            # Nobody is watching Lark to approve a tool call, so decline and
+            # let the seat answer without the tool rather than hang.
+            payload = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"outcome": {"outcome": "cancelled"}},
+            }
+        else:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32601, "message": "method not found: %s" % method},
+            }
+        try:
+            with self.stdin_lock:
+                self.process.stdin.write(json.dumps(payload) + "\n")
+                self.process.stdin.flush()
+        except Exception as exc:
+            log("could not answer %s: %s" % (method, exc))
 
     def _pump_stderr(self):
         """Keep the ACP server's own errors; they are the only clue when a
@@ -328,8 +415,9 @@ class MiniMaxSession:
             self.next_id += 1
             payload = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
             try:
-                self.process.stdin.write(json.dumps(payload) + "\n")
-                self.process.stdin.flush()
+                with self.stdin_lock:
+                    self.process.stdin.write(json.dumps(payload) + "\n")
+                    self.process.stdin.flush()
             except (BrokenPipeError, ValueError) as exc:
                 raise CommandError("miniMax session is not writable: %s" % exc)
             deadline = time.time() + timeout
@@ -419,11 +507,11 @@ class MiniMaxSession:
         if process is None:
             return
         try:
-            process.terminate()
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
             process.wait(timeout=10)
         except Exception:
             try:
-                process.kill()
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
             except Exception:
                 pass
 
@@ -435,49 +523,138 @@ class Bridge:
         self.sessions = {}
         self.sessions_lock = threading.Lock()
         self.turns = queue.Queue()
-        self.seen = set()
+        # message_id -> delivery state.  A plain dict keeps insertion order,
+        # which is what the dedup window needs: ids are opaque strings, so
+        # sorting them evicts by spelling rather than by age.
+        self.rows = {}
         self.seen_lock = threading.Lock()
         self.state_dir = Path(args.state_dir)
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        if self.state_dir.is_symlink():
+            raise ValueError("refusing a symlinked state directory: %s" % self.state_dir)
+        self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state_file = self.state_dir / "state.json"
         self._load_state()
         self.stopping = threading.Event()
+
+    @staticmethod
+    def _parse_state(data):
+        if not isinstance(data, dict):
+            raise RuntimeError("Lark bridge state must be a JSON object")
+        rows = data.get("messages")
+        if rows is None:
+            # The first release persisted a plain list of delivered ids.
+            legacy = data.get("seen_message_ids") or []
+            if not isinstance(legacy, list) or not all(
+                isinstance(item, str) for item in legacy
+            ):
+                raise RuntimeError("Lark bridge state seen_message_ids must be a list of strings")
+            rows = {message_id: "ok" for message_id in legacy}
+        if not isinstance(rows, dict) or not all(
+            isinstance(key, str) and value in DELIVERY_STATES for key, value in rows.items()
+        ):
+            raise RuntimeError(
+                "Lark bridge state messages must map message ids to %s" % (DELIVERY_STATES,)
+            )
+        return dict(rows)
 
     def _load_state(self):
         try:
             with open(self.state_file) as handle:
                 data = json.load(handle)
-            self.seen = set(data.get("seen_message_ids") or [])
-        except Exception:
-            self.seen = set()
+        except FileNotFoundError:
+            self.rows = {}
+            return
+        except (OSError, ValueError) as exc:
+            # A torn or unreadable state file is not "nothing was delivered".
+            # Reading it as empty would replay every recent message on the
+            # next start and double-post the replies.
+            raise RuntimeError(
+                "Lark bridge state %s is unreadable (%s); refusing to start and "
+                "treat corrupt state as authoritative" % (self.state_file, exc)
+            )
+        self.rows = self._parse_state(data)
 
     def _save_state(self):
         with self.seen_lock:
-            ids = sorted(self.seen)[-2000:]
+            rows = list(self.rows.items())
+        # Unresolved rows are kept whatever their age: dropping a pending or
+        # unknown row is what loses a reply or replays one.  Only delivered
+        # ids age out, and the newest ones are the last to go.
+        kept = [pair for pair in rows if pair[1] != "ok"]
+        room = DEDUP_WINDOW - len(kept)
+        if room > 0:
+            kept.extend([pair for pair in rows if pair[1] == "ok"][-room:])
         try:
             tmp = str(self.state_file) + ".tmp"
             with open(tmp, "w") as handle:
-                json.dump({"seen_message_ids": ids}, handle)
+                json.dump({"messages": dict(kept)}, handle)
             os.replace(tmp, self.state_file)
         except Exception as exc:
             log("could not write state: %s" % exc)
 
-    def _mark_seen(self, message_id):
+    def _claim(self, message_id):
+        """Claim a message id for a turn, or report why it must not run.
+
+        A delivered or refused id is finished.  An unknown one is never
+        replayed on our own initiative: its reply may already be in the chat,
+        and a second send would post it twice.  A pending one is claimable,
+        because its last reply provably never reached Lark -- running the turn
+        again costs a model run, but it cannot double-post.
+        """
         with self.seen_lock:
-            if message_id in self.seen:
+            state = self.rows.get(message_id)
+            if state == "unknown":
+                log("not replaying %s: its delivery outcome is unknown" % message_id)
                 return False
-            self.seen.add(message_id)
+            if state in ("ok", "refused"):
+                return False
+            self.rows[message_id] = "pending"
             return True
+
+    def _record_delivery(self, message_id, state):
+        with self.seen_lock:
+            self.rows[message_id] = state
 
     def _session_for(self, chat_id):
         with self.sessions_lock:
             session = self.sessions.get(chat_id)
+            if session is not None and session.process is not None:
+                # The ACP child can die between turns.  Handing back a dead
+                # session spends this turn on a broken pipe instead of a new
+                # one, and keeps the chat pinned to it.
+                if session.process.poll() is not None:
+                    log("miniMax session for %s exited; starting a new one" % chat_id)
+                    session.close()
+                    session = None
             if session is None:
                 session = MiniMaxSession(
                     self.args.mcode, self.args.cwd, self.args.timeout, self.env
                 )
                 self.sessions[chat_id] = session
             return session
+
+    @staticmethod
+    def _classify_reply_failure(detail):
+        """Decide what a failed Lark write means for the delivery state.
+
+        A timeout is the ambiguous case: lark-cli may have delivered the
+        reply and lost the acknowledgement.  A 4xx is Lark refusing the
+        message, which no retry will fix.  What provably never left the Mac
+        -- a missing binary, a refused connection -- is safe to send again.
+        """
+        if "timed out" in detail:
+            return "outcome_unknown"
+        if re.search(r"\b4\d\d\b", detail):
+            return "terminal"
+        if "could not start" in detail:
+            return "retryable"
+        if re.search(
+            r"(?i)(connection (refused|reset|aborted)|broken pipe|"
+            r"network (is )?(unreachable|error)|temporarily unavailable)",
+            detail,
+        ):
+            return "retryable"
+        return "outcome_unknown"
 
     def _reply(self, message_id, text):
         text = (text or "").strip()
@@ -486,18 +663,26 @@ class Bridge:
         text = sentence_gap(text)
         if len(text) > MAX_REPLY_CHARS:
             text = text[:MAX_REPLY_CHARS].rstrip() + "\n\n(reply truncated)"
+        if SECRET_PATTERN.search(text):
+            # Log the id and the code only; the text is the thing being kept
+            # out of the chat, so it does not belong in the log either.
+            log("reply refused for %s: code=secret field=text" % message_id)
+            raise SecretRefusal("code=secret field=text")
         command = [
             self.args.lark_cli,
             "im",
             "+messages-reply",
             "--as",
             "bot",
-            "--message-id",
-            message_id,
-            "--text",
-            text,
+            # --flag=value in one token: a message id or a reply body that
+            # begins with "-" would otherwise be read as another option.
+            "--message-id=" + message_id,
+            "--text=" + text,
         ]
-        run(command, timeout=120, env=self.env)
+        try:
+            run(command, timeout=120, env=self.env)
+        except CommandError as exc:
+            raise DeliveryError(self._classify_reply_failure(str(exc)), str(exc))
 
     def _handle(self, event):
         message_id = event.get("message_id") or event.get("id")
@@ -508,15 +693,18 @@ class Bridge:
             return
         if event.get("sender_type") == "bot":
             return
-        if self.args.allowed_sender and sender_id not in self.args.allowed_sender:
+        # Fail closed.  An empty allowlist means no owner is pinned, and the
+        # seat answers whoever sends it a message; main() refuses to start in
+        # that state, and this check refuses even if it is reached anyway.
+        if sender_id not in self.args.allowed_sender:
             log("ignoring message %s from unallowed sender %s" % (message_id, sender_id))
             return
         if not self._mentioned(event):
             log("ignoring message %s in %s: bot was not mentioned" % (message_id, chat_id))
             return
-        if not self._mark_seen(message_id):
+        if not self._claim(message_id):
             return
-        self.turns.put((message_id, chat_id, content, sender_id))
+        self.turns.put((message_id, chat_id, content, sender_id, 0))
 
     def _mentioned(self, event):
         """In a group chat the bot answers only when it is mentioned.
@@ -540,30 +728,67 @@ class Bridge:
                 item = self.turns.get(timeout=1)
             except queue.Empty:
                 continue
-            message_id, chat_id, content, sender_id = item
+            message_id, chat_id, content, sender_id, attempt = item
             log("message %s from %s in %s" % (message_id, sender_id, chat_id))
-            session = self._session_for(chat_id)
+            # One try/finally around the whole turn: the failure path used to
+            # `continue` past the task_done() and the state save, so a turn
+            # that errored left the queue counter drifting and its dedup row
+            # unwritten -- the next start would answer the same message again.
             try:
-                answer = session.prompt(content)
-            except Exception as exc:
-                log("turn failed for %s: %s" % (message_id, exc))
-                try:
-                    self._reply(message_id, "MM could not answer: %s" % exc)
-                except Exception as reply_exc:
-                    log("reply failed for %s: %s" % (message_id, reply_exc))
-                with self.sessions_lock:
-                    broken = self.sessions.pop(chat_id, None)
-                if broken is not None:
-                    broken.close()
-                continue
-            try:
-                self._reply(message_id, answer)
-                log("replied to %s" % message_id)
-            except Exception as exc:
-                log("reply failed for %s: %s" % (message_id, exc))
+                if not self._turn(message_id, chat_id, content, attempt):
+                    self.turns.put((message_id, chat_id, content, sender_id, attempt + 1))
             finally:
                 self.turns.task_done()
                 self._save_state()
+
+    def _turn(self, message_id, chat_id, content, attempt):
+        """Run one turn and deliver the reply.  False means run it again."""
+        session = self._session_for(chat_id)
+        try:
+            answer = session.prompt(content)
+        except Exception as exc:
+            log("turn failed for %s: %s" % (message_id, exc))
+            done = self._send(message_id, "MM could not answer: %s" % exc)
+            with self.sessions_lock:
+                broken = self.sessions.pop(chat_id, None)
+            if broken is not None:
+                broken.close()
+            return done
+        return self._send(message_id, answer, attempt)
+
+    def _send(self, message_id, text, attempt=0):
+        """Send a reply and record what is now known about its delivery.
+
+        True means the message is done with: delivered, definitively refused,
+        or in a state we refuse to replay.  False means the reply provably
+        never reached Lark and the attempt budget is not spent yet.
+        """
+        try:
+            self._reply(message_id, text)
+        except SecretRefusal:
+            # A refused reply will be refused again; retrying it would only
+            # burn the seat.
+            self._record_delivery(message_id, "refused")
+            return True
+        except DeliveryError as exc:
+            log(
+                "reply failed for %s: outcome=%s detail=%s"
+                % (message_id, exc.outcome, exc.detail)
+            )
+            if exc.outcome == "terminal":
+                self._record_delivery(message_id, "refused")
+                return True
+            if exc.outcome == "outcome_unknown":
+                self._record_delivery(message_id, "unknown")
+                return True
+            # Provably unsent, so the reply is not lost: it stays pending and
+            # goes back on the queue until the attempt budget runs out, after
+            # which the pending row survives in the state file.
+            self._record_delivery(message_id, "pending")
+            return attempt + 1 >= MAX_REPLY_ATTEMPTS
+        log("replied to %s" % message_id)
+        self._record_delivery(message_id, "ok")
+        return True
 
     def run(self):
         reader = LarkEventReader(self.args.lark_cli, self.env, self.args.event_log_dir)
@@ -626,7 +851,7 @@ def build_parser():
         dest="allowed_sender",
         action="append",
         default=[],
-        help="only answer this sender open_id; repeatable (default: answer anyone)",
+        help="only answer this sender open_id; repeatable, and at least one is required",
     )
     parser.add_argument(
         "--bot-open-id",
@@ -648,11 +873,22 @@ def main(argv=None):
         if not os.path.exists(path):
             parser.error("%s not found at %s" % (tool, path))
 
+    # Without a pinned sender the seat answers any Lark user in the chat with
+    # the owner's own credentials, so an unset allowlist is a refusal to
+    # start, not a permissive default.
+    if not args.allowed_sender:
+        parser.error("--allow-sender is required: name the open_id that may drive the seat")
+
     bridge = Bridge(args)
     if args.dry_run:
         original = bridge._reply
 
         def no_reply(message_id, text):
+            # The reply text is still the seat's output, so the same scan the
+            # send path uses applies before it reaches the log.
+            if SECRET_PATTERN.search(text or ""):
+                log("dry run: would refuse reply to %s: code=secret field=text" % message_id)
+                return
             log("dry run: would reply to %s: %s" % (message_id, text[:200]))
 
         bridge._reply = no_reply
