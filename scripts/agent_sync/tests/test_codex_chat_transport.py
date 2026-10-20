@@ -317,6 +317,22 @@ class TransportTests(unittest.TestCase):
         self.adapter._probe_failures.clear()  # Simulate expiration of the bounded busy probe cache.
         self.assertEqual(self.adapter.preflight(self.binding), "ready")
 
+    def test_send_holds_permanently_invalid_thread_and_defers_retryable_one(self):
+        # The daemon's codex send path skips the physical preflight, so send() must give the same
+        # terminal verdict for an unwritable thread instead of deferring it forever.
+        for key, value in [("archived", True), ("readOnly", True), ("id", "wrong")]:
+            original = dict(self.thread)
+            self.thread[key] = value
+            self.assertEqual(self.adapter.send(self.binding, "nudge"), "held")
+            self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
+            self.thread = original
+        self.thread["path"] = str(self.path.parent / "missing")
+        self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
+        self.thread["path"] = str(self.path)
+        self.adapter.loaded = lambda _: False
+        self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
+        self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
+
     def test_send_refreshes_loaded_proof_after_policy_permit(self):
         self.adapter.loaded = None
         path = self.thread["path"]

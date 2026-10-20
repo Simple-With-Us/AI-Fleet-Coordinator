@@ -490,6 +490,8 @@ class CodexChatTransport:
             # uncertain where it would block every other wake to this destination.
             return "failed" if sent and exc.rejected else "unknown" if sent else "deferred"
         except InvalidThread:
+            # Identity, archive, read-only and history-scope failures are permanent, matching the
+            # terminal verdict preflight gives them; deferring would retry this wake forever.
             return "held"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
             # Nothing reached thread/queue/add, so the wake is still safe to retry: only a
