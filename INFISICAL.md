@@ -293,7 +293,7 @@ Owner ruling (2026-10-18):  nothing on this Mac or in a fleet repo reads `~/.sec
 | Old file or folder | Infisical folder (Fleet-OPS, prod) |
 |---|---|
 | `Zulip/<Bot>-zuliprc` | `/zulip`, keys `<BOT>_ZULIP_EMAIL`, `_KEY`, `_SITE` |
-| `ZulipAdmin/realm-admin.zuliprc` | `/zulipadmin`, `REALM_ADMIN_ZULIP_*` (the realm-admin bot, role administrator) |
+| `ZulipAdmin/realm-admin.zuliprc` | `/zulip_operator`, `ZULIP_OPERATOR_*` (the realm-admin bot, role administrator) |
 | `Linear/<SEAT>.env` | `/linear`, `<SEAT>_LINEAR_CLIENT_ID` and `_CLIENT_SECRET` |
 | `appstore-connect.env`, `AuthKey_*.p8` | `/asc` (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`);  per-key `.p8` folders `/authkey-<id>-p8` |
 | `ios-distribution.p12`, `ios-dist-p12-pass`, `apple-certs` | `/mac-certs` (`IOS_DISTRIBUTION_P12_BASE64`, `IOS_DIST_P12_PASSWORD`), root `IOS_DIST_P12_PASS` |
@@ -317,7 +317,7 @@ The names for every other file match its name (lower case, dashes), with one fol
 3. `bash scripts/retire-secrets-dir.sh archive --rename`  copies the folder into an AES-256 encrypted disk image in `~/Documents` (you type the passphrase twice), verifies the image by mounting it read-only and comparing it with the folder, then renames the folder to `~/.secrets.retired-<stamp>`.  `rollback` puts it back and re-enables the writer.
 4. After a quiet day, delete the renamed folder yourself.  The script prints the command and never runs it.
 
-**fleet-work-backup is retired (owner ruling 2026-10-19).**  It was never installed on this Mac and its restic repository has zero snapshots, so OPS-907's backup never ran.  The B2 bucket `jays-fleet-work-backup` is left in place and empty, and the code stays in the repo (`scripts/fleet-work-backup/`) with nothing scheduling it.  Do not describe backups as working.
+**fleet-work-backup is retired (owner ruling 2026-10-19).**  It was never installed on this Mac and its restic repository has zero snapshots, so OPS-907's backup never ran.  The B2 bucket named by `B2_FLEET_WORK_BUCKET_NAME` is left in place and empty, and the code stays in the repo (`scripts/fleet-work-backup/`) with nothing scheduling it.  Do not describe backups as working.
 
 ## Hosted CLAUDE Zulip identity (AFC-296)
 
