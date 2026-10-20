@@ -927,14 +927,16 @@ These bind every message, bot-to-bot included.
 - **Sentence gap.**  A real U+00A0 plus a space between sentences in every Zulip post, DM included, from the CLI or the raw API, and in GitHub titles, bodies, and comments (owner ruling Thu, Oct 8, which supersedes the Wed, Oct 7 finding that two literal ASCII spaces rendered the same).  Never type the HTML entity for a non-breaking space.  You cannot type U+00A0 in chat, and a double space you emit into a tool call **sometimes** arrives collapsed to a single space.  That collapse is intermittent, not deterministic — on 2026-10-18, same machine and same tool, a ~3 KB PR body kept all eight of its double spaces while a ~3 KB Zulip body lost every one.  So generate the gap in the shell.  The pattern must match one *or more* spaces so it is correct in both states:
 
   ```
-  perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
-  grep -o $'\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
-  grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt          # must be 0 — a leftover single-space gap
+  perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
+  grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
+  grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt   # must be 0 — a leftover gap
   chmod 600 body.nbsp.txt                       # agent-sync post --body-file refuses other modes
   agent-sync post --topic "<ID> <subject>" --body-file body.nbsp.txt
   ```
 
   Run both greps every time.  A no-op conversion still exits 0, and a count above zero is not by itself sufficient — a partly converted body can hold real U+00A0 and still ship one wrong gap, which only the second grep catches.  Expect rare benign hits from abbreviations such as `Dr. Smith`.  Never type a raw U+00A0 into a message body or tool call; it is normalized the same way a double space is, so let perl emit it.
+
+  The ``([*_`)\]"]*)`` group is what catches a sentence end **inside** markup.  `**Bold sentence.**  Next sentence.` has the space after the closing `**`, not after the period, so a pattern without the group silently misses it — and neither grep above catches that either, because the file still holds other U+00A0 characters.  The group captures the markup and re-emits it before the gap, so the gap lands after the closing markup.
 
   **This is for renderer-bound text only.**  Swift, TypeScript, shell, and markdown read as source want two literal ASCII spaces and are *not* affected — those gaps came through the write tool intact in the same session.  Never put a U+00A0 into a committed source file; that is a real defect, not a fix.  Let perl emit it.
 

@@ -212,8 +212,13 @@ destination:
 
   ```sh
   printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
-  grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l    # must be above 0
-  grep -cE '[^0-9][.!?] +[A-Z"]' reply.txt      # must print 0: no gap left unconverted
+  grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' reply.txt | wc -l     # must be above 0
+  grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' reply.txt  # must print 0: no gap left unconverted
+
+
+These are the canonical pair, run on the file you just produced.  They carry the same
+markup group the converter does, so a gap that sits after a markup span is counted and a
+missed one is caught.
   ```
 
   A normal one-space gap is the failure this bullet exists to prevent, so treat a
@@ -235,8 +240,10 @@ destination:
   chat, and a double space you emit into a tool call *sometimes* arrives collapsed to a single
   space — intermittently, not deterministically, so never diagnose it and always verify.  So
   generate the gap in the shell, matching one *or more* spaces so it works in both states:
-  `perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g'`.  Then run both checks before posting:
-  `grep -o $'\xc2\xa0' body.nbsp.txt | wc -l` must be `> 0`, and `grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt`
+  ``perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g'``.  The ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` group catches a
+  sentence end *inside* markup or inside a quoted span, where the space comes after the closing
+  span or the closing quote and not after the period.  Then run both checks before posting:
+  `grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l` must be `> 0`, and `grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt`
   must be `0`, because a partly converted body can hold real U+00A0 and still carry one leftover
   single-space gap.  A conversion that matched nothing still exits 0, so a failed run is silent.
   `agent-sync post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
@@ -251,6 +258,11 @@ destination:
   one.  The notes helper converts leftover ASCII doubles after `.`/`!`/`?` into `&nbsp; `.
   Native SwiftUI `Text` does not decode HTML entities; use two literal spaces or Unicode
   `\u{00A0}` in Swift strings.
+- **Any surface not listed above** — a pane, a client, a tool or a channel you have not been
+  told about: two literal ASCII spaces.  Owner ruling 2026-10-20: an untested surface takes
+  two ASCII spaces until it reports otherwise.  A gap that renders is better than a gap that
+  does not, and two ASCII spaces never show as the six literal characters.  When a surface is
+  verified, change its bullet here and report the finding in #agent-sync so every seat gets it.
 
 **Rendering trap — history (chat advice reversed twice):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was
