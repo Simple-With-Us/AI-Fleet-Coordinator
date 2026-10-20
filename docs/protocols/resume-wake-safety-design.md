@@ -408,7 +408,7 @@ Then these variants:  1 to 5 in the same topic, and 6 to 10 each in a topic of i
 | `RESUME_WAKE_MODE` | `canary` | resumes only in `RESUME_WAKE_CANARY_TOPICS` |
 | `RESUME_WAKE_SEATS` | `CLAUDE`;  add `CODEX` for variants 8 to 10 (its `test-resume` pin must pass first) | the canary seat is CLAUDE, and variants 8 to 10 route to a CODEX canary session |
 | `RESUME_WAKE_SENDERS` | `owner+peers` | the trigger and variants 1, 2 and 4 are peer posts, which the default `owner` would never let through |
-| `RESUME_WAKE_CANARY_TOPICS` | the seven topics below | peers are confined to these topics, so a peer post anywhere else still cannot resume |
+| `RESUME_WAKE_CANARY_TOPICS` | the six topics below | peers are confined to these topics, so a peer post anywhere else still cannot resume |
 
 **Seat, topic and setup per variant** (all in #sandbox;  the addressed seat is CLAUDE throughout, and the canary issue `AFC-<canary id>` is filed before the run and claimed by CLAUDE):
 
@@ -419,7 +419,7 @@ Then these variants:  1 to 5 in the same topic, and 6 to 10 each in a topic of i
 | 7 Two sessions | `resume-wake canary v7` | two CLAUDE canary sessions, both with records bound to the topic, in lanes `claude-resume-canary-v7a` and `claude-resume-canary-v7b` |
 | 8 to 10 Other platform and carried grants | `resume-wake canary v8`, `v9`, `v10` | one CODEX canary session in lane `codex-resume-canary` (branch `codex/resume-canary`), its record bound to `v8`, `v9` and `v10` and to no CLAUDE session, so the ask offers CODEX's session |
 
-The lanes and sessions are created before the run by the canary harness, and `resume-wake canary` plus the five topics `v6` to `v10` are the seven canary topics in the knob.  Any failed check sets `RESUME_WAKE_MODE` back to `off` and `RESUME_WAKE_SENDERS` back to `owner`.  Passing the canary leaves `RESUME_WAKE_SENDERS` at `owner` until the owner flips the `on` step;  at `on`, `RESUME_WAKE_SENDERS` is `owner+peers`, as section 7 decides.
+The lanes and sessions are created before the run by the canary harness, and `resume-wake canary` plus the five topics `v6` to `v10` are the six canary topics in the knob.  Any failed check sets `RESUME_WAKE_MODE` back to `off` and `RESUME_WAKE_SENDERS` back to `owner`.  Passing the canary leaves `RESUME_WAKE_SENDERS` at `owner` until the owner flips the `on` step;  at `on`, `RESUME_WAKE_SENDERS` is `owner+peers`, as section 7 decides.
 
 ## 12. Decided (Jay, Oct 19)
 
