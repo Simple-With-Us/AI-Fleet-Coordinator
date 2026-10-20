@@ -13,6 +13,7 @@ import stat
 import sys
 import time
 import types
+import unittest
 from unittest import mock
 
 from fleet_knobs import knobs, lkg, source
@@ -40,6 +41,12 @@ class FakeHelper:
 
     def machine_token(self, cli, env, mode):
         self.logins.append(mode)
+        # Record the credentials the login was handed:  the real helper raises
+        # "automation-env-incomplete" without the pair, and source.py turns that into
+        # "login-failed", so a child_env() that stripped the pair too early would
+        # otherwise degrade every knob on the server while these tests stayed green.
+        self.seen_id = env.get("INFISICAL_AUTOMATION_CLIENT_ID")
+        self.seen_secret = env.get("INFISICAL_AUTOMATION_CLIENT_SECRET")
         if self.login_error:
             raise self.login_error
         return self.token
@@ -91,6 +98,36 @@ class AuthTests(KnobTestCase):
         knobs.get("FLEET_AUTOPUSH_MODE")
         self.assertEqual(helper.logins, ["keychain"])
         self.assertEqual(self.fake.tokens(), [FAKE_TOKEN])
+
+    def test_the_automation_env_mode_is_used_like_any_other_machine_identity(self):
+        # The server has no keychain:  without this the fetch would fall through to mode
+        # "session" and run the export unauthenticated, degrading every knob silently.
+        helper = self.use_helper(FakeHelper(mode="automation-env"))
+        self.fake.set(secrets=GOOD)
+        self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "snapshot")
+        self.assertEqual(helper.logins, ["automation-env"])
+        self.assertEqual(self.fake.tokens(), [FAKE_TOKEN])
+
+    def test_the_automation_credentials_never_reach_the_export_child(self):
+        helper = self.use_helper(FakeHelper(mode="automation-env"))
+        os.environ["INFISICAL_AUTOMATION_CLIENT_ID"] = "idSentinel0123456789"
+        os.environ["INFISICAL_AUTOMATION_CLIENT_SECRET"] = "secretSentinel0123456789"
+        env = source.child_env()
+        self.assertEqual(env["INFISICAL_TOKEN"], FAKE_TOKEN, "the token it resolved to")
+        self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_ID", env)
+        self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_SECRET", env)
+        # Stripped from the child, but the login itself must still have seen the pair.
+        self.assertEqual(helper.seen_id, "idSentinel0123456789")
+        self.assertEqual(helper.seen_secret, "secretSentinel0123456789")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the automation pair is Linux only")
+    def test_a_half_set_automation_pair_is_reported_as_such_not_as_a_keychain(self):
+        self.use_helper(FakeHelper(mode_error=RuntimeError("automation-env-incomplete")))
+        os.environ["INFISICAL_AUTOMATION_CLIENT_ID"] = "idSentinel0123456789"
+        self.fake.set(secrets=GOOD)
+        knobs.get("FLEET_AUTOPUSH_MODE")
+        self.assertEqual(knobs.report()["fetch_reason"], "automation-env-incomplete")
+        self.assertEqual(self.fake.calls(), [])
 
     def test_no_machine_identity_falls_back_to_the_cli_session(self):
         helper = self.use_helper(FakeHelper(mode="session"))
