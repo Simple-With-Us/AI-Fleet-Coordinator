@@ -135,7 +135,7 @@ spaces.
 
 ```sh
 grep -o $'[.!?]\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE '[^0-9][.!?] +[A-Z"]' body.nbsp.txt         # must be 0 — a leftover ASCII gap (one or more spaces)
+grep -cE '[^0-9][.!?] +[A-Z0-9"*`#@]' body.nbsp.txt         # must be 0 — a leftover ASCII gap (one or more spaces)
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
