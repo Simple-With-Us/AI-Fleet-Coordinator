@@ -847,11 +847,14 @@ export function fleetKnob(name) {
 
 // fleetKnob() reads the real fleet_knobs CLI, so the two decisions below take an optional values
 // object:  that is the seam the tests drive, so inverting either one fails a test instead of
-// silently reverting to the behaviour this fix exists to correct.
-function ingestKnobValues() {
+// silently reverting to the behaviour this fix exists to correct.  ingestKnobValues is exported
+// with an injectable reader so the knob-name -> decision mapping itself is asserted too (Kody
+// review, PR #740):  a swapped or misspelled knob then fails a test instead of silently
+// enabling the ingest with the default timeout.
+export function ingestKnobValues(read = fleetKnob) {
   return {
-    [INGEST_ENABLED_KNOB]: fleetKnob(INGEST_ENABLED_KNOB),
-    [INGEST_TIMEOUT_KNOB]: fleetKnob(INGEST_TIMEOUT_KNOB),
+    [INGEST_ENABLED_KNOB]: read(INGEST_ENABLED_KNOB),
+    [INGEST_TIMEOUT_KNOB]: read(INGEST_TIMEOUT_KNOB),
   };
 }
 
