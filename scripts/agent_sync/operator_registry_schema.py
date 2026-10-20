@@ -6,6 +6,7 @@ events row and export-outbox rows, so a crash can never leak or double-issue a l
 
 Standard library only, Python 3.11+.
 """
+
 from __future__ import annotations
 
 SCHEMA_VERSION = 1

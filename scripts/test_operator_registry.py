@@ -1,4 +1,5 @@
 """Tests for agent_sync.operator_registry (AFC-412 PR1).  Run:  python3 scripts/test_operator_registry.py"""
+
 from __future__ import annotations
 
 import json
@@ -10,13 +11,19 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from agent_sync import operator_registry as R  # noqa: E402
+from agent_sync import operator_registry as R
 
 
-def ident(seat="MM", platform="zulip", host="mac-1", scope="simplewithus",
-          native="native-1", **kw):
-    base = dict(seat=seat, platform=platform, verified_host=host, profile_scope=scope,
-                native_session_id=native, source="test", title="Thread Title")
+def ident(seat="MM", platform="zulip", host="mac-1", scope="simplewithus", native="native-1", **kw):
+    base = dict(
+        seat=seat,
+        platform=platform,
+        verified_host=host,
+        profile_scope=scope,
+        native_session_id=native,
+        source="test",
+        title="Thread Title",
+    )
     base.update(kw)
     return base
 
@@ -71,8 +78,8 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(a["label"], "A")
         self.assertTrue(self.reg.close(a["record_id"], actor="MM", source="test"))
         b = self.reg.resolve_or_register(ident(native="n2"))
-        self.assertEqual(b["label"], "A")       # wrapped back to A
-        self.assertEqual(b["generation"], 2)    # disambiguated by generation
+        self.assertEqual(b["label"], "A")  # wrapped back to A
+        self.assertEqual(b["generation"], 2)  # disambiguated by generation
         self.assertEqual(R.cross_seat_ref("MM", b["label"], b["generation"]), "MM A (gen 2)")
         self.assertEqual(R.cross_seat_ref("MM", "B", 1), "MM B")
 

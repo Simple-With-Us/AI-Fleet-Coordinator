@@ -15,6 +15,7 @@ rebind, and no token or wake authority is derived from a match.
 
 Standard library only, Python 3.11+.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,8 +24,9 @@ import os
 import secrets
 import sqlite3
 import time
-from datetime import datetime, timezone
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any
 
 from .operator_registry_schema import DDL, SCHEMA_VERSION
 
@@ -33,13 +35,33 @@ MUTABLE_ATTRS = ("title", "project", "thread_link", "apple_note_link", "state", 
 IDENTITY_FIELDS = ("platform", "verified_host", "profile_scope", "native_session_id")
 
 SESSIONS_HEADERS = (
-    "Record ID", "Label", "Seat", "Platform", "Host", "Native Session ID", "Title", "Project",
-    "Thread Link", "Apple Note Link", "State", "Wake Capability", "Registered At", "Last Seen At",
-    "Closed At", "Source",
+    "Record ID",
+    "Label",
+    "Seat",
+    "Platform",
+    "Host",
+    "Native Session ID",
+    "Title",
+    "Project",
+    "Thread Link",
+    "Apple Note Link",
+    "State",
+    "Wake Capability",
+    "Registered At",
+    "Last Seen At",
+    "Closed At",
+    "Source",
 )
 EVENTS_HEADERS = (
-    "Event ID", "Recorded At", "Session Record ID", "Label", "Event", "Actor", "Outcome",
-    "Source", "Details",
+    "Event ID",
+    "Recorded At",
+    "Session Record ID",
+    "Label",
+    "Event",
+    "Actor",
+    "Outcome",
+    "Source",
+    "Details",
 )
 
 
@@ -71,7 +93,7 @@ def _ulid(now_ms: int | None = None) -> str:
 
 def _utcnow() -> str:
     """Canonical UTC instant.  Display formatting (12-hour America/Chicago) is the exporter's job."""
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def display_title(label: str, title: str) -> str:
@@ -87,10 +109,22 @@ def cross_seat_ref(seat: str, letter: str, generation: int) -> str:
 
 def _session_cells(row: sqlite3.Row, label: str) -> list[str]:
     return [
-        row["record_id"], label, row["seat"], row["platform"], row["verified_host"],
-        row["native_session_id"], row["title"], row["project"], row["thread_link"],
-        row["apple_note_link"], row["state"], row["wake_capability"], row["registered_at"],
-        row["last_seen_at"], row["closed_at"] or "", row["source"],
+        row["record_id"],
+        label,
+        row["seat"],
+        row["platform"],
+        row["verified_host"],
+        row["native_session_id"],
+        row["title"],
+        row["project"],
+        row["thread_link"],
+        row["apple_note_link"],
+        row["state"],
+        row["wake_capability"],
+        row["registered_at"],
+        row["last_seen_at"],
+        row["closed_at"] or "",
+        row["source"],
     ]
 
 
@@ -145,7 +179,9 @@ class SessionRegistry:
 
     # ---- writes (each one transaction:  state + events + outbox) ----------------
 
-    def _allocate(self, conn: sqlite3.Connection, platform: str, record_id: str, now: str) -> tuple[str, int]:
+    def _allocate(
+        self, conn: sqlite3.Connection, platform: str, record_id: str, now: str
+    ) -> tuple[str, int]:
         """Lowest letter with no active assignment, wrapping after Z to A (RECYCLE on).  A reused
         letter gets the next generation.  Raises LabelExhausted when all 26 are live."""
         for letter in LETTERS:
@@ -217,18 +253,42 @@ class SessionRegistry:
                 letter, generation = self._active_alias(conn, record_id)
                 if row["seat"] != identity["seat"]:
                     self._insert_event(
-                        conn, record_id, letter, "resolve", identity["seat"], "seat_mismatch",
-                        identity["source"], f"stored seat is {row['seat']}", now,
+                        conn,
+                        record_id,
+                        letter,
+                        "resolve",
+                        identity["seat"],
+                        "seat_mismatch",
+                        identity["source"],
+                        f"stored seat is {row['seat']}",
+                        now,
                     )
-                    return {"record_id": record_id, "label": letter, "generation": generation,
-                            "created": False, "outcome": "seat_mismatch"}
+                    return {
+                        "record_id": record_id,
+                        "label": letter,
+                        "generation": generation,
+                        "created": False,
+                        "outcome": "seat_mismatch",
+                    }
                 outcome = "resumed_closed" if row["closed_at"] else "resumed"
                 self._insert_event(
-                    conn, record_id, letter, "resume", identity["seat"], outcome,
-                    identity["source"], "", now,
+                    conn,
+                    record_id,
+                    letter,
+                    "resume",
+                    identity["seat"],
+                    outcome,
+                    identity["source"],
+                    "",
+                    now,
                 )
-                return {"record_id": record_id, "label": letter, "generation": generation,
-                        "created": False, "outcome": outcome}
+                return {
+                    "record_id": record_id,
+                    "label": letter,
+                    "generation": generation,
+                    "created": False,
+                    "outcome": outcome,
+                }
             record_id = _ulid()
             conn.execute(
                 "INSERT INTO sessions(record_id, seat, platform, verified_host, profile_scope,"
@@ -236,27 +296,50 @@ class SessionRegistry:
                 " wake_capability, registered_at, last_seen_at, source)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    record_id, identity["seat"], identity["platform"], identity["verified_host"],
-                    identity["profile_scope"], identity["native_session_id"],
-                    identity.get("title", ""), identity.get("project", ""),
-                    identity.get("thread_link", ""), identity.get("apple_note_link", ""),
-                    identity.get("wake_capability", "unknown"), now, now, identity["source"],
+                    record_id,
+                    identity["seat"],
+                    identity["platform"],
+                    identity["verified_host"],
+                    identity["profile_scope"],
+                    identity["native_session_id"],
+                    identity.get("title", ""),
+                    identity.get("project", ""),
+                    identity.get("thread_link", ""),
+                    identity.get("apple_note_link", ""),
+                    identity.get("wake_capability", "unknown"),
+                    now,
+                    now,
+                    identity["source"],
                 ),
             )
             letter, generation = self._allocate(conn, identity["platform"], record_id, now)
             self._insert_event(
-                conn, record_id, letter, "register", identity["seat"], "registered",
-                identity["source"], "", now,
+                conn,
+                record_id,
+                letter,
+                "register",
+                identity["seat"],
+                "registered",
+                identity["source"],
+                "",
+                now,
             )
             self._enqueue_session_upsert(conn, record_id, now)
-            return {"record_id": record_id, "label": letter, "generation": generation,
-                    "created": True, "outcome": "registered"}
+            return {
+                "record_id": record_id,
+                "label": letter,
+                "generation": generation,
+                "created": True,
+                "outcome": "registered",
+            }
 
     def mark_seen(self, record_id: str, at: str | None = None) -> None:
         at = at or _utcnow()
         with self._conn as conn:
             self._get(record_id)
-            conn.execute("UPDATE sessions SET last_seen_at = ? WHERE record_id = ?", (at, record_id))
+            conn.execute(
+                "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?", (at, record_id)
+            )
             self._enqueue_session_upsert(conn, record_id, at)
 
     def update_attrs(self, record_id: str, /, **attrs: str) -> None:
@@ -274,8 +357,13 @@ class SessionRegistry:
             )
             self._enqueue_session_upsert(conn, record_id, now)
 
-    def close(self, record_id: str, at: str | None = None, actor: str = "registry",
-              source: str = "registry") -> bool:
+    def close(
+        self,
+        record_id: str,
+        at: str | None = None,
+        actor: str = "registry",
+        source: str = "registry",
+    ) -> bool:
         """Set closed_at once and retire the live alias.  Closing twice changes nothing."""
         now = at or _utcnow()
         with self._conn as conn:
@@ -296,17 +384,20 @@ class SessionRegistry:
             self._enqueue_session_upsert(conn, record_id, now)
             return True
 
-    def record_event(self, record_id: str, event: str, actor: str, outcome: str,
-                     source: str, details: str = "") -> str:
+    def record_event(
+        self, record_id: str, event: str, actor: str, outcome: str, source: str, details: str = ""
+    ) -> str:
         now = _utcnow()
         with self._conn as conn:
             self._get(record_id)
             letter, _ = self._active_alias(conn, record_id)
-            return self._insert_event(conn, record_id, letter, event, actor, outcome, source,
-                                      details, now)
+            return self._insert_event(
+                conn, record_id, letter, event, actor, outcome, source, details, now
+            )
 
 
 # ---- outbox bridge for the async exporter (AFC-412 PR2) -------------------------
+
 
 def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
     conn = sqlite3.connect(str(db_path))
