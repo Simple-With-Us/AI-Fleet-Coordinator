@@ -10,6 +10,7 @@ sentinel and last-run.json untouched, so it cannot make a stale or failed night 
 
 The sentinel carries source="meta" so recall_search excludes it from results.
 """
+
 from __future__ import annotations
 
 import json
@@ -24,23 +25,38 @@ SENTINEL_TEXT = "fleet-rag ingest status sentinel (not knowledge; excluded from 
 def write_ingest_sentinel(cfg: dict[str, str], qdrant: Qdrant, report: dict[str, Any]) -> str:
     """Upsert the sentinel with the run's outcome.  Returns the point id."""
     ok = bool(report.get("ok", False))
-    point = build_point(SENTINEL_TEXT, {
-        "source": "meta", "app": "fleet", "category": "meta", "seat": "FLEET",
-        "doc_id": SENTINEL_DOC_ID, "chunk_index": 0, "chunk_count": 1, "heading": "",
-        "title": "ingest status", "url": "", "path": "",
-        "created_at": int(report.get("started_at") or now_ms()),
-        "updated_at": int(report.get("finished_at") or now_ms()),
-        "ingest_run": str(report.get("run_id", "")),
-        "ok": ok,
-        "summary": json.dumps({k: report.get(k) for k in ("per_source", "errors") if k in report})[:4000],
-    })
+    point = build_point(
+        SENTINEL_TEXT,
+        {
+            "source": "meta",
+            "app": "fleet",
+            "category": "meta",
+            "seat": "FLEET",
+            "doc_id": SENTINEL_DOC_ID,
+            "chunk_index": 0,
+            "chunk_count": 1,
+            "heading": "",
+            "title": "ingest status",
+            "url": "",
+            "path": "",
+            "created_at": int(report.get("started_at") or now_ms()),
+            "updated_at": int(report.get("finished_at") or now_ms()),
+            "ingest_run": str(report.get("run_id", "")),
+            "ok": ok,
+            "summary": json.dumps(
+                {k: report.get(k) for k in ("per_source", "errors") if k in report}
+            )[:4000],
+        },
+    )
     point["vector"] = embed(cfg, [SENTINEL_TEXT])[0]
     qdrant.upsert([point], wait=True)
     return point["id"]
 
 
 def read_ingest_sentinel(qdrant: Qdrant) -> dict[str, Any] | None:
-    for p in qdrant.scroll({"must": [{"key": "doc_id", "match": {"value": SENTINEL_DOC_ID}}]}, limit=1):
+    for p in qdrant.scroll(
+        {"must": [{"key": "doc_id", "match": {"value": SENTINEL_DOC_ID}}]}, limit=1
+    ):
         return p.get("payload") or {}
     return None
 
