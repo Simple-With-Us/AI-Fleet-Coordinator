@@ -192,8 +192,10 @@ HAVE_GIT = shutil.which("git") is not None
 
 def assertion_patterns(text: str) -> tuple[str, str]:
     """The count pattern and the leftover pattern a text holds."""
-    count = _COUNT_RE.search(text)
-    leftovers = leftover_checks(text)
+    # Earlier surface self-tests are not the canonical publishing assertions.
+    region = text.split(PROTOCOL_REGION_START, 1)[-1]
+    count = _COUNT_RE.search(region)
+    leftovers = leftover_checks(region)
     return (
         count.group("ansi") if count else "",
         leftovers[0] if leftovers else "",
