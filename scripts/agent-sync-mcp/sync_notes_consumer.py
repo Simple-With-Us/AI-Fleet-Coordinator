@@ -52,7 +52,7 @@ def check_value(value: str, seats: set[str]) -> str:
     value = value.strip().upper()
     if not SEAT_RE.match(value):
         raise SystemExit(f"sync_notes_consumer: {KEY} is not a seat tag (letters, digits and hyphens)")
-    if value not in seats:
+    if value not in seats and value != "OPERATOR":
         raise SystemExit(f"sync_notes_consumer: {KEY} names {value}, which is not a live seat in fleet-apps.json")
     return value
 

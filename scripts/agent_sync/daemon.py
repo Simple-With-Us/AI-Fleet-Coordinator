@@ -314,6 +314,10 @@ class SeatRunner:
         # under another name (bot = "GB-Compiler" in [seat.CLAUDE], or email_env and key_env
         # pointed at another seat's variables) would otherwise hold a bot that another seat or
         # the other instance holds too.  users/me says whose key this really is.
+        if self.seat == "OPERATOR":
+            from .service_identity import operator_bot
+            if not operator_bot(me):
+                raise RoleRefused("OPERATOR credential does not match the pinned service bot")
         tag = seat_tag_for(me)
         if tag != self.seat:
             raise RoleRefused(

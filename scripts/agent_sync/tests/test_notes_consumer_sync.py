@@ -68,6 +68,12 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(install.wrangler_calls, [(["secret", "put", "NOTES_RELAY_CONSUMER"], "CLAUDE")])
         self.assertIn("installed", out)
 
+    def test_operator_is_explicit_service_not_roster(self):
+        install = FakeInstall({"NOTES_RELAY_CONSUMER": "OPERATOR"})
+        code, _ = run(install, "--apply")
+        self.assertEqual(code, 0)
+        self.assertEqual(install.wrangler_calls, [(["secret", "put", "NOTES_RELAY_CONSUMER"], "OPERATOR")])
+
     def test_a_wrangler_failure_is_the_exit_code(self):
         code, _ = run(FakeInstall({"NOTES_RELAY_CONSUMER": "CLAUDE"}, code=1), "--apply")
         self.assertEqual(code, 1)
