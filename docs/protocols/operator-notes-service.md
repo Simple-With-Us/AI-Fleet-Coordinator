@@ -11,3 +11,9 @@ The Notes consumer sync script permits OPERATOR explicitly, without adding it to
 ## Not Activated
 
 This PR changes source/tests only. It does not switch NOTES_RELAY_CONSUMER, a Worker binding, Mac listener.toml, or any runtime credential. Before activation: verify the renamed bot live, inspect current Mac config and an empty Notes spool, review the source, then obtain the deployment go. Switch the knob and Worker binding with the Mac config as one change window; preserve rollback state privately. Verify an actual Notes canary and matching Operator result before removing old credential-name aliases. Keep token broker activation and Notes relay acceptance evidence separate.
+
+## Provisioning and linkifier migration
+
+Both owner-run scripts now read Fleet-OPS prod /zulip_operator with ZULIP_OPERATOR_EMAIL, ZULIP_OPERATOR_API_KEY and ZULIP_OPERATOR_SITE. The --admin flag still selects the administrator-capable Operator service; it does not grant agent impersonation. No REALM_ADMIN name fallback remains. Existing env overrides use the same new names. AFC prod /zulip ZULIP_OPERATOR_EMAIL and ZULIP_OPERATOR_API_KEY remain the Notes service credentials.
+
+Legacy cleanup is gated on merged source and verification that deployed/local copies do not still use the old names. Candidate removals: Fleet-OPS prod /zulipadmin REALM_ADMIN_ZULIP_EMAIL, REALM_ADMIN_ZULIP_KEY, REALM_ADMIN_ZULIP_SITE; Fleet-OPS prod root the same three reference aliases; AFC prod /zulip ZULIP_ADMIN_EMAIL and ZULIP_ADMIN_API_KEY. The root key is a reference to the folder key, not a different credential. No secret values or bot keys are rotated by this migration.
