@@ -421,7 +421,9 @@ def check_policy(plugin: dict) -> dict:
             try:
                 command = shlex.split(handler["command"])
             except ValueError as exc:
-                configuration_error = configuration_error or f"the hook command is not a parseable argv: {exc}"
+                configuration_error = (
+                    configuration_error or f"the hook command is not a parseable argv: {exc}"
+                )
                 continue
             if not command:
                 configuration_error = configuration_error or "the hook command is empty"

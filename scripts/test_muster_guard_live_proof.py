@@ -453,10 +453,12 @@ class CheckPolicy(unittest.TestCase):
 
     def test_an_invalid_argv_does_not_hide_an_aggregate_denial(self):
         denying = write_fake_hook(self.root / "guard.sh", deny_all_body())
-        for index, groups in enumerate((
-            [("Bash|bash", "'unclosed"), ("Bash|bash", denying)],
-            [("Bash|bash", denying), ("Bash|bash", "'unclosed")],
-        )):
+        for index, groups in enumerate(
+            (
+                [("Bash|bash", "'unclosed"), ("Bash|bash", denying)],
+                [("Bash|bash", denying), ("Bash|bash", "'unclosed")],
+            )
+        ):
             plugin = write_plugin_groups(self.root / str(index), groups)
             result = proof.check_policy(proof.read_plugin(plugin))
             self.assertTrue(result["ok"])
