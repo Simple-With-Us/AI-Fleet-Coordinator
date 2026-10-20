@@ -24,8 +24,11 @@ many documents; state is written after every group, so an interrupted run resume
 and re-embeds nothing that already landed.  A non-blocking flock on
 ~/apps/fleet-rag/state/ingest.lock keeps two ingests from interleaving (exit 3 when held).
 
-Every non-dry run ends by upserting the ingest sentinel (fleet_rag.health) with ok=true/false
-so the Hetzner health rows see the outcome; the heartbeat-URL GET is an optional extra.
+A full untruncated `ingest --all --prune` run ends by upserting the ingest sentinel
+(fleet_rag.health) with ok=true/false so the Hetzner health rows see the outcome;  the
+heartbeat-URL GET is an optional extra.  That nightly pass is the only run that attests health:
+a partial or unpruned one still writes its log and state, but leaves the sentinel and
+last-run.json alone, so it cannot hide a stale or failed night.
 
 Known limitation — shared chunks: identical chunk text collapses to ONE point (the id is the
 content hash), and a point carries a single doc_id.  When a group writes a row whose id is
