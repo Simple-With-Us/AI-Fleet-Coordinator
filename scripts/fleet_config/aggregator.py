@@ -29,22 +29,25 @@ error;  the rule then reads ``UNPROVEN``,  which is never healthy.
 from __future__ import annotations
 
 import importlib
-import json
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from . import contract
 from .checks import (
     CheckContext,
     CheckError,
     CheckRegistry,
+    CommandRefused,
     build_result,
     iso_utc,
+    parse_bounded_json,
     resolve_home,
+    run_cli,
     utc_now,
 )
 from .types import (
@@ -64,6 +67,10 @@ __all__ = [
     "CHECK_MODULE_BY_KIND",
     "DEFAULT_TIMEOUT",
     "DOCTOR_TIMEOUT",
+    "MAX_DOCTOR_BYTES",
+    "MAX_DOCTOR_DEPTH",
+    "MAX_DOCTOR_NODES",
+    "RUN_DEADLINE_SECONDS",
     "ProofOutcome",
     "load_registry",
     "mark_stale_results",
@@ -80,6 +87,20 @@ DEFAULT_TIMEOUT = 10
 # The seconds a folded-in doctor may take.  The fast doctor finishes in under two
 # seconds;  the lane doctor takes minutes,  so it never runs by default.
 DOCTOR_TIMEOUT = 120
+
+# The seconds ONE status run may take in total.  A run that carries seven L1 hook rules
+# spends up to ten seconds on each probe,  so the per-rule timeout alone would let one
+# run take a minute and a half.  The deadline is the overall budget:  when it is spent,
+# the rules that have not run yet are reported as failing timeouts instead of being run,
+# so a slow machine cannot turn one status run into a queue of probes.
+RUN_DEADLINE_SECONDS = 120
+
+# The limits on what a doctor may answer with.  The bytes are capped before the parse,
+# and the parsed tree is checked for depth and node count,  so a pathological answer
+# cannot exhaust memory or the stack.
+MAX_DOCTOR_BYTES = 1024 * 1024
+MAX_DOCTOR_DEPTH = 32
+MAX_DOCTOR_NODES = 100000
 
 # The doctors whose results are folded into a status run.  They are MAC level checks,
 # not per-seat ones:  they run once per status run,  never once per seat.
