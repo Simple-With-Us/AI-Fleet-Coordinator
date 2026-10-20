@@ -1,8 +1,9 @@
 """Synthetic transaction tests; no keychain, application or process is touched."""
+
 import errno
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import build_support as support
@@ -27,8 +28,10 @@ class BuildSupportTests(unittest.TestCase):
 
     def test_success_prepares_on_target_filesystem_and_verifies_before_replacing(self):
         observed = []
+
         def verify(path):
             observed.append((path, (self.installed / "version").read_text()))
+
         support.install_bundle(self.staged, self.installed, verify)
         self.assertEqual([version for _, version in observed], ["old", "new"])
         self.assertEqual((self.installed / "version").read_text(), "new")
@@ -42,10 +45,12 @@ class BuildSupportTests(unittest.TestCase):
 
     def test_failed_replacement_restores_original(self):
         replace = support.os.replace
+
         def fail_new(source, destination):
             if Path(source).name == "new.app":
                 raise OSError("rename failed")
             return replace(source, destination)
+
         with mock.patch.object(support.os, "replace", side_effect=fail_new):
             with self.assertRaises(OSError):
                 support.install_bundle(self.staged, self.installed, lambda _: None)
@@ -53,19 +58,23 @@ class BuildSupportTests(unittest.TestCase):
 
     def test_verification_failure_and_interrupt_restore_original(self):
         for error in (ValueError("bad signature"), KeyboardInterrupt()):
+
             def verify(path):
                 if path == self.installed:
                     raise error
+
             with self.assertRaises(type(error)):
                 support.install_bundle(self.staged, self.installed, verify)
             self.assertEqual((self.installed / "version").read_text(), "old")
 
     def test_failed_rollback_preserves_recovery_copy(self):
         replace = support.os.replace
+
         def fail_restore(source, destination):
             if Path(source).name in ("new.app", "previous.app"):
                 raise OSError("rename failed")
             return replace(source, destination)
+
         with mock.patch.object(support.os, "replace", side_effect=fail_restore):
             with self.assertRaises(OSError):
                 support.install_bundle(self.staged, self.installed, lambda _: None)
@@ -75,10 +84,12 @@ class BuildSupportTests(unittest.TestCase):
 
     def test_interrupt_after_old_rename_restores_original(self):
         replace = support.os.replace
+
         def interrupt_after_old(source, destination):
             replace(source, destination)
             if Path(destination).name == "previous.app":
                 raise KeyboardInterrupt()
+
         with mock.patch.object(support.os, "replace", side_effect=interrupt_after_old):
             with self.assertRaises(KeyboardInterrupt):
                 support.install_bundle(self.staged, self.installed, lambda _: None)
