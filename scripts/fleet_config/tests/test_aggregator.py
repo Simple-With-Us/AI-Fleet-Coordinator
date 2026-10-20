@@ -13,7 +13,7 @@ The rules under test,  from the design document's section 4:
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fleet_config import aggregator, contract
 from fleet_config.checks import CheckContext, CheckError, CheckRegistry
@@ -31,12 +31,148 @@ from fleet_config.types import (
 
 from ._fake import make_manifest, make_rule, registry_with, result_check
 
-MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=UTC)
+MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=timezone.utc)
 
 
 def context(home="/tmp/fleet-config-home", timeout: int = 10) -> CheckContext:
     """A context with a fixed clock,  so every test sees the same stamps."""
     return CheckContext(home=home, now=MOMENT, timeout=timeout)
+
+
+class RunDeadlineTests(unittest.TestCase):
+    """A run has an overall budget:  the rules left over are failing timeouts."""
+
+    class Clock:
+        """A monotonic clock that returns the values it is given,  one call at a time."""
+
+        def __init__(self, values):
+            self._values = list(values)
+            self._index = 0
+
+        def __call__(self):
+            value = self._values[min(self._index, len(self._values) - 1)]
+            self._index += 1
+            return value
+
+    def test_the_rules_left_over_after_the_budget_are_failing_timeouts(self):
+        rules = [
+            make_rule("mm-a", ConfigKind.INSTRUCTIONS),
+            make_rule("mm-b", ConfigKind.INSTRUCTIONS),
+            make_rule("mm-c", ConfigKind.INSTRUCTIONS),
+        ]
+        manifest = make_manifest(rules)
+        checked = []
+
+        def check(rule, platform, ctx):
+            from fleet_config.checks import build_result
+
+            checked.append(rule.id)
+            return build_result(
+                rule, platform, CheckState.PASS, "fine", ReasonCode.OK, ObservedState(), ctx
+            )
+
+        report = aggregator.run_status(
+            manifest,
+            registry=registry_with({CheckType.FILE_HASH: check}),
+            ctx=context(),
+            deadline_seconds=60,
+            clock=self.Clock([0.0, 0.0, 1000.0, 1000.0, 1000.0]),
+        )
+        self.assertEqual(checked, ["mm-a"], "a rule ran after the budget was spent")
+        self.assertEqual(len(report.results), 3)
+        for result in report.results[1:]:
+            self.assertIs(result.state, CheckState.UNKNOWN)
+            self.assertIs(result.reason_code, ReasonCode.TIMEOUT)
+            self.assertTrue(contract.is_failing(result))
+        self.assertIs(report.summary.overall_verdict, OverallVerdict.FAIL)
+
+    def test_a_run_with_a_budget_to_spare_checks_every_rule(self):
+        rules = [
+            make_rule("mm-a", ConfigKind.INSTRUCTIONS),
+            make_rule("mm-b", ConfigKind.INSTRUCTIONS),
+        ]
+        manifest = make_manifest(rules)
+        registry = registry_with({CheckType.FILE_HASH: result_check(CheckState.PASS)})
+        report = aggregator.run_status(
+            manifest,
+            registry=registry,
+            ctx=context(),
+            deadline_seconds=60,
+            clock=self.Clock([0.0, 1.0, 2.0, 3.0]),
+        )
+        self.assertEqual(len(report.results), 2)
+        for result in report.results:
+            self.assertIs(result.state, CheckState.PASS)
+        self.assertIs(report.summary.overall_verdict, OverallVerdict.PASS)
+
+    def test_the_budget_is_the_default_and_it_is_positive(self):
+        self.assertGreater(aggregator.RUN_DEADLINE_SECONDS, 0)
+
+
+class DoctorBoundsTests(unittest.TestCase):
+    """A doctor's answer is bounded:  too big,  too deep or too wide is a note."""
+
+    def doctor_notes(self, body: str):
+        """Run a fake doctor that prints `body` and return its notes."""
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts = pathlib.Path(tmp)
+            doctor = scripts / "fleet-tools-doctor.py"
+            doctor.write_text(body, encoding="utf-8")
+            return list(
+                aggregator.run_doctors(
+                    context(),
+                    commands=(("fake", ("fleet-tools-doctor.py", "--json")),),
+                    scripts_dir=str(scripts),
+                )
+            )
+
+    def test_a_doctor_that_answers_with_too_many_bytes_is_refused(self):
+        notes = self.doctor_notes(
+            "import sys\nsys.stdout.write('x' * %d)\n" % (aggregator.MAX_DOCTOR_BYTES + 10)
+        )
+        self.assertEqual(len(notes), 1)
+        self.assertIn("more than", notes[0])
+
+    def test_a_doctor_that_answers_with_a_deep_tree_is_refused(self):
+        depth = aggregator.MAX_DOCTOR_DEPTH + 2
+        notes = self.doctor_notes(
+            "import json\nprint(json.dumps(" + "[" * depth + "]" * depth + "))\n"
+        )
+        self.assertEqual(len(notes), 1)
+        self.assertIn("deeper than", notes[0])
+
+    def test_a_doctor_that_answers_with_too_many_nodes_is_refused(self):
+        notes = self.doctor_notes(
+            "import json\nprint(json.dumps(['x'] * %d))\n"
+            % (aggregator.MAX_DOCTOR_NODES + 10)
+        )
+        self.assertEqual(len(notes), 1)
+        self.assertIn("more than", notes[0])
+
+    def test_a_doctor_that_answers_with_no_json_is_refused(self):
+        notes = self.doctor_notes("print('this is not json')\n")
+        self.assertEqual(len(notes), 1)
+        self.assertIn("JSON", notes[0])
+
+    def test_a_refused_doctor_is_a_note_and_not_a_crash(self):
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts = pathlib.Path(tmp)
+            doctor = scripts / "fleet-tools-doctor.py"
+            doctor.write_text("print('x' * 10)\n", encoding="utf-8")
+            report = aggregator.run_status(
+                make_manifest([make_rule("mm-a", ConfigKind.INSTRUCTIONS)]),
+                registry=registry_with({CheckType.FILE_HASH: result_check(CheckState.PASS)}),
+                ctx=context(),
+                include_doctors=True,
+            )
+        self.assertIsNotNone(report)
+        self.assertEqual(len(report.results), 1)
 
 
 class AggregatorTests(unittest.TestCase):
@@ -351,7 +487,7 @@ class AggregatorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             scripts = pathlib.Path(tmp)
-            doctor = scripts / "fake-doctor.py"
+            doctor = scripts / "fleet-tools-doctor.py"
             doctor.write_text(
                 "import json\nprint(json.dumps({'ok': True, 'checks': "
                 "[{'check': 'runtime', 'status': 'ok', 'detail': 'the runtime is there'}]}))\n",
@@ -359,7 +495,7 @@ class AggregatorTests(unittest.TestCase):
             )
             notes = aggregator.run_doctors(
                 context(),
-                commands=(("fake", ("fake-doctor.py", "--json")),),
+                commands=(("fake", ("fleet-tools-doctor.py", "--json")),),
                 scripts_dir=str(scripts),
             )
         self.assertEqual(len(notes), 1)

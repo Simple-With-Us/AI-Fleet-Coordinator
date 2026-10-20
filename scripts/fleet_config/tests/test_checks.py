@@ -14,7 +14,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fleet_config import contract
@@ -83,7 +83,7 @@ def make_context(home: str) -> CheckContext:
     """A context pinned to one home and one clock."""
     return CheckContext(
         home=home,
-        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
+        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -278,7 +278,7 @@ class HooksTests(TempHome):
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": "/Users/jay/apps/lane-tools/lane-guard-hook --format claude",
+                                "command": "/opt/fixture/lane-tools/lane-guard-hook --format claude",
                                 "timeout": 5,
                             }
                         ],
@@ -385,7 +385,7 @@ class HooksTests(TempHome):
                 "version": 1,
                 "hooks": {
                     "beforeShellExecution": [
-                        {"command": "/Users/jay/apps/lane-tools/lane-guard-hook", "timeout": 5}
+                        {"command": "/opt/fixture/lane-tools/lane-guard-hook", "timeout": 5}
                     ]
                 },
             },
@@ -449,7 +449,7 @@ class HooksTests(TempHome):
             "[mcp_servers.fleet-recall]\n"
             'command = "python3"\n'
             "args = [\n"
-            '  "/Users/jay/apps/fleet-rag/fleet-recall-mcp.py",\n'
+            '  "/opt/fixture/fleet-rag/fleet-recall-mcp.py",\n'
             "]\n"
             "enabled = true\n"
             "\n"
@@ -462,7 +462,7 @@ class HooksTests(TempHome):
         self.assertEqual(document["mcp_servers"]["fleet-recall"]["command"], "python3")
         self.assertEqual(
             document["mcp_servers"]["fleet-recall"]["args"],
-            ["/Users/jay/apps/fleet-rag/fleet-recall-mcp.py"],
+            ["/opt/fixture/fleet-rag/fleet-recall-mcp.py"],
         )
         self.assertIs(document["mcp_servers"]["fleet-recall"]["enabled"], True)
         self.assertEqual(document["hooks"][0]["event"], "PreToolUse")
@@ -679,7 +679,7 @@ class PermissionsTests(TempHome):
         """A settings file with the fleet's permissions."""
         return {
             "permissions": {
-                "allow": ["Bash(git:*)", "Read(//Users/jay/apps/**)"],
+                "allow": ["Bash(git:*)", "Read(//opt/fixture/apps/**)"],
                 "deny": ["Bash(rm:*)"],
                 "ask": [],
             }
@@ -692,7 +692,7 @@ class PermissionsTests(TempHome):
             "~/.claude/settings.json",
             expected=ExpectedState(
                 description="d",
-                names=("Bash(git:*)", "Bash(rm:*)", "Read(//Users/jay/apps/**)"),
+                names=("Bash(git:*)", "Bash(rm:*)", "Read(//opt/fixture/apps/**)"),
                 mode="0600",
             ),
             kind=ConfigKind.PERMISSIONS,
@@ -734,7 +734,7 @@ class PermissionsTests(TempHome):
             "~/.claude/settings.json",
             expected=ExpectedState(
                 description="d",
-                names=("Bash(git:*)", "Bash(rm:*)", "Read(//Users/jay/apps/**)"),
+                names=("Bash(git:*)", "Bash(rm:*)", "Read(//opt/fixture/apps/**)"),
                 mode="0600",
             ),
             kind=ConfigKind.PERMISSIONS,

@@ -38,12 +38,11 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass, replace
 
-from .checks import CheckContext, CheckError, build_result
+from .checks import CheckContext, CheckError, build_result, kill_process_group
 from .types import (
     CheckResult,
     CheckState,
@@ -346,39 +345,42 @@ def _event_key(name: str) -> str:
     return name.lower().replace("_", "").replace("-", "")
 
 
-_HOOK_EVENT_KEYS = frozenset(_event_key(name) for name in HOOK_EVENTS)
-
-
 @dataclass(frozen=True)
 class HookConfigSchema:
-    """Where one platform keeps the commands its hooks run.
+    """Where one platform keeps the commands its hooks run,  and which event gates them.
 
-    ``event-map`` reads the platform's hook section:  a mapping of event name to a list
-    of hook entries.  ``named-groups`` reads one level down under every top-level group,
-    and only where the key is a known event.  A key the schema does not name is never
-    read, so a ``command`` string anywhere else in the file cannot become a command to
-    run.
+    ``shape`` is ``event-map`` (a mapping of event name to a list of hook entries)  or
+    ``named-groups`` (one group per hook name at the top level,  each holding its own
+    event lists).  ``section`` is the key the event map lives under.
+
+    ``event`` is the ONE event the platform gates its tool calls on,  and it is the only
+    event this package reads,  validates or bounds.  A sibling event,  and a section the
+    schema does not name,  is never read,  so a malformed or huge unrelated part of a
+    settings file cannot fail a healthy seat's proof.
     """
 
     shape: str
     section: str = "hooks"
+    event: str = "PreToolUse"
 
 
 HOOK_CONFIG_SCHEMAS: dict[str, HookConfigSchema] = {
     # Claude, Codex and Grok keep ``hooks.<event>`` as a list of groups, each with its
     # own ``hooks`` list;  Cursor keeps ``hooks.<event>`` as a flat list of hook objects.
-    "claude": HookConfigSchema("event-map"),
-    "cursor": HookConfigSchema("event-map"),
+    "claude": HookConfigSchema("event-map", event="PreToolUse"),
+    "codex": HookConfigSchema("event-map", event="PreToolUse"),
+    "grok": HookConfigSchema("event-map", event="PreToolUse"),
+    "cursor": HookConfigSchema("event-map", event="beforeShellExecution"),
     # Antigravity keeps one group per hook name at the top level.
-    "antigravity": HookConfigSchema("named-groups"),
+    "antigravity": HookConfigSchema("named-groups", event="PreToolUse"),
 }
 
 
 def _assert_bounded(document: object, platform: str, path: str) -> None:
-    """Refuse a hook config section that nests too deep or holds too many nodes.
+    """Refuse a part of a hook config that nests too deep or holds too many nodes.
 
-    Only the section this schema reads is counted, so a large or deeply nested
-    unrelated part of the settings file cannot make an otherwise healthy seat fail.
+    Only the part this schema reads is counted, so a large or deeply nested unrelated
+    part of the settings file cannot make an otherwise healthy seat fail.
     """
     seen = 0
     stack: list[tuple[object, int]] = [(document, 1)]
@@ -409,6 +411,21 @@ def _assert_bounded(document: object, platform: str, path: str) -> None:
         elif isinstance(node, list):
             for item in node:
                 stack.append((item, depth + 1))
+
+
+def _event_entries(section: dict[str, object], event: str) -> object | None:
+    """The entries of one event in a hook section,  or None when it names no event.
+
+    The event name is compared without case,  underscores or dashes,  because the
+    harnesses spell the same event in more than one way.  A key that is not the event
+    is not read at all,  so a sibling event can never be mistaken for this one.
+    """
+    wanted = _event_key(event)
+    for key, value in section.items():
+        if not isinstance(key, str) or _event_key(key) != wanted:
+            continue
+        return value
+    return None
 
 
 def _commands_from_entries(
@@ -473,7 +490,11 @@ def _commands_from_entries(
 def _commands_from_event_map(
     document: dict[str, object], schema: HookConfigSchema, platform: str, path: str
 ) -> list[str]:
-    """The commands under ``<section>.<event>``, the shape Claude, Codex, Grok and Cursor use."""
+    """The commands under ``<section>.<event>``, the shape Claude, Codex, Grok and Cursor use.
+
+    Only the platform's own event is read.  A sibling event in the same section is
+    never looked at,  so a malformed one is skipped instead of aborting the proof.
+    """
     section = document.get(schema.section)
     if section is None:
         return []
@@ -483,35 +504,47 @@ def _commands_from_event_map(
             % (schema.section, path, platform),
             ReasonCode.UNPARSEABLE,
         )
-    _assert_bounded(section, platform, path)
+    entries = _event_entries(section, schema.event)
+    if entries is None:
+        return []
+    _assert_bounded(entries, platform, path)
     found: list[str] = []
-    for event, entries in section.items():
-        if _event_key(event) not in _HOOK_EVENT_KEYS:
-            continue
-        _commands_from_entries(entries, "the event %r" % event, platform, path, found)
+    _commands_from_entries(entries, "the event %r" % schema.event, platform, path, found)
     return found
 
 
-def _commands_from_named_groups(document: dict[str, object], platform: str, path: str) -> list[str]:
-    """The commands under each named group, the shape Antigravity uses."""
+def _commands_from_named_groups(
+    document: dict[str, object], schema: HookConfigSchema, platform: str, path: str
+) -> list[str]:
+    """The commands under each named group, the shape Antigravity uses.
+
+    Only the platform's own event is read in each group.  A group that holds no such
+    event is not read at all,  so an unrelated group in the owner's settings file can
+    neither fail the proof nor make it slow.
+    """
     found: list[str] = []
     for name, group in document.items():
         if not isinstance(group, dict):
             continue
-        _assert_bounded(group, platform, path)
-        for event, entries in group.items():
-            if _event_key(event) not in _HOOK_EVENT_KEYS:
-                continue
-            _commands_from_entries(
-                entries, "the group %r event %r" % (name, event), platform, path, found
-            )
+        entries = _event_entries(group, schema.event)
+        if entries is None:
+            continue
+        _assert_bounded(entries, platform, path)
+        _commands_from_entries(
+            entries, "the group %r event %r" % (name, schema.event), platform, path, found
+        )
     return found
 
 
 def schema_commands(
     document: object, schema: HookConfigSchema, platform: str, path: str
 ) -> list[str]:
-    """Every command string the schema pins, after the section it reads is checked.
+    """Every command string the schema pins, after the part it reads is checked.
+
+    The schema reads exactly one event:  the one the platform gates its tool calls on.
+    That part is checked for its shape and for its size before any command is taken
+    from it,  and a part the schema does not read is never checked,  never bounded and
+    never turned into a command.
 
     Raises ``CheckError`` naming the platform and the config path when the document
     does not hold the shape the schema pins, so a command this package cannot vouch for
@@ -523,7 +556,7 @@ def schema_commands(
             ReasonCode.UNPARSEABLE,
         )
     if schema.shape == "named-groups":
-        return _commands_from_named_groups(document, platform, path)
+        return _commands_from_named_groups(document, schema, platform, path)
     return _commands_from_event_map(document, schema, platform, path)
 
 
@@ -535,13 +568,14 @@ def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
     config file to read, when the file cannot be parsed, or when it names no guard
     hook.
 
-    A file this reads is bounded before it is parsed (byte limit), and the section the
-    platform's own schema names is checked before any command is taken from it, so an
-    unfamiliar section, a ``command`` key outside a hook entry, an over-nested hook
-    section or an oversized file cannot reach the probe.  A file that fails
-    one of those checks aborts with a ``CheckError`` naming the platform and the config
-    path, which the aggregator reads as a failing ``UNKNOWN``;  it never falls back to a
-    command read from a document this package cannot vouch for.
+    The file is read as untrusted input:  it is bounded before it is parsed (byte
+    limit),  and the part the platform's own schema names is checked for its shape and
+    for its size before any command is taken from it,  so an unfamiliar section,  a
+    ``command`` key outside a hook entry,  an over-nested hook section or an oversized
+    file cannot reach the probe.  A file that fails one of those checks aborts with a
+    ``CheckError`` naming the platform and the config path,  which the aggregator reads
+    as a failing ``UNKNOWN``;  it never falls back to a command read from a document
+    this package cannot vouch for.
     """
     adapter = PLATFORM_ADAPTERS.get(platform)
     if adapter is None or not adapter.config_rel:
@@ -562,7 +596,7 @@ def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
         document = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
         return None
-    schema = HOOK_CONFIG_SCHEMAS.get(adapter.payload_shape)
+    schema = HOOK_CONFIG_SCHEMAS.get(platform)
     if schema is None:
         raise CheckError(
             "there is no hook config schema for the platform %s, so %s is not read"
@@ -722,8 +756,8 @@ def _kill_group(proc: subprocess.Popen) -> None:
 def _run_shell(command: str, stdin: bytes, env: dict[str, str], timeout: int, cwd: str) -> _Run:
     """Run a hook command the way a platform runs one:  through a shell, on stdin.
 
-    The process group is killed on a timeout and on an interruption of the runner,
-    so a probe never leaves a hook running.
+    The process group is killed on a timeout,  and on an interruption,  so a probe never
+    leaves a hook running.
     """
     try:
         proc = subprocess.Popen(
@@ -740,14 +774,16 @@ def _run_shell(command: str, stdin: bytes, env: dict[str, str], timeout: int, cw
     try:
         out, err = proc.communicate(stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            proc.kill()
+        kill_process_group(proc)
         out, err = proc.communicate()
         return _Run(returncode=None, stdout=out or b"", stderr=err or b"", timed_out=True)
     except BaseException:
-        _kill_group(proc)
+        # An interruption (a Ctrl-C,  a SystemExit) must not leave the hook running:
+        # the process group is killed and the child is reaped before the interruption
+        # is re-raised.
+        kill_process_group(proc)
+        _reap(proc)
+        _close_pipes(proc)
         raise
     return _Run(returncode=proc.returncode, stdout=out or b"", stderr=err or b"")
 
@@ -769,16 +805,34 @@ def _run_argv(argv: list[str], stdin: bytes, env: dict[str, str], timeout: int, 
     try:
         out, err = proc.communicate(stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            proc.kill()
+        kill_process_group(proc)
         out, err = proc.communicate()
         return _Run(returncode=None, stdout=out or b"", stderr=err or b"", timed_out=True)
     except BaseException:
-        _kill_group(proc)
+        kill_process_group(proc)
+        _reap(proc)
+        _close_pipes(proc)
         raise
     return _Run(returncode=proc.returncode, stdout=out or b"", stderr=err or b"")
+
+
+def _reap(proc: subprocess.Popen) -> None:
+    """Wait for a killed child,  so it does not linger as a zombie."""
+    try:
+        proc.wait(timeout=5)
+    except Exception:  # noqa: BLE001 - the process is already dead;  reaping is best effort
+        pass
+
+
+def _close_pipes(proc: subprocess.Popen) -> None:
+    """Close the child's pipes,  so an interrupted probe leaks no descriptor."""
+    for stream in (proc.stdin, proc.stdout, proc.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------- deny shapes

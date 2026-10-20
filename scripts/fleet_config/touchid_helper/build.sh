@@ -12,6 +12,17 @@ here="$(cd "$(dirname "$0")" && pwd)"
 config="${1:-Release}"
 xcodegen="${XCODEGEN:-/opt/homebrew/bin/xcodegen}"
 
+# The configuration is a name this script chooses,  not an option it forwards:  a value
+# like --help would otherwise be read by xcodebuild as an option.  It is checked right
+# here,  before anything is generated or built.
+case "$config" in
+    Release|Debug) ;;
+    *)
+        echo "build.sh: the configuration must be Release or Debug, not '$config'" >&2
+        exit 2
+        ;;
+esac
+
 if [ ! -x "$xcodegen" ]; then
     echo "build.sh: xcodegen is not at $xcodegen;  install it with 'brew install xcodegen'" >&2
     exit 1

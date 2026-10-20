@@ -15,6 +15,8 @@ The rules, all enforced here:
     manifest's declared targets is touched
   * the run is idempotent:  a second apply of the same plan has nothing left to do
   * after the writes,  the status runs again,  so the caller sees the new state
+  * every installer runs as a child process through the one allowlisted runner,  with
+    an explicit timeout,  so a hung installer cannot block the command
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
@@ -22,7 +24,6 @@ Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -30,7 +31,14 @@ from dataclasses import dataclass
 from . import plan as plan_module
 from . import touchid
 from .aggregator import run_status
-from .checks import CheckContext, CheckRegistry, resolve_home, utc_now
+from .checks import (
+    CheckContext,
+    CheckRegistry,
+    CommandRefused,
+    resolve_home,
+    run_cli,
+    utc_now,
+)
 from .types import (
     ConfigKind,
     Manifest,
@@ -162,27 +170,27 @@ def default_runner(argv: Sequence[str], timeout: int = DEFAULT_TIMEOUT) -> tuple
 
     The child inherits the environment,  so the installer sees the same PATH and HOME the
     caller had.  A timeout is a failure,  not a hang.
+
+    The child is started through the one allowlisted runner,  so it has an explicit
+    timeout,  an output cap and the same kill discipline as every other child this
+    package starts.  A command that is not on the allowlist is refused before any
+    process exists.
     """
     command = list(argv)
     if command and command[0] == "python3":
         command[0] = sys.executable
     try:
-        result = subprocess.run(
-            command,
-            cwd=scripts_dir(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
+        result = run_cli(command, timeout=timeout, cwd=scripts_dir())
+    except CommandRefused as exc:
+        return 127, "", "the installer command is not on the allowlist:  %s" % exc
+    if result.timed_out:
         return 124, "", "the installer did not finish within %d seconds" % timeout
-    except OSError as exc:
-        return 127, "", "the installer could not be started: %s" % exc
+    if result.error:
+        return 127, "", "the installer could not be started:  %s" % result.error
     return (
-        result.returncode,
-        result.stdout.decode("utf-8", "replace") if result.stdout else "",
-        result.stderr.decode("utf-8", "replace") if result.stderr else "",
+        result.returncode if result.returncode is not None else 127,
+        result.stdout.decode("utf-8", "replace"),
+        result.stderr.decode("utf-8", "replace"),
     )
 
 

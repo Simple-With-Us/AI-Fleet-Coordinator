@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 import tempfile
 import unittest
@@ -36,6 +37,7 @@ from fleet_config.types import (
 __all__ = [
     "FleetTestCase",
     "make_manifest",
+    "make_private_dir",
     "make_rule",
     "manifest_json",
     "registry_json",
@@ -43,6 +45,23 @@ __all__ = [
     "result_check",
     "snapshot_tree",
 ]
+
+
+def make_private_dir(path: str) -> str:
+    """Create a directory the test owns,  with owner-only permissions.
+
+    ``os.makedirs`` would use the permissive default mode bits,  and it follows a
+    symlink:  a link that points somewhere else would be written through.  So the path
+    is refused when it is a symlink,  and the mode is set explicitly afterwards,  which
+    the umask cannot loosen.
+    """
+    if os.path.islink(path):
+        raise ValueError("the directory %s is a symlink,  so it is not created" % path)
+    if os.path.exists(path) and not os.path.isdir(path):
+        raise ValueError("the path %s exists and is not a directory" % path)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    os.chmod(path, 0o700)
+    return path
 
 
 def make_rule(
@@ -197,7 +216,7 @@ class FleetTestCase(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = pathlib.Path(tmp.name).resolve()
         self.home = self.root / "home"
-        self.home.mkdir()
+        make_private_dir(str(self.home))
         self.registry_path = self.root / "fleet-apps.json"
         self.manifest_path = self.root / "fleet-seats.json"
 

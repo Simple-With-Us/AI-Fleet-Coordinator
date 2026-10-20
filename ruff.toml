@@ -11,3 +11,11 @@ extend-exclude = [
     "scripts/needs_owner/tests",
     "scripts/open_loops/tests",
 ]
+
+[lint.per-file-ignores]
+# The fleet_config package has to stay importable under Python 3.9,  which the fleet's
+# Macs run,  so it cannot use the 3.11+ spelling of UTC (UP017).  The repository's
+# target version is newer,  so the rule is turned off for that package alone;  without
+# this an automated fix rewrites the package into something that no longer imports on
+# the interpreter the fleet runs.
+"scripts/fleet_config/**" = ["UP017"]

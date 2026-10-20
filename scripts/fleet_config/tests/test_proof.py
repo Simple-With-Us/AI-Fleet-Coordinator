@@ -13,9 +13,10 @@ import json
 import os
 import shlex
 import stat
+import subprocess
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from unittest import mock
 
 from fleet_config import proof
@@ -31,6 +32,12 @@ from fleet_config.types import (
     ReasonCode,
     Rule,
 )
+
+from ._fake import make_private_dir
+
+# The real Popen,  captured before any test patches it,  so a stand-in that starts a
+# real child does not call itself.
+_REAL_POPEN = subprocess.Popen
 
 # The fake hook.  It reads the payload the probe sends, takes the destination the
 # payload names, and answers in the shape the mode names.  It never writes anything
@@ -128,7 +135,7 @@ class FakeHookCase(unittest.TestCase):
         self.record = os.path.join(self.home, "payload.json")
         self.ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
             timeout=10,
         )
 
@@ -212,7 +219,7 @@ class L1DenyTests(FakeHookCase):
     def test_the_guard_off_switch_is_named_in_the_reason(self):
         ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
             timeout=10,
             env={"FLEET_LANE_GUARD": "off"},
         )
@@ -227,7 +234,7 @@ class L1TimeoutTests(FakeHookCase):
     def test_a_hanging_hook_times_out(self):
         ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
             timeout=1,
         )
         outcome = proof.run_l1_probe("claude", ctx, hook_command=self.hook("sleep"))
@@ -238,7 +245,7 @@ class L1TimeoutTests(FakeHookCase):
     def test_the_timeout_argument_overrides_the_context(self):
         ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
             timeout=600,
         )
         outcome = proof.run_l1_probe("claude", ctx, hook_command=self.hook("sleep"), timeout=1)
@@ -295,61 +302,61 @@ class L1SafetyTests(FakeHookCase):
 class HookResolutionTests(FakeHookCase):
     """The hook under test is the installed one, read from the platform's config."""
 
-    def test_resolve_reads_the_platforms_own_config(self):
-        os.makedirs(os.path.join(self.home, ".claude"))
-        path = os.path.join(self.home, ".claude", "settings.json")
+    def write_config(self, relative: str, document: dict) -> str:
+        """Write a hook config document under the temporary home and return its path."""
+        path = os.path.join(self.home, relative)
+        make_private_dir(os.path.dirname(path))
         with open(path, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "hooks": {
-                        "PreToolUse": [
-                            {
-                                "matcher": "Bash",
-                                "hooks": [
-                                    {
-                                        "type": "command",
-                                        "command": "/opt/lane-tools/lane-guard-hook --format claude",
-                                    }
-                                ],
-                            }
-                        ]
-                    }
-                },
-                handle,
-            )
+            json.dump(document, handle)
+        return path
+
+    def test_resolve_reads_the_platforms_own_config(self):
+        path = self.write_config(
+            ".claude/settings.json",
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/opt/lane-tools/lane-guard-hook --format claude",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+        )
         self.assertEqual(
             proof.resolve_hook_command("claude", self.ctx),
             "/opt/lane-tools/lane-guard-hook --format claude",
         )
+        self.assertTrue(os.path.isfile(path))
 
     def test_resolve_returns_none_when_no_guard_hook_is_named(self):
-        os.makedirs(os.path.join(self.home, ".claude"))
-        path = os.path.join(self.home, ".claude", "settings.json")
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"hooks": {"PreToolUse": []}}, handle)
+        self.write_config(".claude/settings.json", {"hooks": {"PreToolUse": []}})
         self.assertIsNone(proof.resolve_hook_command("claude", self.ctx))
 
     def test_resolve_returns_none_when_there_is_no_config(self):
         self.assertIsNone(proof.resolve_hook_command("claude", self.ctx))
 
     def test_a_command_outside_a_hook_entry_is_not_a_command(self):
-        os.makedirs(os.path.join(self.home, ".claude"))
-        path = os.path.join(self.home, ".claude", "settings.json")
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "sandbox": {
-                        "commands": [{"command": "/opt/lane-tools/lane-guard-hook --format claude"}]
-                    },
-                    "hooks": {"PreToolUse": []},
+        self.write_config(
+            ".claude/settings.json",
+            {
+                "sandbox": {
+                    "commands": [{"command": "/opt/lane-tools/lane-guard-hook --format claude"}]
                 },
-                handle,
-            )
+                "hooks": {"PreToolUse": []},
+            },
+        )
         self.assertIsNone(proof.resolve_hook_command("claude", self.ctx))
 
     def test_an_oversized_config_aborts_naming_the_platform_and_the_path(self):
-        os.makedirs(os.path.join(self.home, ".claude"))
         path = os.path.join(self.home, ".claude", "settings.json")
+        make_private_dir(os.path.dirname(path))
         with open(path, "wb") as handle:
             handle.write(b"{" + b" " * proof.MAX_CONFIG_BYTES + b"}")
         with self.assertRaises(CheckError) as caught:
@@ -359,13 +366,10 @@ class HookResolutionTests(FakeHookCase):
         self.assertIn(path, message)
 
     def test_a_document_nested_past_the_depth_limit_aborts(self):
-        os.makedirs(os.path.join(self.home, ".claude"))
-        path = os.path.join(self.home, ".claude", "settings.json")
         node: dict[str, object] = {"command": "/opt/lane-tools/lane-guard-hook"}
         for _ in range(proof.MAX_CONFIG_DEPTH + 1):
             node = {"hooks": node}
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(node, handle)
+        self.write_config(".claude/settings.json", {"hooks": {"PreToolUse": node}})
         with self.assertRaises(CheckError):
             proof.resolve_hook_command("claude", self.ctx)
 
@@ -434,30 +438,24 @@ class HookResolutionTests(FakeHookCase):
             proof.resolve_hook_command("antigravity", self.ctx)
 
     def test_a_hook_list_that_is_not_a_list_aborts(self):
-        os.makedirs(os.path.join(self.home, ".claude"))
-        path = os.path.join(self.home, ".claude", "settings.json")
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(
-                {"hooks": {"PreToolUse": {"command": "/opt/lane-tools/lane-guard-hook"}}},
-                handle,
-            )
+        self.write_config(
+            ".claude/settings.json",
+            {"hooks": {"PreToolUse": {"command": "/opt/lane-tools/lane-guard-hook"}}},
+        )
         with self.assertRaises(CheckError):
             proof.resolve_hook_command("claude", self.ctx)
 
     def test_a_named_group_config_still_resolves(self):
-        os.makedirs(os.path.join(self.home, ".gemini", "config"))
-        path = os.path.join(self.home, ".gemini", "config", "hooks.json")
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "fleet-lane-guard": {
-                        "PreToolUse": [
-                            {"command": "/opt/lane-tools/fleet-guard-hook --format antigravity"}
-                        ]
-                    }
-                },
-                handle,
-            )
+        self.write_config(
+            ".gemini/config/hooks.json",
+            {
+                "fleet-lane-guard": {
+                    "PreToolUse": [
+                        {"command": "/opt/lane-tools/fleet-guard-hook --format antigravity"}
+                    ]
+                }
+            },
+        )
         self.assertEqual(
             proof.resolve_hook_command("antigravity", self.ctx),
             "/opt/lane-tools/fleet-guard-hook --format antigravity",
@@ -472,6 +470,219 @@ class HookResolutionTests(FakeHookCase):
         self.assertEqual(proof.hook_format("/x/hook --format grok", "claude"), "grok")
         self.assertEqual(proof.hook_format("/x/hook --format=cursor", "claude"), "cursor")
         self.assertEqual(proof.hook_format("/x/hook", "grok"), "grok")
+
+
+class SiblingEventTests(FakeHookCase):
+    """Only the platform's own event may abort a proof;  a sibling may not."""
+
+    def write_config(self, relative: str, document: dict) -> str:
+        """Write a hook config document under the temporary home and return its path."""
+        path = os.path.join(self.home, relative)
+        make_private_dir(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(document, handle)
+        return path
+
+    def test_a_malformed_sibling_event_does_not_stop_the_own_event(self):
+        # A hand-edited PostToolUse list in ~/.claude/settings.json is not this
+        # platform's event,  so it is skipped instead of aborting the proof.
+        self.write_config(
+            ".claude/settings.json",
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": "/opt/lane-tools/lane-guard-hook --format claude"
+                                }
+                            ]
+                        }
+                    ],
+                    "PostToolUse": {"not": "a list"},
+                }
+            },
+        )
+        self.assertEqual(
+            proof.resolve_hook_command("claude", self.ctx),
+            "/opt/lane-tools/lane-guard-hook --format claude",
+        )
+
+    def test_a_malformed_sibling_group_does_not_stop_the_own_group(self):
+        # The owner's unrelated moshi-hook group holds a Stop list this package never
+        # reads,  so its shape cannot fail the lane guard group's proof.
+        self.write_config(
+            ".gemini/config/hooks.json",
+            {
+                "lane-guard": {
+                    "PreToolUse": [
+                        {"command": "/opt/lane-tools/fleet-guard-hook --format antigravity"}
+                    ]
+                },
+                "moshi-hook": {"Stop": {"not": "a list"}},
+            },
+        )
+        self.assertEqual(
+            proof.resolve_hook_command("antigravity", self.ctx),
+            "/opt/lane-tools/fleet-guard-hook --format antigravity",
+        )
+
+    def test_an_unrelated_section_that_is_large_does_not_stop_the_proof(self):
+        # A settings file with thousands of permissions is a healthy seat,  not a
+        # broken one:  the section the schema does not read is never bounded.
+        self.write_config(
+            ".claude/settings.json",
+            {
+                "permissions": {"allow": ["Bash(git:*)"] * 5000},
+                "env": {"A_VARIABLE": "1"},
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": "/opt/lane-tools/lane-guard-hook --format claude"
+                                }
+                            ]
+                        }
+                    ]
+                },
+            },
+        )
+        self.assertEqual(
+            proof.resolve_hook_command("claude", self.ctx),
+            "/opt/lane-tools/lane-guard-hook --format claude",
+        )
+
+    def test_an_unrelated_section_that_is_deep_does_not_stop_the_proof(self):
+        deep: dict[str, object] = {"leaf": True}
+        for _ in range(proof.MAX_CONFIG_DEPTH + 2):
+            deep = {"deeper": deep}
+        self.write_config(
+            ".claude/settings.json",
+            {
+                "mcpServers": {"one": deep},
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "hooks": [
+                                {
+                                    "command": "/opt/lane-tools/lane-guard-hook --format claude"
+                                }
+                            ]
+                        }
+                    ]
+                },
+            },
+        )
+        self.assertEqual(
+            proof.resolve_hook_command("claude", self.ctx),
+            "/opt/lane-tools/lane-guard-hook --format claude",
+        )
+
+    def test_the_own_event_that_is_malformed_still_aborts(self):
+        self.write_config(
+            ".claude/settings.json",
+            {"hooks": {"PreToolUse": {"not": "a list"}}},
+        )
+        with self.assertRaises(CheckError) as caught:
+            proof.resolve_hook_command("claude", self.ctx)
+        self.assertIn("claude", str(caught.exception))
+
+    def test_every_platform_with_a_config_file_has_its_own_schema(self):
+        for platform, adapter in proof.PLATFORM_ADAPTERS.items():
+            if not adapter.config_rel:
+                continue
+            with self.subTest(platform=platform):
+                self.assertIn(platform, proof.HOOK_CONFIG_SCHEMAS)
+                schema = proof.HOOK_CONFIG_SCHEMAS[platform]
+                self.assertIn(schema.event, proof.HOOK_EVENTS)
+
+
+class InterruptionTests(FakeHookCase):
+    """An interruption must not leave the hook child running.
+
+    The child is started in its own session,  so the runner can kill the whole group.
+    The rule this proves is that an interruption terminates and reaps the child before
+    the interruption is propagated,  so a Ctrl-C never leaves a hook behind.
+    """
+
+    def test_an_interruption_leaves_no_child_behind(self):
+        started: list[int] = []
+
+        class InterruptingPopen:
+            """A Popen stand-in that starts a real child and then raises."""
+
+            def __init__(self, argv, **kwargs):
+                self._proc = _REAL_POPEN(argv, **kwargs)
+                started.append(self._proc.pid)
+
+            @property
+            def pid(self):
+                return self._proc.pid
+
+            def communicate(self, *args, **kwargs):
+                raise KeyboardInterrupt("the probe was interrupted")
+
+            def wait(self, timeout=None):
+                return self._proc.wait(timeout=timeout)
+
+            def kill(self):
+                self._proc.kill()
+
+            @property
+            def stdin(self):
+                return self._proc.stdin
+
+            @property
+            def stdout(self):
+                return self._proc.stdout
+
+            @property
+            def stderr(self):
+                return self._proc.stderr
+
+        with mock.patch("fleet_config.proof.subprocess.Popen", InterruptingPopen):
+            with self.assertRaises(KeyboardInterrupt):
+                proof.run_l1_probe("claude", self.ctx, hook_command=self.hook("sleep"))
+        self.assertEqual(len(started), 1, "the probe did not start a child")
+        with self.assertRaises(ProcessLookupError):
+            os.kill(started[0], 0)
+
+    def test_an_interruption_does_not_swallow_the_interruption(self):
+        class InterruptingPopen:
+            """A Popen stand-in that starts a real child and then raises."""
+
+            def __init__(self, argv, **kwargs):
+                self._proc = _REAL_POPEN(argv, **kwargs)
+
+            @property
+            def pid(self):
+                return self._proc.pid
+
+            def communicate(self, *args, **kwargs):
+                raise SystemExit(3)
+
+            def wait(self, timeout=None):
+                return self._proc.wait(timeout=timeout)
+
+            def kill(self):
+                self._proc.kill()
+
+            @property
+            def stdin(self):
+                return self._proc.stdin
+
+            @property
+            def stdout(self):
+                return self._proc.stdout
+
+            @property
+            def stderr(self):
+                return self._proc.stderr
+
+        with mock.patch("fleet_config.proof.subprocess.Popen", InterruptingPopen):
+            with self.assertRaises(SystemExit):
+                proof.run_l1_probe("claude", self.ctx, hook_command=self.hook("sleep"))
 
 
 class L2CanaryTests(FakeHookCase):

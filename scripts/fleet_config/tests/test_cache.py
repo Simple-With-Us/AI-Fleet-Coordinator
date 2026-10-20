@@ -12,7 +12,7 @@ import json
 import os
 import stat
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from fleet_config import cache
@@ -28,7 +28,7 @@ from fleet_config.types import (
 
 from ._fake import FleetTestCase, make_manifest, make_rule
 
-MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=UTC)
+MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=timezone.utc)
 
 
 def _ctx():
@@ -107,6 +107,24 @@ class CacheTests(FleetTestCase):
         cache.save_report(a_report())
         leftovers = [name for name in os.listdir(cache.state_dir()) if name.startswith(".report.")]
         self.assertEqual(leftovers, [])
+
+    def test_the_directory_is_flushed_after_the_rename(self):
+        # Renaming a file into a directory does not persist the new directory entry
+        # until the directory itself is flushed,  so the flush has to happen.
+        flushed = []
+        real_fsync = os.fsync
+
+        def spy(fd):
+            flushed.append(os.fstat(fd).st_ino)
+            return real_fsync(fd)
+
+        with mock.patch("fleet_config.cache.os.fsync", side_effect=spy):
+            cache.save_report(a_report())
+        directory_inode = os.stat(cache.state_dir()).st_ino
+        self.assertIn(directory_inode, flushed, "the directory was not flushed")
+        loaded, note = cache.load_report()
+        self.assertEqual(note, "ok")
+        self.assertIsNotNone(loaded)
 
     def test_a_missing_copy_is_absent_and_not_an_error(self):
         loaded, note = cache.load_report()

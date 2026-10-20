@@ -37,11 +37,18 @@ import os
 import re
 import shutil
 import stat as stat_module
-import subprocess
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
-from .checks import CheckContext, CheckError, build_result, expand_target, iso_utc
+from .checks import (
+    CheckContext,
+    CheckError,
+    CommandRefused,
+    build_result,
+    expand_target,
+    iso_utc,
+    run_cli,
+)
 from .checks_hooks import read_config_document
 from .types import (
     CheckResult,
@@ -326,7 +333,7 @@ def check_credential_stat(rule: Rule, platform: str, ctx: CheckContext) -> Check
         )
 
     mode = mode_string(info.st_mode)
-    mtime = iso_utc(datetime.fromtimestamp(info.st_mtime, tz=UTC))
+    mtime = iso_utc(datetime.fromtimestamp(info.st_mtime, tz=timezone.utc))
     observed = ObservedState(
         present=True,
         mode=mode,
@@ -392,6 +399,9 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
     secret cannot reach this module, a result, a reason or a log.  The listing is
     cached on the context, so one status run asks the secret store once per folder
     rather than once per rule.
+
+    The command runs through the one allowlisted runner,  so it has an explicit
+    timeout and a command that is not on the allowlist is refused before it starts.
     """
     cache_key = "fleet-secrets:names:%s" % folder
     cached = ctx.cache.get(cache_key)
@@ -406,33 +416,32 @@ def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
         )
     argv = [binary, "names", "--path", folder]
     try:
-        completed = subprocess.run(
-            argv,
-            capture_output=True,
-            timeout=ctx.timeout or 10,
-            env=ctx.child_env(),
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
+        result = run_cli(argv, timeout=ctx.timeout or 10, env=ctx.child_env())
+    except CommandRefused as exc:
+        raise CheckError(
+            "the fleet-secrets command is not on the allowlist:  %s" % exc,
+            ReasonCode.ERROR,
+        ) from None
+    if result.timed_out:
         raise CheckError(
             "the fleet-secrets command did not answer within %ds" % (ctx.timeout or 10),
             ReasonCode.TIMEOUT,
-        ) from None
-    except OSError as exc:
+        )
+    if result.error:
         raise CheckError(
-            "the fleet-secrets command could not be started:  %s" % (exc.strerror or exc),
+            "the fleet-secrets command could not be started:  %s" % result.error,
             ReasonCode.ERROR,
-        ) from None
-    if completed.returncode != 0:
+        )
+    if result.returncode != 0:
         # The error text names keys and reason tokens, never values, but it is not
         # needed here, so only the exit code is reported.
         raise CheckError(
             "the fleet-secrets command exited %d, so the secret store could not be read"
-            % completed.returncode,
+            % result.returncode,
             ReasonCode.ERROR,
         )
     names = set()
-    for line in completed.stdout.decode("utf-8", "replace").splitlines():
+    for line in result.stdout.decode("utf-8", "replace").splitlines():
         text = line.strip()
         if not text:
             continue

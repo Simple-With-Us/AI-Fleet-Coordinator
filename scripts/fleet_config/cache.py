@@ -11,7 +11,8 @@ to a file another process wrote:
   * the directory is 0700 and the file 0600, both owned by the current user;  a file that
     is a symlink, owned by someone else, readable by group or other, or not a regular file
     is ignored, never trusted
-  * the copy is written atomically (a temp file in the same directory, then rename)
+  * the copy is written atomically (a temp file in the same directory, then rename), and
+    the directory is flushed after the rename, so a crash cannot lose the new entry
   * a copy older than ``MAX_AGE_SECONDS`` is ignored, so a broken run cannot hide behind
     an old copy forever
   * the copy never holds a secret value.  ``CheckResult`` has no field that could hold
@@ -28,7 +29,7 @@ import os
 import stat
 import tempfile
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from . import contract
@@ -243,12 +244,28 @@ def _report_from_dict(raw: Any) -> StatusReport:
     )
 
 
+def _fsync_dir(path: str) -> None:
+    """Flush the directory's own entries to disk.
+
+    Renaming a file into a directory does not persist the new directory entry until the
+    directory itself is flushed,  so a crash right after the rename could lose the
+    copy.  The descriptor is closed in a ``finally`` block,  so it is never leaked.
+    """
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def save_report(report: StatusReport, now: float | None = None) -> None:
     """Atomically replace the cached copy with `report`.
 
     The copy is written to a temp file in the same directory and renamed over the old
     one, so a reader never sees a half-written report.  The file is 0600 and the
     directory 0700, and the bytes hold no secret value because a result cannot hold one.
+    The directory is flushed after the rename,  so the new directory entry survives a
+    crash.
     """
     epoch = time.time() if now is None else now
     document = {
@@ -268,9 +285,14 @@ def save_report(report: StatusReport, now: float | None = None) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, cache_path())
+<<<<<<< HEAD
         # The rename is only durable once the directory entry is on disk too,  or a
         # crash can lose the last-known-good report the fsync above protected.
         _fsync_dir(state_dir())
+||||||| parent of 5f804a90 (AFC-385: close the remaining review findings on the fleet-config engine)
+=======
+        _fsync_dir(state_dir())
+>>>>>>> 5f804a90 (AFC-385: close the remaining review findings on the fleet-config engine)
     except BaseException:
         try:
             os.close(fd)
@@ -342,7 +364,7 @@ def report_is_stale(report: StatusReport, now: datetime | None = None) -> bool:
     """
     from . import aggregator
 
-    moment = now if now is not None else datetime.now(UTC)
+    moment = now if now is not None else datetime.now(timezone.utc)
     return any(aggregator.result_is_expired(result, moment) for result in report.results)
 
 

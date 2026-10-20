@@ -16,6 +16,9 @@ The rules this module never breaks:
   * A result read after its ``expiresAt`` is re-labelled ``UNKNOWN`` with reason code
     ``stale`` before it reaches the envelope.  The envelope builder does not do this;
     the aggregator owns the clock, as the design document says.
+  * A run has an OVERALL budget,  not only a per-check timeout.  When the budget is
+    spent,  the rules that have not run yet are reported as failing ``TIMEOUT``
+    results,  so a run never keeps spawning one slow probe after another.
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 
@@ -204,6 +207,30 @@ def _unknown(
         CheckState.UNKNOWN,
         reason,
         reason_code,
+        ObservedState(),
+        ctx,
+    )
+
+
+def _deadline_result(
+    rule: Rule,
+    platform: str,
+    ctx: CheckContext,
+    deadline_seconds: int,
+) -> CheckResult:
+    """A result for a rule the run had no budget left for.
+
+    The rule was not checked at all,  so the run says so:  an ``UNKNOWN`` with the
+    failing reason code ``timeout``.  It is never a pass,  and it never accuses the seat
+    of drift it did not observe.
+    """
+    return build_result(
+        rule,
+        platform,
+        CheckState.UNKNOWN,
+        "the run spent its %d second budget before this rule was checked,  so it was "
+        "not checked at all" % int(deadline_seconds),
+        ReasonCode.TIMEOUT,
         ObservedState(),
         ctx,
     )
@@ -440,6 +467,10 @@ def run_doctors(
     could not be put in the envelope without inventing one.  A doctor that cannot run
     is a note too,  never a crash.
 
+    The doctor runs through the one allowlisted runner,  so it has a timeout and cannot
+    hang the run,  and its answer is bounded before it is parsed:  too many bytes,  too
+    deep a tree or too many nodes is a note,  never a crash.
+
     ``scripts_dir`` names where the doctor scripts live,  and ``commands`` names which
     doctors to run;  both are parameters so a test can point them at a temporary
     directory instead of this checkout.
@@ -453,20 +484,20 @@ def run_doctors(
             notes.append("the %s doctor is not available at %s" % (name, path))
             continue
         try:
-            result = subprocess.run(
+            result = run_cli(
                 [sys.executable] + list(argv),
-                cwd=scripts,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 timeout=timeout,
                 env=ctx.child_env(),
-                check=False,
+                cwd=scripts,
             )
-        except subprocess.TimeoutExpired:
+        except CommandRefused as exc:
+            notes.append("the %s doctor is not on the allowlist:  %s" % (name, exc))
+            continue
+        if result.timed_out:
             notes.append("the %s doctor did not finish within %d seconds" % (name, timeout))
             continue
-        except OSError as exc:
-            notes.append("the %s doctor could not be started: %s" % (name, exc))
+        if result.error:
+            notes.append("the %s doctor could not be started: %s" % (name, result.error))
             continue
         if result.returncode != 0:
             detail = (result.stderr or b"").decode("utf-8", "replace").strip()
@@ -475,10 +506,22 @@ def run_doctors(
                 % (name, result.returncode, detail or "no reason given")
             )
             continue
+        if result.truncated:
+            notes.append(
+                "the %s doctor answered with more than %d bytes, so its findings are not read"
+                % (name, MAX_DOCTOR_BYTES)
+            )
+            continue
         try:
-            document = json.loads(result.stdout.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            notes.append("the %s doctor did not answer with JSON" % name)
+            document = parse_bounded_json(
+                result.stdout,
+                what="the %s doctor" % name,
+                max_bytes=MAX_DOCTOR_BYTES,
+                max_depth=MAX_DOCTOR_DEPTH,
+                max_nodes=MAX_DOCTOR_NODES,
+            )
+        except CheckError as exc:
+            notes.append(str(exc))
             continue
         rows = document.get("checks") if isinstance(document, dict) else None
         if not isinstance(rows, list):
@@ -511,6 +554,8 @@ def run_status(
     missing_modules: Sequence[str] | None = None,
     include_doctors: bool = False,
     proof_runner: ProofRunner | None = None,
+    deadline_seconds: int = RUN_DEADLINE_SECONDS,
+    clock: Callable[[], float] = time.monotonic,
 ) -> StatusReport:
     """Run every rule in `manifest` and build one ``StatusReport``.
 
@@ -529,6 +574,14 @@ def run_status(
     function, which is how a test drives the proof path without a real hook.  The
     report's summary comes from ``contract.summarize``, so the aggregator and the
     envelope share one definition of failing.
+
+    The run has an OVERALL budget, ``deadline_seconds``,  and not only the per-check
+    timeout:  a manifest with seven L1 hook rules would otherwise wait on seven
+    sequential hook processes.  When the budget is spent,  the rules that have not run
+    yet are reported as failing ``TIMEOUT`` results instead of being run,  so the run
+    answers with what it proved and never pretends the rest was checked.  ``clock`` is
+    the monotonic clock the budget is read from;  it is a parameter so a test can spend
+    the budget without waiting for it.
     """
     if ctx is None:
         ctx = CheckContext(home=resolve_home(home), now=utc_now(), timeout=DEFAULT_TIMEOUT)
@@ -540,6 +593,7 @@ def run_status(
     notes: list[str] = []
     for name in missing:
         notes.append("the check module %s.py is not available in this build" % name)
+    deadline = clock() + max(0, int(deadline_seconds))
     results: list[CheckResult] = []
     for seat_manifest in manifest.seats:
         if seat is not None and seat_manifest.seat != seat:
@@ -551,6 +605,9 @@ def run_status(
                 continue
             for rule_platform in rule.platforms:
                 if platform is not None and rule_platform != platform:
+                    continue
+                if clock() >= deadline:
+                    results.append(_deadline_result(rule, rule_platform, ctx, deadline_seconds))
                     continue
                 result = _run_check(rule, rule_platform, ctx, registry, missing)
                 result = _apply_proof(result, rule, rule_platform, ctx, prove, proof_runner)
@@ -575,7 +632,9 @@ def result_expires_at(result: CheckResult) -> datetime | None:
     as "fresh".
     """
     try:
-        return datetime.strptime(result.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        return datetime.strptime(result.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
     except (TypeError, ValueError):
         return None
 

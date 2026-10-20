@@ -64,6 +64,8 @@ A check that is stale (past its TTL), errors, times out or produces unparseable 
 
 A cached result read after its `expiresAt` is re-labelled before it reaches the envelope:  state `UNKNOWN`, reason code `stale`, `stale` true.  It keeps its original `checkedAt` as evidence.  The envelope builder does not do this relabelling;  the aggregator owns the clock.
 
+A status run has an overall budget as well as a per-check timeout.  When the budget is spent, the rules that have not run yet are reported as `UNKNOWN` with reason code `timeout` instead of being run, so one slow hook probe cannot turn a run into a queue of probes.  The budget adds no vocabulary:  the result it produces is step 4 of the table below.
+
 The verdict math lives in `contract.py` as pure functions, so every consumer shares it.  `is_failing` is true for `DRIFT` and `MISSING`, and for any result whose reason code is `stale`, `error`, `timeout`, `unparseable` or `proof-failed`.  `overall_verdict` is `FAIL` when any result is failing, else `PASS` when at least one result exists and every result is `PASS`, else `UNKNOWN`.  An empty run is `UNKNOWN`, never `PASS`.
 
 Finished CLI exit codes are pinned now:  0 for verdict `PASS`, 1 for verdict `FAIL`, 3 for verdict `UNKNOWN` (the `fleet_knobs` precedent for an unreachable source), 2 for a refused run (bad manifest, bad registry, or a declined Touch ID confirmation), and 64 for a usage error.  The skeleton in `__main__.py` returns 2 for its stub verbs, which is a placeholder, not the finished mapping.
@@ -352,7 +354,9 @@ Stdlib only, Python 3.9 safe, type hints, a docstring on every public symbol, an
 
 Like `fleet_knobs`, this package must work as a stable copy run with `python3 -I` carrying just `scripts/fleet_config/`.  That is why it imports nothing outside the stdlib and never imports `fleet_lanes` at runtime:  shared facts (the registry roster, the platform id list, the marked-block hash) are read as files or passed in as data, and a parity test pins each mirror to its source.  The alternative, importing `fleet_lanes.layout` and `fleet_lanes.marked_block` directly, is simpler today and is rejected because it silently breaks the isolated copy that hooks and LaunchAgents run.
 
-Safety rules, non-negotiable:  no secret value is ever read into a result, a log or a plan (credential files are `stat` only);  `status` and `plan` write nothing outside `cache.py`'s state dir;  `apply` writes only through the existing installer engines, with their backup and atomic-replace discipline;  and every subprocess the checks run goes through one allowlisted runner with a timeout, on the `fleet_lanes/doctor.py` precedent, so a hung harness cannot hang the run.
+Safety rules, non-negotiable:  no secret value is ever read into a result, a log or a plan (credential files are `stat` only);  `status` and `plan` write nothing outside `cache.py`'s state dir;  `apply` writes only through the existing installer engines, with their backup and atomic-replace discipline;  and every subprocess this package starts goes through one allowlisted runner with a timeout, on the `fleet_lanes/doctor.py` precedent, so a hung harness cannot hang the run.
+
+That runner covers the apply side too, not only the checks:  the MAC level doctors, the secret-store listing and the installer engines the apply side drives all start through it, so a hung installer is a failed step rather than a blocked command, and a command that is not on the allowlist is refused before any process exists.
 
 ## 13. Testing
 
