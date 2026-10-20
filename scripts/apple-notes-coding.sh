@@ -942,7 +942,10 @@ printf '%s' "$TITLE" >"$TITLE_FILE"
 trap 'rm -f "$TMP" "$TITLE_FILE"' EXIT
 
 if [[ "$MODE" == "update" ]]; then
-  NOTE_ID=$(TITLE_FILE="$TITLE_FILE" TMP="$TMP" WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<'EOF'
+  #  Unquoted so ${NOTES_APPLE_EVENT_TIMEOUT_S} expands:  in a quoted heredoc osascript would
+  #  receive the literal text and the "with timeout of" clause would not compile.  The block still
+  #  reads its paths through "system attribute",  so nothing else here expands.
+  NOTE_ID=$(TITLE_FILE="$TITLE_FILE" TMP="$TMP" WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<EOF
 set titlePath to POSIX file (system attribute "TITLE_FILE")
 set noteTitle to read titlePath as «class utf8»
 set htmlPath to POSIX file (system attribute "TMP")
