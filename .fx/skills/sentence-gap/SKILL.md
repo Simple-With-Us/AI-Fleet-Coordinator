@@ -121,6 +121,7 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
+umask 077
 perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
