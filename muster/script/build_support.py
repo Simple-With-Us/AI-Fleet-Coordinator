@@ -65,6 +65,7 @@ def install_bundle(staged, installed, verify):
             # A first-time install has nothing to restore, so drop the unverified bundle.
             if os.path.lexists(installed):
                 shutil.rmtree(installed)
+                fsync_path(installed.parent)
             if previous.exists():
                 os.replace(previous, installed)
                 fsync_path(temporary)
