@@ -117,14 +117,21 @@ def one_home_patterns() -> list[str]:
 
 
 def convert(pattern: str, body: str) -> str:
-    """Run one converter pattern over a body, the way the skill says to."""
-    proc = subprocess.run(
-        ["perl", "-CSDA", "-pe", pattern],
-        input=body,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    """Run one converter pattern over a body, the way the skill says to.  A hung perl
+    exits 124 and a missing perl exits 127, so neither leaves the runner waiting."""
+    try:
+        proc = subprocess.run(
+            ["perl", "-CSDA", "-pe", pattern],
+            input=body,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(124) from exc
+    except FileNotFoundError as exc:
+        raise SystemExit(127) from exc
     if proc.returncode != 0:
         raise AssertionError("perl failed: %s" % proc.stderr.strip())
     return proc.stdout
@@ -138,6 +145,7 @@ def tracked_files() -> list[Path]:
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
     files = []
     for line in out.stdout.splitlines():
