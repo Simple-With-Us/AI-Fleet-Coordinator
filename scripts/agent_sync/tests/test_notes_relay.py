@@ -56,11 +56,15 @@ class FakeClient:
                 for i, (p, a) in enumerate(self.posts)
                 if p == "messages"
             ]
+            senders = [n["operand"] for n in json.loads(params.get("narrow", "[]"))
+                       if n.get("operator") == "sender"]
+            if senders:
+                topic = [m for m in topic if m.get("sender_id") == senders[0]]
             newer = sorted(
                 (m for m in topic if m["id"] > int(params["anchor"])), key=lambda m: m["id"]
             )
             page = newer[: int(params["num_after"])]
-            return {"messages": page, "found_newest": len(newer) <= int(params["num_after"])}
+            return {"messages": page, "found_newest": bool(topic) and bool(page) and page[-1]["id"] == max(m["id"] for m in topic)}
         if path.startswith("messages/"):
             return {"message": self.messages[int(path.split("/")[1])]}
         if path.startswith("user_uploads/"):
