@@ -16,7 +16,7 @@
 // current truth, plus a sparse timeline of events that actually mattered.
 //
 // Routes:
-//   POST /webhook/:source     receive a vendor event (signature-verified)
+//   POST /webhook/:source     receive an authenticated vendor event
 //   GET  /status/:channel/:topic   rebuild the standing status (operator token required)
 //   GET  /sweep               promote incidents that aged past the window
 //
@@ -53,36 +53,15 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
-async function hmacHex(secret, body, algo = "SHA-256") {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: algo },
-    false,
-    ["sign"],
-  );
-  // sign() takes a BufferSource, not a string: passing the raw request text
-  // straight through throws and every signed webhook fails before comparison.
-  const bytes =
-    typeof body === "string" ? new TextEncoder().encode(body) : body;
-  const mac = await crypto.subtle.sign("HMAC", key, bytes);
-  return [...new Uint8Array(mac)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 /**
- * Verify a vendor signature.  Each vendor signs differently; a vendor with no
- * verifier configured is REJECTED rather than trusted, so an unsigned POST can
- * never inject a fake alert.
+ * Verify provider-supported header credentials.  An unconfigured verifier
+ * rejects the request; vendor tokens never travel in URLs.
  */
 async function verify(request, raw, env, source) {
   if (source === "datadog") {
     const secret = env.DATADOG_WEBHOOK_SECRET;
     if (!secret) return false;
-    const sig = request.headers.get("x-datadog-signature") || "";
-    const expected = await hmacHex(secret, raw);
-    return safeEqual(sig, expected);
+    return safeEqual(request.headers.get("x-datadog-token") || "", secret);
   }
   if (source === "betterstack") {
     const secret = env.BETTERSTACK_WEBHOOK_SECRET;
@@ -538,7 +517,8 @@ async function mapBounded(items, fn) {
   );
   return result;
 }
-function validatePayload(payload) {
+function validatePayload(payload, depth = 0) {
+  if (depth > 6) throw new Error("payload nesting exceeded");
   const object = (value) =>
     value !== null && typeof value === "object" && !Array.isArray(value);
   if (!object(payload)) throw new Error("invalid payload");
@@ -551,14 +531,14 @@ function validatePayload(payload) {
     if (
       !booleans.has(key) &&
       !identifiers.has(key) &&
-      !["alert", "data", "monitor_tags"].includes(key) &&
+      !["alert", "data", "attributes", "relationships", "monitor", "monitor_tags"].includes(key) &&
       value !== null &&
       typeof value !== "string"
     )
       throw new Error("invalid text field");
-    if (["alert", "data"].includes(key)) {
+    if (["alert", "data", "attributes", "relationships", "monitor"].includes(key)) {
       if (!object(value)) throw new Error("invalid nested payload");
-      validatePayload(value);
+      validatePayload(value, depth + 1);
     } else if (key === "monitor_tags") {
       if (
         !Array.isArray(value) ||

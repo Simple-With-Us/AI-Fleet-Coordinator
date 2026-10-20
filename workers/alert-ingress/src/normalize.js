@@ -75,12 +75,12 @@ export function fromDatadog(payload) {
 
 /** BetterStack outgoing webhook (`{"text": ...}` shaped). */
 export function fromBetterStack(payload) {
-  const data =
-    payload && typeof payload.data === "object" && payload.data
-      ? payload.data
-      : payload || {};
+  const envelope = payload && typeof payload.data === "object" && payload.data ? payload.data : payload || {};
+  const data = envelope.attributes && typeof envelope.attributes === "object"
+    ? { ...envelope, ...envelope.attributes } : envelope;
   const url = first(data.url, data.check_url, payload.url);
-  const status = strip(first(data.status, payload.status)).toLowerCase();
+  const status = strip(first(data.status, payload.status,
+    Object.hasOwn(data, "resolved_at") ? (data.resolved_at ? "up" : "down") : "")).toLowerCase();
   const name = oneLine(
     first(data.check_name, data.name, payload.name, "betterstack check"),
   );
@@ -92,6 +92,8 @@ export function fromBetterStack(payload) {
   const id = first(
     data.check_id,
     data.monitor_id,
+    envelope.relationships?.monitor?.data?.id,
+    data.id,
     (url.match(/\/([a-f0-9]{16,})/i) || [])[1],
   );
   const key = id ? `betterstack:${id}` : `betterstack:${name.toLowerCase()}`;

@@ -238,25 +238,12 @@ test("generic webhook authentication requires a bearer header, not a URL secret"
   assert.equal(await verify(new Request("https://test/webhook/custom", { headers: { authorization: "Bearer wrong" } }), "{}", env, "custom"), false);
 });
 
-test("a signature over the raw body is verified, not thrown on", async () => {
-  // SubtleCrypto.sign() only accepts a BufferSource; signing the request text
-  // as a string threw and every Datadog webhook 401'd before comparison.
-  const raw = JSON.stringify({ monitor_id: "1", alert_type: "triggered" });
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode("fixture"),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = [...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(raw)))]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  const { verify } = __testing;
+test("Datadog uses its supported static custom header", async () => {
   const env = { DATADOG_WEBHOOK_SECRET: "fixture" };
-  const headers = { "x-datadog-signature": sig };
-  assert.equal(await verify({ headers: new Headers(headers), url: "https://test/webhook/datadog" }, raw, env, "datadog"), true);
-  assert.equal(await verify({ headers: new Headers({ "x-datadog-signature": "00" }), url: "https://test/webhook/datadog" }, raw, env, "datadog"), false);
+  for (const [headers, expected] of [[{ "x-datadog-token": "fixture" }, true],
+    [{ "x-datadog-token": "wrong" }, false], [{ "x-datadog-signature": "fixture" }, false], [{}, false]]) {
+    assert.equal(await verify(new Request("https://test/webhook/datadog", { headers }), "{}", env, "datadog"), expected);
+  }
 });
 
 test("a stable key retains its original service without duplicate membership", async () => {

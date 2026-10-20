@@ -27,6 +27,28 @@ const legacy = {
   },
 };
 const env = { ALERT_STATE: legacy, INGRESS_SHARED_TOKEN: "fixture" };
+test("authenticated Better Stack default incident ingests and resolves", async () => {
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ result: "success", id: 8 }) });
+  const state = storage();
+  const writer = new AlertWriter({ storage: state }, { ...env, BETTERSTACK_WEBHOOK_SECRET: "fixture" });
+  try {
+    for (const resolved_at of [null, "2026-10-20T00:00:00Z"]) {
+      const body = { data: { id: "incident-1", type: "incident", attributes: {
+        name: "Synthetic service", url: "https://example.test", http_method: "get",
+        cause: "Error 500", started_at: "2026-10-20T00:00:00Z", resolved_at,
+        acknowledged_at: null, response_content: null, response_url: null, screenshot_url: null,
+      }, relationships: { monitor: { data: { id: "monitor-1", type: "monitor" } } } } };
+      const result = await writer.fetch(new Request("https://test/webhook/betterstack", {
+        method: "POST", headers: { "x-betterstack-token": "fixture" }, body: JSON.stringify(body),
+      }));
+      assert.equal(result.status, 200);
+      const savedState = JSON.parse(await state.get("kv:state:betterstack:monitor-1"));
+      assert.equal(savedState.phase, resolved_at ? "ok" : "pending");
+      assert.equal(JSON.parse(await state.get("kv:svc:betterstack:monitor-1")), "Synthetic service");
+    }
+  } finally { globalThis.fetch = saved; }
+});
 const request = () =>
   new Request("https://test/status/alerts/svc", { headers: { authorization: "Bearer fixture" } });
 test("missing durable writer fails closed", async () => {

@@ -88,7 +88,7 @@ Contract rules, enforced by `status.test.js`:
 
 No verifier configured means **reject**, never trust:
 
-- **Datadog** — HMAC-SHA256 of the raw body in `x-datadog-signature`, compared in constant time.
+- **Datadog** — configure `X-Datadog-Token` to match `DATADOG_WEBHOOK_SECRET` in its supported custom headers ([provider documentation](https://docs.datadoghq.com/integrations/webhooks/)).
 - **BetterStack** — configure the custom header `X-BetterStack-Token` to match `BETTERSTACK_WEBHOOK_SECRET`, as supported by [the provider's outgoing-webhook documentation](https://betterstack.com/docs/errors/integrations/outgoing-webhooks/).
 - **anything else** — `Authorization: Bearer <token>` matching `INGRESS_SHARED_TOKEN`.  Operator routes use the same header; query-string secrets are rejected.
 
@@ -147,3 +147,5 @@ Webhook JSON must be an object with bounded scalar fields, bounded string tags a
 The concrete manifest is `wrangler.durable-writer.example.toml`.  Before deployment, copy it to an owner-controlled configuration beside the template, set its KV ID to the verified existing historical namespace, confirm the Cloudflare account and Worker name, and review the `alert-writer-v1` migration that creates only `AlertWriter`.  Inject the existing named secrets through the approved secret workflow; never put values in this manifest.  Deploy using `wrangler deploy --config <private-config-path>` only after those scope checks.  Verify health, authenticated status, existing historical records and a synthetic no-send fixture before moving webhook routes; no existing listener or model session needs restarting.  Keep the old Worker version and KV namespace available for rollback, and preserve the new durable outcome records when rolling back so unknown sends cannot replay.
 
 Timeline transitions use a separate durable outcome keyed by the exact normalized transition and previous state.  Destination inventory is completed before mutation; a definitive pre-send failure leaves the previous phase unchanged.  Timeline `unknown` is never resent, while a definitive provider refusal can retry the same transition safely.  Sweep failures are isolated per incident, so one refusal cannot abort independent promotions.
+
+Better Stack Uptime incident-change payloads may use the default `data.attributes` schema, including `resolved_at`; optional `relationships.monitor.data.id` preserves the monitor key.  Monitor-change and on-call-change notifications are not incident signals.
