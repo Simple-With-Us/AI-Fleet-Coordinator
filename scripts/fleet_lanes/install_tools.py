@@ -2440,7 +2440,8 @@ PLATFORMS: dict[str, Platform] = {
                 "fails open only on a timeout.",
                 "OWNER-GATED: there is no live preToolUse record on this Mac, so the first install needs Jay to start a "
                 "new Copilot session and ask for a process listing, which must be refused.  `verify copilot` proves the "
-                "command in the written file denies, and ends with a SKIP for that live proof; it never claims it.  "
+                "command in the written file denies, and ends with a SKIP for that live proof once Copilot is installed "
+                "again;  it never claims it.  "
                 "Copilot CLI itself was retired on 2026-10-20 because it was not being used,  so the target has no "
                 "config to write until it is installed again, and nothing recreates the directory.  Named explicitly, "
                 "the platform is a FAIL (an uninstalled platform reached through `all` is a SKIP):  asking to verify "
