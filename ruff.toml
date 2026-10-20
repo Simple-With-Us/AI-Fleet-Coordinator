@@ -2,7 +2,13 @@
 line-length = 100
 target-version = "py313"
 
+# Explicitly named files (autofix.ci passes the changed files) must still honor extend-exclude.
+force-exclude = true
+
 extend-exclude = [
+    # Python 3.9 safe by contract (the Mac runs these under /usr/bin/python3);  ruff's py313 rewrites
+    # (X | None, collections.abc) break them there.
+    "scripts/fleet_lanes",
     "scripts/fleet_rag/tests",
     "scripts/fleet_facts/tests",
     "scripts/fleet_lanes/tests",
