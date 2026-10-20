@@ -26,28 +26,33 @@ def load_bootstrap(path):
     return [data[k].strip() for k in names]
 
 
+def authenticated_env():
+    env = dict(os.environ)
+    if not env.get("INFISICAL_TOKEN"):
+        client_id, client_secret = load_bootstrap(
+            Path.home() / ".config/fleet-secrets/bootstrap.json"
+        )
+        child = dict(env)
+        child["INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"] = client_id
+        child["INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"] = client_secret
+        result = subprocess.run(
+            ["infisical", "login", "--method=universal-auth", "--plain", "--silent"],
+            env=child,
+            capture_output=True,
+            text=True,
+            timeout=25,
+            stdin=subprocess.DEVNULL,
+        )
+        token = result.stdout.strip()
+        if result.returncode or not token or any(c.isspace() for c in token):
+            raise ValueError("machine authentication failed")
+        env["INFISICAL_TOKEN"] = token
+    return env
+
+
 def main():
     try:
-        env = dict(os.environ)
-        if not env.get("INFISICAL_TOKEN"):
-            client_id, client_secret = load_bootstrap(
-                Path.home() / ".config/fleet-secrets/bootstrap.json"
-            )
-            child = dict(env)
-            child["INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"] = client_id
-            child["INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"] = client_secret
-            result = subprocess.run(
-                ["infisical", "login", "--method=universal-auth", "--plain", "--silent"],
-                env=child,
-                capture_output=True,
-                text=True,
-                timeout=25,
-                stdin=subprocess.DEVNULL,
-            )
-            token = result.stdout.strip()
-            if result.returncode or not token or any(c.isspace() for c in token):
-                raise ValueError("machine authentication failed")
-            env["INFISICAL_TOKEN"] = token
+        env = authenticated_env()
         target = Path.home() / ".local/share/fleet-secrets/fleet-secrets"
         os.execve(str(target), [str(target), *sys.argv[1:]], env)
     except (OSError, ValueError, subprocess.SubprocessError):

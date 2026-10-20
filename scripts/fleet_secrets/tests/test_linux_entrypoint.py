@@ -63,6 +63,25 @@ class BootstrapTests(unittest.TestCase):
         self.assertNotIn("FAKE_SECRET_FROM_CHILD", stderr.getvalue())
         self.assertNotIn("fake-secret", run.call_args.args[0])
 
+    def test_direct_consumers_receive_token_without_bootstrap_credentials(self):
+        result = mock.Mock(returncode=0, stdout="fake-token\n")
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(entry, "load_bootstrap", return_value=["fake-id", "fake-secret"]),
+            mock.patch.object(entry.subprocess, "run", return_value=result) as run,
+        ):
+            env = entry.authenticated_env()
+        self.assertEqual(env, {"INFISICAL_TOKEN": "fake-token"})
+        self.assertNotIn("fake-secret", run.call_args.args[0])
+
+    def test_inherited_token_does_not_reauthenticate(self):
+        with (
+            mock.patch.dict(os.environ, {"INFISICAL_TOKEN": "fake-token"}, clear=True),
+            mock.patch.object(entry, "load_bootstrap") as load,
+        ):
+            self.assertEqual(entry.authenticated_env(), {"INFISICAL_TOKEN": "fake-token"})
+        load.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

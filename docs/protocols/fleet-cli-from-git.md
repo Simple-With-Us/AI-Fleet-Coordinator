@@ -23,6 +23,8 @@ Code installation does not provision authentication.  The server's `fleet-secret
 
 Provision `~/.config/fleet-secrets/bootstrap.json` through an authenticated, encrypted transport, with directory mode 0700 and file mode 0600.  Its only fields are `INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET`, obtained from the canonical secret manager.  Never include their values in source, arguments, logs, or a bundle.  The loader refuses symlinks, other owners, and broader file permissions.  Each invocation exchanges the machine credentials for a fresh access token in memory, then delegates to the regular CLI; credentials remain out of command arguments and output.  Infisical remains the source of all application secrets.  Revoke this bootstrap by rotating its machine credential in Infisical.
 
+The server wrappers for `agent-sync`, `board`, `recall`, and the CODEX stdio MCP also load the entry point with `runpy.run_path` and pass its `authenticated_env()` result into their process environment before exec.  This supplies direct Infisical consumers such as fleet knobs with the same short-lived token, including the Notes relay consumer setting.
+
 Verify `fleet-secrets doctor`, `agent-sync --as CODEX whoami`, and `AGENT_SEAT=CODEX board whoami`.  Linear should identify the Codex app.  A server retaining the old cutover gate also needs `LINEAR_BOARD_WRITES=1` in its board wrapper.  App Store Connect's existing client reads `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_KEY_P8` from Fleet-OPS prod `/asc`; a read of `/v1/apps?limit=1` verifies authentication without registering or releasing an app.
 
 ## Server Commands
