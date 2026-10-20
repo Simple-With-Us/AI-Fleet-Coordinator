@@ -1193,7 +1193,7 @@ class RefusalBoundaryTests(unittest.TestCase):
         from types import SimpleNamespace as NS
         client = mock.Mock()
         message = {"id": 101, "sender_id": 11, "stream_id": 7, "subject": "relay",
-                   "content": N.render_message(make_envelope("create", "[AFC, Codex] Relay", "Body.", {}, "fixture-request", "CODEX"))}
+                   "content": N.render_message(make_envelope("create", "[AFC, CODEX] Relay", "Body.", {}, "fixture-request", "CODEX"))}
         client.get.side_effect = lambda path, *args, **kwargs: ({"message": message} if path != "messages" else {"messages": [], "found_newest": False})
         runner = NS(client=client, me=NS(user_id=10), paths=NS(root=root),
                     users={11: {"user_id": 11, "email": "codex-bot@zulip.test", "is_bot": True}},
