@@ -44,7 +44,9 @@ class AppleEventTimeoutTests(unittest.TestCase):
     def test_the_timeout_is_defined_once_with_its_default(self) -> None:
         pattern = re.compile(rf'^{TIMEOUT_NAME}="\$\{{{TIMEOUT_NAME}:-(\d+)\}}"$', re.MULTILINE)
         found = pattern.findall(self.text)
-        self.assertEqual(len(found), 1, f"the timeout constant is not defined exactly once: {found}")
+        self.assertEqual(
+            len(found), 1, f"the timeout constant is not defined exactly once: {found}"
+        )
         self.assertEqual(int(found[0]), TIMEOUT_DEFAULT_S)
 
     def test_both_notes_blocks_use_the_constant(self) -> None:
