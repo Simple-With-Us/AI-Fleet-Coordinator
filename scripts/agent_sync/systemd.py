@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 from collections.abc import Mapping
 from typing import TextIO
@@ -51,7 +50,8 @@ def unit_text(home: str, python: str, program: str) -> str:
             'Environment="AGENT_SYNC_INSTANCE=mac"',
             "Environment="
             + literal("PATH=" + os.path.join(home, ".local/bin") + ":/usr/local/bin:/usr/bin:/bin"),
-            "EnvironmentFile=-" + os.path.join(root, "listener.env").replace("%", "%%"),
+            # No EnvironmentFile:  a service must not read credentials from a local file.  Seats read the
+            # process environment first, then fleet-secrets / Infisical (launchd behaves the same way).
             "ExecStart=" + " ".join(quote(v) for v in (python, program, "daemon", "run")),
             "Restart=on-failure",
             "RestartSec=30",
@@ -108,8 +108,7 @@ def install(
         "This command does not run systemctl or provision credentials.  Provision the authorized authentication source before activation.\n"
     )
     out.write(
-        "Optional owner-provisioned environment file: %s (mode 600).\n"
-        % shlex.quote(os.path.join(home, ".agent-sync/listener.env"))
+        "The unit reads no credential file:  seats read the service environment first, then fleet-secrets / Infisical.\n"
     )
     out.write(
         "After authentication, configuration and wake verification:\n  systemctl --user daemon-reload\n  systemctl --user enable --now %s\n"

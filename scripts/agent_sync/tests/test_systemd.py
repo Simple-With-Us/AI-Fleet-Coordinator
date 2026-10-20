@@ -18,7 +18,7 @@ class UnitTests(unittest.TestCase):
         self.assertIn('ExecStart="/usr/bin/python3" "/home/a b/tool" "daemon" "run"', text)
         self.assertIn('%%\\"$\\\\x', text)
         self.assertIn("AGENT_SYNC_INSTANCE=mac", text)
-        self.assertIn("EnvironmentFile=-/home/a b%%", text)
+        self.assertNotIn("EnvironmentFile", text)
         self.assertIn("WorkingDirectory=/home/a b%%", text)
         self.assertIn('"/a$$b%%c"', systemd.quote("/a$b%c"))
         with self.assertRaises(ValueError):

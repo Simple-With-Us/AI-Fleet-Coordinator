@@ -17,7 +17,7 @@ The Linux fast-import check was contaminated by the host Datadog sitecustomize i
 
 Current-head Codex review and required CI precede merging.  The server wrapper still uses its existing fleet-cli release; verify the merged module reaches that runtime before calling the wrapper installer.
 
-`fleet-secrets doctor` reports no valid server session login or automation environment pair.  The original handoff requires owner approval for a persistent scoped Infisical machine identity.  The concrete service environment path is `/root/.agent-sync/listener.env`, mode 600, carrying the credential-provider variables rather than Zulip key values.  Restrict the identity to required CLAUDE bot reads; preserve other seats.
+`fleet-secrets doctor` reports no valid server session login or automation environment pair.  The original handoff requires owner approval for a persistent scoped Infisical machine identity.  The unit carries no credential file:  the service environment supplies the credential-provider variables and each seat falls back to `fleet-secrets` / Infisical.  Restrict the identity to required CLAUDE bot reads; preserve other seats.
 
 After approval and authentication, configure only CLAUDE with `creds = "infisical"` and `wake = "inbox"`, pin the owner, and verify two real interactive sessions in isolated scratch state with a sandbox topic.  Confirm A wakes, B remains idle, and CLI inbox reads do not affect A.  Enable `rewake_verified_cli` in live state only after that proof.  Headless wakes and Desktop verification remain separately gated.
 

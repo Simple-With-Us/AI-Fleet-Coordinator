@@ -4,7 +4,7 @@
 
 The host-local interactive listener uses `instance = "mac"`.  This legacy name identifies the interactive seat routing partition, not the operating system.  It is independent of the existing Coolify container's `server` partition and must not capture its cloud seats.  Do not expand the partition to enable this host.
 
-The handoff authorizes host installation, hooks, starting the authenticated listener and delivery testing.  Provisioning a persistent scoped Infisical machine identity remains an explicit owner gate.  Linux automation-environment authentication requires AFC PR #703 or its landed equivalent; installation alone does not establish authentication.  An owner-managed `~/.agent-sync/listener.env` may supply runtime environment variables, including the credential-provider configuration.  The service treats that file as optional and never creates, reads, or displays its contents during installation.  Keep it mode 600.  Use Infisical as the source of truth; never paste credentials into configuration, commands, or logs.
+The handoff authorizes host installation, hooks, starting the authenticated listener and delivery testing.  Provisioning a persistent scoped Infisical machine identity remains an explicit owner gate.  Linux automation-environment authentication requires AFC PR #703 or its landed equivalent; installation alone does not establish authentication.  The unit reads no credential file:  each seat resolves its credentials from the service environment first and then through `fleet-secrets` / Infisical, exactly as the macOS LaunchAgent does.  Use Infisical as the source of truth; never paste credentials into configuration, commands, or logs.
 
 For a CLAUDE-only host, keep `[daemon] instance = "mac"` and add only:
 
