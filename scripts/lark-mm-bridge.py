@@ -36,8 +36,6 @@ Runs on the Mac's /usr/bin/python3 (3.9): stdlib only, no 3.10+ syntax.
 
 from __future__ import annotations
 
-from agent_sync.secretscan import scan as scan_secret
-
 import argparse
 import json
 import os
@@ -50,6 +48,8 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+
+from agent_sync.secretscan import scan as scan_secret
 
 LARK_EVENT_KEY = "im.message.receive_v1"
 DEFAULT_LARK_CLI = os.path.expanduser("~/.local/npm-global/bin/lark-cli")
