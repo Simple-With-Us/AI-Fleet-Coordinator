@@ -76,7 +76,7 @@ numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tol
 lookahead class skips a lowercase follower, so `e.g. this` and lower-case domains keep their plain
 space.
 
-**Known limitations — the pattern is a heuristic, not a dictionary.**  Two deliberate costs:
+**Known limitations — the pattern is a heuristic, not a dictionary.**  Three deliberate costs:
 
 - It gaps a *capitalised* abbreviation:  `Dr. Smith` and `e.g. Acme` both come out with a U+00A0,
   against the rule above about non-terminal abbreviations.
@@ -85,6 +85,11 @@ space.
   parsing as a list, and a body with steps in it renders as one run-on paragraph.  The lookbehind
   skips any period preceded by a digit, which fixes the marker and also protects `v1.2.3`, but it
   costs the gap on a sentence that ends in a digit:  `The answer is 42. Next thing.` gets none.
+- The markup group carries the closing characters it names —  `*`, `_`, `` ` ``, `)`, `]`, `"`.  A
+  sentence end inside a *single*-quoted or curly-quoted span, as in
+  `'Quoted sentence.'  Next sentence.`, is not one of them:  the group cannot consume the quote, so
+  no gap is made, and neither check below sees it either, because both carry the same group.  A
+  body with that shape passes both checks and ships with no gap, so fix it by hand like any other.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
 it, and do not widen the pattern to chase it.
