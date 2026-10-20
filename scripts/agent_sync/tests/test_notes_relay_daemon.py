@@ -900,6 +900,7 @@ class DaemonRelayTests(DaemonHarness):
                 self.assertEqual(runner.cursor, mid - 1)
                 if change == "disable":
                     self.write_config()  # no [notes_relay] any more
+                    self.notes_knob = "CODEX"  # and another seat is the consumer, so this one is not its refuser
                 else:
                     self.notes_knob = "CODEX"
                 daemon.reload()
