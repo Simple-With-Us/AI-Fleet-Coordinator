@@ -31,6 +31,8 @@ def operator_credentials(env, home=None, fetch=None):
 
     names = ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY")
     where = "OPERATOR service: AFC prod /zulip keys %s; no fallback" % ", ".join(names)
+    if not Z.infisical_enabled(env):
+        raise Z.CredentialError("cannot read %s: AGENT_SYNC_INFISICAL turns Infisical off" % where)
     try:
         if fetch is not None:
             values = fetch(names)

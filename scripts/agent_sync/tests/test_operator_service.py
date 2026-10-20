@@ -75,6 +75,18 @@ class Tests(unittest.TestCase):
         with self.assertRaises(Z.CredentialError):
             C.seat_credentials(NS(seat="OPERATOR", creds="env"), {}, None)
 
+    def test_infisical_switch_off_is_refused_before_any_fetch(self):
+        reached = []
+
+        def fetch(names):
+            reached.append(names)
+            return {"ZULIP_OPERATOR_EMAIL": OPERATOR_EMAIL, "ZULIP_OPERATOR_API_KEY": "test-key"}
+
+        with self.assertRaises(Z.CredentialError) as c:
+            operator_credentials({"AGENT_SYNC_INFISICAL": "0"}, fetch=fetch)
+        self.assertIn("AGENT_SYNC_INFISICAL", str(c.exception))
+        self.assertEqual(reached, [])
+
 
 class ConfigTests(unittest.TestCase):
     def config(self, **changes):
