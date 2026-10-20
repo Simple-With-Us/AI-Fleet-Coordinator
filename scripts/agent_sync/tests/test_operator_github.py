@@ -1,4 +1,7 @@
 import json
+import tempfile
+from pathlib import Path
+from agent_sync.operator_github_state import NonceLedger
 import threading
 import unittest
 import urllib.request
@@ -13,10 +16,12 @@ class Router:
 
 class BrokerTests(unittest.TestCase):
     def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.ledger=NonceLedger(Path(self.temp.name)/"replay")
         self.router=Router();self.key=KEY;self.allowed=True;self.audit=[]
         self.broker=Broker(lambda seat:self.key if seat=='CODEX' else None,
             lambda seat:CallerPolicy('swu-codex',{'simple-with-us/ai-fleet-coordinator':{'contents':'read','pull_requests':'write','metadata':'read'}}) if self.allowed else None,
-            self.router,lambda slug:{'login':slug+'[bot]','id':123},clock=lambda:1000,audit=lambda **kw:self.audit.append(kw),enabled=True)
+            self.router,lambda slug:{'login':slug+'[bot]','id':123},clock=lambda:1000,audit=lambda **kw:self.audit.append(kw),enabled=True,nonce_ledger=self.ledger)
         self.path='/operator/v1/github/CODEX/token';self.body=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'contents':'read'}}).encode()
     def request(self,nonce='1'*64,body=None,stamp='1000',sig=None):
         b=self.body if body is None else body
@@ -68,9 +73,22 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(Refused):self.request(body=b'{"repo":"a/b","repo":"c/d","permissions":{"contents":"read"}}')
     def test_capacity(self):
         from agent_sync import operator_github as m
-        self.broker.nonces={('CODEX',str(i)):2000 for i in range(m.MAX_NONCES)}
+        from unittest.mock import patch
+        self.addCleanup(patch.stopall)
+        patch.object(m, 'MAX_NONCES', 1).start()
+        self.request(nonce='2'*64)
         with self.assertRaises(Refused) as c:self.request()
         self.assertEqual(c.exception.status,503)
+    def test_restart_replay(self):
+        self.request()
+        self.broker.nonce_ledger=NonceLedger(Path(self.temp.name)/'replay')
+        with self.assertRaises(Refused) as c:self.request()
+        self.assertEqual(c.exception.status,409)
+    def test_no_store_fails_closed(self):
+        self.broker.nonce_ledger=None
+        with self.assertRaises(Refused) as c:self.request()
+        self.assertEqual(c.exception.status,503)
+        self.assertEqual(self.router.calls,[])
     def test_http_no_auth(self):
         server=BrokerHttp(self.broker);server.start();self.addCleanup(server.close)
         url='http://%s:%s%s'%(*server.address,self.path)

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable, Mapping
 
+from .operator_github_state import LedgerError
 from .github_token_router import RoutingError, permission_set, target_parts
 
 CONTRACT = 'operator-github-mint/1'
@@ -53,13 +54,13 @@ class Broker:
     """
     def __init__(self, key_for: Callable, policy_for: Callable, router,
                  bot_identity: Callable, *, clock=time.time, audit=None,
-                 enabled=False):
+                 enabled=False, nonce_ledger=None):
         self.enabled = enabled
         self.key_for, self.policy_for = key_for, policy_for
         self.router, self.bot_identity = router, bot_identity
         self.clock, self.audit = clock, audit or (lambda **kw: None)
         self.lock = threading.Lock()
-        self.nonces = {}
+        self.nonce_ledger = nonce_ledger
         self.rates = {}
 
     def issue(self, path: str, stamp: str, nonce: str, sig: str, body: bytes):
@@ -80,17 +81,20 @@ class Broker:
         if not isinstance(sig, str) or not re.fullmatch(r'[a-f0-9]{64}', sig) or not hmac.compare_digest(signature(key,path,stamp,nonce,body),sig):
             raise Refused(401, 'authentication failed')
         with self.lock:
-            self.nonces = {k: expiry for k, expiry in self.nonces.items() if expiry >= now}
-            if (seat, nonce) in self.nonces:
-                raise Refused(409, 'replay refused')
-            if len(self.nonces) >= MAX_NONCES:
-                raise Refused(503, 'request capacity exceeded')
             bucket = [t for t in self.rates.get(seat, []) if t > now-60]
             if len(bucket) >= MAX_REQUESTS_PER_MINUTE:
                 raise Refused(429, 'rate limited')
             self.rates[seat] = bucket+[now]
             # Retain until even the future edge of this timestamp is stale.
-            self.nonces[(seat,nonce)] = int(stamp)+MAX_SKEW+1
+            if self.nonce_ledger is None:
+                raise Refused(503, 'replay storage unavailable')
+            try:
+                outcome = self.nonce_ledger.consume(seat, nonce, int(stamp)+MAX_SKEW+1, now, MAX_NONCES)
+            except LedgerError:
+                raise Refused(503, 'replay storage unavailable') from None
+            if outcome != 'ok':
+                raise Refused(409 if outcome == 'replay' else 503,
+                              'replay refused' if outcome == 'replay' else 'request capacity exceeded')
         try:
             data = json.loads(body, object_pairs_hook=_unique)
             if not isinstance(data, dict) or set(data) != {'repo','permissions'}:
