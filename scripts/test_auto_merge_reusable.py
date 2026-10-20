@@ -229,6 +229,19 @@ class ArmStep(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIn("Auto-merge armed (clean status).", out)
 
+    def test_armed_state_is_checked_for_pending_and_clean_prs(self):
+        for mode, message in (
+            ("armed_not_ready", "Auto-merge armed despite pending checks."),
+            ("clean_status_armed", "Auto-merge armed (clean status)."),
+        ):
+            with self.subTest(mode=mode):
+                code, out, calls = run_arm(mode, "true")
+                self.assertEqual(code, 0)
+                self.assertEqual(len(calls), 2)
+                self.assertIn("--json autoMergeRequest --jq .autoMergeRequest", calls[1])
+                self.assertIn(message, out)
+                self.assertNotIn("private-path", out)
+
     def test_the_queue_refusal_is_matched_with_its_backticks(self):
         # gh prints the flag in backticks, so a pattern that looks for the bare flag
         # followed by a space would not match the message that is actually out there.
