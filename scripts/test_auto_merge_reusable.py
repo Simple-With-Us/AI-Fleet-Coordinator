@@ -36,10 +36,23 @@ QUEUE_REFUSAL = "X Cannot use `-d` or `--delete-branch` when merge queue enabled
 FAKE_GH = """#!/bin/bash
 printf '%s\\n' "$*" >> "$GH_CALLS"
 case "${GH_FAKE_MODE}" in
-  not_ready)
+  not_ready|armed_not_ready|clean_status|clean_status_armed)
     if [[ "$*" == "pr view "* ]]; then
-      echo "null"
+      # Answer only the field the armer asks for, so a query for anything else fails
+      # here instead of being answered with a plausible-looking null.
+      if [[ "$*" != *"--json autoMergeRequest"* ]]; then
+        echo "gh: fake gh answers only --json autoMergeRequest, got: $*" >&2
+        exit 1
+      fi
+      case "$GH_FAKE_MODE" in
+        armed_not_ready|clean_status_armed) echo '{"enabledAt":"2026-10-20T00:00:00Z"}' ;;
+        *) echo "null" ;;
+      esac
       exit 0
+    fi
+    if [[ "$GH_FAKE_MODE" == clean_status* ]]; then
+      echo "Pull request is in clean status" >&2
+      exit 1
     fi
     echo "gh: private-path not mergeable" >&2
     exit 1
@@ -190,6 +203,30 @@ class ArmStep(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIn("Auto-merge not armed: the PR is not ready", out)
         self.assertNotIn("private-path", out)
+
+    def test_an_armed_not_ready_pr_reports_the_armed_outcome(self):
+        # A not-mergeable PR that IS armed is armed, not "not ready": the armer must
+        # read the autoMergeRequest field to tell the two apart.  Asking for any other
+        # field would make the fake answer null and this test would fail.
+        code, out, calls = run_arm("armed_not_ready", "true")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Auto-merge armed despite pending checks.", out)
+        self.assertNotIn("the PR is not ready", out)
+
+    def test_a_clean_status_pr_with_no_auto_merge_is_an_error(self):
+        # The clean-status branch must not report a PR armed when it is not: clean
+        # status plus a null autoMergeRequest is an inconsistency, not an arm.
+        code, out, calls = run_arm("clean_status", "true")
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("clean status but auto-merge is not armed", out)
+
+    def test_an_armed_clean_status_pr_reports_the_armed_outcome(self):
+        code, out, calls = run_arm("clean_status_armed", "true")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Auto-merge armed (clean status).", out)
 
     def test_the_queue_refusal_is_matched_with_its_backticks(self):
         # gh prints the flag in backticks, so a pattern that looks for the bare flag
