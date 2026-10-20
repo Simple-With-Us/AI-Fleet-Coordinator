@@ -82,6 +82,43 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(entry.authenticated_env(), {"INFISICAL_TOKEN": "fake-token"})
         load.assert_not_called()
 
+    def test_main_hands_the_minted_token_to_the_execed_cli(self):
+        result = mock.Mock(returncode=0, stdout="fake-token\n")
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(entry, "load_bootstrap", return_value=["fake-id", "fake-secret"]),
+            mock.patch.object(entry.subprocess, "run", return_value=result),
+            mock.patch.object(entry.os, "execve") as execve,
+        ):
+            self.assertIsNone(entry.main())
+        env = execve.call_args.args[2]
+        self.assertEqual(env["INFISICAL_TOKEN"], "fake-token")
+        self.assertNotIn("fake-id", env.values())
+        self.assertNotIn("fake-secret", env.values())
+
+    def test_main_reauthenticates_rather_than_trusting_an_inherited_token(self):
+        result = mock.Mock(returncode=0, stdout="fresh-token\n")
+        with (
+            mock.patch.dict(os.environ, {"INFISICAL_TOKEN": "expired-token"}, clear=True),
+            mock.patch.object(entry, "load_bootstrap", return_value=["fake-id", "fake-secret"]),
+            mock.patch.object(entry.subprocess, "run", return_value=result) as run,
+            mock.patch.object(entry.os, "execve") as execve,
+        ):
+            entry.main()
+        run.assert_called_once()
+        self.assertEqual(execve.call_args.args[2]["INFISICAL_TOKEN"], "fresh-token")
+
+    def test_blank_inherited_token_is_not_taken_as_authenticated(self):
+        with (
+            mock.patch.dict(os.environ, {"INFISICAL_TOKEN": "   "}, clear=True),
+            mock.patch.object(entry, "load_bootstrap", return_value=["fake-id", "fake-secret"]),
+            mock.patch.object(
+                entry.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="fake-token\n")
+            ),
+        ):
+            env = entry.authenticated_env()
+        self.assertEqual(env["INFISICAL_TOKEN"], "fake-token")
+
 
 if __name__ == "__main__":
     unittest.main()

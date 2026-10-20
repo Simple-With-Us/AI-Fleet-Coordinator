@@ -35,9 +35,11 @@ def load_bootstrap(path):
     return [data[k].strip() for k in names]
 
 
-def authenticated_env():
+def authenticated_env(*, refresh: bool = False):
+    """refresh=True mints a fresh token even when one is inherited, so a long-lived
+    wrapper never hands the CLI a token that expired after it was injected."""
     env = dict(os.environ)
-    if not env.get("INFISICAL_TOKEN"):
+    if refresh or not (env.get("INFISICAL_TOKEN") or "").strip():
         client_id, client_secret = load_bootstrap(
             Path.home() / ".config/fleet-secrets/bootstrap.json"
         )
@@ -66,7 +68,7 @@ def authenticated_env():
 
 def main():
     try:
-        env = authenticated_env()
+        env = authenticated_env(refresh=True)
         target = Path.home() / ".local/share/fleet-secrets/fleet-secrets"
         os.execve(str(target), [str(target), *sys.argv[1:]], env)
     except (OSError, ValueError, subprocess.SubprocessError):
