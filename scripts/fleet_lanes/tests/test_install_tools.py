@@ -1613,8 +1613,8 @@ class CliTests(World):
         self.assertIn("with the MiniMax hook shim allowing everything", text)
         self.assertIn("with the MiniMax adapter renamed", text)
         self.assertIn("FAIL  minimax", text)
-        self.assertIn("Read/deny/hook-env", text)
-        self.assertIn("Write/deny/hook-env", text)
+        self.assertIn("Read/probe-placeholder/deny/hook-env", text)
+        self.assertIn("Write/probe-placeholder/deny/hook-env", text)
         self.assertIn("FAIL  claude", text)  # the failures it provoked are printed
         self.assertNotIn("self-test FAIL", text)
 
@@ -1629,7 +1629,7 @@ class CliTests(World):
             rc = T.self_test(lines.append, timeout=TIMEOUT, minimal_path=False, source=self.source)
         self.assertEqual(rc, 1, "\n".join(lines))
         self.assertIn("did NOT fail", "\n".join(lines))
-        self.assertIn("did NOT fail minimax Read/deny/hook-env", "\n".join(lines))
+        self.assertIn("did NOT fail minimax Read/probe-placeholder/deny/hook-env", "\n".join(lines))
 
 
 # --------------------------------------------------------------------------- review round 2: confirmed findings
@@ -4957,7 +4957,10 @@ class FleetHookStableCopyTests(World):
                 self.assertEqual(r.status, "refused", r)
                 self.assertFalse(os.path.exists(self.paths.stable))
                 self.assertTrue(
-                    any("FAIL  minimax" in line and "Read/deny/hook-env" in line for line in lines),
+                    any(
+                        "FAIL  minimax" in line and "Read/.env/deny/hook-env" in line
+                        for line in lines
+                    ),
                     "\n".join(lines),
                 )
 

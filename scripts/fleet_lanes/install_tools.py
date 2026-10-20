@@ -4592,8 +4592,10 @@ def registry_tree(registry: str) -> str:
                 raise Refused(
                     f"required integration registry {registry}: app paths must be strings"
                 )
-            name = candidate.strip()
-            if name:
+            # Only the folder name under ~/Code identifies the tree: a registry value
+            # spelled as a path or `owner/name` would otherwise probe outside ~/Code.
+            name = os.path.basename(candidate.strip().rstrip("/"))
+            if name and name not in (".", ".."):
                 return name
     raise Refused(f"required integration registry {registry} contains no registered tree")
 
@@ -4633,9 +4635,9 @@ def probe_minimax_files(
         out.append(
             Check(
                 "minimax",
-                f"{tool}/{'deny' if deny else 'allow'}/hook-env",
+                f"{tool}/{os.path.basename(path)}/{'deny' if deny else 'allow'}/hook-env",
                 "FAIL" if problem else "PASS",
-                problem or "compatible file payload checked",
+                problem or f"compatible file payload checked ({path})",
             )
         )
     return out
@@ -5841,7 +5843,11 @@ def self_test(
         # MiniMax owns its shim and adapter.  Damage those paths independently:
         # changing Muse's shared fleet shim must not be treated as MM coverage.
         def require_minimax_damage(checks: list[Check], damage: str) -> None:
-            for name in ("deny/login-PATH", "Read/deny/hook-env", "Write/deny/hook-env"):
+            for name in (
+                "deny/login-PATH",
+                "Read/probe-placeholder/deny/hook-env",
+                "Write/probe-placeholder/deny/hook-env",
+            ):
                 if not any(
                     c.target == "minimax" and c.name == name and c.status == "FAIL" for c in checks
                 ):
