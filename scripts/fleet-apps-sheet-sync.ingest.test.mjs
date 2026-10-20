@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
 import {
-  registryIngestArgs, summarizeIngest, ingestFailureDetail, MIRROR_MD_PATH, REGISTRY_INGEST_SOURCE
+  registryIngestArgs, summarizeIngest, ingestFailureDetail, buildMarkdownMirror,
+  MIRROR_MD_PATH, REGISTRY_INGEST_SOURCE
 } from "./fleet-apps-sheet-sync.mjs";
 
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
@@ -27,26 +27,64 @@ test("the mirror is a top-level ~/apps markdown file, which is what the doc sour
   // The doc source owns APPS_DIR (= HOME / "apps") and globs its top-level *.md files
   // (fleet_rag/sources.py:  live += sorted(apps.glob("*.md"))).  The mirror has to live there,
   // and under that name, or the `doc` source never carries it and the ingest above is a no-op.
-  const appsDir = `${homedir()}/apps`;
-  assert.equal(MIRROR_MD_PATH, `${appsDir}/FLEET-APPS-REGISTRY.md`);
-  assert.equal(MIRROR_MD_PATH.split("/").length, appsDir.split("/").length + 1, "top level of ~/apps");
+  // These assertions are HOME-independent on purpose:  the mirror is pinned to the fleet account's
+  // tree, so the CI runner's own HOME is not the reference and the test says nothing about it.
+  const parent = MIRROR_MD_PATH.slice(0, MIRROR_MD_PATH.lastIndexOf("/"));
+  assert.equal(parent.split("/").pop(), "apps", "the mirror lives in the apps dir the doc source globs");
+  assert.equal(MIRROR_MD_PATH.split("/").length, parent.split("/").length + 1, "top level of ~/apps");
   assert.ok(MIRROR_MD_PATH.endsWith(".md"));
+  assert.equal(MIRROR_MD_PATH.split("/").pop(), "FLEET-APPS-REGISTRY.md");
 
   const sources = read("scripts/fleet_rag/sources.py");
   assert.match(sources, /APPS_DIR = HOME \/ "apps"/, "the doc source's apps dir is ~/apps");
   assert.match(sources, /apps\.glob\("\*\.md"\)/, "the doc source still ingests top-level ~/apps/*.md");
+
+  // The source also drops any file over its own size cap, so a mirror that grows past the cap
+  // would stop being ingested and this step would go silent again.  Assert the cap holds.
+  const cap = Number((sources.match(/DOC_MAX_BYTES = ([\d_]+) \* ([\d_]+)/) || [])
+    .slice(1)
+    .reduce((a, b) => Number(String(a).replace(/_/g, "")) * Number(String(b).replace(/_/g, "")), 1));
+  assert.ok(cap > 0, "the doc source's size cap is readable");
+  if (existsSync(MIRROR_MD_PATH)) {
+    assert.ok(
+      statSync(MIRROR_MD_PATH).size <= cap,
+      `the mirror is under the doc source's ${cap}-byte cap`
+    );
+  }
 });
 
-test("summarizeIngest reads the ingest report and degrades safely", () => {
+test("the mirror body carries no timestamp, so the ingest's hash skip can match", () => {
+  // The ingest skips a document whose content hash is unchanged.  A "Last Synced" stamp in the
+  // mirror body changed that hash on every run, so the skip never matched and every sheet sync
+  // re-embedded the mirror even when nothing about the registry had changed.
+  const tabs = {
+    registry: [["A"], ["b"], []],
+    testflight: [["A"], []], icons: [[], [], [], ["A"], []], fleetApps: [["A"], []], seats: [["A"], []],
+  };
+  const first = buildMarkdownMirror({ sections: [] }, tabs);
+  const second = buildMarkdownMirror({ sections: [] }, tabs);
+  assert.equal(first, second, "two mirrors of the same data are byte-identical");
+  assert.doesNotMatch(first, /^\*\*Last Synced:\*\*/m, "the mirror body has no volatile timestamp");
+  assert.doesNotMatch(first, /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/, "the mirror body has no ISO timestamp");
+});
+
+test("summarizeIngest reads the ingest report and never fakes a success", () => {
   const report = JSON.stringify({
     per_source: { doc: { docs_seen: 142, docs_changed: 1, chunks_new: 37 } }
   });
   assert.equal(summarizeIngest(report), "142 docs, 1 changed, 37 chunks written");
-  // A report without the doc source (a different source ran) still reads as a summary.
-  assert.equal(summarizeIngest(JSON.stringify({ per_source: {} })), "done");
+  // A report without the doc source must NOT read as a successful "done":  the old wording made a
+  // malformed report look like a clean run, which is the opposite of what a summary is for.
+  assert.equal(summarizeIngest(JSON.stringify({ per_source: {} })), "report has no doc source");
+  assert.equal(summarizeIngest(JSON.stringify({})), "report has no doc source");
   // Garbage or empty stdout must not throw.
-  assert.equal(summarizeIngest(""), "done");
+  assert.equal(summarizeIngest(""), "no output");
   assert.equal(summarizeIngest("not json at all"), "not json at all");
+  // A count that is not a number is not rendered as one.
+  assert.equal(
+    summarizeIngest(JSON.stringify({ per_source: { doc: { docs_seen: "many" } } })),
+    "no counts in the report"
+  );
 });
 
 test("a failed ingest reports the tool's own stderr, not just the exit", () => {
