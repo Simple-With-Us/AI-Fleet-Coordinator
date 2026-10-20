@@ -40,9 +40,9 @@ block's lines, and collapses every other line into a count; a contradiction show
 kind and the matched text only (the path, the temp directory and checkout words, the legacy prefix).
 Whatever is printed still goes through a credential redactor, as a second layer.
 
-Fleet Basics.  Three platforms have no other fleet instruction file (Clutch, Kimi, Vibe), so their block
+Fleet Basics.  Four platforms have no other fleet instruction file (Clutch, Kimi, Vibe, Copilot CLI), so their block
 also carries the Fleet Basics (AGENT-SYNC pointer, seat identity, coordination, secrets, writing) ahead of the Lane Map.
-Clutch has a fixed default seat (CLUTCH, a launcher's seat wins); the other two are engine-only CLIs with NO default
+Clutch has a fixed default seat (CLUTCH, a launcher's seat wins); the other three are engine-only CLIs with NO default
 seat and say so.  The marker family is the same `fleet-lane-map` block.  OpenCode (the row is the owner's, #438) is the
 OPENCODE seat since #440, so its block carries a fixed-seat Seat Identity (default OPENCODE for a session Jay opens in a
 terminal, a launcher's seat first, no default for a headless run or Conductor) ahead of the Lane Map, but not the rest
@@ -75,31 +75,10 @@ from . import layout as L
 from .doctor import redact_text as _redact_urls
 
 __all__ = [
-    "BEGIN_PREFIX",
-    "BLOCK_VERSION",
-    "END_LINE",
-    "EXIT_FAILED",
-    "EXIT_OK",
-    "EXIT_REFUSED",
-    "EXIT_USAGE",
-    "PLATFORMS",
-    "ApplyResult",
-    "Contradiction",
-    "MarkerError",
-    "PlanEntry",
-    "Platform",
-    "VerifyResult",
-    "apply_platform",
-    "atomic_write",
-    "block_lines",
-    "block_text",
-    "build_entry",
-    "compose",
-    "find_block",
-    "find_contradictions",
-    "main",
-    "redact",
-    "verify_platform",
+    "BLOCK_VERSION", "BEGIN_PREFIX", "END_LINE", "PLATFORMS", "Platform", "PlanEntry", "ApplyResult",
+    "VerifyResult", "MarkerError", "Contradiction", "block_lines", "block_text", "compose",
+    "find_block", "find_contradictions", "redact", "build_entry", "apply_platform",
+    "verify_platform", "atomic_write", "main", "EXIT_OK", "EXIT_FAILED", "EXIT_REFUSED", "EXIT_USAGE",
 ]
 
 EXIT_OK = 0
@@ -189,6 +168,9 @@ PLATFORMS: tuple[Platform, ...] = (
     # Engine-only CLIs: no default seat, so the block says to take a launcher's seat or ask Jay.  (OpenCode is not one: see below.)
     Platform("kimi", ".kimi-code/AGENTS.md", "nodefault", "Kimi Code ($KIMI_CODE_HOME/AGENTS.md)"),
     Platform("vibe", ".vibe/AGENTS.md", "nodefault", "Mistral Vibe ({VIBE_HOME}/AGENTS.md)"),
+    Platform("copilot", ".copilot/copilot-instructions.md", "nodefault", "GitHub Copilot CLI (user-level instructions)",
+             caveat="UNVERIFIED on this Mac: the file name comes from GitHub's documentation, and the 1.0.68 "
+                    "binary was not exercised with a model; start a Copilot session and ask what it loaded"),
     # OpenCode 2.x (bundled with Conductor) reads `<config dir>/AGENTS.md` as its global instruction file;
     # `opencode debug paths` prints the config dir (~/.config/opencode).  Found in the binary, not yet exercised
     # (the platform row is the owner's, #438).  OpenCode is the OPENCODE seat (#440), so its block is a fixed-seat Seat
@@ -211,7 +193,7 @@ PLATFORMS: tuple[Platform, ...] = (
 PLATFORM_BY_NAME = {p.name: p for p in PLATFORMS}
 PLATFORM_ALIASES = {"ag": "antigravity", "gemini": "antigravity", "mm": "minimax", "grok-build": "grok",
                     "mc": "muse-code", "muse": "muse-code", "kimi-code": "kimi", "mistral-vibe": "vibe",
-                    "dsh": "clutch"}
+                    "copilot-cli": "copilot", "dsh": "clutch"}
 
 
 def resolve_platform_names(names: Iterable[str]) -> list[Platform]:
@@ -386,7 +368,7 @@ _LONG_TOKEN = re.compile(r"(?<![\w/.~-])[A-Za-z0-9_-]{40,}(?![\w/.~-])")
 _AWS_SECRET = re.compile(r"(?<![\w/.~+%-])[A-Za-z0-9/+]{40}(?![\w/.~+%-])")
 
 
-def _mask_aws(m: re.Match[str]) -> str:
+def _mask_aws(m: "re.Match[str]") -> str:
     """40 characters of the base64 alphabet that mix digits and both cases: an AWS secret access key (it
     can contain `/` and `+`, which the plain long-token rule cannot see).  Ordinary paths fail a test."""
     t = m.group(0)
@@ -443,9 +425,9 @@ _LANES_PATH = re.compile(
 _OLD_LANE_DIRS = ("_managed", "_review", "_notes", "<prefix>", "<app>")
 _TMP_TOKEN = re.compile(r"(?:/private)?/tmp\b|/var/tmp\b|\$\{?TMPDIR\}?|/var/folders\b|\bmktemp\b")
 _CHECKOUT_WORD = re.compile(
-    r"\b(?:git\s+clone|git\s+worktree|git\s+init|clone[sd]?|cloning|worktrees?|checkouts?)\b", re.IGNORECASE)
+    r"\b(?:git\s+clone|git\s+worktree|git\s+init|clone[sd]?|cloning|worktrees?|checkouts?)\b", re.I)
 _NEGATION = re.compile(
-    r"\b(?:never|don't|dont|do\s+not|not|no|forbidden|forbid|ban|banned|avoid|must\s+not|cannot|can't)\b", re.IGNORECASE)
+    r"\b(?:never|don't|dont|do\s+not|not|no|forbidden|forbid|ban|banned|avoid|must\s+not|cannot|can't)\b", re.I)
 _AGENT_PREFIX = re.compile(r"(?<![\w/.~$@-])agent/[A-Za-z][\w.-]*")
 
 

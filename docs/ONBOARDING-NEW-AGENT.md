@@ -1,7 +1,7 @@
 # Onboarding a new agent seat
 
 Policy + steps for adding a coding agent (Claude, Codex, Grok, Cursor,
-Antigravity, Kimi, or a future seat) to this fleet.
+Antigravity, Monet, Kimi, Copilot, or a future seat) to this fleet.
 
 **GitHub:** https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
 **Sibling (new app):** [ONBOARDING-NEW-APP.md](ONBOARDING-NEW-APP.md) · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
@@ -304,6 +304,7 @@ Then, by hand and with the owner's approval of each live install (read the `plan
    | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `agent-sync` | `muse`, a plugin the owner installs |
    | Kimi Code | none | `kimi`, `~/.kimi-code/AGENTS.md` | none (reads the shared `~/.agents/skills`) | `kimi`: `fleet-recall` | `kimi`, a `[[hooks]]` block |
    | Mistral Vibe | none | `vibe`, `~/.vibe/AGENTS.md` | none | none (its `config.toml` holds `mcp_servers = []`) | none |
+   | Copilot CLI | none | `copilot`, `~/.copilot/copilot-instructions.md` (UNVERIFIED) | none | `copilot`: `fleet-recall` | none (its hook is fail-closed) |
    | OpenCode | none | `opencode`, `~/.config/opencode/AGENTS.md` (the owner's row, #438; it may also read `~/AGENTS.md`) | none | `opencode`: `fleet-recall` | none (plugin API unproven) |
    | Conductor | none | none: its Claude Code and Codex read theirs | none | none: each harness inside reads its own | none: the Claude and Codex guards fire inside it |
    | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `agent-sync` | `minimax` (alias `mm`, in `all`), a local plugin directory `~/.minimax/plugins/fleet-guard/` with the lane and secret guard |
