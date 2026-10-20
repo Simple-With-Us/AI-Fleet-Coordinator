@@ -434,9 +434,11 @@ def check_policy(plugin: dict) -> dict:
                     env=_hook_env(),
                 )
             except subprocess.TimeoutExpired:
-                return _stage_error("the hook command timed out after 30s")
+                startup_error = startup_error or "the hook command timed out after 30s"
+                continue
             except (OSError, subprocess.SubprocessError) as exc:
-                return _stage_error(f"could not run the hook command: {exc}")
+                startup_error = startup_error or f"could not run the hook command: {exc}"
+                continue
             out = (proc.stdout or "") + (proc.stderr or "")
             if DENY_SHAPE.search(out):
                 denied = True

@@ -440,6 +440,17 @@ class CheckPolicy(unittest.TestCase):
         self.assertEqual(verdicts[0], verdicts[1])
         self.assertTrue(verdicts[0][0])
 
+    def test_an_unstartable_handler_does_not_hide_a_later_denial(self):
+        missing = str(self.root / "missing-hook")
+        denying = write_fake_hook(self.root / "guard.sh", deny_all_body())
+        for groups in (
+            [("Bash|bash", missing), ("Bash|bash", denying)],
+            [("Bash|bash", denying), ("Bash|bash", missing)],
+        ):
+            plugin = write_plugin_groups(self.root / str(len(groups[0][1])), groups)
+            result = proof.check_policy(proof.read_plugin(plugin))
+            self.assertTrue(result["ok"])
+
     def test_an_allowing_hook_fails(self):
         command = write_fake_hook(self.root / "allow.sh", "exit 0")
         plugin = write_plugin(self.root, "Bash|bash", command)
