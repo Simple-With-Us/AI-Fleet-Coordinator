@@ -332,14 +332,36 @@ class RegisteredEnvTests(unittest.TestCase):
             self.assertEqual(doctor.registered_env("CODEX", home), {"ZULIP_RC": "/x"})
             self.assertEqual(doctor.registered_env("CURSOR", home), {})
             self.assertEqual(doctor.registered_env("CLAUDE", home / "missing"), {})
+            self.assertEqual(doctor.registered_env("CODEX", home / "missing"), {})
+            (home / ".claude.json").write_text(json.dumps({"mcpServers": {"other": {"env": {}}}}))
+            self.assertEqual(doctor.registered_env("CLAUDE", home), {})
+            #  A file that is there but the wrong shape is an error, not an absent registration:  the probe
+            #  would otherwise start the MCP without the registered env and report on an environment no client
+            #  ever starts.  A missing file, and a seat that registers nothing, still mean no env.
             for bad in (
                 [],
                 {"mcpServers": []},
                 {"mcpServers": {"agent-sync": "x"}},
                 {"mcpServers": {"agent-sync": {"env": "x"}}},
+                "not json at all",
             ):
-                (home / ".claude.json").write_text(json.dumps(bad))
-                self.assertEqual(doctor.registered_env("CLAUDE", home), {})
+                (home / ".claude.json").write_text(bad if isinstance(bad, str) else json.dumps(bad))
+                with self.assertRaises((ValueError, TypeError)):
+                    doctor.registered_env("CLAUDE", home)
+
+    def test_a_malformed_client_config_is_reported_not_swallowed(self):
+        with (
+            mock.patch.object(
+                doctor,
+                "registered_env",
+                side_effect=ValueError(".claude.json for CLAUDE is not valid"),
+            ),
+            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/agent-sync"),
+        ):
+            report = doctor.Report()
+            doctor.check_mcp_startup(report, "CLAUDE")
+        self.assertTrue(report.failed)
+        self.assertIn("not valid", report.rows[0]["detail"])
 
     def test_the_probe_passes_the_registered_env(self):
         seen = {}

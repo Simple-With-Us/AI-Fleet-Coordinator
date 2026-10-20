@@ -736,13 +736,19 @@ _ISO = re.compile(
     #  ?d=2026-10-19) keeps it.  A dot after the date is the end of a sentence, so only a dot followed by a word
     #  character keeps the date whole.
     r'(?<![\w/.:=?&-])(\d{4})-(\d{2})-(\d{2})'
-    # A +HH:MM / -HH:MM offset is only an offset on the ISO T form.  On the space form (2026-10-19 10:30) a bare
-    # -11:00 after the minutes is the end of a time range, not a UTC offset, and taking it as one moves the hour
-    # and drops the range end.  That range end is a second local time, so it is captured and rendered in the
-    # fleet form too:  a note must not keep a 24-hour clock it rewrote everything else away from.
+    # The same forms as scripts/agent_sync/textfmt.py, so a stamp reads the same in a Note and in chat, and the
+    # trailing zone and range end are captured whole (see _TAIL) because the space form allows either order:
+    # 15:30Z-16:00 is a range end in UTC, and 10:30-11:00 is a range end in local time.
     r'(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?'
-    r'| (\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z)?(?:-(\d{2}):(\d{2}))?)?'
+    r'| (\d{2}):(\d{2})(:\d{2}(?:\.\d+)?)?((?:-\d{2}:\d{2}(?::\d{2})?|Z|[+-]\d{2}:?\d{2})*)?)?'
     r'(?![\w/-]|\.[A-Za-z0-9])'
+)
+#  The space form's tail, in either order:  a -HH:MM straight after the minutes is the range end first and a UTC
+#  offset only when the start carried seconds and the end did not (2026-10-19 10:30:00-05:00), because a range
+#  that shows seconds shows them on both ends (10:30:00-11:00:00);  a Z or +HH:MM before one is a zone (15:30Z-16:00).
+_TAIL = re.compile(
+    r'(?:(?P<r1>-\d{2}:\d{2}(?::\d{2})?)(?P<z2>Z|[+-]\d{2}:?\d{2})?'
+    r'|(?P<z1>Z|[+-]\d{2}:?\d{2})(?P<r2>-\d{2}:\d{2}(?::\d{2})?)?)?\Z'
 )
 
 def _fleet_day(d):
@@ -761,9 +767,19 @@ def _fleet_date(m):
     return new
 
 def _fleet_date_text(m):
-    y, mo, d, t_hh, t_mm, t_zone, hh, mm, zone, r_hh, r_mm = m.groups()
+    y, mo, d, t_hh, t_mm, t_zone, hh, mm, s_secs, tail = m.groups()
+    r_hh = r_mm = None
     if t_hh is not None:
         hh, mm, zone = t_hh, t_mm, t_zone
+    else:
+        parts = _TAIL.match(tail or '').groupdict()
+        zone = parts['z2'] or parts['z1']
+        end = parts['r1'] or parts['r2'] or ''
+        r_hh, r_mm, end_secs = _END.match(end).groups() if end else (None, None, None)
+        if r_hh is not None and s_secs is not None and end_secs is None:
+            # Seconds on the start of a range but not on its end:  a UTC offset, not a range (see _TAIL).
+            zone = tail
+            r_hh = r_mm = None
     try:
         if hh is None:
             return _fleet_day(datetime(int(y), int(mo), int(d)))
@@ -796,22 +812,46 @@ def fleet_dates(markup):
 
 # Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as agent-sync's textfmt.single_gaps), so
 # a note reads the same whoever wrote it.  Known abbreviations, dotted words, initials and list markers are skipped.
-_ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq'.split())
-_GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#])')
+# 'no' is absent on purpose, for textfmt.py's reason:  'I said no.  Then we stop.' ends a sentence, and 'No. 5'
+# cannot be told apart from it here, so the same call as check-routine-prompts.py makes.
+_ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig nos vol ca mt ft sq'.split())
+#  The mention span and the mask are the ones in scripts/agent_sync/textfmt.py:  mask the mention first, so a
+#  gap before a mention is still a gap and a mention's own punctuation is never mistaken for a sentence end.
+#  The mask character is in the lookahead below for that reason.  Code is not masked here because the HTML
+#  split above already keeps every pre and code segment out of this one.
+_MASK = '\ue000'
+_MENTION = re.compile(r'@_?\*{1,2}[^*\n]+\*{1,2}')
+_GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#' + _MASK + r'])')
+_END = re.compile(r'^-(\d{2}):(\d{2})(?::(\d{2}))?$')
 _WORD = re.compile(r'([A-Za-z][A-Za-z.]*)\Z')
 
+def _mask_mentions(segment):
+    masked = list(segment)
+    for m in _MENTION.finditer(segment):
+        for i in range(m.start(), m.end()):
+            masked[i] = _MASK
+    return ''.join(masked)
+
 def _one_space_gaps(segment):
-    def repl(m):
+    masked = _mask_mentions(segment)
+    pieces = []
+    last = 0
+    for m in _GAP1.finditer(masked):
         if m.group(1).startswith('.'):
-            before = _WORD.search(segment[max(0, m.start() - 40):m.start()])
+            before = _WORD.search(masked[max(0, m.start() - 40):m.start()])
             word = before.group(1).casefold().rstrip('.') if before else ''
             if before and (word in _ABBREV or len(word) == 1 or '.' in word):
-                return m.group(0)
-            if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
-                return m.group(0)
+                continue
+            if re.fullmatch(r'\s*\d{1,9}', masked[:m.start()]):
+                continue
+        pieces.append(segment[last:m.start(1)])  # the untouched text, not the masked copy
+        pieces.append(m.group(1) + '  ')
+        last = m.end()
         _changes['gaps'] += 1
-        return m.group(1) + '  '
-    return _GAP1.sub(repl, segment)
+    if not pieces:
+        return segment
+    pieces.append(segment[last:])
+    return ''.join(pieces)
 
 inner = fleet_dates(inner)
 if summary_text:

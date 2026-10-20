@@ -103,7 +103,13 @@ def load_state(path: Path) -> dict:
 
 def save_state(path: Path, state: dict) -> None:
     temporary = path.with_name(".git-state-" + uuid.uuid4().hex)
-    temporary.write_text(json.dumps(state, sort_keys=True) + "\n")
+    #  Owner-only, and fsynced before the rename:  the rename is what makes it authoritative, so a crash
+    #  before the bytes are down would leave the state truncated with nothing to retry against.
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(state, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(temporary, path)
 
 
@@ -208,7 +214,11 @@ def wrappers(home: Path, repo: Path, result: dict) -> dict:
 
 
 def locked(base: Path):
-    base.mkdir(parents=True, exist_ok=True)
+    #  The state dir holds the live commit, the skipped commit and the private pointer:  0700 when this
+    #  run creates it, so nothing else on the host can read or swap them.
+    if base.is_symlink():
+        raise Failed("unsafe_state_directory")
+    base.mkdir(mode=0o700, parents=True, exist_ok=True)
     handle = (base / "update.lock").open("a")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -224,7 +234,8 @@ def setup(home: Path) -> dict:
         if not (p["repo"] / ".git").exists():
             try:
                 subprocess.run(
-                    [GIT, "clone", "-q", "--no-checkout", REMOTE, str(p["repo"])],
+                    #  `--` so a --home that begins with a dash is a path to git, not an option to it.
+                    [GIT, "clone", "-q", "--no-checkout", "--", REMOTE, str(p["repo"])],
                     check=True,
                     timeout=600,
                     capture_output=True,

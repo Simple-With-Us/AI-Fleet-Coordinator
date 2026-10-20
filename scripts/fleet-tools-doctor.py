@@ -512,25 +512,49 @@ MCP_PROBE = b"".join(
 def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
     """The `env` the seat's client registers for its agent-sync MCP server:  Claude Code's ~/.claude.json
     for CLAUDE, Codex's ~/.codex/config.toml for CODEX.  On the server that carries ZULIP_RC (AFC-359
-    retired the default zuliprc folder and fleet-secrets is Mac-only).  Values are passed, never printed."""
-    try:
-        if seat == "CLAUDE":
-            data = json.loads((home / ".claude.json").read_text())
-            servers = data.get("mcpServers") if isinstance(data, dict) else None
-        elif seat == "CODEX":
-            try:
-                import tomllib  # 3.11+;  a Mac's /usr/bin/python3 has none (codex_mcp_names falls back)
-            except ImportError:
-                return {}
-            servers = tomllib.loads((home / ".codex/config.toml").read_text()).get("mcp_servers")
-        else:
+    retired the default zuliprc folder and fleet-secrets is Mac-only).  Values are passed, never printed.
+
+    A missing file means the seat registers nothing, so `{}`.  A file that is there but cannot be read as the
+    shape it claims to be raises instead:  the probe below would otherwise run without the registered env and
+    report on an environment no client ever starts."""
+    if seat == "CLAUDE":
+        name, key = ".claude.json", "mcpServers"
+    elif seat == "CODEX":
+        name, key = ".codex/config.toml", "mcp_servers"
+        try:
+            import tomllib  # 3.11+;  a Mac's /usr/bin/python3 has none (codex_mcp_names falls back)
+        except ImportError:
             return {}
-    except (OSError, ValueError):
+    else:
         return {}
-    # Any malformed level (a list, a string) means no registered env, never an exception.
-    server = servers.get("agent-sync") if isinstance(servers, dict) else None
-    env = server.get("env") if isinstance(server, dict) else None
-    return {str(key): str(value) for key, value in env.items()} if isinstance(env, dict) else {}
+    try:
+        raw = (home / name).read_text()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ValueError(f"cannot read {name} for {seat}: {exc}") from exc
+    try:
+        data = json.loads(raw) if name.endswith(".json") else tomllib.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} for {seat} is not valid: {exc}") from exc
+    if not isinstance(data, dict):
+        raise TypeError(f"{name} for {seat} must hold an object")
+    servers = data.get(key)
+    if servers is None:
+        return {}
+    if not isinstance(servers, dict):
+        raise TypeError(f"the {key} registry in {name} for {seat} must be a mapping")
+    server = servers.get("agent-sync")
+    if server is None:
+        return {}
+    if not isinstance(server, dict):
+        raise TypeError(f"the agent-sync MCP server in {name} for {seat} must be a mapping")
+    env = server.get("env")
+    if env is None:
+        return {}
+    if not isinstance(env, dict):
+        raise TypeError(f"the agent-sync MCP env in {name} for {seat} must be a mapping")
+    return {str(key_): str(value) for key_, value in env.items()}
 
 
 def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.run) -> None:
@@ -540,10 +564,15 @@ def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.r
         report.add(f"mcp-start:{seat}", "FAIL", "agent-sync is not on PATH")
         return
     try:
+        env = {**os.environ, **registered_env(seat)}
+    except (TypeError, ValueError) as exc:
+        report.add(f"mcp-start:{seat}", "FAIL", str(exc))
+        return
+    try:
         result = runner(
             ["agent-sync", "mcp", "--default-seat", seat],
             input=MCP_PROBE,
-            env={**os.environ, **registered_env(seat)},
+            env=env,
             capture_output=True,
             timeout=60,
             check=False,
