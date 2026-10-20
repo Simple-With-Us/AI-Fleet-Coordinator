@@ -416,13 +416,16 @@ def check_policy(plugin: dict) -> dict:
             covering = [fallback]
         denied = False
         startup_error = None
+        configuration_error = None
         for handler in covering:
             try:
                 command = shlex.split(handler["command"])
             except ValueError as exc:
-                return _stage_fail(f"the hook command is not a parseable argv: {exc}")
+                configuration_error = configuration_error or f"the hook command is not a parseable argv: {exc}"
+                continue
             if not command:
-                return _stage_fail("the hook command is empty")
+                configuration_error = configuration_error or "the hook command is empty"
+                continue
             try:
                 proc = subprocess.run(
                     command,
@@ -473,6 +476,8 @@ def check_policy(plugin: dict) -> dict:
             # No handler denied, so a handler that never started is the real answer: the
             # guard was not exercised, which is a stage that could not be evaluated
             # rather than a policy that let the canary through.
+            if configuration_error is not None:
+                return _stage_fail(configuration_error)
             if startup_error is not None:
                 return _stage_error(startup_error)
             missed.append(tool_name)
