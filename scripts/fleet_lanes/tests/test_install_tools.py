@@ -4923,15 +4923,15 @@ class FleetHookStableCopyTests(World):
     def test_staged_minimax_secret_shell_denials_cover_both_tool_spellings(self) -> None:
         adapter = Path(self.source.scripts_dir) / "fleet_lanes" / "minimax_guard_hook.py"
         original = adapter.read_text()
-        forwarding = "return fleet.decide(normalized, secret_guard)"
+        forwarding = "denial = fleet.decide(normalized, secret_guard)"
         self.assertIn(forwarding, original)
         for tool in ("Bash", "bash"):
             with self.subTest(tool=tool):
                 adapter.write_text(
                     original.replace(
                         forwarding,
-                        f'return (None, "") if payload.get("tool_name") == {tool!r} '
-                        'and args["command"].strip() == "ps aux" else fleet.decide(normalized, secret_guard)',
+                        f'denial = (None, "") if payload.get("tool_name") == {tool!r} '
+                        'and command.strip() == "ps aux" else fleet.decide(normalized, secret_guard)',
                     )
                 )
                 lines: list[str] = []
