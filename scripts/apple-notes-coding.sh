@@ -281,13 +281,17 @@ _run_note_shortcut() {  # $1 = shortcut name
 }
 
 if [[ "$MODE" == "unpin" ]]; then
-  if _run_note_shortcut "Unpin Coding Note"; then
+  # Capture the code once:  $? read after a failed [[ ]] is the [[ ]]'s own 1,
+  # so an elif chain on $? can never reach the 3 (list unreadable) arm (AFC-431).
+  _unpin_rc=0
+  _run_note_shortcut "Unpin Coding Note" || _unpin_rc=$?
+  if [[ "$_unpin_rc" == "0" ]]; then
     echo "unpinned: yes (headless via 'Unpin Coding Note' shortcut)"
     exit 0
-  elif [[ $? -eq 2 ]]; then
+  elif [[ "$_unpin_rc" == "2" ]]; then
     echo "unpinned: no — 'Unpin Coding Note' shortcut not found. Create it: duplicate 'Pin Coding Note', rename, switch the last action's Add to Remove." >&2
     exit 4
-  elif [[ $? -eq 3 ]]; then
+  elif [[ "$_unpin_rc" == "3" ]]; then
     echo "unpinned: no — the Shortcut list could not be read, so it is unknown whether 'Unpin Coding Note' exists" >&2
     exit 4
   else

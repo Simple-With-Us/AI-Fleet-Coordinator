@@ -16,10 +16,10 @@ looked exactly like a Shortcut that was never installed.
 The retry is gated on APPLE_NOTES_PIN_RETRY, because a miss can pop a note picker on the owner's screen
 and a caller may want a single attempt.
 
-These tests drive the real source:  the `_run_note_shortcut` function and the pin decision block are cut out
-of scripts/apple-notes-coding.sh and run in a harness with a stub `shortcuts` on PATH, so the assertions
-cover the shipped text and not a copy of it.  Nothing here touches Notes, and it runs anywhere bash and
-python3 exist.
+These tests drive the real source:  the `_run_note_shortcut` function, the pin decision block and the unpin
+decision block are cut out of scripts/apple-notes-coding.sh and run in a harness with a stub `shortcuts` on
+PATH, so the assertions cover the shipped text and not a copy of it.  Nothing here touches Notes, and it
+runs anywhere bash and python3 exist.
 
 Run:  cd scripts && python3 -m unittest test_apple_notes_pin
 """
@@ -39,7 +39,7 @@ SCRIPT = Path(__file__).resolve().parent / "apple-notes-coding.sh"
 STUB = """#!/bin/bash
 if [ "${1:-}" = "list" ]; then
   if [ "${STUB_LIST_FAILS:-0}" = "1" ]; then exit 1; fi
-  if [ "${STUB_INSTALLED:-1}" = "1" ]; then printf '%s\\n' "Pin Coding Note"; fi
+  if [ "${STUB_INSTALLED:-1}" = "1" ]; then printf '%s\\n' "${STUB_NAME:-Pin Coding Note}"; fi
   exit 0
 fi
 n=0
@@ -52,7 +52,7 @@ exit 0
 
 HARNESS = """set -uo pipefail
 TITLE="AFC test note"
-MODE="update"
+MODE="${HARNESS_MODE:-update}"
 WANT_PIN="${HARNESS_WANT_PIN:-0}"
 APPLE_NOTES_PIN="${HARNESS_APPLE_NOTES_PIN:-1}"
 #  the real block waits 2 s for the note index and 3 s between attempts;  the test only needs the shape
@@ -76,12 +76,29 @@ def _extract(source: str) -> tuple[str, str]:
     return fn.group(0), source[start:end]
 
 
+def _extract_unpin(source: str) -> str:
+    """Cut the unpin decision block out of the real script, the same way, so it is covered too."""
+    start = source.index('if [[ "$MODE" == "unpin" ]]; then')
+    return source[start : source.index("\nfi\n", start) + len("\nfi\n")]
+
+
 @unittest.skipUnless(SCRIPT.is_file(), "needs scripts/apple-notes-coding.sh")
 class PinDecisionTests(unittest.TestCase):
     def run_block(self, **env: str) -> tuple[subprocess.CompletedProcess, int]:
         """Run the real pin block with a stub `shortcuts`, and return the result and the run count."""
         source = SCRIPT.read_text()
         function, block = _extract(source)
+        return self._run(function, block, **env)
+
+    def run_unpin_block(self, **env: str) -> tuple[subprocess.CompletedProcess, int]:
+        """Run the real unpin block with a stub `shortcuts`, and return the result and the run count."""
+        source = SCRIPT.read_text()
+        function, _ = _extract(source)
+        return self._run(function, _extract_unpin(source), **env)
+
+    def _run(
+        self, function: str, block: str, **env: str
+    ) -> tuple[subprocess.CompletedProcess, int]:
         with tempfile.TemporaryDirectory() as tmp:
             bindir = Path(tmp) / "bin"
             bindir.mkdir()
@@ -167,6 +184,40 @@ class PinDecisionTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertNotIn("pinned: skipped", p.stdout)
         self.assertIn("ran but did not complete", p.stderr)
+
+    def test_unpin_reports_a_missing_shortcut_as_a_missing_shortcut(self):
+        p, runs = self.run_unpin_block(HARNESS_MODE="unpin")
+        self.assertEqual(p.returncode, 4, p.stdout)
+        self.assertIn("not found", p.stderr)
+        self.assertNotIn("run failed", p.stderr)
+        self.assertEqual(runs, 0, "the Shortcut ran even though it is not installed")
+
+    def test_unpin_reports_an_unreadable_list_as_an_unreadable_list(self):
+        """The twin of the pin case:  a failed list lookup proves nothing, so it must not say 'run failed'.
+
+        The block used to branch on $? after each [[ ]], which made this arm unreachable.
+        """
+        p, runs = self.run_unpin_block(HARNESS_MODE="unpin", STUB_LIST_FAILS="1")
+        self.assertEqual(p.returncode, 4, p.stdout)
+        self.assertIn("could not be read", p.stderr)
+        self.assertNotIn("run failed", p.stderr)
+        self.assertNotIn("not found", p.stderr)
+        self.assertEqual(runs, 0, "the Shortcut ran even though the list could not be read")
+
+    def test_unpin_reports_a_failed_run_as_a_failed_run(self):
+        p, runs = self.run_unpin_block(
+            HARNESS_MODE="unpin", STUB_NAME="Unpin Coding Note", STUB_FAIL_FIRST="99"
+        )
+        self.assertEqual(p.returncode, 4, p.stdout)
+        self.assertIn("run failed", p.stderr)
+        self.assertNotIn("not found", p.stderr)
+        self.assertEqual(runs, 2)
+
+    def test_unpin_succeeds_headlessly_when_the_shortcut_is_there(self):
+        p, runs = self.run_unpin_block(HARNESS_MODE="unpin", STUB_NAME="Unpin Coding Note")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("unpinned: yes", p.stdout)
+        self.assertEqual(runs, 1)
 
 
 if __name__ == "__main__":
