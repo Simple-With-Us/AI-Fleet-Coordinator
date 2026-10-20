@@ -160,6 +160,8 @@ class ProcessInspectionTests(unittest.TestCase):
             self.assertEqual(support.installed_pids(self.binary), ["12"])
         self.assertEqual(run.call_args_list[0].args[0], ["/usr/bin/pgrep", "-x", "Muster"])
         for call in run.call_args_list[1:]:
+            self.assertIn("-b", call.args[0])
+            self.assertIn("-nP", call.args[0])
             self.assertEqual(call.args[0][-3:], ["-d", "txt", "-Fn"])
             self.assertEqual(call.kwargs["timeout"], 5)
 
@@ -188,6 +190,17 @@ class ProcessInspectionTests(unittest.TestCase):
             ):
                 with self.assertRaises(RuntimeError):
                     support.installed_pids(self.binary)
+
+    def test_nonblocking_inspection_failure_never_trusts_a_partial_path(self):
+        with (
+            mock.patch.object(support.subprocess, "run", side_effect=[
+                self.result("12\n"), self.result("p12\nn" + str(self.binary) + "\n", status=1)
+            ]),
+            mock.patch.object(support.os, "kill", return_value=None) as probe,
+        ):
+            with self.assertRaises(RuntimeError):
+                support.installed_pids(self.binary)
+        probe.assert_called_once_with(12, 0)
 
     def test_process_exit_during_inspection_is_harmless(self):
         with (
