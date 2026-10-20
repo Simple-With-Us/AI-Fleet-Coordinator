@@ -181,9 +181,9 @@ The installers exist (`install-fleet-skills.py`, `fleet_lanes.install_rules`, `i
 
 Done:  the Mac and the server report the same skill set, hooks and MCP registrations as main, and a skill change on main reaches both hosts without a hand run.
 
-### G3  home.jays.services
+### G3  operator start page
 
-This item is scoped to the operator start page, not to AFC's web surfaces in general:  `site/` is a separate supported surface that keeps publishing from `fleet-activity-site.yml`, and nothing here touches it.  The live start page deploys from Fleet-OPS, and AFC holds no deployment of the page itself:  the Vercel copies (`vercel.json`, `vercel-ignore.sh`, `api/`, `public/`), the `tests/deployment-boundary.test.cjs` guard and the RAG snapshot workflow are all absent from this tree, having gone with #693, and AGENTS.md already names `site/` and `scripts/safari-start/public/` as the repo's only web surfaces.  The one thing left to place is the `start-jays-services` redirect Worker under `scripts/safari-start/`, whose `wrangler.jsonc` still claims a hostname Vercel now serves.  Answer decision 5 for that code and its `visual-tests/` specs - retire it under G4, or move it to the repo that owns the page - and update AGENTS.md to match.
+This item is scoped to the operator start page, not to AFC's web surfaces in general:  `site/` is a separate supported surface that keeps publishing from `fleet-activity-site.yml`, and nothing here touches it.  The live start page deploys from Fleet-OPS, and AFC holds no deployment of the page itself:  the Vercel copies (`vercel.json`, `vercel-ignore.sh`, `api/`, `public/`), the `tests/deployment-boundary.test.cjs` guard and the RAG snapshot workflow are all absent from this tree, having gone with #693, and AGENTS.md already names `site/` and `scripts/safari-start/public/` as the repo's only web surfaces.  The one thing left to place is the `start-jays-services` redirect Worker under `scripts/safari-start/`, whose `wrangler.jsonc` still claims a hostname Vercel now serves.  Answer decision 6 for that code and its `visual-tests/` specs - retire it under G4, or move it to the repo that owns the page - and update AGENTS.md to match.  Decision 5 stays as the record that home.jays.services lives in Fleet-OPS (line 26).
 
 Done:  one repository holds the operator start page, and its merge is the only way that page changes.
 
@@ -273,7 +273,7 @@ Done:  a merge is the only way a DNS record or Access app changes, and the check
 2. **Deploy credentials in CI (G5, G12, G16).**  Which scoped Cloudflare tokens to mint (per Worker;  DNS edit per zone), kept in Infisical and read only by the deploy jobs.
 3. **Reconcilers that restart things (G1, G7).**  May they restart a changed unit on their own once check-only has run clean, or should they stay report-only?
 4. **Owner-owned files (G2).**  Keep `~/.claude/CLAUDE.md` and `~/AGENTS.md` report-only, as assumed here?
-5. **home.jays.services (G3).**  Fleet-OPS or AFC as the one source.
+5. **home.jays.services (G3).**  Answered:  Fleet-OPS is the one source;  the page deploys from there on push.
 6. **Retiring Workers (G4).**  OK to delete `start-jays-services`, the legacy `fleet-share-api` and `pr-conflict-watch`?
 7. **A credential that can write GitHub rulesets (G10).**  None exists today.
 8. **An Infisical admin identity for the structure audit (G15),** and whether to adopt the Terraform provider.
