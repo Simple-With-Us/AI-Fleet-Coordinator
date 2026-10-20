@@ -35,6 +35,14 @@ _MARKUP_GROUP = r"""([*_`)\]"]*)"""
 # in.  The live procedure is in the one home;  a record is not a copy of it.
 DATED_RECORDS = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
 
+# Generated mirrors.  These are built from Fleet-OPS handbook/ and this repository cannot
+# change them:  scripts/check-generated-mirror.py refuses any edit from a branch that is
+# not handbook-sync/mirror, so the pattern reaches one only when the upstream handbook page
+# changes and the sync job rewrites the mirror.  The checkout-wide sweep below skips them
+# for the same reason DATED_RECORDS is skipped -- not a copy this repository may edit --
+# and check-generated-mirror.py is the gate that holds them honest in the meantime.
+GENERATED_MIRRORS = ("AGENT-SYNC.md",)
+
 # The rendered copies of the one home, and the fleet's own guidance, all carry the same
 # pattern.  The one home is the source;  the rest are checked against it.
 RENDERED_COPIES = (
@@ -69,7 +77,6 @@ RENDERED_COPIES = (
 
 # The live guidance that quotes the pattern for a reader to copy.
 GUIDANCE = (
-    "AGENT-SYNC.md",
     "FLEET-UI-COPY.md",
     "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
     "docs/ZULIP-SWITCH-PROMPT.md",
@@ -242,10 +249,11 @@ class OneSourceOfTruthTests(unittest.TestCase):
     def test_no_live_file_holds_a_converter_without_the_markup_group(self) -> None:
         """A copy that drifts is a body that ships with no gap, so every converter in the
         checkout carries the markup group.  A dated record of a ruling keeps the form it
-        was written in and is listed as such."""
+        was written in and is listed as such, and a generated mirror is built elsewhere and
+        cannot be edited here."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if rel in DATED_RECORDS:
+            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS:
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
