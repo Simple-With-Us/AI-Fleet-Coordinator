@@ -3217,7 +3217,7 @@ class Daemon:
                 continue
             # A busy chat is queued too:  the nudge queue's preflight holds it until the chat is idle, so a chat
             # that was picked is never silently dropped.
-            fields = ("platform", "host", "session_id", "cwd")
+            fields = ("platform", "host", "session_id")
             if any(not isinstance(row.get(key), str) or not row[key].strip() for key in fields):
                 result["failed"] = result.get("failed", 0) + 1
                 self.log.write(
@@ -3225,6 +3225,7 @@ class Daemon:
                 )
                 continue
             binding = {key: row[key] for key in fields}
+            binding["cwd"] = row["cwd"] if isinstance(row.get("cwd"), str) else ""
             binding.update(channel=channel, topic=topic)
             try:
                 added = self.chat_queue(runner.seat).enqueue_target(

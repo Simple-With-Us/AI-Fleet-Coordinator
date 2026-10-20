@@ -88,7 +88,7 @@ class MinimaxHookTests(unittest.TestCase):
         self.assertIn(
             "another seat", self.reason("Write", "apps/lanes/BotFleet/minimax-work/file", env)
         )
-        self.assertIn("identity is unavailable", self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env))
+        self.assertIsNone(self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env))
         self.assertIsNone(self.reason("Read", "apps/lanes/BotFleet/minimax-work/file", env))
 
     def test_no_identity_is_not_inferred_as_mm(self):

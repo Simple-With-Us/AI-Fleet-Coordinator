@@ -222,6 +222,15 @@ class DaemonFanoutTests(DaemonHarness):
         self.assertEqual(result.get("failed"), 1)
         self.assertEqual(daemon.chat_queue("CLAUDE").snapshot()["items"], [])
 
+    def test_absent_cwd_does_not_discard_a_valid_chat_identity(self):
+        daemon = self.started()
+        row = dict(cloud(1, 0, ST_URL), seat="CLAUDE", cwd=None, updated_at=self.clock.time())
+        daemon._chat_catalog = FakeCatalog([row])
+        with mock.patch.object(daemon.chat_queue("CLAUDE"), "enqueue_target", return_value=True) as enqueue:
+            result = daemon.fanout(123, "agent-sync", "misc", F.Scope())
+        self.assertEqual(result["queued"], 1)
+        self.assertEqual(enqueue.call_args.args[0]["cwd"], "")
+
     def test_catalog_failure_does_not_log_external_exception_text(self):
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog([])

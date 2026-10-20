@@ -117,7 +117,11 @@ def _prefix_target(text: str) -> str:
     for count in range(min(4, len(parts)), 0, -1):
         candidate = " ".join(parts[-count:]).strip(" ,:;")
         normalized = re.sub(r"[\s._-]+", "", candidate).casefold()
-        if normalized in aliases or _ISSUE_RE.fullmatch(candidate) or _PR_REF_RE.fullmatch(candidate):
+        if (
+            normalized in aliases
+            or _ISSUE_RE.fullmatch(candidate)
+            or _PR_REF_RE.fullmatch(candidate)
+        ):
             return candidate
         if _PR_URL_RE.search(candidate) and " " not in candidate:
             return candidate

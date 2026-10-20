@@ -4632,10 +4632,13 @@ def probe_minimax_files(
                 if deny
                 else ("unexpected output" if res.stdout.strip() or res.stderr.strip() else None)
             )
-        if not problem and any(
-            source in res.stdout for source in (b"SECRET_FILE_PATTERNS", b"FLEET_APPS_JSON")
-        ):
-            problem = "required file policy is unavailable or invalid"
+        missing_sources = [
+            source.decode("ascii")
+            for source in (b"SECRET_FILE_PATTERNS", b"FLEET_APPS_JSON")
+            if source in res.stdout
+        ]
+        if not problem and missing_sources:
+            problem = "required file policy is unavailable or invalid: " + ", ".join(missing_sources)
         out.append(
             Check(
                 "minimax",

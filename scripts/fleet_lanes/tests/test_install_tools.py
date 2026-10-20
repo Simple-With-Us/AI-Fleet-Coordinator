@@ -5852,6 +5852,7 @@ class MinimaxProbeBytesTests(unittest.TestCase):
         env_check = next(check for check in checks if check.name == "Read/.env/deny/hook-env")
         self.assertEqual(env_check.status, "FAIL")
         self.assertIn("required file policy", env_check.detail)
+        self.assertIn("SECRET_FILE_PATTERNS", env_check.detail)
 
 
 class MinimaxBundleTests(World):
