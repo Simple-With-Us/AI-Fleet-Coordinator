@@ -639,6 +639,35 @@ class DispatchVerdict(unittest.TestCase):
         result = proof._dispatch_verdict(stream, 0, "refused")
         self.assertTrue(result["ok"])
 
+    def test_the_canary_is_recognised_with_an_ampersand_redirect(self):
+        # `&>` is a redirect operator in bash, not a command separator, and the guard
+        # denies it exactly as it denies `ps > /dev/null`.  Reading it as a separator
+        # made the tool report a live refusal as "the canary never ran" - the one answer
+        # that tells the operator the guard was never exercised.
+        for command in ("ps &>/dev/null", "ps &> /dev/null", "ps -ef &>/dev/null"):
+            with self.subTest(command=command):
+                stream = tool_call_event(refused_call(command, "refused"))
+                result = proof._dispatch_verdict(stream, 0, "refused")
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["status"], proof.STATUS_OK)
+
+    def test_the_canary_is_recognised_with_a_duplicated_stderr_redirect(self):
+        # `2>&1` before the redirect is a descriptor duplication, not a separator.
+        stream = tool_call_event(refused_call("ps 2>&1 > /dev/null", "refused"))
+        result = proof._dispatch_verdict(stream, 0, "refused")
+        self.assertTrue(result["ok"])
+
+    def test_an_ampersand_separator_is_still_not_the_canary(self):
+        # Widening the redirect spellings must not widen the shape: `&&` and a trailing
+        # `&` still separate commands, so a command that merely mentions `ps` is not
+        # the canary.
+        for command in ("ps && echo x > /dev/null", "ps & echo x > /dev/null"):
+            with self.subTest(command=command):
+                stream = tool_call_event(ran_call(command))
+                result = proof._dispatch_verdict(stream, 0, "refused")
+                self.assertIsNone(result["ok"])
+                self.assertEqual(result["status"], proof.STATUS_ERROR)
+
     def test_the_tool_names_the_runtime_used_are_reported(self):
         stream = "\n".join(
             [

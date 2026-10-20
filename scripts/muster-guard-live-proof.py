@@ -55,7 +55,12 @@ CANARY = "ps > /dev/null"
 # A trailing `; ...` or `&& ...` is the model echoing the exit code, which is still the
 # canary.  Nothing may come between `ps` and the redirect but arguments, so a command
 # that only mentions `ps` is not the canary.
-CANARY_PATTERN = re.compile(r"^ps\b[^;|&]*>\s*/dev/null\b")
+# `&>` is a redirect operator in bash, not a separator, so `ps &>/dev/null` and
+# `ps 2>&1 > /dev/null` are the canary too - and the guard denies every one of them, so
+# missing those spellings reported a refusal as "the canary never ran".  `&` is therefore
+# allowed only where it is part of `&>` or a `2>&1` duplication, never as `&&` or a
+# trailing background separator.
+CANARY_PATTERN = re.compile(r"^ps\b(?:[^;&|]|&(?=[>\d]))*(?:&>|>)\s*/dev/null\b")
 
 # The tool names the MiniMax runtime has been observed to deliver.  The Mac 3.1.1 runtime
 # delivers lowercase `bash`; the 0.6.12 server runtime adapts a native shell call to `Bash`
