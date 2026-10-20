@@ -18,6 +18,7 @@ be a live seat of fleet-apps.json.  Read through the INFISICAL_AUTOMATION identi
 
 Standard library only.  Python 3.11+.  Run from scripts/agent-sync-mcp/.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,35 +45,55 @@ def _install():
 
 def live_seats() -> set[str]:
     data = json.loads(FLEET_APPS.read_text(encoding="utf-8"))
-    return {str(row.get("tag", "")).upper() for row in data.get("seats", []) if not row.get("retired")}
+    return {
+        str(row.get("tag", "")).upper() for row in data.get("seats", []) if not row.get("retired")
+    }
 
 
 def check_value(value: str, seats: set[str]) -> str:
     """The value, or SystemExit saying why it is not a seat the Worker may trust."""
     value = value.strip().upper()
     if not SEAT_RE.match(value):
-        raise SystemExit(f"sync_notes_consumer: {KEY} is not a seat tag (letters, digits and hyphens)")
+        raise SystemExit(
+            f"sync_notes_consumer: {KEY} is not a seat tag (letters, digits and hyphens)"
+        )
     if value not in seats and value != "OPERATOR":
-        raise SystemExit(f"sync_notes_consumer: {KEY} names {value}, which is not a live seat in fleet-apps.json")
+        raise SystemExit(
+            f"sync_notes_consumer: {KEY} names {value}, which is not a live seat in fleet-apps.json"
+        )
     return value
 
 
 def read_knob(install=None) -> str:
     """NOTES_RELAY_CONSUMER from Infisical prod `/`.  Raises SystemExit when it is missing or empty."""
     install = install or _install()
-    login = install.http_json("POST", f"{install.INFISICAL_API}/api/v1/auth/universal-auth/login", body={
-        "clientId": install.handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
-        "clientSecret": install.handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
-    })
+    login = install.http_json(
+        "POST",
+        f"{install.INFISICAL_API}/api/v1/auth/universal-auth/login",
+        body={
+            "clientId": install.handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
+            "clientSecret": install.handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
+        },
+    )
     token = login.get("accessToken") or raise_exit("Infisical login returned no access token")
-    query = urllib.parse.urlencode({"workspaceId": install.INFISICAL_PROJECT, "environment": install.INFISICAL_ENV,
-                                    "secretPath": INFISICAL_PATH})
-    data = install.http_json("GET", f"{install.INFISICAL_API}/api/v3/secrets/raw?{query}",
-                             headers={"Authorization": "Bearer " + token})
+    query = urllib.parse.urlencode(
+        {
+            "workspaceId": install.INFISICAL_PROJECT,
+            "environment": install.INFISICAL_ENV,
+            "secretPath": INFISICAL_PATH,
+        }
+    )
+    data = install.http_json(
+        "GET",
+        f"{install.INFISICAL_API}/api/v3/secrets/raw?{query}",
+        headers={"Authorization": "Bearer " + token},
+    )
     found = {s.get("secretKey"): s.get("secretValue") or "" for s in data.get("secrets", [])}
     if not found.get(KEY, "").strip():
-        raise SystemExit(f"sync_notes_consumer: {KEY} is not set in Infisical {install.INFISICAL_ENV}{INFISICAL_PATH};  "
-                         "the owner creates it (DEPLOY.md, \"Notes, recall and the guide\")")
+        raise SystemExit(
+            f"sync_notes_consumer: {KEY} is not set in Infisical {install.INFISICAL_ENV}{INFISICAL_PATH};  "
+            'the owner creates it (DEPLOY.md, "Notes, recall and the guide")'
+        )
     return found[KEY]
 
 
@@ -82,7 +103,9 @@ def raise_exit(message: str):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--apply", action="store_true", help="write the Worker binding (default: check only)")
+    parser.add_argument(
+        "--apply", action="store_true", help="write the Worker binding (default: check only)"
+    )
     args = parser.parse_args(argv)
     install = _install()
     value = check_value(read_knob(install), live_seats())

@@ -316,6 +316,7 @@ class SeatRunner:
         # the other instance holds too.  users/me says whose key this really is.
         if self.seat == "OPERATOR":
             from .service_identity import operator_bot
+
             if not operator_bot(me):
                 raise RoleRefused("OPERATOR credential does not match the pinned service bot")
         tag = seat_tag_for(me)

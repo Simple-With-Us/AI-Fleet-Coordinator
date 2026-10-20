@@ -865,7 +865,9 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                 if key in section:
                     problems.append('seat.%s.%s applies only to creds = "env"' % (seat_name, key))
         wake = section.get("wake", "inbox")
-        if seat_name == "OPERATOR" and (creds != "infisical" or wake != "inbox" or bot != "Operator"):
+        if seat_name == "OPERATOR" and (
+            creds != "infisical" or wake != "inbox" or bot != "Operator"
+        ):
             problems.append("OPERATOR service requires bot=Operator, creds=infisical, wake=inbox")
         if wake not in KNOWN_WAKES:
             wake_problems.append(
@@ -1087,8 +1089,11 @@ def seat_credentials(
     or the CLI's triple."""
     if seat_cfg.seat == "OPERATOR":
         from .service_identity import operator_credentials
+
         if seat_cfg.creds != "infisical":
-            raise Z.CredentialError("OPERATOR service requires creds=infisical; no file/env fallback")
+            raise Z.CredentialError(
+                "OPERATOR service requires creds=infisical; no file/env fallback"
+            )
         return operator_credentials(env)
     if seat_cfg.creds == "env":
         assert seat_cfg.email_env and seat_cfg.key_env
