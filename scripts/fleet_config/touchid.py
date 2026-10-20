@@ -9,6 +9,8 @@ The gate fails closed, always:
 
   * a helper that is missing, not executable, not signed, or that exits non-zero refuses
     the write;  there is no path through this module that silently allows one
+  * the helper is resolved from fixed paths the package owns, never from the
+    environment,  so a stand-in binary cannot confirm a write by exiting 0
   * Touch ID that cannot be enrolled or is not present is a clear refusal with an
     actionable reason, never a bypass
   * the test override is refused in production:  the environment variable alone never
@@ -55,9 +57,6 @@ HELPER_EXIT_FAILED = 3
 # the gate in production.
 TEST_BYPASS_ENV = "FLEET_CONFIG_TOUCHID_TEST_BYPASS"
 
-# The environment variable that names the helper binary, for an installed copy or a test.
-HELPER_ENV = "FLEET_CONFIG_TOUCHID_HELPER"
-
 # The default seconds the helper may take to ask for Touch ID before the gate gives up.
 DEFAULT_TIMEOUT = 120
 
@@ -88,13 +87,12 @@ def _package_dir() -> str:
 def helper_candidates() -> tuple[str, ...]:
     """The places the helper may live, most specific first.
 
-    The environment override comes first, so a test or an installed copy can name its own
-    binary;  the repo-local build comes next, and the system path last.
+    The candidates are fixed paths the package owns,  the repo-local build first and the
+    system path last.  Nothing here comes from the environment,  because a stand-in
+    binary named by an environment variable could confirm the write by exiting 0 and so
+    bypass the gate;  a test passes its own path to ``confirm`` as an argument instead.
     """
-    override = (os.environ.get(HELPER_ENV) or "").strip()
-    candidates = []
-    if override:
-        candidates.append(override)
+    candidates: list[str] = []
     base = os.path.join(_package_dir(), "touchid_helper")
     candidates.append(os.path.join(base, "build", "Build", "Products", "Release", "TouchIDGate"))
     candidates.append(os.path.join(base, "build", "Build", "Products", "Debug", "TouchIDGate"))

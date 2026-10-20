@@ -18,6 +18,7 @@ import os
 import subprocess
 import unittest
 from datetime import UTC, datetime
+from unittest import mock
 
 from fleet_config import aggregator, touchid
 from fleet_config import apply as apply_module
@@ -379,6 +380,11 @@ class TouchIdGateTests(FleetTestCase):
     def test_the_hooks_kind_is_persistence_class(self):
         self.assertTrue(touchid.is_persistence_class(ConfigKind.HOOKS))
         self.assertFalse(touchid.is_persistence_class(ConfigKind.INSTRUCTIONS))
+
+    def test_the_helper_never_comes_from_the_environment(self):
+        path = self.fake_helper("exit 0", sign=False)
+        with mock.patch.dict(os.environ, {"FLEET_CONFIG_TOUCHID_HELPER": path}, clear=True):
+            self.assertNotIn(path, touchid.helper_candidates())
 
 
 if __name__ == "__main__":
