@@ -8,12 +8,12 @@ This tool separates the three things that are usually confused:
   2. policy    - does the installed hook script deny the canary when it is run directly?
   3. dispatch  - does the MiniMax runtime actually call the hook in a live session?
 
-Only the third is the proof.  The first two can both be green while the seat runs with no
+Only the third is the proof. The first two can both be green while the seat runs with no
 protection at all, which is exactly the failure this was written for: the MiniMax Code
 runtime delivers its shell tool as `bash`, and a plugin whose matcher read `Bash` never
 fires, silently.
 
-The canary is `ps > /dev/null`.  The sensitive guard denies it, so when the guard works the
+The canary is `ps > /dev/null`. The sensitive guard denies it, so when the guard works the
 command never runs; when the guard is inert the command runs and prints nothing, so the
 canary is harmless either way and leaks no process list into a report.
 
