@@ -1,4 +1,4 @@
-"""AFC-387 tests: the Copilot, Vibe, OpenCode and fx guards, and the --format vibe deny shape.
+"""AFC-387 tests: the Vibe, OpenCode and fx guards, and the --format vibe deny shape.
 
     cd scripts && python3 -m unittest fleet_lanes.tests.test_muster_guards -v
 
@@ -146,129 +146,6 @@ class VibeFormatTests(unittest.TestCase):
             {"hookSpecificOutput": {"permissionDecisionReason": "x /tmp/hh-verify"}}
         ).encode()
         self.assertIsNotNone(T.check_deny_output("vibe", claude))
-
-
-class CopilotTests(World):
-    def setUp(self) -> None:
-        super().setUp()
-        (self.home / ".copilot" / "hooks").mkdir(parents=True)
-        (self.home / ".copilot" / "settings.json").write_text(
-            json.dumps({"env": {"EXAMPLE": DUMMY_TOKEN}}) + "\n", encoding="utf-8"
-        )
-        (self.home / ".copilot" / "hooks" / "agent-hook-otlp.json").write_text(
-            json.dumps({"version": 1, "hooks": {"postToolUse": []}}) + "\n", encoding="utf-8"
-        )
-        self.install_tools()
-        self.file = self.home / ".copilot" / "hooks" / "fleet-lane-guard.json"
-
-    def test_plan_is_read_only_and_shows_the_file(self) -> None:
-        before = snapshot(self.tmp)
-        rc, out, err = run_main("plan", *self.base(), "copilot")
-        self.assertEqual((rc, err), (0, ""), out)
-        self.assertEqual(snapshot(self.tmp), before)
-        for needle in (
-            "[new]",
-            '"version": 1',
-            '"matcher": "Bash"',
-            "timeoutSec",
-            "UNVERIFIED",
-            "OWNER-GATED",
-        ):
-            self.assertIn(needle, out)
-        self.assertNotIn(DUMMY_TOKEN, out)
-
-    def test_apply_writes_the_fleet_owned_file_and_is_idempotent(self) -> None:
-        settings_before = (self.home / ".copilot" / "settings.json").read_bytes()
-        otlp_before = (self.home / ".copilot" / "hooks" / "agent-hook-otlp.json").read_bytes()
-        r = self.apply("copilot")
-        self.assertEqual(r.status, "added", r)
-        doc = json.loads(self.file.read_text(encoding="utf-8"))
-        self.assertEqual(doc["version"], 1)
-        (group,) = doc["hooks"]["PreToolUse"]
-        self.assertEqual(group["matcher"], "Bash")
-        (hook,) = group["hooks"]
-        self.assertEqual(hook["type"], "command")
-        self.assertEqual(hook["command"], T.fleet_hook_command(self.paths, "claude"))
-        self.assertEqual(hook["timeoutSec"], 5)
-        self.assertEqual((self.home / ".copilot" / "settings.json").read_bytes(), settings_before)
-        self.assertEqual(
-            (self.home / ".copilot" / "hooks" / "agent-hook-otlp.json").read_bytes(), otlp_before
-        )
-        after = snapshot(self.home)
-        self.assertEqual(self.apply("copilot").status, "unchanged")
-        self.assertEqual(snapshot(self.home), after)
-
-    def test_apply_makes_an_owner_only_backup_of_a_stale_file_of_ours(self) -> None:
-        self.assertEqual(self.apply("copilot").status, "added")
-        doc = json.loads(self.file.read_text(encoding="utf-8"))
-        doc["hooks"]["PreToolUse"][0]["hooks"][0]["timeoutSec"] = 3
-        self.file.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-        r = self.apply("copilot")
-        self.assertEqual(r.status, "updated", r)
-        self.assertTrue(r.backup and os.path.exists(r.backup), r)
-        self.assertEqual(stat.S_IMODE(os.stat(r.backup).st_mode), 0o600)
-        self.assertEqual(
-            json.loads(self.file.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["hooks"][0][
-                "timeoutSec"
-            ],
-            5,
-        )
-
-    def test_a_foreign_file_at_our_path_is_refused_and_left_alone(self) -> None:
-        self.file.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "hooks": {
-                        "PreToolUse": [
-                            {
-                                "matcher": "Bash",
-                                "hooks": [{"type": "command", "command": "/bin/true"}],
-                            }
-                        ]
-                    },
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        before = snapshot(self.home)
-        r = self.apply("copilot")
-        self.assertEqual(r.status, "refused", r)
-        self.assertEqual(snapshot(self.home), before)
-
-    def test_verify_proves_the_deny_and_keeps_the_live_proof_a_skip(self) -> None:
-        self.apply("copilot")
-        checks = T.verify_copilot(self.paths, timeout=TIMEOUT, minimal_path=False)
-        self.assertPassOrSkip(checks)
-        by = {c.name: c for c in checks}
-        for name in ("hooks entry", "deny/login-PATH", "allow/login-PATH", "secret/login-PATH"):
-            self.assertEqual(by[name].status, "PASS", by[name].line())
-        self.assertEqual(by["fires"].status, "SKIP")
-        self.assertIn("UNVERIFIED", by["fires"].detail)
-
-    def test_verify_fails_when_the_fleet_hook_allows_everything(self) -> None:
-        self.apply("copilot")
-        shim = Path(self.paths.fleet_shim)
-        shim.write_text("#!/bin/sh\nexit 0\n")
-        os.chmod(shim, 0o755)
-        checks = T.verify_copilot(self.paths, timeout=TIMEOUT, minimal_path=False)
-        self.assertTrue(any(c.name == "deny/login-PATH" and c.status == "FAIL" for c in checks))
-
-    def test_an_unwired_copilot_is_a_skip_unless_named(self) -> None:
-        checks = T.verify_copilot(self.paths, timeout=TIMEOUT, minimal_path=False)
-        self.assertEqual([(c.name, c.status) for c in checks], [("hooks file", "SKIP")])
-        rc, out, _ = run_main(
-            "verify",
-            "--home",
-            str(self.home),
-            "--timeout",
-            str(TIMEOUT),
-            "--no-minimal-path",
-            "copilot",
-        )
-        self.assertEqual(rc, 1, out)
-        self.assertRegex(out, r"FAIL\s+copilot\s+hooks file.*named explicitly")
 
 
 class VibeTomlSafetyTests(World):
@@ -646,7 +523,6 @@ class CliRoundTripTests(World):
 
     def setUp(self) -> None:
         super().setUp()
-        (self.home / ".copilot" / "hooks").mkdir(parents=True)
         (self.home / ".vibe").mkdir(parents=True)
         (self.home / ".vibe" / "config.toml").write_text('active_model = "x"\n', encoding="utf-8")
         (self.home / ".config" / "opencode").mkdir(parents=True)
@@ -656,7 +532,7 @@ class CliRoundTripTests(World):
         self.install_tools()
 
     def test_apply_then_verify_through_the_cli_for_each_new_platform(self) -> None:
-        for key in ("copilot", "vibe", "opencode"):
+        for key in ("vibe", "opencode"):
             rc, out, err = run_main("apply", *self.base(), "--no-verify", key)
             self.assertEqual((rc, err), (0, ""), out)
             self.assertIn(key, out)
@@ -677,7 +553,6 @@ class CliRoundTripTests(World):
         fx_settings = self.home / ".fx"
         rc, out, err = run_main("apply", *self.base(), "--no-verify", "all")
         self.assertEqual((rc, err), (0, ""), out)
-        self.assertTrue((self.home / ".copilot" / "hooks" / "fleet-lane-guard.json").is_file())
         self.assertTrue((self.home / ".vibe" / "hooks.toml").is_file())
         self.assertTrue((self.home / ".config" / "opencode" / "opencode.json").is_file())
         self.assertFalse(fx_settings.exists())
@@ -687,7 +562,7 @@ class CliRoundTripTests(World):
         (self.home / ".fx" / "settings.json").write_text(
             json.dumps({"provider": "gateway", "permission_mode": "yolo"}) + "\n", encoding="utf-8"
         )
-        run_main("apply", *self.base(), "--no-verify", "copilot", "vibe", "opencode")
+        run_main("apply", *self.base(), "--no-verify", "vibe", "opencode")
         rc, out, _ = run_main(
             "verify",
             "--home",
@@ -699,7 +574,7 @@ class CliRoundTripTests(World):
         )
         self.assertEqual(rc, 1, out)
         self.assertRegex(out, r"FAIL\s+fx\s+platform")
-        for key in ("copilot", "vibe", "opencode"):
+        for key in ("vibe", "opencode"):
             self.assertNotRegex(out, r"FAIL\s+%s\s" % key, out)
 
 

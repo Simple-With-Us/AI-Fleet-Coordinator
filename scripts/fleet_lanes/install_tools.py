@@ -18,7 +18,7 @@ non-zero, times out, or prints nothing is a FAIL.
     python3 -m fleet_lanes.install_tools verify [--home H] [tools | PLATFORM ... | all]
     python3 -m fleet_lanes.install_tools --self-test
 
-PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch, kimi, copilot, vibe, opencode
+PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch, kimi, vibe, opencode
 or fx.  The first five get a hook entry in their config file.  minimax is a plugin DIRECTORY that this tool owns:
 MiniMax Code reads no settings
 file for hooks, it loads them from a real directory under ~/.minimax/plugins/<name>/ (a symlink is skipped), so `apply
@@ -33,24 +33,20 @@ never edits Muse's config, and the only muse it runs is `muse plugins validate` 
 found on PATH, with HOME, the XDG dirs, TMPDIR and Muse's credential path inside a throwaway dir, none of the
 caller's XDG_ or MUSE_ variables except the plugin switch, and MUSE_NO_AUTO_UPDATE=1 and MUSE_LOGIN=0 (see
 muse_validate_env).  That is confined, not proven read-only: the launcher still runs from its own install dir.
-`all` is `tools` plus the five config platforms plus minimax (an own directory, no owner step afterwards), plus
-copilot, vibe, opencode and fx.  `apply` needs a target; `plan` defaults to all plus muse, clutch
-and kimi, and `verify` the same.
+`all` is `tools` plus the five config platforms plus minimax (an own directory, no owner step afterwards), plus vibe,
+opencode and fx.  `apply` needs a target; `plan` defaults to all plus muse, clutch and kimi, and `verify` the same.
 
-copilot, vibe, opencode and fx (AFC-387).  copilot is a fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json
-(version 1, hooks.PreToolUse, matcher Bash, the fleet hook with --format claude and timeoutSec 5); this tool never
-edits ~/.copilot/settings.json, and whether Copilot fires a preToolUse hook at all is UNVERIFIED on this Mac, so the
-first install is owner-gated and `verify copilot` ends with a SKIP for the live proof.  vibe is a marked [[hooks]]
-block in ~/.vibe/hooks.toml (name fleet-lane-guard, type before_tool, match bash, the fleet hook with --format vibe,
-timeout 5, strict true) plus the gate `enable_experimental_hooks = true` in ~/.vibe/config.toml, without which Vibe
-loads no hooks at all; `match` is bash because that is Vibe's shell tool name, and a wrong exact name would
-silently never fire.  Vibe is an engine-only CLI with no fleet seat, so no seat is claimed for it.  opencode is a
-local TypeScript plugin in the stable dir (opencode-plugin/fleet-lane-guard.ts) listed by absolute path in the
-plugin array of ~/.config/opencode/opencode.json; it inspects tool.execute.before and denies through
-permission.ask, and whether permission.ask is reached for a denied call is UNVERIFIED.  fx has NO hook surface at
-all: `plan fx` prints a prepared compensating control (a static permission.bash deny list over the temp-destination
-shapes, with permission_mode moved off yolo) for the owner to merge by hand, this tool never writes ~/.fx, and
-`verify fx` is a FAIL (UNSUPPORTED) with the blocker recorded until Jay approves that control or an exception.
+vibe, opencode and fx (AFC-387).  vibe is a marked [[hooks]] block in ~/.vibe/hooks.toml (name fleet-lane-guard, type
+before_tool, match bash, the fleet hook with --format vibe, timeout 5, strict true) plus the gate
+`enable_experimental_hooks = true` in ~/.vibe/config.toml, without which Vibe loads no hooks at all; `match` is bash
+because that is Vibe's shell tool name, and a wrong exact name would silently never fire.  Vibe is an engine-only CLI
+with no fleet seat, so no seat is claimed for it.  opencode is a local TypeScript plugin in the stable dir
+(opencode-plugin/fleet-lane-guard.ts) listed by absolute path in the plugin array of
+~/.config/opencode/opencode.json; it inspects tool.execute.before and denies through permission.ask, and whether
+permission.ask is reached for a denied call is UNVERIFIED.  fx has NO hook surface at all: `plan fx` prints a prepared
+compensating control (a static permission.bash deny list over the temp-destination shapes, with permission_mode moved
+off yolo) for the owner to merge by hand, this tool never writes ~/.fx, and `verify fx` is a FAIL (UNSUPPORTED) with
+the blocker recorded until Jay approves that control or an exception.
 
 The fleet hook.  `fleet-guard-hook` (fleet_lanes/fleet_guard_hook.py) is the lane guard AND the secret guard in one
 command:  the lane guard, then the secret guard (scripts/hooks/secret-guard-pretooluse.py, copied into the stable dir
@@ -287,7 +283,6 @@ MINIMAX_HOOK_TIMEOUT_S = (
     10  # seconds, 1 to 10 (MiniMax's range).  A timeout fails OPEN, so the top of the range
 )
 PLATFORM_ALIASES = {"mm": "minimax"}  # the seat tag works as a target
-COPILOT_HOOKS_REL = ".copilot/hooks/fleet-lane-guard.json"  # a fleet-owned file; ~/.copilot/settings.json is not ours
 VIBE_CONFIG_REL = ".vibe/config.toml"  # holds only the enable_experimental_hooks gate for this tool
 VIBE_HOOKS_REL = ".vibe/hooks.toml"
 VIBE_SHELL_TOOL = "bash"  # Vibe's shell tool name; a wrong exact name silently never fires
@@ -455,10 +450,6 @@ class Paths:
     @property
     def minimax_hooks(self) -> str:
         return os.path.join(self.minimax_bundle, *MINIMAX_HOOKS_FILE.split("/"))
-
-    @property
-    def copilot_hooks(self) -> str:
-        return os.path.join(self.home, *COPILOT_HOOKS_REL.split("/"))
 
     @property
     def vibe_config(self) -> str:
@@ -2417,43 +2408,6 @@ PLATFORMS: dict[str, Platform] = {
             ),
         ),
         Platform(
-            "copilot",
-            "Copilot CLI (fleet-owned hooks file)",
-            "claude",
-            "claude",
-            "claude",
-            "PreToolUse",
-            "Bash",
-            ".copilot",
-            COPILOT_HOOKS_REL,
-            supported=False,
-            kind="bundle",
-            in_all=True,
-            notes=(
-                "A NEW fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json (a documented user-level load path for "
-                "*.json under ~/.copilot/hooks).  This tool never edits ~/.copilot/settings.json, which the fleet does "
-                "not own, and never touches the existing agent-hook-otlp.json in the same directory.",
-                "The file is version 1 with one hooks.PreToolUse group, matcher Bash (the PascalCase event gets Claude "
-                "matcher semantics and reports the Claude tool name, which is exactly the payload fleet-guard-hook "
-                "--format claude parses), and one type command hook running the fleet hook by absolute path with "
-                "timeoutSec 5.  A command preToolUse hook is fail-closed on exit 2, a crash or any non-zero exit, and "
-                "fails open only on a timeout.",
-                "OWNER-GATED: there is no live preToolUse record on this Mac, so the first install needs Jay to start a "
-                "new Copilot session and ask for a process listing, which must be refused.  `verify copilot` proves the "
-                "command in the written file denies, and ends with a SKIP for that live proof once Copilot is installed "
-                "again;  it never claims it.  "
-                "Copilot CLI itself was retired on 2026-10-20 because it was not being used,  so the target has no "
-                "config to write until it is installed again, and nothing recreates the directory.  Named explicitly, "
-                "the platform is a FAIL (an uninstalled platform reached through `all` is a SKIP):  asking to verify "
-                "a platform that is not there is a mistake worth reporting,  not a healthy state.",
-            ),
-            unverified=(
-                "That Copilot CLI fires a PreToolUse hook from ~/.copilot/hooks/fleet-lane-guard.json at all (only a "
-                "postToolUse firing, from agent-hook-otlp.json, is recorded on this Mac).",
-                "That a running Copilot session picks up the new file: start a new session.",
-            ),
-        ),
-        Platform(
             "vibe",
             "Mistral Vibe (hooks.toml plus the experimental-hooks gate)",
             "vibe",
@@ -2573,9 +2527,6 @@ NEXT_STEPS: dict[str, str] = {
     "kimi": "start a new Kimi Code session, ask it to run `ps`, and expect a refusal",
     "minimax": "start a new MiniMax Code session, ask it to run `ps`, and expect a refusal (a local plugin is enabled by "
     "default: nothing to install or approve)",
-    "copilot": "OWNER STEP (first install): start a new Copilot CLI session, ask it to run a process listing, and "
-    "expect a refusal.  No live preToolUse firing is recorded on this Mac, so until that proof exists the guard is "
-    "written but UNVERIFIED",
     "vibe": "start a new Vibe session, ask it to clone a fleet repo into /tmp, and expect a refusal",
     "opencode": "OWNER STEP: start a new OpenCode session, ask it to run a process listing, and expect a refusal.  "
     "Whether permission.ask denies live is UNVERIFIED until that proof exists",
@@ -3221,16 +3172,6 @@ def plan_platform(plat: Platform, paths: Paths, *, follow_symlinks: bool = False
             "`apply tools` writes it.  No config file is edited",
         )
     if plat.kind == "bundle":
-        if plat.key == "copilot":
-            cp = plan_copilot(paths, follow_symlinks=follow_symlinks)
-            act = {
-                "new": "add",
-                "stale": "update",
-                "current": "unchanged",
-                "skip": "skip",
-                "refuse": "refuse",
-            }[cp.state]
-            return PlatformPlan(plat, cp.path, act, cp.command, cp.reason, notes=list(cp.notes))
         mp = plan_minimax(paths, follow_symlinks=follow_symlinks)
         act = {
             "new": "add",
@@ -3604,15 +3545,6 @@ def apply_platform(
             check_kimi=check_kimi,
         )
     if plat.kind == "bundle":
-        if plat.key == "copilot":
-            return apply_copilot(
-                paths,
-                now=now,
-                timeout=timeout,
-                minimal_path=minimal_path,
-                shim_proven=shim_proven,
-                follow_symlinks=follow_symlinks,
-            )
         return apply_minimax(
             paths,
             timeout=timeout,
@@ -4010,11 +3942,6 @@ def verify_platform(
     if plat.kind == "block":
         return verify_block(plat, paths, timeout=timeout, minimal_path=minimal_path)
     if plat.kind == "bundle":
-        if plat.key == "copilot":
-            # Copilot CLI is retired on this Mac,  so the platform dir may be absent.  The
-            # per-platform verifier SKIPs that case,  and the dispatch must reach it
-            # rather than answer FAIL for a platform that is simply not installed.
-            return verify_copilot(paths, timeout=timeout, minimal_path=minimal_path)
         return verify_minimax(paths, timeout=timeout, minimal_path=minimal_path)
     if not plat.supported:
         return [
@@ -5906,298 +5833,6 @@ def verify_minimax(
     return out
 
 
-# --------------------------------------------------------------------------- Copilot CLI: a fleet-owned hooks file
-
-
-def render_copilot_hooks(paths: Paths) -> str:
-    """~/.copilot/hooks/fleet-lane-guard.json.  Version 1, one PreToolUse group with matcher Bash and one command
-    hook (timeoutSec 5), running the fleet hook in the Claude contract."""
-    doc = {
-        "version": 1,
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "matcher": "Bash",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": fleet_hook_command(paths, "claude"),
-                            "timeoutSec": HOOK_TIMEOUT_S,
-                        }
-                    ],
-                }
-            ]
-        },
-    }
-    return json.dumps(doc, indent=2) + "\n"
-
-
-def copilot_expected(paths: Paths) -> dict:
-    return json.loads(render_copilot_hooks(paths))
-
-
-def _copilot_foreign(doc: object, paths: Paths) -> str | None:
-    """Why a file at our own hooks path is not one this tool wrote, or None.  A file that holds any hook that is not
-    ours, any other event, or any other top-level key is somebody else's and is left alone."""
-    if not isinstance(doc, dict):
-        return "it is JSON but not an object"
-    if doc == copilot_expected(paths) or doc == {}:
-        return None
-    if set(doc) - {"version", "hooks"}:
-        return (
-            "it holds top-level keys this tool never writes ("
-            + ", ".join(sorted(set(doc) - {"version", "hooks"}))
-            + ")"
-        )
-    hooks = doc.get("hooks")
-    if not isinstance(hooks, dict):
-        return "its hooks value is not an object"
-    if set(hooks) - {"PreToolUse"}:
-        return (
-            "it holds hook events this tool never writes ("
-            + ", ".join(sorted(set(hooks) - {"PreToolUse"}))
-            + ")"
-        )
-    total = 0
-    for group in hooks.get("PreToolUse") or []:
-        inner = group.get("hooks") if isinstance(group, dict) else None
-        if not isinstance(inner, list):
-            return "a PreToolUse group holds no hook list"
-        for hook in inner:
-            total += 1
-            if not isinstance(hook, dict) or not is_ours(hook.get("command")):
-                return "it holds a hook this tool did not write"
-    if total == 0:
-        return "it holds no fleet hook and is not a file this tool wrote"
-    return None
-
-
-@dataclass
-class CopilotPlan:
-    path: str
-    state: str  # new, stale, current, skip, refuse
-    reason: str
-    command: str
-    text: str
-    notes: list[str] = field(default_factory=list)
-    raw: bytes | None = None
-    mode: int | None = None
-    exists: bool = False
-
-
-def plan_copilot(paths: Paths, *, follow_symlinks: bool = False) -> CopilotPlan:
-    """Read-only: what `apply copilot` writes into ~/.copilot/hooks/fleet-lane-guard.json."""
-    path = paths.copilot_hooks
-    cmd = fleet_hook_command(paths, "claude")
-    text = render_copilot_hooks(paths)
-
-    def plan(state: str, reason: str = "", notes: Sequence[str] = ()) -> CopilotPlan:
-        return CopilotPlan(path, state, reason, cmd, text, list(notes))
-
-    if not os.path.isdir(os.path.join(paths.home, ".copilot")):
-        return plan("skip", "~/.copilot does not exist (platform not installed)")
-    refusal, outside, link = _link_check(path, paths.home, COPILOT_HOOKS_REL, follow_symlinks)
-    if refusal:
-        return plan("refuse", refusal)
-    notes = [link] if link else []
-    if os.path.islink(path):
-        return plan(
-            "refuse", f"{path} is a symlink; this tool writes a real file there, not through a link"
-        )
-    if os.path.lexists(path):
-        if not os.path.isfile(path):
-            return plan("refuse", f"{path} exists and is not a regular file")
-        try:
-            cfg = load_config(path)
-        except Refused as exc:
-            return plan("refuse", str(exc))
-        foreign = _copilot_foreign(cfg.doc, paths)
-        if foreign:
-            return plan("refuse", f"{path}: {foreign}; left alone")
-        cp = plan("current" if cfg.doc == copilot_expected(paths) else "stale", "", notes)
-        cp.raw, cp.mode, cp.exists = cfg.raw, cfg.mode, cfg.exists
-        if cp.state != "current" and outside:
-            return plan("refuse", outside, notes)
-        return cp
-    if outside:
-        return plan("refuse", outside, notes)
-    return plan("new", "", notes)
-
-
-def apply_copilot(
-    paths: Paths,
-    *,
-    now: Callable[[], float] = time.time,
-    timeout: float = PROBE_TIMEOUT_S,
-    minimal_path: bool = True,
-    shim_proven: bool = False,
-    follow_symlinks: bool = False,
-) -> Result:
-    """Write the fleet-owned Copilot hooks file, with a backup first, but only if the fleet hook denies right now."""
-    cp = plan_copilot(paths, follow_symlinks=follow_symlinks)
-    if cp.state == "skip":
-        return Result("copilot", "skipped", cp.reason)
-    if cp.state == "refuse":
-        return Result("copilot", "refused", cp.reason)
-    if not shim_proven:
-        if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
-            return Result(
-                "copilot",
-                "refused",
-                f"the fleet hook {paths.fleet_shim} is missing or not executable; run `apply tools` first",
-            )
-        bad = [
-            c
-            for c in probe_command(
-                cp.command,
-                target="copilot",
-                fmt="claude",
-                shape="claude",
-                home=paths.home,
-                timeout=timeout,
-                minimal_path=minimal_path,
-                secret=True,
-            )
-            if c.status == "FAIL"
-        ]
-        if bad:
-            return Result(
-                "copilot",
-                "refused",
-                "the installed fleet hook fails its probes, so it will not be wired in: "
-                + bad[0].detail,
-            )
-    if cp.state == "current":
-        return Result("copilot", "unchanged", f"{cp.path} already holds the hook")
-    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
-    backup: str | None = None
-    try:
-        os.makedirs(os.path.dirname(cp.path), exist_ok=True)
-        if cp.exists:
-            assert cp.raw is not None
-            backup = _make_backup(cp.path, cp.raw, cp.mode, stamp)
-        if not _reread_matches(cp.path, cp.raw or b"", cp.exists):
-            if backup:
-                os.unlink(backup)
-            return Result(
-                "copilot",
-                "failed",
-                f"{cp.path} changed while it was being written; nothing written, retry",
-            )
-        atomic_write(cp.path, cp.text.encode("utf-8"), cp.mode if cp.mode is not None else 0o644)
-    except OSError as exc:
-        return Result(
-            "copilot", "failed", f"{cp.path} not changed: {type(exc).__name__}: {exc}", backup
-        )
-    try:
-        after = json.loads(_read_bytes(cp.path).decode("utf-8"))
-        ok = after == copilot_expected(paths) and bool(locate(after, PLATFORMS["copilot"]))
-    except (OSError, ValueError):
-        ok = False
-    if not ok:
-        try:
-            if cp.exists and cp.raw is not None:
-                atomic_write(cp.path, cp.raw, cp.mode if cp.mode is not None else 0o644)
-            else:
-                os.unlink(cp.path)
-        except OSError:
-            pass
-        return Result(
-            "copilot",
-            "failed",
-            f"{cp.path} failed validation after the write; the original was restored",
-            backup,
-        )
-    detail = cp.path + (f" (backup {backup})" if backup else " (new file)")
-    return Result("copilot", "added" if cp.state == "new" else "updated", detail, backup)
-
-
-def verify_copilot(
-    paths: Paths, *, timeout: float = PROBE_TIMEOUT_S, minimal_path: bool = True
-) -> list[Check]:
-    """Take the command back out of the written hooks file and run it.  What this cannot see is whether Copilot
-    fires a preToolUse hook, which is UNVERIFIED on this Mac and stays a SKIP."""
-    t = "copilot"
-    if not os.path.isdir(os.path.join(paths.home, ".copilot")):
-        return [Check(t, "platform", "SKIP", "~/.copilot does not exist (platform not installed)")]
-    path = paths.copilot_hooks
-    if not os.path.lexists(path):
-        return [
-            Check(t, "hooks file", "SKIP", f"not wired: {path} does not exist; run `apply copilot`")
-        ]
-    if os.path.islink(path) or not os.path.isfile(path):
-        return [Check(t, "hooks file", "FAIL", f"{path} is not a regular file")]
-    out: list[Check] = [Check(t, "hooks file", "PASS", f"{path} is a regular file")]
-    out.append(
-        _check_shim(
-            t,
-            FLEET_HOOK_NAME,
-            paths.fleet_shim,
-            render_fleet_hook_shim(read_guard_facts(paths.stable)),
-        )
-    )
-    try:
-        cfg = load_config(path)
-        entries = locate(cfg.doc, PLATFORMS["copilot"])
-    except Refused as exc:
-        out.append(Check(t, "hooks entry", "FAIL", str(exc)))
-        return out
-    if cfg.doc != copilot_expected(paths):
-        out.append(
-            Check(
-                t,
-                "hooks entry",
-                "FAIL",
-                f"{path} differs from what this install_tools writes; re-run `apply copilot`",
-            )
-        )
-        return out
-    if not entries or entries[0].problems:
-        out.append(
-            Check(
-                t,
-                "hooks entry",
-                "FAIL",
-                f"{path}: "
-                + ("; ".join(entries[0].problems) if entries else "no fleet hook under PreToolUse"),
-            )
-        )
-        return out
-    out.append(Check(t, "hooks entry", "PASS", f"{entries[0].where} command={entries[0].command}"))
-    out.extend(
-        probe_command(
-            entries[0].command,
-            target=t,
-            fmt="claude",
-            shape="claude",
-            home=paths.home,
-            timeout=timeout,
-            minimal_path=minimal_path,
-            secret=True,
-        )
-    )
-    switch, _off = guard_switch()
-    if _is_off(os.environ.get(switch, "")):
-        out.append(
-            Check(
-                t,
-                "guard-switch-env",
-                "WARN",
-                f"{switch}={os.environ.get(switch)!r} is set in the environment this command runs in; the probes scrub it",
-            )
-        )
-    out.append(
-        Check(
-            t,
-            "fires",
-            "SKIP",
-            "whether Copilot CLI fires this PreToolUse hook is UNVERIFIED (no live preToolUse record on this "
-            "Mac); the owner proof is a new Copilot session asked to run a process listing, which must be refused",
-        )
-    )
-    return out
-
-
 # --------------------------------------------------------------------------- OpenCode: a local plugin listed in opencode.json
 
 
@@ -6902,30 +6537,6 @@ def _emit_minimax_plan(
     return False
 
 
-def _emit_copilot_plan(
-    plat: Platform, cp: CopilotPlan, emit: Callable[[str], None], *, explicit: bool
-) -> bool:
-    """Print the plan of the Copilot CLI hooks file.  True when it is a failure."""
-    emit(f"== {plat.key}  {plat.label}  {cp.path}  [{cp.state}]")
-    if cp.state in ("skip", "refuse"):
-        emit(f"   {cp.state.upper()}: {cp.reason}")
-        return cp.state == "refuse" or (explicit and cp.state == "skip")
-    emit(
-        "   Copilot CLI loads *.json under ~/.copilot/hooks.  This is a NEW fleet-owned file; "
-        "~/.copilot/settings.json and agent-hook-otlp.json are never touched."
-    )
-    emit(f"   command: {cp.command}")
-    for ln in cp.text.splitlines():
-        emit(f"     | {ln}")
-    for n in cp.notes:
-        emit(f"   {n}")
-    for n in plat.notes:
-        emit(f"   note: {n}")
-    for u in plat.unverified:
-        emit(f"   UNVERIFIED: {u}")
-    return False
-
-
 def _emit_opencode_plan(
     plat: Platform, op: OpencodePlan, emit: Callable[[str], None], *, explicit: bool
 ) -> bool:
@@ -7110,15 +6721,7 @@ def _cmd_plan(args: argparse.Namespace, emit: Callable[[str], None]) -> int:
                 rc = EXIT_FAIL
             continue
         if plat.kind == "bundle":
-            if plat.key == "copilot":
-                if _emit_copilot_plan(
-                    plat,
-                    plan_copilot(paths, follow_symlinks=args.follow_symlinks),
-                    emit,
-                    explicit=tgt in explicit,
-                ):
-                    rc = EXIT_FAIL
-            elif _emit_minimax_plan(
+            if _emit_minimax_plan(
                 plat,
                 plan_minimax(paths, follow_symlinks=args.follow_symlinks),
                 paths,
