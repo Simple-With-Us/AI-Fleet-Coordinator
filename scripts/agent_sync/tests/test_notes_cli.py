@@ -383,6 +383,26 @@ class NotesCliTests(Harness):
         self.assertEqual(result.code, 3)
         self.assertEqual(self.fake.messages, [])
 
+    def test_the_relay_cli_hands_the_pinned_owner_to_the_tools(self):
+        # The OPERATOR consumer is trusted only against the pinned owner (operator_bot refuses an
+        # owner of 0), so the CLI must pass the configured one through or `notes status` never settles.
+        from agent_sync.mcp import tools as T
+
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "listener.toml").write_text(
+            '[daemon]\nowner_user_id = 4242\n', encoding="utf-8"
+        )
+        seen = {}
+        real = T.Tools.__init__
+
+        def spy(self_, agent, **kw):
+            seen.update(kw)
+            return real(self_, agent, **kw)
+
+        with mock.patch.object(T.Tools, "__init__", spy):
+            self.run_cli("notes", "status", "cli-owner-0001", "--json")
+        self.assertEqual(seen.get("owner_user_id"), 4242)
+
     def test_the_guide_command_prints_the_guide_or_a_section(self):
         whole = self.run_cli("guide")
         self.assertEqual(whole.code, 0)

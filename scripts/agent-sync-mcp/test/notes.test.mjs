@@ -50,7 +50,7 @@ function harness({ consumer, seat = "GROK-WEB" } = {}) {
     clientId: "client",
     grantRef: "abcdef012345",
     paused: false,
-    config: withBot(consumer !== undefined ? loadConfig(testEnv({ NOTES_RELAY_CONSUMER: consumer })) : config, seat),
+    config: withBot(consumer !== undefined ? loadConfig(testEnv({ NOTES_RELAY_CONSUMER: consumer, OPERATOR_ZULIP_USER_ID: "43210", OPERATOR_ZULIP_EMAIL: "operator@example.test" })) : config, seat),
     zulip: new ZulipClient({ email: botEmail(seat), key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
     key: fake.key,
     gate: memoryGate(clock),
@@ -467,4 +467,25 @@ test("note title grammar rejects display names and case variants", () => {
   for (const title of ["[AFC, Claude] Topic", "[AFC, claude] Topic", "[AFC, Grok Web] Topic", "[AFC, gb-fixer] Topic", "[AFC,  CLAUDE] Topic", "[AFC, CLAUDE] "])
     assert.throws(() => checkTitle(title), /must read/);
   assert.equal(checkTitle("[AFC, CT, GB-FIXER] Topic"), "[AFC, CT, GB-FIXER] Topic");
+});
+
+test("OPERATOR service consumer trusts only the pinned bot, not display names or Admin", async () => {
+  const { tools } = harness({ consumer: "OPERATOR" });
+  const correct = { bot_owner_id: tools.config.ownerUserId, is_bot: true, user_id: 43210, email: "operator@example.test", full_name: "[Operator]" };
+  assert.equal(await tools.notesFleetBot(43210, [correct]), true);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, email: "fixture-old-admin@example.test" }]), false);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, bot_owner_id: 999 }]), false);
+  assert.equal(await tools.notesFleetBot(1, [{ ...correct, user_id: 1 }]), false);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, is_bot: false }]), false);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, email: "other@example.test" }]), false);
+});
+
+
+test("Notes consumer discovery indexes members once instead of rescanning per candidate", async () => {
+  const { tools } = harness({ consumer: "OPERATOR" });
+  const members = Array.from({ length: 1000 }, (_, i) => ({ user_id: i + 100, is_bot: true, email: `peer${i}@example.test` }));
+  members.push({ user_id: 43210, is_bot: true, email: "operator@example.test", bot_owner_id: tools.config.ownerUserId });
+  members.find = () => { throw new Error("quadratic member rescan"); };
+  tools.zulip.get = async () => ({ messages: [], found_newest: true });
+  assert.equal(await tools.notesRefusalReason({ id: 1, subject: "note" }, "request-123", RELAY_ID, members), null);
 });

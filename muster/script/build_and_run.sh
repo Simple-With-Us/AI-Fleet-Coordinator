@@ -37,13 +37,21 @@ for command in xcodebuild xcodegen python3; do
 done
 
 installed_pids() {
-    /bin/ps -axo pid=,comm= | /usr/bin/awk -v binary="$INSTALLED_BINARY" '
-        { pid = $1; sub(/^[[:space:]]*[0-9]+[[:space:]]+/, ""); if ($0 == binary) print pid }
-    '
+    python3 - "$INSTALLED_BINARY" "$ROOT_DIR/script" <<'PYPROCESSES'
+import sys
+sys.path.insert(0, sys.argv[2])
+from build_support import installed_pids
+try:
+    print("\n".join(installed_pids(sys.argv[1])))
+except Exception:
+    sys.exit("Cannot safely inspect active Muster processes; refusing to continue.")
+PYPROCESSES
 }
 
 refuse_running_replacement() {
-    if [ -n "$(installed_pids)" ] && [ "$RELAUNCH" -ne 1 ]; then
+    local pids
+    pids="$(installed_pids)" || exit $?
+    if [ -n "$pids" ] && [ "$RELAUNCH" -ne 1 ]; then
         echo "Muster is running at $INSTALLED_APP." >&2
         echo "Quit it first, or use --relaunch to explicitly stop that installed copy."
         exit 1
@@ -198,16 +206,18 @@ if os.path.lexists(installed) and bundle_id(installed) not in allowed_ids:
 PY
 refuse_running_replacement
 if [ "$RELAUNCH" -eq 1 ]; then
-    PIDS="$(installed_pids)"
+    PIDS="$(installed_pids)" || exit $?
     if [ -n "$PIDS" ]; then
         while IFS= read -r pid; do
             /bin/kill -TERM "$pid" 2>/dev/null || true
         done <<< "$PIDS"
         for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            [ -z "$(installed_pids)" ] && break
+            PIDS="$(installed_pids)" || exit $?
+            [ -z "$PIDS" ] && break
             sleep 0.5
         done
-        if [ -n "$(installed_pids)" ]; then
+        PIDS="$(installed_pids)" || exit $?
+        if [ -n "$PIDS" ]; then
             echo "Muster has not exited; refusing to replace the running app." >&2
             exit 1
         fi
@@ -235,10 +245,11 @@ PYINSTALL
 case "$MODE" in
     --verify|--debug)
         for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            [ -n "$(installed_pids)" ] && break
+            PIDS="$(installed_pids)" || exit $?
+            [ -n "$PIDS" ] && break
             sleep 0.5
         done
-        PIDS="$(installed_pids)"
+        PIDS="$(installed_pids)" || exit $?
         if [ -z "$PIDS" ]; then
             echo "Muster did not remain running after launch." >&2
             exit 1

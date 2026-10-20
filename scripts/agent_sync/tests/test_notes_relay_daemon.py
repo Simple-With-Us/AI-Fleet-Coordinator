@@ -21,6 +21,7 @@ from unittest import mock
 from agent_sync import config as C
 from agent_sync import notes as N
 from agent_sync import notes_relay as NR
+from agent_sync import zulip as Z
 from agent_sync.tests.harness import write_rc
 from agent_sync.tests.test_daemon import DaemonHarness
 
@@ -229,6 +230,130 @@ class DaemonRelayTests(DaemonHarness):
         self.assertIsNone(daemon.notes_relay)
         mid = self.fake.add_message("Codex", "notes-relay", "t", "@**Claude** can you check this?")
         self.pump_until(daemon, lambda: any(r["id"] == mid for r in self.inbox()))
+
+    def test_a_request_with_no_consumer_is_refused_instead_of_lost(self):
+        """AFC-407:  with the relay off there is no consumer at all, and the request used to be routed like any
+        chatter:  the cursor moved past it, nothing said a note was lost, and `notes_status` said "queued" for
+        ever.  The consumer seat refuses it instead, so the requester hears back at once."""
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNone(daemon.notes_relay, "the relay is off, so there is no consumer")
+        self.assertEqual(daemon.notes_relay_refuser, "CLAUDE")
+        mid = self.envelope_message(mention=True)
+        self.pump_until(
+            daemon,
+            lambda: (
+                (mid, 10, "cross_mark") in self.fake.reactions
+                or (mid, 10, "x") in self.fake.reactions
+            ),
+        )
+        self.assertTrue(
+            (mid, 10, "cross_mark") in self.fake.reactions or (mid, 10, "x") in self.fake.reactions,
+            "the request carries the cross mark that notes_status reads",
+        )
+        self.assertTrue(
+            self.wait(
+                lambda: any(
+                    m["sender_id"] == 10
+                    and str(m.get("content") or "").startswith(
+                        "notes-relay refused daemon-request-1:"
+                    )
+                    for m in self.fake.messages
+                )
+            ),
+            "the requester is told that nothing was written",
+        )
+        reply = next(
+            m
+            for m in self.fake.messages
+            if m["sender_id"] == 10
+            and str(m.get("content") or "").startswith("notes-relay refused daemon-request-1:")
+        )
+        self.assertIn("no Notes relay consumer is running", reply["content"])
+        self.assertEqual(self.inbox(), [], "a relay request must not become seat inbox work")
+        self.assertEqual(self.ledger(), [], "a relay request must not wake anyone")
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("notes-relay-unconsumed", log)
+
+    def test_a_host_that_is_not_the_consumer_does_not_answer_a_request(self):
+        """AFC-407:  the knob names one consumer.  A host that is not it must leave the request alone:  it
+        belongs to the Mac that is the consumer."""
+        self.notes_knob = "MM"
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNone(daemon.notes_relay)
+        self.assertIsNone(daemon.notes_relay_refuser, "another seat is the consumer")
+        mid = self.envelope_message()
+        self.pump_until(daemon, lambda: daemon.seats["CLAUDE"].cursor >= mid)
+        self.assertFalse(
+            [r for r in self.fake.reactions if r[0] == mid], "this host does not answer the request"
+        )
+        self.assertFalse(
+            [m for m in self.fake.messages if "notes-relay refused" in str(m.get("content") or "")],
+            "this host does not refuse the request either",
+        )
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("notes-relay-unclaimed", log)
+
+    def test_a_refusal_that_failed_is_held_and_published_on_the_next_tick(self):
+        """AFC-407:  the reply is part of the result, so a refusal that failed on a retryable error is not a lost
+        request.  The cursor is held below it (a later message must not carry it past) and the tick publishes the
+        refusal, after which the hold falls and the requester has heard back."""
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        self.assertIsNone(daemon.notes_relay)
+        real = NR.refuse_unconsumed
+        attempts = []
+
+        def flaky(r, message, reason, log):
+            attempts.append(message.get("id"))
+            if len(attempts) == 1:
+                raise Z.ApiError("zulip is busy", code="RATE_LIMIT_HIT", status=429)
+            return real(r, message, reason, log)
+
+        mid = self.envelope_message()
+        before = runner.cursor
+        with mock.patch.object(NR, "refuse_unconsumed", flaky):
+            daemon.route_message(runner, self.fake.messages[-1])
+            self.assertEqual(attempts, [mid], "the refusal was tried and failed")
+            self.assertEqual(runner.cursor, before, "a failed refusal must not move the cursor")
+            self.assertEqual(runner.hold_below, mid, "the cursor is held below the request")
+            later = self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+            daemon.route_message(runner, self.fake.messages[-1])
+            self.assertEqual(
+                runner.cursor, mid - 1, "a later message must not carry the cursor past the request"
+            )
+            self.assertGreater(later, mid)
+            daemon.retry_held_notes_relay()
+        self.assertTrue(
+            (mid, 10, "cross_mark") in self.fake.reactions or (mid, 10, "x") in self.fake.reactions,
+            "the retry publishes the cross mark",
+        )
+        self.assertTrue(
+            any("notes-relay refused" in str(m.get("content") or "") for m in self.fake.messages),
+            "the retry tells the requester that nothing was written",
+        )
+        self.assertIsNone(runner.hold_below, "the hold falls once the refusal is published")
+        self.assertGreaterEqual(runner.cursor, later, "the cursor catches up past the request")
+        self.assertGreaterEqual(self.persisted_cursor(runner), mid)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("notes-relay-refusal-held", log)
+        self.assertIn("notes-relay-refusal-retried", log)
+
+    def test_a_restart_backfills_the_relay_channel_for_the_refusing_seat(self):
+        """A refusal held below the cursor survives a restart only if the backfill can reach the channel:  with no
+        consumer running the relay narrow is otherwise never added, and the request would be stranded."""
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNone(daemon.notes_relay)
+        runner = daemon.seats["CLAUDE"]
+        mid = self.envelope_message()
+        self.assertIn(
+            mid,
+            [m["id"] for m in runner.backfill()],
+            "the refusing seat reads the relay channel so a held request comes back",
+        )
 
     def two_seats(self):
         codex_key = secrets.token_hex(16)
@@ -680,6 +805,44 @@ class DaemonRelayTests(DaemonHarness):
         self.assertEqual(runner.cursor, later)
         consumer.stop()
 
+    def test_requests_past_the_retry_limit_are_still_refused_with_no_consumer(self):
+        """Past the retry limit only the overflow marker remembers a request, and with no consumer nothing spools
+        it:  the refusal is the answer, so the tick must walk the relay channel from the marker rather than leave the
+        marker pinned and the cursor below it for ever."""
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertIsNone(daemon.notes_relay, "there is no consumer, so the seat refuses")
+        runner = daemon.seats["CLAUDE"]
+        # Fill the retry map past its limit so a later request can only live in the overflow marker.
+        base = self.fake.messages[-1]["id"] if self.fake.messages else 1
+        for i in range(daemon.NOTES_RELAY_RETRY_LIMIT + 2):
+            daemon._keep_for_relay_retry(runner, {"id": base + 1 + i})
+        self.assertTrue(daemon.notes_relay_overflow, "the map is full, so the marker is in use")
+        mid = self.envelope_message(mention=True, rid="overflow-refuse-2")
+        daemon._keep_for_relay_retry(runner, {"id": mid})
+        self.assertNotIn(
+            (runner.seat, mid),
+            daemon.notes_relay_retry,
+            "this request is past the limit, so only the marker remembers it",
+        )
+        self.assertEqual(
+            daemon.notes_relay_overflow["CLAUDE"][1],
+            base + 1 + daemon.NOTES_RELAY_RETRY_LIMIT,
+            "the marker sits at the lowest id the full map could not track",
+        )
+        daemon.last_tick["relay_retry"] = -1e9
+        daemon.tick()
+        self.assertEqual(daemon.notes_relay_overflow, {}, "the marker drains once the refusals land")
+        self.assertTrue(
+            self.wait(
+                lambda: any(
+                    str(m.get("content") or "").startswith("notes-relay refused overflow-refuse-2:")
+                    for m in self.fake.messages
+                )
+            ),
+            "the overflowed request is refused, not merely forgotten",
+        )
+
     def test_an_overflow_backfill_stops_on_a_page_with_no_new_ids(self):
         """A deleted anchor (or a page of ids already seen) must end the pass, not repeat it to the page cap."""
         daemon = self.started_with_relay()
@@ -737,6 +900,7 @@ class DaemonRelayTests(DaemonHarness):
                 self.assertEqual(runner.cursor, mid - 1)
                 if change == "disable":
                     self.write_config()  # no [notes_relay] any more
+                    self.notes_knob = "CODEX"  # and another seat is the consumer, so this one is not its refuser
                 else:
                     self.notes_knob = "CODEX"
                 daemon.reload()
@@ -995,5 +1159,258 @@ class DaemonRelayTests(DaemonHarness):
         )
 
 
+    def test_missing_script_reload_keeps_pending_refusal(self):
+        self.enable()
+        with mock.patch("agent_sync.notes.direct_available", return_value=None):
+            daemon = self.started()
+            runner = daemon.seats["CLAUDE"]
+            mid = self.envelope_message(rid="fixture-missing-script-reload")
+            with mock.patch.object(NR, "refuse_unconsumed", side_effect=Z.NetworkError("offline")):
+                daemon.route_message(runner, self.fake.messages[-1])
+            daemon.reload()
+            self.assertIn((runner.seat, mid), daemon.notes_relay_retry)
+            self.assertEqual(runner.hold_below, mid)
+
+    def test_disabled_reload_keeps_pending_refusal(self):
+        self.write_config(wake="inbox")
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        mid = self.envelope_message(rid="fixture-disabled-reload")
+        with mock.patch.object(NR, "refuse_unconsumed", side_effect=Z.NetworkError("unreachable")):
+            daemon.route_message(runner, self.fake.messages[-1])
+        self.assertIn((runner.seat, mid), daemon.notes_relay_retry)
+        daemon.reload()
+        self.assertIn((runner.seat, mid), daemon.notes_relay_retry)
+        self.assertEqual(runner.hold_below, mid)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class RefusalBoundaryTests(unittest.TestCase):
+    def runner(self, root):
+        from types import SimpleNamespace as NS
+        client = mock.Mock()
+        message = {"id": 101, "sender_id": 11, "stream_id": 7, "subject": "relay",
+                   "content": N.render_message(make_envelope("create", "[AFC, Codex] Relay", "Body.", {}, "fixture-request", "CODEX"))}
+        client.get.side_effect = lambda path, *args, **kwargs: ({"message": message} if path != "messages" else {"messages": [], "found_newest": False})
+        runner = NS(client=client, me=NS(user_id=10), paths=NS(root=root),
+                    users={11: {"user_id": 11, "email": "codex-bot@zulip.test", "is_bot": True}},
+                    daemon=NS(config=NS(owner_user_id=1)))
+        return runner, message
+
+    def test_empty_forward_scan_and_malformed_pages(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            self.assertFalse(NR.already_replied(runner, message, 101, "refused", lambda *a, **k: None))
+            for payload in ({}, {"messages": None, "found_newest": False}):
+                runner.client.get.side_effect = None
+                runner.client.get.return_value = payload
+                with self.assertRaises(NR.MalformedResponse):
+                    NR.already_replied(runner, message, 101, "refused", lambda *a, **k: None)
+
+    def test_untrusted_sender_is_not_answered(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            runner.users[11]["is_bot"] = False
+            self.assertFalse(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+            runner.client.post.assert_not_called()
+
+    def test_unknown_send_is_not_sent_again(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            sends = []
+            def post(path, params):
+                if path == "messages":
+                    sends.append(params)
+                    raise Z.NetworkError("timed out", maybe_sent=True)
+                return {}
+            runner.client.post.side_effect = post
+            with self.assertRaises(Z.NetworkError):
+                NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertTrue(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+            self.assertEqual(len(sends), 1)
+
+    def test_a_refusal_that_never_reached_zulip_is_sent_again(self):
+        """A refused connection never reached Zulip, so the outcome is definite, not ambiguous:  the row must not
+        stay `unknown`, or every retry stops at the reconcile guard and the refusal is never published at all."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            sends = []
+            def post(path, params):
+                if path == "messages":
+                    sends.append(params)
+                    raise Z.NetworkError("connection refused", maybe_sent=False)
+                return {}
+            runner.client.post.side_effect = post
+            for _ in range(3):
+                with self.assertRaises(Z.NetworkError):
+                    NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertEqual(len(sends), 3, "each retry sends again rather than wedging on `unknown`")
+
+    def test_ambiguous_http_reply_is_never_replayed(self):
+        import tempfile
+        for status in (408, 500, 503):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as root:
+                runner, message = self.runner(root)
+                sends = []
+                def post(path, params):
+                    if path == "messages":
+                        sends.append(params)
+                        raise Z.ApiError("ambiguous", status=status)
+                    return {}
+                runner.client.post.side_effect = post
+                with self.assertRaises(Z.ApiError):
+                    NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+                self.assertTrue(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+                self.assertEqual(len(sends), 1)
+
+    def test_unknown_sender_retry_is_bounded_and_durable(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            runner.users = {}
+            for _ in range(2):
+                with self.assertRaises(NR.MalformedResponse):
+                    NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertFalse(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+            self.assertFalse(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+            runner.client.post.assert_not_called()
+
+    def test_ambiguous_reaction_does_not_suppress_the_reply(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            failed = [False]
+            replies = []
+            def post(path, params):
+                if path.endswith("/reactions") and not failed[0]:
+                    failed[0] = True
+                    raise Z.NetworkError("reaction timeout", maybe_sent=True)
+                if path == "messages":
+                    replies.append(params)
+                return {}
+            runner.client.post.side_effect = post
+            with self.assertRaises(Z.NetworkError):
+                NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertTrue(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+            self.assertEqual(len(replies), 1)
+
+    def test_capped_scan_resumes_after_a_new_runner_loads_its_state(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            anchors = []
+            def get(path, params, **kwargs):
+                anchor = params["anchor"]
+                anchors.append(anchor)
+                return {"messages": [{"id": anchor + 1, "sender_id": 10, "content": "unrelated"}],
+                        "found_newest": anchor >= 103}
+            runner.client.get.side_effect = get
+            with mock.patch.object(NR, "REPLY_SCAN_PAGES", 2):
+                with self.assertRaises(NR.MalformedResponse):
+                    NR.already_replied(runner, message, 101, "refused", lambda *a, **k: None)
+            replacement, _ = self.runner(root)
+            replacement.client.get.side_effect = get
+            self.assertFalse(NR.already_replied(replacement, message, 101, "refused", lambda *a, **k: None))
+            self.assertEqual(anchors, [101, 102, 103])
+
+    def test_completed_receipts_and_lock_registry_are_bounded(self):
+        import tempfile
+        from pathlib import Path
+        from agent_sync import live as LIVE
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            before = len(LIVE._PATH_LOCKS)
+            with mock.patch.object(NR, "REFUSAL_ROWS_KEEP", 2), mock.patch.object(NR, "REFUSAL_ROWS_LIMIT", 4):
+                for message_id in range(101, 111):
+                    self.assertTrue(NR.refuse_unconsumed(runner, dict(message, id=message_id), "Disabled.", lambda *a, **k: None))
+            self.assertLessEqual(len(list((Path(root) / NR.RELAY_DIR / "refusals").glob("*.json"))), 2)
+            self.assertLessEqual(len(list(Path(root).rglob("*.lock"))), 2)
+            self.assertLessEqual(len(LIVE._PATH_LOCKS) - before, 2)
+
+    def test_capacity_refuses_new_rows_without_deleting_ambiguous_receipts(self):
+        import tempfile
+        from pathlib import Path
+        from agent_sync import live as LIVE
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            directory = Path(root) / NR.RELAY_DIR / "refusals"
+            for index in range(3):
+                LIVE.write_json(str(directory / (str(index) + ".json")), {"state": "unknown"}, durable=True)
+            with mock.patch.object(NR, "REFUSAL_ROWS_LIMIT", 3):
+                with self.assertRaisesRegex(NR.MalformedResponse, "capacity"):
+                    NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertEqual(len(list(directory.glob("*.json"))), 3)
+            runner.client.post.assert_not_called()
+
+    def test_unauthorized_requests_allocate_no_state(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            runner.users[11]["is_bot"] = False
+            for message_id in range(101, 121):
+                self.assertFalse(NR.refuse_unconsumed(runner, dict(message, id=message_id), "Disabled.", lambda *a, **k: None))
+            self.assertEqual(list(Path(root).rglob("*")), [])
+
+    def test_malformed_destination_never_posts_message(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            runner.client.get.side_effect = None
+            runner.client.get.return_value = {"message": {"stream_id": True, "topic": "relay"}}
+            with self.assertRaises(NR.MalformedResponse):
+                NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertFalse(any(call.args[0] == "messages" for call in runner.client.post.call_args_list))
+
+
+class OverflowRefusalBoundaryTests(unittest.TestCase):
+    def daemon(self, rows):
+        import threading
+        from agent_sync import daemon as D
+        from types import SimpleNamespace as NS
+        daemon = D.Daemon.__new__(D.Daemon)
+        daemon.notes_relay_lock = threading.RLock()
+        reader = NS(seat="CLAUDE", fetch=mock.Mock(return_value=rows), set_hold=mock.Mock())
+        daemon.notes_relay_overflow = {"CLAUDE": (reader, 10)}
+        daemon.notes_relay_retry = {}
+        daemon.log = mock.Mock()
+        return daemon, reader
+
+    def test_malformed_page_keeps_marker(self):
+        for rows in (None, {}, [None], [{"id": True}], [{"id": "10"}], [{"id": 0}]):
+            with self.subTest(rows=rows):
+                daemon, reader = self.daemon(rows)
+                self.assertEqual(daemon._refuse_relay_overflow(reader, "Disabled."), 0)
+                self.assertEqual(daemon.notes_relay_overflow["CLAUDE"][1], 10)
+
+    def test_failed_item_does_not_block_later_items(self):
+        daemon, reader = self.daemon([{"id": 10}, {"id": 11}])
+        with mock.patch.object(NR, "in_relay_channel", return_value=True), mock.patch.object(NR, "is_request", return_value=True), mock.patch.object(NR, "refuse_unconsumed", side_effect=[Z.NetworkError("offline"), True]) as refuse:
+            self.assertEqual(daemon._refuse_relay_overflow(reader, "Disabled."), 11)
+        self.assertEqual(refuse.call_count, 2)
+        self.assertIn(("CLAUDE", 10), daemon.notes_relay_retry)
+        reader.set_hold.assert_called_with(10)
+        self.assertIn("deadline", reader.fetch.call_args.kwargs)
+
+    def test_concurrent_earlier_marker_is_preserved(self):
+        daemon, reader = self.daemon([])
+        def fetch(*a, **k):
+            daemon.notes_relay_overflow["CLAUDE"] = (reader, 5)
+            return []
+        reader.fetch.side_effect = fetch
+        self.assertEqual(daemon._refuse_relay_overflow(reader, "Disabled."), 0)
+        self.assertEqual(daemon.notes_relay_overflow["CLAUDE"][1], 5)
+
+    def test_tick_limits_refusals_and_resumes_at_first_unprocessed_item(self):
+        daemon, reader = self.daemon([{"id": i} for i in range(10, 20)])
+        with mock.patch.object(NR, "in_relay_channel", return_value=True), mock.patch.object(NR, "is_request", return_value=True), mock.patch.object(NR, "refuse_unconsumed", return_value=True) as refuse:
+            daemon._refuse_relay_overflow(reader, "Disabled.")
+        self.assertEqual(refuse.call_count, 4)
+        self.assertEqual(daemon.notes_relay_overflow["CLAUDE"][1], 14)

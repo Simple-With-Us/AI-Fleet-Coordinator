@@ -487,11 +487,21 @@ _PRINT_NAMED_ENV = (
 )
 
 _cache_lock = threading.Lock()
-_value_cache: dict[tuple[str, str], tuple[float, str]] = {}  # (bin, name) -> (fetched at, value)
-_names_cache: dict[str, tuple[float, frozenset[str]]] = {}  # bin -> (fetched at, names)
+_value_cache: dict[tuple[str, str, str], tuple[float, str]] = {}  # (bin, project, name)
+_names_cache: dict[tuple[str, str], tuple[float, frozenset[str]]] = {}  # (bin, project) -> names
 _failures: dict[
     tuple[str, ...], tuple[float, str]
-] = {}  # (bin, what...) -> (failed at, reason), memory only
+] = {}  # (bin, project, what...) -> (failed at, reason), memory only
+
+
+def _project_scope(env: Mapping[str, str], home: Path) -> str:
+    """The Infisical project this read targets, for cache keying only (never echoed).  One binary can
+    serve several projects (the AFC /zulip the Notes service reads, the Fleet-OPS /zulip the seats
+    read), so values, names and outages are kept apart per project:  an outage in one store must not
+    refuse a fetch from a healthy one.  Fails closed like infisical_project_id, which resolves the same
+    two places and is what fleet-secrets itself does:  an unresolvable project is never cached under
+    an empty scope, and no value can be fetched without one."""
+    return infisical_project_id(env, home)
 
 
 def _recent_failure(key: tuple[str, ...], now: float) -> str | None:
@@ -543,14 +553,16 @@ def _fetch_from_fleet_secrets(
         raise CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
     now = time.monotonic()
     with _cache_lock:
-        held = {n: _value_cache.get((binary, n)) for n in wanted}
+        project = _project_scope(env, home)
+        held = {n: _value_cache.get((binary, project, n)) for n in wanted}
         if all(v is not None and now - v[0] < INFISICAL_CACHE_TTL for v in held.values()):
             return {n: v[1] for n, v in held.items() if v is not None}
-        failure_key = (binary, "values", *wanted)
+        failure_key = (binary, project, "values", *wanted)
         # A timeout or an auth or fetch failure is about Infisical, not about these names:  it is remembered
-        # per binary, so the seats after a failed prefetch fail at once instead of each waiting out the cap.
+        # per binary and project, so the seats after a failed prefetch fail at once instead of each
+        # waiting out the cap, without one store's outage refusing another store's fetch.
         # A missing key stays a failure of this request only.
-        outage_key = (binary, "outage")
+        outage_key = (binary, project, "outage")
         recent = _recent_failure(failure_key, now) or _recent_failure(outage_key, now)
         if recent is not None and not all(v is not None for v in held.values()):
             raise CredentialError(
@@ -593,7 +605,7 @@ def _fetch_from_fleet_secrets(
         _failures.pop(failure_key, None)
         _failures.pop(outage_key, None)
         for n, v in got.items():
-            _value_cache[(binary, n)] = (now, v)
+            _value_cache[(binary, project, n)] = (now, v)
         return got
 
 
@@ -604,10 +616,11 @@ def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[st
         raise CredentialError("fleet-secrets is not installed (~/.local/bin/fleet-secrets)")
     now = time.monotonic()
     with _cache_lock:
-        held = _names_cache.get(binary)
+        project = _project_scope(env, home)
+        held = _names_cache.get((binary, project))
         if held is not None and now - held[0] < INFISICAL_CACHE_TTL:
             return held[1]
-        failure_key = (binary, "names")
+        failure_key = (binary, project, "names")
         recent = _recent_failure(failure_key, now)
         if recent is not None and held is None:
             raise CredentialError(
@@ -630,7 +643,7 @@ def _list_from_fleet_secrets(env: Mapping[str, str], home: Path) -> frozenset[st
             for line in text.splitlines()
             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", line.strip())
         )
-        _names_cache[binary] = (now, names)
+        _names_cache[(binary, project)] = (now, names)
         return names
 
 
@@ -956,6 +969,7 @@ class ZulipClient:
         *,
         timeout: float | None = None,
         long_poll: bool = False,
+        deadline: float | None = None,
         upload: tuple[str, bytes, str] | None = None,
     ) -> dict[str, Any]:
         """One API call.  429 is retried (Retry-After, at most 3 times).  GET also retries
@@ -989,12 +1003,22 @@ class ZulipClient:
             headers["Content-Type"] = content_type
         rate_retries = 0
         net_retries = 0
+
+        def pause(seconds: float) -> None:
+            if deadline is not None:
+                seconds = min(seconds, max(0.0, deadline - time.monotonic()))
+            self.sleep(seconds)
+
         while True:
+            budget = timeout if timeout is not None else self.timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise NetworkError("request deadline exhausted", timeout=True, maybe_sent=False)
+                budget = min(budget, remaining)
             request = urllib.request.Request(url, data=data, method=method, headers=headers)
             try:
-                with self._opener.open(
-                    request, timeout=timeout if timeout is not None else self.timeout
-                ) as response:
+                with self._opener.open(request, timeout=budget) as response:
                     body = response.read()
                     status = response.status
             except urllib.error.HTTPError as exc:
@@ -1007,14 +1031,14 @@ class ZulipClient:
                     exc.close()
                 if status == 429 and rate_retries < MAX_RATE_LIMIT_RETRIES:
                     rate_retries += 1
-                    self.sleep(self._retry_after(exc.headers, body))
+                    pause(self._retry_after(exc.headers, body))
                     continue
                 if (
                     method == "GET"
                     and status in GATEWAY_STATUSES
                     and net_retries < len(GET_RETRY_BACKOFF)
                 ):
-                    self.sleep(GET_RETRY_BACKOFF[net_retries])
+                    pause(GET_RETRY_BACKOFF[net_retries])
                     net_retries += 1
                     continue
                 raise self._api_error(status, body) from None
@@ -1027,7 +1051,7 @@ class ZulipClient:
                     and not (long_poll and is_timeout)
                 )
                 if retryable:
-                    self.sleep(GET_RETRY_BACKOFF[net_retries])
+                    pause(GET_RETRY_BACKOFF[net_retries])
                     net_retries += 1
                     continue
                 refused = isinstance(reason, ConnectionRefusedError)
