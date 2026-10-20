@@ -68,7 +68,7 @@ def _extract(source: str) -> tuple[str, str]:
     The anchors are pre-existing lines, so the same extraction works against the script before the
     AFC-431 fix and the tests fail there on behaviour rather than on a missing marker.
     """
-    fn = re.search(r"^_run_note_shortcut\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.M)
+    fn = re.search(r"^_run_note_shortcut\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
     assert fn, "the _run_note_shortcut function is gone from apple-notes-coding.sh"
     start = source.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.")
     want = source.index('if [[ "$WANT_PIN" != "1" ]]; then')
@@ -91,9 +91,7 @@ class PinDecisionTests(unittest.TestCase):
             counter = Path(tmp) / "counter"
             script = Path(tmp) / "harness.sh"
             #  a plain replace, because the harness carries shell ${...} braces that str.format would eat
-            script.write_text(
-                HARNESS.replace("{function}", function).replace("{block}", block)
-            )
+            script.write_text(HARNESS.replace("{function}", function).replace("{block}", block))
             child = dict(os.environ)
             child["PATH"] = f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}"
             child["STUB_COUNTER"] = str(counter)
