@@ -1618,6 +1618,16 @@ class VMSeatLaneTests(unittest.TestCase):
             if seat.tag != "MA":
                 self.assertTrue(skill_allowed_for_seat("pr-sweep", seat), key)
 
+    def test_every_installed_ma_skill_avoids_mac_lane_invocations(self):
+        docs = Path(ROOT, "docs", "fleet-skills")
+        for name in catalog_skill_names(str(docs)):
+            if not skill_allowed_for_seat(name, SEATS["muse-assist"]):
+                continue
+            rendered = specialize_from_monet(
+                _load_skill(name), SEATS["muse-assist"], skill_name=name
+            )
+            self.assertNotIn("~/apps/lane ", rendered, name)
+
 
 if __name__ == "__main__":
     unittest.main()
