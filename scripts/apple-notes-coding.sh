@@ -17,6 +17,7 @@
 #   apple-notes-coding.sh --pin-only "Exact Note Title"
 #   apple-notes-coding.sh --unpin-only "Exact Note Title"
 #   APPLE_NOTES_PIN=0 apple-notes-coding.sh "Title" ...        # skip pinning
+#   APPLE_NOTES_PIN_RETRY=0 apple-notes-coding.sh "Title" ...  # pin Shortcut: one attempt, no retry
 #   APPLE_NOTES_ACTIVATE=1 apple-notes-coding.sh "Title" ... # bring Notes to front
 #
 # Session id (AFC-361, owner 2026-10-19):  create and update stamp the writer's session id into the note, so a
@@ -250,6 +251,32 @@ fi
 # sending an operator to recreate a Shortcut that exists is worse than saying
 # the list did not read.  First-ever run of each shortcut shows a one-time
 # "Allow ... to share with Notes?" dialog — choose Always Allow.
+#
+# Whether a failed Shortcut run is retried is the APPLE_NOTES_PIN_RETRY fleet knob (Infisical,
+# through scripts/fleet_knobs), resolved once per process through the package that sits next to this
+# script.  APPLE_NOTES_PIN_RETRY in the environment is only a narrowing override:  it can turn the
+# retry off, never on.  With no fleet_knobs on this host, or an unreachable Infisical with no
+# last-known-good copy, the registered default (on) applies, narrowed by that override.
+_PIN_RETRY=""
+_pin_retry_on() {
+  if [[ -z "${_PIN_RETRY:-}" ]]; then
+    local knob="" here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    if [[ -n "$here" && -d "$here/fleet_knobs" ]] && command -v python3 >/dev/null 2>&1; then
+      knob="$(cd "$here" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
+    fi
+    case "$knob" in
+      true|1|yes|on) _PIN_RETRY=1 ;;
+      false|0|no|off) _PIN_RETRY=0 ;;
+      *) case "${APPLE_NOTES_PIN_RETRY:-}" in
+           false|0|no|off) _PIN_RETRY=0 ;;
+           *) _PIN_RETRY=1 ;;
+         esac ;;
+    esac
+  fi
+  [[ "$_PIN_RETRY" == "1" ]]
+}
+
 _run_note_shortcut() {  # $1 = shortcut name
   local listing
   if ! listing="$(shortcuts list 2>/dev/null)"; then
@@ -262,13 +289,14 @@ _run_note_shortcut() {  # $1 = shortcut name
   # A just-written note may not be visible to the Shortcut's Find step yet, and
   # that miss fails the run (observed 2026-10-20).  Retry once before giving up,
   # so a timing race does not leave a coding note unpinned.  A miss can also pop
-  # a note picker on the owner's screen, so the retry is gated:  set
-  # APPLE_NOTES_PIN_RETRY=0 for a single attempt, which is what a caller wants
-  # when it would rather not risk a second Shortcut invocation.  The retry runs
-  # 3 s later than the first attempt, so the note index has had more time to
-  # catch up and the retry is the less likely of the two to miss it.
+  # a note picker on the owner's screen, so the retry is gated by the
+  # APPLE_NOTES_PIN_RETRY knob:  set it to false, or APPLE_NOTES_PIN_RETRY=0 in the
+  # environment, for a single attempt, which is what a caller wants when it would
+  # rather not risk a second Shortcut invocation.  The retry runs 3 s later than
+  # the first attempt, so the note index has had more time to catch up and the
+  # retry is the less likely of the two to miss it.
   attempts=1
-  if [[ "${APPLE_NOTES_PIN_RETRY:-1}" != "0" ]]; then attempts=2; fi
+  if _pin_retry_on; then attempts=2; fi
   for (( attempt = 1; attempt <= attempts; attempt++ )); do
     if shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
       rm -f "$tmp"

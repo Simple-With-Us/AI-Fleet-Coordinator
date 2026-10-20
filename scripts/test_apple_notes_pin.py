@@ -13,8 +13,9 @@ The script used to collapse rc 1 and rc 2 into one message that always named the
 it ran the Shortcut exactly once, so a timing race left the note unpinned, and a failed `shortcuts list`
 looked exactly like a Shortcut that was never installed.
 
-The retry is gated on APPLE_NOTES_PIN_RETRY, because a miss can pop a note picker on the owner's screen
-and a caller may want a single attempt.
+The retry is gated on the APPLE_NOTES_PIN_RETRY fleet knob, because a miss can pop a note picker on the
+owner's screen and an operator may want a single attempt.  The knob is read once per process through
+scripts/fleet_knobs, and APPLE_NOTES_PIN_RETRY in the environment is only a narrowing override.
 
 These tests drive the real source:  the `_run_note_shortcut` function, the pin decision block and the unpin
 decision block are cut out of scripts/apple-notes-coding.sh and run in a harness with a stub `shortcuts` on
@@ -50,11 +51,20 @@ if [ "${STUB_FAIL_FIRST:-0}" -gt 0 ] && [ "$n" -le "${STUB_FAIL_FIRST:-0}" ]; th
 exit 0
 """
 
+#  a stand-in for `python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY`, which the script runs in the
+#  directory it lives in;  only put on PATH when a test asks for it (STUB_KNOB)
+KNOB_STUB = """#!/bin/bash
+printf '%s\\n' "${STUB_KNOB}"
+"""
+
 HARNESS = """set -uo pipefail
 TITLE="AFC test note"
 MODE="${HARNESS_MODE:-update}"
 WANT_PIN="${HARNESS_WANT_PIN:-0}"
 APPLE_NOTES_PIN="${HARNESS_APPLE_NOTES_PIN:-1}"
+#  the knob's resolved value, as the caller forwards it:  set here so the tests never shell out to
+#  fleet_knobs, and so APPLE_NOTES_PIN_RETRY in the environment keeps meaning a narrowing override
+APPLE_NOTES_PIN_RETRY="${HARNESS_APPLE_NOTES_PIN_RETRY-1}"
 #  the real block waits 2 s for the note index and 3 s between attempts;  the test only needs the shape
 sleep() { :; }
 {function}
@@ -68,12 +78,14 @@ def _extract(source: str) -> tuple[str, str]:
     The anchors are pre-existing lines, so the same extraction works against the script before the
     AFC-431 fix and the tests fail there on behaviour rather than on a missing marker.
     """
+    knob = re.search(r"^_PIN_RETRY=\"\"\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
     fn = re.search(r"^_run_note_shortcut\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
     assert fn, "the _run_note_shortcut function is gone from apple-notes-coding.sh"
+    assert knob, "the _pin_retry_on knob resolver is gone from apple-notes-coding.sh"
     start = source.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.")
     want = source.index('if [[ "$WANT_PIN" != "1" ]]; then')
     end = source.index("\nfi\n", want) + len("\nfi\n")
-    return fn.group(0), source[start:end]
+    return knob.group(0) + fn.group(0), source[start:end]
 
 
 def _extract_unpin(source: str) -> str:
@@ -105,6 +117,13 @@ class PinDecisionTests(unittest.TestCase):
             stub = bindir / "shortcuts"
             stub.write_text(STUB)
             stub.chmod(0o755)
+            if "STUB_KNOB" in env:
+                #  the script reads the knob through the fleet_knobs package next to it and the
+                #  python3 that runs it:  both live here, so `python3 -m fleet_knobs get` is the stub
+                (Path(tmp) / "fleet_knobs").mkdir()
+                knob_stub = bindir / "python3"
+                knob_stub.write_text(KNOB_STUB)
+                knob_stub.chmod(0o755)
             counter = Path(tmp) / "counter"
             script = Path(tmp) / "harness.sh"
             #  a plain replace, because the harness carries shell ${...} braces that str.format would eat
@@ -173,10 +192,30 @@ class PinDecisionTests(unittest.TestCase):
 
     def test_the_retry_can_be_switched_off(self):
         """APPLE_NOTES_PIN_RETRY=0 keeps the single attempt, for a caller that will not risk a second run."""
-        p, runs = self.run_block(STUB_FAIL_FIRST="99", APPLE_NOTES_PIN_RETRY="0")
+        p, runs = self.run_block(STUB_FAIL_FIRST="99", HARNESS_APPLE_NOTES_PIN_RETRY="0")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("shortcut run failed", p.stdout)
         self.assertEqual(runs, 1, "the retry ran even though it was switched off")
+
+    def test_the_knob_turns_the_retry_off(self):
+        """The fleet knob (Infisical) owns the switch;  false keeps the single attempt."""
+        p, runs = self.run_block(STUB_FAIL_FIRST="99", HARNESS_APPLE_NOTES_PIN_RETRY="", STUB_KNOB="false")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(runs, 1, "the retry ran even though the knob turned it off")
+
+    def test_the_environment_cannot_turn_the_retry_back_on(self):
+        """A local value may only narrow:  it can stop the retry, never start one the knob turned off."""
+        p, runs = self.run_block(
+            STUB_FAIL_FIRST="99", HARNESS_APPLE_NOTES_PIN_RETRY="1", STUB_KNOB="false"
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(runs, 1, "the environment widened the knob back to a retry")
+
+    def test_the_knob_turns_the_retry_on(self):
+        """The knob alone decides when the caller names no override."""
+        p, runs = self.run_block(STUB_FAIL_FIRST="99", HARNESS_APPLE_NOTES_PIN_RETRY="", STUB_KNOB="true")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(runs, 2, "the retry did not run even though the knob turned it on")
 
     def test_the_gui_fallback_is_still_reachable_after_a_failed_run(self):
         """--pin still has to reach the GUI path when the Shortcut fails, so the skip line must not fire."""
