@@ -771,8 +771,13 @@ class Tools:
             self._call_tag = _sha(self.thread_id)[:8]
             self.session_source = "codex_thread_meta_sha256"
 
-    def _use_tag(self, tag: str | None) -> None:
-        """Display tags may be short; native Codex ledgers use the full verified UUID."""
+    def _use_tag(self, tag: str | None, session_id: str | None = None) -> None:
+        """Display tags may be short; native Codex ledgers use the full verified UUID.
+
+        `session_id` is the FULL id the caller passed as `session`, when it passed one.  Without
+        it the tag is all that survives into the state file, and the session behind the tag is
+        unrecoverable.
+        """
         state_key = self._call_state_key if tag == self._call_tag else None
         key = state_key or tag
         if tag != self.agent.tag or self.agent.state.tag != key:
@@ -783,15 +788,17 @@ class Tools:
                 key,
                 retain_posted=bool(state_key),
                 # The id must be the one BEHIND the tag this file is written under:  a native
-                # codex-thread state belongs to the thread id, the server's own tag belongs to the
-                # server's own session id, and a client-supplied tag carries no full id at all --
-                # writing the server's id under it would point a foreign tag at this process's
-                # session.  Without an id here a post records only the 8-character tag, and the
-                # session behind it is unrecoverable.
+                # codex-thread state belongs to the thread id, the caller's own `session` belongs
+                # to the tag derived from it, and the server's own tag belongs to the server's
+                # own session id.  A tag the server cannot attribute to any of those carries no
+                # id:  writing the server's id under it would point a foreign tag at this
+                # process's session.  Without an id a post records only the 8-character tag.
                 session_id=(
                     self.thread_id
                     if state_key
-                    else (self.agent.session_id if key == self.process_tag else None)
+                    else (
+                        session_id or (self.agent.session_id if key == self.process_tag else None)
+                    )
                 ),
             )
 
@@ -1218,7 +1225,7 @@ class Tools:
         self._scan(text=args["text"], topic=topic, channel=channel)
         text = self._text(args["text"])
         to = list(args.get("to") or [])
-        self._use_tag(self._call_tag or Z.session_tag(args.get("session")))
+        self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
         key = self._key(
             args.get("idempotency_key"),
             ["post", self.agent.tag, channel.casefold(), topic.casefold(), text, to],
@@ -1254,7 +1261,7 @@ class Tools:
         self._scan(text=args["text"])
         text = self._text(args["text"])
         to = list(args.get("to") or [])
-        self._use_tag(self._call_tag or Z.session_tag(args.get("session")))
+        self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
         key = self._key(
             args.get("idempotency_key"), ["reply", self.agent.tag, message_id, text, to]
         )
@@ -1332,7 +1339,7 @@ class Tools:
         return clean(value, limit)[0] if isinstance(value, str) else value
 
     def _tagged(self, text: str, session: str | None) -> str:
-        self._use_tag(self._call_tag or Z.session_tag(session))
+        self._use_tag(self._call_tag or Z.session_tag(session), session)
         return CLI._compose(self.agent, text, labels=[], mentions=[], no_tag=False)
 
     def _write(self, func: Callable[[], Any]) -> Any:
@@ -1519,7 +1526,7 @@ class Tools:
                 "invalid_argument", "that is only this bot:  name at least one other person"
             )
         ids = [int(p["user_id"]) for p in people]
-        self._use_tag(self._call_tag or Z.session_tag(args.get("session")))
+        self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
         explicit = args.get("idempotency_key")
         key = self._key(
             "dm:" + explicit if explicit else None, ["dm_send", self.agent.tag, ids, text]

@@ -14,7 +14,6 @@ import sys
 import tempfile
 import time
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from agent_sync import adapters as A
@@ -142,17 +141,17 @@ class MuseEnvTest(unittest.TestCase):
     def test_env_is_minimal_and_names_the_seat(self) -> None:
         env = A.muse_env(
             {
-                "USER": "jay",
+                "USER": "fixture-user",
                 "TMPDIR": "/tmp",
                 "ANTHROPIC_API_KEY": "secret",
                 "ZULIP_API_KEY": "secret",
                 "MUSE_TOKEN": "secret",
             },
-            "/home/jay",
+            "/home/fixture-user",
             "/wake/path",
             seat="MM",
         )
-        self.assertEqual(env["HOME"], "/home/jay")
+        self.assertEqual(env["HOME"], "/home/fixture-user")
         self.assertEqual(env["PATH"], "/wake/path")
         self.assertEqual(env["AGENT_LAUNCHER"], A.WAKE_LAUNCHER)
         self.assertEqual(env["AGENT_LAUNCH_SEAT"], "MM")
@@ -163,7 +162,7 @@ class MuseEnvTest(unittest.TestCase):
             self.assertNotIn(leaked, env)
 
     def test_without_a_seat_no_identity_is_injected(self) -> None:
-        env = A.muse_env({"USER": "jay"}, "/home/jay", "/wake/path")
+        env = A.muse_env({"USER": "fixture-user"}, "/home/fixture-user", "/wake/path")
         self.assertNotIn("AGENT_SEAT", env)
         self.assertNotIn("AGENT_LAUNCHER", env)
 
@@ -398,19 +397,6 @@ class McodeFallbackTest(unittest.TestCase):
     coercion and a populated `board` object.  What did not pass is the lockdown, and that is why the
     order is fixed:  muse then mcode, never the reverse."""
 
-    def test_fallback_fingerprint_covers_contract_and_schema(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            contract = Path(tmp) / "contract.md"
-            contract.write_text("Contract one.")
-            with mock.patch.object(A, "CONTRACT_PATH", str(contract)):
-                first = A.mcode_wake_fingerprint("fixture-mcode")
-                contract.write_text("Contract two.")
-                self.assertNotEqual(first, A.mcode_wake_fingerprint("fixture-mcode"))
-                with mock.patch.object(A, "schema_text", return_value="fixture-schema"):
-                    self.assertNotEqual(first, A.mcode_wake_fingerprint("fixture-mcode"))
-                contract.unlink()
-                self.assertEqual(A.mcode_wake_fingerprint("fixture-mcode"), "")
-
     def test_the_argv_states_what_mcode_can_state(self) -> None:
         argv = A.mcode_argv("/usr/local/bin/mcode")
         self.assertEqual(argv[:2], ["/usr/local/bin/mcode", "exec"])
@@ -450,8 +436,8 @@ class McodeFallbackTest(unittest.TestCase):
         # Verified, not assumed:  pointing HOME at the inert workspace made mcode refuse with
         # "Sign in to MiniMax to use Agent features".  Recorded so nobody "hardens" it into a
         # guaranteed-broken wake.
-        env = A.mcode_env({"USER": "jay"}, "/home/jay", "/wake/path")
-        self.assertEqual(env["HOME"], "/home/jay")
+        env = A.mcode_env({"USER": "fixture-user"}, "/home/fixture-user", "/wake/path")
+        self.assertEqual(env["HOME"], "/home/fixture-user")
         for leaked in ("ANTHROPIC_API_KEY", "ZULIP_API_KEY"):
             self.assertNotIn(leaked, env)
 
@@ -542,11 +528,77 @@ class McodeFallbackTest(unittest.TestCase):
             self.assertEqual(
                 A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3.1-Flash")["why"], "pin_stale"
             )
-            # A pin recorded before the fingerprint existed cannot stand in for one.
+            # A pin recorded before the fingerprint existed vouches for nothing about the current
+            # command, and says so apart from a moved binary:  the binary here is the same, so
+            # `pin_stale` would point the operator at a path that never moved.
             L.write_json(paths.wake_pin_mcode, {"mcode": A.binary_pin(exe), "at": time.time()})
-            self.assertEqual(
-                A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3")["why"], "pin_stale"
-            )
+            state = A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3")
+            self.assertEqual(state["why"], "pin_unverified")
+            self.assertFalse(state["pinned"])
+            self.assertEqual(state["mcode"], state["pinned_mcode"])
+
+    def test_the_fallback_cause_names_the_fault_instead_of_repeating_the_path(self) -> None:
+        # `pin_stale` covers a moved binary and a changed model/contract/schema.  Reporting the
+        # wrong one points the operator at a path that never moved, and shows it twice.
+        moved = {
+            "why": "pin_stale",
+            "mcode": "/opt/homebrew/bin/mcode",
+            "pinned_mcode": "/usr/local/bin/mcode",
+        }
+        self.assertIn("mcode moved to", A.mcode_pin_cause(moved))
+        self.assertIn("/usr/local/bin/mcode", A.mcode_pin_cause(moved))
+        changed = {
+            "why": "pin_stale",
+            "mcode": "/opt/homebrew/bin/mcode",
+            "pinned_mcode": "/opt/homebrew/bin/mcode",
+        }
+        cause = A.mcode_pin_cause(changed)
+        self.assertIn("model, contract or schema", cause)
+        self.assertEqual(cause.count("/opt/homebrew/bin/mcode"), 1, cause)
+        unverified = {
+            "why": "pin_unverified",
+            "mcode": "/opt/homebrew/bin/mcode",
+            "pinned_mcode": "/opt/homebrew/bin/mcode",
+        }
+        self.assertIn("predates the command fingerprint", A.mcode_pin_cause(unverified))
+
+    def test_the_fallback_remediation_selects_the_fallback_runtime(self) -> None:
+        # Without `--runtime fallback`, `test-wake` resolves the default "auto" to seat_cfg.wake and
+        # re-pins the PRIMARY runtime, which leaves this pin stale and the fallback still refused.
+        # Both halves carry it, so the string is safe to follow even when only the red line was
+        # copied:  a `--pin` typed without `--runtime` would pin the PRIMARY runtime again.
+        self.assertEqual(
+            A.MCODE_PIN_REMEDIATION.count("--runtime fallback"), 2, A.MCODE_PIN_REMEDIATION
+        )
+        self.assertIn("--run", A.MCODE_PIN_REMEDIATION)
+        self.assertIn("--pin`", A.MCODE_PIN_REMEDIATION)
+        rendered = A.MCODE_PIN_REMEDIATION % ("MM", "MM")
+        self.assertEqual(rendered.count("--seat MM"), 2)
+
+    def test_the_fallback_fingerprint_covers_the_contract_and_the_schema(self) -> None:
+        # The fallback is validated against the same wake contract and result schema the muse
+        # runner uses, so a pin that ignores them still reads as verified after either changes.
+        base = A.mcode_wake_fingerprint("<mcode>", "minimax/MiniMax-M3")
+        self.assertTrue(base)
+        original = A.MCODE_WAKE_POLICY_VERSION
+        try:
+            A.MCODE_WAKE_POLICY_VERSION = "mcode-fallback-model-v2"
+            self.assertNotEqual(A.mcode_wake_fingerprint("<mcode>", "minimax/MiniMax-M3"), base)
+        finally:
+            A.MCODE_WAKE_POLICY_VERSION = original
+        self.assertEqual(A.mcode_wake_fingerprint("<mcode>", "minimax/MiniMax-M3"), base)
+
+    def test_the_fallback_fingerprint_fails_closed_when_the_contract_is_unreadable(self) -> None:
+        # A pin must never vouch for a command whose contract could not be loaded, so an
+        # unreadable contract returns None and every pin reads stale rather than pinned.
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = os.path.join(tmp, "no-such-contract.md")
+            original = A.CONTRACT_PATH
+            try:
+                A.CONTRACT_PATH = missing
+                self.assertIsNone(A.mcode_wake_fingerprint("<mcode>", "minimax/MiniMax-M3"))
+            finally:
+                A.CONTRACT_PATH = original
 
     def test_a_fallback_candidate_from_another_model_is_not_pinned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
