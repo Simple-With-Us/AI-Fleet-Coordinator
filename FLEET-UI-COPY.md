@@ -199,11 +199,14 @@ destination:
   a real gap.  Two ASCII spaces collapse, and a raw U+00A0 typed by the model arrives as a
   plain space (the verified reply held 0 NBSPs).
 - **Chat reply in the MiniMax Code chat pane** (owner-verified 2026-10-20):  a REAL U+00A0, the
-  nbsp character, right after the period, then a normal space, outside code spans — emitted by
-  the shell, never typed, because a raw U+00A0 typed into a message is normalized away (see
-  "What does NOT work" below).  Jay:  "I
-  think you need to do nbsp for chats or something", and "I have confirmed this before with
-  agents and knew you needed nbsp already".  Two ASCII spaces collapse in that pane, and the
+  nbsp character, right after the period, then a normal space, outside code spans.  Emit that
+  character in the shell, never type it, because a U+00A0 written into a message is normalized
+  away the same way a double space is:
+  `printf 'Sentence one.\302\240 Sentence two.\n'`, where `\302\240` is the UTF-8 encoding of
+  U+00A0, then check the result with `grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l`, which must
+  not print `0`.  Jay:  "I think you need to do nbsp for chats or something", and "I have
+  confirmed this before with agents and knew you needed nbsp already".  Two ASCII spaces
+  collapse in that pane, and the
   `&nbsp;` ENTITY renders as the six literal characters, which is worse than no gap at all.
   The earlier 2026-10-18 note for this pane, entity plus a space, was wrong, and it is
   corrected here.
@@ -249,9 +252,12 @@ U+00A0 plus a space (owner-verified).  Do not re-run these tests.  Owner ruling 
 a surface is known to collapse two typed spaces (any Markdown or HTML renderer), use its working
 mechanism without asking; confirmation is no longer needed per surface.
 
-**What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
+**What does NOT work, tested in front of the owner:** a raw U+00A0 character typed into a Claude
+Code Code-tab chat message
 (normalized away in the view, even though copy-paste showed two spaces -- do not be fooled by
-copy-paste); app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
+copy-paste; in the MiniMax Code pane a real U+00A0 does render, but only when the shell emits
+it -- see "HOW to emit it" above); app settings (none exist -- `outputStyle` changes tone only,
+`--output-format` is
 headless `claude -p` only, `axScreenReader` only drops borders); patching the client (the CLI is
 a ~277MB compiled Mach-O binary, the desktop app is a signed native bundle -- patching breaks
 code signing and is wiped by auto-update; do not attempt).  (Two literal ASCII spaces in chat
