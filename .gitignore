@@ -23,3 +23,8 @@ scripts/host/fleet-health-recover.d/*.env
 
 # Wrangler local dev cache (start.jays.services Worker)
 scripts/safari-start/.wrangler/
+
+# Muster generated project and local build staging
+muster/Muster.xcodeproj/
+muster/.build/
+muster/dist/
