@@ -22,17 +22,17 @@ def check_bot(user):
 class Tests(unittest.TestCase):
     def test_exact_bot(self):
         self.assertTrue(
-            check_bot({"owner_id":12,"is_bot": True, "user_id": OPERATOR_BOT_ID, "email": OPERATOR_EMAIL})
+            check_bot({"bot_owner_id":12,"is_bot": True, "user_id": OPERATOR_BOT_ID, "email": OPERATOR_EMAIL})
         )
 
     def test_wrong_id(self):
-        self.assertFalse(check_bot({"owner_id":12,"is_bot": True, "user_id": 1, "email": OPERATOR_EMAIL}))
+        self.assertFalse(check_bot({"bot_owner_id":12,"is_bot": True, "user_id": 1, "email": OPERATOR_EMAIL}))
 
     def test_old_admin(self):
         self.assertFalse(
             check_bot(
                 {
-                    "owner_id":12,"is_bot": True,
+                    "bot_owner_id":12,"is_bot": True,
                     "user_id": OPERATOR_BOT_ID,
                     "email": "fixture-old-admin@example.test",
                 }
@@ -41,7 +41,7 @@ class Tests(unittest.TestCase):
 
     def test_not_bot(self):
         self.assertFalse(
-            check_bot({"owner_id":12,"is_bot": False, "user_id": OPERATOR_BOT_ID, "email": OPERATOR_EMAIL})
+            check_bot({"bot_owner_id":12,"is_bot": False, "user_id": OPERATOR_BOT_ID, "email": OPERATOR_EMAIL})
         )
 
     def test_not_agent_roster(self):
@@ -95,7 +95,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(seen["env"][Z.ENV_INFISICAL_PROJECT], AFC_PROJECT)
 
     def test_wrong_owner_refused(self):
-        self.assertFalse(check_bot({"owner_id":99,"is_bot":True,"user_id":OPERATOR_BOT_ID,"email":OPERATOR_EMAIL}))
+        self.assertFalse(check_bot({"bot_owner_id":99,"is_bot":True,"user_id":OPERATOR_BOT_ID,"email":OPERATOR_EMAIL}))
     def test_missing_project_refused(self):
         with self.assertRaises(Z.CredentialError):operator_credentials({k:v for k,v in ENV.items() if k != "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"})
     def test_missing_identity_refused(self):

@@ -457,10 +457,10 @@ test("notes_status answers not_configured, and trusts nobody, when the consumer 
 
 test("OPERATOR service consumer trusts only the pinned bot, not display names or Admin", async () => {
   const { tools } = harness({ consumer: "OPERATOR" });
-  const correct = { owner_id: tools.config.ownerUserId, is_bot: true, user_id: 43210, email: "operator@example.test", full_name: "[Operator]" };
+  const correct = { bot_owner_id: tools.config.ownerUserId, is_bot: true, user_id: 43210, email: "operator@example.test", full_name: "[Operator]" };
   assert.equal(await tools.notesFleetBot(43210, [correct]), true);
   assert.equal(await tools.notesFleetBot(43210, [{ ...correct, email: "fixture-old-admin@example.test" }]), false);
-  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, owner_id: 999 }]), false);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, bot_owner_id: 999 }]), false);
   assert.equal(await tools.notesFleetBot(1, [{ ...correct, user_id: 1 }]), false);
   assert.equal(await tools.notesFleetBot(43210, [{ ...correct, is_bot: false }]), false);
   assert.equal(await tools.notesFleetBot(43210, [{ ...correct, email: "other@example.test" }]), false);

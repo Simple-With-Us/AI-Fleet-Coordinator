@@ -312,7 +312,7 @@ export const NOTES_METHODS = {
       return Number.isSafeInteger(this.config.operatorZulipUserId) && this.config.operatorZulipUserId > 0
         && user.user_id === this.config.operatorZulipUserId
         && Number.isSafeInteger(this.config.ownerUserId) && this.config.ownerUserId > 0
-        && (user.owner_id ?? user.owner_user_id) === this.config.ownerUserId
+        && user.bot_owner_id === this.config.ownerUserId
         && String(user.email ?? "").toLowerCase() === this.config.operatorZulipEmail;
     }
     return seatTagFor(user) === this.config.notesRelayConsumer;

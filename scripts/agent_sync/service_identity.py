@@ -31,7 +31,7 @@ def operator_bot(user, env, owner_id):
     return (
         isinstance(owner_id, int)
         and owner_id > 0
-        and user.get("owner_id", user.get("owner_user_id")) == owner_id
+        and user.get("bot_owner_id") == owner_id
         and user.get("is_bot") is True
         and user.get("user_id") == bot_id
         and str(user.get("email", "")).casefold() == email
