@@ -141,9 +141,8 @@ def environment_refusal(env: Mapping[str, str]) -> str | None:
         slug = (env.get(var) or "").strip().lower()
         if slug and slug != ENVIRONMENT:
             return (
-                "refusing Infisical environment %r from %s:  prod is the only environment "
+                f"refusing Infisical environment {slug!r} from {var}:  prod is the only environment "
                 "(dev and staging are retired);  unset it or set it to prod;  see INFISICAL.md"
-                % (slug, var)
             )
     return None
 
@@ -169,14 +168,12 @@ def infisical_project_id(env: Mapping[str, str], home: Path, project: str = DEFA
             value = ""
     if not value:
         raise SecretsError(
-            "the %s Infisical project id is not set:  set %s or put it in ~/%s "
+            f"the {_LABELS[project]} Infisical project id is not set:  set {env_name} or put it in ~/{project_file} "
             "(it lives in the private fleet-ops inventory)"
-            % (_LABELS[project], env_name, project_file)
         )
     if not _UUID_RE.match(value):
         raise SecretsError(
-            "the %s Infisical project id (%s or ~/%s) is not a UUID"
-            % (_LABELS[project], env_name, project_file)
+            f"the {_LABELS[project]} Infisical project id ({env_name} or ~/{project_file}) is not a UUID"
         )
     return value
 
@@ -210,6 +207,10 @@ def check_name(name: str) -> str:
 
 def _base_env(env: Mapping[str, str]) -> dict[str, str]:
     out = dict(env)
+    # Automation credentials are resolved by machine_token from the caller's mapping,
+    # then translated to the CLI's universal-auth names only for the login subprocess.
+    out.pop(ENV_AUTOMATION_ID, None)
+    out.pop(ENV_AUTOMATION_SECRET, None)
     out["INFISICAL_DISABLE_UPDATE_CHECK"] = "true"
     return out
 
@@ -280,8 +281,7 @@ def _complete_or_none(label: str, keychain: str | None) -> bool:
         return True
     if have_id or have_secret:
         raise SecretsError(
-            "keychain-incomplete:  %s needs both accounts %s and %s under service %s, or neither"
-            % (label, KEYCHAIN_CLIENT_ID, KEYCHAIN_CLIENT_SECRET, KEYCHAIN_SERVICE)
+            f"keychain-incomplete:  {label} needs both accounts {KEYCHAIN_CLIENT_ID} and {KEYCHAIN_CLIENT_SECRET} under service {KEYCHAIN_SERVICE}, or neither"
         )
     return False
 
@@ -313,8 +313,7 @@ def auth_mode(env: Mapping[str, str]) -> str:
             return "automation-env"
         if have_id or have_secret:
             raise SecretsError(
-                "automation-env-incomplete:  set both %s and %s, or neither"
-                % (ENV_AUTOMATION_ID, ENV_AUTOMATION_SECRET)
+                f"automation-env-incomplete:  set both {ENV_AUTOMATION_ID} and {ENV_AUTOMATION_SECRET}, or neither"
             )
     return "session"
 
@@ -357,7 +356,7 @@ def machine_token(cli: str, env: Mapping[str, str], mode: str = "keychain") -> s
         client_id = client_secret = ""
         child = {}
     if proc.returncode != 0:
-        raise SecretsError("login-failed:  exit-%d" % proc.returncode)
+        raise SecretsError(f"login-failed:  exit-{proc.returncode}")
     try:
         token = proc.stdout.decode("utf-8").strip()
     except UnicodeDecodeError:
@@ -433,9 +432,9 @@ def fetch_all(
     argv = [
         cli,
         "export",
-        "--env=%s" % ENVIRONMENT,
-        "--projectId=%s" % project,
-        "--path=%s" % path,
+        f"--env={ENVIRONMENT}",
+        f"--projectId={project}",
+        f"--path={path}",
         "--format=json",
         "--silent",
     ]
@@ -456,7 +455,7 @@ def fetch_all(
     finally:
         child = {}
     if proc.returncode != 0:
-        raise SecretsError("fetch-failed:  exit-%d" % proc.returncode)
+        raise SecretsError(f"fetch-failed:  exit-{proc.returncode}")
     out = proc.stdout
     if len(out) > MAX_OUTPUT_BYTES:
         raise SecretsError("fetch-failed:  bad-output")
@@ -505,7 +504,7 @@ def reject_unresolved(secrets: Mapping[str, str], names: Iterable[str] | None = 
         val = secrets.get(key)
         if val is not None and REF_RE.match(val):
             raise SecretsError(
-                "unresolved-reference:  %s came back as an unexpanded Infisical reference" % key, 5
+                f"unresolved-reference:  {key} came back as an unexpanded Infisical reference", 5
             )
 
 
@@ -553,8 +552,9 @@ def check_writable(name: str, path: str) -> None:
         if path == folder and re.match(pattern, name):
             return
     raise SecretsError(
-        "set refused:  %s at %s is not on the built-in write allowlist (%s);  widening it needs a code change"
-        % (name, path, ", ".join("%s %s" % (f, p) for f, p in WRITE_ALLOWLIST)),
+        "set refused:  {} at {} is not on the built-in write allowlist ({});  widening it needs a code change".format(
+            name, path, ", ".join(f"{f} {p}" for f, p in WRITE_ALLOWLIST)
+        ),
         2,
     )
 
@@ -571,7 +571,7 @@ def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
     check_path(path)
     check_writable(name, path)
     if "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
-        raise SecretsError("value is empty-unsafe or larger than %d bytes" % MAX_VALUE_BYTES, 2)
+        raise SecretsError(f"value is empty-unsafe or larger than {MAX_VALUE_BYTES} bytes", 2)
     project = infisical_project_id(env, home_dir(env))
     cli = find_cli(env)
     if not cli:
@@ -596,18 +596,19 @@ def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
         # (404 on a listing of it) is an error and nothing is written.
         probe = _api(
             "GET",
-            "/v3/secrets/raw?workspaceId=%s&environment=%s&secretPath=%s&recursive=false&include_imports=false"
-            % (project, ENVIRONMENT, urllib.request.quote(path, safe="/")),
+            "/v3/secrets/raw?workspaceId={}&environment={}&secretPath={}&recursive=false&include_imports=false".format(
+                project, ENVIRONMENT, urllib.request.quote(path, safe="/")
+            ),
             token,
             None,
             env,
         )
         if probe == 404:
             raise SecretsError(
-                "folder-missing:  %s does not exist in Fleet-OPS;  nothing was written" % path, 4
+                f"folder-missing:  {path} does not exist in Fleet-OPS;  nothing was written", 4
             )
         if probe != 200:
-            raise SecretsError("write-failed:  folder-check http-%d" % probe, 4)
+            raise SecretsError(f"write-failed:  folder-check http-{probe}", 4)
         status = _api("PATCH", "/v3/secrets/raw/" + quoted, token, body, env)
         if status in (200, 201):
             return "updated"
@@ -615,7 +616,7 @@ def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
             status = _api("POST", "/v3/secrets/raw/" + quoted, token, body, env)
             if status in (200, 201):
                 return "created"
-        raise SecretsError("write-failed:  http-%d" % status)
+        raise SecretsError(f"write-failed:  http-{status}")
     finally:
         body = {}
         token = ""

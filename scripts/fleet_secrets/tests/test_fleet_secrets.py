@@ -57,12 +57,12 @@ class World:
             elif argv[-1] == FAKE_LOGIN_KEYCHAIN:
                 store = self.keychain
             else:
-                raise AssertionError("keychain lookup without an explicit keychain path: %r" % argv)
+                raise AssertionError(f"keychain lookup without an explicit keychain path: {argv!r}")
             if acct in store:
                 return subprocess.CompletedProcess(argv, 0, (store[acct] + "\n").encode(), b"")
             return subprocess.CompletedProcess(argv, 44, b"", b"not found")
         if argv[0] != FAKE_CLI:
-            raise AssertionError("unexpected program %r" % argv[0])
+            raise AssertionError(f"unexpected program {argv[0]!r}")
         if argv[1] == "--version":
             return subprocess.CompletedProcess(argv, 0, b"infisical version 0.43.141\n", b"")
         if argv[1] == "login" and len(argv) > 2 and argv[2] == "status":
@@ -85,7 +85,7 @@ class World:
                 else json.dumps(self.secrets).encode()
             )
             return subprocess.CompletedProcess(argv, 0, body, b"")
-        raise AssertionError("unexpected argv %r" % (argv[:2],))
+        raise AssertionError(f"unexpected argv {argv[:2]!r}")
 
     def exports(self):
         return [(a, e) for a, e in self.calls if len(a) > 1 and a[1] == "export"]
@@ -171,7 +171,7 @@ class GetTests(Base):
 class UnresolvedReferenceTests(Base):
     def test_unresolved_reference_fails_closed_naming_the_key(self):
         self.use(World(secrets={"ALPHA": VAL_A, "BROKEN": "${folder.OTHER}"}))
-        code, out, err = self.call("run", "--", "true")
+        code, _out, err = self.call("run", "--", "true")
         self.assertEqual(code, 5)
         self.assertIn("BROKEN", err)
         self.assertNotIn("folder.OTHER", err)
@@ -186,7 +186,7 @@ class UnresolvedReferenceTests(Base):
 
     def test_names_fails_closed_too(self):
         self.use(World(secrets={"ALPHA": VAL_A, "BROKEN": "${x}"}))
-        code, out, err = self.call("names")
+        code, out, _err = self.call("names")
         self.assertEqual((code, out), (5, ""))
 
     def test_a_value_that_merely_contains_a_reference_is_fine(self):
@@ -198,7 +198,7 @@ class RunTests(Base):
     def test_run_injects_env_and_execs(self):
         self.use(World())
         self.env["KEEP"] = "kept"
-        code, _, err = self.call("run", "--", "mycmd", "--flag", "x")
+        _code, _, err = self.call("run", "--", "mycmd", "--flag", "x")
         self.assertEqual(err, "")
         ((prog, argv, env),) = self.exec_calls
         self.assertEqual((prog, argv), ("mycmd", ["mycmd", "--flag", "x"]))
@@ -276,7 +276,7 @@ class RunTests(Base):
             "INFISICAL_CLIENT_SECRET": "STORED_SECRET_SENTINEL",
             core.ENV_CLIENT_SECRET: "STORED_UA_SENTINEL",
         }
-        w = self.use(World(secrets=secrets))
+        self.use(World(secrets=secrets))
         self.call("run", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertEqual(env["ALPHA"], VAL_A)
@@ -284,7 +284,7 @@ class RunTests(Base):
             {k for k in env if k.startswith("INFISICAL_")}, {core.ENV_PROJECT}
         )  # only the parent's own
         for var in ("INFISICAL_TOKEN", "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET"):
-            code, _, err = self.call("run", "--only", "ALPHA," + var, "--", "mycmd")
+            code, _, _err = self.call("run", "--only", "ALPHA," + var, "--", "mycmd")
             self.assertEqual(code, 2, var)
         self.assertEqual(len(self.exec_calls), 1)
         self.assertEqual(
@@ -348,7 +348,7 @@ class AuthSelectionTests(Base):
         ((largv, lenv),) = w.logins()
         self.assertIn("--method=universal-auth", largv)
         self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
-        eargv, eenv = w.exports()[0]
+        _eargv, eenv = w.exports()[0]
         self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
         self.assertNotIn(core.ENV_CLIENT_SECRET, eenv)
 
@@ -360,7 +360,7 @@ class AuthSelectionTests(Base):
         self.assertIn("--method=universal-auth", largv)
         self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
         self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
-        eargv, eenv = w.exports()[0]
+        _eargv, eenv = w.exports()[0]
         self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
         self.assertNotIn(core.ENV_CLIENT_SECRET, eenv)
         lookups = [a for a, _ in w.calls if a[0] == core.SECURITY_BIN]
@@ -423,10 +423,23 @@ class AuthSelectionTests(Base):
         self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
         self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
         self.assertNotIn(core.ENV_AUTOMATION_SECRET, lenv)
-        eargv, eenv = w.exports()[0]
+        _eargv, eenv = w.exports()[0]
         self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
         self.assertNotIn(core.ENV_AUTOMATION_SECRET, eenv)
         self.assertNoSentinel(out.replace(VAL_A, ""), err)
+
+    def test_token_mode_and_readonly_probes_never_forward_automation_pair(self):
+        w = self.use(World())
+        self._automation_env()
+        self.env[core.ENV_TOKEN] = ACCESS_TOKEN
+        self.assertEqual(self.call("get", "ALPHA")[0], 0)
+        self.assertEqual(core.cli_version(FAKE_CLI, self.env), "0.43.141")
+        self.assertTrue(core.session_valid(FAKE_CLI, self.env))
+        for argv, child in w.calls:
+            if argv[0] == FAKE_CLI:
+                self.assertNotIn(core.ENV_AUTOMATION_ID, child)
+                self.assertNotIn(core.ENV_AUTOMATION_SECRET, child)
+        self.assertEqual(self.env[core.ENV_AUTOMATION_SECRET], CLIENT_SECRET)
 
     def test_automation_env_is_ignored_off_linux(self):
         self.use(World())
@@ -805,7 +818,7 @@ class SetTests(Base):
 
     def test_the_cli_login_session_is_refused_because_it_cannot_hand_over_a_token(self):
         self.use(World())  # no keychain items:  session mode
-        code, out, err = self.run_set("CACHE_K", "--path", "/linear")
+        code, _out, err = self.run_set("CACHE_K", "--path", "/linear")
         self.assertEqual(code, 4)
         self.assertIn("machine identity", err)
         self.assertEqual(self.api, [])
