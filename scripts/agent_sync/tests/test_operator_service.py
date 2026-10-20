@@ -135,6 +135,57 @@ class Tests(unittest.TestCase):
         self.assertEqual(reached, [])
 
 
+class ListenerConnectTests(unittest.TestCase):
+    """The pinned Operator keeps the administrator account's own address, so the roster tag
+    (seat_tag_for) reads ADMIN, not OPERATOR:  the seat must connect on the service identity."""
+
+    def runner(self, email, env):
+        from types import SimpleNamespace as NS
+        from agent_sync import daemon as D
+
+        cfg = NS(seat="OPERATOR", bot="Operator", creds="infisical", wake="inbox")
+        runner = D.SeatRunner.__new__(D.SeatRunner)
+        runner.daemon = NS(
+            env=dict(env),
+            config=NS(owner_user_id=12, notes_relay_enabled=True, notes_relay_seat="OPERATOR",
+                      outgoing_webhook_seats=()),
+            realm="https://realm.example.test",
+        )
+        runner.cfg = cfg
+        runner.seat = "OPERATOR"
+        runner.creds = NS(email=email, key="test-key", site="https://realm.example.test")
+        runner.me = None
+        runner.me_person = {}
+        runner.streams = {}
+        runner.queue = None
+        runner.client = NS(get=lambda *a, **k: {"email": email, "role": 400, "is_bot": True,
+                                               "bot_owner_id": 12, "user_id": OPERATOR_BOT_ID,
+                                               "bot_type": 1})
+        return runner
+
+    def test_pinned_operator_connects_despite_admin_roster_tag(self):
+        from agent_sync import daemon as D
+
+        email = "admin-bot@example.test"
+        env = dict(ENV, OPERATOR_ZULIP_EMAIL=email)
+        runner = self.runner(email, env)
+        # The roster tag alone would refuse this seat:  it is ADMIN, not OPERATOR.
+        self.assertEqual(I.seat_tag_for({"is_bot": True, "email": email}), "ADMIN")
+        # It gets past the credential/role/roster checks and only then reaches the subscriptions
+        # fetch, which this fake client does not serve:  passing that point is the assertion.
+        with self.assertRaises(Exception) as c:
+            runner.connect()
+        self.assertNotIsInstance(c.exception, D.RoleRefused)
+
+    def test_lookalike_operator_is_still_refused(self):
+        from agent_sync import daemon as D
+
+        email = "admin-bot@example.test"
+        runner = self.runner(email, dict(ENV, OPERATOR_ZULIP_USER_ID="999"))
+        with self.assertRaises(D.RoleRefused):
+            runner.connect()
+
+
 class ConfigTests(unittest.TestCase):
     def config(self, **changes):
         seat = dict(bot="Operator", creds="infisical", wake="inbox")
