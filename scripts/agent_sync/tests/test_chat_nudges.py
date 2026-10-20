@@ -70,6 +70,24 @@ class ChatNudgesTest(unittest.TestCase):
     def _item(self) -> dict:
         return self.queue.snapshot()["items"][0]
 
+    def test_reconcile_is_bounded_and_rotates_after_restart(self):
+        for mid in range(9):
+            self.queue.enqueue(self.binding["channel"], self.binding["topic"], mid, 10)
+        with L.locked(self.queue.path):
+            data = self.queue._read()
+            for item in data["items"]:
+                item["status"] = "unknown"
+            L.write_json(self.queue.path, data)
+        transport = FakeTransport()
+        for now in (11, 12, 13):
+            # Reconstruct to prove the fairness cursor survives process replacement.
+            self.queue = ChatNudges(self.tmp.name, "GROK")
+            before = len(transport.receipt_calls)
+            self.queue.reconcile(transport, now)
+            self.assertLessEqual(len(transport.receipt_calls) - before, 4)
+        self.assertEqual(len({text for _, text in transport.receipt_calls}), 9)
+        self.assertTrue(all(row["status"] == "unknown" for row in self.queue.snapshot()["items"]))
+
     def test_nudge_is_deterministic_json_quoted_and_contains_no_body(self) -> None:
         text = nudge_text('channel "quote"', "topic\nline", "12345")
         self.assertEqual(text, nudge_text('channel "quote"', "topic\nline", "12345"))

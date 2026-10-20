@@ -263,11 +263,17 @@ class ChatNudges:
         with L.locked(self.path + ".reconcile"):
             with L.locked(self.path):
                 data = self._read()
-                unknown = [
-                    (row["id"], dict(row["binding"]), row["text"])
-                    for row in data["items"]
-                    if row.get("status") == "unknown"
-                ]
+                # Bound expensive native receipts and rotate fairly across permanent unknowns.
+                # Persist scan order so a listener restart cannot starve later deliveries.
+                rows = sorted(
+                    (row for row in data["items"] if row.get("status") == "unknown"),
+                    key=lambda row: row.get("receipt_checked_at", float("-inf")),
+                )[:4]
+                unknown = [(row["id"], dict(row["binding"]), row["text"]) for row in rows]
+                for row in rows:
+                    row["receipt_checked_at"] = float(now)
+                if rows:
+                    L.write_json(self.path, data)
             for item_id, binding, text in unknown:
                 try:
                     found = bool(transport.receipt(binding, text))

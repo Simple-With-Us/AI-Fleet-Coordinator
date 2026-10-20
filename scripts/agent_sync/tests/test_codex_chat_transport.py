@@ -56,7 +56,12 @@ class TransportTests(unittest.TestCase):
                     return {"thread": outer.thread}
                 if method == "thread/queue/list":
                     limit = params.get("limit")
-                    return {"data": outer.queued if limit is None else outer.queued[:limit]}
+                    start = int(params.get("cursor", "0"))
+                    end = start + limit
+                    return {
+                        "data": outer.queued[start:end],
+                        "nextCursor": str(end) if end < len(outer.queued) else None,
+                    }
                 if method == "thread/queue/add":
                     return (
                         outer.ack
@@ -127,6 +132,7 @@ class TransportTests(unittest.TestCase):
             [{"type": "text", "text": "nudge", "attachment": "x"}],
         ):
             self.queued[0]["input"] = input
+            self.adapter._receipts.clear()
             self.assertFalse(self.adapter.receipt(self.binding, "nudge"))
 
     def test_invalid_bindings_never_open_rpc(self):
@@ -145,11 +151,12 @@ class TransportTests(unittest.TestCase):
             ("readOnly", True),
             ("id", "wrong"),
             ("cwd", "/wrong"),
-            ("path", "/missing"),
+            ("path", str(self.path.parent / "missing")),
         ]:
             original = dict(self.thread)
             self.thread[key] = value
-            self.assertEqual(self.adapter.preflight(self.binding), "busy")
+            expected = "busy" if key == "path" else "invalid"
+            self.assertEqual(self.adapter.preflight(self.binding), expected)
             self.thread = original
         self.adapter.loaded = lambda _: False
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
@@ -172,12 +179,13 @@ class TransportTests(unittest.TestCase):
         # The probe must count the whole queue; a partial page would under-report a full one.
         self.assertEqual(
             [p["limit"] for m, p in self.calls if m == "thread/queue/list"],
-            [module.QUEUE_CAPACITY],
+            [module.QUEUE_PAGE_SIZE] * (module.QUEUE_CAPACITY // module.QUEUE_PAGE_SIZE),
         )
         self.calls.clear()
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
         self.assertNotIn("thread/queue/add", [x[0] for x in self.calls])
         self.queued = self.queued[:-1]
+        self.adapter._full_queues.clear()  # A drained queue becomes visible after its brief busy TTL.
         self.assertEqual(self.adapter.preflight(self.binding), "ready")
 
     def test_receipt_reads_the_same_queue_window_as_preflight(self):
@@ -186,7 +194,7 @@ class TransportTests(unittest.TestCase):
         self.assertFalse(self.adapter.receipt(self.binding, "nudge"))
         self.assertEqual(
             [p["limit"] for m, p in self.calls if m == "thread/queue/list"],
-            [module.QUEUE_CAPACITY],
+            [module.QUEUE_PAGE_SIZE],
         )
 
     def test_timeout_before_send_deferred_after_add_unknown(self):
@@ -207,8 +215,7 @@ class TransportTests(unittest.TestCase):
                 outer.calls.append((method, params))
                 if method == "thread/read":
                     state["reads"] += 1
-                    if state["reads"] > 1:
-                        # The second read is the one inside send(), after preflight said "ready".
+                    if state["reads"] == 1:
                         raise OSError("app-server vanished")
                     return {"thread": outer.thread}
                 return {"data": []}
@@ -219,6 +226,204 @@ class TransportTests(unittest.TestCase):
         self.adapter.rpc_factory = FailingRPC
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
         self.assertNotIn("thread/queue/add", [m for m, _ in self.calls])
+
+    def test_single_send_session_and_no_cached_ready_or_permit(self):
+        original = self.adapter.rpc_factory
+        with patch.object(self.adapter, "rpc_factory", wraps=original) as factory:
+            self.assertEqual(
+                self.adapter.send(self.binding, "nudge", permit=lambda: True), "accepted"
+            )
+            self.assertEqual(factory.call_count, 1)
+            self.assertEqual(sum(m == "thread/read" for m, _ in self.calls), 1)
+            self.assertEqual(
+                self.adapter.send(self.binding, "nudge", permit=lambda: False), "deferred"
+            )
+            self.assertEqual(factory.call_count, 2)
+
+    def test_terminal_history_scope_vs_retryable_missing_and_unloaded(self):
+        self.thread["path"] = "/outside/sessions/rollout.jsonl"
+        self.assertEqual(self.adapter.preflight(self.binding), "invalid")
+        self.thread["path"] = str(self.path)
+        self.path.unlink()
+        self.assertEqual(self.adapter.preflight(self.binding), "busy")
+        self.path.touch()
+        self.adapter.loaded = lambda _: False
+        self.assertEqual(self.adapter.preflight(self.binding), "busy")
+        self.adapter.loaded = lambda _: True
+        self.assertEqual(self.adapter.preflight(self.binding), "ready")
+
+    def test_full_queue_verdict_cached_per_exact_binding_and_expires(self):
+        self.queued = [{} for _ in range(module.QUEUE_CAPACITY)]
+        with patch.object(module.time, "monotonic", return_value=100) as clock:
+            self.assertEqual(self.adapter.preflight(self.binding), "busy")
+            count = len(self.calls)
+            for _ in range(20):
+                self.assertEqual(self.adapter.preflight(self.binding), "busy")
+            self.assertEqual(len(self.calls), count)
+            self.queued = []
+            clock.return_value = 106
+            self.assertEqual(self.adapter.preflight(self.binding), "ready")
+
+    def test_capacity_rejection_deferred_but_other_errors_uncertain(self):
+        original = self.adapter.rpc_factory
+
+        def factory():
+            rpc = original()
+            request = rpc.request
+
+            def request_with_rejection(method, params):
+                if method == "thread/queue/add":
+                    raise module.RPCError(
+                        {
+                            "code": -32600,
+                            "message": "queue cannot contain more than 100 submissions",
+                        }
+                    )
+                return request(method, params)
+
+            rpc.request = request_with_rejection
+            return rpc
+
+        self.adapter.rpc_factory = factory
+        self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
+        self.assertTrue(self.adapter._full(self.binding))
+        self.assertNotIn(
+            "queue cannot", str(module.RPCError({"code": -32600, "message": "private"}))
+        )
+
+    def test_wrong_or_boolean_capacity_error_code_remains_unknown_after_add(self):
+        original = self.adapter.rpc_factory
+        for code in (-32603, True, "-32600", None):
+
+            def factory():
+                rpc = original()
+                request = rpc.request
+
+                def reject(method, params):
+                    if method == "thread/queue/add":
+                        raise module.RPCError(
+                            {
+                                "code": code,
+                                "message": "queue cannot contain more than 100 submissions",
+                            }
+                        )
+                    return request(method, params)
+
+                rpc.request = reject
+                return rpc
+
+            self.adapter.rpc_factory = factory
+            self.assertEqual(self.adapter.send(self.binding, "nudge"), "unknown")
+            self.assertFalse(self.adapter._full(self.binding))
+
+    def test_receipt_snapshot_shared_for_different_items_then_refreshes(self):
+        self.queued = [
+            {
+                "clientUserMessageId": message_id(self.binding, "one"),
+                "input": [{"type": "text", "text": "one", "text_elements": []}],
+            }
+        ]
+        original = self.adapter.rpc_factory
+        with (
+            patch.object(module.time, "monotonic", return_value=100) as clock,
+            patch.object(self.adapter, "rpc_factory", wraps=original) as factory,
+        ):
+            self.assertTrue(self.adapter.receipt(self.binding, "one"))
+            self.assertFalse(self.adapter.receipt(self.binding, "two"))
+            self.assertEqual(factory.call_count, 1)
+            self.queued = [
+                {
+                    "clientUserMessageId": message_id(self.binding, "two"),
+                    "input": [{"type": "text", "text": "two", "textElements": []}],
+                }
+            ]
+            clock.return_value = 103
+            self.assertTrue(self.adapter.receipt(self.binding, "two"))
+            self.assertFalse(self.adapter.receipt(self.binding, "one"))
+            self.assertEqual(factory.call_count, 2)
+
+    def test_receipt_finds_last_page_and_bounds_requests(self):
+        self.queued = [{} for _ in range(module.QUEUE_CAPACITY - 1)] + [
+            {
+                "clientUserMessageId": message_id(self.binding, "nudge"),
+                "input": [{"type": "text", "text": "nudge", "text_elements": []}],
+            }
+        ]
+        self.assertTrue(self.adapter.receipt(self.binding, "nudge"))
+        pages = [p for m, p in self.calls if m == "thread/queue/list"]
+        self.assertEqual(len(pages), module.QUEUE_CAPACITY // module.QUEUE_PAGE_SIZE)
+        self.assertEqual(pages[-1]["cursor"], "90")
+        self.assertTrue(all(p["limit"] == module.QUEUE_PAGE_SIZE for p in pages))
+
+    def test_incomplete_cyclic_pagination_is_retryable_and_bounded(self):
+        original = self.adapter.rpc_factory
+
+        def factory():
+            rpc = original()
+            request = rpc.request
+            rpc.request = lambda method, params: (
+                {"data": [{}], "nextCursor": "repeated"}
+                if method == "thread/queue/list"
+                else request(method, params)
+            )
+            return rpc
+
+        self.adapter.rpc_factory = factory
+        self.assertEqual(self.adapter.preflight(self.binding), "busy")
+        self.assertFalse(self.adapter.receipt(self.binding, "nudge"))
+        self.assertEqual(self.adapter._receipts, {})
+
+    def test_failed_receipt_does_not_cache_false_and_hide_new_evidence(self):
+        self.fail = "thread/read"
+        self.assertFalse(self.adapter.receipt(self.binding, "nudge"))
+        self.assertEqual(self.adapter._receipts, {})
+        self.fail = None
+        self.queued = [
+            {
+                "clientUserMessageId": message_id(self.binding, "nudge"),
+                "input": [{"type": "text", "text": "nudge", "text_elements": []}],
+            }
+        ]
+        self.assertTrue(self.adapter.receipt(self.binding, "nudge"))
+
+    def test_rpc_preserves_structured_capacity_rejection_without_server_message(self):
+        script = self.home / "fake-codex"
+        script.write_text(
+            '#!/usr/bin/env python3\nimport sys,json\nfor line in sys.stdin:\n r=json.loads(line)\n if "id" in r:\n  result={"id":r["id"],"result":{}} if r["method"]=="initialize" else {"id":r["id"],"error":{"code":-32600,"message":"queue cannot contain more than 100 submissions"}}\n  print(json.dumps(result),flush=True)\n'
+        )
+        script.chmod(0o700)
+        rpc = RPC(str(script))
+        try:
+            with self.assertRaises(module.RPCError) as caught:
+                rpc.request("thread/queue/add", {})
+            self.assertTrue(caught.exception.queue_full)
+            self.assertEqual(caught.exception.code, -32600)
+            self.assertNotIn("queue cannot", str(caught.exception))
+        finally:
+            rpc.close()
+
+    def test_receipt_cache_retains_only_compact_evidence_and_expires_on_insert(self):
+        text = "sensitive message body " * 1000
+        self.queued = [
+            {
+                "clientUserMessageId": message_id(self.binding, text),
+                "input": [{"type": "text", "text": text, "text_elements": []}],
+            }
+        ]
+        with patch.object(module.time, "monotonic", return_value=100) as clock:
+            self.assertTrue(self.adapter.receipt(self.binding, text))
+            snapshot = self.adapter._receipts[self.adapter._key(self.binding)]
+            self.assertEqual(len(snapshot[1]), 1)
+            self.assertNotIn(text, repr(snapshot))
+            self.assertTrue(
+                all(isinstance(digest, bytes) and len(digest) == 32 for _, digest in snapshot[1])
+            )
+            self.adapter._receipts["expired"] = (99, set(), set())
+            self.adapter._receipts.clear()  # Force one refreshed evidence snapshot.
+            self.adapter._receipts["expired"] = (99, set(), set())
+            clock.return_value = 103
+            self.assertTrue(self.adapter.receipt(self.binding, text))
+            self.assertNotIn("expired", self.adapter._receipts)
 
     def test_rpc_close_swallows_teardown_errors(self):
         # Cleanup runs from callers' finally blocks; a raise there would replace an
@@ -252,6 +457,7 @@ class TransportTests(unittest.TestCase):
                 "input": [{"type": "text", "text": "nudge", "textElements": []}],
             }
         ]
+        self.adapter._receipts.clear()
         self.assertTrue(self.adapter.receipt(self.binding, "nudge"))
         self.queued = []
         self.path.write_text(
@@ -267,6 +473,8 @@ class TransportTests(unittest.TestCase):
             )
             + "\n"
         )
+        self.adapter._receipts.clear()
+        self.adapter._receipts.clear()
         self.assertFalse(self.adapter.receipt(self.binding, "nudge"))
         self.path.write_text(
             json.dumps(
@@ -274,6 +482,7 @@ class TransportTests(unittest.TestCase):
             )
             + "\n"
         )
+        self.adapter._receipts.clear()
         self.assertTrue(self.adapter.receipt(self.binding, "nudge"))
 
     def test_rpc_process_argv_has_no_resume_start_or_model_override(self):
@@ -334,12 +543,14 @@ class TransportTests(unittest.TestCase):
         ]:
             script = self.home / "fake-codex"
             script.write_text(
-                "#!/usr/bin/env python3\nimport sys\nfor line in sys.stdin:\n " + body + "\n"
+                "#!/usr/bin/env python3\nimport sys,json\nfor line in sys.stdin:\n r=json.loads(line)\n"
+                " if r.get('method')=='initialize': print(json.dumps({'id':r['id'],'result':{}}),flush=True)\n"
+                " elif 'id' in r: " + body + "\n"
             )
             script.chmod(0o700)
-            with patch.object(RPC, "request", autospec=True) as init:
-                init.return_value = {}
-                rpc = RPC(str(script))
+            rpc = RPC(
+                str(script)
+            )  # Real handshake proves the child is ready before timing its response.
             try:
                 with self.assertRaises(error):
                     rpc.request("thread/read", {}, timeout=2 if error is ValueError else 0.1)

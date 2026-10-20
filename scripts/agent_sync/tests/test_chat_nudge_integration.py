@@ -81,8 +81,10 @@ class ChatNudgeIntegrationTests(DaemonHarness):
             sent.append((target, text))
             return "accepted"
 
-        daemon._chat_transport = SimpleNamespace(preflight=lambda binding: "ready", send=send)
+        physical_probe = mock.Mock(return_value="ready")
+        daemon._chat_transport = SimpleNamespace(preflight=physical_probe, send=send)
         self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "accepted")
+        physical_probe.assert_called_once_with(binding)
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][0], binding)
         self.assertEqual(queue.snapshot()["items"][0]["status"], "accepted")
@@ -91,6 +93,32 @@ class ChatNudgeIntegrationTests(DaemonHarness):
             [r["state"] for r in runner.ledger.rows() if r.get("adapter") == "chat-nudge"],
             ["started", "done"],
         )
+
+    def test_codex_permit_rechecks_pause_without_another_physical_probe(self):
+        daemon = self.daemon()
+        runner = self._grok_runner(daemon)
+        runner.seat = "CODEX"
+        queue = daemon.chat_queue("CODEX")
+        binding = dict(
+            channel="agent-sync",
+            topic="AFC-305",
+            platform="codex",
+            host="host",
+            session_id="existing-1",
+            cwd="/repo",
+        )
+        queue.enqueue_target(binding, 42, self.clock.time(), source_seat="CODEX", owner=False)
+
+        def send(target, text, *, permit):
+            set_pause(daemon.root, "CODEX", wakes_only=True, by="test", now=self.clock.time())
+            return "accepted" if permit() else "deferred"
+
+        probe = mock.Mock(return_value="ready")
+        daemon._chat_transport = SimpleNamespace(preflight=probe, send=send)
+        self.assertEqual(daemon.dispatch_chat_nudge(runner)["status"], "pending")
+        probe.assert_called_once_with(binding)
+        self.assertEqual(runner.ledger.rows()[-1]["state"], "skipped")
+        self.assertEqual(queue.snapshot()["items"][0]["status"], "pending")
 
     def test_stale_owner_backlog_surfaces_once_but_fresh_owner_still_wakes(self):
         daemon = self.daemon()

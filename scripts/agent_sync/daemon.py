@@ -5147,7 +5147,7 @@ class Daemon:
                 self.wake_id = ""
                 self.pending: dict[str, Any] = {}
 
-            def preflight(inner, binding: dict[str, str]) -> str:
+            def gates(inner, binding: dict[str, str]) -> str:
                 if (
                     runner.seat not in ("GROK", "CURSOR", "CODEX")
                     or not runner.cfg.enabled
@@ -5206,6 +5206,12 @@ class Daemon:
                 if blocked:
                     return "busy"
                 inner.pending = row
+                return "ready"
+
+            def preflight(inner, binding: dict[str, str]) -> str:
+                readiness = inner.gates(binding)
+                if readiness != "ready":
+                    return readiness
                 if not hasattr(daemon, "_chat_transport"):
                     daemon._chat_transport = CT.ChatTransport()
                 return daemon._chat_transport.preflight(binding)
@@ -5213,7 +5219,11 @@ class Daemon:
             def send(inner, binding: dict[str, str], text: str) -> str:
                 # Repeat every daemon gate immediately before accounting and transport; a pause,
                 # budget change or loop-guard trip may have raced the earlier preflight.
-                readiness = inner.preflight(binding)
+                readiness = (
+                    inner.gates(binding)
+                    if binding.get("platform") == "codex"
+                    else inner.preflight(binding)
+                )
                 if readiness == "busy":
                     return "deferred"
                 if readiness != "ready":
@@ -5225,7 +5235,16 @@ class Daemon:
                     if not hasattr(daemon, "_chat_transport"):
                         daemon._chat_transport = CT.ChatTransport()
                     outcome = daemon._chat_transport.send(
-                        binding, text, permit=lambda: inner.preflight(binding) == "ready"
+                        binding,
+                        text,
+                        permit=lambda: (
+                            (
+                                inner.gates(binding)
+                                if binding.get("platform") == "codex"
+                                else inner.preflight(binding)
+                            )
+                            == "ready"
+                        ),
                     )
                 except Exception:
                     outcome = "unknown"

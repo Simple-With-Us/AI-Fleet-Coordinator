@@ -21,6 +21,12 @@ DESKTOP_EXECUTABLE = (
 # Native thread queues reject thread/queue/add past this many submissions, so preflight
 # must count the whole queue rather than a page of it.  A full queue drains on its own.
 QUEUE_CAPACITY = 100
+QUEUE_PAGE_SIZE = 10
+FULL_QUEUE_TTL = 5.0
+RECEIPT_TTL = 2.0
+CACHE_LIMIT = 64
+RECEIPT_CACHE_LIMIT = 8
+MAX_CACHED_MESSAGE_HASHES = 1024
 _LOADED_CACHE = (0.0, frozenset())
 
 
@@ -60,6 +66,28 @@ def loaded_rollouts():
         pass
     _LOADED_CACHE = (now, frozenset(paths))
     return _LOADED_CACHE[1]
+
+
+class InvalidThread(ValueError):
+    """The selected thread identity or writable-history scope is permanently invalid."""
+
+
+class ThreadUnavailable(ValueError):
+    """Local history or an existing desktop owner may become available later."""
+
+
+class RPCError(ValueError):
+    """A correlated structured server rejection; never retain or display its message."""
+
+    def __init__(self, error):
+        super().__init__("Codex RPC request rejected")
+        self.code = error.get("code") if isinstance(error, dict) else None
+        self.queue_full = (
+            isinstance(error, dict)
+            and type(self.code) is int
+            and self.code == -32600
+            and error.get("message") == "queue cannot contain more than 100 submissions"
+        )
 
 
 class RPC:
@@ -137,7 +165,9 @@ class RPC:
                 raise ValueError("Malformed Codex RPC response")
             if row.get("id") != expected:
                 continue
-            if "error" in row or not isinstance(row.get("result"), dict):
+            if "error" in row:
+                raise RPCError(row["error"])
+            if not isinstance(row.get("result"), dict):
                 raise ValueError("Codex RPC request failed")
             return row["result"]
         raise TimeoutError("Codex RPC timeout")
@@ -195,6 +225,8 @@ class CodexChatTransport:
             lambda: RPC(binary, env={**os.environ, "CODEX_HOME": str(self.home / ".codex")})
         )
         self.loaded = loaded or (lambda thread: thread.get("path") in loaded_rollouts())
+        self._full_queues = {}
+        self._receipts = {}
 
     def _valid(self, binding):
         if binding.get("platform") != "codex" or binding.get("host") != socket.gethostname():
@@ -217,76 +249,118 @@ class CodexChatTransport:
             or thread.get("id") != binding["session_id"]
             or thread.get("cwd") != binding["cwd"]
         ):
-            raise ValueError("Thread identity mismatch")
+            raise InvalidThread("Thread identity mismatch")
         if thread.get("archived") is True or thread.get("readOnly") is True:
-            raise ValueError("Thread is not writable")
+            raise InvalidThread("Thread is not writable")
         path = thread.get("path")
         if not isinstance(path, str):
-            raise ValueError("Missing local rollout")
+            raise ThreadUnavailable("Missing local rollout")
         file = Path(path)
         base = self.home / ".codex" / "sessions"
-        if (
-            not file.is_file()
-            or not os.access(file, os.R_OK)
-            or file.is_symlink()
-            or not file.resolve().is_relative_to(base.resolve())
-        ):
-            raise ValueError("Thread rollout is not active local history")
+        if file.is_symlink() or not file.resolve().is_relative_to(base.resolve()):
+            raise InvalidThread("Thread rollout is outside active local history")
+        if not file.is_file() or not os.access(file, os.R_OK):
+            raise ThreadUnavailable("Thread rollout is not readable yet")
         if not self.loaded(thread):
-            raise ValueError("Thread is not loaded")
+            raise ThreadUnavailable("Thread is not loaded")
         return thread
+
+    @staticmethod
+    def _key(binding):
+        return tuple(binding.get(k) for k in ("platform", "host", "session_id", "cwd"))
+
+    def _prerequisites(self):
+        return os.access(self.binary, os.X_OK) and (self.home / ".codex/queue_1.sqlite").is_file()
+
+    @staticmethod
+    def _remember(cache, key, value, *, limit=CACHE_LIMIT):
+        now = time.monotonic()
+        for old_key, old_value in list(cache.items()):
+            expires = old_value[0] if isinstance(old_value, tuple) else old_value
+            if expires <= now:
+                del cache[old_key]
+        if len(cache) >= limit and key not in cache:
+            del cache[next(iter(cache))]
+        cache[key] = value
+
+    def _full(self, binding):
+        return time.monotonic() < self._full_queues.get(self._key(binding), 0)
+
+    def _mark_full(self, binding):
+        self._remember(self._full_queues, self._key(binding), time.monotonic() + FULL_QUEUE_TTL)
+
+    @staticmethod
+    def _queue(rpc, binding):
+        """Small pages, at most one queue capacity; incomplete/cyclic listings fail closed."""
+        items, cursor, seen = [], None, set()
+        for _ in range((QUEUE_CAPACITY + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE):
+            params = {
+                "threadId": binding["session_id"],
+                "limit": min(QUEUE_PAGE_SIZE, QUEUE_CAPACITY - len(items)),
+            }
+            if cursor is not None:
+                params["cursor"] = cursor
+            result = rpc.request("thread/queue/list", params)
+            page = result.get("data")
+            if not isinstance(page, list) or len(page) > params["limit"]:
+                raise ValueError("Invalid queue page")
+            items.extend(page)
+            cursor = result.get("nextCursor")
+            if len(items) >= QUEUE_CAPACITY or cursor is None:
+                return items
+            if not isinstance(cursor, str) or not cursor or cursor in seen or not page:
+                raise ValueError("Invalid queue cursor")
+            seen.add(cursor)
+        raise ValueError("Queue pagination exceeds bounded capacity window")
 
     def preflight(self, binding):
         if not self._valid(binding):
             return "invalid"
+        if not self._prerequisites():
+            return "busy"
+        if self._full(binding):
+            return "busy"
         rpc = None
         try:
-            # A missing binary or queue database is a recoverable local state (app not
-            # installed yet, updated, or restarted), so it stays queued as "busy".  Only
-            # an unsupported host or platform is permanently unavailable, and _valid
-            # already rejects those as "invalid" before this point.
-            if (
-                not os.access(self.binary, os.X_OK)
-                or not (self.home / ".codex/queue_1.sqlite").is_file()
-            ):
-                return "busy"
             rpc = self.rpc_factory()
             self._thread(rpc, binding)
-            rows = rpc.request(
-                "thread/queue/list",
-                {"threadId": binding["session_id"], "limit": QUEUE_CAPACITY},
-            )
-            data = rows.get("data")
-            if not isinstance(data, list):
+            if len(self._queue(rpc, binding)) >= QUEUE_CAPACITY:
+                self._mark_full(binding)
                 return "busy"
-            # A full queue rejects the next add outright; treat it as busy so the nudge
-            # is retried after the queue drains rather than stranded as uncertain.
-            return "busy" if len(data) >= QUEUE_CAPACITY else "ready"
+            return "ready"
+        except InvalidThread:
+            return "invalid"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
             return "busy"
         finally:
             if rpc:
                 rpc.close()
 
-    def receipt(self, binding, text):
-        if not self._valid(binding):
-            return False
-        rpc = None
+    def _receipt_snapshot(self, binding):
+        key = self._key(binding)
+        cached = self._receipts.get(key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1], cached[2]
+        rpc = self.rpc_factory()
         try:
-            rpc = self.rpc_factory()
             thread = self._thread(rpc, binding)
-            result = rpc.request(
-                "thread/queue/list",
-                {"threadId": binding["session_id"], "limit": QUEUE_CAPACITY},
-            )
-            client_id = message_id(binding, text)
-            for item in result.get("data", []):
+            items = set()
+            for row in self._queue(rpc, binding):
+                if not isinstance(row, dict):
+                    continue
+                value = row.get("input")
+                if not isinstance(value, list) or len(value) != 1 or not isinstance(value[0], dict):
+                    continue
+                text = value[0].get("text")
+                client_id = row.get("clientUserMessageId")
                 if (
-                    isinstance(item, dict)
-                    and item.get("clientUserMessageId") == client_id
-                    and exact_text_input(item.get("input"), text)
+                    isinstance(text, str)
+                    and exact_text_input(value, text)
+                    and isinstance(client_id, str)
+                    and len(client_id) <= 128
                 ):
-                    return True
+                    items.add((client_id, hashlib.sha256(text.encode()).digest()))
+            messages = set()
             with open(thread["path"], "rb") as fh:
                 fh.seek(0, os.SEEK_END)
                 fh.seek(max(0, fh.tell() - MAX_RESPONSE))
@@ -300,42 +374,60 @@ class CodexChatTransport:
                     if not isinstance(event, dict) or not isinstance(event.get("payload"), dict):
                         continue
                     payload = event["payload"]
-                    if (
-                        event.get("type") == "event_msg"
-                        and payload.get("type") == "user_message"
-                        and payload.get("message") == text
-                    ):
-                        return True
-                    if (
+                    if event.get("type") == "event_msg" and payload.get("type") == "user_message":
+                        if isinstance(payload.get("message"), str):
+                            messages.add(hashlib.sha256(payload["message"].encode()).digest())
+                    elif (
                         event.get("type") == "response_item"
                         and payload.get("type") == "message"
                         and payload.get("role") == "user"
                     ):
-                        content = payload.get("content", [])
-                        if (
-                            "".join(
-                                x.get("text", "")
+                        content = payload.get("content")
+                        if isinstance(content, list):
+                            texts = [
+                                x.get("text")
                                 for x in content
-                                if isinstance(x, dict) and x.get("type") == "input_text"
-                            )
-                            == text
-                        ):
-                            return True
+                                if isinstance(x, dict)
+                                and x.get("type") == "input_text"
+                                and isinstance(x.get("text"), str)
+                            ]
+                            if texts:
+                                messages.add(hashlib.sha256("".join(texts).encode()).digest())
+            # Keep only compact evidence hashes.  Oversized histories remain verifiable
+            # on this call but never consume the bounded shared receipt cache.
+            if len(messages) <= MAX_CACHED_MESSAGE_HASHES:
+                self._remember(
+                    self._receipts,
+                    key,
+                    (time.monotonic() + RECEIPT_TTL, items, messages),
+                    limit=RECEIPT_CACHE_LIMIT,
+                )
+            return items, messages
+        finally:
+            rpc.close()
+
+    def receipt(self, binding, text):
+        if not self._valid(binding):
+            return False
+        try:
+            items, messages = self._receipt_snapshot(binding)
+            client_id = message_id(binding, text)
+            digest = hashlib.sha256(text.encode()).digest()
+            return digest in messages or (client_id, digest) in items
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
             return False
-        finally:
-            if rpc:
-                rpc.close()
-        return False
 
     def send(self, binding, text, *, permit: Callable[[], bool] | None = None):
-        if self.preflight(binding) != "ready":
+        if not self._valid(binding) or not self._prerequisites() or self._full(binding):
             return "deferred"
         rpc = None
         sent = False
         try:
             rpc = self.rpc_factory()
             self._thread(rpc, binding)
+            if len(self._queue(rpc, binding)) >= QUEUE_CAPACITY:
+                self._mark_full(binding)
+                return "deferred"
             if permit is not None and not permit():
                 return "deferred"
             sent = True
@@ -356,7 +448,13 @@ class CodexChatTransport:
                 or queued.get("clientUserMessageId") != message_id(binding, text)
             ):
                 return "unknown"
+            self._receipts.pop(self._key(binding), None)
             return "accepted"
+        except RPCError as exc:
+            if sent and exc.queue_full:
+                self._mark_full(binding)
+                return "deferred"
+            return "unknown" if sent else "deferred"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
             # Nothing reached thread/queue/add, so the wake is still safe to retry: only a
             # failure after the add is uncertain.

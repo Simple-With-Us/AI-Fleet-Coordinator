@@ -2,7 +2,7 @@
 
 ## 2026-10-19 CODEX — Native Codex Wake Transport (AFC-305, AFC-326)
 
-Adds exact loaded-thread delivery through Codex’s durable queue, CODEX queue dispatch in the existing listener, and CODEX destination selection in the Muse bridge.  Operator remains the existing listener service, with Echo’s token work integrated separately.  Native preflight, one queue acknowledgment and its exact stored-message receipt are verified; actual idle-turn pickup and fresh live Zulip-to-Muse acceptance remain pending.  Live source switches remain off until review and activation gates pass.
+Adds exact loaded-thread delivery through Codex’s durable queue, CODEX queue dispatch in the existing listener, and CODEX destination selection in the Muse bridge.  Operator remains the existing listener service, with Echo’s token work integrated separately.  Native preflight, one queue acknowledgment and its exact stored-message receipt are verified; actual idle-turn pickup is verified, while fresh live Zulip-to-Muse acceptance remains pending.  Live source switches remain off until review and activation gates pass.
 
 Rollout: `docs/rollouts/2026-10-19-native-codex-wake-delivery.md`.
 
