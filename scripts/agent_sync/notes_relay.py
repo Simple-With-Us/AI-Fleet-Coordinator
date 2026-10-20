@@ -435,7 +435,9 @@ def refuse_unconsumed(
 ) -> bool:
     """Refuse a relay request that no consumer on this Mac will write (the relay is off, or this host cannot run
     the notes script).  The requester reads the cross mark and the reply, so `notes_status` answers "refused"
-    with the reason instead of "queued" for ever.  The log carries the id and a code, never the reason text."""
+    with the reason instead of "queued" for ever.  The reply relays the request's own id, so that text goes
+    through the same credential scan and mention neutralising as the reason.  The log carries the id and a code,
+    never the reason text."""
     message_id = message.get("id")
     if not isinstance(message_id, int) or isinstance(message_id, bool):
         return False
@@ -447,7 +449,7 @@ def refuse_unconsumed(
     if isinstance(parsed, dict):
         candidate = parsed.get("request_id")
         request_id = candidate if isinstance(candidate, str) and candidate else None
-    label = request_id or "(message %d)" % message_id
+    label = W.neutralize_mentions(safe_reason(request_id or "(message %d)" % message_id))
     prefix = N.refusal_label(label)
     try:
         react(runner, message_id, N.REFUSED_EMOJI, log)

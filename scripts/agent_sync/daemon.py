@@ -996,12 +996,15 @@ class Daemon:
     def _retry_failed_refusals(self) -> None:
         """Publish again a refusal that failed on a retryable error, for the requests the hold is keeping the
         cursor below.  With no consumer running there is nothing to spool, so the reply itself is the retry:  a
-        refusal that lands frees the hold it was holding, and one that keeps failing waits for the next tick."""
+        refusal that lands frees the hold it was holding, and one that keeps failing on a retryable error waits for
+        the next tick.  A permanent failure frees the hold too:  nothing a retry could change (the message is gone,
+        the channel closed), so the cursor must not be held below it for ever."""
         seat = self.notes_relay_refuser
         reader = self.seats.get(seat) if seat else None
         if reader is None or not reader.connected or reader.client is None:
             return
         refused: list[tuple[str, int]] = []
+        gave_up: list[int] = []
         for key in sorted(self.notes_relay_retry, key=lambda item: item[1]):
             if key[0] != reader.seat:
                 continue
@@ -1009,23 +1012,44 @@ class Daemon:
                 message = reader.client.get("messages/%d" % key[1], {"apply_markdown": False}).get(
                     "message"
                 )
-                if not isinstance(message, dict) or not NR.refuse_unconsumed(
-                    reader, message, self.notes_relay_refusal_reason, self.log.write
-                ):
-                    continue
+            except Z.ApiError as exc:
+                if NR.retryable(exc):
+                    continue  # 429, 5xx, a permission error:  the next tick tries again
+                message = None  # the request is gone:  no reply could land
             except Exception:  # noqa: BLE001 - the next tick tries again
                 continue
+            if message is None or not isinstance(message, dict):
+                self.log.write(
+                    "notes-relay-refusal-gave-up", seat=reader.seat, id=key[1], status="gone"
+                )
+                del self.notes_relay_retry[key]
+                gave_up.append(key[1])
+                continue
+            try:
+                landed = NR.refuse_unconsumed(
+                    reader, message, self.notes_relay_refusal_reason, self.log.write
+                )
+            except Exception:  # noqa: BLE001 - a retryable error:  the next tick tries again
+                continue
             del self.notes_relay_retry[key]
-            refused.append(key)
-        if not refused:
+            if landed:
+                refused.append(key)
+            else:  # a permanent refusal failure:  nothing a retry could change, so the hold falls
+                self.log.write(
+                    "notes-relay-refusal-gave-up", seat=reader.seat, id=key[1], status="refused"
+                )
+                gave_up.append(key[1])
+        if not refused and not gave_up:
             return
-        self.log.write(
-            "notes-relay-refusal-retried",
-            seat=reader.seat,
-            ids=[mid for _, mid in refused],
-        )
+        if refused:
+            self.log.write(
+                "notes-relay-refusal-retried",
+                seat=reader.seat,
+                ids=[mid for _, mid in refused],
+            )
         self._release_relay_hold(reader)
-        reader.advance(max(mid for _, mid in refused))
+        if refused:
+            reader.advance(max(mid for _, mid in refused))
 
     def _abandon_relay_holds(self, why: str) -> None:
         """This listener has stopped consuming on purpose, so nothing will spool the requests it was holding the
