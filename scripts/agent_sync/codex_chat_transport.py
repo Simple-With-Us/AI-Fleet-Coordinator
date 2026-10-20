@@ -237,7 +237,9 @@ class CodexChatTransport:
         except (ValueError, TypeError, AttributeError):
             return False
         cwd = binding.get("cwd")
-        return isinstance(cwd, str) and os.path.isabs(cwd) and os.path.isdir(cwd)
+        # A missing directory is recoverable (an unmounted volume), so only shape is checked here;
+        # preflight reports the transient state as busy rather than a permanent hold.
+        return isinstance(cwd, str) and os.path.isabs(cwd)
 
     def _thread(self, rpc, binding):
         result = rpc.request(
@@ -316,7 +318,7 @@ class CodexChatTransport:
     def preflight(self, binding):
         if not self._valid(binding):
             return "invalid"
-        if not self._prerequisites():
+        if not self._prerequisites() or not os.path.isdir(binding["cwd"]):
             return "busy"
         if self._full(binding):
             return "busy"

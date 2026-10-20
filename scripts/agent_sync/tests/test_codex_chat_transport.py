@@ -138,11 +138,16 @@ class TransportTests(unittest.TestCase):
     def test_invalid_bindings_never_open_rpc(self):
         for changed in (
             {"host": "remote"},
-            {"cwd": "/not-present"},
+            {"cwd": "relative/workspace"},
             {"session_id": "not-uuid"},
             {"platform": "other"},
         ):
             self.assertEqual(self.adapter.preflight(dict(self.binding, **changed)), "invalid")
+        self.assertEqual(self.calls, [])
+
+    def test_missing_workspace_stays_busy_not_invalid(self):
+        # An unmounted workspace is recoverable; a terminal hold would drop the wake forever.
+        self.assertEqual(self.adapter.preflight(dict(self.binding, cwd="/not-present")), "busy")
         self.assertEqual(self.calls, [])
 
     def test_archived_unreadable_unknown_or_unloaded_refused(self):
