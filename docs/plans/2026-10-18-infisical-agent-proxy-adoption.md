@@ -49,6 +49,8 @@ Each phase is additive until Phase 5.  Nothing is deleted, booted out or rotated
 
 ### Phase 2:  Agent Proxy pilot
 
+**What retires `~/.secrets`, and what the broker is for (MiniMax, OPS-969, AFC #665).**  The Fleet-OPS credential inventory splits into keys a broker can carry as they stand, keys carried after minting a short-lived token, a minority a broker can never carry, and units that are not broker units at all (`/global-api-keys` and `/agent-proxy`) — the counts and the per-key breakdown stay in the private attack map rather than here.  So `fleet-secrets` is what retires `~/.secrets`, and the broker is a hardening layer on top for the brokerable keys.  File-type secrets move into Infisical as values and are written to a `0600` temp file from `fleet-secrets get` only for the life of the job.  The proxied-service map from #665 is the input for the pilot's first services, starting with each seat's Zulip Basic auth.
+
 - Run one standalone proxy (`infisical secrets agent-proxy start`, proxy identity from `/agent-proxy`, `--unmatched-host block`) as a LaunchAgent, and launch one terminal agent (the `claude` CLI or `opencode`) through `connect` with the agent identity.  Services for Zulip, Linear, GitHub and recall.
 - Unknowns to settle:  Claude Code subscription login behind the proxy, the `board` CLI's token, whether desktop apps honour `HTTPS_PROXY` and trust the local CA, and the CA's one-week expiry.
 - A wrapper per CLI seat (`~/apps/agent-proxy/<seat>`), registered in `MAC-LOCAL-PROCESSES.md`.
@@ -62,6 +64,8 @@ Each phase is additive until Phase 5.  Nothing is deleted, booted out or rotated
 `AGENT-SYNC.md` (Secret handoff, grep trap), the global agent files (`~/.claude/CLAUDE.md`, `~/AGENTS.md`, `~/.codex/AGENTS.md` and the other platforms), the `secret-handoff` and `secret-safety` skills, and `INFISICAL.md` § Mac `global-api-keys` sync:  replace "the handoff file" with "Infisical, through the proxy or `infisical run`".
 
 ### Phase 5:  Cutover (owner gate)
+
+Gate:  no consumer reads anything under `~/.secrets` (checked by grep across repos on `origin/main`, the Mac's scripts and LaunchAgents, and pm2 jobs).  Brokering every key is not a gate.
 
 1. Boot out `com.jay.infisical-secrets-sync` and retire `scripts/infisical-secrets-sync.sh`.
 2. Move `~/.secrets/` into an encrypted archive (not delete) and confirm every consumer still works for a day.

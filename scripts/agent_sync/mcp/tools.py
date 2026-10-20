@@ -58,7 +58,7 @@ from .. import zulip_cli as ZCLI
 from .. import zulip_ops as OPS
 from ..idem import PENDING_FRESH, IdemStore
 from ..state import State
-from ..textfmt import sentence_gap
+from ..textfmt import fix_outbound
 from . import fleetlink_tools as FLEETLINK
 from . import guide as GUIDE
 from . import linear_tools as LINEAR
@@ -1047,7 +1047,7 @@ class Tools:
         # The hash is of the text Zulip stores:  the client converts sentence gaps to U+00A0 plus a
         # space on the way out (textfmt, AFC #392), and the reconcile read compares stored content.
         fields = {
-            "body_sha": _sha(sentence_gap(body).strip()),
+            "body_sha": _sha(fix_outbound(body, limit=10000)[0].strip()),
             "channel": channel,
             "topic": topic,
             "channel_id": channel_id,
@@ -1117,7 +1117,12 @@ class Tools:
             raise error from None
         self._idem_set(row_key, state="sent", id=message_id, channel_id=channel_id)
         self._remember_posted(message_id)
-        return {"id": message_id, "channel_id": channel_id, "duplicate": False}
+        result: dict[str, Any] = {"id": message_id, "channel_id": channel_id, "duplicate": False}
+        # Owner 2026-10-19:  say what the outbound fixes changed, so the agent learns the fleet format.
+        reformatted = fix_outbound(body, limit=10000)[1]
+        if reformatted:
+            result["reformatted"] = reformatted
+        return result
 
     def _write_result(self, result: Mapping[str, Any]) -> dict[str, Any]:
         return self.ok(json.dumps(dict(result)), result)
@@ -1534,6 +1539,7 @@ class Tools:
         )
         return self._write_result(
             {"id": result["id"], "user_ids": ids, "duplicate": result["duplicate"]}
+            | ({"reformatted": result["reformatted"]} if result.get("reformatted") else {})
         )
 
     # ---- messages -------------------------------------------------------------------------
