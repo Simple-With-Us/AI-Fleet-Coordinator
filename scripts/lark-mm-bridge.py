@@ -49,6 +49,15 @@ import threading
 import time
 from pathlib import Path
 
+# The secret scanner lives in the managed agent-sync runtime, which is a
+# separate checkout and is not on the interpreter's path.  Add it before the
+# import, so the bridge does not depend on how it was launched.
+_AGENT_SYNC_SCRIPTS = os.path.expanduser(
+    "~/apps/lanes/_managed/fleet/agent-sync-runtime/scripts"
+)
+if os.path.isdir(_AGENT_SYNC_SCRIPTS) and _AGENT_SYNC_SCRIPTS not in sys.path:
+    sys.path.insert(0, _AGENT_SYNC_SCRIPTS)
+
 from agent_sync.secretscan import scan as scan_secret
 
 LARK_EVENT_KEY = "im.message.receive_v1"
