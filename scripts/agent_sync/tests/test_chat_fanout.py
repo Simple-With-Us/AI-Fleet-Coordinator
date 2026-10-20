@@ -104,7 +104,12 @@ class ScopeTests(unittest.TestCase):
         aliases = (("Example Trade", "example-trade"), ("Demo Market", "demo-market"), ("Sample With Friends", "sample-with-friends"))
         registry = {"EX": tuple(repo for _, repo in aliases)}
         resolvers = [(repo, re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)) for name, repo in aliases]
-        with mock.patch.object(F, "TEAM_REPOS", registry), mock.patch.object(F, "_NAME_RES", resolvers):
+        with (
+            mock.patch.object(F, "TEAM_REPOS", registry),
+            mock.patch.object(F, "_NAME_RES", resolvers),
+            mock.patch.object(F, "_ACRONYM_RE", re.compile(r"(?<![\w-])(EX)(?![\w-])")),
+            mock.patch.object(F, "_REPO_TEAM", {repo: "EX" for _, repo in aliases}),
+        ):
             for name, repo in aliases:
                 self.assertEqual(F.scope(name + " @all look", "misc").repos, frozenset({repo}))
             self.assertIsNone(F.scope("EX deploy is stuck @all look", "misc").repos)
