@@ -120,6 +120,22 @@ Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, o
 `agent-sync post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
 
+**Source files are a different surface and are NOT affected.**  Swift, TypeScript, shell, and
+markdown read as source want **two literal ASCII spaces**, and in the same session those
+two-space gaps came through the write tool completely intact.  Do **not** "fix" a source file by
+inserting U+00A0 on the strength of this chat-surface problem:  plain source wants plain ASCII,
+and a U+00A0 committed into a source file is a real defect.  The perl conversion above is for
+text bound for GitHub, Zulip, or any renderer.  Never run it over source.
+
+Two more traps, both hit 2026-10-18:
+
+- **Never type a raw U+00A0 into a message body or tool call.**  It is normalized the same way
+  a double space is.  Let perl emit it.
+- The first `agent-sync` call in a session can die with "Parent-death guardian target
+  registration timed out".  Retry verbatim.  If the retry fails with "cannot open it (No such
+  file or directory)", the first attempt died before writing the file — the perl step never
+  ran.  That is not evidence the post went out.
+
 ### Verify, don't assume — run this self-test only on a NEW, unlisted surface
 
 The table above already answers every surface listed in it — follow the row, don't re-test

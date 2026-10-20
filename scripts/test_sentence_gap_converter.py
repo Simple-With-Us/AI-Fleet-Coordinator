@@ -113,6 +113,26 @@ GUIDANCE = (
     "scripts/pr_sweep/rules.md",
 )
 
+# The three files that carry the protocol, and the content each of them must keep.  The
+# source-files warning and the two traps were dropped once, by a commit that made the
+# protocol block byte-identical across the three, and nothing said so.
+PROTOCOL_FILES = (
+    "docs/fleet-skills/sentence-gap/SKILL.md",
+    "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
+    ".cursor/rules/sentence-gap.mdc",
+)
+
+REQUIRED_BLOCKS = (
+    "**Source files are a different surface and are NOT affected.**",
+    "Two more traps, both hit 2026-10-18:",
+    "**Never type a raw U+00A0 into a message body or tool call.**",
+    "Parent-death guardian target",
+)
+
+# The region the three files must share byte for byte.
+PROTOCOL_REGION_START = "Both checks carry the same markup group"
+PROTOCOL_REGION_END = "### Verify, don't assume"
+
 # The shapes the converter has to get right.  Each is (body line, gapped?) and the gapped
 # ones are the ones a body can hold without anyone noticing the missing gap in the render.
 SHAPES = (
@@ -499,6 +519,58 @@ class AssertionCommandTests(unittest.TestCase):
                     _ASSERT_MARKUP_GROUP,
                     pattern,
                     "%s holds a blind leftover check:  %s" % (rel, pattern),
+                )
+
+
+class ProtocolContentTests(unittest.TestCase):
+    """The protocol files must keep the content a reader needs, not only the converter.
+
+    One commit made the protocol block byte-identical across the three files and, in
+    doing so, dropped the source-files warning and the two 2026-10-18 traps from all of
+    them.  Nothing said so:  the rule that a source file wants plain ASCII spaces then
+    existed only in the guidance files, and an agent reading only the source of truth
+    would commit U+00A0 into a source file.
+    """
+
+    def test_every_protocol_file_keeps_the_source_files_warning(self) -> None:
+        """Each of the three must keep the warning and both traps."""
+        for rel in PROTOCOL_FILES:
+            with self.subTest(file=rel):
+                text = (ROOT / rel).read_text(encoding="utf-8")
+                for block in REQUIRED_BLOCKS:
+                    self.assertIn(
+                        block,
+                        text,
+                        "%s no longer carries %r" % (rel, block),
+                    )
+
+    def test_the_protocol_region_is_byte_identical_across_the_three(self) -> None:
+        """Making the three agree must not cost any of them content."""
+        regions = {}
+        for rel in PROTOCOL_FILES:
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            start = text.index(PROTOCOL_REGION_START)
+            end = text.index(PROTOCOL_REGION_END, start)
+            regions[rel] = text[start:end]
+        self.assertEqual(
+            len(set(regions.values())),
+            1,
+            "the protocol region differs between the files:  %s"
+            % sorted((rel, len(text)) for rel, text in regions.items()),
+        )
+
+    def test_every_rendered_copy_carries_the_source_files_warning(self) -> None:
+        """The rendered trees carry the warning too, or a seat reads a file without it."""
+        for rel in RENDERED_COPIES:
+            path = ROOT / rel
+            if not path.exists():
+                continue
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(file=rel):
+                self.assertIn(
+                    REQUIRED_BLOCKS[0],
+                    text,
+                    "%s no longer carries the source-files warning" % rel,
                 )
 
 
