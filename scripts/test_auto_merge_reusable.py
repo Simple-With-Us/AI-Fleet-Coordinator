@@ -36,9 +36,13 @@ QUEUE_REFUSAL = "X Cannot use `-d` or `--delete-branch` when merge queue enabled
 FAKE_GH = """#!/bin/bash
 printf '%s\\n' "$*" >> "$GH_CALLS"
 case "${GH_FAKE_MODE}" in
-  queue)
+  queue|queue_then_fail)
     if [[ "$*" == *"--delete-branch"* ]]; then
       echo "X Cannot use \\`-d\\` or \\`--delete-branch\\` when merge queue enabled" >&2
+      exit 1
+    fi
+    if [[ "$GH_FAKE_MODE" == "queue_then_fail" ]]; then
+      echo "gh: some other failure" >&2
       exit 1
     fi
     ;;
@@ -162,6 +166,15 @@ class ArmStep(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertNotIn("gh: some other failure", out)
         self.assertIn("status=failed", out)
+        self.assertIn("code=outcome_unknown", out)
+
+    def test_retry_failure_details_are_not_logged(self):
+        code, out, calls = run_arm("queue_then_fail", "true")
+        self.assertEqual(code, 1)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("--delete-branch", calls[1])
+        self.assertNotIn("gh: some other failure", out)
+        self.assertIn("status=failed code=outcome_unknown", out)
 
     def test_the_queue_refusal_is_matched_with_its_backticks(self):
         # gh prints the flag in backticks, so a pattern that looks for the bare flag

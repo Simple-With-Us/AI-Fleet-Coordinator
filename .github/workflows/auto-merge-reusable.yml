@@ -225,7 +225,7 @@ jobs:
           [ "$DELETE_BRANCH" = "true" ] && args+=(--delete-branch)
           echo "Enabling auto-merge (${args[*]}) for $PR_URL"
           out="$(gh pr merge "${args[@]}" "$PR_URL" 2>&1)" && { echo "auto_merge_command status=success"; exit 0; }
-          echo "auto_merge_command status=failed code=unavailable request_id=unavailable"
+          echo "auto_merge_command status=failed code=outcome_unknown request_id=unavailable"
           if echo "$out" | grep -qiE 'delete-branch.*when merge queue enabled'; then
             # A merge queue refuses --delete-branch: the flag flips the repository's
             # delete-branch-on-merge setting, and a queue cannot have both.  The
@@ -234,7 +234,7 @@ jobs:
             # in the repo (AFC-413).
             echo "::notice::the merge queue refuses --delete-branch; arming without it"
             out="$(gh pr merge --auto --squash "$PR_URL" 2>&1)" && { echo "auto_merge_command status=success"; exit 0; }
-            echo "auto_merge_command status=failed code=unavailable request_id=unavailable"
+            echo "auto_merge_command status=failed code=outcome_unknown request_id=unavailable"
           fi
           if echo "$out" | grep -qiE 'already enabled|Auto merge is already'; then
             echo "Auto-merge already armed."; exit 0
@@ -250,7 +250,7 @@ jobs:
             if gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest' | grep -vq null; then
               echo "Auto-merge armed despite pending checks."; exit 0
             fi
-            echo "::notice::Auto-merge not armed ($(echo "$out" | head -1))"; exit 0
+            echo "::notice::Auto-merge not armed: the PR is not ready"; exit 0
           fi
           echo "::error::Failed to enable auto-merge for $PR_URL"
           exit 1
