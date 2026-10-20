@@ -530,7 +530,9 @@ class McodeFallbackTest(unittest.TestCase):
             )
             # A pin recorded before the fingerprint existed cannot stand in for one.
             L.write_json(paths.wake_pin_mcode, {"mcode": A.binary_pin(exe), "at": time.time()})
-            self.assertEqual(A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3")["why"], "pin_stale")
+            self.assertEqual(
+                A.mcode_pin_state(paths, exe, "minimax/MiniMax-M3")["why"], "pin_stale"
+            )
 
     def test_a_fallback_candidate_from_another_model_is_not_pinned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

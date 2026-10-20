@@ -4918,8 +4918,7 @@ class Daemon:
                 )
                 red.append(
                     "fallback pin is stale: %s; run "
-                    "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
-                    % (_cause, seat)
+                    "`agent-sync daemon test-wake --seat %s --run`, then `--pin`" % (_cause, seat)
                 )
             for problem in runner.cfg.config_problems:
                 red.append(
