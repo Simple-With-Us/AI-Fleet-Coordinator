@@ -334,7 +334,12 @@ class MiniMaxSession:
             while time.time() < deadline:
                 with self.buffer_lock:
                     for index, message in enumerate(self.buffer):
-                        if message.get("id") == request_id:
+                        # A JSON-RPC response carries result or error and never
+                        # method.  The bridge and the ACP server both number
+                        # their requests from 1, so a server-initiated request
+                        # can share this id; matching on id alone read it as
+                        # the response and the turn ended with no content.
+                        if message.get("id") == request_id and "method" not in message:
                             del self.buffer[index]
                             if "error" in message:
                                 raise CommandError(
@@ -342,34 +347,42 @@ class MiniMaxSession:
                                     % (method, (message["error"] or {}).get("message", "unknown"))
                                 )
                             return message.get("result")
-                    self.buffer = [m for m in self.buffer if m.get("id") != request_id]
+                    self.buffer = [
+                        m
+                        for m in self.buffer
+                        if m.get("id") != request_id or "method" in m
+                    ]
                 time.sleep(0.15)
             raise CommandError("%s timed out after %ss" % (method, timeout))
 
     def _collect_text(self, result):
         """Pull the assistant text out of a prompt result and its updates."""
+        updates = self._collect_notifications()
         text = ""
         for block in (result or {}).get("content") or []:
             if block.get("type") == "text" and block.get("text"):
                 text += block["text"]
-        if text:
-            return text
-        return self._collect_notifications()
+        return text or updates
 
     def _collect_notifications(self):
+        """Take the text out of this turn's updates, and drop them.
+
+        The pump appends every message the ACP server writes and _call only
+        removes what matches its own request id, so the session/update
+        notifications of a finished turn stayed in the buffer: the next turn
+        answered with the previous turn's text as well, and the buffer grew
+        for the life of the session.  They are consumed here, and taken
+        whether or not the prompt result carried text of its own.
+        """
         text = ""
-        deadline = time.time() + 30
         with self.buffer_lock:
             pending = list(self.buffer)
+            self.buffer = [m for m in pending if m.get("method") != "session/update"]
         for message in pending:
-            if message.get("method") != "session/update":
-                continue
             update = (message.get("params") or {}).get("update") or {}
             content = update.get("content") or {}
             if content.get("type") == "text" and content.get("text"):
                 text += content["text"]
-        if text:
-            return text
         return text
 
     def prompt(self, message):
@@ -546,6 +559,12 @@ class Bridge:
         def handle_signal(signum, frame):
             log("signal %s received; shutting down" % signum)
             self.stopping.set()
+            # The main thread is parked in readline() on the consumer's stdout
+            # and a handler that returns leaves that read blocked (PEP 475), so
+            # the flag alone would go unnoticed until the next event arrived and
+            # the finally block would never save state.  Terminating the child
+            # closes the pipe, which ends the read.
+            reader.stop()
 
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)

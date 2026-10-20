@@ -11,6 +11,8 @@ import importlib.util
 import json
 import os
 import re
+import signal
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -142,6 +144,10 @@ class FakeSessionScript:
 
 
 class BridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.state_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state_dir.cleanup)
+
     def test_lark_event_key_is_the_message_event(self):
         self.assertEqual(bridge_mod.LARK_EVENT_KEY, "im.message.receive_v1")
 
@@ -271,6 +277,8 @@ class BridgeTests(unittest.TestCase):
 
     def test_collect_text_prefers_result_content(self):
         session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
         result = {"content": [{"type": "text", "text": "from result"}]}
         self.assertEqual(session._collect_text(result), "from result")
 
@@ -284,6 +292,127 @@ class BridgeTests(unittest.TestCase):
         ]
         session.buffer_lock = threading.Lock()
         self.assertEqual(session._collect_text({}), "from update")
+
+    def test_updates_do_not_carry_into_the_next_turn(self):
+        """One turn's updates must not be answered again on the next one.
+
+        The pump appends every message the ACP server writes and _call only
+        removes what matches its own request id, so the session/update
+        notifications used to survive the turn that produced them.
+        """
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = [
+            {
+                "method": "session/update",
+                "params": {"update": {"content": {"type": "text", "text": "turn one"}}},
+            }
+        ]
+        session.buffer_lock = threading.Lock()
+        self.assertEqual(session._collect_text({}), "turn one")
+        self.assertEqual(session.buffer, [])
+        self.assertEqual(session._collect_text({}), "")
+
+    def test_collect_text_consumes_updates_even_when_the_result_has_text(self):
+        """The result path must clear the updates too, or they build up."""
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.buffer = [
+            {
+                "method": "session/update",
+                "params": {"update": {"content": {"type": "text", "text": "leftover"}}},
+            }
+        ]
+        session.buffer_lock = threading.Lock()
+        result = {"content": [{"type": "text", "text": "from result"}]}
+        self.assertEqual(session._collect_text(result), "from result")
+        self.assertEqual(session.buffer, [])
+
+    def test_call_ignores_a_server_request_that_shares_the_request_id(self):
+        """A request carrying our id is not our response.
+
+        The bridge and the ACP server both number requests from 1, so a
+        server-initiated request can collide with the pending one.  Matching on
+        id alone ended the turn with no content.
+        """
+
+        class CollidingScript(FakeSessionScript):
+            def session_prompt(self, request):
+                # Emitted before the response, so a matcher that only looks at
+                # the id sees this first.
+                self.process.stdout.emit(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "method": "session/request_permission",
+                        "params": {"sessionId": "mvs_test_1", "options": []},
+                    }
+                )
+                return FakeSessionScript.session_prompt(self, request)
+
+        script = CollidingScript(answer="BRIDGE_OK")
+        session = bridge_mod.MiniMaxSession.__new__(bridge_mod.MiniMaxSession)
+        session.mcode = "/bin/true"
+        session.cwd = "/tmp"
+        session.timeout = 30
+        session.env = None
+        session.process = None
+        session.session_id = None
+        session.next_id = 1
+        session.buffer = []
+        session.buffer_lock = threading.Lock()
+        session.lock = threading.Lock()
+
+        process = FakeProcess(script)
+        script.process = process
+        session.spawn = lambda command, **kwargs: process
+        session._start()
+        self.assertEqual(session.prompt("hello there"), "BRIDGE_OK")
+
+    def test_signal_handler_stops_the_event_reader(self):
+        """SIGTERM has to break the blocking read, not just set the flag.
+
+        A signal handler that returns leaves the main thread parked in
+        readline() (PEP 475 retries it), so an idle bridge used to sit there
+        until the next message arrived and the finally block never got to save
+        state.  The stand-in reader blocks until stop() releases it, the way
+        the consumer's stdout does.
+        """
+        released = threading.Event()
+
+        class BlockingReader:
+            def events(self):
+                released.wait(timeout=10)
+                return iter(())
+
+            def stop(self):
+                released.set()
+
+        bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+        bridge.args = make_args(lark_cli="/bin/true", event_log_dir=None)
+        bridge.env = None
+        bridge.sessions = {}
+        bridge.sessions_lock = threading.Lock()
+        bridge.turns = bridge_mod.queue.Queue()
+        bridge.seen = {"om_seen"}
+        bridge.seen_lock = threading.Lock()
+        bridge.state_file = Path(self.state_dir.name) / "state.json"
+        bridge.stopping = threading.Event()
+
+        real_reader = bridge_mod.LarkEventReader
+        bridge_mod.LarkEventReader = lambda *a, **kw: BlockingReader()
+        # signal.signal() only works on the main thread, and unittest runs the
+        # test there, so run() stays on this thread and the signal is raised
+        # from another one, the way launchd would.
+        threading.Timer(0.2, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+        try:
+            bridge.run()
+        finally:
+            bridge_mod.LarkEventReader = real_reader
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+
+        self.assertTrue(released.is_set(), "the event reader was never stopped")
+        self.assertTrue(bridge.stopping.is_set())
+        self.assertTrue(bridge.state_file.exists(), "state was not saved on shutdown")
 
     def test_acp_handshake_and_prompt_against_fake_process(self):
         script = FakeSessionScript(answer="BRIDGE_OK")
