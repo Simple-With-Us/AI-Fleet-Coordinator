@@ -42,6 +42,23 @@ const CHECK_NAMES = Object.freeze({
 const REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const UPLOAD_PATH_RE = /^\/user_uploads\/[A-Za-z0-9_./-]{1,200}$/;
 const TITLE_BAD_RE = /["\\\u0000-\u001f\u007f\u0085\u2028\u2029]/;
+const TITLE_SCOPE_RE = /^\[([^\]]+)\] \S/;
+const TEAM_KEYS_RE = /^[A-Z0-9]+(?:, [A-Z0-9]+)*$/;
+
+// The title shape `[TEAM_KEY, SEAT_TAG] Topic`:  one or more capitalised team keys, then the
+// seat tag, then a non-empty topic.  A leading-bracket test alone lets `[AFC` and `[]` reach
+// the relay envelope, so the whole scope is validated here.  Mirrors `title_agent` in notes.py.
+export function titleScope(title) {
+  const match = TITLE_SCOPE_RE.exec(title);
+  if (!match) return null;
+  const inner = match[1];
+  const cut = inner.lastIndexOf(", ");
+  if (cut < 0) return null;
+  const keys = inner.slice(0, cut);
+  const seat = inner.slice(cut + 2).trim();
+  if (!TEAM_KEYS_RE.test(keys) || !seat) return null;
+  return { keys, seat };
+}
 const PR_RE = /^[0-9#, ]{1,40}$/;
 const FENCE_OPEN = "```json\n";
 const FENCE_CLOSE = "\n```";
@@ -141,6 +158,7 @@ export function checkTitle(raw) {
   if (points(title).length > TITLE_MAX) throw invalid(`argument 'title' is ${points(title).length} characters; at most ${TITLE_MAX}`);
   if (!title.startsWith("[")) throw invalid('argument \'title\' must start with [TEAM_KEY, SEAT_TAG], such as "[AFC, MM] Topic"');
   if (TITLE_BAD_RE.test(title)) throw invalid("argument 'title' must not hold a double quote, a backslash or a control character");
+  if (!titleScope(title)) throw invalid('argument \'title\' must read "[TEAM_KEY, SEAT_TAG] Topic", such as "[AFC, MM] Topic"');
   return title;
 }
 

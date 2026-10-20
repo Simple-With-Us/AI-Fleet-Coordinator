@@ -81,6 +81,32 @@ class TitleAndFlagTests(unittest.TestCase):
         self.assertIn("control character", self.refuses("[AFC, Claude] line separator"))
         self.assertIn("at most", self.refuses("[AFC, Claude] " + "x" * 300))
 
+    def test_the_whole_scope_is_validated_not_just_the_leading_bracket(self):
+        """AFC-422:  a leading `[` let `[AFC` and `[]` reach the relay envelope.  The title must
+        read `[TEAM_KEY, SEAT_TAG] Topic`:  capitalised team keys, a seat tag, and a topic."""
+        for good in (
+            "[AFC, Claude] relay rollout",
+            "[AFC, CT, Grok Web] notes",
+            "[UM, MM] Topic",
+            "[ST, CT, UM, Grok] multi-team",
+            "[AFC, gb-fixer] any case for a role tag",
+            "[AFC2, Claude] digits in a team key",
+        ):
+            N.check_title(good)
+        for bad, why in (
+            ("[AFC", "unclosed"),
+            ("[AFC Topic", "no scope close"),
+            ("[] Topic", "empty scope"),
+            ("[AFC] Topic", "no seat tag"),
+            ("[AFC, ] Topic", "empty seat tag"),
+            ("[AFC, Claude]", "no topic"),
+            ("[AFC, Claude] ", "blank topic"),
+            ("[afc, Claude] Topic", "team key not capitals"),
+            ("[AFC-2, Claude] x", "hyphen is not a team key"),
+        ):
+            with self.subTest(why):
+                self.assertIn("must read", self.refuses(bad))
+
     def test_flags_are_a_closed_set_and_activate_is_not_in_it(self):
         self.assertEqual(
             N.check_flags({"pin": False, "summary": "short", "pr": "46, 47"}),

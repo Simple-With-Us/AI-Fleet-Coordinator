@@ -422,68 +422,141 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertNotIn("TOPSECRETBODY", p.stderr + p.stdout)
 
-    def test_four_writes_at_once_do_not_collide(self):
-        """Owner 2026-10-19:  four rapid notes_pin calls on the same title must not trip over a shared temp-dir.
+    def test_four_concurrent_script_runs_do_not_collide(self):
+        """Owner 2026-10-19 (AFC-422):  four rapid notes writes on one Mac must not trip over a temp file.
 
-        The bug was the helper script quoting `mktemp /tmp/foo.XXXXXX.py` in a way
-        that made macOS return a FIXED path.  Two threads then raced to write the
-        same file, the second clobbering the first.  The fix was a temp DIRECTORY
-        (`mktemp -d`) so each writer gets its own file under its own private dir.
+        The bug was the helper quoting `mktemp /tmp/foo.XXXXXX.py` in a way that made macOS
+        return a FIXED path, so two seats writing at once wrote the same converter file.  The
+        fix is in `_convert_body_to_html` (`scripts/apple-notes-coding.sh`):  a private
+        `mktemp -d` per call, so the converter inside it is unique and a stale directory can
+        never break the next call.
 
-        This test recreates that race deterministically:  spawn N threads that each
-        `mktemp -d` their own temp directory under a single shared parent (the
-        scenario the fix targets), then verify every thread got a unique directory
-        and that each one's body survives the race.
+        This drives the real script rather than re-implementing `mktemp`.  A test that shells out
+        to `mktemp` directly passes even if the script regresses to the fixed-path pattern, so it
+        guards nothing.  The script runs under `bash -x` and the expanded converter path is read
+        back out of the trace, which shows the actual per-call directory.
         """
         import os
+        import re
+        import shutil
         import subprocess
         import tempfile
         import threading
 
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple-notes-coding.sh")
         tmp_parent = tempfile.mkdtemp(prefix="afc422-")
         names = [f"conc-id-{i:04d}" for i in range(4)]
-        seen_dirs = []
-        seen_bodies = []
-        seen_lock = threading.Lock()
+        live = set()
+        lock = threading.Lock()
+        results = {}
 
         def worker(name):
-            # Each worker asks mktemp for its own dir; the fix guarantees a unique path per call.
-            out = subprocess.run(
-                [
-                    "bash",
-                    "-c",
-                    f"set -e; d=$(mktemp -d {tmp_parent}/apple-notes-md.XXXXXX); printf '%s' \"$d\"",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            d = out.stdout.strip()
-            body_path = os.path.join(d, "body.md")
-            with open(body_path, "w", encoding="utf-8") as f:
-                f.write(f"Body of {name}.")
-            with open(body_path, "r", encoding="utf-8") as f:
-                body = f.read()
-            with seen_lock:
-                seen_dirs.append(d)
-                seen_bodies.append(body)
+            env = dict(os.environ, APPLE_NOTES_PRINT_HTML="1", AGENT_SESSION="conc-test-session-0001")
+            cmd = ["bash", "-x", script, f"[AFC, Claude] Notes {name}", f"Body of {name}."]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+            with lock:
+                live.add(proc)
+            try:
+                out, err = proc.communicate(timeout=180)
+                rc = proc.returncode
+            except BaseException:  # noqa: BLE001 - a Ctrl-C must still reap the child
+                proc.terminate()
+                try:
+                    proc.communicate(timeout=10)
+                except BaseException:  # noqa: BLE001
+                    proc.kill()
+                    proc.communicate()
+                with lock:
+                    live.discard(proc)
+                raise
+            with lock:
+                live.discard(proc)
+                results[name] = (rc, out, err)
 
         threads = [threading.Thread(target=worker, args=(n,)) for n in names]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        except BaseException:  # noqa: BLE001 - stop every sibling worker before unwinding
+            with lock:
+                stopping = list(live)
+            for proc in stopping:
+                proc.terminate()
+            raise
+        finally:
+            with lock:
+                stopping = list(live)
+            for proc in stopping:
+                proc.kill()
+                proc.communicate()
+            self.addCleanup(shutil.rmtree, tmp_parent, True)
 
-        # Every thread got a UNIQUE tmp dir.
-        self.assertEqual(len(seen_dirs), len(set(seen_dirs)))
-        # Every body was written and read back without clobbering.
-        self.assertEqual(len(seen_bodies), len(names))
-        # Each name appears in exactly one body — proves no two threads clobbered.
-        joined = "".join(seen_bodies)
-        for n in names:
-            self.assertIn(n, joined)
-        # And no name was lost.
-        self.assertEqual(sum(joined.count(n) for n in names), len(names))
+        self.assertEqual(sorted(results), sorted(names))
+
+        converter_re = re.compile(r"(/tmp/apple-notes-md\.[A-Za-z0-9]+)/convert\.py")
+        paths = []
+        for name in names:
+            rc, out, err = results[name]
+            self.assertEqual(rc, 0, f"{name} exited {rc}: {err[-400:]}")
+            # The body that went in is the body that came out:  no clobbering.
+            self.assertIn(f"Body of {name}.", out)
+            # The trace names the directory once per reference;  one call means one directory.
+            found = set(converter_re.findall(err))
+            self.assertEqual(len(found), 1, f"{name} used {len(found)} converter directories: {found}")
+            paths.extend(found)
+
+        # Every call used its OWN directory.  A shared one is the original bug.
+        self.assertEqual(len(paths), len(names))
+        self.assertEqual(len(set(paths)), len(names))
+
+        # The converter file inside each directory is removed, so a later call cannot inherit it.
+        # (The directory itself is removed too, but Finder drops a .DS_Store into new /tmp
+        # subdirectories and `rmdir` cannot clear that;  that is /tmp litter, not the collision fix.)
+        for path in set(paths):
+            self.assertFalse(os.path.exists(os.path.join(path, "convert.py")), f"{path}/convert.py was left behind")
+
+
+class TitleSecretScanTests(unittest.TestCase):
+    """AFC-422:  the title reaches AppleScript source, the relay envelope, the owner notification and
+    stderr, so a credential pasted into it would leak four ways.  It is rejected before any of those,
+    and the rejection never echoes the value:  a complaint that printed the title would put the
+    credential into the very log it exists to protect."""
+
+    def run_script(self, title, body="Body."):
+        env = dict(os.environ, APPLE_NOTES_PRINT_HTML="1", AGENT_SESSION="scan-test-session-01")
+        return subprocess.run(
+            ["/bin/bash", str(SCRIPT), title, body],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+
+    def test_a_credential_shaped_title_is_refused_and_the_value_is_never_echoed(self):
+        for secret in (
+            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "AKIAIOSFODNN7EXAMPLE",
+            "sk-abcdefghijklmnopqrstuvwxyz0123",
+            "api_key: ZZZZZZZZZZZZZZZZZZZZ",
+        ):
+            with self.subTest(secret[:6]):
+                out = self.run_script(f"[AFC, MM] rollout {secret}")
+                self.assertEqual(out.returncode, 2, out.stderr[-300:])
+                self.assertIn("field 'title' rejected", out.stderr)
+                self.assertNotIn(secret, out.stdout + out.stderr)
+
+    def test_an_ordinary_title_is_accepted_and_still_converts(self):
+        for title in (
+            "[AFC, MM] Notes Title Ruling",
+            "[AFC, CT, Grok Web] token rotation notes",
+            "[AFC, Claude] roadmap",
+        ):
+            with self.subTest(title):
+                out = self.run_script(title, "Body of the note.")
+                self.assertEqual(out.returncode, 0, out.stderr[-300:])
+                self.assertIn("Body of the note.", out.stdout)
 
 
 if __name__ == "__main__":

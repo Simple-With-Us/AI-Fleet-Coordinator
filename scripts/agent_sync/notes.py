@@ -148,6 +148,11 @@ def check_title(raw: Any) -> str:
             "invalid_argument",
             "argument 'title' must not hold a double quote, a backslash or a control character",
         )
+    if title_agent(title) is None:
+        raise NotesError(
+            "invalid_argument",
+            'argument \'title\' must read "[TEAM_KEY, SEAT_TAG] Topic", such as "[AFC, MM] Topic"',
+        )
     return title
 
 

@@ -147,6 +147,19 @@ fi
 # Strip accidental backslash escaping on title brackets e.g. \[TEAM_KEY, SEAT_TAG\]
 TITLE=$(printf '%s' "$TITLE" | sed -e 's/^\\\[/[/' -e 's/\\\]$/]/' -e 's/\\\[/[/g' -e 's/\\\]/]/g')
 
+# Secret scan on the title (AFC-422).  The title reaches AppleScript source, the relay envelope, the
+# owner notification and two stderr lines, so a credential pasted into it would leak four ways.  Reject
+# it here, before any of those, and never echo the value back: a rejection that printed the title would
+# put the credential in the very log it is protecting.
+_title_looks_secret() {
+  printf '%s' "$1" | grep -Eqi -e \
+    '-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.|(api[_-]?key|secret|password|passwd|token)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_./+-]{12,}'
+}
+if _title_looks_secret "$TITLE"; then
+  echo "apple-notes-coding: field 'title' rejected: it looks like it holds a credential.  The value is not echoed." >&2
+  exit 2
+fi
+
 
 # ---- Session id (AFC-361) ---------------------------------------------------------------------------------------
 # Data copy of fleet-apps.json `sessionIds`;  scripts/test_session_ids_parity.py keeps it equal.
@@ -237,7 +250,7 @@ fi
 
 if [[ "$MODE" == "pin" || "$MODE" == "unpin" ]]; then
   NOTE_ID=$(osascript -e "tell application \"Notes\" to get id of note \"$TITLE\" of folder \"Coding\" of account \"iCloud\"" 2>/dev/null || true)
-  [[ -n "$NOTE_ID" ]] || { echo "$MODE-only: note not found in Coding: $TITLE" >&2; exit 3; }
+  [[ -n "$NOTE_ID" ]] || { echo "$MODE-only: no note with that title in Coding" >&2; exit 3; }
   SKIP_BODY=1
 else
   SKIP_BODY=0
@@ -589,7 +602,7 @@ fi
 # Title: "[TEAM_KEY, SEAT_TAG] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52pm".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
-  echo "warning: title should start with [TEAM_KEY, SEAT_TAG] e.g. \"[UM, MM] Topic\" (got: $TITLE)" >&2
+  echo "warning: title should start with [TEAM_KEY, SEAT_TAG] e.g. \"[UM, MM] Topic\"" >&2
 fi
 if printf '%s' "$TITLE" | grep -Eiq 'session'; then
   echo "warning: do not put 'session' in Apple Note titles" >&2
@@ -887,7 +900,7 @@ tell application "Notes"
 end tell
 EOF
 )
-  echo "updated note id=$NOTE_ID in folder Coding title=$TITLE"
+  echo "updated note id=$NOTE_ID in folder Coding"
 else
   NOTE_ID=$(WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<EOF
 set htmlPath to POSIX file "$TMP"

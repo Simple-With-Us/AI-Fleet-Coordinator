@@ -108,6 +108,13 @@ test("titles, flags and envelopes are refused the way notes.py refuses them", ()
   assert.throws(() => checkTitle('[AFC, Claude] a "quote"'), /double quote/);
   assert.throws(() => checkTitle("[AFC, Claude] back\\slash"), /backslash/);
   assert.throws(() => checkTitle("[AFC, Claude] line\nbreak"), /control character/);
+  // AFC-422:  a leading bracket alone let `[AFC` and `[]` reach the relay envelope.
+  for (const good of ["[AFC, Claude] relay rollout", "[AFC, CT, Grok Web] notes", "[UM, MM] Topic", "[AFC, gb-fixer] any case", "[AFC2, Claude] digits"]) {
+    assert.equal(checkTitle(good), good);
+  }
+  for (const bad of ["[AFC", "[AFC Topic", "[] Topic", "[AFC] Topic", "[AFC, ] Topic", "[AFC, Claude]", "[AFC, Claude] ", "[afc, Claude] Topic", "[AFC-2, Claude] x"]) {
+    assert.throws(() => checkTitle(bad), /must read/, `should refuse ${bad}`);
+  }
   assert.throws(() => checkFlags({ activate: true }), /unknown flag 'activate'/);
   assert.throws(() => checkFlags({ summary: 'say "hi"' }), /summary/);
   assert.throws(() => checkFlags({ pr: "46; rm" }), /pull request/);

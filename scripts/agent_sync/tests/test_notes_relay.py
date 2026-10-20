@@ -172,6 +172,24 @@ class RelayHarness(unittest.TestCase):
             SENDERS[identity], "[%s·ab12cd34] %s" % (identity, N.render_message(env))
         )
 
+    def raw_request(self, identity, title, rid="request-0001", action="create", markdown="hello body"):
+        """A post that skips `make_envelope`, so the listener's own checks are still under test.
+
+        The tool layer now refuses a title with no `[TEAM_KEY, SEAT_TAG]` scope, but a message can
+        reach `#notes-relay` from anywhere, so the listener must still reject it itself."""
+        env = {
+            "v": N.ENVELOPE_VERSION,
+            "action": action,
+            "title": title,
+            "markdown": markdown,
+            "flags": {},
+            "request_id": rid,
+            "identity": identity,
+        }
+        return self.message(
+            SENDERS[identity], "[%s·ab12cd34] %s" % (identity, N.render_message(env))
+        )
+
     def process(self, message):
         return self.consumer.process(self.runner, message)
 
@@ -284,7 +302,7 @@ class SenderTests(RelayHarness):
             "which is not GB-FIXER",
         )
         self.assert_refused(
-            self.request("CURSOR", "[AFC] no agent", rid="rid-wrong-agent-3"), "must read"
+            self.raw_request("CURSOR", "[AFC] no agent", rid="rid-wrong-agent-3"), "must read"
         )
 
     def test_a_reply_cannot_mention_anyone_through_the_sender_chosen_text(self):
