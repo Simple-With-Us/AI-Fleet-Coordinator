@@ -260,6 +260,11 @@ fi
 # narrowed by that override.
 _PIN_RETRY=""
 _pin_retry_on() {
+  #  A local value may only narrow, so it is read first:  an operator who sets it to off gets a
+  #  decision without a knob lookup that can reach the network, and the lookup cannot widen it later.
+  case "${APPLE_NOTES_PIN_RETRY:-}" in
+    false|0|no|off) return 1 ;;
+  esac
   if [[ -z "${_PIN_RETRY:-}" ]]; then
     local knob="" here candidate
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
@@ -270,12 +275,8 @@ _pin_retry_on() {
       fi
     done
     case "$knob" in
-      true|1|yes|on) _PIN_RETRY=1 ;;
       false|0|no|off) _PIN_RETRY=0 ;;
       *) _PIN_RETRY=1 ;;
-    esac
-    case "${APPLE_NOTES_PIN_RETRY:-}" in
-      false|0|no|off) _PIN_RETRY=0 ;;
     esac
   fi
   [[ "$_PIN_RETRY" == "1" ]]

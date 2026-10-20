@@ -117,7 +117,7 @@ class PinDecisionTests(unittest.TestCase):
             bindir.mkdir(mode=0o700)
             stub = bindir / "shortcuts"
             stub.write_text(STUB)
-            stub.chmod(0o755)
+            stub.chmod(0o700)
             if "STUB_KNOB" in env:
                 #  the script reads the knob through the fleet_knobs package next to it and the
                 #  python3 that runs it:  both live here, so `python3 -m fleet_knobs get` is the stub
@@ -129,7 +129,7 @@ class PinDecisionTests(unittest.TestCase):
                 package.mkdir(mode=0o700, parents=True)
                 knob_stub = bindir / "python3"
                 knob_stub.write_text(KNOB_STUB)
-                knob_stub.chmod(0o755)
+                knob_stub.chmod(0o700)
             counter = Path(tmp) / "counter"
             script = Path(tmp) / "harness.sh"
             #  a plain replace, because the harness carries shell ${...} braces that str.format would eat
@@ -244,6 +244,17 @@ class PinDecisionTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(runs, 1)
+
+    def test_a_local_disable_does_not_reach_the_knob(self):
+        """The local off switch is a fast path:  it decides without a lookup that can reach the network."""
+        result, runs = self.run_block(
+            STUB_FAIL_FIRST="99", HARNESS_APPLE_NOTES_PIN_RETRY="0", STUB_KNOB="true"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(runs, 1)
+        self.assertEqual(
+            self.knob_reads, 0, "the knob was read even though the local value had already decided"
+        )
 
     def test_the_knob_turns_the_retry_on(self):
         """The knob alone decides when the caller names no override."""
