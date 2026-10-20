@@ -1271,6 +1271,29 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
         "git push -u origin HEAD",
     ):
         vm = vm.replace(command, chr(96) + command + chr(96))
+    # Claim metadata.  `--env` is the Linear Env label (Mac or Cloud), and
+    # `--where` carries a path, so a Mac label plus a Mac lane path records VM
+    # work as work on this Mac at a checkout MA never has (AFC-723).  Each
+    # `--where` value keeps its own `@ <branch>` tail; only the lane path in
+    # front of it changes.
+    checkout = "~/muse-assist-<repo>"
+    for lane_where in (
+        "~/apps/lanes/<Repo>/<seat>-<slug>",
+        "~/apps/lanes/Congress.Trade/<seat>-fix",
+        "<lane path>",
+        "lane path",
+    ):
+        # Keep any `claimed: <Day, Mon D, YYYY>` prefix and `@ branch` tail;
+        # only the Mac lane path itself changes.  Quote the value so the bare
+        # phrase `lane path` cannot also match inside `~/apps/lane path`.  The
+        # branch is written both as `<branch>` and bare in these skills.
+        text = re.sub(
+            rf'"((?:claimed: <Day, Mon D, YYYY> )?)(?:{re.escape(lane_where)})'
+            rf'( @ (?:<branch>|branch))?"',
+            lambda m: f'"{m.group(1)}{checkout}{m.group(2) or ""}"',
+            text,
+        )
+    text = text.replace("--env Mac", "--env cloud")
     if skill_name == "session-start":
         # Retitle the section and swap only the Mac lane command block.  The
         # app/acronym table and the scratch-checkout ban below it are
@@ -1324,6 +1347,23 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
             "## 7. Retain The Durable VM Checkout\n\nAfter merge, verify the remote result and keep the per-repo VM checkout for the next task.  Do not run Mac lane retirement or delete local work.\n\n",
             text,
             flags=re.MULTILINE | re.DOTALL,
+        )
+    elif skill_name == "unstick-pr":
+        # The phantom-fix block cd's into a Mac lane by path (AFC-723).
+        text = text.replace(
+            'cd "$(~/apps/lane path <app> <slug>)"   # your lane; never ~/Code/<repo>',
+            "cd ~/'muse-assist-<repo>'   # your durable VM checkout; never ~/Code/<repo>",
+        )
+    elif skill_name == "pr-sweep":
+        # The sweep needs a throwaway checkout of origin/main; on the VM that is
+        # the durable per-repo checkout, not a `lane new` worktree (AFC-723).
+        text = text.replace(
+            "- Run it from a fresh checkout of `origin/main`, never from `~/Code`:  "
+            '`d=$(~/apps/lane new AI-Fleet-Coordinator pr-sweep-run) && cd "$d"`',
+            "- Run it from the durable VM checkout on a fresh `origin/main`, never from `~/Code`:  "
+            "`d=$(git -C ~/'muse-assist-AI-Fleet-Coordinator' rev-parse --show-toplevel) "
+            '&& git -C "$d" fetch origin && git -C "$d" checkout --detach '
+            'refs/remotes/origin/main && cd "$d"`',
         )
     return text
 

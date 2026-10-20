@@ -1572,14 +1572,28 @@ class AgentSyncRosterTests(unittest.TestCase):
 
 
 class VMSeatLaneTests(unittest.TestCase):
+    # Every skill MA installs.  The two lists drive the same assertions so a
+    # skill added to the pack is checked without editing this test twice.
+    VM_SKILLS = (
+        "session-start",
+        "fleet-coordination",
+        "land-lane",
+        "closeout",
+        "unstick-pr",
+        "pr-sweep",
+        "board-ops",
+    )
+
+    def _render(self, name: str) -> str:
+        source = Path(ROOT, "docs", "fleet-skills", name, "SKILL.md").read_text()
+        return specialize_from_monet(source, SEATS["muse-assist"], skill_name=name)
+
     def test_vm_steps_replace_mac_lane_commands_and_keep_identity(self):
         for name in ("session-start", "fleet-coordination", "land-lane", "closeout"):
-            source = Path(ROOT, "docs", "fleet-skills", name, "SKILL.md").read_text()
-            rendered = specialize_from_monet(source, SEATS["muse-assist"], skill_name=name)
+            rendered = self._render(name)
             self.assertIn(
                 "durable VM checkout" if name in ("land-lane", "closeout") else "durable", rendered
             )
-            self.assertNotRegex(rendered, r"(?m)^\s*~/apps/lane (?:new|retire|prune)")
             self.assertNotIn("Make one lane per task", rendered)
             self.assertNotIn("lane.lane new", rendered)
             self.assertNotIn("create the lane by hand", rendered)
@@ -1587,6 +1601,40 @@ class VMSeatLaneTests(unittest.TestCase):
             self.assertIn("MA", rendered)
         ordinary = specialize_from_monet(_session(), SEATS["codex"], skill_name="session-start")
         self.assertIn("~/apps/lane new", ordinary)
+
+    def test_no_vm_skill_runs_a_mac_lane_command(self):
+        """AFC-723.  The command can sit mid-sentence, so do not anchor the
+        pattern to a line start: `unstick-pr` cd'd into `~/apps/lane path` and
+        `pr-sweep` started at `~/apps/lane new`, both mid-line."""
+        for name in self.VM_SKILLS:
+            rendered = self._render(name)
+            self.assertNotIn(
+                "~/apps/lane ", rendered, f"{name} still runs the Mac lane tool"
+            )
+
+    def test_vm_claims_record_cloud_env_and_the_vm_checkout(self):
+        """AFC-723.  `--env` is the Linear Env label and `--where` is a path,
+        so a Mac label and a Mac lane path misreport every VM claim.  Only the
+        claim commands are checked: the app/acronym table and the historical
+        notes still name Mac lane folders on purpose."""
+        for name in ("session-start", "board-ops", "fleet-coordination"):
+            claims = [ln for ln in self._render(name).splitlines() if "board claim" in ln or "board file" in ln]
+            self.assertTrue(claims, f"{name} has no claim command to check")
+            for line in claims:
+                if "--env" not in line:
+                    # A passing mention of `board file` (which routes to a team)
+                    # carries no Env label to check.
+                    continue
+                self.assertNotIn("--env Mac", line, f"{name} still claims Mac work: {line}")
+                self.assertNotIn(
+                    "~/apps/lanes/", line, f"{name} still claims a Mac lane path: {line}"
+                )
+                self.assertIn("--env cloud", line, f"{name} does not claim cloud work: {line}")
+        # The Mac seats keep the Mac workflow unchanged.
+        source = Path(ROOT, "docs", "fleet-skills", "board-ops", "SKILL.md").read_text()
+        codex = specialize_from_monet(source, SEATS["codex"], skill_name="board-ops")
+        self.assertIn("--env Mac", codex)
+        self.assertIn("~/apps/lanes/Congress.Trade/", codex)
 
 
 if __name__ == "__main__":
