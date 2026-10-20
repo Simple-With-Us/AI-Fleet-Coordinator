@@ -86,6 +86,7 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
+umask 077   # both body copies hold message content; never leave them world-readable
 perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.gap.txt
 ```
 
@@ -104,6 +105,7 @@ perl -CSDA -ne '
   if (!$fence && !/^\s*repo:/) { s/(?<=\S) {2,}/ /g }
   print
 ' body.gap.txt > body.nbsp.txt
+rm -f body.gap.txt   # the scratch copy of the body is not needed afterwards
 ```
 
 The header line is exempt on purpose.  `repo:  <Project>  |  DONE` is a template, not prose:
@@ -116,12 +118,16 @@ in a PR body often carries aligned spacing, and collapsing it silently rewrites 
 one-line version of this pass, `s/(?<=\S) {2,}/ /g`, turns `wc -l     # must be > 0` into
 `wc -l # must be > 0` and turns `repo:  <Project>  |  DONE` inside a quoted example into
 `repo: <Project> | DONE`.  Both changes are invisible to every assertion, because the assertion
-runs after the damage.  The fence-aware version above leaves the code exactly as the author wrote
-it, and it leaves the house header alone on the same pass.
+runs after the damage.  The fence-aware version above leaves a ```` ``` ````-fenced block exactly
+as the author wrote it, and it leaves the house header alone on the same pass.
 
 Run the two passes in order, first into a scratch file and then into the file you post.  The
 second pass never touches the U+00A0 the first pass produced, because a U+00A0 plus one space
-is a run of one space.
+is a run of one space.  The scratch file is a second on-disk copy of the body, so the
+`umask 077` above has to come first and the `rm -f` after the second pass is not optional:  a
+leftover world-readable body copy in the working tree exposes message content to other local
+users and risks a stray `git add`.  This is the same rule `scripts/agent_sync/bodyfile.py`
+enforces on the file you post.
 
 Matching one *or more* is the whole fix.  The old pattern requiring exactly two spaces — written
 here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
@@ -131,7 +137,7 @@ numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tol
 lookahead class skips a lowercase follower, so `e.g. this` and lower-case domains keep their plain
 space.
 
-**Known limitations — the pattern is a heuristic, not a dictionary.**  Three deliberate costs:
+**Known limitations — the pattern is a heuristic, not a dictionary.**  Four deliberate costs:
 
 - It gaps a *capitalised* abbreviation:  `Dr. Smith` and `e.g. Acme` both come out with a U+00A0,
   against the rule above about non-terminal abbreviations.
@@ -145,6 +151,14 @@ space.
   space was, and the code no longer says exactly what it said.  The second pass skips fences, so it
   cannot make this worse, but it cannot undo it either.  When a body quotes code with a
   sentence-like line in it, keep that one line out of the conversion.
+- The second pass only recognises a ```` ``` ```` fence that starts a line, so a `~~~` fence, a
+  fence behind a `>` quote marker, a four-space indented code block, and any inline code span all
+  get their runs collapsed.  `s/(?<=\S) {2,}/ /g` has no notion of a backtick span at all.  The
+  third check carries the same fence filter, so it reports clean on the damage it did not see.
+  `scripts/agent_sync/textfmt.py` already implements the wider contract (`_FENCE_OPEN_RE`,
+  `_INLINE_RE`, `_split_fences` cover `~~~`, indented, list- and quote-nested fences and inline
+  spans), so prefer it over this recipe when a body quotes code;  otherwise fix the affected code
+  by hand after the run.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
 it, and do not widen the pattern to chase it.
