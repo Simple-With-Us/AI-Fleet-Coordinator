@@ -314,12 +314,22 @@ class SeatRunner:
         # under another name (bot = "GB-Compiler" in [seat.CLAUDE], or email_env and key_env
         # pointed at another seat's variables) would otherwise hold a bot that another seat or
         # the other instance holds too.  users/me says whose key this really is.
-        tag = seat_tag_for(me)
-        if tag != self.seat:
-            raise RoleRefused(
-                "the credential for seat %s belongs to the bot of seat %s (users/me); a seat holds "
-                "only its own bot, so it is refused" % (self.seat, tag)
-            )
+        if self.seat == "OPERATOR":
+            from .service_identity import operator_bot
+
+            # The service identity, not the roster tag, is what pins this seat:  the Operator keeps
+            # the administrator account's own address, so seat_tag_for would read ADMIN, not
+            # OPERATOR.  operator_bot is the stricter check (id, email, bot, pinned owner), so the
+            # roster-tag refusal below applies to agent seats only.
+            if not operator_bot(me, self.daemon.env, self.daemon.config.owner_user_id):
+                raise RoleRefused("OPERATOR credential does not match the pinned service bot")
+        else:
+            tag = seat_tag_for(me)
+            if tag != self.seat:
+                raise RoleRefused(
+                    "the credential for seat %s belongs to the bot of seat %s (users/me); a seat "
+                    "holds only its own bot, so it is refused" % (self.seat, tag)
+                )
         self.me = R.SeatIdentity(
             self.seat, int(me["user_id"]), str(me.get("full_name") or ""), self.creds.email
         )
