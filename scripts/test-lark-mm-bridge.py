@@ -864,7 +864,9 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(session.buffer), 1)
 
     def test_sentence_gap_accepts_a_different_gap(self):
-        out = bridge_mod.sentence_gap("Sentence one. Sentence two.", gap=bridge_mod.ZULIP_SENTENCE_GAP)
+        out = bridge_mod.sentence_gap(
+            "Sentence one. Sentence two.", gap=bridge_mod.ZULIP_SENTENCE_GAP
+        )
         self.assertEqual(out, "Sentence one.\u00a0 Sentence two.")
         self.assertEqual(bridge_mod.ZULIP_SENTENCE_GAP, "\u00a0 ")
 

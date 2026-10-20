@@ -52,9 +52,7 @@ from pathlib import Path
 # The secret scanner lives in the managed agent-sync runtime, which is a
 # separate checkout and is not on the interpreter's path.  Add it before the
 # import, so the bridge does not depend on how it was launched.
-_AGENT_SYNC_SCRIPTS = os.path.expanduser(
-    "~/apps/lanes/_managed/fleet/agent-sync-runtime/scripts"
-)
+_AGENT_SYNC_SCRIPTS = os.path.expanduser("~/apps/lanes/_managed/fleet/agent-sync-runtime/scripts")
 if os.path.isdir(_AGENT_SYNC_SCRIPTS) and _AGENT_SYNC_SCRIPTS not in sys.path:
     sys.path.insert(0, _AGENT_SYNC_SCRIPTS)
 
@@ -137,9 +135,7 @@ def sentence_gap(text, gap=SENTENCE_GAP):
         rebuilt = []
         for i, piece in enumerate(pieces):
             if i % 2 == 0:
-                piece = _SENTENCE_END.sub(
-                    lambda m: _widen_sentence(m, gap), piece
-                )
+                piece = _SENTENCE_END.sub(lambda m: _widen_sentence(m, gap), piece)
             rebuilt.append(piece)
         out.append("".join(rebuilt))
     return "\n".join(out)
