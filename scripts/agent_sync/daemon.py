@@ -3246,11 +3246,13 @@ class Daemon:
         return result
 
     def chat_catalog(self) -> Any:
-        if not hasattr(self, "_chat_catalog"):
-            from .chat_catalog import ChatCatalog
+        # Fanout threads race here, so the check and the construction are one guarded step.
+        with self._fanout_lock:
+            if not hasattr(self, "_chat_catalog"):
+                from .chat_catalog import ChatCatalog
 
-            self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
-        return self._chat_catalog
+                self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
+            return self._chat_catalog
 
     def chat_queue(self, seat: str) -> CN.ChatNudges:
         if seat not in self._chat_queues:
@@ -3264,13 +3266,9 @@ class Daemon:
         if runner.cfg.wake != "muse" or not pending.trigger_ids or pending.route_tagged:
             return []
         try:
-            if not hasattr(self, "_chat_catalog"):
-                from .chat_catalog import ChatCatalog
-
-                self._chat_catalog = ChatCatalog(home=self.home, scrub=self.scrub, max_records=120)
             # One leader walk, not one timeout per page.  A still-pending leader is an
             # unavailable catalog row, so this wake continues instead of stalling intake.
-            rows = self._chat_catalog.discover(
+            rows = self.chat_catalog().discover(
                 wait_grok=True, grok_timeout=CT.discovery_wait_budget()
             )
             # Every direct message or explicit bot mention may wake Muse.  Its trigger is
