@@ -419,7 +419,11 @@ def already_replied(
         if not page:
             # Zulip's found_newest is a coverage flag, not a cursor flag:  when the anchor is newer than every message
             # matching the narrow, all of them sit on the before side and num_before 0 returns none.  An empty page is
-            # the end of the forward scan, not a malformed answer, so the refusal is still posted.
+            # the end of the forward scan, not a malformed answer, so the refusal is still posted -- but only when the
+            # server actually sent a message list:  a missing or garbled "messages" payload is malformed, not an empty
+            # topic, so the request stays held instead of a second refusal being published.
+            if not isinstance(found.get("messages"), list):
+                raise MalformedResponse("Zulip messages response must include a list of messages")
             return False
         if not ids:
             raise MalformedResponse("Zulip messages response omitted a valid next anchor")
