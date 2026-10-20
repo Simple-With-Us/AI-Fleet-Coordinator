@@ -10,6 +10,13 @@ from pathlib import Path
 
 
 def load_bootstrap(path):
+    parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        pinfo = os.fstat(parent)
+        if pinfo.st_uid != os.geteuid() or stat.S_IMODE(pinfo.st_mode) != 0o700:
+            raise ValueError("bootstrap directory must be an owned directory with mode 0700")
+    finally:
+        os.close(parent)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd) as source:
         info = os.fstat(source.fileno())
@@ -35,16 +42,21 @@ def authenticated_env():
             Path.home() / ".config/fleet-secrets/bootstrap.json"
         )
         child = dict(env)
+        child["INFISICAL_DISABLE_UPDATE_CHECK"] = "true"
         child["INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"] = client_id
         child["INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"] = client_secret
-        result = subprocess.run(
-            ["infisical", "login", "--method=universal-auth", "--plain", "--silent"],
-            env=child,
-            capture_output=True,
-            text=True,
-            timeout=25,
-            stdin=subprocess.DEVNULL,
-        )
+        try:
+            result = subprocess.run(
+                ["infisical", "login", "--method=universal-auth", "--plain", "--silent"],
+                env=child,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+        finally:
+            client_id = client_secret = ""
+            child = {}
         token = result.stdout.strip()
         if result.returncode or not token or any(c.isspace() for c in token):
             raise ValueError("machine authentication failed")
