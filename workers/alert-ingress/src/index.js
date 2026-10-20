@@ -97,14 +97,17 @@ function authorized(request, env) {
 async function collectStates(env, channel, topic) {
   const prefix = `idx:${channel}:${topic}:`;
   const keys = await env.ALERT_STATE.list({ prefix });
-  const states = [];
-  for (const { name } of keys.keys) {
-    const key = name.slice(prefix.length);
-    const raw = await env.ALERT_STATE.get(stateKey(key), "json");
-    if (!raw) continue;
-    states.push({ key, ...raw, service: (await env.ALERT_STATE.get(svcKey(key), "json")) || key });
-  }
-  return states;
+  // Parallel reads: serial get pairs cost 2N KV round-trips per call.
+  const fetched = await Promise.all(
+    keys.keys.map(async ({ name }) => {
+      const key = name.slice(prefix.length);
+      const raw = await env.ALERT_STATE.get(stateKey(key), "json");
+      if (!raw) return null;
+      const svc = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
+      return { key, ...raw, service: svc };
+    }),
+  );
+  return fetched.filter(Boolean);
 }
 
 /** Every topic that has at least one tracked signal. */
@@ -119,8 +122,11 @@ async function collectTopics(env) {
   const topics = {};
   let firing = 0;
   let total = 0;
-  for (const topic of [...seen].sort()) {
-    const states = await collectStates(env, DEFAULT_CHANNEL, topic);
+  // Parallel across topics: serial collectStates made /status cost ~1 + T*(1+2A) KV calls.
+  const perTopic = await Promise.all(
+    [...seen].sort().map(async (topic) => [topic, await collectStates(env, DEFAULT_CHANNEL, topic)]),
+  );
+  for (const [topic, states] of perTopic) {
     // A topic whose states have all been cleared is dropped rather than
     // rendered as an empty card, so the view self-cleans as incidents resolve.
     if (states.length === 0) continue;
@@ -171,15 +177,27 @@ function ctStamp() {
 async function refreshStatus(env, channel, topic) {
   const states = await collectStates(env, channel, topic);
   const content = renderStatus({ topic, states, updatedAt: ctStamp() });
-  const id = await writeStatus({
-    email: env.ZULIP_BOT_EMAIL,
-    apiKey: env.ZULIP_BOT_API_KEY,
-    channel,
-    topic,
-    content,
-    statusId: Number(await env.ALERT_STATE.get(statusKey(channel, topic), "json")) || null,
-  });
-  if (id) await env.ALERT_STATE.put(statusKey(channel, topic), JSON.stringify(id));
+  // KV gives no cross-request atomicity for the read-then-write inside
+  // writeStatus, so two concurrent webhooks for a fresh topic could both POST
+  // a new standing message and orphan the first.  A short-lived per-topic lock
+  // serializes the create-or-patch decision; a skipped refresh self-heals on
+  // the next event or sweep.
+  const lockKey = `lock:${channel}:${topic}`;
+  if (await env.ALERT_STATE.get(lockKey)) return content;
+  await env.ALERT_STATE.put(lockKey, "1", { expirationTtl: 60 });
+  try {
+    const id = await writeStatus({
+      email: env.ZULIP_BOT_EMAIL,
+      apiKey: env.ZULIP_BOT_API_KEY,
+      channel,
+      topic,
+      content,
+      statusId: Number(await env.ALERT_STATE.get(statusKey(channel, topic), "json")) || null,
+    });
+    if (id) await env.ALERT_STATE.put(statusKey(channel, topic), JSON.stringify(id));
+  } finally {
+    await env.ALERT_STATE.delete(lockKey);
+  }
   return content;
 }
 
@@ -235,6 +253,7 @@ async function runSweep(env) {
   const minOpenMs = Number(env.MIN_OPEN_MS) || DEFAULT_MIN_OPEN_MS;
   const all = await env.ALERT_STATE.list({ prefix: "state:" });
   let promoted = 0;
+  const dirtyTopics = new Set();
   for (const { name } of all.keys) {
     const key = name.slice("state:".length);
     const prev = await env.ALERT_STATE.get(name, "json");
@@ -253,8 +272,11 @@ async function runSweep(env) {
       what: s.state.text,
       link: s.state.link,
     });
-    await refreshStatus(env, DEFAULT_CHANNEL, service);
+    dirtyTopics.add(service);
   }
+  // One status refresh per topic, however many incidents promoted in it, and
+  // all in parallel instead of one rebuild per incident.
+  await Promise.all([...dirtyTopics].map((topic) => refreshStatus(env, DEFAULT_CHANNEL, topic)));
   return { promoted, checked: all.keys.length };
 }
 

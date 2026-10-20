@@ -101,3 +101,18 @@ test("a malformed payload never throws", () => {
     assert.doesNotThrow(() => normalize("generic", bad));
   }
 });
+test("datadog error is an active alert, not a recovery", () => {
+  assert.equal(fromDatadog({ alert_type: "Error", monitor_id: 1 }).firing, true);
+});
+
+test("generic never reads a non-recovery word as recovered", () => {
+  for (const status of ["broken", "disrupted", "ookup", "clearance"]) {
+    assert.equal(fromGeneric({ alert: { status } }).firing, true, status);
+  }
+});
+
+test("a generic route name binds the state-key namespace, not the payload source", () => {
+  const e = normalize("uptime-robot", { source: "datadog", alert: { id: "real-id", status: "firing" } });
+  assert.equal(e.source, "uptime-robot");
+  assert.equal(e.key, "uptime-robot:real-id");
+});
