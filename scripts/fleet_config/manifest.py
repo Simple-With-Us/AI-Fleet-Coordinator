@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .types import (
+    CONFIG_KINDS,
     CheckSpec,
     CheckType,
     Collector,
@@ -40,10 +41,12 @@ __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "MANIFEST_FILENAME",
     "REGISTRY_FILENAME",
+    "CHECK_TYPES_BY_KIND",
     "ManifestError",
     "default_manifest_path",
     "default_registry_path",
     "registry_seat_tags",
+    "known_platforms",
     "load_manifest",
     "validate_coverage",
     "validate_platforms",
@@ -54,6 +57,18 @@ __all__ = [
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = "fleet-seats.json"
 REGISTRY_FILENAME = "fleet-apps.json"
+
+# The check types each kind supports, from design doc section 5.  A rule whose check
+# type is not listed for its kind is rejected:  the pairing is fixed, so a rule can
+# never ask for a check its kind has no meaning for.
+CHECK_TYPES_BY_KIND: Dict[ConfigKind, Tuple[CheckType, ...]] = {
+    ConfigKind.INSTRUCTIONS: (CheckType.MARKED_BLOCK_HASH, CheckType.FILE_HASH),
+    ConfigKind.HOOKS: (CheckType.HOOK_REGISTERED,),
+    ConfigKind.MCP: (CheckType.MCP_SERVERS_REGISTERED,),
+    ConfigKind.SKILLS: (CheckType.SKILLS_INSTALLED,),
+    ConfigKind.SUBAGENTS: (CheckType.SUBAGENTS_INSTALLED,),
+    ConfigKind.PERMISSIONS: (CheckType.PERMISSIONS_MATCH, CheckType.CREDENTIAL_STAT),
+}
 
 
 class ManifestError(ValueError):
@@ -225,6 +240,38 @@ def load_manifest(
     return Manifest(schema_version=MANIFEST_SCHEMA_VERSION, seats=seats, source_path=str(target))
 
 
+def known_platforms() -> Tuple[str, ...]:
+    """The platform ids the installer tables define, sorted.
+
+    This helper is for development and tests only:  it imports ``fleet_lanes`` inside
+    the function body, which the runtime package never does (design doc, section 12).
+    A runtime caller passes the known set in as data, to ``validate_platforms``.
+
+    The set is the union of the two installer tables:  ``install_rules.PLATFORMS``
+    (the harness config surfaces that carry a rules file) and
+    ``install_tools.PLATFORMS`` (the harness config surfaces that carry a hook).  The
+    two tables do not name the same platforms:  ``install_rules`` has no ``muse`` row
+    and ``install_tools`` has no ``home-agents`` row, and a platform id a manifest
+    names must be known to one of them.
+    """
+    from fleet_lanes import install_rules, install_tools  # noqa: PLC0415 - dev and test only
+
+    names = {platform.name for platform in install_rules.PLATFORMS}
+    names.update(install_tools.PLATFORMS.keys())
+    return tuple(sorted(names))
+
+
+def _covered(seat: SeatManifest, platform: str, kind: ConfigKind) -> bool:
+    """True when a rule or an explicit cover accounts for one (platform, kind) pair."""
+    for rule in seat.rules:
+        if rule.kind is kind and platform in rule.platforms:
+            return True
+    for cover in seat.not_applicable:
+        if cover.kind is kind and (not cover.platforms or platform in cover.platforms):
+            return True
+    return False
+
+
 def validate_coverage(manifest: Manifest) -> None:
     """Every (seat, platform, kind) triple is covered, or ManifestError is raised.
 
@@ -233,9 +280,39 @@ def validate_coverage(manifest: Manifest) -> None:
     the seat lists).  A seat with an empty platforms list needs one seat-wide
     not-applicable entry per kind, each with a reason.  Silence is never a cover.
 
-    Skeleton:  the manifest implementer fills this body in against design section 7.
+    Every not-applicable entry needs a non-empty reason:  a cover without a reason is
+    a gap dressed as a decision, so it is rejected here rather than rendered as one.
     """
-    raise NotImplementedError("coverage validation is pinned in the design doc, section 7")
+    problems: List[str] = []
+    for seat in manifest.seats:
+        for cover in seat.not_applicable:
+            if not cover.reason.strip():
+                problems.append(
+                    "seat %s has a not-applicable entry for %s with no reason"
+                    % (seat.seat, cover.kind.value)
+                )
+        if not seat.platforms:
+            for kind in CONFIG_KINDS:
+                if not any(
+                    cover.kind is kind and not cover.platforms for cover in seat.not_applicable
+                ):
+                    problems.append(
+                        "seat %s lists no platform and has no seat-wide not-applicable entry for %s"
+                        % (seat.seat, kind.value)
+                    )
+            continue
+        for platform in seat.platforms:
+            for kind in CONFIG_KINDS:
+                if not _covered(seat, platform, kind):
+                    problems.append(
+                        "seat %s platform %s kind %s is covered by no rule and by no "
+                        "not-applicable entry" % (seat.seat, platform, kind.value)
+                    )
+    if problems:
+        raise ManifestError(
+            "the manifest does not cover every (seat, platform, kind) triple:  %s"
+            % ";  ".join(problems)
+        )
 
 
 def validate_platforms(manifest: Manifest, known_platforms: Tuple[str, ...]) -> None:
@@ -243,10 +320,22 @@ def validate_platforms(manifest: Manifest, known_platforms: Tuple[str, ...]) -> 
 
     ``known_platforms`` comes from ``fleet_lanes.install_rules.PLATFORMS`` at the call
     site, passed in as data so this package never imports ``fleet_lanes`` at runtime.
-
-    Skeleton:  the manifest implementer fills this body in against design section 7.
+    ``known_platforms()`` above supplies that set to a development or test caller.
     """
-    raise NotImplementedError("platform validation is pinned in the design doc, section 7")
+    known = set(known_platforms)
+    named = set()
+    for seat in manifest.seats:
+        named.update(seat.platforms)
+        for rule in seat.rules:
+            named.update(rule.platforms)
+        for cover in seat.not_applicable:
+            named.update(cover.platforms)
+    unknown = sorted(named - known)
+    if unknown:
+        raise ManifestError(
+            "the manifest names platform ids the installer tables do not define:  %s"
+            % ", ".join(unknown)
+        )
 
 
 def validate_rules(manifest: Manifest) -> None:
@@ -257,6 +346,42 @@ def validate_rules(manifest: Manifest) -> None:
     kind other than hooks is rejected, because no proof machinery exists for the other
     kinds and ``UNPROVEN`` would become their permanent state.
 
-    Skeleton:  the manifest implementer fills this body in against design section 7.
+    A rule may only name platforms the seat entry lists:  a rule for a platform the
+    seat does not have is a rule that would never run, and a silent one at that.
+    An L2 rule needs a TTL of at least 86400 seconds, so a daily canary stays fresh
+    between runs.
     """
-    raise NotImplementedError("rule validation is pinned in the design doc, section 7")
+    problems: List[str] = []
+    for seat in manifest.seats:
+        for rule in seat.rules:
+            if not rule.seat.strip():
+                problems.append("rule %s names no seat" % rule.id)
+            if not rule.owner_seat.strip():
+                problems.append("rule %s names no owner seat" % rule.id)
+            if not rule.platforms:
+                problems.append("rule %s names no platform" % rule.id)
+            else:
+                for platform in rule.platforms:
+                    if platform not in seat.platforms:
+                        problems.append(
+                            "rule %s names platform %s, which seat %s does not list"
+                            % (rule.id, platform, seat.seat)
+                        )
+            supported = CHECK_TYPES_BY_KIND[rule.kind]
+            if rule.check.type not in supported:
+                problems.append(
+                    "rule %s is a %s rule, which the %s check type does not support"
+                    % (rule.id, rule.kind.value, rule.check.type.value)
+                )
+            if rule.kind is not ConfigKind.HOOKS and rule.proof_level is not ProofLevel.L0:
+                problems.append(
+                    "rule %s asks for proof %s, but only a hooks rule may ask for more "
+                    "than L0" % (rule.id, rule.proof_level.value)
+                )
+            if rule.proof_level is ProofLevel.L2 and rule.ttl_seconds < 86400:
+                problems.append(
+                    "rule %s asks for L2 proof, so its ttlSeconds must be at least 86400"
+                    % rule.id
+                )
+    if problems:
+        raise ManifestError("the manifest holds inconsistent rules:  %s" % ";  ".join(problems))
