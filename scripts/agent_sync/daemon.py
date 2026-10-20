@@ -631,7 +631,8 @@ class Daemon:
         self.chat_nudges = CN.ChatNudges(self.root, "GROK", recover=False)
         self._chat_queues = {"GROK": self.chat_nudges}
         self._fanout_lock = threading.Lock()
-        self._fanout_seen: set[int] = set()
+        # Bounded:  the ids only have to outlive one message's routing, so the daemon never grows without limit.
+        self._fanout_seen: collections.deque[int] = collections.deque(maxlen=RING_LIMIT)
         self.coalescer = W.Coalescer(
             window=self.config.coalesce_seconds,
             max_window=self.config.coalesce_max_seconds,
@@ -3184,7 +3185,7 @@ class Daemon:
         with self._fanout_lock:
             if message_id in self._fanout_seen:
                 return
-            self._fanout_seen.add(message_id)
+            self._fanout_seen.append(message_id)
         where = FAN.scope(R.outside_code(str(message.get("content") or "")), c.topic)
         threading.Thread(
             target=self.fanout,
@@ -3222,8 +3223,16 @@ class Daemon:
                 added = self.chat_queue(runner.seat).enqueue_target(
                     binding, message_id, self.clock.time(), owner=True
                 )
-            except ValueError:
-                result["no_transport"][platform] = result["no_transport"].get(platform, 0) + 1
+            except ValueError as exc:
+                # The transport was vetted above, so a refusal here is a bad binding or an unreadable state
+                # file:  an error to log and count, not a platform with nowhere to send.
+                result["failed"] = result.get("failed", 0) + 1
+                self.log.write(
+                    "fanout-chat-error",
+                    id=message_id,
+                    platform=platform,
+                    error=self.scrub(str(exc))[:200],
+                )
                 continue
             except Exception as exc:  # one chat's failure never stops the rest of the alert
                 result["failed"] = result.get("failed", 0) + 1
