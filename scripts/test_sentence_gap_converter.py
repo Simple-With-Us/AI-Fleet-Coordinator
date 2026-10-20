@@ -76,11 +76,29 @@ import fleet_skill_identity as _identity
 
 
 def _active_by_seat_copies() -> tuple[str, ...]:
-    """The by-seat upload packs of the one home, for the seats that are still live."""
+    """The by-seat upload packs of the one home, for the seats that are still live.
+
+    The path is derived the way the installer derives it, `seat_key or tag.lower()`,
+    so a seat added without an explicit `seat_key` is found under the name the
+    installer wrote it to.
+    """
     return tuple(
-        "docs/fleet-skills/by-seat/%s/sentence-gap/SKILL.md" % seat.seat_key
+        "docs/fleet-skills/by-seat/%s/sentence-gap/SKILL.md" % (seat.seat_key or seat.tag.lower())
         for seat in _identity.catalog_seats()
         if not seat.retired
+    )
+
+
+def _retired_by_seat_copies() -> tuple[str, ...]:
+    """The by-seat upload packs of the retired seats.
+
+    The repository keeps them as the record of what those seats had, so the installer
+    does not re-render them and the sweeps below do not read them.
+    """
+    return tuple(
+        "docs/fleet-skills/by-seat/%s/sentence-gap/SKILL.md" % (seat.seat_key or seat.tag.lower())
+        for seat in _identity.catalog_seats()
+        if seat.retired
     )
 
 
@@ -103,6 +121,10 @@ RENDERED_COPIES = (
     + _active_by_seat_copies()
     + _platform_copies()
 )
+
+# The retired seats' by-seat packs.  The repository keeps them as history, so the
+# installer does not re-render them and the sweeps do not read them.
+RETIRED_COPIES = _retired_by_seat_copies()
 
 # The live guidance that quotes the pattern for a reader to copy.
 GUIDANCE = (
@@ -365,11 +387,16 @@ class OneSourceOfTruthTests(unittest.TestCase):
     def test_no_live_file_holds_a_converter_without_the_markup_group(self) -> None:
         """A copy that drifts is a body that ships with no gap, so every converter in the
         checkout carries the markup group.  A dated record of a ruling keeps the form it
-        was written in and is listed as such, and a generated mirror is built elsewhere and
-        cannot be edited here."""
+        was written in and is listed as such, a generated mirror is built elsewhere and
+        cannot be edited here, and a retired seat's pack is history."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
+            if (
+                rel in DATED_RECORDS
+                or rel in GENERATED_MIRRORS
+                or rel in CHECKER_FILES
+                or rel in RETIRED_COPIES
+            ):
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -474,6 +501,10 @@ class AssertionCommandTests(unittest.TestCase):
         The shape of a command can be right while the command still matches nothing:  a
         stray bracket after the class closes the expression early, the count prints 0,
         and the pair passes a look at the text.  So the commands are run.
+
+        The leftover check is run both ways.  It has to be quiet on a converted body and
+        loud on a body with a missed gap, because a check that cannot see the gap is
+        quiet on both and passes the one-way test while being blind.
         """
         pattern = one_home_patterns()[0]
         with tempfile.TemporaryDirectory() as tmp:
@@ -482,6 +513,10 @@ class AssertionCommandTests(unittest.TestCase):
                 convert(pattern, "**Bold sentence.**  Next sentence.\n"),
                 encoding="utf-8",
             )
+            missed = Path(tmp) / "missed.txt"
+            # The gap after a markup span was never made:  one space, so the converter's
+            # pattern does not match it and the body ships with no gap.
+            missed.write_text("**Bold sentence.** Next sentence.\n", encoding="utf-8")
             for rel in GUIDANCE:
                 with open(ROOT / rel, encoding="utf-8") as fh:
                     text = fh.read()
@@ -501,13 +536,24 @@ class AssertionCommandTests(unittest.TestCase):
                     "%s holds a leftover check that fires on a converted body:  %s"
                     % (rel, leftover),
                 )
+                self.assertGreater(
+                    run_grep("grep -cE '%s' '%s'" % (leftover, missed)),
+                    0,
+                    "%s holds a leftover check that cannot see a missed gap:  %s" % (rel, leftover),
+                )
 
     def test_no_live_file_holds_a_blind_leftover_check(self) -> None:
         """No live file may hold the check that cannot see a gap after a markup span.
-        A dated record of a ruling keeps the form it was written in and is skipped."""
+        A dated record of a ruling keeps the form it was written in and is skipped, and a
+        retired seat's pack is history and is skipped."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
+            if (
+                rel in DATED_RECORDS
+                or rel in GENERATED_MIRRORS
+                or rel in CHECKER_FILES
+                or rel in RETIRED_COPIES
+            ):
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
