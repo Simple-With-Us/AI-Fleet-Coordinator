@@ -5763,7 +5763,13 @@ def probe_minimax_files(
     """Run MM's compatible file payloads in its restricted subprocess environment."""
     env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
     env.update(HOME=home, PATH=MINIMAL_PATH if minimal_path else os.environ.get("PATH", ""))
-    tree = registry_tree(registry)
+    try:
+        tree = registry_tree(registry)
+    except Refused as exc:
+        # An unreadable/invalid registry is a failed check, not an abort: letting
+        # Refused escape here unwinds through apply_minimax and skips the
+        # remaining platforms in `apply all`.
+        return [Check("minimax", "registry-tree", "FAIL", str(exc))]
     integration = os.path.join("Code", tree, "probe-placeholder")
     out = []
     for tool, path, deny in (
