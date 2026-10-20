@@ -447,7 +447,12 @@ class ChatTransport:
         return self.adapter(binding).preflight(binding)
 
     def send(self, binding, text, *, permit=None):
-        return self.adapter(binding).send(binding, text, permit=permit)
+        self.hold_reason = None
+        adapter = self.adapter(binding)
+        outcome = adapter.send(binding, text, permit=permit)
+        if outcome == "held":
+            self.hold_reason = getattr(adapter, "hold_reason", None)
+        return outcome
 
     def receipt(self, binding, text):
         return self.adapter(binding).receipt(binding, text)

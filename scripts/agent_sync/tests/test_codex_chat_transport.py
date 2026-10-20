@@ -325,6 +325,7 @@ class TransportTests(unittest.TestCase):
             original = dict(self.thread)
             self.thread[key] = value
             self.assertEqual(self.adapter.send(self.binding, "nudge"), "held")
+            self.assertTrue(self.adapter.hold_reason)
             self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
             self.thread = original
         self.thread["path"] = str(self.path.parent / "missing")
@@ -333,6 +334,8 @@ class TransportTests(unittest.TestCase):
         self.adapter.loaded = lambda _, **kwargs: False
         self.assertEqual(self.adapter.send(self.binding, "nudge"), "deferred")
         self.assertNotIn("thread/queue/add", [method for method, _ in self.calls])
+        self.assertEqual(self.adapter.send(self.binding, "nudge"), "accepted")
+        self.assertIsNone(self.adapter.hold_reason)
 
     def test_send_refreshes_loaded_proof_after_policy_permit(self):
         self.adapter.loaded = None

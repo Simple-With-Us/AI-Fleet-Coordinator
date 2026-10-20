@@ -5229,6 +5229,7 @@ class Daemon:
                 return daemon._chat_transport.preflight(binding)
 
             def send(inner, binding: dict[str, str], text: str) -> str:
+                inner.hold_reason = None
                 # Repeat every daemon gate immediately before accounting and transport; a pause,
                 # budget change or loop-guard trip may have raced the earlier preflight.
                 readiness = (
@@ -5260,6 +5261,11 @@ class Daemon:
                     )
                 except Exception:
                     outcome = "unknown"
+                if outcome == "held":
+                    inner.hold_reason = (
+                        getattr(daemon._chat_transport, "hold_reason", None)
+                        or inner.hold_reason
+                    )
                 if outcome == "deferred" and getattr(inner, "hold_reason", None):
                     outcome = "held"
                 # Local delivery uses no model tokens.  Downstream chat spend is unmeasured; count

@@ -236,6 +236,7 @@ class CodexChatTransport:
         self._full_queues = {}
         self._probe_failures = {}
         self._receipts = {}
+        self.hold_reason = None
 
     def _valid(self, binding):
         if binding.get("platform") != "codex" or binding.get("host") != socket.gethostname():
@@ -443,10 +444,12 @@ class CodexChatTransport:
             return False
 
     def send(self, binding, text, *, permit: Callable[[], bool] | None = None):
+        self.hold_reason = None
         # A malformed or mismatched binding can never succeed, so it is held rather than left on
         # the retryable path: the daemon re-checks policy gates but not the physical probe here,
         # so a deferred verdict would requeue this wake forever.
         if not self._valid(binding):
+            self.hold_reason = "Invalid Codex thread binding"
             return "held"
         # Repeat the workspace availability check preflight made: it can disappear between the
         # two calls, and send() is reachable directly.  Deferred, not held, so the wake retries.
@@ -491,9 +494,10 @@ class CodexChatTransport:
             # A correlated well-formed rejection is held for explicit retry, not left
             # uncertain where it would block every other wake to this destination.
             return "failed" if sent and exc.rejected else "unknown" if sent else "deferred"
-        except InvalidThread:
+        except InvalidThread as exc:
             # Identity, archive, read-only and history-scope failures are permanent, matching the
             # terminal verdict preflight gives them; deferring would retry this wake forever.
+            self.hold_reason = str(exc)
             return "held"
         except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
             # Nothing reached thread/queue/add, so the wake is still safe to retry: only a

@@ -19,6 +19,17 @@ from agent_sync.chat_transport import GrokTransport
 
 
 class TransportTests(unittest.TestCase):
+    def test_dispatch_forwards_hold_reason_without_retaining_it_after_success(self):
+        transport = CT.ChatTransport()
+        adapter = SimpleNamespace(send=Mock(return_value="held"), hold_reason="Thread is not writable")
+        transport.adapters["codex"] = adapter
+        binding = {"platform": "codex"}
+        self.assertEqual(transport.send(binding, "nudge"), "held")
+        self.assertEqual(transport.hold_reason, "Thread is not writable")
+        adapter.send.return_value = "accepted"
+        self.assertEqual(transport.send(binding, "nudge"), "accepted")
+        self.assertIsNone(transport.hold_reason)
+
     def setUp(self):
         self.reset_discovery()
 
