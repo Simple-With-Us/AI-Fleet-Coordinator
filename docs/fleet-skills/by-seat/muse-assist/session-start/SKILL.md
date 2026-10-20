@@ -6,12 +6,12 @@ description: >-
 
 # Session start (MA)
 
-> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM):  your lane is the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM):  use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
 
-This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` (historical `muse/<slug>`).  No Mac lane (cloud VM):  the lane is your VM checkout, one per repo named `muse-assist-<repo>`, so never create `~/apps/lanes` or run `~/apps/lane`.  Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly distinguish from Muse Code (`[MC]`).  `MA` is the default seat of an ordinary session; a launcher's seat wins (Identity).
+This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` (historical `muse/<slug>`).  No Mac lane (cloud VM):  use your durable VM checkout, one per repo named `muse-assist-<repo>`, so never create `~/apps/lanes` or run `~/apps/lane`.  Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly distinguish from Muse Code (`[MC]`).  `MA` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
 ## 1. Identity
 
@@ -57,7 +57,7 @@ or MCP `recall_search`.  A hit is a lead, not a verdict — open the Linear issu
 
 The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.  Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders` (Lane Map, owner 2026-10-07: `docs/protocols/lane-map.md` in AI-Fleet-Coordinator).
 
-Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  This VM checkout is the lane; do not invoke the Mac lane tool or create Mac lane directories.
+Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  Reuse this durable VM checkout across tasks; do not invoke the Mac lane tool or create Mac lane directories.
 
 | App | Zulip `repo:` | Acronym (Linear team) | Lane folder |
 |-----|---------------|-----------------------|-------------|

@@ -695,7 +695,7 @@ SEATS: dict[str, Seat] = {
         "exclusive",
         "This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  "
         "Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` "
-        "(historical `muse/<slug>`).  No Mac lane (cloud VM):  the lane is your VM checkout, "
+        "(historical `muse/<slug>`).  No Mac lane (cloud VM):  use your durable VM checkout, "
         "one per repo named `muse-assist-<repo>`, so never create `~/apps/lanes` or run "
         "`~/apps/lane`.  "
         "Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly "
@@ -706,7 +706,7 @@ SEATS: dict[str, Seat] = {
         zulip_bot="muse-assist-bot",
         zulip_rc="MA",
         lane_clause=(
-            "No Mac lane (cloud VM):  your lane is the durable VM checkout "
+            "No Mac lane (cloud VM):  use the durable VM checkout "
             "`muse-assist-<repo>`, one per repo."
         ),
     ),
@@ -1261,7 +1261,7 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
         "Require a clean checkout before switching branches.  For a new task, run git fetch origin "
         "and git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main, then publish with "
         "git push -u origin HEAD.  For a follow-up, switch to the existing task branch instead; "
-        "never reset it or discard previous work.  This VM checkout is the lane; do not invoke "
+        "never reset it or discard previous work.  Reuse this durable VM checkout across tasks; do not invoke "
         "the Mac lane tool or create Mac lane directories.\n\n"
     )
     for command in (
