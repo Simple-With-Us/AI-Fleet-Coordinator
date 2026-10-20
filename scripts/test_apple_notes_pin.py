@@ -102,7 +102,9 @@ def _extract(source: str) -> tuple[str, str]:
     fn = re.search(r"^_run_note_shortcut\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
     #  the Shortcuts-app precondition is optional:  it was live-only until AFC-436 put it in the
     #  canonical script,  so the extraction still works against a script that does not have it
-    ensure = re.search(r"^_ensure_shortcuts_running\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
+    ensure = re.search(
+        r"^_ensure_shortcuts_running\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE
+    )
     assert fn, "the _run_note_shortcut function is gone from apple-notes-coding.sh"
     assert knob, "the _pin_retry_on knob resolver is gone from apple-notes-coding.sh"
     start = source.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.")
