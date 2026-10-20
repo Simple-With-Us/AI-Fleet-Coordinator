@@ -522,3 +522,9 @@ always-on jobs (pm2 resurrect / ecosystem start, launchd kickstart/bootstrap)
 and keeps scheduled timers **loaded** (does not kickstart idle).  Steals
 stale merge-shepherd run-locks older than 2h (the disk-janitor steal went with that job, Oct 11).  4-per-hour
 backoff.  `MAC_PROCESS_WATCH_RESTART=0` is log-only.
+
+## Server Secret Helper (AFC-427)
+
+| Helper | Kind | Purpose |
+|---|---|---|
+| `fleet-secrets` Linux bootstrap (`scripts/fleet_secrets/linux-entrypoint.py`) | On-demand, server only | Reads an owned 0600 machine bootstrap under `~/.config/fleet-secrets/`, mints a fresh token in memory, and delegates to the existing CLI.  Server CODEX Zulip and Linear identities and an App Store Connect read were verified on Oct 20, 2026. |
