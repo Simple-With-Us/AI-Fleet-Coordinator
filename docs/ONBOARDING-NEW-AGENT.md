@@ -1,7 +1,7 @@
 # Onboarding a new agent seat
 
 Policy + steps for adding a coding agent (Claude, Codex, Grok, Cursor,
-Antigravity, Monet, Kimi, or a future seat) to this fleet.
+Antigravity, Kimi, or a future seat) to this fleet.
 
 **GitHub:** https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
 **Sibling (new app):** [ONBOARDING-NEW-APP.md](ONBOARDING-NEW-APP.md) · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  

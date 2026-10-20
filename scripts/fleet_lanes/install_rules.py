@@ -40,7 +40,7 @@ block's lines, and collapses every other line into a count; a contradiction show
 kind and the matched text only (the path, the temp directory and checkout words, the legacy prefix).
 Whatever is printed still goes through a credential redactor, as a second layer.
 
-Fleet Basics.  Four platforms have no other fleet instruction file (Clutch, Kimi, Vibe), so their block
+Fleet Basics.  Three platforms have no other fleet instruction file (Clutch, Kimi, Vibe), so their block
 also carries the Fleet Basics (AGENT-SYNC pointer, seat identity, coordination, secrets, writing) ahead of the Lane Map.
 Clutch has a fixed default seat (CLUTCH, a launcher's seat wins); the other two are engine-only CLIs with NO default
 seat and say so.  The marker family is the same `fleet-lane-map` block.  OpenCode (the row is the owner's, #438) is the
