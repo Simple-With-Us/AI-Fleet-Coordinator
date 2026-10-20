@@ -192,7 +192,7 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
                 [binary, "get", name, "--path", INFISICAL_PATH],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                timeout=15,
+                timeout=TIMEOUT_S,
                 cwd="/",
                 env=child,
                 check=False,
@@ -200,7 +200,11 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
             if proc.returncode == 0:
                 value = proc.stdout.decode("utf-8").strip() or None
         except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-            value = None
+            # Transient failure (timeout, spawn error): do not cache a false
+            # miss, or resolve_credential reports not_configured for the whole
+            # TOKEN_CACHE_TTL.  Only a definitive miss (nonzero exit) or a
+            # value is cached.
+            return None
     _token_cache[name] = (now, value)
     return value
 
