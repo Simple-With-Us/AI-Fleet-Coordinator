@@ -19,8 +19,12 @@ Run:  python3 -m unittest scripts/test_apple_notes_timeout.py  (or cd scripts &&
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -92,6 +96,38 @@ class AppleEventTimeoutTests(unittest.TestCase):
             "the caller's cap is at or below the script's AppleEvent timeout,  so a large write "
             "is killed while osascript is still running",
         )
+
+    def test_the_notes_blocks_use_an_unquoted_heredoc(self) -> None:
+        """The timeout constant is a shell variable,  so the heredoc has to expand it.
+
+        In a quoted heredoc osascript receives the literal text of the constant and the
+        "with timeout of" clause does not compile,  which breaks the write.  The pin block is
+        the other way round:  it has no shell variable and stays quoted.
+        """
+        self.assertIn("osascript <<EOF\n", self.text)
+        self.assertNotIn("osascript <<'EOF'\nset titlePath", self.text)
+        self.assertEqual(self.text.count("osascript <<EOF"), 2)
+        self.assertEqual(self.text.count("osascript <<'EOF'"), 1)
+
+    @unittest.skipUnless(shutil.which("osacompile"), "needs osacompile")
+    def test_the_update_block_still_compiles(self) -> None:
+        """Compile the rendered AppleScript,  so a broken block fails here and not on a write."""
+        block = re.search(r"osascript <<EOF\n(.*?)\nEOF\n", self.text, re.DOTALL)
+        self.assertIsNotNone(block, "the unquoted Notes block is gone")
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp) / "body.html"
+            body.write_text("<div>test</div>", encoding="utf-8")
+            title = Path(tmp) / "title.txt"
+            title.write_text("[AFC, MiniMax] compile probe", encoding="utf-8")
+            rendered = block.group(1).replace("$TMP", str(body)).replace("$TITLE_FILE", str(title))
+            rendered = rendered.replace("${NOTES_APPLE_EVENT_TIMEOUT_S}", str(TIMEOUT_DEFAULT_S))
+            proc = subprocess.run(
+                ["osacompile", "-o", os.devnull, "-e", rendered],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 if __name__ == "__main__":
