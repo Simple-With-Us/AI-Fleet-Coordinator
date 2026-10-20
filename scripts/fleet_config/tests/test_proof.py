@@ -369,6 +369,70 @@ class HookResolutionTests(FakeHookCase):
         with self.assertRaises(CheckError):
             proof.resolve_hook_command("claude", self.ctx)
 
+    def test_a_large_unrelated_section_does_not_abort_the_read(self):
+        """Only the section the platform reads is bounded, so a big permissions list is fine."""
+        os.makedirs(os.path.join(self.home, ".claude"))
+        path = os.path.join(self.home, ".claude", "settings.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "permissions": {
+                        "allow": ["Bash(rule %d)" % index for index in range(proof.MAX_CONFIG_ELEMENTS)]
+                    },
+                    "hooks": {
+                        "PreToolUse": [
+                            {
+                                "matcher": "Bash",
+                                "hooks": [
+                                    {"type": "command", "command": "/opt/lane-tools/lane-guard-hook"}
+                                ],
+                            }
+                        ]
+                    },
+                },
+                handle,
+            )
+        self.assertEqual(
+            proof.resolve_hook_command("claude", self.ctx),
+            "/opt/lane-tools/lane-guard-hook",
+        )
+
+    def test_a_hooks_section_over_the_element_limit_still_aborts(self):
+        os.makedirs(os.path.join(self.home, ".claude"))
+        path = os.path.join(self.home, ".claude", "settings.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "hooks": {
+                        "PreToolUse": [
+                            {"matcher": "Bash(%d)" % index}
+                            for index in range(proof.MAX_CONFIG_ELEMENTS + 1)
+                        ]
+                    }
+                },
+                handle,
+            )
+        with self.assertRaises(CheckError):
+            proof.resolve_hook_command("claude", self.ctx)
+
+    def test_a_named_group_over_the_element_limit_still_aborts(self):
+        os.makedirs(os.path.join(self.home, ".gemini", "config"))
+        path = os.path.join(self.home, ".gemini", "config", "hooks.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "fleet-lane-guard": {
+                        "PreToolUse": [
+                            {"matcher": "run_command(%d)" % index}
+                            for index in range(proof.MAX_CONFIG_ELEMENTS + 1)
+                        ]
+                    }
+                },
+                handle,
+            )
+        with self.assertRaises(CheckError):
+            proof.resolve_hook_command("antigravity", self.ctx)
+
     def test_a_hook_list_that_is_not_a_list_aborts(self):
         os.makedirs(os.path.join(self.home, ".claude"))
         path = os.path.join(self.home, ".claude", "settings.json")

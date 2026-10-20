@@ -700,10 +700,30 @@ class _Run:
     error: str = ""
 
 
+def _kill_group(proc: subprocess.Popen) -> None:
+    """Kill a child's whole process group and reap it, so nothing is left running.
+
+    The child is started in its own session,  so an interruption of the runner does
+    not reach it:  without this it would outlive the probe.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.communicate()
+    except BaseException:
+        pass
+
+
 def _run_shell(command: str, stdin: bytes, env: dict[str, str], timeout: int, cwd: str) -> _Run:
     """Run a hook command the way a platform runs one:  through a shell, on stdin.
 
-    The process group is killed on a timeout, so a probe never leaves a hook running.
+    The process group is killed on a timeout and on an interruption of the runner,
+    so a probe never leaves a hook running.
     """
     try:
         proc = subprocess.Popen(
@@ -726,6 +746,9 @@ def _run_shell(command: str, stdin: bytes, env: dict[str, str], timeout: int, cw
             proc.kill()
         out, err = proc.communicate()
         return _Run(returncode=None, stdout=out or b"", stderr=err or b"", timed_out=True)
+    except BaseException:
+        _kill_group(proc)
+        raise
     return _Run(returncode=proc.returncode, stdout=out or b"", stderr=err or b"")
 
 
@@ -752,6 +775,9 @@ def _run_argv(argv: list[str], stdin: bytes, env: dict[str, str], timeout: int, 
             proc.kill()
         out, err = proc.communicate()
         return _Run(returncode=None, stdout=out or b"", stderr=err or b"", timed_out=True)
+    except BaseException:
+        _kill_group(proc)
+        raise
     return _Run(returncode=proc.returncode, stdout=out or b"", stderr=err or b"")
 
 

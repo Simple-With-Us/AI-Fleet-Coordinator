@@ -313,6 +313,20 @@ class HooksTests(TempHome):
         result = check_hook_registered(rule, "claude", self.ctx)
         self.assertIs(result.state, CheckState.MISSING)
 
+    def test_hook_registered_passes_without_the_file_when_the_rule_expects_no_hook(self):
+        """The seeded `<seat>-hooks-none` rules:  a harness with no settings file passes."""
+        rule = make_rule(
+            CheckType.HOOK_REGISTERED,
+            "~/.fx/settings.json",
+            detail="PreToolUse",
+            expected=ExpectedState(description="d", names=(), present=False),
+            kind=ConfigKind.HOOKS,
+        )
+        result = check_hook_registered(rule, "fx", self.ctx)
+        self.assertIs(result.state, CheckState.PASS)
+        self.assertIs(result.proof_level_achieved, ProofLevel.L0)
+        self.assertFalse(result.observed.present)
+
     def test_hook_registered_is_missing_without_an_entry_for_the_event(self):
         self.write_json(".claude/settings.json", {"env": {"HOME": "/tmp"}})
         rule = make_rule(
@@ -515,6 +529,18 @@ class McpTests(TempHome):
         )
         result = check_mcp_servers_registered(rule, "claude", self.ctx)
         self.assertIs(result.state, CheckState.MISSING)
+
+    def test_mcp_passes_without_the_file_when_the_rule_expects_no_server(self):
+        rule = make_rule(
+            CheckType.MCP_SERVERS_REGISTERED,
+            "~/.codex/config.toml",
+            expected=ExpectedState(description="d", names=("fleet-recall",), present=False),
+            kind=ConfigKind.MCP,
+        )
+        result = check_mcp_servers_registered(rule, "codex", self.ctx)
+        self.assertIs(result.state, CheckState.PASS)
+        self.assertIs(result.proof_level_achieved, ProofLevel.L0)
+        self.assertFalse(result.observed.present)
 
     def test_mcp_drifts_when_an_expected_server_is_not_registered(self):
         self.write_json(".claude.json", {"mcpServers": {"fleet-recall": {"command": "python3"}}})

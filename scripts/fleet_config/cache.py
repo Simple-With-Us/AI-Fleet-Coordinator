@@ -98,6 +98,24 @@ def _ensure_dir() -> None:
         os.chmod(target, 0o700)
 
 
+def _fsync_dir(path: str) -> None:
+    """Flush a directory's own entries to disk, so a rename into it survives a crash.
+
+    A filesystem that cannot fsync a directory is not a reason to lose the write,  so
+    the error is swallowed:  the bytes are already on disk either way.
+    """
+    try:
+        handle = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    except OSError:
+        pass
+    finally:
+        os.close(handle)
+
+
 def _dir_is_private() -> bool:
     """True when the state directory is a private directory that belongs to us."""
     try:
@@ -250,6 +268,9 @@ def save_report(report: StatusReport, now: float | None = None) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, cache_path())
+        # The rename is only durable once the directory entry is on disk too,  or a
+        # crash can lose the last-known-good report the fsync above protected.
+        _fsync_dir(state_dir())
     except BaseException:
         try:
             os.close(fd)

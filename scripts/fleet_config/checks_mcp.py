@@ -85,6 +85,17 @@ def check_mcp_servers_registered(rule: Rule, platform: str, ctx: CheckContext) -
         )
 
     if not os.path.exists(path):
+        if rule.expected.present is False:
+            return build_result(
+                rule,
+                platform,
+                CheckState.PASS,
+                "The MCP config file %s is absent, as the rule expects." % target,
+                ReasonCode.OK,
+                ObservedState(present=False),
+                ctx,
+                proof_level_achieved=ProofLevel.L0,
+            )
         return build_result(
             rule,
             platform,

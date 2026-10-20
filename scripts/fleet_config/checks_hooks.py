@@ -584,10 +584,21 @@ def check_hook_registered(rule: Rule, platform: str, ctx: CheckContext) -> Check
 
     if not os.path.exists(path):
         # A rule that says "no hook is registered" is satisfied by an absent file:
-        # there is no hook there either.  It is NOT the same as a rule that says the
-        # FILE must be absent,  which is what `expected.present is False` means
-        # elsewhere in this package,  so the absence here is always a MISSING unless
-        # the rule names no hook at all.
+        # there is no hook there either.  This is the inversion every other check in
+        # this package applies on its missing-target path,  and the seeded
+        # `<seat>-hooks-none` rules rely on it:  a harness with no hook surface has
+        # no settings file either,  and that seat is in the desired state.
+        if rule.expected.present is False:
+            return build_result(
+                rule,
+                platform,
+                CheckState.PASS,
+                "The hook config file %s is absent, as the rule expects." % target,
+                ReasonCode.OK,
+                ObservedState(present=False),
+                ctx,
+                proof_level_achieved=ProofLevel.L0,
+            )
         return build_result(
             rule,
             platform,
