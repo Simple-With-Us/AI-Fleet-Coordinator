@@ -100,10 +100,15 @@ class ScopeTests(unittest.TestCase):
         )
 
     def test_prefix_names_are_complete_and_multiword(self):
-        for name, repo in (("Socratic Trade", "socratic-trade"), ("Congress Trade", "congress.trade"), ("Simple With Us", "simple-with-us")):
-            self.assertEqual(F.scope(name + " @all look", "misc").repos, frozenset({repo}))
-        self.assertIsNone(F.scope("ST deploy is stuck @all look", "misc").repos)
-        self.assertIsNone(F.scope("ST deploy is stuck.  @all look", "misc").repos)
+        import re
+        aliases = (("Example Trade", "example-trade"), ("Demo Market", "demo-market"), ("Sample With Friends", "sample-with-friends"))
+        registry = {"EX": tuple(repo for _, repo in aliases)}
+        resolvers = [(repo, re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE)) for name, repo in aliases]
+        with mock.patch.object(F, "TEAM_REPOS", registry), mock.patch.object(F, "_NAME_RES", resolvers):
+            for name, repo in aliases:
+                self.assertEqual(F.scope(name + " @all look", "misc").repos, frozenset({repo}))
+            self.assertIsNone(F.scope("EX deploy is stuck @all look", "misc").repos)
+            self.assertIsNone(F.scope("EX deploy is stuck.  @all look", "misc").repos)
 
     def test_a_cloud_chats_id_is_never_taken_for_its_repo(self):
         row = cloud(1, 1, None)
@@ -224,7 +229,7 @@ class DaemonFanoutTests(DaemonHarness):
 
     def test_absent_cwd_is_refused_by_the_real_queue_contract(self):
         daemon = self.started()
-        row = dict(cloud(1, 0, ST_URL), seat="CLAUDE", cwd=None, updated_at=self.clock.time())
+        row = dict(cloud(1, 0, None), seat="CLAUDE", cwd=None, updated_at=self.clock.time())
         daemon._chat_catalog = FakeCatalog([row])
         result = daemon.fanout(123, "agent-sync", "misc", F.Scope())
         self.assertEqual(result.get("failed"), 1)
