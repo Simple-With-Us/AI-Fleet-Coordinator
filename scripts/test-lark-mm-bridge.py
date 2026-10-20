@@ -43,7 +43,7 @@ class FakeProcess:
         self.script = script
         self.stdin = FakeStdin(self)
         self.stdout = FakeStdout(self)
-        self.stderr = None
+        self.stderr = iter(())
         self.returncode = None
         self.terminated = False
 
@@ -374,6 +374,35 @@ class BridgeTests(unittest.TestCase):
             ["--allow-sender", "ou_one", "--allow-sender", "ou_two"]
         )
         self.assertEqual(args.allowed_sender, ["ou_one", "ou_two"])
+
+    def test_sentence_gap_widens_after_a_sentence_end(self):
+        out = bridge_mod.sentence_gap("Sentence one. Sentence two.")
+        self.assertEqual(out, "Sentence one.\u00a0 Sentence two.")
+
+    def test_sentence_gap_collapses_two_ascii_spaces_to_the_wide_gap(self):
+        out = bridge_mod.sentence_gap("Sentence one.  Sentence two.")
+        self.assertEqual(out, "Sentence one.\u00a0 Sentence two.")
+
+    def test_sentence_gap_leaves_colons_and_commas_alone(self):
+        out = bridge_mod.sentence_gap("Note: value, then; more")
+        self.assertEqual(out, "Note: value, then; more")
+
+    def test_sentence_gap_leaves_inline_code_alone(self):
+        out = bridge_mod.sentence_gap("Use `foo. bar` as the key. Then go.")
+        self.assertIn("`foo. bar`", out)
+        self.assertTrue(out.endswith("\u00a0 Then go."))
+
+    def test_sentence_gap_leaves_fenced_code_alone(self):
+        text = "Here:\n```\nx = 1.  y = 2\n```\nDone. Now."
+        out = bridge_mod.sentence_gap(text)
+        self.assertIn("x = 1.  y = 2", out)
+        self.assertTrue(out.endswith("\u00a0 Now."))
+
+    def test_sentence_gap_keeps_abbreviations_and_decimals(self):
+        self.assertEqual(
+            bridge_mod.sentence_gap("Dr. Smith is here. Next."), "Dr. Smith is here.\u00a0 Next."
+        )
+        self.assertEqual(bridge_mod.sentence_gap("Version 3.14 ships."), "Version 3.14 ships.")
 
     def test_lark_env_prepends_cli_prefix(self):
         env = bridge_mod.lark_env()

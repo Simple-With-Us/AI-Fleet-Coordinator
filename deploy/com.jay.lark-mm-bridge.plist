@@ -29,7 +29,7 @@
 	<key>ThrottleInterval</key>
 	<integer>30</integer>
 	<key>ProcessType</key>
-	<string>Background</string>
+	<string>Standard</string>
 	<key>StandardErrorPath</key>
 	<string>/Users/jay/Library/Logs/lark-mm-bridge/bridge.err.log</string>
 	<key>StandardOutPath</key>

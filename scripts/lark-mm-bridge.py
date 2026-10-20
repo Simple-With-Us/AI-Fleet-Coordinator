@@ -40,6 +40,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import shlex
 import signal
 import subprocess
@@ -56,6 +57,55 @@ DEFAULT_CWD = os.path.expanduser("~/apps")
 DEFAULT_TIMEOUT = 600
 MAX_REPLY_CHARS = 4000
 BUSY_MARK = "(MM is still working on the previous message.)"
+# The MiniMax Code ACP server has to start a runtime before it answers
+# initialize.  On a loaded Mac that handshake is slow, and a tight timeout
+# turns a working seat into "could not answer" (AFC-417).
+ACP_HANDSHAKE_TIMEOUT = 300
+
+# The owner's house rule: a visibly wider gap between sentences, after . ! and ?
+# only, never after a colon, semicolon, comma or dash.  In a Markdown chat pane
+# the gap is a real U+00A0 plus a normal space; two ASCII spaces collapse and the
+# &nbsp; entity renders as six literal characters.
+SENTENCE_GAP = "\u00a0 "
+_SENTENCE_END = re.compile(r"([A-Za-z]+)([.!?])( +)(?=[\"'(\[A-Z])")
+_ABBREVIATIONS = ("mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "no")
+
+
+def _widen_sentence(match):
+    """Replace the spaces after a sentence end with the wide gap."""
+    if match.group(1).lower() in _ABBREVIATIONS:
+        return match.group(0)
+    return match.group(1) + match.group(2) + SENTENCE_GAP
+
+
+def sentence_gap(text):
+    """Widen the gap after a sentence end, leaving code alone.
+
+    The seat answers in plain prose, and prose carries one space between
+    sentences.  Lark renders that as a single space, so every reply the bridge
+    sends would break the owner's house rule.  Fenced code blocks and inline
+    code spans are left exactly as they are.
+    """
+    if not text:
+        return text
+    out = []
+    in_fence = False
+    for line in text.split("\n"):
+        if line.strip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        pieces = re.split(r"(`[^`]*`)", line)
+        rebuilt = []
+        for i, piece in enumerate(pieces):
+            if i % 2 == 0:
+                piece = _SENTENCE_END.sub(_widen_sentence, piece)
+            rebuilt.append(piece)
+        out.append("".join(rebuilt))
+    return "\n".join(out)
 
 
 def log(message):
@@ -223,7 +273,7 @@ class MiniMaxSession:
             [self.mcode, "acp"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             env=self.env,
@@ -231,15 +281,20 @@ class MiniMaxSession:
         self.next_id = 1
         self.buffer = []
         threading.Thread(target=self._pump, daemon=True).start()
+        threading.Thread(target=self._pump_stderr, daemon=True).start()
         self._call(
             "initialize",
             {
                 "protocolVersion": 1,
                 "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}},
             },
-            timeout=120,
+            timeout=ACP_HANDSHAKE_TIMEOUT,
         )
-        result = self._call("session/new", {"cwd": self.cwd, "mcpServers": []}, timeout=180)
+        result = self._call(
+            "session/new",
+            {"cwd": self.cwd, "mcpServers": []},
+            timeout=ACP_HANDSHAKE_TIMEOUT,
+        )
         self.session_id = (result or {}).get("sessionId")
         if not self.session_id:
             raise CommandError("session/new returned no sessionId")
@@ -257,6 +312,14 @@ class MiniMaxSession:
                 continue
             with self.buffer_lock:
                 self.buffer.append(message)
+
+    def _pump_stderr(self):
+        """Keep the ACP server's own errors; they are the only clue when a
+        handshake times out."""
+        for line in self.process.stderr:
+            line = line.rstrip()
+            if line:
+                log("acp: %s" % line)
 
     def _call(self, method, params, timeout):
         with self.lock:
@@ -392,6 +455,7 @@ class Bridge:
         text = (text or "").strip()
         if not text:
             text = "(MM produced no reply.)"
+        text = sentence_gap(text)
         if len(text) > MAX_REPLY_CHARS:
             text = text[:MAX_REPLY_CHARS].rstrip() + "\n\n(reply truncated)"
         command = [
