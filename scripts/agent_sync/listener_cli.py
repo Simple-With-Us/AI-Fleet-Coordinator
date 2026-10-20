@@ -27,8 +27,7 @@ from . import chat_transport as CT
 from . import config as C
 from . import heldback as HELD
 from . import identity as I
-from . import launchd
-from . import systemd
+from . import launchd, systemd
 from . import listener_records as LR
 from . import live as L
 from . import wakes as W
@@ -349,14 +348,22 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
     ]
     if "systemd_user_service" in info:
         service_info = info["systemd_user_service"]
-        lines.append("systemd user service: %s; state: %s" % (
-            "installed" if service_info["installed"] else "not installed",
-            service_info["active_state"]))
+        lines.append(
+            "systemd user service: %s; state: %s"
+            % (
+                "installed" if service_info["installed"] else "not installed",
+                service_info["active_state"],
+            )
+        )
     plugin_line = "plugin: repo %s, installed %s" % (
-        repo_version or "?", info["plugin"]["installed"] or "no")
+        repo_version or "?",
+        info["plugin"]["installed"] or "no",
+    )
     if sys.platform == "darwin":
-        plugin_line = "LaunchAgent: %s; " % (
-            "installed" if info["launch_agent"] else "not installed") + plugin_line
+        plugin_line = (
+            "LaunchAgent: %s; " % ("installed" if info["launch_agent"] else "not installed")
+            + plugin_line
+        )
     lines.append(plugin_line)
     if status:
         lines.append(
