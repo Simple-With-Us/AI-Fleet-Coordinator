@@ -415,6 +415,7 @@ def check_policy(plugin: dict) -> dict:
             uncovered.append(tool_name)
             covering = [fallback]
         denied = False
+        startup_error = None
         for handler in covering:
             try:
                 command = shlex.split(handler["command"])
@@ -454,11 +455,24 @@ def check_policy(plugin: dict) -> dict:
                 # pyenv or conda interpreter, so on such a seat the command exits 127 with
                 # no deny JSON at all.  Reporting that as a guard that let the canary
                 # through sends the operator to fix a guard that was never exercised.
-                return _stage_error(
-                    f"the hook command exited {proc.returncode}: "
-                    f"{(proc.stderr or '').strip()[-200:]}"
-                )
+                #
+                # Recorded rather than returned, because every matching handler runs in a
+                # live session and one of them denying is enough to block the call.  An
+                # immediate return would make the verdict a function of the order the
+                # groups happen to be declared in - `[crashing, denying]` would error
+                # while `[denying, crashing]` passed for the same configuration.
+                if startup_error is None:
+                    startup_error = (
+                        f"the hook command exited {proc.returncode}: "
+                        f"{(proc.stderr or '').strip()[-200:]}"
+                    )
+                continue
         if not denied:
+            # No handler denied, so a handler that never started is the real answer: the
+            # guard was not exercised, which is a stage that could not be evaluated
+            # rather than a policy that let the canary through.
+            if startup_error is not None:
+                return _stage_error(startup_error)
             missed.append(tool_name)
     ok = not missed
     full = next(iter(denied_for.values()), "")
