@@ -141,17 +141,17 @@ class MuseEnvTest(unittest.TestCase):
     def test_env_is_minimal_and_names_the_seat(self) -> None:
         env = A.muse_env(
             {
-                "USER": "jay",
+                "USER": "fixture-user",
                 "TMPDIR": "/tmp",
                 "ANTHROPIC_API_KEY": "secret",
                 "ZULIP_API_KEY": "secret",
                 "MUSE_TOKEN": "secret",
             },
-            "/home/jay",
+            "/home/fixture-user",
             "/wake/path",
             seat="MM",
         )
-        self.assertEqual(env["HOME"], "/home/jay")
+        self.assertEqual(env["HOME"], "/home/fixture-user")
         self.assertEqual(env["PATH"], "/wake/path")
         self.assertEqual(env["AGENT_LAUNCHER"], A.WAKE_LAUNCHER)
         self.assertEqual(env["AGENT_LAUNCH_SEAT"], "MM")
@@ -162,7 +162,7 @@ class MuseEnvTest(unittest.TestCase):
             self.assertNotIn(leaked, env)
 
     def test_without_a_seat_no_identity_is_injected(self) -> None:
-        env = A.muse_env({"USER": "jay"}, "/home/jay", "/wake/path")
+        env = A.muse_env({"USER": "fixture-user"}, "/home/fixture-user", "/wake/path")
         self.assertNotIn("AGENT_SEAT", env)
         self.assertNotIn("AGENT_LAUNCHER", env)
 
@@ -436,8 +436,8 @@ class McodeFallbackTest(unittest.TestCase):
         # Verified, not assumed:  pointing HOME at the inert workspace made mcode refuse with
         # "Sign in to MiniMax to use Agent features".  Recorded so nobody "hardens" it into a
         # guaranteed-broken wake.
-        env = A.mcode_env({"USER": "jay"}, "/home/jay", "/wake/path")
-        self.assertEqual(env["HOME"], "/home/jay")
+        env = A.mcode_env({"USER": "fixture-user"}, "/home/fixture-user", "/wake/path")
+        self.assertEqual(env["HOME"], "/home/fixture-user")
         for leaked in ("ANTHROPIC_API_KEY", "ZULIP_API_KEY"):
             self.assertNotIn(leaked, env)
 
