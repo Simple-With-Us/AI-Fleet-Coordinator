@@ -586,7 +586,7 @@ if [[ "$SKIP_BODY" == "0" ]]; then
 fi
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
-# Title: "[TEAM_KEY, SEAT_TAG] Topic" — multi-app OK. Body first line: "Sun, Aug 9, 3:52pm".
+# Title: "[TEAM_KEY, SEAT_TAG] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52pm".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
   echo "warning: title should start with [TEAM_KEY, SEAT_TAG] e.g. \"[UM, MM] Topic\" (got: $TITLE)" >&2
