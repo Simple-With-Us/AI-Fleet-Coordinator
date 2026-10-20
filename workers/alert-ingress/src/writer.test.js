@@ -28,7 +28,7 @@ const legacy = {
 };
 const env = { ALERT_STATE: legacy, INGRESS_SHARED_TOKEN: "fixture" };
 const request = () =>
-  new Request("https://test/status/alerts/svc?token=fixture");
+  new Request("https://test/status/alerts/svc", { headers: { authorization: "Bearer fixture" } });
 test("missing durable writer fails closed", async () => {
   for (const path of ["/status", "/sweep", "/webhook/generic"])
     assert.equal(

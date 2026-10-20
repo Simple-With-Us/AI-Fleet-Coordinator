@@ -87,23 +87,15 @@ async function verify(request, raw, env, source) {
   if (source === "betterstack") {
     const secret = env.BETTERSTACK_WEBHOOK_SECRET;
     if (!secret) return false;
-    const sig = request.headers.get("x-betterstack-signature") || "";
-    const expected = await hmacHex(secret, raw);
-    return safeEqual(sig, expected);
+    // Better Stack supports static custom headers, not body signatures.
+    return safeEqual(request.headers.get("x-betterstack-token") || "", secret);
   }
-  // Unknown source: require a shared bearer secret in the path/query.
-  const token = new URL(request.url).searchParams.get("token") || "";
-  return (
-    !!env.INGRESS_SHARED_TOKEN && safeEqual(token, env.INGRESS_SHARED_TOKEN)
-  );
+  return authorized(request, env);
 }
 
-/** Shared-token gate for operator routes.  `token` query param or Bearer <redacted> */
+/** Header-only shared-token gate; credentials must never be placed in URLs. */
 function authorized(request, env) {
-  const token =
-    new URL(request.url).searchParams.get("token") ||
-    request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ||
-    "";
+  const token = request.headers.get("authorization")?.match(/^Bearer\s+(\S+)$/i)?.[1] || "";
   return (
     !!env.INGRESS_SHARED_TOKEN && safeEqual(token, env.INGRESS_SHARED_TOKEN)
   );
@@ -286,6 +278,9 @@ async function sendEventOnce(env, identity, args) {
 async function handleEvent(source, payload, env) {
   const event = normalize(source, payload);
   const channel = DEFAULT_CHANNEL;
+  // Keep the original topic for a stable key when vendor labels change.
+  const priorService = await env.ALERT_STATE.get(svcKey(event.key), "json");
+  if (typeof priorService === "string" && priorService) event.service = priorService;
   const topic = event.service;
 
   const prev = await env.ALERT_STATE.get(stateKey(event.key), "json");
@@ -336,7 +331,6 @@ async function handleEvent(source, payload, env) {
     );
   }
 
-  const priorService = await env.ALERT_STATE.get(svcKey(event.key), "json");
   await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
   await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
   await env.ALERT_STATE.put(`idx:${channel}:${topic}:${event.key}`, "1");
@@ -346,20 +340,6 @@ async function handleEvent(source, payload, env) {
   // channel readable at a glance instead of by scrolling.
   const status = await refreshStatus(env, channel, topic);
 
-  // A stable key whose service moved keeps the membership it was filed under
-  // unless it is removed: the same state would then be counted under both
-  // topics and the old topic's standing message would never self-update.
-  let vacated = null;
-  if (
-    typeof priorService === "string" &&
-    priorService &&
-    priorService !== topic
-  ) {
-    await env.ALERT_STATE.delete(`idx:${channel}:${priorService}:${event.key}`);
-    await env.ALERT_STATE.delete(topicKey(channel, priorService));
-    vacated = priorService;
-  }
-  if (vacated) await refreshStatus(env, channel, vacated);
   return { action: result.action, posted: !!posted, status };
 }
 
@@ -502,6 +482,9 @@ const handler = {
 };
 
 export const __testing = {
+  handleEvent,
+  verify,
+  listAll,
   refreshStatus,
   runSweep,
   collectStates,
@@ -625,12 +608,6 @@ export class AlertWriter {
       },
       async put(key, value) {
         await storage.put(`kv:${key}`, value);
-      },
-      // A membership that moves must disappear from listings too, which merge
-      // historical KV keys, so drop it from both layers.
-      async delete(key) {
-        await storage.delete(`kv:${key}`);
-        await legacy.delete(key);
       },
       async list({ prefix }) {
         const previous = await listAll(legacy, prefix);

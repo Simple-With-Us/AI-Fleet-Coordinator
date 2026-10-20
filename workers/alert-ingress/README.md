@@ -38,7 +38,7 @@ A message is only warranted when **state** changes.  The channel ends up as:
 | `POST /webhook/:source` | vendor event; signature verified, replies immediately |
 | `GET  /status` | **machine-readable** status for any consumer that renders it |
 | `GET  /status/:channel/:topic` | the rendered standing status, as Markdown |
-| `GET  /sweep?token=…` | run the promotion sweep by hand |
+| `GET  /sweep` | run the promotion sweep by hand |
 | `GET  /health` | liveness |
 
 Sources with a bespoke parser: `datadog`, `betterstack`.  Anything else falls back to a conventional-key reader.  The route's source name is authoritative, so a payload cannot claim to be another integration.
@@ -89,8 +89,10 @@ Contract rules, enforced by `status.test.js`:
 No verifier configured means **reject**, never trust:
 
 - **Datadog** — HMAC-SHA256 of the raw body in `x-datadog-signature`, compared in constant time.
-- **BetterStack** — HMAC-SHA256 in `x-betterstack-signature`.
-- **anything else** — `?token=` matching `INGRESS_SHARED_TOKEN`.
+- **BetterStack** — configure the custom header `X-BetterStack-Token` to match `BETTERSTACK_WEBHOOK_SECRET`, as supported by [the provider's outgoing-webhook documentation](https://betterstack.com/docs/errors/integrations/outgoing-webhooks/).
+- **anything else** — `Authorization: Bearer <token>` matching `INGRESS_SHARED_TOKEN`.  Operator routes use the same header; query-string secrets are rejected.
+
+Stable alert keys retain their first service/topic assignment when vendor labels change, preserving one membership and one standing status.
 
 ## The wait window
 

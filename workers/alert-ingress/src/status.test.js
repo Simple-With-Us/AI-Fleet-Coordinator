@@ -223,6 +223,21 @@ test("one topic's failed status refresh does not abort the rest of the sweep", a
   }
 });
 
+test("Better Stack accepts only its configured static header", async () => {
+  const env = { BETTERSTACK_WEBHOOK_SECRET: "synthetic" };
+  for (const [headers, expected] of [[{ "x-betterstack-token": "synthetic" }, true],
+    [{ "x-betterstack-token": "wrong" }, false], [{ "x-betterstack-signature": "synthetic" }, false], [{}, false]]) {
+    assert.equal(await verify(new Request("https://test/webhook/betterstack", { headers }), "{}", env, "betterstack"), expected);
+  }
+});
+
+test("generic webhook authentication requires a bearer header, not a URL secret", async () => {
+  const env = { INGRESS_SHARED_TOKEN: "synthetic" };
+  assert.equal(await verify(new Request("https://test/webhook/custom", { headers: { authorization: "Bearer synthetic" } }), "{}", env, "custom"), true);
+  assert.equal(await verify(new Request("https://test/webhook/custom?token=synthetic"), "{}", env, "custom"), false);
+  assert.equal(await verify(new Request("https://test/webhook/custom", { headers: { authorization: "Bearer wrong" } }), "{}", env, "custom"), false);
+});
+
 test("a signature over the raw body is verified, not thrown on", async () => {
   // SubtleCrypto.sign() only accepts a BufferSource; signing the request text
   // as a string threw and every Datadog webhook 401'd before comparison.
@@ -244,7 +259,7 @@ test("a signature over the raw body is verified, not thrown on", async () => {
   assert.equal(await verify({ headers: new Headers({ "x-datadog-signature": "00" }), url: "https://test/webhook/datadog" }, raw, env, "datadog"), false);
 });
 
-test("a stable key that changes service leaves no duplicate membership", async () => {
+test("a stable key retains its original service without duplicate membership", async () => {
   const kv = fakeKV();
   seed(kv, { key: "custom:one", service: "Old.svc", state: { phase: "ok", severity: "INFO", since: 1, updated: 2, text: "fine", link: "" } });
   const orig = globalThis.fetch;
@@ -259,10 +274,10 @@ test("a stable key that changes service leaves no duplicate membership", async (
     globalThis.fetch = orig;
   }
   // The state must be counted once, under the topic it now belongs to.
-  assert.equal(kv.store.has(indexPrefix("alerts", "Old.svc") + "custom:one"), false);
-  assert.equal(kv.store.has(topicKey("alerts", "Old.svc")), false);
-  assert.equal(kv.store.has(indexPrefix("alerts", "New.svc") + "custom:one"), true);
+  assert.equal(kv.store.has(indexPrefix("alerts", "Old.svc") + "custom:one"), true);
+  assert.equal(kv.store.has(topicKey("alerts", "Old.svc")), true);
+  assert.equal(kv.store.has(indexPrefix("alerts", "New.svc") + "custom:one"), false);
   const { topics, total } = await collectTopics(asEnv(kv));
-  assert.deepEqual(Object.keys(topics), ["New.svc"]);
+  assert.deepEqual(Object.keys(topics), ["Old.svc"]);
   assert.equal(total, 1);
 });
