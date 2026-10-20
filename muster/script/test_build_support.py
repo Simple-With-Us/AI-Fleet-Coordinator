@@ -65,6 +65,13 @@ class BuildSupportTests(unittest.TestCase):
             self.assertEqual(events[position + 1][0], "directory")
             self.assertEqual(events[position + 2], ("directory", self.installed.parent))
 
+    def test_install_flushes_the_copied_bundle_and_the_install_directory(self):
+        flushed = []
+        with mock.patch.object(support, "fsync_path", side_effect=flushed.append):
+            support.install_bundle(self.staged, self.installed, lambda _: None)
+        self.assertIn(self.installed.parent, flushed)
+        self.assertTrue(any(path.name == "version" for path in flushed))
+
     def test_copy_failure_keeps_original(self):
         with mock.patch.object(support.shutil, "copytree", side_effect=OSError("copy failed")):
             with self.assertRaises(OSError):
