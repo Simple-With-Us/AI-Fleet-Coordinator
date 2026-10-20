@@ -45,7 +45,7 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 > collapse is **intermittent, not deterministic**:  in one session a ~3 KB PR body kept all eight
 > of its double spaces while a ~3 KB Zulip body lost every one, same machine, same tool.  So the
 > pattern must match one *or more* spaces to be correct either way:
-> `perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt`.
+> `perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt`.
 > Note the single-space form is *not* a fix — it matches nothing on text that kept its two
 > spaces.  Before posting run both checks: `grep -o $'\xc2\xa0' body.nbsp.txt | wc -l` must be
 > `> 0` and `grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt` must be `0`, since a partly converted body can
@@ -53,6 +53,17 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 > shell, markdown read as source) are unaffected and keep two literal ASCII spaces; never put a
 > U+00A0 into a committed source file.  This file is a dated record of the 2026-10-08 ruling and
 > is kept as-is above;  the live procedure is in `docs/fleet-skills/sentence-gap/SKILL.md`.
+
+> 🔁 **Updated 2026-10-19 (AFC-415) — the 2026-10-18 pattern above still misses a shape.**  That
+> pattern wants the space right after the sentence end, so it never matches a sentence end that
+> sits *inside* a markup span:  `**Bold sentence.**  Next sentence.` has its space after the
+> closing `**`, not after the period, and the gap is missed.  Neither check catches it, because
+> the file still holds other U+00A0 characters and this shape is not a single space after a
+> sentence end.  The live pattern adds the markup group `([*_`)\]"]*)`, which captures the markup
+> after the sentence end and re-emits it after the gap, so the span survives and the gap lands:
+> `perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt`.
+> The 2026-10-08 and 2026-10-18 commands are left as they were written;  the one home is
+> `docs/fleet-skills/sentence-gap/SKILL.md`.
 
 ## What landed (docs, in this PR)
 
