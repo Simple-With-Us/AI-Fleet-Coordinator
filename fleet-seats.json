@@ -137,18 +137,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the AG Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "AG_ZULIP_EMAIL",
+              "AG_ZULIP_KEY",
+              "AG_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "ag-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "AG",
+          "platforms": [
+            "antigravity"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_AG",
             "target": "~/.secrets/Zulip/AG-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "ag-permissions-zuliprc",
+          "id": "ag-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "AG",
           "platforms": [
@@ -313,18 +339,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the CLAUDE Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "CLAUDE_ZULIP_EMAIL",
+              "CLAUDE_ZULIP_KEY",
+              "CLAUDE_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "claude-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "CLAUDE",
+          "platforms": [
+            "claude"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_CLAUDE",
             "target": "~/.secrets/Zulip/Claude-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "claude-permissions-zuliprc",
+          "id": "claude-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "CLAUDE",
           "platforms": [
@@ -453,18 +505,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the CLUTCH Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "CLUTCH_ZULIP_EMAIL",
+              "CLUTCH_ZULIP_KEY",
+              "CLUTCH_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "clutch-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "CLUTCH",
+          "platforms": [
+            "clutch"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_CLUTCH",
             "target": "~/.secrets/Zulip/Clutch-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "clutch-permissions-zuliprc",
+          "id": "clutch-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "CLUTCH",
           "platforms": [
@@ -629,18 +707,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the CODEX Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "CODEX_ZULIP_EMAIL",
+              "CODEX_ZULIP_KEY",
+              "CODEX_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "codex-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "CODEX",
+          "platforms": [
+            "codex"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_CODEX",
             "target": "~/.secrets/Zulip/Codex-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "codex-permissions-zuliprc",
+          "id": "codex-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "CODEX",
           "platforms": [
@@ -787,18 +891,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the CURSOR Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "CURSOR_ZULIP_EMAIL",
+              "CURSOR_ZULIP_KEY",
+              "CURSOR_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "cursor-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "CURSOR",
+          "platforms": [
+            "cursor"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_CURSOR",
             "target": "~/.secrets/Zulip/Cursor-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "cursor-permissions-zuliprc",
+          "id": "cursor-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "CURSOR",
           "platforms": [
@@ -985,18 +1115,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the FX Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "FX_ZULIP_EMAIL",
+              "FX_ZULIP_KEY",
+              "FX_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "fx-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "FX",
+          "platforms": [
+            "fx"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_FX",
             "target": "~/.secrets/Zulip/FX-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "fx-permissions-zuliprc",
+          "id": "fx-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "FX",
           "platforms": [
@@ -1166,18 +1322,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the GROK Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "GROK_BUILD_ZULIP_EMAIL",
+              "GROK_BUILD_ZULIP_KEY",
+              "GROK_BUILD_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "grok-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "GROK",
+          "platforms": [
+            "grok"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_GROK_BUILD",
             "target": "~/.secrets/Zulip/Grok-Build-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "grok-permissions-zuliprc",
+          "id": "grok-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "GROK",
           "platforms": [
@@ -1343,18 +1525,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the MA Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "MA_ZULIP_EMAIL",
+              "MA_ZULIP_KEY",
+              "MA_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "ma-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "MA",
+          "platforms": [
+            "muse"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_MA",
             "target": "~/.secrets/Zulip/MA-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "ma-permissions-zuliprc",
+          "id": "ma-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "MA",
           "platforms": [
@@ -1487,18 +1695,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the MC Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "MC_ZULIP_EMAIL",
+              "MC_ZULIP_KEY",
+              "MC_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "mc-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "MC",
+          "platforms": [
+            "muse-code"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_MC",
             "target": "~/.secrets/Zulip/MC-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "mc-permissions-zuliprc",
+          "id": "mc-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "MC",
           "platforms": [
@@ -1661,18 +1895,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the MM Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "MM_ZULIP_EMAIL",
+              "MM_ZULIP_KEY",
+              "MM_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "mm-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "MM",
+          "platforms": [
+            "minimax"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_MM",
             "target": "~/.secrets/Zulip/MM-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "mm-permissions-zuliprc",
+          "id": "mm-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "MM",
           "platforms": [
@@ -1784,18 +2044,44 @@
         {
           "autofixAllowed": false,
           "check": {
+            "detail": "the OPENCODE Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "OPENCODE_ZULIP_EMAIL",
+              "OPENCODE_ZULIP_KEY",
+              "OPENCODE_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "opencode-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "OPENCODE",
+          "platforms": [
+            "opencode"
+          ],
+          "proofLevel": "L0",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
             "detail": "ZULIP_OPENCODE",
             "target": "~/.secrets/Zulip/OpenCode-zuliprc",
             "type": "credential_stat"
           },
           "collector": "mac",
-          "description": "The check reads stat data only:  existence, mode, size and mtime.  The credential is never opened and no value ever reaches a result.",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
           "expected": {
-            "description": "The Zulip credential is present with mode 0600, stat only",
-            "mode": "0600",
-            "present": true
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
           },
-          "id": "opencode-permissions-zuliprc",
+          "id": "opencode-permissions-zulip-retired-file",
           "kind": "permissions",
           "ownerSeat": "OPENCODE",
           "platforms": [

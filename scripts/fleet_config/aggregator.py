@@ -35,7 +35,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from . import contract
 from .checks import (
@@ -554,7 +554,7 @@ def result_expires_at(result: CheckResult) -> datetime | None:
     as "fresh".
     """
     try:
-        return datetime.strptime(result.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        return datetime.strptime(result.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
 

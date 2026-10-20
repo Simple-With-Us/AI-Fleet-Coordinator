@@ -1,7 +1,7 @@
-"""``permissions`` checks:  the permission identifiers of a settings file and the stat
-of a credential file.
+"""``permissions`` checks:  the permission identifiers of a settings file, the stat
+of a credential file and the reachability of a credential in the secret store.
 
-Two check types live here, both L0:
+Three check types live here, all L0:
 
   * ``PERMISSIONS_MATCH``  compares the permission identifiers a harness settings file
     holds with ``expected.names``, and compares the file's mode with ``expected.mode``.
@@ -12,6 +12,11 @@ Two check types live here, both L0:
     result can carry a secret value.  ``ObservedState`` has no field that could hold
     one either, and the reason string names the credential reference, never its
     contents.
+  * ``CREDENTIAL_KEY_PRESENT``  asks the fleet's ``fleet-secrets`` CLI for the KEY
+    NAMES in one secret-store folder and reports which of the rule's names are there.
+    It is how the fleet reaches a credential today (AFC-359):  the command it runs is
+    fixed by this module,  the ``names`` verb only,  and that verb prints names and
+    never values.  A value cannot reach a result,  a reason or a log.
 
 The permission names are compared as sets:  the names a settings file holds must be
 exactly the names the rule expects.  An identifier that the rule does not list is a
@@ -29,8 +34,11 @@ Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import stat as stat_module
-from datetime import UTC, datetime
+import subprocess
+from datetime import datetime, timezone
 from typing import Any
 
 from .checks import CheckContext, CheckError, build_result, expand_target, iso_utc
@@ -50,6 +58,23 @@ __all__ = ["CHECKS"]
 # The permission lists this reader knows, in the order they are read.
 _PERMISSION_LIST_KEYS = ("allow", "deny", "ask")
 _FLAT_PERMISSION_KEYS = ("allowPermissions", "denyPermissions", "askPermissions")
+
+# The secret-store folder a credential rule may name.  The pattern is the one the
+# fleet-secrets CLI itself accepts,  so a manifest can never turn the check into a
+# request for something else.
+_FOLDER_RE = re.compile(r"^/[A-Za-z0-9._/-]*$")
+
+# The shape of a key name in a listing.  Anything else is unreadable output,  which is
+# a failing UNKNOWN and never a pass.
+_KEY_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
+
+# The CLI the check asks for key names.  The name is also the one the fleet's other
+# tools use,  so the same binary answers for the whole fleet.
+_FLEET_SECRETS = "fleet-secrets"
+
+# The environment variable that names the binary explicitly,  as the fleet's own
+# doctor does.
+_FLEET_SECRETS_BIN = "FLEET_SECRETS_BIN"
 
 
 def permission_names(document: dict[str, Any]) -> tuple[str, ...]:
@@ -301,7 +326,7 @@ def check_credential_stat(rule: Rule, platform: str, ctx: CheckContext) -> Check
         )
 
     mode = mode_string(info.st_mode)
-    mtime = iso_utc(datetime.fromtimestamp(info.st_mtime, tz=UTC))
+    mtime = iso_utc(datetime.fromtimestamp(info.st_mtime, tz=timezone.utc))
     observed = ObservedState(
         present=True,
         mode=mode,
@@ -345,7 +370,158 @@ def check_credential_stat(rule: Rule, platform: str, ctx: CheckContext) -> Check
     )
 
 
+def _secret_store_binary(ctx: CheckContext) -> str | None:
+    """The ``fleet-secrets`` binary to ask, or None when there is none.
+
+    The fleet's own ``FLEET_SECRETS_BIN`` override wins, so a caller can name the
+    binary explicitly.  Otherwise the binary is looked up on the PATH the check was
+    given, not the process PATH, so a run that was pointed at a different PATH asks
+    that one and a test never reaches the real secret store by accident.
+    """
+    override = (ctx.env.get(_FLEET_SECRETS_BIN) or os.environ.get(_FLEET_SECRETS_BIN) or "").strip()
+    if override:
+        return override
+    path = ctx.env.get("PATH") or os.environ.get("PATH", "")
+    return shutil.which(_FLEET_SECRETS, path=path)
+
+
+def _secret_store_names(ctx: CheckContext, folder: str) -> frozenset[str]:
+    """The key NAMES in one secret-store folder, or a CheckError.
+
+    The command is the ``names`` verb, which prints names and never values, so a
+    secret cannot reach this module, a result, a reason or a log.  The listing is
+    cached on the context, so one status run asks the secret store once per folder
+    rather than once per rule.
+    """
+    cache_key = "fleet-secrets:names:%s" % folder
+    cached = ctx.cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    binary = _secret_store_binary(ctx)
+    if not binary:
+        raise CheckError(
+            "the fleet-secrets command is not on PATH, so the secret store cannot be reached",
+            ReasonCode.ERROR,
+        )
+    argv = [binary, "names", "--path", folder]
+    try:
+        completed = subprocess.run(
+            argv,
+            capture_output=True,
+            timeout=ctx.timeout or 10,
+            env=ctx.child_env(),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise CheckError(
+            "the fleet-secrets command did not answer within %ds" % (ctx.timeout or 10),
+            ReasonCode.TIMEOUT,
+        ) from None
+    except OSError as exc:
+        raise CheckError(
+            "the fleet-secrets command could not be started:  %s" % (exc.strerror or exc),
+            ReasonCode.ERROR,
+        ) from None
+    if completed.returncode != 0:
+        # The error text names keys and reason tokens, never values, but it is not
+        # needed here, so only the exit code is reported.
+        raise CheckError(
+            "the fleet-secrets command exited %d, so the secret store could not be read"
+            % completed.returncode,
+            ReasonCode.ERROR,
+        )
+    names = set()
+    for line in completed.stdout.decode("utf-8", "replace").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if not _KEY_NAME_RE.match(text):
+            raise CheckError(
+                "the fleet-secrets command printed a line that is not a key name",
+                ReasonCode.UNPARSEABLE,
+            )
+        names.add(text)
+    frozen = frozenset(names)
+    ctx.cache[cache_key] = frozen
+    return frozen
+
+
+def check_credential_key_present(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
+    """Check that a credential is reachable in the secret store, by key NAME.
+
+    This is how the fleet reaches a credential now that ``~/.secrets`` is retired
+    (AFC-359):  the seat's credential lives in the secret store under a key name, and
+    the check asks the ``fleet-secrets`` CLI whether that name is there.
+
+    The check never sees a value.  The ``names`` verb prints names only, the observed
+    state carries the names that were found, and the reason string names the rule's
+    expected names.  A key that is absent is ``MISSING``;  a secret store that cannot
+    be reached is a failing ``UNKNOWN``;  neither is ever a pass.
+    """
+    folder = (rule.check.target or "").strip()
+    if not _FOLDER_RE.match(folder):
+        return build_result(
+            rule,
+            platform,
+            CheckState.UNKNOWN,
+            "The secret-store folder %r is not a path the check can ask for." % folder,
+            ReasonCode.UNPARSEABLE,
+            ObservedState(present=None),
+            ctx,
+        )
+    wanted = tuple(rule.expected.names)
+    if not wanted:
+        return build_result(
+            rule,
+            platform,
+            CheckState.UNKNOWN,
+            "The rule names no key to look for, so the secret store cannot be checked.",
+            ReasonCode.UNPARSEABLE,
+            ObservedState(present=None),
+            ctx,
+        )
+    try:
+        available = _secret_store_names(ctx, folder)
+    except CheckError as exc:
+        return build_result(
+            rule,
+            platform,
+            CheckState.UNKNOWN,
+            str(exc),
+            exc.reason_code,
+            ObservedState(present=None),
+            ctx,
+        )
+    found = tuple(name for name in wanted if name in available)
+    observed = ObservedState(present=bool(found), names=found)
+    if len(found) == len(wanted):
+        return build_result(
+            rule,
+            platform,
+            CheckState.PASS,
+            "The credential key %s is in the secret store at %s."
+            % (", ".join(found), folder),
+            ReasonCode.OK,
+            observed,
+            ctx,
+            proof_level_achieved=ProofLevel.L0,
+        )
+    absent = tuple(name for name in wanted if name not in available)
+    return build_result(
+        rule,
+        platform,
+        CheckState.MISSING,
+        "The credential key %s is not in the secret store at %s."
+        % (", ".join(absent), folder),
+        ReasonCode.MISSING,
+        observed,
+        ctx,
+    )
+
+
 CHECKS = {
     CheckType.PERMISSIONS_MATCH: check_permissions_match,
     CheckType.CREDENTIAL_STAT: check_credential_stat,
+    CheckType.CREDENTIAL_KEY_PRESENT: check_credential_key_present,
 }

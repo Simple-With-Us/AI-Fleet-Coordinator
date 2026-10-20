@@ -67,7 +67,11 @@ CHECK_TYPES_BY_KIND: dict[ConfigKind, tuple[CheckType, ...]] = {
     ConfigKind.MCP: (CheckType.MCP_SERVERS_REGISTERED,),
     ConfigKind.SKILLS: (CheckType.SKILLS_INSTALLED,),
     ConfigKind.SUBAGENTS: (CheckType.SUBAGENTS_INSTALLED,),
-    ConfigKind.PERMISSIONS: (CheckType.PERMISSIONS_MATCH, CheckType.CREDENTIAL_STAT),
+    ConfigKind.PERMISSIONS: (
+        CheckType.PERMISSIONS_MATCH,
+        CheckType.CREDENTIAL_STAT,
+        CheckType.CREDENTIAL_KEY_PRESENT,
+    ),
 }
 
 

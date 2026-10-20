@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import subprocess
 import unittest
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from fleet_config import aggregator, touchid
 from fleet_config import apply as apply_module
@@ -34,7 +34,7 @@ from fleet_config.types import (
 
 from ._fake import FleetTestCase, make_manifest, make_rule, registry_with, snapshot_tree
 
-MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=UTC)
+MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=timezone.utc)
 
 GUARD_REL = ".minimax/plugins/fleet-guard/hooks/hooks.json"
 GUARD_MARKER = "deny the sentinel write"
@@ -314,14 +314,21 @@ class TouchIdGateTests(FleetTestCase):
     """The gate itself:  fail closed,  and the test override is refused in production."""
 
     def fake_helper(self, body: str, sign: bool = True) -> str:
-        """A fake helper script that exits with the code `body` asks for."""
+        """A fake helper script that exits with the code `body` asks for.
+
+        The helper is signed ad hoc when codesign is available, because the gate
+        refuses an unsigned helper.  codesign is a macOS tool, so on another platform
+        the helper is left unsigned and the signing-dependent test skips;  the gate
+        still refuses it, which is the same outcome.
+        """
         path = self.root / "fake-gate.sh"
         path.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
         path.chmod(0o755)
-        if sign:
+        if sign and os.path.exists("/usr/bin/codesign"):
             subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(path)], check=True)
         return str(path)
 
+    @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_a_missing_helper_refuses(self):
         with self.assertRaises(touchid.TouchIdError) as caught:
             touchid.confirm("apply the change", helper=str(self.root / "nope"))
@@ -333,6 +340,7 @@ class TouchIdGateTests(FleetTestCase):
             touchid.confirm("apply the change", helper=path)
         self.assertEqual(caught.exception.reason, "not-signed")
 
+    @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_a_helper_that_fails_refuses(self):
         path = self.fake_helper("echo 'the owner cancelled' >&2\nexit 3")
         with self.assertRaises(touchid.TouchIdError) as caught:
@@ -340,6 +348,7 @@ class TouchIdGateTests(FleetTestCase):
         self.assertEqual(caught.exception.reason, "cancelled")
         self.assertIn("the owner cancelled", str(caught.exception))
 
+    @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_an_unavailable_touch_id_refuses_with_an_actionable_reason(self):
         path = self.fake_helper("echo 'Touch ID is not enrolled on this Mac' >&2\nexit 2")
         with self.assertRaises(touchid.TouchIdError) as caught:
@@ -347,16 +356,19 @@ class TouchIdGateTests(FleetTestCase):
         self.assertEqual(caught.exception.reason, "unavailable")
         self.assertIn("not enrolled", str(caught.exception))
 
+    @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_a_successful_helper_allows_the_write(self):
         path = self.fake_helper("exit 0")
         self.assertIsNone(touchid.confirm("apply the change", helper=path))
 
+    @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_the_environment_override_alone_never_bypasses_the_gate(self):
         path = self.fake_helper("echo 'no' >&2\nexit 3")
         env = {touchid.TEST_BYPASS_ENV: "1"}
         with self.assertRaises(touchid.TouchIdError):
             touchid.confirm("apply the change", helper=path, env=env)
 
+    @unittest.skipUnless(os.path.exists("/usr/bin/codesign"), "codesign is a macOS tool")
     def test_the_test_bypass_works_only_when_the_caller_asks_for_it(self):
         path = self.fake_helper("echo 'no' >&2\nexit 3")
         env = {touchid.TEST_BYPASS_ENV: "1"}

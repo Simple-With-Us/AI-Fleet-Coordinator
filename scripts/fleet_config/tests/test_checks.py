@@ -12,9 +12,11 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any
 
+from fleet_config import contract
 from fleet_config.checks import CheckContext, default_registry, sha256_text
 from fleet_config.checks_hooks import (
     check_hook_registered,
@@ -29,7 +31,11 @@ from fleet_config.checks_instructions import (
     marked_block_body,
 )
 from fleet_config.checks_mcp import check_mcp_servers_registered
-from fleet_config.checks_permissions import check_credential_stat, check_permissions_match
+from fleet_config.checks_permissions import (
+    check_credential_key_present,
+    check_credential_stat,
+    check_permissions_match,
+)
 from fleet_config.checks_skills import check_skills_installed
 from fleet_config.checks_subagents import check_subagents_installed
 from fleet_config.contract import is_failing, result_to_dict
@@ -76,7 +82,7 @@ def make_context(home: str) -> CheckContext:
     """A context pinned to one home and one clock."""
     return CheckContext(
         home=home,
-        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
+        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -822,6 +828,130 @@ class CredentialTests(TempHome):
         self.assertEqual(result.observed.mode, "0644")
         self.assertNotIn(self.SENTINEL, result.reason)
 
+    def test_a_retired_credential_file_must_be_gone(self):
+        # The inverse of the check above:  the flat file is on its way out, so a file
+        # that is still there is DRIFT and a file that is gone is a pass.
+        rule = make_rule(
+            CheckType.CREDENTIAL_STAT,
+            "~/.secrets/Zulip/Claude-zuliprc",
+            detail="ZULIP_CLAUDE",
+            expected=ExpectedState(description="d", present=False),
+            kind=ConfigKind.PERMISSIONS,
+        )
+        gone = check_credential_stat(rule, "claude", self.ctx)
+        self.assertIs(gone.state, CheckState.PASS)
+        path = self.write(".secrets/Zulip/Claude-zuliprc", self.SENTINEL)
+        os.chmod(path, 0o600)
+        still_there = check_credential_stat(rule, "claude", self.ctx)
+        self.assertIs(still_there.state, CheckState.DRIFT)
+        self.assertNotIn(self.SENTINEL, still_there.reason)
+
+
+class SecretStoreCredentialTests(TempHome):
+    """The secret-store credential check, which asks for key NAMES and never values."""
+
+    SENTINEL = "sentinel-secret-value-do-not-leak"
+
+    def fake_secrets(self, body: str) -> None:
+        """Put a fake ``fleet-secrets`` on PATH that prints `body`."""
+        directory = os.path.join(self.home, "bin")
+        os.makedirs(directory, exist_ok=True)
+        script = os.path.join(directory, "fleet-secrets")
+        with open(script, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\n" + body + "\n")
+        os.chmod(script, 0o755)
+        self.ctx = self.ctx.__class__(
+            home=self.ctx.home,
+            now=self.ctx.now,
+            timeout=self.ctx.timeout,
+            env={"PATH": "%s:%s" % (directory, os.environ.get("PATH", ""))},
+        )
+
+    def rule(self, names=("CLAUDE_ZULIP_KEY",)) -> Rule:
+        return make_rule(
+            CheckType.CREDENTIAL_KEY_PRESENT,
+            "/zulip",
+            detail="the CLAUDE Zulip credential",
+            expected=ExpectedState(description="d", present=True, names=names),
+            kind=ConfigKind.PERMISSIONS,
+        )
+
+    def test_a_present_key_passes_and_only_names_are_reported(self):
+        self.fake_secrets("echo CLAUDE_ZULIP_EMAIL\necho CLAUDE_ZULIP_KEY")
+        result = check_credential_key_present(self.rule(), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.PASS)
+        self.assertEqual(result.observed.names, ("CLAUDE_ZULIP_KEY",))
+        self.assertNotIn(self.SENTINEL, result.reason)
+        self.assertNotIn(self.SENTINEL, json.dumps(result_to_dict(result)))
+
+    def test_an_absent_key_is_missing_and_not_a_pass(self):
+        self.fake_secrets("echo SOME_OTHER_KEY")
+        result = check_credential_key_present(self.rule(), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.MISSING)
+        self.assertIs(result.reason_code, ReasonCode.MISSING)
+        self.assertTrue(contract.is_failing(result))
+
+    def test_an_unreachable_secret_store_is_a_failing_unknown(self):
+        # No fleet-secrets on PATH at all:  the check must not report a pass.
+        self.ctx = self.ctx.__class__(
+            home=self.ctx.home,
+            now=self.ctx.now,
+            timeout=self.ctx.timeout,
+            env={"PATH": os.path.join(self.home, "empty")},
+        )
+        result = check_credential_key_present(self.rule(), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIn(result.reason_code, contract.FAILING_REASON_CODES)
+        self.assertTrue(contract.is_failing(result))
+
+    def test_a_failing_command_is_a_failing_unknown(self):
+        self.fake_secrets("exit 4")
+        result = check_credential_key_present(self.rule(), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIn(result.reason_code, contract.FAILING_REASON_CODES)
+
+    def test_unreadable_output_is_a_failing_unknown(self):
+        self.fake_secrets("echo 'not a key name!'")
+        result = check_credential_key_present(self.rule(), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
+
+    def test_a_rule_with_no_key_to_look_for_is_unparseable(self):
+        self.fake_secrets("echo CLAUDE_ZULIP_KEY")
+        result = check_credential_key_present(self.rule(names=()), "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
+
+    def test_the_folder_must_be_a_path_the_check_may_ask_for(self):
+        self.fake_secrets("echo CLAUDE_ZULIP_KEY")
+        rule = self.rule()
+        rule = replace(rule, check=CheckSpec(type=CheckType.CREDENTIAL_KEY_PRESENT, target="rm -rf /", detail="x"))
+        result = check_credential_key_present(rule, "claude", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIs(result.reason_code, ReasonCode.UNPARSEABLE)
+
+    def test_one_run_asks_the_secret_store_once_per_folder(self):
+        directory = os.path.join(self.home, "bin")
+        os.makedirs(directory, exist_ok=True)
+        calls = os.path.join(self.home, "calls")
+        script = os.path.join(directory, "fleet-secrets")
+        with open(script, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\necho called >> %s\necho CLAUDE_ZULIP_KEY\n" % calls)
+        os.chmod(script, 0o755)
+        self.ctx = self.ctx.__class__(
+            home=self.ctx.home,
+            now=self.ctx.now,
+            timeout=self.ctx.timeout,
+            env={"PATH": "%s:%s" % (directory, os.environ.get("PATH", ""))},
+        )
+        first = check_credential_key_present(self.rule(), "claude", self.ctx)
+        second = check_credential_key_present(self.rule(), "claude", self.ctx)
+        self.assertIs(first.state, CheckState.PASS)
+        self.assertIs(second.state, CheckState.PASS)
+        with open(calls, encoding="utf-8") as handle:
+            recorded = handle.read().strip().splitlines()
+        self.assertEqual(len(recorded), 1)
+
 
 class RegistryTests(unittest.TestCase):
     """The dispatch table holds every check type."""
@@ -830,7 +960,7 @@ class RegistryTests(unittest.TestCase):
         implemented = default_registry().implemented()
         expected = tuple(sorted(check.value for check in CheckType))
         self.assertEqual(implemented, expected)
-        self.assertEqual(len(implemented), 8)
+        self.assertEqual(len(implemented), 9)
 
 
 class DocumentReaderTests(TempHome):

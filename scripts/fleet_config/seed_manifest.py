@@ -65,6 +65,10 @@ MARKER_BLOCK = "fleet-lane-map"
 # The credential mode the fleet holds every Zulip credential at.
 CREDENTIAL_MODE = "0600"
 
+# The secret-store folder the Zulip credentials live in:  Infisical, project
+# Fleet-OPS, prod, path /zulip.  The fleet-secrets CLI takes the same path.
+SECRET_STORE_PATH = "/zulip"
+
 # The fleet skills pack, one directory per skill, at the repo root.
 PACK_SKILLS_DIR = "docs/fleet-skills"
 
@@ -200,11 +204,15 @@ def _registry() -> dict[str, dict]:
 
 
 def _credential(seat: str) -> tuple[str, str]:
-    """The (path, reference name) of a seat's Zulip credential.
+    """The (path, reference name) of a seat's retired Zulip credential file.
 
     The path comes from the registry's ``zulipFileCode``, and the reference name is
     the name the credential is known by in the fleet's secret store.  The reference
     name is what a check reason carries, so the path never reaches a reason string.
+
+    The flat file is on its way out:  ``~/.secrets`` is being retired by AFC-359, and
+    every reader now goes through Infisical.  This helper still names the file,
+    because a rule that says the retired file must be GONE needs its path.
     """
     rows = _registry()
     row = rows.get(seat)
@@ -212,6 +220,25 @@ def _credential(seat: str) -> tuple[str, str]:
     if not code:
         raise ValueError("the seat %r has no Zulip credential file code" % seat)
     return "~/.secrets/Zulip/%s-zuliprc" % code, "ZULIP_%s" % code.upper().replace("-", "_")
+
+
+def _secret_store_keys(seat: str) -> tuple[str, ...]:
+    """The secret-store key names a seat's Zulip credential is held under.
+
+    The prefix is the seat's registry file code, uppercased with dashes turned into
+    underscores, which is how the fleet names the key:  the ``Claude`` file code is
+    ``CLAUDE_ZULIP_KEY``, and the ``Grok-Build`` code is ``GROK_BUILD_ZULIP_KEY``.
+
+    The names are the names of the CREDENTIAL, never its value, so they are safe to
+    put in a manifest, a result and a reason string.
+    """
+    rows = _registry()
+    row = rows.get(seat)
+    code = (row or {}).get("zulipFileCode")
+    if not code:
+        raise ValueError("the seat %r has no Zulip credential file code" % seat)
+    prefix = code.upper().replace("-", "_")
+    return ("%s_ZULIP_EMAIL" % prefix, "%s_ZULIP_KEY" % prefix, "%s_ZULIP_SITE" % prefix)
 
 
 # --------------------------------------------------------------------------- rule shapes
@@ -354,22 +381,54 @@ def _subagents_rule(
 
 
 def _credential_rule(seat: str, platform: str) -> dict[str, object]:
-    """The rule that pins the Zulip credential of a seat, by stat alone."""
+    """The rule that pins a seat's Zulip credential in the secret store.
+
+    The credential lives in Infisical, project Fleet-OPS, path ``/zulip``, under the
+    seat's key names.  The check asks the ``fleet-secrets`` CLI whether those names
+    are there, and the ``names`` verb prints names only, so no value can reach a
+    result.
+    """
+    keys = _secret_store_keys(seat)
+    reference = "the %s Zulip credential" % seat
+    return _rule(
+        "%s-permissions-zulip-key" % seat.lower(),
+        "permissions",
+        [platform],
+        {"type": "credential_key_present", "target": SECRET_STORE_PATH, "detail": reference},
+        {
+            "description": "The Zulip credential is reachable in the secret store at %s"
+            % SECRET_STORE_PATH,
+            "present": True,
+            "names": list(keys),
+        },
+        seat,
+        "The check asks the fleet-secrets CLI for key NAMES and never for a value, so "
+        "a secret cannot reach a result, a reason or a log.  A secret store that "
+        "cannot be reached is a failing UNKNOWN, never a pass.",
+    )
+
+
+def _retired_credential_rule(seat: str, platform: str) -> dict[str, object]:
+    """The rule that the RETIRED flat credential file must be gone.
+
+    ``~/.secrets`` is being retired by AFC-359.  The file may still exist while that
+    work is in flight, so the rule says it must be absent:  a file that is there is
+    DRIFT, which is the finding AFC-359 wants to see, and it goes green on its own
+    when the folder is deleted.
+    """
     path, reference = _credential(seat)
     return _rule(
-        "%s-permissions-zuliprc" % seat.lower(),
+        "%s-permissions-zulip-retired-file" % seat.lower(),
         "permissions",
         [platform],
         {"type": "credential_stat", "target": path, "detail": reference},
         {
-            "description": "The Zulip credential is present with mode %s, stat only"
-            % CREDENTIAL_MODE,
-            "present": True,
-            "mode": CREDENTIAL_MODE,
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": False,
         },
         seat,
-        "The check reads stat data only:  existence, mode, size and mtime.  The "
-        "credential is never opened and no value ever reaches a result.",
+        "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The "
+        "check reads stat data only and never opens the file.",
     )
 
 
@@ -578,6 +637,7 @@ def _harness_seat(
             _subagents_rule(seat, platform, subagents[0], subagents[1], subagents_description)
         )
     rules.append(_credential_rule(seat, platform))
+    rules.append(_retired_credential_rule(seat, platform))
     return {"platforms": [platform], "rules": rules, "notApplicable": covers}
 
 
