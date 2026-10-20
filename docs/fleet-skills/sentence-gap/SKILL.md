@@ -107,7 +107,7 @@ block:
 ```sh
 perl -CSDA -ne '
   if (/^\s*```/) { $fence = !$fence; print; next }
-  if (!$fence && !/^\s*repo:/) { s/(?<=\S) {2,}/ /g }
+  if (!$fence && !/^\s*repo:/) { s/(?<=\S) {2,}(?=\S)/ /g }
   print
 ' body.gap.txt > body.nbsp.txt
 rm -f body.gap.txt   # the scratch copy of the body is not needed afterwards
@@ -120,7 +120,7 @@ but two is the house form.  Leave that line exactly as the template has it.
 
 The fenced code block is exempt for a different reason:  **code is not prose.**  A line of shell
 in a PR body often carries aligned spacing, and collapsing it silently rewrites the code.  A
-one-line version of this pass, `s/(?<=\S) {2,}/ /g`, turns `wc -l     # must be > 0` into
+one-line version of this pass, `s/(?<=\S) {2,}(?=\S)/ /g`, turns `wc -l     # must be > 0` into
 `wc -l # must be > 0` and turns `repo:  <Project>  |  DONE` inside a quoted example into
 `repo: <Project> | DONE`.  Both changes are invisible to every assertion, because the assertion
 runs after the damage.  The fence-aware version above leaves a ```` ``` ````-fenced block exactly
@@ -142,7 +142,7 @@ numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tol
 lookahead class skips a lowercase follower, so `e.g. this` and lower-case domains keep their plain
 space.
 
-**Known limitations — the pattern is a heuristic, not a dictionary.**  Four deliberate costs:
+**Known limitations — the pattern is a heuristic, not a dictionary.**  Five deliberate costs:
 
 - It gaps a *capitalised* abbreviation:  `Dr. Smith` and `e.g. Acme` both come out with a U+00A0,
   against the rule above about non-terminal abbreviations.
@@ -158,12 +158,15 @@ space.
   sentence-like line in it, keep that one line out of the conversion.
 - The second pass only recognises a ```` ``` ```` fence that starts a line, so a `~~~` fence, a
   fence behind a `>` quote marker, a four-space indented code block, and any inline code span all
-  get their runs collapsed.  `s/(?<=\S) {2,}/ /g` has no notion of a backtick span at all.  The
-  third check carries the same fence filter, so it reports clean on the damage it did not see.
-  `scripts/agent_sync/textfmt.py` already implements the wider contract (`_FENCE_OPEN_RE`,
-  `_INLINE_RE`, `_split_fences` cover `~~~`, indented, list- and quote-nested fences and inline
-  spans), so prefer it over this recipe when a body quotes code;  otherwise fix the affected code
-  by hand after the run.
+  get their runs collapsed.  `s/(?<=\S) {2,}(?=\S)/ /g` has no notion of a backtick span at all.
+  The third check carries the same fence filter, so it reports clean on the damage it did not see.
+  `scripts/agent_sync/textfmt.py` implements the wider fence and inline protection, but only for
+  the FIRST pass:  `sentence_gap` and `fix_outbound` widen a gap after `.`/`!`/`?` and never
+  collapse a run of spaces anywhere else, so `published:  <id>` keeps its two spaces there.  Run
+  the second pass above as well;  otherwise fix the affected code by hand after the run.
+- The second pass skips a run of two or more spaces at the END of a line, because `(?=\S)` has
+  nothing to look at there.  That is deliberate:  two trailing spaces are the Markdown hard line
+  break, and collapsing them would join two lines into one paragraph on GitHub.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
 it, and do not widen the pattern to chase it.
@@ -175,7 +178,7 @@ partly-converted body can have real U+00A0 and still carry a leftover single-spa
 ```sh
 grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
 grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
-perl -CSDA -ne 'if (/^\s*```/) { $fence = !$fence; next } print if !$fence && !/^\s*repo:/ && /(?<=\S) {2,}/' body.nbsp.txt | wc -l   # must be 0 — a double space left in prose
+perl -CSDA -ne 'if (/^\s*```/) { $fence = !$fence; next } print if !$fence && !/^\s*repo:/ && /(?<=\S) {2,}(?=\S)/' body.nbsp.txt | wc -l   # must be 0 — a double space left in prose
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first

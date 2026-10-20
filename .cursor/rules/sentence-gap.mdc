@@ -56,8 +56,31 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+umask 077   # both body copies hold message content; never leave them world-readable
+perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.gap.txt
 ```
+
+**A second pass is required, and the first pass alone is what ships the wrong gap.**  The
+conversion above only touches a run of spaces that follows `.` `!` `?`.  Every OTHER run of two
+or more spaces survives it, so a colon or a semicolon in prose keeps two spaces:
+`They are now published:  <id>` and `already decided;  PR #<n>` both come out of the first
+pass unchanged.  The owner ruling is that a colon, a semicolon, a comma or a dash gets **one
+ordinary space**.  So collapse every remaining run, on every line except the house closeout
+header and any fenced code block:
+
+```sh
+perl -CSDA -ne '
+  if (/^\s*```/) { $fence = !$fence; print; next }
+  if (!$fence && !/^\s*repo:/) { s/(?<=\S) {2,}(?=\S)/ /g }
+  print
+' body.gap.txt > body.nbsp.txt
+rm -f body.gap.txt   # the scratch copy of the body is not needed afterwards
+```
+
+The `repo:` line is exempt because `repo:  <Project>  |  DONE` is the house closeout template,
+not prose.  Fenced code is exempt because **code is not prose**:  collapsing it rewrites the
+author's aligned spacing.  `s/(?<=\S) {2,}/ /g` without `(?=\S)` would also eat the two trailing
+spaces that are the Markdown hard line break.
 
 Matching one *or more* is the whole fix.  The old pattern requiring exactly two spaces — written
 here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
@@ -67,7 +90,7 @@ numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tol
 lookahead class skips a lowercase follower, so `e.g. this` and lower-case domains keep their plain
 space.
 
-**Known limitations — the pattern is a heuristic, not a dictionary.**  Two deliberate costs:
+**Known limitations — the pattern is a heuristic, not a dictionary.**  Five deliberate costs:
 
 - It gaps a *capitalised* abbreviation:  `Dr. Smith` and `e.g. Acme` both come out with a U+00A0,
   against the rule above about non-terminal abbreviations.
@@ -76,17 +99,26 @@ space.
   parsing as a list, and a body with steps in it renders as one run-on paragraph.  The lookbehind
   skips any period preceded by a digit, which fixes the marker and also protects `v1.2.3`, but it
   costs the gap on a sentence that ends in a digit:  `The answer is 42. Next thing.` gets none.
+- The first pass does not know about fenced code, so a sentence-like line of code picks up a
+  U+00A0 inside the code.  The second pass skips fences, so it cannot make this worse.
+- The second pass only recognises a ```` ``` ```` fence that starts a line, so a `~~~` fence, a
+  quote-nested or indented fence, and any inline code span get their runs collapsed.
+  `scripts/agent_sync/textfmt.py` covers `~~~`, indented, nested fences and inline spans, but only
+  for the FIRST pass, so run the second pass above as well.
+- The second pass skips a run of spaces at the END of a line, because `(?=\S)` has nothing to look
+  at there.  That is deliberate:  two trailing spaces are the Markdown hard line break.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
 it, and do not widen the pattern to chase it.
 
-**Assert before you post — both checks, every time.**  A conversion that matches nothing still
+**Assert before you post — all three checks, every time.**  A conversion that matches nothing still
 exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
 partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
 
 ```sh
 grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
 grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
+perl -CSDA -ne 'if (/^\s*```/) { $fence = !$fence; next } print if !$fence && !/^\s*repo:/ && /(?<=\S) {2,}(?=\S)/' body.nbsp.txt | wc -l   # must be 0 — a double space left in prose
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
