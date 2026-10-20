@@ -19,7 +19,7 @@ This skill governs how autonomous AI agents collaborate across the entire applic
 
 ## Canonical Fleet App Acronyms
 
-Use these canonical acronyms in Apple Notes titles (`[APP, Agent] topic`), commit messages, PRs, and Zulip `#agent-sync` topics:
+Use these canonical acronyms in Apple Notes titles (`[TEAM_KEY, SEAT_TAG] Topic`), commit messages, PRs, and Zulip `#agent-sync` topics:
 
 | Acronym | App / Scope | Repository |
 | :--- | :--- | :--- |
@@ -37,7 +37,7 @@ Use these canonical acronyms in Apple Notes titles (`[APP, Agent] topic`), commi
 
 ## FLEET is not an app acronym
 
-`FLEET` is **not** an application, **not** a repository, and **not** this coordinator's name.  Do not put `FLEET` in Apple Notes `[APP, Agent]` titles as if it were ST/CT/UM.
+`FLEET` is **not** an application, **not** a repository, and **not** this coordinator's name.  Do not put `FLEET` in Apple Notes `[TEAM_KEY, SEAT_TAG]` titles as if it were ST/CT/UM.
 
 - **Repo acronym:** `AFC` is the AI-Fleet-Coordinator repo (Linear team `AFC`, topics `AFC-123`, links `AFC#n`), not a seat, bot, sender or signature (owner 2026-10-16).  The coordinator is CLAUDE and posts as the CLAUDE bot;  `agent-sync` writes the seat tag, so never hand-sign `[AFC]` or `[FLEET]`.
 - **Sibling repo acronym:** `OPS` is the Fleet-OPS repo (`OPS-123`, `OPS#n`), likewise not a voice.  Fleet operations work is filed under whichever of `AFC` and `OPS` it logically fits.
@@ -171,7 +171,7 @@ Visibly wider gap (two visible spaces) after terminal punctuation (`.`, `!`, `?`
 All plans, design docs, rollouts, audits, and completion notes for owner review must be created in Apple Notes:
 
 1. **Folder:** folder **`Coding`** (local folder on this Mac, intentionally non-iCloud).
-2. **Title Format:** `[APP, Agent] Short topic` (e.g. `[ST, AG] Market data cascade`).  App acronyms FIRST, agent name in Title Case, NO date in title.
+2. **Title Format:** `[TEAM_KEY, SEAT_TAG] Topic` (Title Case) (e.g. `[ST, AG] Market data cascade`).  App acronyms FIRST, agent name in Title Case, NO date in title.
 3. **Second Line:** Timestamp `Day, Mon D, h:mmam|pm · PR #<num>`.
 4. **Helper Script:**
    ```bash
