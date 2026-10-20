@@ -712,7 +712,9 @@ if m:
 _SESSION_ROW = (
     r'(?:<p>\s*)?(?:<span[^>]*>\s*)?\s*Session:\s*'
     r'[A-Za-z0-9][A-Za-z0-9._:-]{3,127}'
-    r'(?:\s*-\s*[^<\n]*)?'  # a row from before 2026-10-19 carried a second date after the id
+    # A row from before Oct 19 carried a second date after the id (' - Mon, Oct 19, 9:40pm').  Only that exact
+    # shape is taken, so prose that merely begins with 'Session:' ('Session: claude-code resumed') stays.
+    r'(?:\s+-\s+[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(?:, \d{1,2}:\d{2}[ap]m)?)?'
     r'\s*(?:</span>\s*)?</p>'
 )
 _SPACER = r'(?:<div><br\s*/?></div>\s*)*'
@@ -771,7 +773,10 @@ def _fleet_date_text(m):
             when = datetime.fromisoformat(when.isoformat() + offset).astimezone(_CENTRAL)
         out = _fleet_day(when) + ', ' + _fleet_clock(when)
         if r_hh is not None:
-            out += '-' + _fleet_clock(datetime(int(y), int(mo), int(d), int(r_hh), int(r_mm)))
+            end = datetime(int(y), int(mo), int(d), int(r_hh), int(r_mm))
+            if zone:  # the range end is in the same zone as its start, so it converts the same way
+                end = datetime.fromisoformat(end.isoformat() + offset).astimezone(_CENTRAL)
+            out += '-' + _fleet_clock(end)
         return out
     except ValueError:
         return m.group(0)

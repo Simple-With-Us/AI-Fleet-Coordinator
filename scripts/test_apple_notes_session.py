@@ -382,6 +382,18 @@ class SessionIdTests(unittest.TestCase):
         self.assertIn("backup-2026-10-19.tar", p.stdout)
         self.assertIn("?d=2026-10-19&amp;n=2", p.stdout)
 
+    def test_a_utc_range_end_converts_like_its_start_and_session_prose_stays(self):
+        body = (
+            "<p>Window 2026-10-19 15:30Z-16:00 for the deploy.</p>"
+            "<p>Session: claude-code resumed after the restart.</p>"
+        )
+        p = self.run_script(
+            "--update", "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"Window {OCT_19}, 10:30am-11:00am for the deploy.", p.stdout)
+        self.assertIn("Session: claude-code resumed after the restart.", p.stdout)
+
     def test_the_body_never_reaches_the_refusal(self):
         p = self.run_script(
             "[AFC, Claude] topic", env={"AGENT_SEAT": "CLAUDE"}, body="TOPSECRETBODY"
