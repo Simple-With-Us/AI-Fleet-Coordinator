@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import unittest
+from unittest import mock
 
 from agent_sync import chat_fanout as F
 from agent_sync import router as R
@@ -206,6 +207,23 @@ class DaemonFanoutTests(DaemonHarness):
         self.assertEqual(
             (result["queued"], result["already"], result["no_transport"]), (0, 5, {"claude": 1})
         )
+
+    def test_malformed_bindings_are_not_coerced_into_queue_identifiers(self):
+        daemon = self.started()
+        row = dict(cloud(1, 0, ST_URL), seat="CLAUDE", host=7, updated_at=self.clock.time())
+        daemon._chat_catalog = FakeCatalog([row])
+        result = daemon.fanout(123, "agent-sync", "misc", F.Scope())
+        self.assertEqual(result.get("failed"), 1)
+        self.assertEqual(daemon.chat_queue("CLAUDE").snapshot()["items"], [])
+
+    def test_catalog_failure_does_not_log_external_exception_text(self):
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        with mock.patch.object(daemon._chat_catalog, "discover", side_effect=RuntimeError("private external body")):
+            with mock.patch.object(daemon.log, "write") as logged:
+                result = daemon.fanout(123, "agent-sync", "misc", F.Scope())
+        self.assertEqual(result["error"], "catalog")
+        self.assertNotIn("private external body", repr(logged.call_args_list))
 
     def test_a_peers_all_queues_nothing(self):
         daemon = self.started()

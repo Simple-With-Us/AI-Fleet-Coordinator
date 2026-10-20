@@ -88,13 +88,13 @@ class MinimaxHookTests(unittest.TestCase):
         self.assertIn(
             "another seat", self.reason("Write", "apps/lanes/BotFleet/minimax-work/file", env)
         )
-        self.assertIsNone(self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env))
+        self.assertIn("identity is unavailable", self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env))
         self.assertIsNone(self.reason("Read", "apps/lanes/BotFleet/minimax-work/file", env))
 
     def test_no_identity_is_not_inferred_as_mm(self):
-        self.assertIsNone(self.reason("Write", "apps/lanes/BotFleet/codex-work/file"))
+        self.assertIn("identity is unavailable", self.reason("Write", "apps/lanes/BotFleet/codex-work/file"))
         env = dict(self.env, AGENT_SEAT="MM", AGENT_LAUNCHER="BotFleet")
-        self.assertIsNone(self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env))
+        self.assertIn("identity is unavailable", self.reason("Write", "apps/lanes/BotFleet/codex-work/file", env))
 
     def test_shell_policy_bare_ps_lane_clone_and_allow(self):
         for command in (
@@ -160,9 +160,9 @@ class MinimaxHookTests(unittest.TestCase):
             ):
                 with self.subTest(policy=expected, table=sg):
                     self.assertIn(expected, mm.decide(self.payload("Write", path), ctx, sg)[0])
-            self.assertIsNone(mm.decide(self.payload("Read", ".env"), ctx, sg)[0])
+            self.assertIn("SECRET_FILE_PATTERNS", mm.decide(self.payload("Read", ".env"), ctx, sg)[0])
         with mock.patch.object(mm.fleet, "_load_secret_guard", return_value=None):
-            self.assertIsNone(mm.decide(self.payload("Read", ".env"), ctx)[0])
+            self.assertIn("SECRET_FILE_PATTERNS", mm.decide(self.payload("Read", ".env"), ctx)[0])
             self.assertIn(
                 "integration tree",
                 mm.decide(self.payload("Write", "Code/BotFleet/file.py"), ctx)[0],
@@ -177,7 +177,7 @@ class MinimaxHookTests(unittest.TestCase):
             "review lane",
             mm.decide(self.payload("Write", "apps/lanes/BotFleet/review-pr-1/file.py"), ctx)[0],
         )
-        self.assertIsNone(mm.decide(self.payload("Write", "Code/BotFleet/file.py"), ctx)[0])
+        self.assertIn("FLEET_APPS_JSON", mm.decide(self.payload("Write", "Code/BotFleet/file.py"), ctx)[0])
 
     def test_either_path_field_name_is_checked(self):
         ctx = guard.make_context(self.env, home=self.home)

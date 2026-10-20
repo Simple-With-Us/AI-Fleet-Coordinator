@@ -30,15 +30,16 @@ def file_reason(payload: dict, ctx=None, secret_guard=None) -> str | None:
         return None
     ctx = guard.make_context() if ctx is None else ctx
     roots = layout.make_roots(ctx.home, ctx.env, registry=ctx.registry)
+    table_error = False
     try:
         sg = secret_guard if secret_guard is not None else fleet._load_secret_guard()
-        patterns = sg.SECRET_FILE_PATTERNS if sg is not None else ()
-        if not isinstance(patterns, (tuple, list)) or not all(isinstance(p, str) for p in patterns):
+        patterns = sg.SECRET_FILE_PATTERNS if sg is not None else None
+        if not patterns or not isinstance(patterns, (tuple, list)) or not all(isinstance(p, str) for p in patterns):
             raise ValueError("invalid secret file pattern table")
         secret_patterns = tuple(re.compile(p, re.IGNORECASE) for p in patterns)
-    except Exception:  # noqa: BLE001 -- optional policy failure must not disable the other guards
-        # Only the unavailable secret table degrades; independent path checks still run.
+    except Exception:  # noqa: BLE001 -- refuse affected file operations below
         secret_patterns = ()
+        table_error = True
     cwd = payload.get("cwd")
     # Check every field name this tool might carry: a name this adapter does not read
     # must never be the reason a file operation is allowed.
@@ -49,6 +50,10 @@ def file_reason(payload: dict, ctx=None, secret_guard=None) -> str | None:
         reason = _path_reason(tool, value, cwd, ctx, roots, secret_patterns)
         if reason:
             return reason
+    if table_error:
+        return "MiniMax file tool refused: SECRET_FILE_PATTERNS is unavailable or invalid."
+    if ctx.registry.source == "fallback":
+        return "MiniMax file tool refused: required FLEET_APPS_JSON registry is unavailable or invalid."
     return None
 
 
@@ -91,6 +96,8 @@ def _path_reason(tool: str, path: str, cwd, ctx, roots, secret_patterns) -> str 
     )
     seat = ctx.registry.seat_by_name(seat_name) if seat_name else None
     lane = layout.explain_lane_name(path, ctx.registry, roots)
+    if lane.seat is not None and seat is None:
+        return "MiniMax file tool refused: trusted launch/seat identity is unavailable for lane authorization."
     if seat is not None and lane.seat is not None and lane.seat.lower() != seat.suffix.lower():
         return "MiniMax file tool blocked another seat's lane.  Use the assigned seat's own lane."
     return None
@@ -100,14 +107,9 @@ def decide(payload: dict, ctx=None, secret_guard=None):
     """Return a known-policy denial.
 
     Shell policy is `fleet.decide`, which isolates its lane and secret checks from each other.
-    A file root or path-resolution error can allow the whole file operation.  Secret-module or
-    pattern-table failures instead skip only the table-backed secret checks; integration-tree,
-    review-lane, other-seat and literal .secrets checks still run.
-
-    Registry read errors instead produce guard.make_context's fallback registry: extra app rows
-    and no seats.  Secret and review-lane checks still run, but integration-tree coverage narrows
-    to those extra rows and the other-seat check cannot identify a seat.  The registry's
-    source == "fallback" marker identifies this partial degradation.
+    Required registry and secret-policy failures refuse affected file operations.  Known
+    independent denials still take precedence.  A lane write without a valid trusted
+    seat is refused; the host's restricted environment cannot attest launcher identity.
     """
     if payload.get("tool_name") in ("Bash", "bash"):
         args = payload.get("tool_input")
