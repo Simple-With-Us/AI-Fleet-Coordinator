@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing } from "./index.js";
 
-const { collectTopics, collectStates, listAll, runSweep, stateKey, svcKey, topicKey, indexPrefix, ctStamp } = __testing;
+const { collectTopics, collectStates, listAll, runSweep, handleEvent, verify, stateKey, svcKey, topicKey, indexPrefix, ctStamp } = __testing;
 
 /** Minimal in-memory stand-in for the Workers KV binding. */
 function fakeKV(seed = {}) {
@@ -22,6 +22,9 @@ function fakeKV(seed = {}) {
     },
     async put(key, value) {
       store.set(key, value);
+    },
+    async delete(key) {
+      store.delete(key);
     },
     async list({ prefix = "", cursor } = {}) {
       return {
@@ -218,4 +221,48 @@ test("one topic's failed status refresh does not abort the rest of the sweep", a
   } finally {
     globalThis.fetch = orig;
   }
+});
+
+test("a signature over the raw body is verified, not thrown on", async () => {
+  // SubtleCrypto.sign() only accepts a BufferSource; signing the request text
+  // as a string threw and every Datadog webhook 401'd before comparison.
+  const raw = JSON.stringify({ monitor_id: "1", alert_type: "triggered" });
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode("fixture"),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = [...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(raw)))]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  const { verify } = __testing;
+  const env = { DATADOG_WEBHOOK_SECRET: "fixture" };
+  const headers = { "x-datadog-signature": sig };
+  assert.equal(await verify({ headers: new Headers(headers), url: "https://test/webhook/datadog" }, raw, env, "datadog"), true);
+  assert.equal(await verify({ headers: new Headers({ "x-datadog-signature": "00" }), url: "https://test/webhook/datadog" }, raw, env, "datadog"), false);
+});
+
+test("a stable key that changes service leaves no duplicate membership", async () => {
+  const kv = fakeKV();
+  seed(kv, { key: "custom:one", service: "Old.svc", state: { phase: "ok", severity: "INFO", since: 1, updated: 2, text: "fine", link: "" } });
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ result: "success", id: 5 }) });
+  try {
+    await handleEvent(
+      "custom",
+      { id: "one", service: "New.svc", status: "down" },
+      asEnv(kv),
+    );
+  } finally {
+    globalThis.fetch = orig;
+  }
+  // The state must be counted once, under the topic it now belongs to.
+  assert.equal(kv.store.has(indexPrefix("alerts", "Old.svc") + "custom:one"), false);
+  assert.equal(kv.store.has(topicKey("alerts", "Old.svc")), false);
+  assert.equal(kv.store.has(indexPrefix("alerts", "New.svc") + "custom:one"), true);
+  const { topics, total } = await collectTopics(asEnv(kv));
+  assert.deepEqual(Object.keys(topics), ["New.svc"]);
+  assert.equal(total, 1);
 });

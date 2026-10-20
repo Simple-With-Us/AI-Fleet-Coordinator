@@ -61,7 +61,11 @@ async function hmacHex(secret, body, algo = "SHA-256") {
     false,
     ["sign"],
   );
-  const mac = await crypto.subtle.sign("HMAC", key, body);
+  // sign() takes a BufferSource, not a string: passing the raw request text
+  // straight through throws and every signed webhook fails before comparison.
+  const bytes =
+    typeof body === "string" ? new TextEncoder().encode(body) : body;
+  const mac = await crypto.subtle.sign("HMAC", key, bytes);
   return [...new Uint8Array(mac)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
@@ -332,6 +336,7 @@ async function handleEvent(source, payload, env) {
     );
   }
 
+  const priorService = await env.ALERT_STATE.get(svcKey(event.key), "json");
   await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
   await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
   await env.ALERT_STATE.put(`idx:${channel}:${topic}:${event.key}`, "1");
@@ -340,6 +345,21 @@ async function handleEvent(source, payload, env) {
   // Every outcome refreshes the standing status, which is what makes the
   // channel readable at a glance instead of by scrolling.
   const status = await refreshStatus(env, channel, topic);
+
+  // A stable key whose service moved keeps the membership it was filed under
+  // unless it is removed: the same state would then be counted under both
+  // topics and the old topic's standing message would never self-update.
+  let vacated = null;
+  if (
+    typeof priorService === "string" &&
+    priorService &&
+    priorService !== topic
+  ) {
+    await env.ALERT_STATE.delete(`idx:${channel}:${priorService}:${event.key}`);
+    await env.ALERT_STATE.delete(topicKey(channel, priorService));
+    vacated = priorService;
+  }
+  if (vacated) await refreshStatus(env, channel, vacated);
   return { action: result.action, posted: !!posted, status };
 }
 
@@ -606,6 +626,12 @@ export class AlertWriter {
       async put(key, value) {
         await storage.put(`kv:${key}`, value);
       },
+      // A membership that moves must disappear from listings too, which merge
+      // historical KV keys, so drop it from both layers.
+      async delete(key) {
+        await storage.delete(`kv:${key}`);
+        await legacy.delete(key);
+      },
       async list({ prefix }) {
         const previous = await listAll(legacy, prefix);
         const local = await storage.list({
@@ -657,6 +683,7 @@ Object.assign(__testing, {
   listAll,
   mapBounded,
   validatePayload,
+  verify,
   handler,
   handleEvent,
   sendEventOnce,
