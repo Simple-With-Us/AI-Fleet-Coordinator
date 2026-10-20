@@ -17,6 +17,12 @@ DEFAULT_PYTHON = "/usr/bin/python3"
 MIN_PYTHON = (3, 11)
 
 
+class InterpreterProbeFailure(Exception):
+    def __init__(self, code: int, message: str):
+        self.code = code
+        super().__init__(message)
+
+
 def interpreter_version(python: str) -> tuple[int, int] | None:
     """The candidate interpreter's major.minor, or None when it ran without reporting a usable one.
 
@@ -42,7 +48,9 @@ def interpreter_version(python: str) -> tuple[int, int] | None:
 def too_old(python: str) -> bool:
     """True only when the interpreter is confirmed older than MIN_PYTHON; a failed probe propagates."""
     version = interpreter_version(python)
-    return version is not None and version < MIN_PYTHON
+    if version is None:
+        raise InterpreterProbeFailure(1, "interpreter did not report a verified Python version")
+    return version < MIN_PYTHON
 
 
 def probe_failure_exit_code(error: OSError | subprocess.TimeoutExpired) -> int:
@@ -60,11 +68,10 @@ def _confirmed_too_old(python: str, out: TextIO) -> bool:
         return too_old(python)
     except (OSError, subprocess.TimeoutExpired) as error:
         code = probe_failure_exit_code(error)
-        out.write(
-            "note: %s could not be probed to confirm its Python version (exit %d); "
-            "pass --python PATH (3.11 or newer)\n" % (python, code)
-        )
-        raise SystemExit(code) from error
+        raise InterpreterProbeFailure(
+            code,
+            "interpreter version probe failed (exit %d); pass --python PATH (3.11 or newer)" % code,
+        ) from error
 
 
 def fsync_directory(directory: str) -> None:
@@ -152,42 +159,44 @@ def install(
     dry_run: bool = False,
     python: str | None = None,
     program: str | None = None,
+    err: TextIO | None = None,
 ) -> int:
     target = unit_path(home)
     root = os.path.abspath(
         os.path.expanduser(env.get(L.ENV_STATE_DIR) or os.path.join(home, ".agent-sync"))
     )
     config = os.path.abspath(L.config_path(root, env))
-    probed = False
-    if python is None:
-        if os.access(DEFAULT_PYTHON, os.X_OK) and not _confirmed_too_old(DEFAULT_PYTHON, out):
-            python = DEFAULT_PYTHON
-            # The default path already probed this interpreter; a second spawn can fail transiently and
-            # would abort an install whose runtime was just confirmed.
-            probed = True
-        else:
-            # The unit would fail to start under an interpreter the operator never chose, and may name a
-            # virtual-environment or /usr/local Python the user manager cannot reach.  Say so, never silently.
-            python = sys.executable
-            out.write(
-                f"note: {DEFAULT_PYTHON} is missing or older than Python 3.11; the unit's ExecStart uses "
-                f"{python} instead (inspect it before enabling, or pass --python PATH)\n"
+    err = err or out
+    try:
+        probed = False
+        if not python:
+            if os.access(DEFAULT_PYTHON, os.X_OK) and not _confirmed_too_old(DEFAULT_PYTHON, out):
+                python = DEFAULT_PYTHON
+                probed = True
+            else:
+                python = sys.executable
+                out.write(
+                    f"note: {DEFAULT_PYTHON} is missing or older than Python 3.11; using {python} instead (inspect ExecStart before enabling)\n"
+                )
+        if not os.access(python, os.X_OK):
+            raise InterpreterProbeFailure(
+                127, "interpreter is missing or not executable; pass --python PATH (3.11 or newer)"
             )
-    if os.access(python, os.X_OK):
         if not probed and _confirmed_too_old(python, out):
-            out.write(f"note: {python} is older than Python 3.11; pass --python PATH (3.11 or newer)\n")
-    else:
-        out.write(f"note: {python} is not executable; pass --python PATH (3.11 or newer)\n")
+            raise InterpreterProbeFailure(
+                2, "interpreter is older than Python 3.11; pass --python PATH (3.11 or newer)"
+            )
+    except InterpreterProbeFailure as error:
+        err.write("agent-sync: %s\n" % error)
+        return error.code
     data = unit_text(home, python, program or launchd.program_path(home), root=root, config=config)
     unit_dir = os.path.dirname(target)
     probe = unit_dir
     while probe != os.path.dirname(home):
-        # $HOME itself is the operator's own layout and may legitimately be a symlink; only the
-        # directory chain the unit is created below is this guard's business.
-        if probe == home:
-            break
         if os.path.islink(probe):
             raise ValueError("refusing symlink in service directory")
+        if probe == home:
+            break
         if probe == os.path.dirname(probe):
             break
         probe = os.path.dirname(probe)
@@ -206,19 +215,22 @@ def install(
     out.write("{}write user service {}\n".format("would: " if dry_run else "", target))
     if not dry_run:
         L.private_dir(unit_dir)
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=unit_dir, delete=False
-        ) as fh:
-            temporary = fh.name
-            fh.write(data)
-            fh.flush()
-            # Set the owner-only mode before the fsync so contents and mode reach the disk together.
-            os.fchmod(fh.fileno(), 0o600)
-            os.fsync(fh.fileno())
+        temporary = None
         try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=unit_dir, delete=False
+            ) as fh:
+                temporary = fh.name
+                fh.write(data)
+                fh.flush()
+                os.fchmod(fh.fileno(), 0o600)
+                os.fsync(fh.fileno())
             os.replace(temporary, target)
+        except OSError:
+            err.write("agent-sync: could not write the user service\n")
+            return 1
         finally:
-            if os.path.exists(temporary):
+            if temporary and os.path.exists(temporary):
                 os.unlink(temporary)
         fsync_directory(unit_dir)
     out.write(

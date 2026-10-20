@@ -29,7 +29,7 @@ class UnitTests(unittest.TestCase):
     def test_install_preserves_config_and_uninstall_keeps_state(self):
         with tempfile.TemporaryDirectory() as home:
             out = io.StringIO()
-            with patch.object(systemd.subprocess, "run") as run:
+            with patch.object(systemd.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "3.12\n", "")) as run:
                 systemd.install({}, home, out)
                 self.assertFalse([c for c in run.call_args_list if "systemctl" in str(c)])
             config = Path(home, ".agent-sync/listener.toml")
@@ -75,12 +75,13 @@ class UnitTests(unittest.TestCase):
                 systemd.install({}, home, io.StringIO())
             self.assertEqual(list(Path(outside).iterdir()), [])
 
-    def test_symlinked_home_installs_but_a_link_below_it_is_refused(self):
+    def test_symlinked_home_and_links_below_it_are_refused(self):
         with tempfile.TemporaryDirectory() as real:
             home = str(Path(real, "link"))
             os.symlink(real, home)
-            systemd.install({}, home, io.StringIO())
-            self.assertTrue(Path(systemd.unit_path(home)).exists())
+            with self.assertRaises(ValueError):
+                systemd.install({}, home, io.StringIO())
+            self.assertFalse(Path(systemd.unit_path(home)).exists())
         # The guard still covers the directory chain the unit is created below.
         with tempfile.TemporaryDirectory() as real, tempfile.TemporaryDirectory() as outside:
             home = str(Path(real, "link"))
@@ -99,22 +100,22 @@ class UnitTests(unittest.TestCase):
                 systemd.install({}, home, io.StringIO())
             self.assertIn(systemd.quote(sys.executable), Path(systemd.unit_path(home)).read_text())
             out = io.StringIO()
-            systemd.install({}, home, out, python="/not-an-interpreter")
-            self.assertIn("is not executable", out.getvalue())
+            self.assertEqual(systemd.install({}, home, out, python="/not-an-interpreter"), 127)
+            self.assertIn("not executable", out.getvalue())
         with self.assertRaises(ValueError):
             systemd.unit_text("/home/bad\nRestart=no", "/usr/bin/python3", "/tool")
 
     def test_old_interpreter_falls_back_or_is_noted(self):
         with tempfile.TemporaryDirectory() as home:
             out = io.StringIO()
-            with patch.object(systemd, "too_old", return_value=True):
-                systemd.install({}, home, out)
+            with patch.object(systemd, "too_old", side_effect=[True, False]):
+                self.assertEqual(systemd.install({}, home, out), 0)
             self.assertIn(systemd.quote(sys.executable), Path(systemd.unit_path(home)).read_text())
             # The fallback interpreter was never chosen by the operator, so it is reported.
             self.assertIn(sys.executable, out.getvalue())
             out = io.StringIO()
             with patch.object(systemd, "too_old", return_value=True):
-                systemd.install({}, home, out, python="/usr/bin/python3")
+                self.assertEqual(systemd.install({}, home, out, python=sys.executable), 2)
             self.assertIn("older than Python 3.11", out.getvalue())
         with patch.object(
             systemd.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "3.9\n", "")
@@ -135,11 +136,28 @@ class UnitTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as home:
                 with patch.object(systemd.os, "access", return_value=True):
                     with patch.object(systemd.subprocess, "run", side_effect=error):
-                        with self.assertRaises(SystemExit) as raised:
-                            systemd.install({}, home, io.StringIO(), python="/usr/bin/python3")
-                self.assertEqual(raised.exception.code, expected_exit_code)
+                        code = systemd.install({}, home, io.StringIO(), python=sys.executable)
+                self.assertEqual(code, expected_exit_code)
                 self.assertFalse(Path(systemd.unit_path(home)).exists())
                 self.assertFalse(Path(home, ".agent-sync", "listener.toml").exists())
+
+    def test_empty_python_and_unknown_version_fail_closed(self):
+        with tempfile.TemporaryDirectory() as home:
+            with patch.object(systemd, "too_old", return_value=False):
+                self.assertEqual(systemd.install({}, home, io.StringIO(), python=""), 0)
+            self.assertNotIn('ExecStart=""', Path(systemd.unit_path(home)).read_text())
+        with tempfile.TemporaryDirectory() as home:
+            with patch.object(systemd, "interpreter_version", return_value=None):
+                self.assertEqual(systemd.install({}, home, io.StringIO(), python=sys.executable), 1)
+            self.assertFalse(Path(systemd.unit_path(home)).exists())
+
+    def test_mode_failure_cleans_temp_unit(self):
+        with tempfile.TemporaryDirectory() as home:
+            err = io.StringIO()
+            with patch.object(systemd, "too_old", return_value=False), patch.object(systemd.os, "fchmod", side_effect=OSError("private detail")):
+                self.assertEqual(systemd.install({}, home, io.StringIO(), err=err), 1)
+            self.assertEqual(list(Path(systemd.unit_path(home)).parent.iterdir()), [])
+            self.assertNotIn("private detail", err.getvalue())
 
     def test_default_interpreter_is_probed_once(self):
         # A second spawn could fail transiently and abort an install whose runtime was just confirmed.
@@ -201,6 +219,14 @@ class DispatchTests(ListenerHarness):
             self.assertEqual(
                 json.loads(result.out)["systemd_user_service"]["active_state"], "inactive"
             )
+
+    def test_probe_failure_returns_cli_result_and_stderr(self):
+        with patch("agent_sync.listener_cli.sys.platform", "linux"), patch.object(systemd.os, "access", return_value=True), patch.object(systemd.subprocess, "run", side_effect=subprocess.TimeoutExpired("python", 10)):
+            result = self.run_cli("daemon", "install", "--python", sys.executable)
+        self.assertEqual(result.code, 124)
+        self.assertIn("version probe failed", result.err)
+        self.assertNotIn("version probe failed", result.out)
+        self.assertFalse(Path(systemd.unit_path(str(self.home))).exists())
 
     def test_unsupported_platform_refuses_without_writes(self):
         with patch("agent_sync.listener_cli.sys.platform", "win32"):

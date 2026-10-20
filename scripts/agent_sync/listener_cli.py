@@ -268,7 +268,13 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             raise Z.UsageError("daemon installation supports only macOS and Linux")
     if sub == "install":
         return service.install(
-            rt.env, _home(rt), rt.stdout, dry_run=args.dry_run, python=args.python, program=args.bin
+            rt.env,
+            _home(rt),
+            rt.stdout,
+            dry_run=args.dry_run,
+            python=args.python,
+            program=args.bin,
+            **({"err": rt.stderr} if service is systemd else {}),
         )
     if sub == "uninstall":
         return service.uninstall(_home(rt), rt.stdout, dry_run=args.dry_run)
