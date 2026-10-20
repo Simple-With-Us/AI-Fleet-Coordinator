@@ -1,19 +1,24 @@
 """Server session routing acceptance with fake Zulip and real listener inbox files."""
+
 from __future__ import annotations
 
 import io
 
 from agent_sync import attach
-from agent_sync.tests.test_daemon import DaemonHarness, MENTION
+from agent_sync.tests.test_daemon import MENTION, DaemonHarness
 
 
 class ServerSessionRoutingTests(DaemonHarness):
     def drain(self, lease_id):
         out, err = io.StringIO(), io.StringIO()
         code = attach.main(
-            ["--drain"], env=self.env(AGENT_LEASE=lease_id),
-            stdin=io.StringIO(), stdout=out, stderr=err,
-            now=self.clock.time, sleep=self.clock.sleep,
+            ["--drain"],
+            env=self.env(AGENT_LEASE=lease_id),
+            stdin=io.StringIO(),
+            stdout=out,
+            stderr=err,
+            now=self.clock.time,
+            sleep=self.clock.sleep,
         )
         self.assertEqual(code, 0, err.getvalue())
         self.transcript.extend([out.getvalue(), err.getvalue()])
@@ -21,8 +26,13 @@ class ServerSessionRoutingTests(DaemonHarness):
 
     def exercise(self, read_before_route):
         daemon = self.started()
-        self.write_lease("session-A", topics=[("agent-sync", "owned")],
-                         session_id="aaaa1111", posted=[400], last_prompt=1)
+        self.write_lease(
+            "session-A",
+            topics=[("agent-sync", "owned")],
+            session_id="aaaa1111",
+            posted=[400],
+            last_prompt=1,
+        )
         self.write_lease("session-B", session_id="bbbb2222", last_prompt=100)
         mid = self.fake.add_message("Codex", "agent-sync", "owned", MENTION)
         sibling = self.env(CLAUDE_CODE_SESSION_ID="bbbb2222", AGENT_LEASE="session-B")
