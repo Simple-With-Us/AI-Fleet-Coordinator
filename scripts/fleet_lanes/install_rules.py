@@ -529,7 +529,8 @@ _LANES_PATH = re.compile(
 _OLD_LANE_DIRS = ("_managed", "_review", "_notes", "<prefix>", "<app>")
 _TMP_TOKEN = re.compile(r"(?:/private)?/tmp\b|/var/tmp\b|\$\{?TMPDIR\}?|/var/folders\b|\bmktemp\b")
 _CHECKOUT_WORD = re.compile(
-    r"\b(?:git\s+clone|git\s+worktree|git\s+init|clone[sd]?|cloning|worktrees?|checkouts?)\b", re.IGNORECASE
+    r"\b(?:git\s+clone|git\s+worktree|git\s+init|clone[sd]?|cloning|worktrees?|checkouts?)\b",
+    re.IGNORECASE,
 )
 _NEGATION = re.compile(
     r"\b(?:never|don't|dont|do\s+not|not|no|forbidden|forbid|ban|banned|avoid|must\s+not|cannot|can't)\b",
