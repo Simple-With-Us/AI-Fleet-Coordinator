@@ -391,6 +391,56 @@ class VibeTests(World):
         self.assertFalse(self.hooks.exists())
 
 
+class OpenCodePluginShapeTests(World):
+    """The plugin probes only command-shaped values, and validates the permission input."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.home / ".config" / "opencode").mkdir(parents=True)
+
+    def plugin_text(self) -> str:
+        """The plugin source the installer writes, as text.
+
+        ``build_files`` returns the bytes it would write,  so they are written into the
+        fake stable directory here and the plugin is read back from it,  which is what
+        the plugin that ships actually contains.
+        """
+        files = T.build_files(self.source, self.paths)
+        self.assertIn(T.OPENCODE_PLUGIN_FILE, files)
+        stable = Path(self.paths.stable)
+        for relative, blob in files.items():
+            target = stable / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(blob)
+        return Path(self.paths.opencode_plugin).read_text(encoding="utf-8")
+
+    def test_only_command_shaped_values_are_probed(self) -> None:
+        # A permission pattern is a glob that names WHAT may be called,  and a title is
+        # prose.  Neither is a shell command,  so neither is sent to the guard:  that
+        # would cost one child process per string and could deny a call that is not a
+        # fleet clone at all.
+        text = self.plugin_text()
+        self.assertIn("isCommandShaped", text)
+        self.assertIn("COMMAND_SHAPE", text)
+        # The filter must be applied to every source of candidates.
+        self.assertGreaterEqual(text.count("isCommandShaped("), 3)
+
+    def test_the_permission_input_is_validated_at_runtime(self) -> None:
+        # A TypeScript annotation is not a runtime check,  so a malformed hookInput
+        # would be read as if it were well formed.
+        text = self.plugin_text()
+        self.assertIn("permissionInput", text)
+        self.assertIn("must be an object", text)
+        self.assertIn("must be a string or an array of strings", text)
+        self.assertIn("must not be empty", text)
+
+    def test_the_plugin_source_is_valid_typescript(self) -> None:
+        # The plugin is TypeScript that OpenCode loads,  so it has to parse.  A syntax
+        # error in it would break every OpenCode session,  not just the guard.
+        text = self.plugin_text()
+        self.assertNotIn("\\s", text.split("const COMMAND_SHAPE")[1].split("\n")[0])
+
+
 class OpenCodeTests(World):
     def setUp(self) -> None:
         super().setUp()

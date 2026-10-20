@@ -1349,19 +1349,71 @@ function runGuard(command: string, cwd: string): Promise<string | null> {
 // call that is not a fleet clone and costs one child process per string.
 const MAX_GUARD_CANDIDATES = 8;
 
+// A permission pattern is a glob that names WHAT may be called,  and a title is prose.
+// Neither is a command,  so neither is probed.  A value is a command candidate when it has
+// something a shell would run in it:  a space,  a slash,  or a shell metacharacter.  A bare
+// word is not probed,  because no guard rule can match on one and the spawn is pure cost.
+const COMMAND_SHAPE = " /;&|<>`$(){}[]'";
+
+function isCommandShaped(value: string): boolean {
+  // A space, a tab, a path separator or a shell metacharacter all mean the value
+  // could be a command.  A tab is tested by its character code because the class
+  // cannot be spelled with a backslash here.
+  if (value.indexOf("\t") >= 0) return true;
+  for (const ch of COMMAND_SHAPE) {
+    if (value.indexOf(ch) >= 0) return true;
+  }
+  return false;
+}
+
+// The shape checks the plugin API documents,  enforced at runtime because a TypeScript
+// annotation is not one.  A hookInput that is not an object,  a pattern that is neither a
+// string nor an array of strings,  or a title that is not a string,  is a malformed
+// permission prompt:  the plugin cannot rule on it,  so it must not be read as if it were
+// well formed.
+function permissionInput(hookInput: unknown): AnyRecord {
+  if (!hookInput || typeof hookInput !== "object" || Array.isArray(hookInput)) {
+    throw new TypeError("the permission hookInput must be an object");
+  }
+  const hook = hookInput as AnyRecord;
+  const pattern = hook.pattern;
+  if (pattern !== undefined && pattern !== null) {
+    if (typeof pattern === "string") {
+      // a string is fine
+    } else if (Array.isArray(pattern)) {
+      for (const item of pattern) {
+        if (typeof item !== "string") {
+          throw new TypeError("every entry of a permission pattern array must be a string");
+        }
+      }
+    } else {
+      throw new TypeError("a permission pattern must be a string or an array of strings");
+    }
+  }
+  if (hook.title !== undefined && hook.title !== null && typeof hook.title !== "string") {
+    throw new TypeError("a permission title must be a string");
+  }
+  if (hook.title === "") {
+    throw new TypeError("a permission title must not be empty");
+  }
+  return hook;
+}
+
 function guardCandidates(hook: AnyRecord): string[] {
   const candidates: string[] = [];
   const pattern = hook.pattern;
   if (typeof pattern === "string") {
-    candidates.push(pattern);
+    if (isCommandShaped(pattern)) candidates.push(pattern);
   } else if (Array.isArray(pattern)) {
-    for (const item of pattern) if (typeof item === "string") candidates.push(item);
+    for (const item of pattern) {
+      if (typeof item === "string" && isCommandShaped(item)) candidates.push(item);
+    }
   }
   const metadata = hook.metadata;
   if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
     for (const key of ["command", "cmd", "script"]) {
       const value = (metadata as AnyRecord)[key];
-      if (typeof value === "string") candidates.push(value);
+      if (typeof value === "string" && isCommandShaped(value)) candidates.push(value);
     }
   }
   return candidates;
@@ -1418,7 +1470,8 @@ export const server = async (input: { directory?: string; worktree?: string }) =
       },
       output: { status: "ask" | "deny" | "allow" },
     ) => {
-      const key = denialKey(hookInput.sessionID, hookInput.callID);
+      const hook = permissionInput(hookInput);
+      const key = denialKey(hook.sessionID, hook.callID);
       if (key && deniedCalls.has(key)) {
         // Answering a denial consumes it, so a long-lived server does not retain one
         // entry per denied call forever.
@@ -1426,7 +1479,6 @@ export const server = async (input: { directory?: string; worktree?: string }) =
         output.status = "deny";
         return;
       }
-      const hook = (hookInput ?? {}) as AnyRecord;
       for (const candidate of guardCandidates(hook).slice(0, MAX_GUARD_CANDIDATES)) {
         let reason: string | null;
         try {
