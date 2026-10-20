@@ -701,10 +701,13 @@ class DocumentationExecutionTests(unittest.TestCase):
         raw = "[Sentence.](https://example.com) Next sentence.\n"
         for rel in ("FLEET-UI-COPY.md",) + PROTOCOL_FILES:
             text = (ROOT / rel).read_text(encoding="utf-8")
-            blocks = re.findall(r"(?m)^([ ]{0,3})```sh\n(.*?)^\1```", text, re.S)
+            blocks = re.findall(r"(?m)^([ ]{0,3})```sh\n(.*?)^\1```", text, re.DOTALL)
             for _, block in blocks:
-                commands = [line.strip().split(" #", 1)[0].rstrip()
-                            for line in block.splitlines() if line.strip().startswith("grep ")]
+                commands = [
+                    line.strip().split(" #", 1)[0].rstrip()
+                    for line in block.splitlines()
+                    if line.strip().startswith("grep ")
+                ]
                 if not commands:
                     continue
                 self.assertEqual(len(commands), 2, rel)
@@ -715,8 +718,13 @@ class DocumentationExecutionTests(unittest.TestCase):
                             (Path(tmp) / name).write_text(body, encoding="utf-8")
                         values = []
                         for command in commands:
-                            proc = subprocess.run(["bash", "-c", command], cwd=tmp,
-                                                  capture_output=True, text=True, timeout=30)
+                            proc = subprocess.run(
+                                ["bash", "-c", command],
+                                cwd=tmp,
+                                capture_output=True,
+                                text=True,
+                                timeout=30,
+                            )
                             self.assertIn(proc.returncode, (0, 1), rel + proc.stderr)
                             self.assertEqual(proc.stderr, "", rel)
                             values.append(int(proc.stdout.strip()))
