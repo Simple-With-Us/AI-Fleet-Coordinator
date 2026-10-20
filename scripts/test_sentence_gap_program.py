@@ -19,7 +19,6 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,7 +58,7 @@ HAVE_PERL = shutil.which("perl") is not None
 CODE_REGIONS = (
     "```js\nconst x = 1.  // a comment.  Another.\nreturn x.  More\n```",
     "~~~python\ndef f():\n    return True.  Something\n~~~",
-    "  ```sh\n  echo \"hello.  world\"\n  ```",
+    '  ```sh\n  echo "hello.  world"\n  ```',
     "> ```\n> quoted fence body.  More\n> ```",
     "    indented code line.  More\n    second indented line.  More",
     "repo:  AI-Fleet-Coordinator  |  DONE",
