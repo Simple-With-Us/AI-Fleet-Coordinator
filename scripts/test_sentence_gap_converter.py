@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,35 +64,41 @@ CHECKER_FILES = ("scripts/test_sentence_gap_converter.py",)
 
 # The rendered copies of the one home, and the fleet's own guidance, all carry the same
 # pattern.  The one home is the source;  the rest are checked against it.
+#
+# The list is derived from the seat registry rather than named by hand, so a new seat
+# cannot be forgotten and a retired one cannot be kept.  A retired seat (MONET, RENOIR,
+# DSH, KIMI) keeps its catalog copy as history and gets no new tracked tree -- the
+# registry says so, and the installer already skips retired seats -- so it is not a copy
+# that can ship a body with no gap, and it is not a target for new work.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import fleet_skill_identity as _identity  # noqa: E402  (the path is set just above)
+
+
+def _active_by_seat_copies() -> tuple[str, ...]:
+    """The by-seat upload packs of the one home, for the seats that are still live."""
+    return tuple(
+        "docs/fleet-skills/by-seat/%s/sentence-gap/SKILL.md" % seat.seat_key
+        for seat in _identity.catalog_seats()
+        if not seat.retired
+    )
+
+
+def _platform_copies() -> tuple[str, ...]:
+    """The repo-tracked platform trees of the one home.  The registry already skips the
+    retired seats here, so this list cannot keep one."""
+    out = []
+    for dest, _seat in _identity.repo_platform_copies(str(ROOT)):
+        out.append(Path(dest).relative_to(ROOT).as_posix() + "/sentence-gap/SKILL.md")
+    return tuple(out)
+
+
 RENDERED_COPIES = (
+    # The universal copy, and the Cursor rules file, which is a hand-written paste of
+    # the same protocol.
     "skills/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/ag/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/claude/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/clutch/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/codex/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/cursor/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/deepseek/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/fx/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/grok-bot/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/grok-build/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/grok/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/kimi/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/minimax/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/monet/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/muse-assist/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/muse-code/sentence-gap/SKILL.md",
-    "docs/fleet-skills/by-seat/renoir/sentence-gap/SKILL.md",
-    ".claude/skills/sentence-gap/SKILL.md",
-    ".clutch/dsh/skills/sentence-gap/SKILL.md",
-    ".codex/skills/sentence-gap/SKILL.md",
-    ".config/muse/skills/sentence-gap/SKILL.md",
     ".cursor/rules/sentence-gap.mdc",
-    ".cursor/skills/sentence-gap/SKILL.md",
-    ".fx/skills/sentence-gap/SKILL.md",
-    ".gemini/skills/sentence-gap/SKILL.md",
-    ".grok/skills/sentence-gap/SKILL.md",
-    ".minimax/skills/sentence-gap/SKILL.md",
-)
+) + _active_by_seat_copies() + _platform_copies()
 
 # The live guidance that quotes the pattern for a reader to copy.
 GUIDANCE = (
@@ -402,6 +409,40 @@ class AssertionCommandTests(unittest.TestCase):
                 count,
                 "%s holds a blind count check:  %s" % (rel, count),
             )
+
+    def test_every_live_guidance_file_passes_its_own_checks(self) -> None:
+        """A guidance file's own commands have to work, not merely look right.
+
+        The shape of a command can be right while the command still matches nothing:  a
+        stray bracket after the class closes the expression early, the count prints 0,
+        and the pair passes a look at the text.  So the commands are run.
+        """
+        pattern = one_home_patterns()[0]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body.nbsp.txt"
+            path.write_text(
+                convert(pattern, "**Bold sentence.**  Next sentence.\n"),
+                encoding="utf-8",
+            )
+            for rel in GUIDANCE:
+                with open(ROOT / rel, encoding="utf-8") as fh:
+                    text = fh.read()
+                count, leftover = assertion_patterns(text)
+                self.assertTrue(count, "%s holds no count assertion" % rel)
+                self.assertTrue(leftover, "%s holds no leftover assertion" % rel)
+                got_count = run_grep("grep -o $'%s' '%s' | wc -l" % (count, path))
+                got_leftover = run_grep("grep -cE '%s' '%s'" % (leftover, path))
+                self.assertGreater(
+                    got_count,
+                    0,
+                    "%s holds a count check that matches nothing:  %s" % (rel, count),
+                )
+                self.assertEqual(
+                    got_leftover,
+                    0,
+                    "%s holds a leftover check that fires on a converted body:  %s"
+                    % (rel, leftover),
+                )
 
     def test_no_live_file_holds_a_blind_leftover_check(self) -> None:
         """No live file may hold the check that cannot see a gap after a markup span.

@@ -55,13 +55,13 @@ matches one *or more* spaces, so it is correct in both states:
 perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Matching one *or more* is half the fix.  The other half is the **markup group**
-``([*_`)\]"]*)``:  a sentence end that sits *inside* a markup span is followed by the markup and
-only then by the space, so a pattern that wants the space right after the sentence end never
-matches it.  `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two
-greps below would catch it, because the file has other U+00A0 characters and this shape is not a
-single space after a sentence end.  The group captures the markup and re-emits it after the gap,
-so the span survives and the gap lands.
+Matching one *or more* is half the fix.  The **markup group** ``([*_`)\]"]*)`` is the other half:  a
+sentence end that sits *inside* a markup span is followed by the markup and only then by the
+space, so a pattern that wants the space right after the sentence end never matches it.
+`**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two checks below
+would catch it, because the file still holds other U+00A0 characters and this shape is not a
+single space after a sentence end.  The group captures the markup and re-emits it before the gap,
+so the span survives and the gap lands after the closing markup.
 
 The old pattern requiring exactly two spaces — written
 here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
@@ -89,8 +89,8 @@ exits 0, so a failed run is silent.  And a count above zero is *not* on its own 
 partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
 
 ```sh
-grep -o $'[.!?][]*_`)\"]*\xc2\xa0' body.nbsp.txt | wc -l   # must be > 0, and plausibly large for the body size
-grep -cE '[^0-9][.!?][]*_`)\"]* +[A-Z"]' body.nbsp.txt      # must be 0 — a leftover gap
+grep -o $'[.!?][]*_`)\"]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE '[^0-9][.!?][]*_`)\"]* +[A-Z"]' body.nbsp.txt         # must be 0 — a leftover gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -112,22 +112,6 @@ A `0` from the first check means the run changed nothing.  Fix it before posting
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
 `agent-sync post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
-
-**Source files are a different surface and are NOT affected.**  Swift, TypeScript, shell, and
-markdown read as source want **two literal ASCII spaces**, and in the same session those
-two-space gaps came through the write tool completely intact.  Do **not** "fix" a source file by
-inserting U+00A0 on the strength of this chat-surface problem:  plain source wants plain ASCII,
-and a U+00A0 committed into a source file is a real defect.  The perl conversion above is for
-text bound for GitHub, Zulip, or any renderer.  Never run it over source.
-
-Two more traps, both hit 2026-10-18:
-
-- **Never type a raw U+00A0 into a message body or tool call.**  It is normalized the same way
-  a double space is.  Let perl emit it.
-- The first `agent-sync` call in a session can die with "Parent-death guardian target
-  registration timed out".  Retry verbatim.  If the retry fails with "cannot open it (No such
-  file or directory)", the first attempt died before writing the file — the perl step never
-  ran.  That is not evidence the post went out.
 
 ### Verify, don't assume — run this self-test only on a NEW, unlisted surface
 

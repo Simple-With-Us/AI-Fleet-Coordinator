@@ -63,8 +63,8 @@ sentence end that sits *inside* a markup span is followed by the markup and only
 space, so a pattern that wants the space right after the sentence end never matches it.
 `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two checks below
 would catch it, because the file still holds other U+00A0 characters and this shape is not a
-single space after a sentence end.  The group captures the markup and re-emits it after the gap,
-so the span survives and the gap lands.
+single space after a sentence end.  The group captures the markup and re-emits it before the gap,
+so the span survives and the gap lands after the closing markup.
 
 The old pattern requiring exactly two spaces — written
 here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
@@ -103,26 +103,18 @@ marker (`1. Item`) is not mistaken for an unconverted gap — the same reason th
 carries `(?<![0-9])`.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
 read them and confirm they are abbreviations rather than real sentences.
 
+Both checks carry the same markup group as the converter, and they have to:  a gap that sits
+after a markup span is emitted as `<punctuation><markup><U+00A0><space>`, so a check that looks
+for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a
+space straight after the punctuation cannot see the one that was missed.  The `]` is written
+first in the class because a POSIX bracket expression ends at the first unquoted `]`, and there
+is no backslash escape inside one:  ``[]*_`)\"]`` is the set {`]`, `*`, `_`, `` ` ``, `)`, `"`}.
+In the perl pattern the same set is written ``([*_`)\]"]*)``, where `\]` does escape.
+
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
 `agent-sync post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
-
-**Source files are a different surface and are NOT affected.**  Swift, TypeScript, shell, and
-markdown read as source want **two literal ASCII spaces**, and in the same session those
-two-space gaps came through the write tool completely intact.  Do **not** "fix" a source file by
-inserting U+00A0 on the strength of this chat-surface problem:  plain source wants plain ASCII,
-and a U+00A0 committed into a source file is a real defect.  The perl conversion above is for
-text bound for GitHub, Zulip, or any renderer.  Never run it over source.
-
-Two more traps, both hit 2026-10-18:
-
-- **Never type a raw U+00A0 into a message body or tool call.**  It is normalized the same way
-  a double space is.  Let perl emit it.
-- The first `agent-sync` call in a session can die with "Parent-death guardian target
-  registration timed out".  Retry verbatim.  If the retry fails with "cannot open it (No such
-  file or directory)", the first attempt died before writing the file — the perl step never
-  ran.  That is not evidence the post went out.
 
 ### Verify, don't assume — run this self-test only on a NEW, unlisted surface
 

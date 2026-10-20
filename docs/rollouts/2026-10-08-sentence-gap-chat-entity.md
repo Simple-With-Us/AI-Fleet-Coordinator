@@ -60,7 +60,8 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 > closing `**`, not after the period, and the gap is missed.  Neither check catches it, because
 > the file still holds other U+00A0 characters and this shape is not a single space after a
 > sentence end.  The live pattern adds the markup group ``([*_`)\]"]*)``, which captures the markup
-> after the sentence end and re-emits it after the gap, so the span survives and the gap lands:
+> after the sentence end and re-emits it before the gap, so the span survives and the gap lands
+> after the closing markup:
 > ``perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt``.
 > The two checks carry the same markup group, because the gap they have to see is emitted as
 > <punctuation><markup><U+00A0><space>:  a check that looks for the U+00A0 straight after the
