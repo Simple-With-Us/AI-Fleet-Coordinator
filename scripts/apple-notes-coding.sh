@@ -245,7 +245,7 @@ fi
 
 # Run a headless pin/unpin Shortcut with the note title as a text-file input.
 # Returns 0 on success, 2 when the Shortcut is not installed, 1 when the run
-# itself failed. First-ever run of each shortcut shows a one-time
+# itself failed.  First-ever run of each shortcut shows a one-time
 # "Allow ... to share with Notes?" dialog — choose Always Allow.
 _run_note_shortcut() {  # $1 = shortcut name
   shortcuts list 2>/dev/null | grep -qxF "$1" || return 2
