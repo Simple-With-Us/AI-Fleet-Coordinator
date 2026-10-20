@@ -116,9 +116,13 @@ class ChatNudges:
                 raise ValueError("chat nudge item is invalid")
             if "receipt_checked_at" in item:
                 value = item["receipt_checked_at"]
+                # Magnitude is compared before isfinite: a persisted JSON integer wider than the
+                # float range makes math.isfinite raise OverflowError, escaping the fail-closed
+                # ValueError contract this guard exists to enforce.
                 if (
                     not isinstance(value, (int, float))
                     or isinstance(value, bool)
+                    or abs(value) > 1e308
                     or not math.isfinite(value)
                 ):
                     raise ValueError("chat nudge receipt_checked_at must be a finite number")

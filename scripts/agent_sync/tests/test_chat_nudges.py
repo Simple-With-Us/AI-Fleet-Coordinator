@@ -90,7 +90,7 @@ class ChatNudgesTest(unittest.TestCase):
 
     def test_reconcile_rejects_invalid_persisted_receipt_timestamp(self):
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 42, 10)
-        for value in (None, "bad", True, float("nan"), float("inf")):
+        for value in (None, "bad", True, float("nan"), float("inf"), 10**400, -(10**400)):
             with L.locked(self.queue.path):
                 data = L.read_json(self.queue.path)
                 data["items"][0]["receipt_checked_at"] = value

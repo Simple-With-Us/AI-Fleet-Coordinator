@@ -430,11 +430,15 @@ class CodexChatTransport:
             return False
 
     def send(self, binding, text, *, permit: Callable[[], bool] | None = None):
+        # A malformed or mismatched binding can never succeed, so it is held rather than left on
+        # the retryable path: the daemon re-checks policy gates but not the physical probe here,
+        # so a deferred verdict would requeue this wake forever.
+        if not self._valid(binding):
+            return "held"
         # Repeat the workspace availability check preflight made: it can disappear between the
         # two calls, and send() is reachable directly.  Deferred, not held, so the wake retries.
         if (
-            not self._valid(binding)
-            or not os.path.isdir(binding["cwd"])
+            not os.path.isdir(binding["cwd"])
             or not self._prerequisites()
             or self._full(binding)
         ):

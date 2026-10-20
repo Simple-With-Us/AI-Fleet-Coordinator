@@ -156,9 +156,10 @@ class TransportTests(unittest.TestCase):
             self.adapter.send(dict(self.binding, cwd="/not-present"), "nudge"), "deferred"
         )
         self.assertEqual(self.calls, [])
-        # A relative path never reaches the directory check and stays deferred rather than held.
+        # A relative path is a malformed binding, so it never reaches the directory check and is
+        # held rather than retried forever.
         self.assertEqual(
-            self.adapter.send(dict(self.binding, cwd="relative/workspace"), "nudge"), "deferred"
+            self.adapter.send(dict(self.binding, cwd="relative/workspace"), "nudge"), "held"
         )
         self.assertEqual(self.calls, [])
 
@@ -339,7 +340,7 @@ class TransportTests(unittest.TestCase):
                             "message": "queue cannot contain more than 100 submissions",
                         }
                     )
-                return request(method, params)
+                return request(method, params, **kwargs)
 
             rpc.request = request_with_rejection
             return rpc
