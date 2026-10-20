@@ -1,6 +1,6 @@
 """The session id a notes write must carry (AFC-361, docs/protocols/resume-wake-safety-design.md section 4).
 
-A headless resume-wake finds a seat's session from a `Session: <id> - <time>` line stamped in the note, so
+A headless resume-wake finds a seat's session from the `Session: <id>` line stamped in the note, so
 `notes_create`, `notes_update` and `agent-sync notes create|update` carry the writer's session id, and the Mac
 listener refuses a relayed request that has none.
 

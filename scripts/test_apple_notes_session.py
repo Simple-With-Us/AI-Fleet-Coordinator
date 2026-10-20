@@ -12,9 +12,12 @@ import os
 import re
 import subprocess
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "apple-notes-coding.sh"
+#  the script drops the year only when it is the current one, so the expected date follows the clock
+OCT_19 = "Mon, Oct 19" if datetime.now().year == 2026 else "Mon, Oct 19, 2026"
 PLATFORM_VARS = (
     "AGENT_SESSION",
     "CLAUDE_CODE_SESSION_ID",
@@ -154,8 +157,8 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         m = re.search(
-            r"<p>((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m)</p>"
-            r"<p>Session: abc12345-def6 - \1</p>",
+            r"<p>(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \w{3} \d{1,2}, \d{1,2}:\d{2}[ap]m</p>"
+            r'<p><span style="font-size: 11px;">Session: abc12345-def6</span></p>',
             p.stdout,
         )
         self.assertIsNotNone(m, p.stdout)
@@ -173,11 +176,11 @@ class SessionIdTests(unittest.TestCase):
             sid = f"{seat.lower()}-sess-0001"
             p = self.run_script("[AFC, Agent] topic", env={"AGENT_SEAT": seat, var: sid})
             self.assertEqual(p.returncode, 0, f"{seat}: {p.stderr}")
-            self.assertIn(f"Session: {sid} -", p.stdout, seat)
+            self.assertIn(f"Session: {sid}</span>", p.stdout, seat)
         p = self.run_script(
             "[AFC, Cursor] topic", env={"AGENT_SEAT": "CURSOR", "CURSOR_AGENT_CHAT_ID": "chat-0002"}
         )
-        self.assertIn("Session: chat-0002 -", p.stdout)
+        self.assertIn("Session: chat-0002</span>", p.stdout)
 
     def test_a_seat_with_its_own_variable_ignores_other_platforms(self):
         p = self.run_script(
@@ -190,7 +193,7 @@ class SessionIdTests(unittest.TestCase):
             "[AFC, Agent] topic", env={"AGENT_SEAT": "BF-FIXER", "CODEX_THREAD_ID": "codex-0004"}
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("Session: codex-0004 -", p.stdout)
+        self.assertIn("Session: codex-0004</span>", p.stdout)
 
     def test_precedence_flag_then_agent_session_then_platform(self):
         env = {
@@ -198,14 +201,16 @@ class SessionIdTests(unittest.TestCase):
             "AGENT_SESSION": "generic-0005",
             "CLAUDE_CODE_SESSION_ID": "platform-0006",
         }
-        self.assertIn("Session: generic-0005 -", self.run_script("[AFC, Claude] t", env=env).stdout)
         self.assertIn(
-            "Session: flag-0007 -",
+            "Session: generic-0005</span>", self.run_script("[AFC, Claude] t", env=env).stdout
+        )
+        self.assertIn(
+            "Session: flag-0007</span>",
             self.run_script("--session", "flag-0007", "[AFC, Claude] t", env=env).stdout,
         )
         env.pop("AGENT_SESSION")
         self.assertIn(
-            "Session: platform-0006 -", self.run_script("[AFC, Claude] t", env=env).stdout
+            "Session: platform-0006</span>", self.run_script("[AFC, Claude] t", env=env).stdout
         )
 
     def test_a_malformed_id_is_refused(self):
@@ -219,7 +224,7 @@ class SessionIdTests(unittest.TestCase):
     def test_an_exempt_seat_with_an_id_still_stamps_it(self):
         p = self.run_script("--session", "wise-thread-1", "[AFC, Wise] topic")
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("Session: wise-thread-1 -", p.stdout)
+        self.assertIn("Session: wise-thread-1</span>", p.stdout)
 
     def test_an_update_replaces_a_session_row_echoed_from_the_old_body(self):
         old = "<p>Mon, Oct 19, 9:40pm</p><p>Session: old-id-0001 - Mon, Oct 19, 9:40pm</p><p>Body.</p>"
@@ -233,7 +238,182 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
-        self.assertIn("Session: new-id-0002 -", p.stdout)
+        self.assertIn("Session: new-id-0002</span>", p.stdout)
+        self.assertNotIn("old-id-0001", p.stdout)
+
+    def test_a_chat_tag_is_not_a_session_id(self):
+        p = self.run_script("--session", "session8", "[BF, MM] t", env={"AGENT_SEAT": "MM"})
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("__MAVIS_RUNTIME_SESSION_ID", p.stderr)
+
+    def test_a_session_row_left_at_the_end_by_the_old_layout_is_dropped(self):
+        old = "<p>Mon, Oct 19, 9:40pm</p><p>Body.</p><p>Session: old-id-0001 - Mon, Oct 19, 9:40pm</p>"
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=old,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
+        self.assertLess(p.stdout.index("Session:"), p.stdout.index("Body."))
+
+    def test_iso_dates_in_prose_become_fleet_dates_but_code_and_links_keep_them(self):
+        body = (
+            "<p>Merged 2026-10-19, deployed 2026-10-20T02:03:00Z, filed 2025-03-07.</p>"
+            "<pre><code>log 2026-10-19</code></pre>"
+            '<p><a href="https://x.test/2026-10-19">see</a> backup-2026-10-19.tar</p>'
+        )
+        p = self.run_script(
+            "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(
+            f"Merged {OCT_19}, deployed {OCT_19}, 9:03pm, filed Fri, Mar 7, 2025.", p.stdout
+        )
+        self.assertIn("log 2026-10-19", p.stdout)
+        self.assertIn("https://x.test/2026-10-19", p.stdout)
+        self.assertIn("backup-2026-10-19.tar", p.stdout)
+        self.assertIn(
+            "notes: reformatted:  dates rewritten in the fleet format (2026-10-19 to", p.stderr
+        )
+
+    def test_one_space_sentence_gaps_are_widened_and_reported(self):
+        body = "<p>Merged it. Next is CI. Ask Dr. Smith. The U.S. Army. 4 tests failed. Done.</p><pre><code>a. B</code></pre>"
+        p = self.run_script(
+            "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        g = "  "
+        self.assertIn(
+            f"Merged it.{g}Next is CI.{g}Ask Dr. Smith.{g}The U.S. Army.{g}4 tests failed.{g}Done.",
+            p.stdout,
+        )
+        self.assertIn("a. B", p.stdout)
+        self.assertIn("notes: reformatted:  5 sentence gaps had one space", p.stderr)
+        clean = self.run_script(
+            "--session",
+            "abc12345",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body="<p>One.  Two.</p>",
+        )
+        self.assertNotIn("reformatted", clean.stderr)
+
+    def test_a_time_range_end_is_not_read_as_a_utc_offset(self):
+        body = "<p>Standup 2026-10-19 10:30-11:00 Central, and 2026-10-19T10:30-11:00.</p>"
+        p = self.run_script(
+            "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        #  the space form keeps its range end instead of shifting 10:30 to 4:30pm on the -11:00, and both
+        #  ends read in the fleet form rather than on a 24-hour clock
+        self.assertIn(f"Standup {OCT_19}, 10:30am-11:00am Central", p.stdout)
+        #  the ISO T form really is an offset, and still converts
+        self.assertIn(f"and {OCT_19}, 4:30pm", p.stdout)
+
+    def test_prose_that_starts_with_session_is_not_mistaken_for_a_row(self):
+        """`Session:` opening a paragraph of prose is content:  an id-shaped word after it is still prose."""
+        body = "<p>Mon, Oct 19, 9:40pm</p><p>Body.</p><p>Session: the board claim was AFC-123</p>"
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=body,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("Session: the board claim was AFC-123", p.stdout)
+        self.assertEqual(
+            p.stdout.count("Session:"), 2, p.stdout
+        )  #  the prose one and the stamped row
+
+    def test_a_stale_row_left_at_the_end_goes_with_its_trailing_spacer(self):
+        old = (
+            "<p>Mon, Oct 19, 9:40pm</p><p>Body.</p>"
+            '<p><span style="font-size: 11px;">Session: old-id-0001</span></p><div><br></div>'
+        )
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=old,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
+        self.assertNotIn("old-id-0001", p.stdout)
+
+    def test_a_stale_row_left_at_the_end_goes_with_every_spacer_behind_it(self):
+        """An old note can end on more than one spacer:  the row still goes, or two rows are left."""
+        old = (
+            "<p>Mon, Oct 19, 9:40pm</p><p>Body.</p>"
+            '<p><span style="font-size: 11px;">Session: old-id-0001</span></p>'
+            "<div><br></div><div><br></div>"
+        )
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=old,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
+        self.assertNotIn("old-id-0001", p.stdout)
+
+    def test_a_date_inside_a_file_name_or_a_query_string_keeps_its_iso_form(self):
+        body = (
+            "<p>Merged 2026-10-19.  Ship 2026-10-19.tar.gz, keep backup-2026-10-19.tar, "
+            "and https://x.test/q?d=2026-10-19&amp;n=2</p>"
+        )
+        p = self.run_script(
+            "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        #  a sentence-final date converts;  a date glued to a name or a query value does not
+        self.assertIn(f"Merged {OCT_19}.", p.stdout)
+        self.assertIn("2026-10-19.tar.gz", p.stdout)
+        self.assertIn("backup-2026-10-19.tar", p.stdout)
+        self.assertIn("?d=2026-10-19&amp;n=2", p.stdout)
+
+    def test_a_utc_range_end_converts_like_its_start_and_session_prose_stays(self):
+        body = (
+            "<p>Window 2026-10-19 15:30Z-16:00 for the deploy.</p>"
+            "<p>Session: claude-code resumed after the restart.</p>"
+        )
+        p = self.run_script(
+            "--update",
+            "--session",
+            "abc12345",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=body,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"Window {OCT_19}, 10:30am-11:00am for the deploy.", p.stdout)
+        self.assertIn("Session: claude-code resumed after the restart.", p.stdout)
+
+    def test_an_old_session_row_with_a_year_is_replaced_not_kept(self):
+        old = (
+            "<p>Mon, Oct 19, 9:40pm</p><p>Session: old-id-0001 - Mon, Oct 19, 2026, 9:40pm</p>"
+            "<div><br></div><p>Body.</p>"
+        )
+        p = self.run_script(
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=old,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
         self.assertNotIn("old-id-0001", p.stdout)
 
     def test_the_body_never_reaches_the_refusal(self):
