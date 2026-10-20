@@ -405,7 +405,12 @@ class SessionIdTests(unittest.TestCase):
             "<div><br></div><p>Body.</p>"
         )
         p = self.run_script(
-            "--update", "--session", "new-id-0002", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=old
+            "--update",
+            "--session",
+            "new-id-0002",
+            "[AFC, Claude] t",
+            env={"AGENT_SEAT": "CLAUDE"},
+            body=old,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.count("Session:"), 1, p.stdout)
