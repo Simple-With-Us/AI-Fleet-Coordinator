@@ -55,7 +55,23 @@ or MCP `recall_search`.  A hit is a lead, not a verdict — open the Linear issu
 
 ## 3. Use The Durable VM Checkout
 
+The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.  Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders` (Lane Map, owner 2026-10-07: `docs/protocols/lane-map.md` in AI-Fleet-Coordinator).
+
 Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  This VM checkout is the lane; do not invoke the Mac lane tool or create Mac lane directories.
+
+| App | Zulip `repo:` | Acronym (Linear team) | Lane folder |
+|-----|---------------|-----------------------|-------------|
+| Socratic.Trade | `Socratic.Trade` | ST | `~/apps/lanes/Socratic-Trade/<seat>-<slug>` |
+| Congress.Trade | `Congress.Trade` | CT | `~/apps/lanes/Congress.Trade/<seat>-<slug>` |
+| Usage Monitor | `API-usage-monitor` | UM | `~/apps/lanes/Usage-Monitor/<seat>-<slug>` |
+| congress-trading-shared | `congress-trading-shared` | CTS | `~/apps/lanes/congress-trading-shared/<seat>-<slug>` |
+| DealDex | `DealDex` | DD | `~/apps/lanes/DealDex/<seat>-<slug>` |
+| Personal-Site | `Personal-Site` | PS | `~/apps/lanes/Personal-Site/<seat>-<slug>` |
+| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/lanes/AI-Fleet-Coordinator/<seat>-<slug>` |
+
+Machine-infra issues file to the `OPS` team (`board file --app fleet-infra` routes there).  `<seat>` is your seat's whole folder name from `fleet-apps.json` (`worktreeSuffix`), never a short tag, and the folder above it is the repo's folder name under `~/Code` (`codeDir`), exactly as spelled there.  Lanes in the old places under `~/apps/lanes` (`<prefix>/` such as `lanes/trading`, `_managed`, `_review`) stay until the layout migration moves them, and flat ones such as `~/apps/trading-muse-assist` are not moved at all and retire normally; do not create new ones in any old place.  Inventory is `~/Code/AI-Fleet-Coordinator/fleet-apps.json`.  `scripts/setup-agent-lanes.sh` is retired (it exits 2); do not run it.  The `~/apps/lane` tool is Mac-only: if MA needs a new repo checkout, ask the owner for the VM path rather than running the lane tool or hand-making a lane.lane new <app> <slug>` from the `scripts/` folder of an AI-Fleet-Coordinator checkout, or create the lane by hand to match the table in `docs/protocols/lane-map.md`.
+
+Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and its open Linear issues (`board list --app <app>`).  `docs/EFFORT-LOG.md` is archived history now; read it only for background.  Personal-Site `AGENTS.md` can lag `README.md` (the live source is `site/`); believe README + current tree over a stale "static snapshot" paragraph.
 
 ## 4. Claim before substantial edits
 

@@ -1272,11 +1272,27 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
     ):
         vm = vm.replace(command, chr(96) + command + chr(96))
     if skill_name == "session-start":
+        # Retitle the section and swap only the Mac lane command block.  The
+        # app/acronym table and the scratch-checkout ban below it are
+        # seat-independent and must survive (AFC-723).
         text = re.sub(
-            r"^## 3\..*?(?=^## 4\.)",
-            "## 3. Use The Durable VM Checkout\n\n" + vm,
+            r"^## 3\. Pick the lane.*$",
+            "## 3. Use The Durable VM Checkout",
+            text,
+            flags=re.MULTILINE,
+        )
+        text = re.sub(
+            r"^Make one lane per task.*?^```$",
+            vm.rstrip("\n"),
             text,
             flags=re.MULTILINE | re.DOTALL,
+        )
+        # The retained paragraph explains the Mac lane tool as the fallback when
+        # it is missing; on the VM that tool is what MA must never run.
+        text = re.sub(
+            r"If `~/apps/lane` is missing[^.]*\.",
+            "The `~/apps/lane` tool is Mac-only: if MA needs a new repo checkout, ask the owner for the VM path rather than running the lane tool or hand-making a lane.",
+            text,
         )
     elif skill_name == "fleet-coordination":
         text = re.sub(
