@@ -252,3 +252,11 @@ class RelativeExecutableTests(unittest.TestCase):
                 systemd._confirmed_too_old("/chosen/python", io.StringIO())
         self.assertIn("/chosen/python", str(error.exception))
         self.assertEqual(error.exception.code, 124)
+
+class InvalidVersionIdentityTests(unittest.TestCase):
+    def test_unknown_version_reports_selected_interpreter(self):
+        with patch.object(systemd, "interpreter_version", return_value=None):
+            with self.assertRaises(systemd.InterpreterProbeFailure) as error:
+                systemd.too_old("/chosen/runtime")
+        self.assertEqual(error.exception.code, 1)
+        self.assertIn("/chosen/runtime", str(error.exception))

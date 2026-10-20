@@ -49,7 +49,7 @@ def too_old(python: str) -> bool:
     """True only when the interpreter is confirmed older than MIN_PYTHON; a failed probe propagates."""
     version = interpreter_version(python)
     if version is None:
-        raise InterpreterProbeFailure(1, "interpreter did not report a verified Python version")
+        raise InterpreterProbeFailure(1, "interpreter %s did not report a verified Python version" % python)
     return version < MIN_PYTHON
 
 
