@@ -170,7 +170,13 @@ only look at sentence-ending marks, so a body can pass both of them and still ca
 space after a colon or a semicolon — `published:  <id>`, `already decided;  PR #<n>`.  That
 is a gap where the owner asked for one ordinary space, and it is invisible to the first two
 checks, which is exactly why it ships.  The `^repo:` filter drops the house closeout header,
-whose two spaces are the template's own.
+whose two spaces are the template's own, and the fence filter drops fenced code blocks, whose
+spacing is the author's.
+
+The third check has to be fence-aware for the same reason the second pass is:  a plain
+`grep -cE '[^[:space:]] {2,}'` flags the aligned spacing inside a code block and reads as a
+failure that is not there, which trains people to ignore it.  The filter has to match the pass
+exactly, or the assertion measures something the conversion never touched.
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
