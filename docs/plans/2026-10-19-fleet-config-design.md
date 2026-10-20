@@ -45,7 +45,7 @@ The six config kinds (`types.py` `ConfigKind`) are `instructions`, `hooks`, `mcp
 
 A `collector` says where a check runs:  `mac` now, with `vm`, `hetzner` and `api` reserved.  A rule with a reserved collector yields one `UNSUPPORTED` result per named platform in Phase 2, with the reason naming the collector.  Reserving the values now means a later phase adds collectors with no schema change.
 
-A `platform` is a harness config surface id from `scripts/fleet_lanes/install_rules.py` `PLATFORMS` (such as `claude`, `codex`, `grok`, `antigravity`, `minimax`, `cursor`, `clutch`, `kimi`, `copilot`, `opencode`, `muse-code`).  Platform ids are passed into `fleet_config` as data, never hardcoded in this package and never imported from `fleet_lanes` at runtime.  The shared `home-agents` file is not a seat platform and must not appear in a manifest.  A platform with no file for a kind (per the installer tables) yields `UNSUPPORTED` for that kind, not an invented path.
+A `platform` is a harness config surface id from `scripts/fleet_lanes/install_rules.py` `PLATFORMS` (such as `claude`, `codex`, `grok`, `antigravity`, `minimax`, `cursor`, `clutch`, `kimi`, `opencode`, `muse-code`).  Platform ids are passed into `fleet_config` as data, never hardcoded in this package and never imported from `fleet_lanes` at runtime.  The shared `home-agents` file is not a seat platform and must not appear in a manifest.  A platform with no file for a kind (per the installer tables) yields `UNSUPPORTED` for that kind, not an invented path.
 
 ## 4. Fail-Closed Semantics
 
