@@ -340,3 +340,44 @@ test("definitive timeline refusal retries safely but unknown never retries", asy
     globalThis.fetch = original;
   }
 });
+test("incident refresh metadata cannot replay an unknown transition after crash", async () => {
+  const db = storage(),
+    original = globalThis.fetch;
+  const previous = {
+    phase: "pending",
+    since: 100,
+    updated: 101,
+    text: "initial",
+    severity: "SEVERE",
+  };
+  const next = { ...previous, phase: "alerting" };
+  const identity = (value) =>
+    __testing.transitionIdentity("monitor", "announce", value, next);
+  let sends = 0;
+  globalThis.fetch = async () => {
+    sends++;
+    throw new Error("accepted then lost");
+  };
+  try {
+    await __testing.sendEventOnce({ WRITER_STORAGE: db }, identity(previous), {
+      email: "test@example.invalid",
+      apiKey: "fixture",
+      severity: "SEVERE",
+      service: "svc",
+      what: "down",
+    });
+    // Crash before phase commit, then an ordinary refresh changes only metadata.
+    const refreshed = { ...previous, updated: 999, text: "new description" };
+    assert.deepEqual(identity(previous), identity(refreshed));
+    await __testing.sendEventOnce({ WRITER_STORAGE: db }, identity(refreshed), {
+      email: "test@example.invalid",
+      apiKey: "fixture",
+      severity: "SEVERE",
+      service: "svc",
+      what: "down",
+    });
+    assert.equal(sends, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

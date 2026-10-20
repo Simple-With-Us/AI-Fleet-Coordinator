@@ -229,6 +229,12 @@ async function refreshStatus(env, channel, topic) {
   return content;
 }
 
+function transitionIdentity(key, action, previous, next) {
+  // Refresh timestamps and descriptive metadata never create another delivery
+  // identity for the same incident generation and severity transition.
+  return [key, action, previous?.phase, previous?.since, next.severity];
+}
+
 async function sendEventOnce(env, identity, args) {
   if (!env.WRITER_STORAGE) throw new Error("durable writer required");
   const digest = await crypto.subtle.digest(
@@ -278,27 +284,35 @@ async function handleEvent(source, payload, env) {
   const sev =
     result.state.phase === "alerting" ? result.state.severity : "INFO";
   if (result.action === "announce" || result.action === "update") {
-    posted = await sendEventOnce(env, [event.key, result.action, prev, event], {
-      email: env.ZULIP_BOT_EMAIL,
-      apiKey: env.ZULIP_BOT_API_KEY,
-      channel,
-      topic,
-      severity: sev,
-      service: event.service,
-      what: result.state.text,
-      link: result.state.link,
-    });
+    posted = await sendEventOnce(
+      env,
+      transitionIdentity(event.key, result.action, prev, result.state),
+      {
+        email: env.ZULIP_BOT_EMAIL,
+        apiKey: env.ZULIP_BOT_API_KEY,
+        channel,
+        topic,
+        severity: sev,
+        service: event.service,
+        what: result.state.text,
+        link: result.state.link,
+      },
+    );
   } else if (result.action === "resolve") {
-    posted = await sendEventOnce(env, [event.key, result.action, prev, event], {
-      email: env.ZULIP_BOT_EMAIL,
-      apiKey: env.ZULIP_BOT_API_KEY,
-      channel,
-      topic,
-      severity: "INFO",
-      service: event.service,
-      what: "recovered",
-      link: event.link,
-    });
+    posted = await sendEventOnce(
+      env,
+      transitionIdentity(event.key, result.action, prev, result.state),
+      {
+        email: env.ZULIP_BOT_EMAIL,
+        apiKey: env.ZULIP_BOT_API_KEY,
+        channel,
+        topic,
+        severity: "INFO",
+        service: event.service,
+        what: "recovered",
+        link: event.link,
+      },
+    );
   }
 
   await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
@@ -327,16 +341,20 @@ async function runSweep(env) {
     if (!s) continue;
     try {
       const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
-      await sendEventOnce(env, [key, "announce", prev], {
-        email: env.ZULIP_BOT_EMAIL,
-        apiKey: env.ZULIP_BOT_API_KEY,
-        channel: DEFAULT_CHANNEL,
-        topic: service,
-        severity: s.state.severity,
-        service,
-        what: s.state.text,
-        link: s.state.link,
-      });
+      await sendEventOnce(
+        env,
+        transitionIdentity(key, "announce", prev, s.state),
+        {
+          email: env.ZULIP_BOT_EMAIL,
+          apiKey: env.ZULIP_BOT_API_KEY,
+          channel: DEFAULT_CHANNEL,
+          topic: service,
+          severity: s.state.severity,
+          service,
+          what: s.state.text,
+          link: s.state.link,
+        },
+      );
       await env.ALERT_STATE.put(name, JSON.stringify(s.state));
       promoted++;
       dirtyTopics.add(service);
@@ -624,4 +642,5 @@ Object.assign(__testing, {
   handler,
   handleEvent,
   sendEventOnce,
+  transitionIdentity,
 });
