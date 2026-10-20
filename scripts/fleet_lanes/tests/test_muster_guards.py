@@ -271,6 +271,67 @@ class CopilotTests(World):
         self.assertRegex(out, r"FAIL\s+copilot\s+hooks file.*named explicitly")
 
 
+class VibeTomlSafetyTests(World):
+    """The Vibe gate is written safely, and the file stays loadable on every Python."""
+
+    def test_the_gate_replaces_the_whole_value_when_it_spans_lines(self) -> None:
+        # A value may span lines,  and replacing only its first line leaves the rest of
+        # it behind as orphan text,  which is not valid TOML:  Vibe's config would stop
+        # loading.  The whole value goes.
+        source = 'enable_experimental_hooks = [\n  "x",\n]\nother = 1\n'
+        out = T.vibe_set_gate(source)
+        self.assertIn("enable_experimental_hooks = true", out)
+        self.assertNotIn('"x"', out)
+        self.assertNotIn("]", out)
+        self.assertIn("other = 1", out)
+        self.assertTrue(T.vibe_gate(out))
+        self.assertIsNone(T._toml_problem(out))
+
+    def test_a_single_line_gate_is_replaced_in_place(self) -> None:
+        # The ordinary case must not change:  the key is replaced and nothing else moves.
+        source = "enable_experimental_hooks = false\nx = 1\n"
+        out = T.vibe_set_gate(source)
+        self.assertEqual(out, "enable_experimental_hooks = true\nx = 1\n")
+
+    def test_the_toml_check_catches_a_value_that_was_replaced_in_the_middle(self) -> None:
+        # The corruption a replace leaves behind,  which is what the check has to see.
+        broken = 'enable_experimental_hooks = true\n  "x",\n]\nother = 1\n'
+        self.assertIsNotNone(T._toml_problem(broken))
+
+    def test_the_structural_check_catches_what_tomllib_catches(self) -> None:
+        # On 3.11+ tomllib catches the corruption,  but the installer runs on the
+        # minimum Python,  where there is no tomllib and the single regex it used to
+        # fall back to found nothing.  The structural check is what stands in for
+        # tomllib there,  so it has to catch the same corruption.
+        broken = 'enable_experimental_hooks = true\n  "x",\n]\nother = 1\n'
+        self.assertIsNotNone(T._toml_structure_problem(broken))
+        self.assertIsNotNone(T._toml_structure_problem('models = [\n  "a",\n'))
+        self.assertIsNotNone(T._toml_structure_problem('s = """\nhello\n'))
+        self.assertIsNone(T._toml_structure_problem('models = [\n  "a",\n]\nx = 1\n'))
+        self.assertIsNone(T._toml_structure_problem("[section]\nhooks = 1\n"))
+
+    def test_the_toml_check_accepts_a_valid_file(self) -> None:
+        for text in (
+            'models = [\n  "a",\n]\nother = 1\n',
+            "[section]\nhooks = 1\n",
+            '[tools.bash]\nname = "x"\n',
+            "# a comment\nkey = 1\n",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(T._toml_problem(text))
+
+    def test_the_toml_check_reports_an_unclosed_value(self) -> None:
+        self.assertIsNotNone(T._toml_problem('models = [\n  "a",\n'))
+        self.assertIsNotNone(T._toml_problem('s = """\nhello\n'))
+
+    def test_a_top_level_hooks_key_is_reported_but_a_table_scoped_one_is_not(self) -> None:
+        # A top-level `hooks` key would be redefined by the [[hooks]] table this tool
+        # writes,  and that is a problem.  A key under a table belongs to that table,
+        # and refusing it would refuse a good file.
+        self.assertIsNotNone(T._toml_problem("hooks = 1\nother = 2\n"))
+        self.assertIsNone(T._toml_problem("[section]\nhooks = 1\n"))
+
+
 class VibeTests(World):
     CONFIG = (
         'active_model = "mistral-medium-3.5"\nvim_keybindings = false\n\n[experiment_overrides]\n'

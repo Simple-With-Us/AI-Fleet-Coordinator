@@ -4593,6 +4593,11 @@ _VIBE_GATE_RE = re.compile(
 _VIBE_TABLE_RE = re.compile(r"^[ \t]*\[")
 _VIBE_KV_RE = re.compile(r"^[ \t]*([A-Za-z0-9_.-]+)[ \t]*=")
 
+# A top-level TOML key, as the structural check sees it:  a bare name, a quoted name or
+# a single-quoted name, then an equals sign.  It is the line shape a well-formed
+# top-level key/value pair has.
+_TOML_KEY_RE = re.compile(r"^[ \t]*(?:[A-Za-z0-9_-]+|\"[^\"\n]*\"|'[^'\n]*')[ \t]*=")
+
 
 def _vibe_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | None]:
     """The bracket depth and the open string delimiter after reading `line`, both carried across lines.  A value may
@@ -4679,7 +4684,13 @@ def vibe_set_gate(text: str) -> str:
         if _VIBE_TABLE_RE.match(line):
             break
         if _VIBE_GATE_RE.match(line):
-            lines[i] = _VIBE_GATE_KEY + " = true"
+            # The value of the key may span lines,  and replacing only its first line
+            # leaves the rest of it behind as orphan text,  which is not valid TOML.
+            # The value ends where the scan says it ends,  so the whole value goes.
+            # For a single-line value the end is the next line,  so the result is
+            # byte-identical to replacing the line alone.
+            end = _vibe_value_end(lines, i)
+            lines[i:end] = [_VIBE_GATE_KEY + " = true"]
             return "\n".join(lines)
         if _VIBE_KV_RE.match(line):
             insert_at = _vibe_value_end(lines, i)
@@ -4710,21 +4721,83 @@ class BlockPlan:
     gate_exists: bool = False
 
 
+def _toml_structure_problem(text: str) -> str | None:
+    """Why `text` is not well-formed TOML, as far as a scanner can tell, or None.
+
+    There is no ``tomllib`` on the minimum Python,  so this is the check that stands in
+    for it.  A scanner cannot check every rule of TOML,  but it catches the corruption a
+    writer like this one can do:  a value or a string that is never closed,  and a line
+    left over from a value that was replaced.
+
+    It reuses ``_vibe_scan``,  which already carries the bracket depth and the open
+    string across lines,  so a line inside a value is that value's text and not a key.
+    """
+    depth = 0
+    quote: str | None = None
+    for lineno, line in enumerate(text.splitlines(), 1):
+        at_top = quote is None and depth <= 0
+        depth, quote = _vibe_scan(line, depth, quote)
+        if not at_top:
+            continue
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _VIBE_TABLE_RE.match(line):
+            continue
+        if not _TOML_KEY_RE.match(line):
+            return "config.toml line %d is neither a table header nor a key" % lineno
+    if quote is not None:
+        return "config.toml has a string that is never closed"
+    if depth != 0:
+        return "config.toml has a bracket or a brace that is not closed"
+    return None
+
+
+def _has_top_level_key(text: str, name: str) -> bool:
+    """True when `name` is a key at the top level of `text`, not inside a table.
+
+    A key under a table belongs to that table,  and a regex over the whole file cannot
+    tell the two apart:  a table-scoped `hooks` key is perfectly valid,  and refusing it
+    would refuse a good file.  A table header therefore ENDS the top level,  and every
+    key after one belongs to that table until the next header.
+    """
+    depth = 0
+    quote: str | None = None
+    in_table = False
+    pattern = re.compile(r"^[ \t]*%s[ \t]*=" % re.escape(name))
+    for line in text.splitlines():
+        at_top = quote is None and depth <= 0
+        depth, quote = _vibe_scan(line, depth, quote)
+        if at_top and _VIBE_TABLE_RE.match(line):
+            # A table header ends the top level:  the keys under it are that table's.
+            in_table = True
+            continue
+        if at_top and pattern.match(line) and not in_table:
+            return True
+    return False
+
+
 def _toml_problem(text: str) -> str | None:
     """Why `text` would not load as Kimi's config.toml, or None.  With tomllib (Python 3.11+) the new file has to
-    parse; without it the one thing checked is that no top-level `hooks` key exists beside our array of tables."""
+    parse; without it the structure is scanned,  which catches a value that was replaced
+    and left a line behind,  and a value or a string that is never closed.  The one
+    thing checked either way is that no top-level `hooks` key exists beside our array
+    of tables."""
     try:
         import tomllib
     except ImportError:
-        if re.search(r"(?m)^\s*hooks\s*=", text):
-            return (
-                "config.toml has a top-level `hooks =` key, which a [[hooks]] table would redefine"
-            )
-        return None
-    try:
-        tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        return f"the new config.toml would not parse as TOML ({exc})"
+        problem = _toml_structure_problem(text)
+        if problem:
+            return problem
+    else:
+        try:
+            tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            return f"the new config.toml would not parse as TOML ({exc})"
+    # The one thing checked either way:  a top-level `hooks` key would be redefined by
+    # the [[hooks]] table this tool writes.
+    if _has_top_level_key(text, "hooks"):
+        return "config.toml has a top-level `hooks =` key, which a [[hooks]] table would redefine"
     return None
 
 
