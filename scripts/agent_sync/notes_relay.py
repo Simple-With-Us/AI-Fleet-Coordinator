@@ -350,12 +350,12 @@ def in_relay_channel(message: Mapping[str, Any], channel: str = N.RELAY_CHANNEL)
     )
 
 
-def react(runner: Any, message_id: int, names: tuple[str, ...], log: Callable[..., None]) -> None:
+def react(runner: Any, message_id: int, names: tuple[str, ...], log: Callable[..., None], *, deadline: float | None = None) -> None:
     """Set the first emoji Zulip accepts.  A network failure propagates (the request stays spooled and is
     published on the retry);  an emoji Zulip does not know falls through to the next name."""
     for name in names:
         try:
-            runner.client.post("messages/%d/reactions" % message_id, {"emoji_name": name})
+            runner.client.post("messages/%d/reactions" % message_id, {"emoji_name": name}, **({"deadline": deadline} if deadline is not None else {}))
             return
         except Z.ApiError as exc:
             if exc.code == "REACTION_ALREADY_EXISTS":
@@ -375,6 +375,7 @@ def already_replied(
     message_id: int,
     prefix: str,
     log: Callable[..., None],
+    *, deadline: float | None = None,
 ) -> bool:
     """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
     forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
@@ -388,7 +389,7 @@ def already_replied(
         + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else [])
     )
     anchor = message_id
-    deadline = time.monotonic() + 10.0
+    deadline = min(deadline, time.monotonic() + 10.0) if deadline is not None else time.monotonic() + 10.0
     for _ in range(REPLY_SCAN_PAGES):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -403,7 +404,7 @@ def already_replied(
                 "include_anchor": "false",
                 "apply_markdown": "false",
             },
-            timeout=remaining,
+            timeout=remaining, deadline=deadline,
         )
         if not isinstance(found, Mapping) or not isinstance(found.get("messages"), list):
             raise MalformedResponse("Zulip messages response must include a list of messages")
@@ -458,6 +459,7 @@ def _refuse_unconsumed_locked(
     log: Callable[..., None],
     row: str,
     unknown: bool,
+    deadline: float | None = None,
 ) -> bool:
     """Refuse a relay request that no consumer on this Mac will write (the relay is off, or this host cannot run
     the notes script).  The requester reads the cross mark and the reply, so `notes_status` answers "refused"
@@ -476,7 +478,13 @@ def _refuse_unconsumed_locked(
     except Refusal as exc:
         log("notes-relay-unconsumed-invalid", id=message_id, code=exc.code)
         if exc.code == "sender_unknown":
-            raise MalformedResponse("sender inventory is incomplete") from None
+            previous = LIVE.read_json(row)
+            attempts = int(previous.get("sender_attempts") or 0) + 1
+            LIVE.write_json(row, {"state": "sender_pending" if attempts < 3 else "unauthorized",
+                                  "sender_attempts": attempts}, durable=True)
+            if attempts < 3:
+                raise MalformedResponse("sender inventory is incomplete") from None
+            return False
         if exc.code in ("sender_not_bot", "sender_owner", "sender_identity", "identity_mismatch"):
             return False
         # The sender is authorized but the request cannot run; publish the validation reason.
@@ -492,8 +500,8 @@ def _refuse_unconsumed_locked(
     label = W.neutralize_mentions(safe_reason(request_id or "(message %d)" % message_id))
     prefix = N.refusal_label(label)
     try:
-        react(runner, message_id, N.REFUSED_EMOJI, log)
-        response = runner.client.get("messages/%d" % message_id, {"apply_markdown": False})
+        react(runner, message_id, N.REFUSED_EMOJI, log, **({"deadline": deadline} if deadline is not None else {}))
+        response = runner.client.get("messages/%d" % message_id, {"apply_markdown": False}, **({"deadline": deadline} if deadline is not None else {}))
         original = response.get("message") if isinstance(response, Mapping) else None
         if (
             not isinstance(original, Mapping)
@@ -502,7 +510,7 @@ def _refuse_unconsumed_locked(
             or not isinstance(original.get("topic", original.get("subject")), str)
         ):
             raise MalformedResponse("refusal destination must contain stream_id and topic")
-        if already_replied(runner, original, message_id, prefix, log):
+        if already_replied(runner, original, message_id, prefix, log, **({"deadline": deadline} if deadline is not None else {})):
             LIVE.write_json(row, {"state": "ok"}, durable=True)
             return True
         if unknown:
@@ -520,31 +528,30 @@ def _refuse_unconsumed_locked(
                 "topic": Z.message_topic(original),
                 "content": "%s %s" % (prefix, text),
             },
+            **({"deadline": deadline} if deadline is not None else {}),
         )
-    except Z.NetworkError as exc:
-        # A refused connection never reached Zulip, so the outcome is definite rather than ambiguous:  leaving the
-        # row `unknown` would make every later pass stop at the guard above and never send, holding the cursor below
-        # this request for ever.  Release the row so a retry may send; a failure that may have landed stays `unknown`.
-        if not exc.maybe_sent:
-            LIVE.write_json(row, {"state": "refused"}, durable=True)
-        raise
+    except (Z.NetworkError, Z.ApiError) as exc:
+        status = getattr(exc, "status", None)
+        if isinstance(status, bool) or not isinstance(status, int):
+            status = None
+        definite_rejection = status is not None and 400 <= status < 500 and status != 408
+        definitely_unsent = status is None and getattr(exc, "maybe_sent", None) is False
+        LIVE.write_json(row, {"state": "refused" if definite_rejection or definitely_unsent else "unknown"}, durable=True)
+        if isinstance(exc, Z.NetworkError) or retryable(exc):
+            raise
+        log("notes-relay-reply-failed", id=message_id, status=status)
+        return False
     except MalformedResponse as exc:
         log("notes-relay-reply-malformed", id=message_id, error=str(exc)[:120])
-        raise  # the reply is part of the result:  the request stays held and the next pass publishes it
-    except Z.ApiError as exc:
-        # A server rejection is definite; a retry may send again after the condition clears.
-        LIVE.write_json(row, {"state": "refused"}, durable=True)
-        if retryable(exc):
-            raise  # the reply is part of the result:  the next pass publishes it
-        log("notes-relay-reply-failed", id=message_id, status=exc.status)
-        return False
+        raise
     LIVE.write_json(row, {"state": "ok"}, durable=True)
     log("notes-relay-unconsumed", id=message_id, code="no_consumer")
     return True
 
 
 def refuse_unconsumed(
-    runner: Any, message: Mapping[str, Any], reason: str, log: Callable[..., None]
+    runner: Any, message: Mapping[str, Any], reason: str, log: Callable[..., None],
+    *, deadline: float | None = None,
 ) -> bool:
     """Serialize reconciliation and sending, retaining ambiguous outcomes across restarts."""
     message_id = message.get("id")
@@ -556,8 +563,10 @@ def refuse_unconsumed(
         previous = LIVE.read_json(row)
         if previous.get("state") == "ok":
             return True
+        if previous.get("state") == "unauthorized":
+            return False
         return _refuse_unconsumed_locked(
-            runner, message, reason, log, row, previous.get("state") == "unknown"
+            runner, message, reason, log, row, previous.get("state") == "unknown", deadline
         )
 
 

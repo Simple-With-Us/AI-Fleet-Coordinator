@@ -368,6 +368,7 @@ class SeatRunner:
         before: int = 0,
         after: int = 0,
         include: bool = False,
+        deadline: float | None = None,
     ) -> list[dict[str, Any]]:
         assert self.client is not None
         result = self.client.get(
@@ -380,8 +381,12 @@ class SeatRunner:
                 "include_anchor": include,
                 "apply_markdown": False,
             },
+            **({"deadline": deadline} if deadline is not None else {}),
         )
-        return list(result.get("messages") or [])
+        messages = result.get("messages")
+        if not isinstance(messages, list):
+            raise NR.MalformedResponse("relay message page must be a list")
+        return messages
 
     def backfill(self) -> list[dict[str, Any]]:
         """DMs, mentions and the owner's posts are paged from the cursor until exhausted.  Each
@@ -1002,7 +1007,7 @@ class Daemon:
         with self.notes_relay_lock:
             seat = self.notes_relay_refuser
             reader = self.seats.get(seat) if seat else None
-            keys = sorted(self.notes_relay_retry, key=lambda item: item[1])[:4]
+            keys = sorted((key for key in self.notes_relay_retry if key[0] == seat), key=lambda item: item[1])[:4]
             reason = self.notes_relay_refusal_reason
         if reader is None or not reader.connected or reader.client is None:
             return
@@ -1069,59 +1074,53 @@ class Daemon:
             return 0
         holder, start = marker
         anchor = last = start - 1  # after `start - 1`, so `start` is included
-        refused_at: int | None = None
-        for _ in range(self.NOTES_RELAY_BACKFILL_PAGES):
-            try:
-                page = reader.fetch(
-                    [{"operator": "channel", "operand": NR.N.RELAY_CHANNEL}],
-                    anchor=anchor,
-                    after=PAGE,
-                )
-            except Exception:  # noqa: BLE001 - the marker stays;  the next tick tries again
-                break
-            rows = sorted(
-                (m for m in page if isinstance(m.get("id"), int) and m["id"] > last),
-                key=lambda m: m["id"],
+        deadline = time.monotonic() + 5.0
+        pending: int | None = None
+        processed = 0
+        reached_newest = False
+        try:
+            page = reader.fetch(
+                [{"operator": "channel", "operand": NR.N.RELAY_CHANNEL}],
+                anchor=anchor, after=PAGE, deadline=deadline,
             )
-            for message in rows:
-                if not (NR.in_relay_channel(message) and NR.is_request(message)):
-                    last = message["id"]
-                    continue
-                try:
-                    if not NR.refuse_unconsumed(reader, message, reason, self.log.write):
-                        self.log.write(
-                            "notes-relay-refusal-gave-up", id=message["id"], status="refused"
-                        )
-                        last = message["id"]
-                        continue  # a permanent refusal cannot pin the overflow marker forever
-                except Exception:  # noqa: BLE001 - a retryable error:  the next tick tries again
-                    refused_at = message["id"]
-                    break
-                last = message["id"]
-            if refused_at is not None:
+            if not isinstance(page, list):
+                raise NR.MalformedResponse("relay message page must be a list")
+            for message in page:
+                if (not isinstance(message, dict) or isinstance(message.get("id"), bool)
+                        or not isinstance(message.get("id"), int) or message["id"] <= 0):
+                    raise NR.MalformedResponse("relay page entries need positive integer ids")
+            rows = sorted((m for m in page if m["id"] > last), key=lambda m: m["id"])
+        except Exception as exc:
+            self.log.write("notes-relay-overflow-incomplete", error=type(exc).__name__)
+            return 0
+        for message in rows:
+            if time.monotonic() >= deadline or processed >= 4:
+                pending = message["id"]
                 break
-            if not rows or len(page) < PAGE:
-                # The channel's newest message has been read:  nothing below is left to refuse.
-                with self.notes_relay_lock:
-                    self.notes_relay_overflow.pop(reader.seat, None)
-                self.log.write(
-                    "notes-relay-overflow-refused",
-                    seat=holder.seat,
-                    reader=reader.seat,
-                    from_id=start,
-                    through=last,
-                )
-                return last
-            anchor = last
-        if last > start - 1:
-            # Progress is kept:  everything below the new marker has been refused, so the hold may move up to it.
-            with self.notes_relay_lock:
-                self.notes_relay_overflow[reader.seat] = (
-                    holder,
-                    refused_at if refused_at is not None else last + 1,
-                )
+            if NR.in_relay_channel(message) and NR.is_request(message):
+                processed += 1
+                try:
+                    if not NR.refuse_unconsumed(reader, message, reason, self.log.write, deadline=deadline):
+                        self.log.write("notes-relay-refusal-gave-up", id=message["id"], status="refused")
+                except Exception as exc:
+                    self.log.write("notes-relay-refusal-retry", id=message["id"], error=type(exc).__name__)
+                    self._keep_for_relay_retry(reader, message)
+                    with self.notes_relay_lock:
+                        if (reader.seat, message["id"]) not in self.notes_relay_retry:
+                            pending = min(pending or message["id"], message["id"])
+            last = message["id"]
+        else:
+            reached_newest = not rows or len(page) < PAGE
+        with self.notes_relay_lock:
+            # A concurrent route may have installed an earlier marker while HTTP was in flight.
+            if self.notes_relay_overflow.get(reader.seat) != marker:
+                return 0
+            if reached_newest and pending is None:
+                self.notes_relay_overflow.pop(reader.seat, None)
+            elif last >= start or pending is not None:
+                self.notes_relay_overflow[reader.seat] = (holder, pending or last + 1)
             self._release_relay_hold(holder)
-        return 0
+        return last if reached_newest and pending is None else 0
 
     def _abandon_relay_holds(self, why: str) -> None:
         """This listener has stopped consuming on purpose, so nothing will spool the requests it was holding the
@@ -1289,11 +1288,14 @@ class Daemon:
         # the channel:  every seat treats a request there as consumed, and the consumer seat answers it.  When it
         # cannot write, the consumer seat refuses it, so the requester hears back instead of waiting on "queued".
         self.notes_relay_consumer_seat = cfg.notes_relay_seat if agrees else None
+        previous_refuser = self.notes_relay_refuser
         self.notes_relay_refuser = (
             cfg.notes_relay_seat
             if (agrees and not (cfg.notes_relay_enabled and available))
             else None
         )
+        if previous_refuser is not None and previous_refuser != self.notes_relay_refuser:
+            self._abandon_relay_holds("the relay refuser changed")
         self.notes_relay_refusal_reason = (
             NR.NO_CONSUMER_REASON if available else NR.NO_SCRIPT_REASON
         )
@@ -1329,7 +1331,8 @@ class Daemon:
                 "notes-relay-unavailable",
                 reason="no osascript or no apple-notes-coding.sh on this host",
             )
-            self._abandon_relay_holds("the notes script is unavailable")
+            if self.notes_relay_refuser is None:
+                self._abandon_relay_holds("the notes script is unavailable and this host is not its refuser")
             return
         if not agrees:
             self.log.write(

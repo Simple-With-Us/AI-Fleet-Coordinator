@@ -1159,6 +1159,18 @@ class DaemonRelayTests(DaemonHarness):
         )
 
 
+    def test_missing_script_reload_keeps_pending_refusal(self):
+        self.enable()
+        with mock.patch("agent_sync.notes.direct_available", return_value=None):
+            daemon = self.started()
+            runner = daemon.seats["CLAUDE"]
+            mid = self.envelope_message(rid="fixture-missing-script-reload")
+            with mock.patch.object(NR, "refuse_unconsumed", side_effect=Z.NetworkError("offline")):
+                daemon.route_message(runner, self.fake.messages[-1])
+            daemon.reload()
+            self.assertIn((runner.seat, mid), daemon.notes_relay_retry)
+            self.assertEqual(runner.hold_below, mid)
+
     def test_disabled_reload_keeps_pending_refusal(self):
         self.write_config(wake="inbox")
         daemon = self.started()
@@ -1241,6 +1253,35 @@ class RefusalBoundaryTests(unittest.TestCase):
                     NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
             self.assertEqual(len(sends), 3, "each retry sends again rather than wedging on `unknown`")
 
+    def test_ambiguous_http_reply_is_never_replayed(self):
+        import tempfile
+        for status in (408, 500, 503):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as root:
+                runner, message = self.runner(root)
+                sends = []
+                def post(path, params):
+                    if path == "messages":
+                        sends.append(params)
+                        raise Z.ApiError("ambiguous", status=status)
+                    return {}
+                runner.client.post.side_effect = post
+                with self.assertRaises(Z.ApiError):
+                    NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+                self.assertTrue(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+                self.assertEqual(len(sends), 1)
+
+    def test_unknown_sender_retry_is_bounded_and_durable(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            runner, message = self.runner(root)
+            runner.users = {}
+            for _ in range(2):
+                with self.assertRaises(NR.MalformedResponse):
+                    NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertFalse(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+            self.assertFalse(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
+            runner.client.post.assert_not_called()
+
     def test_malformed_destination_never_posts_message(self):
         import tempfile
         with tempfile.TemporaryDirectory() as root:
@@ -1250,3 +1291,49 @@ class RefusalBoundaryTests(unittest.TestCase):
             with self.assertRaises(NR.MalformedResponse):
                 NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
             self.assertFalse(any(call.args[0] == "messages" for call in runner.client.post.call_args_list))
+
+
+class OverflowRefusalBoundaryTests(unittest.TestCase):
+    def daemon(self, rows):
+        import threading
+        from agent_sync import daemon as D
+        from types import SimpleNamespace as NS
+        daemon = D.Daemon.__new__(D.Daemon)
+        daemon.notes_relay_lock = threading.RLock()
+        reader = NS(seat="CLAUDE", fetch=mock.Mock(return_value=rows), set_hold=mock.Mock())
+        daemon.notes_relay_overflow = {"CLAUDE": (reader, 10)}
+        daemon.notes_relay_retry = {}
+        daemon.log = mock.Mock()
+        return daemon, reader
+
+    def test_malformed_page_keeps_marker(self):
+        for rows in (None, {}, [None], [{"id": True}], [{"id": "10"}], [{"id": 0}]):
+            with self.subTest(rows=rows):
+                daemon, reader = self.daemon(rows)
+                self.assertEqual(daemon._refuse_relay_overflow(reader, "Disabled."), 0)
+                self.assertEqual(daemon.notes_relay_overflow["CLAUDE"][1], 10)
+
+    def test_failed_item_does_not_block_later_items(self):
+        daemon, reader = self.daemon([{"id": 10}, {"id": 11}])
+        with mock.patch.object(NR, "in_relay_channel", return_value=True), mock.patch.object(NR, "is_request", return_value=True), mock.patch.object(NR, "refuse_unconsumed", side_effect=[Z.NetworkError("offline"), True]) as refuse:
+            self.assertEqual(daemon._refuse_relay_overflow(reader, "Disabled."), 11)
+        self.assertEqual(refuse.call_count, 2)
+        self.assertIn(("CLAUDE", 10), daemon.notes_relay_retry)
+        reader.set_hold.assert_called_with(10)
+        self.assertIn("deadline", reader.fetch.call_args.kwargs)
+
+    def test_concurrent_earlier_marker_is_preserved(self):
+        daemon, reader = self.daemon([])
+        def fetch(*a, **k):
+            daemon.notes_relay_overflow["CLAUDE"] = (reader, 5)
+            return []
+        reader.fetch.side_effect = fetch
+        self.assertEqual(daemon._refuse_relay_overflow(reader, "Disabled."), 0)
+        self.assertEqual(daemon.notes_relay_overflow["CLAUDE"][1], 5)
+
+    def test_tick_limits_refusals_and_resumes_at_first_unprocessed_item(self):
+        daemon, reader = self.daemon([{"id": i} for i in range(10, 20)])
+        with mock.patch.object(NR, "in_relay_channel", return_value=True), mock.patch.object(NR, "is_request", return_value=True), mock.patch.object(NR, "refuse_unconsumed", return_value=True) as refuse:
+            daemon._refuse_relay_overflow(reader, "Disabled.")
+        self.assertEqual(refuse.call_count, 4)
+        self.assertEqual(daemon.notes_relay_overflow["CLAUDE"][1], 14)
