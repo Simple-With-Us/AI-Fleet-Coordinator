@@ -14,6 +14,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from . import secretscan
 from .operator_registry import SessionRegistry
 
 # event name -> required detail keys
@@ -51,18 +52,22 @@ def _check_details(event: str, details: Mapping[str, Any]) -> None:
 
 def _check_detail_container(container: Any, path: str) -> None:
     """Walk every node json.dumps would serialize, including inside nested dicts, lists
-    and tuples, so a nested credential is refused before any write."""
+    and tuples, so a nested credential is refused before any write.  Keys and values both go
+    through the fleet secret scanner, which knows the formats the local regexes do not
+    (JWTs, AWS keys, Infisical tokens, assigned credentials)."""
     if isinstance(container, Mapping):
         for key, value in container.items():
             label = f"{path}.{key}" if path else str(key)
-            if SECRET_KEY_RE.search(str(key)):
+            name = str(key)
+            if SECRET_KEY_RE.search(name) or secretscan.scan(name):
                 raise SecretInDetails(f"detail key refused: {label!r}")
             _check_detail_container(value, label)
     elif isinstance(container, (list, tuple)):
         for item in container:
             _check_detail_container(item, path)
-    elif isinstance(container, str) and SECRET_VALUE_RE.search(container):
-        raise SecretInDetails(f"detail value for {path!r} matches a credential pattern")
+    elif isinstance(container, str):
+        if SECRET_VALUE_RE.search(container) or secretscan.scan(container):
+            raise SecretInDetails(f"detail value for {path!r} matches a credential pattern")
 
 
 def emit_provenance_event(
