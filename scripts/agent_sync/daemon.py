@@ -317,7 +317,7 @@ class SeatRunner:
         if self.seat == "OPERATOR":
             from .service_identity import operator_bot
 
-            if not operator_bot(me):
+            if not operator_bot(me, self.daemon.env, self.daemon.config.owner_user_id):
                 raise RoleRefused("OPERATOR credential does not match the pinned service bot")
         tag = seat_tag_for(me)
         if tag != self.seat:

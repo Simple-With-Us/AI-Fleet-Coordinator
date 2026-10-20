@@ -50,7 +50,7 @@ function harness({ consumer, seat = "GROK-WEB" } = {}) {
     clientId: "client",
     grantRef: "abcdef012345",
     paused: false,
-    config: withBot(consumer !== undefined ? loadConfig(testEnv({ NOTES_RELAY_CONSUMER: consumer })) : config, seat),
+    config: withBot(consumer !== undefined ? loadConfig(testEnv({ NOTES_RELAY_CONSUMER: consumer, OPERATOR_ZULIP_USER_ID: "43210", OPERATOR_ZULIP_EMAIL: "operator@example.test" })) : config, seat),
     zulip: new ZulipClient({ email: botEmail(seat), key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
     key: fake.key,
     gate: memoryGate(clock),
@@ -457,10 +457,11 @@ test("notes_status answers not_configured, and trusts nobody, when the consumer 
 
 test("OPERATOR service consumer trusts only the pinned bot, not display names or Admin", async () => {
   const { tools } = harness({ consumer: "OPERATOR" });
-  const correct = { is_bot: true, user_id: 1217148, email: "operator-bot@simplewithus.zulipchat.com", full_name: "[Operator]" };
-  assert.equal(await tools.notesFleetBot(1217148, [correct]), true);
-  assert.equal(await tools.notesFleetBot(1217148, [{ ...correct, email: "fixture-old-admin@example.test" }]), false);
+  const correct = { owner_id: tools.config.ownerUserId, is_bot: true, user_id: 43210, email: "operator@example.test", full_name: "[Operator]" };
+  assert.equal(await tools.notesFleetBot(43210, [correct]), true);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, email: "fixture-old-admin@example.test" }]), false);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, owner_id: 999 }]), false);
   assert.equal(await tools.notesFleetBot(1, [{ ...correct, user_id: 1 }]), false);
-  assert.equal(await tools.notesFleetBot(1217148, [{ ...correct, is_bot: false }]), false);
-  assert.equal(await tools.notesFleetBot(1217148, [{ ...correct, email: "other@example.test" }]), false);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, is_bot: false }]), false);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, email: "other@example.test" }]), false);
 });
