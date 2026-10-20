@@ -99,6 +99,12 @@ class ScopeTests(unittest.TestCase):
             F.scope(url + " @**all** look", "misc").repos, st, "a full PR link fits the prefix form"
         )
 
+    def test_prefix_names_are_complete_and_multiword(self):
+        for name, repo in (("Socratic Trade", "socratic-trade"), ("Congress Trade", "congress.trade"), ("Simple With Us", "simple-with-us")):
+            self.assertEqual(F.scope(name + " @all look", "misc").repos, frozenset({repo}))
+        self.assertIsNone(F.scope("ST deploy is stuck @all look", "misc").repos)
+        self.assertIsNone(F.scope("ST deploy is stuck.  @all look", "misc").repos)
+
     def test_a_cloud_chats_id_is_never_taken_for_its_repo(self):
         row = cloud(1, 1, None)
         self.assertIsNone(F.ChatPlaces(lambda *a: "").repo(row))
