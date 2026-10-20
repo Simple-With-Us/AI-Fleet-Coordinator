@@ -27,6 +27,10 @@ extend-exclude = [
 # target version above is dropped.  Keep every other rule on.  See AFC-425.
 "scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045"]
 
+[lint.per-file-ignores]
+# Existing `# noqa: UP0xx` markers in the package are unused once py39 turns those rules off.
+"scripts/fleet_lanes/**" = ["RUF100"]
+
 [format]
 # Whitespace churn and py313-only syntax: the 3.9-run package keeps its hand layout.  See AFC-425.
 exclude = ["scripts/fleet_lanes/**"]
