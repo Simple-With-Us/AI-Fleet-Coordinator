@@ -182,7 +182,7 @@ test("Better Stack's documented JSON:API incident body is accepted and read", ()
       attributes: {
         id: 4242,
         status: "triggered",
-        title: "congress.trade is DOWN",
+        title: "service.example.test is DOWN",
         url: "https://uptime.betterstack.com/team/1/monitors/99887766",
         started_at: "2026-10-20T20:00:00Z",
       },
