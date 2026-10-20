@@ -62,16 +62,18 @@ BUSY_MARK = "(MM is still working on the previous message.)"
 ACP_HANDSHAKE_TIMEOUT = 300
 
 # The owner's house rule: a visibly wider gap between sentences, after . ! and ?
-# only, never after a colon, semicolon, comma or dash.  In a Markdown chat pane
-# the gap is a real U+00A0 plus a normal space; two ASCII spaces collapse and the
-# &nbsp; entity renders as six literal characters.
-SENTENCE_GAP = "\u00a0 "
+# only, never after a colon, semicolon, comma or dash.  Lark renders a plain
+# text message literally, so two ASCII spaces already show as a wide gap there,
+# and the owner asked for exactly that on Oct 19, 2026: "No nbsp here please
+# just 2 spaces".  A real U+00A0 is the mechanism for Markdown panes that
+# collapse spaces (the MiniMax Code pane, GitHub, Zulip), not for Lark.
+SENTENCE_GAP = "  "
 _SENTENCE_END = re.compile(r"([A-Za-z]+)([.!?])( +)(?=[\"'(\[A-Z])")
 _ABBREVIATIONS = ("mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "no")
 
 
 def _widen_sentence(match):
-    """Replace the spaces after a sentence end with the wide gap."""
+    """Normalise the spaces after a sentence end to the wide gap."""
     if match.group(1).lower() in _ABBREVIATIONS:
         return match.group(0)
     return match.group(1) + match.group(2) + SENTENCE_GAP
@@ -81,7 +83,7 @@ def sentence_gap(text):
     """Widen the gap after a sentence end, leaving code alone.
 
     The seat answers in plain prose, and prose carries one space between
-    sentences.  Lark renders that as a single space, so every reply the bridge
+    sentences.  Lark shows that as a single space, so every reply the bridge
     sends would break the owner's house rule.  Fenced code blocks and inline
     code spans are left exactly as they are.
     """

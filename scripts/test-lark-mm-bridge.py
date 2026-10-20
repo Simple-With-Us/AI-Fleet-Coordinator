@@ -508,11 +508,16 @@ class BridgeTests(unittest.TestCase):
 
     def test_sentence_gap_widens_after_a_sentence_end(self):
         out = bridge_mod.sentence_gap("Sentence one. Sentence two.")
-        self.assertEqual(out, "Sentence one.\u00a0 Sentence two.")
+        self.assertEqual(out, "Sentence one.  Sentence two.")
 
-    def test_sentence_gap_collapses_two_ascii_spaces_to_the_wide_gap(self):
+    def test_sentence_gap_normalises_two_ascii_spaces_to_the_wide_gap(self):
         out = bridge_mod.sentence_gap("Sentence one.  Sentence two.")
-        self.assertEqual(out, "Sentence one.\u00a0 Sentence two.")
+        self.assertEqual(out, "Sentence one.  Sentence two.")
+
+    def test_sentence_gap_uses_two_spaces_and_never_a_nbsp(self):
+        out = bridge_mod.sentence_gap("Sentence one. Sentence two.")
+        self.assertNotIn("\u00a0", out)
+        self.assertEqual(bridge_mod.SENTENCE_GAP, "  ")
 
     def test_sentence_gap_leaves_colons_and_commas_alone(self):
         out = bridge_mod.sentence_gap("Note: value, then; more")
@@ -521,17 +526,17 @@ class BridgeTests(unittest.TestCase):
     def test_sentence_gap_leaves_inline_code_alone(self):
         out = bridge_mod.sentence_gap("Use `foo. bar` as the key. Then go.")
         self.assertIn("`foo. bar`", out)
-        self.assertTrue(out.endswith("\u00a0 Then go."))
+        self.assertTrue(out.endswith(".  Then go."))
 
     def test_sentence_gap_leaves_fenced_code_alone(self):
         text = "Here:\n```\nx = 1.  y = 2\n```\nDone. Now."
         out = bridge_mod.sentence_gap(text)
         self.assertIn("x = 1.  y = 2", out)
-        self.assertTrue(out.endswith("\u00a0 Now."))
+        self.assertTrue(out.endswith(".  Now."))
 
     def test_sentence_gap_keeps_abbreviations_and_decimals(self):
         self.assertEqual(
-            bridge_mod.sentence_gap("Dr. Smith is here. Next."), "Dr. Smith is here.\u00a0 Next."
+            bridge_mod.sentence_gap("Dr. Smith is here. Next."), "Dr. Smith is here.  Next."
         )
         self.assertEqual(bridge_mod.sentence_gap("Version 3.14 ships."), "Version 3.14 ships.")
 
