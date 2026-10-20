@@ -115,10 +115,20 @@ test("the ingest's skip flag and timeout are fleet knobs, not ambient env vars",
   });
   assert.equal(settings[INGEST_ENABLED_KNOB], "false");
   assert.equal(settings[INGEST_TIMEOUT_KNOB], "60000");
-  assert.equal(ingestEnabled(settings), false);
-  assert.equal(ingestTimeoutMs(settings), 60000);
-  assert.equal(ingestEnabled({ [INGEST_ENABLED_KNOB]: "true" }), true);
   assert.equal(fleetKnob("NOT_A_KNOB"), undefined);
+
+  // The decision path itself, which the raw strings above do not cover:  a "false" knob must skip
+  // the ingest, and the timeout knob must become the child's timeout.  Inverting either one would
+  // silently restore the bug this PR fixes, so assert the decision rather than only the string.
+  assert.equal(ingestEnabled(settings), false, "FLEET_SHEET_INGEST_ENABLED=false skips the ingest");
+  assert.equal(ingestTimeoutMs(settings), 60000, "the timeout knob is the child's timeout");
+  // The defaults keep the ingest on and give it the registered budget.
+  assert.equal(ingestEnabled({}), true);
+  assert.equal(ingestEnabled({ [INGEST_ENABLED_KNOB]: "true" }), true);
+  assert.equal(ingestTimeoutMs({}), 5400000);
+  // A missing, unparseable or non-positive timeout falls back to the registered default.
+  assert.equal(ingestTimeoutMs({ [INGEST_TIMEOUT_KNOB]: "nonsense" }), 5400000);
+  assert.equal(ingestTimeoutMs({ [INGEST_TIMEOUT_KNOB]: "0" }), 5400000);
 });
 
 test("summarizeIngest reads the ingest report and never fakes a success", () => {

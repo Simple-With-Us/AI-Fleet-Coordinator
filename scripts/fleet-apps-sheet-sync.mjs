@@ -845,16 +845,26 @@ export function fleetKnob(name) {
   return KNOB_CACHE[name];
 }
 
-export function ingestEnabled(values) {
-  return (values ? values[INGEST_ENABLED_KNOB] : fleetKnob(INGEST_ENABLED_KNOB)) !== "false";
+// fleetKnob() reads the real fleet_knobs CLI, so the two decisions below take an optional values
+// object:  that is the seam the tests drive, so inverting either one fails a test instead of
+// silently reverting to the behaviour this fix exists to correct.
+function ingestKnobValues() {
+  return {
+    [INGEST_ENABLED_KNOB]: fleetKnob(INGEST_ENABLED_KNOB),
+    [INGEST_TIMEOUT_KNOB]: fleetKnob(INGEST_TIMEOUT_KNOB),
+  };
+}
+
+export function ingestEnabled(values = ingestKnobValues()) {
+  return values[INGEST_ENABLED_KNOB] !== "false";
 }
 
 // The doc source covers every document the fleet owns, so a hung embedder or a Qdrant call would
 // otherwise block the sheet sync with no bound at all.  A full corpus walk took about 43 minutes
 // the last time it ran, so the default is generous; Infisical can lower it when a run must be
 // bounded tighter.
-export function ingestTimeoutMs(values) {
-  const ms = Number(values ? values[INGEST_TIMEOUT_KNOB] : fleetKnob(INGEST_TIMEOUT_KNOB));
+export function ingestTimeoutMs(values = ingestKnobValues()) {
+  const ms = Number(values[INGEST_TIMEOUT_KNOB]);
   return Number.isFinite(ms) && ms > 0 ? ms : Number(KNOB_DEFAULTS[INGEST_TIMEOUT_KNOB]);
 }
 
