@@ -18,17 +18,18 @@ MIN_PYTHON = (3, 11)
 
 
 def interpreter_version(python: str) -> tuple[int, int] | None:
-    """The candidate interpreter's major.minor, or None when it cannot be probed."""
-    try:
-        result = subprocess.run(
-            [python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    """The candidate interpreter's major.minor, or None when it ran without reporting a usable one.
+
+    A timeout or a launch failure is raised, never collapsed into an unknown version:  an unverified
+    interpreter must not pass for a supported one.
+    """
+    result = subprocess.run(
+        [python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
     if result.returncode != 0:
         return None
     try:
@@ -39,9 +40,31 @@ def interpreter_version(python: str) -> tuple[int, int] | None:
 
 
 def too_old(python: str) -> bool:
-    """True only when the interpreter is confirmed older than MIN_PYTHON; an unprobeable one is left alone."""
+    """True only when the interpreter is confirmed older than MIN_PYTHON; a failed probe propagates."""
     version = interpreter_version(python)
     return version is not None and version < MIN_PYTHON
+
+
+def probe_failure_exit_code(error: OSError | subprocess.TimeoutExpired) -> int:
+    """A hung interpreter is 124, a missing one 127, any other launch failure 1."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        return 124
+    if isinstance(error, FileNotFoundError):
+        return 127
+    return 1
+
+
+def _confirmed_too_old(python: str, out: TextIO) -> bool:
+    """True when the interpreter is confirmed older; a probe that times out or cannot launch aborts."""
+    try:
+        return too_old(python)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        code = probe_failure_exit_code(error)
+        out.write(
+            "note: %s could not be probed to confirm its Python version (exit %d); "
+            "pass --python PATH (3.11 or newer)\n" % (python, code)
+        )
+        raise SystemExit(code) from error
 
 
 def fsync_directory(directory: str) -> None:
@@ -136,7 +159,7 @@ def install(
     )
     config = os.path.abspath(L.config_path(root, env))
     if python is None:
-        if os.access(DEFAULT_PYTHON, os.X_OK) and not too_old(DEFAULT_PYTHON):
+        if os.access(DEFAULT_PYTHON, os.X_OK) and not _confirmed_too_old(DEFAULT_PYTHON, out):
             python = DEFAULT_PYTHON
         else:
             # The unit would fail to start under an interpreter the operator never chose, and may name a
@@ -146,10 +169,11 @@ def install(
                 f"note: {DEFAULT_PYTHON} is missing or older than Python 3.11; the unit's ExecStart uses "
                 f"{python} instead (inspect it before enabling, or pass --python PATH)\n"
             )
-    if not os.access(python, os.X_OK):
+    if os.access(python, os.X_OK):
+        if _confirmed_too_old(python, out):
+            out.write(f"note: {python} is older than Python 3.11; pass --python PATH (3.11 or newer)\n")
+    else:
         out.write(f"note: {python} is not executable; pass --python PATH (3.11 or newer)\n")
-    elif too_old(python):
-        out.write(f"note: {python} is older than Python 3.11; pass --python PATH (3.11 or newer)\n")
     data = unit_text(home, python, program or launchd.program_path(home), root=root, config=config)
     unit_dir = os.path.dirname(target)
     probe = unit_dir

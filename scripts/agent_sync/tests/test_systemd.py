@@ -123,8 +123,23 @@ class UnitTests(unittest.TestCase):
             self.assertTrue(systemd.too_old("/usr/bin/python3"))
         for error in (OSError("private"), subprocess.TimeoutExpired("python3", 10)):
             with patch.object(systemd.subprocess, "run", side_effect=error):
-                self.assertIsNone(systemd.interpreter_version("/usr/bin/python3"))
-                self.assertFalse(systemd.too_old("/usr/bin/python3"))
+                with self.assertRaises(type(error)):
+                    systemd.interpreter_version("/usr/bin/python3")
+
+    def test_failed_probe_exits_before_the_unit_is_written(self):
+        for error, expected_exit_code in (
+            (FileNotFoundError("private"), 127),
+            (subprocess.TimeoutExpired("python3", 10), 124),
+            (OSError("private"), 1),
+        ):
+            with tempfile.TemporaryDirectory() as home:
+                with patch.object(systemd.os, "access", return_value=True):
+                    with patch.object(systemd.subprocess, "run", side_effect=error):
+                        with self.assertRaises(SystemExit) as raised:
+                            systemd.install({}, home, io.StringIO(), python="/usr/bin/python3")
+                self.assertEqual(raised.exception.code, expected_exit_code)
+                self.assertFalse(Path(systemd.unit_path(home)).exists())
+                self.assertFalse(Path(home, ".agent-sync", "listener.toml").exists())
 
     def test_dry_run_writes_nothing(self):
         with tempfile.TemporaryDirectory() as home:
