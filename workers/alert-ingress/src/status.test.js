@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing } from "./index.js";
 
-const { collectTopics, collectStates, listKeys, runSweep, stateKey, svcKey, topicKey, indexPrefix, ctStamp } = __testing;
+const { collectTopics, collectStates, listAll, runSweep, stateKey, svcKey, topicKey, indexPrefix, ctStamp } = __testing;
 
 /** Minimal in-memory stand-in for the Workers KV binding. */
 function fakeKV(seed = {}) {
@@ -58,8 +58,25 @@ function pagedKV(pageSize = 2, seed = {}) {
   };
 }
 
+/** Minimal in-memory stand-in for the Durable Object storage binding. */
+function fakeStorage() {
+  const data = new Map();
+  return {
+    data,
+    async get(k) {
+      return data.get(k);
+    },
+    async put(k, v) {
+      data.set(k, v);
+    },
+    async list({ prefix }) {
+      return new Map([...data].filter(([k]) => k.startsWith(prefix)));
+    },
+  };
+}
+
 /** The collectors take the Workers `env`, so wrap the fake binding the same way. */
-const asEnv = (kv) => ({ ALERT_STATE: kv });
+const asEnv = (kv) => ({ ALERT_STATE: kv, WRITER_STORAGE: fakeStorage() });
 
 function seed(kv, { channel = "alerts", key, service, state }) {
   kv.store.set(stateKey(key), JSON.stringify(state));
@@ -160,10 +177,10 @@ test("ctStamp renders a Central Time string a human can read", () => {
   assert.match(s, /^[A-Z][a-z]{2} \d{1,2}, \d{1,2}:\d{2}(am|pm)$/);
 });
 
-test("listKeys drains the whole cursor chain, not just the first page", async () => {
+test("listAll drains the whole cursor chain, not just the first page", async () => {
   const kv = pagedKV(2);
   for (let i = 0; i < 7; i++) kv.store.set(`state:k${i}`, "1");
-  const names = await listKeys({ ALERT_STATE: kv }, "state:");
+  const names = (await listAll(kv, "state:")).map(({ name }) => name);
   assert.equal(names.length, 7, "every key past page one must be read");
   assert.deepEqual(names, [...kv.store.keys()].filter((k) => k.startsWith("state:")));
 });
