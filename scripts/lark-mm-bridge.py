@@ -36,6 +36,8 @@ Runs on the Mac's /usr/bin/python3 (3.9): stdlib only, no 3.10+ syntax.
 
 from __future__ import annotations
 
+from agent_sync.secretscan import scan as scan_secret
+
 import argparse
 import json
 import os
@@ -66,16 +68,6 @@ MAX_REPLY_ATTEMPTS = 3
 # A reply is the one place model output leaves the machine, and the seat has
 # whatever the owner's conversations and its retrieved context hold.  Anything
 # shaped like a credential is refused rather than forwarded.
-SECRET_PATTERN = re.compile(
-    r"(?i)(?:sk-[A-Za-z0-9_-]{16,}"
-    r"|ghp_[A-Za-z0-9]{20,}"
-    r"|gho_[A-Za-z0-9]{20,}"
-    r"|github_pat_[A-Za-z0-9_]{20,}"
-    r"|xoxb-[A-Za-z0-9-]{10,}"
-    r"|AIza[A-Za-z0-9_-]{20,}"
-    r"|bearer[ ]+[A-Za-z0-9._~+/=-]{16,}"
-    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----)"
-)
 # The MiniMax Code ACP server has to start a runtime before it answers
 # initialize.  On a loaded Mac that handshake is slow, and a tight timeout
 # turns a working seat into "could not answer" (AFC-417).
@@ -387,6 +379,10 @@ class MiniMaxSession:
         if not isinstance(message, dict):
             log("ignoring an ACP frame that is not an object")
             return
+        if "method" in message and not isinstance(message["method"], str):
+            return
+        if "id" in message and (type(message["id"]) not in (str, int)):
+            return
         if "method" in message and "id" in message:
             # Buffering it instead of answering leaves the turn waiting for a
             # reply that never comes until session/prompt times out.
@@ -396,41 +392,15 @@ class MiniMaxSession:
             self.buffer.append(message)
 
     def _answer_request(self, message):
-        """Answer a request the agent sends to the client.
-
-        Nobody is watching Lark to approve a tool call, so a request that goes
-        unanswered stalls the turn until the prompt timeout and the chat gets
-        no answer at all.  The owner has set full access for this seat, so a
-        permission request is answered with its allow option, and the
-        least-privileged one of those: allow once before allow always.
-        """
+        """Cancel permission requests unless a trusted approval path is added."""
         method = message.get("method")
         request_id = message.get("id")
         if method == "session/request_permission":
-            options = (message.get("params") or {}).get("options") or []
-            allow_once = None
-            allow_always = None
-            for option in options:
-                kind = (option.get("kind") or "").lower()
-                if kind == "allow_once":
-                    allow_once = option.get("optionId")
-                elif kind == "allow_always":
-                    allow_always = option.get("optionId")
-                elif kind.startswith("allow") and allow_once is None:
-                    allow_once = option.get("optionId")
-            allow = allow_once or allow_always
-            if allow:
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {"outcome": {"outcome": "selected", "optionId": allow}},
-                }
-            else:
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {"outcome": {"outcome": "cancelled"}},
-                }
+            payload = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {"outcome": {"outcome": "cancelled"}},
+            }
         else:
             payload = {
                 "jsonrpc": "2.0",
@@ -450,7 +420,7 @@ class MiniMaxSession:
         for line in self.process.stderr:
             line = line.rstrip()
             if line:
-                log("acp: %s" % line)
+                log("acp: %s" % ("[withheld: secret-shaped]" if scan_secret(line) else line))
 
     def _call(self, method, params, timeout):
         with self.lock:
@@ -593,6 +563,7 @@ class Bridge:
         # which is what the dedup window needs: ids are opaque strings, so
         # sorting them evicts by spelling rather than by age.
         self.rows = {}
+        self.jobs = {}
         self.seen_lock = threading.Lock()
         self.active_ids = set()
         self.state_lock = threading.Lock()
@@ -639,6 +610,46 @@ class Bridge:
                 "treat corrupt state as authoritative" % (self.state_file, exc)
             )
         self.rows = self._parse_state(data)
+        jobs = data.get("jobs", {})
+        if not isinstance(jobs, dict):
+            raise RuntimeError("invalid durable job inventory")
+        self.jobs = {}
+        for message_id, job in jobs.items():
+            if not isinstance(job, dict) or job.get("stage") not in ("queued", "running", "reply"):
+                raise RuntimeError("invalid durable job")
+            if not all(
+                isinstance(job.get(key), str) for key in ("chat_id", "content", "sender_id")
+            ):
+                raise RuntimeError("invalid durable job fields")
+            if scan_secret(job["content"]) or (
+                "reply" in job and (not isinstance(job["reply"], str) or scan_secret(job["reply"]))
+            ):
+                raise RuntimeError("secret-shaped durable job refused")
+            if (
+                type(job.get("attempt", 0)) is not int
+                or not 0 <= job.get("attempt", 0) <= MAX_REPLY_ATTEMPTS
+            ):
+                raise RuntimeError("invalid durable attempt budget")
+            if not isinstance(job.get("cwd"), str):
+                raise RuntimeError("invalid durable working directory")
+            self.jobs[message_id] = job
+            if (
+                self.rows.get(message_id) == "pending"
+                and job["stage"] in ("queued", "reply")
+                and job.get("attempt", 0) < MAX_REPLY_ATTEMPTS
+                and job["sender_id"] in self.args.allowed_sender
+                and job.get("cwd") == self.args.cwd
+            ):
+                self.active_ids.add(message_id)
+                self.turns.put(
+                    (
+                        message_id,
+                        job["chat_id"],
+                        job["content"],
+                        job["sender_id"],
+                        job.get("attempt", 0),
+                    )
+                )
 
     def _save_state(self):
         if not hasattr(self, "state_lock"):
@@ -646,6 +657,7 @@ class Bridge:
         with self.state_lock:
             with self.seen_lock:
                 rows = list(self.rows.items())
+                jobs = dict(getattr(self, "jobs", {}))
             kept = [pair for pair in rows if pair[1] != "ok"]
             room = DEDUP_WINDOW - len(kept)
             if room > 0:
@@ -656,7 +668,17 @@ class Bridge:
                     mode="w", dir=str(self.state_file.parent), delete=False
                 ) as handle:
                     tmp = handle.name
-                    json.dump({"messages": dict(kept)}, handle)
+                    json.dump(
+                        {
+                            "messages": dict(kept),
+                            "jobs": {
+                                key: job
+                                for key, job in jobs.items()
+                                if self.rows.get(key) == "pending"
+                            },
+                        },
+                        handle,
+                    )
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.replace(tmp, self.state_file)
@@ -688,6 +710,13 @@ class Bridge:
             if message_id in self.active_ids:
                 return False
             state = self.rows.get(message_id)
+            if state == "pending" and (
+                getattr(self, "jobs", {}).get(message_id, {}).get("stage")
+                not in ("queued", "reply")
+                or getattr(self, "jobs", {}).get(message_id, {}).get("attempt", 0)
+                >= MAX_REPLY_ATTEMPTS
+            ):
+                return False
             if state == "unknown":
                 log("not replaying %s: its delivery outcome is unknown" % message_id)
                 return False
@@ -730,6 +759,8 @@ class Bridge:
         """
         if "timed out" in detail:
             return "outcome_unknown"
+        if re.search(r"\b429\b", detail):
+            return "retryable"
         if re.search(r"\b4\d\d\b", detail):
             return "terminal"
         if "could not start" in detail:
@@ -748,7 +779,7 @@ class Bridge:
         text = sentence_gap(text)
         if len(text) > MAX_REPLY_CHARS:
             text = text[:MAX_REPLY_CHARS].rstrip() + "\n\n(reply truncated)"
-        if SECRET_PATTERN.search(text):
+        if scan_secret(text):
             # Log the id and the code only; the text is the thing being kept
             # out of the chat, so it does not belong in the log either.
             log("reply refused for %s: code=secret field=text" % message_id)
@@ -802,7 +833,24 @@ class Bridge:
         if not self._mentioned(event):
             log("ignoring message %s in %s: bot was not mentioned" % (message_id, chat_id))
             return
+        if scan_secret(content):
+            log("incoming message refused: code=secret")
+            return
         if not self._claim(message_id):
+            return
+        if not hasattr(self, "jobs"):
+            self.jobs = {}
+        self.jobs[message_id] = {
+            "stage": "queued",
+            "chat_id": chat_id,
+            "content": content,
+            "sender_id": sender_id,
+            "cwd": self.args.cwd,
+            "attempt": 0,
+        }
+        if not self._save_state():
+            with self.seen_lock:
+                self.active_ids.discard(message_id)
             return
         self.turns.put((message_id, chat_id, content, sender_id, 0))
 
@@ -845,27 +893,47 @@ class Bridge:
             try:
                 retry = not self._turn(message_id, chat_id, content, attempt)
                 if retry:
+                    getattr(self, "jobs", {}).get(message_id, {}).update(attempt=attempt + 1)
+                    self.stopping.wait(min(2**attempt, 8))
                     self.turns.put((message_id, chat_id, content, sender_id, attempt + 1))
             finally:
                 if not retry:
                     with self.seen_lock:
                         getattr(self, "active_ids", set()).discard(message_id)
+                        if self.rows.get(message_id) != "pending":
+                            getattr(self, "jobs", {}).pop(message_id, None)
                 self.turns.task_done()
                 self._save_state()
 
     def _turn(self, message_id, chat_id, content, attempt):
-        """Run one turn and deliver the reply.  False means run it again."""
+        """Run the model once; delivery retries reuse a durable safe reply."""
+        jobs = getattr(self, "jobs", {})
+        job = jobs.get(message_id)
+        if job and job.get("stage") == "reply":
+            return self._send(message_id, job["reply"], attempt)
+        if job:
+            job["stage"] = "running"
+            if not self._save_state():
+                return True
         session = self._session_for(chat_id)
         try:
             answer = session.prompt(content)
-        except Exception as exc:
-            log("turn failed for %s: %s" % (message_id, exc))
-            done = self._send(message_id, "MM could not answer: %s" % exc)
+        except Exception:
+            log("turn failed for %s" % message_id)
+            answer = "MM could not answer this turn."
             with self.sessions_lock:
                 broken = self.sessions.pop(chat_id, None)
             if broken is not None:
                 broken.close()
-            return done
+        if scan_secret(answer or ""):
+            self._record_delivery(message_id, "refused")
+            return True
+        if len(answer or "") > MAX_REPLY_CHARS:
+            answer = answer[:MAX_REPLY_CHARS].rstrip() + "\n\n(reply truncated)"
+        if job:
+            job.update(stage="reply", reply=answer or "(MM produced no reply.)")
+            if not self._save_state():
+                return True
         return self._send(message_id, answer, attempt)
 
     def _send(self, message_id, text, attempt=0):
@@ -904,6 +972,9 @@ class Bridge:
             # goes back on the queue until the attempt budget runs out, after
             # which the pending row survives in the state file.
             self._record_delivery(message_id, "pending")
+            getattr(self, "jobs", {}).get(message_id, {}).update(attempt=attempt + 1)
+            if not self._save_state():
+                return True
             return attempt + 1 >= MAX_REPLY_ATTEMPTS
         log("replied to %s" % message_id)
         self._record_delivery(message_id, "ok")
@@ -939,6 +1010,7 @@ class Bridge:
                 try:
                     reader.stop()
                 finally:
+                    worker.join(timeout=min(self.args.timeout + 130, 300))
                     with self.sessions_lock:
                         sessions = list(self.sessions.values())
                         self.sessions.clear()
@@ -1018,7 +1090,7 @@ def main(argv=None):
         def no_reply(message_id, text):
             # The reply text is still the seat's output, so the same scan the
             # send path uses applies before it reaches the log.
-            if SECRET_PATTERN.search(text or ""):
+            if scan_secret(text or ""):
                 log("dry run: would refuse reply to %s: code=secret field=text" % message_id)
                 return
             log("dry run: would reply to %s: %s" % (message_id, text[:200]))
