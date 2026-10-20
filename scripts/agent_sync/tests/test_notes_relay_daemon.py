@@ -1158,6 +1158,19 @@ class DaemonRelayTests(DaemonHarness):
         )
 
 
+    def test_disabled_reload_keeps_pending_refusal(self):
+        self.write_config(wake="inbox")
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        mid = self.envelope_message(rid="fixture-disabled-reload")
+        with mock.patch.object(NR, "refuse_unconsumed", side_effect=Z.NetworkError("unreachable")):
+            daemon.route_message(runner, self.fake.messages[-1])
+        self.assertIn((runner.seat, mid), daemon.notes_relay_retry)
+        daemon.reload()
+        self.assertIn((runner.seat, mid), daemon.notes_relay_retry)
+        self.assertEqual(runner.hold_below, mid)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
 
@@ -1206,8 +1219,7 @@ class RefusalBoundaryTests(unittest.TestCase):
             runner.client.post.side_effect = post
             with self.assertRaises(Z.NetworkError):
                 NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
-            with self.assertRaises(NR.MalformedResponse):
-                NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None)
+            self.assertTrue(NR.refuse_unconsumed(runner, message, "Disabled.", lambda *a, **k: None))
             self.assertEqual(len(sends), 1)
 
     def test_a_refusal_that_never_reached_zulip_is_sent_again(self):

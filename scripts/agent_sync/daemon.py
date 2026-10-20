@@ -1089,8 +1089,9 @@ class Daemon:
                     continue
                 try:
                     if not NR.refuse_unconsumed(reader, message, reason, self.log.write):
-                        refused_at = message["id"]
-                        break  # a permanent refusal failure:  no retry could change it
+                        self.log.write("notes-relay-refusal-gave-up", id=message["id"], status="refused")
+                        last = message["id"]
+                        continue  # a permanent refusal cannot pin the overflow marker forever
                 except Exception:  # noqa: BLE001 - a retryable error:  the next tick tries again
                     refused_at = message["id"]
                     break
@@ -1316,7 +1317,10 @@ class Daemon:
                 return
             self.notes_relay = None
         if not cfg.notes_relay_enabled:
-            self._abandon_relay_holds("the relay is disabled")
+            # A disabled consumer still owes refusal acknowledgements.  Keep their retry/overflow
+            # holds across an unchanged reload; only a host no longer assigned to refusal abandons them.
+            if self.notes_relay_refuser is None:
+                self._abandon_relay_holds("the relay is disabled and this host is not its refuser")
             return
         if not available:
             self.log.write(

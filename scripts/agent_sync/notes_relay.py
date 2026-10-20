@@ -475,7 +475,12 @@ def _refuse_unconsumed_locked(
         )
     except Refusal as exc:
         log("notes-relay-unconsumed-invalid", id=message_id, code=exc.code)
-        return False
+        if exc.code == "sender_unknown":
+            raise MalformedResponse("sender inventory is incomplete") from None
+        if exc.code in ("sender_not_bot", "sender_owner", "sender_identity", "identity_mismatch"):
+            return False
+        # The sender is authorized but the request cannot run; publish the validation reason.
+        reason = str(exc)
     request_id: str | None = None
     try:
         parsed = N.parse_message(message.get("content"))
@@ -501,7 +506,10 @@ def _refuse_unconsumed_locked(
             LIVE.write_json(row, {"state": "ok"}, durable=True)
             return True
         if unknown:
-            raise MalformedResponse("previous refusal outcome is unknown; reconcile before retry")
+            # The cross mark above already acknowledges the refusal.  Only its explanatory reply is uncertain;
+            # retaining the row prevents a duplicate send, but must not hold the routing cursor forever.
+            log("notes-relay-refusal-reply-unknown", id=message_id)
+            return True
         LIVE.write_json(row, {"state": "unknown"}, durable=True)
         text = W.neutralize_mentions(safe_reason(" ".join(reason.split())[:REASON_LIMIT]))
         runner.client.post(
