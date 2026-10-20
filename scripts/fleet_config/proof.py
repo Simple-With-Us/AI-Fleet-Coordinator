@@ -1118,12 +1118,44 @@ _L2_DENY_SHAPE_RES = tuple(
 # The guard's own sentence,  with the destination it names.  The hook prints the same
 # reason in every format,  so the sentence is what the plain-text exit-2 contract
 # puts on stderr,  and it is what a transcript carries when the answer is not JSON.
-# The destination is the last thing in the sentence,  so it is the last token of it.
-# The part before the destination is read greedily,  so the destination is the LAST
-# " at " of the sentence and not one of its own words.
+#
+# The real sentence is "Blocked: fleet-repo checkouts are not allowed <location>, and
+# this command would put <what> of <source> at <destination>."  The destination is the
+# LAST token,  so the part before it is read greedily,  and the destination itself is
+# read up to the sentence's full stop,  not to the first one:  a greedy capture of the
+# destination would take the reviewer's own text when the sentence carries more than
+# one clause.
 _L2_GUARD_SENTENCE_RE = re.compile(
-    re.escape(L2_DENY_PHRASE) + r"[^.]*this command would put .* at (?P<target>\S+)"
+    re.escape(L2_DENY_PHRASE)
+    + r"[^.]*?this command would put .*? at (?P<target>[^.]+?)(?=\.|\s|$)"
 )
+
+
+def _is_hook_answer_line(line: str) -> bool:
+    """True when `line` is the runtime's record of the hook's answer.
+
+    A transcript also holds the MODEL's text,  and a model that says "denied" or
+    quotes the guard's sentence is not the hook answering.  Two things are read as
+    the hook's answer:
+
+    * a line that carries a JSON payload,  which is how the runtime records a tool's
+      structured output,  and
+    * a line that IS the guard's own sentence,  which is how the plain-text exit-2
+      contract puts it on stderr.
+
+    The guard's sentence starts with "Blocked: "  and the plain-text contract puts
+    the reason there and nothing else,  so a line that STARTS with the sentence is
+    the hook's answer.  A line that merely QUOTES the sentence,  in the middle of a
+    model's prose,  is not:  the model would be reporting it,  not saying it.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("{") or stripped.startswith('"'):
+        return True
+    # The guard's own sentence,  and the start of the line with it.  A model that
+    # quotes the wording mid-sentence is reporting it,  and is not the hook.
+    return stripped.startswith("Blocked: ") and L2_DENY_PHRASE in stripped
 
 
 def _l2_deny_reasons(text: str) -> list[str]:
@@ -1134,16 +1166,23 @@ def _l2_deny_reasons(text: str) -> list[str]:
     wrote,  and every quote in it is escaped.  The guard's own sentence is read too,
     for the answer that is not JSON at all.
 
+    Only the runtime's own record of the hook's answer is read,  line by line,  so
+    text the MODEL wrote cannot impersonate the hook:  a model that repeats the
+    guard's wording or says "denied" must not turn into an L2 pass.
+
     A reason read out of a shape is the guard's own,  so it names the destination
     the guard refused.  That is what makes it evidence,  and it is what the caller
     checks the sentinel marker against.
     """
-    reasons = [
-        match.group(1) for pattern in _L2_DENY_SHAPE_RES for match in pattern.finditer(text)
-    ]
-    reasons.extend(
-        match.group("target").rstrip(".") for match in _L2_GUARD_SENTENCE_RE.finditer(text)
-    )
+    reasons: list[str] = []
+    for line in text.splitlines():
+        if not _is_hook_answer_line(line):
+            continue
+        for pattern in _L2_DENY_SHAPE_RES:
+            for match in pattern.finditer(line):
+                reasons.append(match.group(1))
+        for match in _L2_GUARD_SENTENCE_RE.finditer(line):
+            reasons.append(match.group("target").rstrip("."))
     return reasons
 
 
