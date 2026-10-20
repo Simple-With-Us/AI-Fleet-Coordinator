@@ -5,8 +5,8 @@
         name are replaced.  A few names (PATH, HOME, LD_*, DYLD_* ...) are never injected.
   get NAME [--path /]
         print one value, exactly, with no trailing newline.  Exit 3 when NAME is absent.
-  names [--path /]
-        key names only, one per line.
+  names [--path /] [--project fleet-ops|ai-fleet-coordinator]
+        key names only, one per line.  --project picks the Infisical project (read-only;  default fleet-ops).
   set NAME [--path /]
         create or update one secret in Fleet-OPS prod.  The value is read from standard input (one
         trailing newline removed), never from an argument.  Needs a machine identity.  Only names on the
@@ -34,7 +34,7 @@ from .core import SecretsError, UsageError
 USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
     "       fleet-secrets get NAME [--path /]\n"
-    "       fleet-secrets names [--path /]\n"
+    "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets set NAME --path /linear   (value on standard input;  CACHE_* names only)\n"
     "       fleet-secrets doctor [--json]\n"
 )
@@ -50,7 +50,7 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
             if a == "--only" and not allow_only:
                 raise UsageError("unknown option --only for this command")
             if i + 1 >= len(args):
-                raise UsageError("%s needs a value" % a)
+                raise UsageError(f"{a} needs a value")
             opts["path" if a == "--path" else "only"] = args[i + 1]
             i += 2
         elif a.startswith("--path=") or (allow_only and a.startswith("--only=")):
@@ -58,7 +58,7 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
             opts[key] = val
             i += 1
         elif a.startswith("-") and a != "-":
-            raise UsageError("unknown option %s" % a)
+            raise UsageError(f"unknown option {a}")
         else:
             opts["args"].append(a)  # type: ignore[union-attr]
             i += 1
@@ -81,7 +81,7 @@ def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     name = core.check_name(str(opts["args"][0]))  # type: ignore[index]
     secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
     if name not in secrets:
-        raise SecretsError("key %s is not in Infisical at %s" % (name, opts["path"]), 3)
+        raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
     core.reject_unresolved(secrets, [name])
     out.write(secrets[name])
     out.flush()
@@ -101,14 +101,29 @@ def cmd_set(args: Sequence[str], env: Mapping[str, str], out: TextIO, stdin: Tex
         result = core.put_secret(name, path, value, env)
     finally:
         value = ""
-    out.write("%s %s at %s\n" % (result, name, path))
+    out.write(f"{result} {name} at {path}\n")
     out.flush()
     return 0
 
 
 def cmd_names(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
-    opts = _parse(args, False, 0)
-    secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
+    rest = list(args)
+    project = core.DEFAULT_PROJECT
+    for i, a in enumerate(rest):
+        if a == "--project" or a.startswith("--project="):
+            if a == "--project":
+                if i + 1 >= len(rest):
+                    raise UsageError("--project needs a value")
+                project = rest[i + 1]
+                del rest[i : i + 2]
+            else:
+                project = a.partition("=")[2]
+                del rest[i]
+            break
+    if project not in core.PROJECT_SOURCES:
+        raise UsageError("unknown --project:  use {}".format(" or ".join(core.PROJECT_SOURCES)))
+    opts = _parse(rest, False, 0)
+    secrets = core.fetch_all(core.check_path(str(opts["path"])), env, project)
     core.reject_unresolved(secrets)
     out.write("".join(n + "\n" for n in sorted(secrets)))
     out.flush()
@@ -128,15 +143,14 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
         reserved = [n for n in only if not core.injectable(n)]
         if reserved:
             raise UsageError(
-                "--only cannot inject reserved name %s (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
+                f"--only cannot inject reserved name {reserved[0]} (PATH, HOME, SHELL, interpreter, LD_* and DYLD_* "
                 "variables are never injected);  read it with `get` if you really need the value"
-                % reserved[0]
             )
     secrets = core.fetch_all(core.check_path(str(opts["path"])), env)
     if only is not None:
         for name in only:
             if name not in secrets:
-                raise SecretsError("key %s is not in Infisical at %s" % (name, opts["path"]), 3)
+                raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
         chosen = {n: secrets[n] for n in only}
     else:
         chosen = {n: v for n, v in secrets.items() if core.injectable(n)}
@@ -147,11 +161,11 @@ def cmd_run(args: Sequence[str], env: Mapping[str, str], err: TextIO) -> int:
     try:
         os.execvpe(command[0], command, child_env)
     except FileNotFoundError:
-        raise SecretsError("command not found: %s" % command[0], 127) from None
+        raise SecretsError(f"command not found: {command[0]}", 127) from None
     except PermissionError:
-        raise SecretsError("command not executable: %s" % command[0], 126) from None
+        raise SecretsError(f"command not executable: {command[0]}", 126) from None
     except OSError:
-        raise SecretsError("could not start: %s" % command[0], 126) from None
+        raise SecretsError(f"could not start: {command[0]}", 126) from None
     return 0  # unreachable after a real exec
 
 
@@ -175,10 +189,14 @@ def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
         rep["system_keychain_client_id_present"],
         rep["system_keychain_client_secret_present"],
     ) = core.keychain_presence(core.SYSTEM_KEYCHAIN)
+    (
+        rep["automation_env_client_id_present"],
+        rep["automation_env_client_secret_present"],
+    ) = core.automation_env_presence(env)
     try:
         rep["auth_mode"] = core.auth_mode(env)
-    except SecretsError:
-        rep["auth_mode"] = "keychain-incomplete"
+    except SecretsError as exc:
+        rep["auth_mode"] = exc.message.split(":")[0][:40]
     rep["session_login_valid"] = core.session_valid(cli, env) if cli else False
     rep["fetch_names_ok"] = False
     rep["names_count"] = 0
@@ -220,7 +238,7 @@ def cmd_doctor(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
                 if isinstance(val, bool)
                 else ("none" if val is None else str(val))
             )
-            out.write("%s: %s\n" % (key, shown))
+            out.write(f"{key}: {shown}\n")
     out.flush()
     return 0 if rep["ok"] else 1
 
@@ -250,9 +268,9 @@ def main(
             return cmd_run(rest, env, err)
         if cmd == "doctor":
             return cmd_doctor(rest, env, out)
-        raise UsageError("unknown command %s" % cmd)
+        raise UsageError(f"unknown command {cmd}")
     except SecretsError as exc:
-        err.write("fleet-secrets: %s\n" % exc.message)
+        err.write(f"fleet-secrets: {exc.message}\n")
         if isinstance(exc, UsageError):
             err.write(USAGE)
         return exc.code
