@@ -10,6 +10,7 @@ PROJECT_ENV = "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"
 
 def operator_identity(env):
     from . import zulip as Z
+
     try:
         bot_id = int(env.get("OPERATOR_ZULIP_USER_ID", ""))
         email = env.get("OPERATOR_ZULIP_EMAIL", "").strip().casefold()
@@ -19,6 +20,7 @@ def operator_identity(env):
     except (ValueError, TypeError):
         raise Z.CredentialError("Set OPERATOR_ZULIP_USER_ID and OPERATOR_ZULIP_EMAIL") from None
 
+
 # Seats the partition may list that are not agent roster seats:  no reader queue, and never an
 # eligible wake sender or a `route.seat` target (config.fleet_tags keeps them out).
 SERVICE_SEATS = frozenset({OPERATOR})
@@ -27,7 +29,8 @@ SERVICE_SEATS = frozenset({OPERATOR})
 def operator_bot(user, env, owner_id):
     bot_id, email = operator_identity(env)
     return (
-        isinstance(owner_id, int) and owner_id > 0
+        isinstance(owner_id, int)
+        and owner_id > 0
         and user.get("owner_id", user.get("owner_user_id")) == owner_id
         and user.get("is_bot") is True
         and user.get("user_id") == bot_id
@@ -45,7 +48,9 @@ def operator_credentials(env, home=None, fetch=None):
     if not project:
         raise Z.CredentialError("Set " + PROJECT_ENV)
     names = ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY")
-    where = "OPERATOR service: configured Notes credential store keys %s; no fallback" % ", ".join(names)
+    where = "OPERATOR service: configured Notes credential store keys %s; no fallback" % ", ".join(
+        names
+    )
     if not Z.infisical_enabled(env):
         raise Z.CredentialError("cannot read %s: AGENT_SYNC_INFISICAL turns Infisical off" % where)
     try:

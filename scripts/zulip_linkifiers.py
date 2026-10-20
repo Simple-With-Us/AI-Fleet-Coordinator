@@ -167,9 +167,7 @@ CHECKS: list[tuple[str, str | None]] = [
 def _fleet_secret(name: str) -> str:
     """One Infisical value via `fleet-secrets get` (folder /zulip, else the root), or "" (never logged)."""
     binary = os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
-    folders = (
-        ["/zulip_operator"] if name.startswith("ZULIP_OPERATOR_") else ["/zulip", None]
-    )
+    folders = ["/zulip_operator"] if name.startswith("ZULIP_OPERATOR_") else ["/zulip", None]
     for folder in folders:
         extra = ["--path", folder] if folder else []
         try:
