@@ -1288,11 +1288,14 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
             flags=re.MULTILINE | re.DOTALL,
         )
         # The retained paragraph explains the Mac lane tool as the fallback when
-        # it is missing; on the VM that tool is what MA must never run.
+        # it is missing; on the VM that tool is what MA must never run.  The
+        # fallback runs to the end of its line: the command it names
+        # (`fleet_lanes.lane`) carries periods of its own (AFC-723).
         text = re.sub(
-            r"If `~/apps/lane` is missing[^.]*\.",
+            r"If `~/apps/lane` is missing.*$",
             "The `~/apps/lane` tool is Mac-only: if MA needs a new repo checkout, ask the owner for the VM path rather than running the lane tool or hand-making a lane.",
             text,
+            flags=re.MULTILINE,
         )
     elif skill_name == "fleet-coordination":
         text = re.sub(
@@ -1305,6 +1308,13 @@ def _muse_assist_vm_steps(text: str, skill_name: str) -> str:
         text = re.sub(
             r"^1\. You are in your lane.*$",
             "1. You are on the intended task branch in your durable VM checkout; see session-start.",
+            text,
+            flags=re.MULTILINE,
+        )
+        # The after-merge step retires a Mac lane; the VM checkout is kept.
+        text = re.sub(
+            r"^- Retire the lane once the PR is merged:.*$",
+            "- Keep the durable `muse-assist-<repo>` VM checkout for the next task; do not run the Mac lane retire or prune tools.",
             text,
             flags=re.MULTILINE,
         )
