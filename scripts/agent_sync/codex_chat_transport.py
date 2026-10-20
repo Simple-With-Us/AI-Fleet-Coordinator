@@ -295,14 +295,18 @@ class CodexChatTransport:
     def _queue(rpc, binding):
         """Small pages, at most one queue capacity; incomplete/cyclic listings fail closed."""
         items, cursor, seen = [], None, set()
-        for _ in range((QUEUE_CAPACITY + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE):
+        deadline = time.monotonic() + 5.0
+        for _ in range(QUEUE_CAPACITY):
             params = {
                 "threadId": binding["session_id"],
                 "limit": min(QUEUE_PAGE_SIZE, QUEUE_CAPACITY - len(items)),
             }
             if cursor is not None:
                 params["cursor"] = cursor
-            result = rpc.request("thread/queue/list", params)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Codex queue pagination deadline exceeded")
+            result = rpc.request("thread/queue/list", params, timeout=remaining)
             page = result.get("data")
             if not isinstance(page, list) or len(page) > params["limit"]:
                 raise ValueError("Invalid queue page")
@@ -427,9 +431,7 @@ class CodexChatTransport:
         try:
             rpc = self.rpc_factory()
             self._thread(rpc, binding)
-            if len(self._queue(rpc, binding)) >= QUEUE_CAPACITY:
-                self._mark_full(binding)
-                return "deferred"
+            # The native add atomically rejects full queues; avoid repeating preflight's listing.
             if permit is not None and not permit():
                 return "deferred"
             sent = True

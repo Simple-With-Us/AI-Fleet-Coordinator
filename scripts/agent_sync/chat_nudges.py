@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -113,6 +114,14 @@ class ChatNudges:
                 or not isinstance(item.get("dedupe_key"), str)
             ):
                 raise ValueError("chat nudge item is invalid")
+            if "receipt_checked_at" in item:
+                value = item["receipt_checked_at"]
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(value)
+                ):
+                    raise ValueError("chat nudge receipt_checked_at must be a finite number")
         return data
 
     @staticmethod

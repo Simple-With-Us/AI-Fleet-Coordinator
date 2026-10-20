@@ -88,6 +88,16 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertEqual(len({text for _, text in transport.receipt_calls}), 9)
         self.assertTrue(all(row["status"] == "unknown" for row in self.queue.snapshot()["items"]))
 
+    def test_reconcile_rejects_invalid_persisted_receipt_timestamp(self):
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 42, 10)
+        for value in (None, "bad", True, float("nan"), float("inf")):
+            with L.locked(self.queue.path):
+                data = L.read_json(self.queue.path)
+                data["items"][0]["receipt_checked_at"] = value
+                L.write_json(self.queue.path, data)
+            with self.assertRaisesRegex(ValueError, "receipt_checked_at must be a finite number"):
+                self.queue.reconcile(FakeTransport(), 11)
+
     def test_nudge_is_deterministic_json_quoted_and_contains_no_body(self) -> None:
         text = nudge_text('channel "quote"', "topic\nline", "12345")
         self.assertEqual(text, nudge_text('channel "quote"', "topic\nline", "12345"))

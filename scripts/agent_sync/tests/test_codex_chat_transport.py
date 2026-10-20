@@ -48,7 +48,7 @@ class TransportTests(unittest.TestCase):
         outer = self
 
         class FakeRPC:
-            def request(self, method, params):
+            def request(self, method, params, **kwargs):
                 outer.calls.append((method, params))
                 if method == outer.fail:
                     raise TimeoutError("private error")
@@ -178,6 +178,22 @@ class TransportTests(unittest.TestCase):
         (self.home / ".codex/queue_1.sqlite").touch()
         self.assertEqual(self.adapter.preflight(self.binding), "ready")
 
+    def test_queue_short_pages_complete_with_one_shared_deadline(self):
+        calls = []
+        class SmallPages:
+            def request(self, method, params, *, timeout):
+                calls.append(timeout)
+                index = int(params.get("cursor", "0"))
+                return {"data": [{"id": str(index)}],
+                        "nextCursor": str(index + 1) if index < 11 else None}
+        with patch.object(module.time, "monotonic", side_effect=[0] + [i / 10 for i in range(12)]):
+            self.assertEqual(len(self.adapter._queue(SmallPages(), self.binding)), 12)
+        self.assertEqual(len(calls), 12)
+        self.assertGreater(calls[0], calls[-1])
+        with patch.object(module.time, "monotonic", side_effect=[0, 5]):
+            with self.assertRaisesRegex(TimeoutError, "pagination deadline exceeded"):
+                self.adapter._queue(SmallPages(), self.binding)
+
     def test_full_native_queue_is_busy_before_send(self):
         self.queued = [{"clientUserMessageId": str(i)} for i in range(module.QUEUE_CAPACITY)]
         self.assertEqual(self.adapter.preflight(self.binding), "busy")
@@ -216,7 +232,7 @@ class TransportTests(unittest.TestCase):
         state = {"reads": 0}
 
         class FailingRPC:
-            def request(self, method, params):
+            def request(self, method, params, **kwargs):
                 outer.calls.append((method, params))
                 if method == "thread/read":
                     state["reads"] += 1
@@ -276,7 +292,7 @@ class TransportTests(unittest.TestCase):
             rpc = original()
             request = rpc.request
 
-            def request_with_rejection(method, params):
+            def request_with_rejection(method, params, **kwargs):
                 if method == "thread/queue/add":
                     raise module.RPCError(
                         {
@@ -366,7 +382,7 @@ class TransportTests(unittest.TestCase):
         def factory():
             rpc = original()
             request = rpc.request
-            rpc.request = lambda method, params: (
+            rpc.request = lambda method, params, **kwargs: (
                 {"data": [{}], "nextCursor": "repeated"}
                 if method == "thread/queue/list"
                 else request(method, params)
