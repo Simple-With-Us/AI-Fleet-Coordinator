@@ -109,6 +109,12 @@ def _fsync_dir(path: str) -> None:
         os.close(fd)
 
 
+class MalformedResponse(ValueError):
+    """A Zulip page this listener cannot walk (a message id that is not an id, a missing found_newest, a non-empty
+    page with no message after the anchor).  The reply is part of the refusal's result, so a caller treats it as a
+    retryable failure:  the request stays held and the reply is published on the next pass rather than lost."""
+
+
 class Refusal(Exception):
     """A request that must not run.  The text is the reason a sender reads in the reply.  `code` is a fixed category
     (the only part that is logged:  the text can quote what the sender typed).  `request_id` is the envelope's, when
@@ -402,16 +408,21 @@ def already_replied(
         for m in page:
             candidate_id = m.get("id")
             if not isinstance(candidate_id, int) or isinstance(candidate_id, bool):
-                raise ValueError("Zulip message id must be an integer")
+                raise MalformedResponse("Zulip message id must be an integer")
             if candidate_id > anchor:
                 ids.append(candidate_id)
         found_newest = found.get("found_newest")
         if not isinstance(found_newest, bool):
-            raise ValueError("Zulip messages response must include a boolean found_newest")
+            raise MalformedResponse("Zulip messages response must include a boolean found_newest")
         if found_newest:
             return False  # the topic's newest message has been read:  no reply yet
+        if not page:
+            # Zulip's found_newest is a coverage flag, not a cursor flag:  when the anchor is newer than every message
+            # matching the narrow, all of them sit on the before side and num_before 0 returns none.  An empty page is
+            # the end of the forward scan, not a malformed answer, so the refusal is still posted.
+            return False
         if not ids:
-            raise ValueError("Zulip messages response omitted a valid next anchor")
+            raise MalformedResponse("Zulip messages response omitted a valid next anchor")
         anchor = max(ids)
     log("notes-relay-reply-scan-capped", id=message_id, pages=REPLY_SCAN_PAGES)
     return False
@@ -469,6 +480,9 @@ def refuse_unconsumed(
                 "content": "%s %s" % (prefix, text),
             },
         )
+    except MalformedResponse as exc:
+        log("notes-relay-reply-malformed", id=message_id, error=str(exc)[:120])
+        raise  # the reply is part of the result:  the request stays held and the next pass publishes it
     except Z.ApiError as exc:
         if retryable(exc):
             raise  # the reply is part of the result:  the next pass publishes it
@@ -828,6 +842,9 @@ class Consumer:
                     "content": "%s %s" % (prefix, reason),
                 },
             )
+        except MalformedResponse as exc:
+            self.log("notes-relay-reply-malformed", id=message_id, error=str(exc)[:120])
+            raise  # the reply is part of the result:  keep the request spooled and post it on the retry
         except Z.ApiError as exc:
             if retryable(exc):
                 raise  # the reply is part of the result:  keep the request spooled and post it on the retry
