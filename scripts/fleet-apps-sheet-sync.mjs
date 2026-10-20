@@ -890,6 +890,11 @@ export function ingestFailureDetail(err) {
   return lines.length ? lines.slice(-3).join(" | ") : "no output";
 }
 
+export function summarizeIngestFailure(err) {
+  const report = String(err.stdout || "");
+  return [report ? summarizeIngest(report) : "", ingestFailureDetail(err)].filter(Boolean).join("; ");
+}
+
 function exportMarkdownMirror(markdown) {
   mkdirSync(dirname(MIRROR_MD_PATH), { recursive: true });
   writeFileSync(MIRROR_MD_PATH, markdown, "utf8");
@@ -914,11 +919,7 @@ function exportMarkdownMirror(markdown) {
     // and returns 1 when the report is not ok.  Read it, and label the outcome FAILED rather than
     // skipped, because a skip is a choice and a failure is not.  The sheet itself was already
     // written and verified by this point, so this warns loudly instead of failing the job.
-    const report = String(err.stdout || "");
-    const detail = report ? summarizeIngest(report) : "";
-    const why = detail && !/^(no output|no doc source)$/.test(detail)
-      ? detail
-      : ingestFailureDetail(err);
+    const why = summarizeIngestFailure(err);
     console.warn(`   Note: Fleet RAG ingest FAILED (${why})`);
   }
 }

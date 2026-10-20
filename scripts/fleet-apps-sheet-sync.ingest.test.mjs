@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import {
-  registryIngestArgs, summarizeIngest, ingestFailureDetail, buildMarkdownMirror,
+  registryIngestArgs, summarizeIngest, summarizeIngestFailure, ingestFailureDetail, buildMarkdownMirror,
   MIRROR_MD_PATH, FLEET_HOME, REGISTRY_INGEST_SOURCE,
   fleetKnob, ingestEnabled, ingestTimeoutMs, INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB
 } from "./fleet-apps-sheet-sync.mjs";
@@ -171,4 +171,11 @@ test("the real recall CLI rejects a file path and accepts a source", { skip: !RE
     .split(/\s+/)
     .find((t) => t && !t.startsWith("[") && !t.startsWith("-") && !t.endsWith("]") && !t.startsWith("]"));
   assert.equal(bare, undefined, `the ingest command must take no positional argument (saw ${bare})`);
+});
+
+
+test("failed JSON reports retain source stderr alongside counts", () => {
+  const detail = summarizeIngestFailure({ stdout: JSON.stringify({ per_source: { doc: { docs_seen: 3 } } }), stderr: "[doc] ERROR synthetic source failure" });
+  assert.match(detail, /3 docs/);
+  assert.match(detail, /synthetic source failure/);
 });

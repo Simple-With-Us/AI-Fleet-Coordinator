@@ -114,6 +114,7 @@ class IngestTests(unittest.TestCase):
             return "sentinel-id"
 
         self.patches = [
+            mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc",)),
             mock.patch.object(ingest, "embed", fake_embed),
             mock.patch.object(ingest, "gitleaks_gate", lambda path: set()),
             mock.patch.object(ingest, "GENERATORS", {"doc": gen}),
@@ -132,6 +133,19 @@ class IngestTests(unittest.TestCase):
     def _run(self, **kw):  # noqa: ANN001
         return ingest.run("doc", cfg={"x": "y"}, qd=self.qd, state_path=self.state, last_run_path=self.last,
                           log_path=self.logf, log=lambda *a: None, **kw)
+
+    def test_partial_ingest_preserves_global_nightly_health(self) -> None:
+        self.last.write_text('{"ok": false, "started_at": 1}')
+        before = self.last.read_bytes()
+        with (mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc", "zulip")),
+              mock.patch.object(ingest, "_heartbeat") as heartbeat):
+            report = self._run()
+        self.assertTrue(report["ok"])
+        self.assertEqual(self.last.read_bytes(), before)
+        self.assertEqual(self.sentinels, [])
+        heartbeat.assert_not_called()
+        self.assertTrue(self.logf.exists())
+        self.assertTrue(self.state.exists())
 
     def test_first_run_then_idempotent(self) -> None:
         rep = self._run()
@@ -372,7 +386,8 @@ class IngestTests(unittest.TestCase):
         for p in self.patches:
             p.stop()
         try:
-            with mock.patch.object(ingest, "embed", lambda cfg, t: [[0.1] * 4 for _ in t]), \
+            with mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc",)), \
+                    mock.patch.object(ingest, "embed", lambda cfg, t: [[0.1] * 4 for _ in t]), \
                     mock.patch.object(health, "embed", lambda cfg, t: [[0.2] * 4 for _ in t]), \
                     mock.patch.object(ingest, "gitleaks_gate", lambda path: set()), \
                     mock.patch.object(ingest, "GENERATORS", {"doc": boom}), \

@@ -660,11 +660,15 @@ def _run_locked(
     report["finished_at"] = now_ms()
     report["wall_s"] = round(time.monotonic() - t_run, 1)
     if not dry_run:
-        _write_sentinel_safely(cfg, qd, report, log)
-        _write_json(last_run_path, report)
+        # Only an untruncated full nightly-source pass can attest global health.
+        # Partial/manual refreshes keep their log and state without hiding a stale night.
+        nightly = set(names) == set(sources.NIGHTLY_SOURCES) and since_ms is None and limit is None
+        if nightly:
+            _write_sentinel_safely(cfg, qd, report, log)
+            _write_json(last_run_path, report)
+            if report["ok"] and heartbeat:
+                _heartbeat()
         _append_log(log_path, report)
-        if report["ok"] and heartbeat:
-            _heartbeat()
     return report
 
 
