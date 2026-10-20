@@ -1089,7 +1089,9 @@ class Daemon:
                     continue
                 try:
                     if not NR.refuse_unconsumed(reader, message, reason, self.log.write):
-                        self.log.write("notes-relay-refusal-gave-up", id=message["id"], status="refused")
+                        self.log.write(
+                            "notes-relay-refusal-gave-up", id=message["id"], status="refused"
+                        )
                         last = message["id"]
                         continue  # a permanent refusal cannot pin the overflow marker forever
                 except Exception:  # noqa: BLE001 - a retryable error:  the next tick tries again
