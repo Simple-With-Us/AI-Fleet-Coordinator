@@ -127,7 +127,7 @@ Per-app quirks (read the workflow on main before trusting this list):
 **Rules that matter** (AGENT-SYNC § Releases, Versioning, and Brand Assets):
 
 - What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the AGENT-SYNC Appendix C template, two ASCII spaces between sentences, and the owner's 12-hour clock with am or pm and no zone abbreviation.  No seat, agent, or tool names, ever.
-- Patch-increment the marketing version (`1.0.N`) on every upload and never reuse a version string.  Build numbers are unique (default `YYYYMMDDHHmm`).
+- The marketing version and the build number are both the repo's commit count, `1.0.<commit_count>` and `<commit_count>`, so the pair always describes one commit and no version string is ever reused.  UTC `YYYYMMDDHHmm` build stamps are retired.
 - The owner authorized TestFlight uploads.  App Store review submission and public release are not authorized; they stay an owner action.  Do not change external TestFlight groups or testers.
 
 ## 6. After verify

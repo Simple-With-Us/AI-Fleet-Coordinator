@@ -129,13 +129,34 @@ jobs:
     outputs:
       usage: ${{ steps.usage.outputs.json }}
     steps:
+      # The handbook sync job owns handbook-sync/mirror and refuses a pull request whose head it did not push
+      # (AFC-402).  A review event is filtered in the caller;  a workflow_dispatch run names its pull request
+      # only by number, so the head ref is resolved here.  The number goes through env, never into the script.
+      - name: Skip The Handbook Mirror Pull Request
+        id: guard
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.inputs.pr }}
+        run: |
+          set -euo pipefail
+          case "$PR_NUMBER" in '' | *[!0-9]*) echo "::error::pr must be a pull request number"; exit 1 ;; esac
+          branch=$(gh pr view "$PR_NUMBER" --json headRefName -q .headRefName)
+          if [ "$branch" = "handbook-sync/mirror" ]; then
+            echo "::notice::PR #$PR_NUMBER is the handbook mirror branch, which the handbook sync job owns;  nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: ${{ steps.guard.outputs.skip != 'true' }}
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Claude Autofix
         id: claude
+        if: ${{ steps.guard.outputs.skip != 'true' }}
         uses: anthropics/claude-code-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1
         # Routed to MiniMax via its Anthropic-compatible endpoint:  claude-code-action
         # drives the Claude Code CLI, which honors ANTHROPIC_BASE_URL / _AUTH_TOKEN /
@@ -164,7 +185,7 @@ jobs:
           classify_inline_comments: "false"
 
       - name: Summarize Autofix Diagnostics
-        if: ${{ always() }}
+        if: ${{ always() && steps.guard.outputs.skip != 'true' }}
         id: diagnostics
         uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-diagnostics@070fdbfacadbd9e90cbb54098123df7d3fef737f
 
@@ -173,7 +194,7 @@ jobs:
         # Only the counters of Claude Code's final result message leave this job (UM-1593):  no prompt,
         # diff, or tool output.  The ingest credential is never present here, because the model runs
         # with Bash in this job and could rewrite any file on the runner, including a cached action.
-        if: ${{ always() }}
+        if: ${{ always() && steps.guard.outputs.skip != 'true' }}
         continue-on-error: true
         run: |
           f="$RUNNER_TEMP/claude-execution-output.json"

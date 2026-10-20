@@ -40,7 +40,16 @@ from pathlib import Path
 from typing import Any, TextIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import __version__, bodyfile, listener_cli, notes_cli, secretscan, zulip_cli, zulip_ops
+from . import (
+    __version__,
+    bodyfile,
+    listener_cli,
+    notes_cli,
+    secretscan,
+    textfmt,
+    zulip_cli,
+    zulip_ops,
+)
 from . import identity as I
 from . import live as LIVE
 from . import router as ROUTER
@@ -1453,6 +1462,16 @@ def _check_hint(channel: str, topic: str) -> str:
     )
 
 
+def _reformatted(agent: Agent, body: str) -> list[str]:
+    """What the outbound fixes changed in `body` (textfmt.fix_outbound, owner 2026-10-19).  In text mode each line goes
+    to stderr, so the agent sees what it should have written;  JSON output carries the list as `reformatted`."""
+    report = textfmt.fix_outbound(body, limit=MAX_CONTENT_LENGTH)[1]
+    if not agent.json:
+        for line in report:
+            agent.err("reformatted:  " + line)
+    return report
+
+
 def _send(agent: Agent, channel: str, topic: str, body: str) -> int:
     try:
         result = agent.client.post(
@@ -1495,8 +1514,12 @@ def _send(agent: Agent, channel: str, topic: str, body: str) -> int:
         # A fresh session that posts and then waits must see the reply, even one that arrives before
         # `wait` starts; with no cursor, `wait` would take that reply for history.
         agent.state.advance_cursor(channel, topic, message_id)
+    report = _reformatted(agent, body)
     if agent.json:
-        agent.emit_json({"id": message_id, "channel": channel, "topic": topic})
+        agent.emit_json(
+            {"id": message_id, "channel": channel, "topic": topic}
+            | ({"reformatted": report} if report else {})
+        )
     else:
         agent.out(
             "posted id %d to #%s \u203a %s\n"
@@ -1797,8 +1820,12 @@ def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
         raise
     message_id = int(result["id"])
     agent.state.record_posted(message_id)
+    report = _reformatted(agent, body)
     if agent.json:
-        agent.emit_json({"id": message_id, "type": "direct", "to": to.ids})
+        agent.emit_json(
+            {"id": message_id, "type": "direct", "to": to.ids}
+            | ({"reformatted": report} if report else {})
+        )
     else:
         agent.out("sent id %d to %s (direct message)\n" % (message_id, where))
     return 0
