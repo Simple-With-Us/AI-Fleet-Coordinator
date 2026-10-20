@@ -10,8 +10,8 @@ This tool separates the three things that are usually confused:
 
 Only the third is the proof.  The first two can both be green while the seat runs with no
 protection at all, which is exactly the failure this was written for: the MiniMax Code
-runtime (3.1.1) delivers its shell tool as `bash`, and a plugin whose matcher read `Bash`
-never fires, silently.
+runtime delivers its shell tool as `bash`, and a plugin whose matcher read `Bash` never
+fires, silently.
 
 The canary is `ps > /dev/null`.  The sensitive guard denies it, so when the guard works the
 command never runs; when the guard is inert the command runs and prints nothing, so the
@@ -26,9 +26,9 @@ Usage:
     --json         print the report as JSON
 
 Exit code is 0 when the live dispatch denies the canary, 1 when it ran and did not deny, and 2
-when the check could not be run at all — a missing mcode, a timeout, an unreadable plugin.  The
-third case proves nothing about the guard: reporting it as a failure would point the operator at
-the installer when the guard was never exercised.
+when the check could not be run at all - a missing mcode, a timeout, an unreadable plugin.
+The third case proves nothing about the guard: reporting it as a failure would point the
+operator at the installer when the guard was never exercised.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -61,60 +62,76 @@ FILE_NAMES = ("Read", "Write", "Edit", "read", "write", "edit")
 # A stage result carries an explicit status, so an operational failure is never read as a
 # negative result.  `ok: False` means the stage ran and the guard failed the check.
 # `ok: None` with status `error` means the stage could not run at all, which proves nothing
-# either way — a different thing, with a different exit code.
+# either way - a different thing, with a different exit code.
 STATUS_OK = "ok"
 STATUS_FAIL = "fail"
 STATUS_ERROR = "error"
 STATUS_SKIPPED = "skipped"
 
-# The hook's own deny reason recommends pgrep, so a session that shows it was the hook and
-# not the model's own reluctance.  A model that declines to run ps will not say pgrep.
-DENY_MARKERS = ("pgrep", "permissionDecision")
+# The hook answers in the Claude hook contract, so the only thing in a hook's own answer that
+# proves it denied is that shape: a `permissionDecision` of `deny`.  The hook's own reason
+# recommends pgrep, and a model that merely declines `ps` can put that word in its answer,
+# so a bare `pgrep` or a bare `deny` proves nothing and would report a guard as armed when
+# nothing stopped the call.
+DENY_SHAPE = re.compile(r'"permissionDecision"\s*:\s*"deny"')
+
+# The runtime's own tool-call status vocabulary.  A call that ran is `completed` (2); a call
+# the runtime refused is `failed` (3) with no execution record at all, because the command
+# never started.
+TOOL_STATUS_COMPLETED = 2
+TOOL_STATUS_FAILED = 3
+
+# How much of the hook's denial reason is used to recognise that reason in a live session.
+# The reason is passed through to the tool result verbatim, and a block cuts the end of a
+# string, never its start, so the first words of the reason survive any truncation.
+FINGERPRINT_CHARS = 48
 
 
-def _matcher_covers(matcher: str, names) -> bool:
-    """True when the matcher covers every name in `names`.
+def _matcher_gates(matcher: object, tool: str) -> bool:
+    """True when the installer's own matcher rule lets `tool` reach this group.
 
-    A matcher is a regex in the Claude hook contract, so it is matched case sensitively
-    here: the fleet plugins use exact names joined by `|`, and a case-insensitive reading
-    would hide the very drift this tool exists to catch.
+    This is the same rule as `fleet_lanes.install_tools._matcher_gates`, and it has to be
+    the same rule: this tool predicts what the installer will do, so a matcher the
+    installer would reject must not be reported as covering a tool.  A matcher is a regex
+    in the Claude hook contract, so it is matched with `re.fullmatch` and case sensitively.
+    A null matcher, an empty matcher and `*` all mean every tool.
     """
-    if matcher in ("", None):
+    if matcher is None or matcher in ("", "*"):
+        return True
+    if not isinstance(matcher, str):
         return False
     try:
-        pattern = re.compile(matcher)
+        return re.fullmatch(matcher, tool) is not None
     except re.error:
         return False
-    return all(pattern.search(name) for name in names)
 
 
-def _covered_names(matcher: str, names):
+def _matcher_covers(matcher: object, names) -> bool:
+    """True when the matcher covers every name in `names`."""
+    return all(_matcher_gates(matcher, name) for name in names)
+
+
+def _covered_names(matcher: object, names):
     """The subset of `names` the matcher covers, and the subset it misses.
 
     Coverage is per name, never per group: a matcher of `Bash` covers `Bash` and misses
     `bash`, and reporting the whole shell group as missed would hide that it does cover
     one of them.
     """
-    if matcher in ("", None):
-        return [], list(names)
-    try:
-        pattern = re.compile(matcher)
-    except re.error:
-        return [], list(names)
     covered, missed = [], []
     for name in names:
-        (covered if pattern.search(name) else missed).append(name)
+        (covered if _matcher_gates(matcher, name) else missed).append(name)
     return covered, missed
 
 
-def _stage_error(why: str) -> dict:
+def _stage_error(why: str, **extra) -> dict:
     """A stage that could not be evaluated.
 
     Deliberately not `ok: False`.  A stage that could not run has not proved anything
     either way, and reporting it as a failure sends the operator to fix the guard when
     the guard was never exercised.
     """
-    return {"ok": None, "status": STATUS_ERROR, "why": why}
+    return {"ok": None, "status": STATUS_ERROR, "why": why, **extra}
 
 
 def _stage_fail(why: str, **extra) -> dict:
@@ -122,9 +139,54 @@ def _stage_fail(why: str, **extra) -> dict:
     return {"ok": False, "status": STATUS_FAIL, "why": why, **extra}
 
 
-def _stage_ok(why: str, **extra) -> dict:
-    """A stage that ran, and the check passed."""
-    return {"ok": True, "status": STATUS_OK, "why": why, **extra}
+def _hooks_document_errors(doc: object) -> list[str]:
+    """Every reason `doc` is not a usable hooks document.
+
+    A malformed `hooks.json` must not crash the tool and must not quietly look like an
+    empty plugin: both turn a broken install into a wrong verdict.  Every message names
+    `hooks.json` and the exact shape that was wrong.
+    """
+    if not isinstance(doc, dict):
+        return ["hooks.json must be a JSON object"]
+    if "hooks" not in doc:
+        return ["hooks.json must contain the 'hooks' section"]
+    unknown = sorted(set(doc) - {"hooks"})
+    if unknown:
+        return ["hooks.json may only contain the 'hooks' section, found " + ", ".join(unknown)]
+    raw_hooks = doc["hooks"]
+    if not isinstance(raw_hooks, dict):
+        return ["hooks.json 'hooks' must be an object"]
+    for event, entries in raw_hooks.items():
+        if not isinstance(event, str):
+            return ["hooks.json event names must be strings"]
+        if not isinstance(entries, list):
+            return [f"hooks.json event {event!r} must map to an array of hook entries"]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return [f"hooks.json hook entry for {event!r} must be an object"]
+            matcher = entry.get("matcher")
+            if matcher is not None and not isinstance(matcher, str):
+                return [f"hooks.json hook entry 'matcher' for {event!r} must be a string"]
+            raw_handlers = entry.get("hooks")
+            if not isinstance(raw_handlers, list):
+                return [f"hooks.json hook entry 'hooks' for {event!r} must be an array"]
+            for handler in raw_handlers:
+                if not isinstance(handler, dict):
+                    return [f"hooks.json handler for {event!r} must be an object"]
+                for field in ("matcher", "command", "type"):
+                    value = handler.get(field)
+                    if value is not None and not isinstance(value, str):
+                        return [f"hooks.json handler {field!r} for {event!r} must be a string"]
+                timeout = handler.get("timeout")
+                if timeout is not None and (
+                    isinstance(timeout, bool)
+                    or not isinstance(timeout, (int, float))
+                    or timeout < 0
+                ):
+                    return [
+                        f"hooks.json handler 'timeout' for {event!r} must be a nonnegative number"
+                    ]
+    return []
 
 
 def read_plugin(plugin_dir: Path) -> dict:
@@ -133,22 +195,31 @@ def read_plugin(plugin_dir: Path) -> dict:
     hooks_path = plugin_dir / "hooks" / "hooks.json"
     report = {"plugin_dir": str(plugin_dir), "manifest": None, "hooks": [], "errors": []}
     if not manifest_path.is_file():
-        report["errors"].append("missing %s" % manifest_path)
+        report["errors"].append(f"missing {manifest_path}")
     else:
         try:
-            report["manifest"] = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            report["errors"].append("manifest is not readable JSON: %s" % exc)
+            report["errors"].append(f"manifest is not readable JSON: {exc}")
+        else:
+            if not isinstance(manifest, dict):
+                report["errors"].append("plugin.json must be a JSON object")
+            else:
+                report["manifest"] = manifest
     if not hooks_path.is_file():
-        report["errors"].append("missing %s" % hooks_path)
+        report["errors"].append(f"missing {hooks_path}")
         return report
     try:
         doc = json.loads(hooks_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        report["errors"].append("hooks.json is not readable JSON: %s" % exc)
+        report["errors"].append(f"hooks.json is not readable JSON: {exc}")
         return report
-    for event, entries in (doc.get("hooks") or {}).items():
-        for entry in entries or []:
+    shape_errors = _hooks_document_errors(doc)
+    if shape_errors:
+        report["errors"].extend(shape_errors)
+        return report
+    for event, entries in doc["hooks"].items():
+        for entry in entries:
             for handler in entry.get("hooks") or []:
                 report["hooks"].append(
                     {
@@ -165,47 +236,64 @@ def read_plugin(plugin_dir: Path) -> dict:
 def check_matcher(plugin: dict) -> dict:
     """Stage 1: does any PreToolUse matcher cover the names the runtime delivers?
 
-    The shell names are the requirement.  This tool's policy stage proves the guard
-    denies a shell canary, so a matcher that covers every shell name is a matcher that
-    can prove it; demanding the file spellings as well would fail a perfectly valid
-    shell-only plugin.  File-tool coverage is still reported, because a guard that also
-    wants to police file tools needs those names and the reader should be able to see
-    whether it has them.
+    The shell names are the requirement.  This tool's policy stage proves the guard denies
+    a shell canary, so a matcher that covers every shell name is a matcher that can prove
+    it; demanding the file spellings as well would fail a perfectly valid shell-only
+    plugin.  File-tool coverage is still reported, because a guard that also wants to
+    police file tools needs those names and the reader should be able to see whether it
+    has them.
+
+    Coverage is the union across every PreToolUse group.  A plugin that splits its groups
+    - one for the shell tools, one for the file tools - guards the whole tool surface, and
+    a stage that demanded one group cover the shell names would report a correctly
+    configured plugin as broken.
     """
     pre = [h for h in plugin["hooks"] if h["event"] == "PreToolUse"]
     if not pre:
         return _stage_fail("no PreToolUse handler is registered")
-    best = None
+    groups = []
+    shell_covered = set()
+    file_covered = set()
     for handler in pre:
         matcher = handler["matcher"]
-        shell_covered, shell_missed = _covered_names(matcher, SHELL_NAMES)
-        file_covered, file_missed = _covered_names(matcher, FILE_NAMES)
-        ok = not shell_missed
-        if best is None or ok:
-            best = {
-                "ok": ok,
-                "status": STATUS_OK if ok else STATUS_FAIL,
+        group_shell_covered, group_shell_missed = _covered_names(matcher, SHELL_NAMES)
+        group_file_covered, group_file_missed = _covered_names(matcher, FILE_NAMES)
+        shell_covered.update(group_shell_covered)
+        file_covered.update(group_file_covered)
+        groups.append(
+            {
                 "matcher": matcher,
-                "shell_covered": shell_covered,
-                "shell_missed": shell_missed,
-                "file_covered": file_covered,
-                "file_missed": file_missed,
-                "why": (
-                    "the matcher covers every shell tool name the runtime delivers"
-                    if ok
-                    else "the matcher misses %s" % ", ".join(shell_missed)
-                ),
+                "command": handler.get("command"),
+                "shell_covered": group_shell_covered,
+                "shell_missed": group_shell_missed,
+                "file_covered": group_file_covered,
+                "file_missed": group_file_missed,
             }
-        if ok:
-            break
-    return best
+        )
+    shell_missed = [name for name in SHELL_NAMES if name not in shell_covered]
+    file_missed = [name for name in FILE_NAMES if name not in file_covered]
+    ok = not shell_missed
+    return {
+        "ok": ok,
+        "status": STATUS_OK if ok else STATUS_FAIL,
+        "shell_covered": sorted(shell_covered),
+        "shell_missed": shell_missed,
+        "file_covered": sorted(file_covered),
+        "file_missed": file_missed,
+        "groups": groups,
+        "why": (
+            "the matcher covers every shell tool name the runtime delivers"
+            if ok
+            else "the matcher misses " + ", ".join(shell_missed)
+        ),
+    }
 
 
 def _canary_payload(tool_name: str) -> str:
     return json.dumps(
         {
             "tool_name": tool_name,
-            "tool_input": {"command": CANARY + " "},
+            "tool_input": {"command": CANARY},
             "hook_event_name": "PreToolUse",
             "session_id": "muster-guard-live-proof",
             "cwd": str(Path.home()),
@@ -214,50 +302,268 @@ def _canary_payload(tool_name: str) -> str:
     )
 
 
-def check_policy(plugin: dict) -> dict:
-    """Stage 2: run the installed hook command directly with the canary payload."""
-    handler = next(
-        (h for h in plugin["hooks"] if h["event"] == "PreToolUse" and h.get("command")),
-        None,
-    )
-    if handler is None:
-        return _stage_fail("no PreToolUse command to run")
+def _denial_reason(output: str) -> str:
+    """The reason text from the hook's Claude-shaped denial."""
     try:
-        command = shlex.split(handler["command"])
-    except ValueError as exc:
-        return _stage_fail("the hook command is not a parseable argv: %s" % exc)
-    if not command:
-        return _stage_fail("the hook command is empty")
-    denied = False
-    detail = ""
+        doc = json.loads(output)
+    except ValueError:
+        return ""
+    if not isinstance(doc, dict):
+        return ""
+    specific = doc.get("hookSpecificOutput")
+    if isinstance(specific, dict):
+        reason = specific.get("permissionDecisionReason")
+        if isinstance(reason, str):
+            return reason
+    for key in ("permissionDecisionReason", "reason"):
+        value = doc.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _normalize(text: str) -> str:
+    """Collapse whitespace, so a reason matches however the runtime wrapped it."""
+    return " ".join(text.split())
+
+
+def _fingerprint(reason: str) -> str:
+    """A short, distinctive fragment of the hook's denial reason.
+
+    The live session's tool result carries the hook's own reason text, so a fragment of
+    that text is what proves the installed hook is what blocked the call.  The start of the
+    reason is used because a block cuts the end of a string, never its start.
+    """
+    normalized = _normalize(reason)
+    return normalized[:FINGERPRINT_CHARS] if normalized else ""
+
+
+def check_policy(plugin: dict) -> dict:
+    """Stage 2: run the installed hook command directly with the canary payload.
+
+    Every shell name the runtime can deliver is run, so a guard that denies `Bash` but not
+    `bash` cannot pass by being asked once and answered once.  The group whose matcher
+    covers the name is the one that would be asked in a live session; when no group covers
+    a name the hook is still run with that payload, so the policy question is answered for
+    every name, and the name is reported as uncovered.
+
+    Coverage itself is the matcher stage's question.  A hook script that denies the
+    canary is a correct policy even when the matcher never routes a call to it, and
+    reporting the two as one finding hides which of them is broken.
+    """
+    pre = [h for h in plugin["hooks"] if h["event"] == "PreToolUse" and h.get("command")]
+    if not pre:
+        return _stage_fail("no PreToolUse command to run")
+    fallback = pre[0]
+    denied_for = {}
+    missed = []
+    uncovered = []
     for tool_name in SHELL_NAMES:
-        try:
-            proc = subprocess.run(
-                command,
-                input=_canary_payload(tool_name),
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            return _stage_error("could not run the hook command: %s" % exc)
-        out = (proc.stdout or "") + (proc.stderr or "")
-        if "deny" in out:
-            denied = True
-            detail = out.strip()[:400]
-            break
+        covering = [h for h in pre if _matcher_gates(h.get("matcher"), tool_name)]
+        if not covering:
+            uncovered.append(tool_name)
+            covering = [fallback]
+        denied = False
+        for handler in covering:
+            try:
+                command = shlex.split(handler["command"])
+            except ValueError as exc:
+                return _stage_fail(f"the hook command is not a parseable argv: {exc}")
+            if not command:
+                return _stage_fail("the hook command is empty")
+            try:
+                proc = subprocess.run(
+                    command,
+                    input=_canary_payload(tool_name),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                return _stage_error("the hook command timed out after 30s")
+            except (OSError, subprocess.SubprocessError) as exc:
+                return _stage_error(f"could not run the hook command: {exc}")
+            out = (proc.stdout or "") + (proc.stderr or "")
+            if DENY_SHAPE.search(out):
+                denied = True
+                denied_for[tool_name] = out.strip()[:400]
+                break
+        if not denied:
+            missed.append(tool_name)
+    ok = not missed
+    reason = _denial_reason(next(iter(denied_for.values()), ""))
+    detail = next(iter(denied_for.values()), "")
+    why = (
+        "the hook denied the canary when run directly"
+        if ok
+        else "the hook did not deny the canary for " + ", ".join(missed)
+    )
+    if uncovered:
+        why += " (no PreToolUse group covers " + ", ".join(uncovered) + ")"
     return {
-        "ok": denied,
-        "status": STATUS_OK if denied else STATUS_FAIL,
-        "why": "the hook denied the canary when run directly"
-        if denied
-        else "the hook allowed the canary when run directly",
-        "command": handler["command"],
+        "ok": ok,
+        "status": STATUS_OK if ok else STATUS_FAIL,
+        "why": why,
+        "denied_for": sorted(denied_for),
+        "missed": missed,
+        "uncovered": uncovered,
+        "denial_reason": reason,
+        "denial_fingerprint": _fingerprint(reason),
         "detail": detail,
     }
 
 
-def check_dispatch(model: str, timeout: int) -> dict:
+def _completed_tool_calls(text: str) -> list[dict]:
+    """Every completed tool call in a `stream-json` run.
+
+    The run's own event stream is the runtime's record of what it did.  The model's answer
+    is not: the fleet's deny reason recommends `pgrep`, so a model that merely declines the
+    command can put that word in its prose.
+    """
+    calls = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("type") != "item.completed":
+            continue
+        item = event.get("item") or {}
+        if item.get("type") != "tool_call":
+            continue
+        call = item.get("toolCall") or {}
+        if call:
+            calls.append(call)
+    return calls
+
+
+def _call_text(call: dict) -> str:
+    """Every text the runtime recorded for one tool call."""
+    output = call.get("output") or {}
+    parts = []
+    for block in output.get("content") or []:
+        if isinstance(block, dict) and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    details = output.get("details") or {}
+    for source in (details, details.get("execution") or {}):
+        for key in ("reason", "message", "error"):
+            value = source.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    return "\n".join(parts)
+
+
+def _call_executed(call: dict) -> bool:
+    """True when the runtime actually ran the command.
+
+    A call the runtime refused has no execution record at all: the command never started.
+    A call that ran has one, whatever its exit code.
+    """
+    details = (call.get("output") or {}).get("details") or {}
+    if details.get("execution"):
+        return True
+    process = details.get("processOutput") or {}
+    return process.get("exitCode") is not None
+
+
+def _is_canary_call(call: dict) -> bool:
+    """True when the call is the canary command."""
+    command = (call.get("input") or {}).get("command")
+    if not isinstance(command, str):
+        return False
+    return "ps" in command and "/dev/null" in command
+
+
+def _call_was_denied(call: dict, fingerprint: str) -> bool:
+    """True when the installed hook is what refused this call.
+
+    Two things have to be true: the runtime refused the call and recorded no execution,
+    and the refusal carries the installed hook's own reason text.  The second half is what
+    makes the proof specific - the runtime has other layers that can refuse a command, and
+    a refusal by any of them says nothing about this guard.
+    """
+    if _call_executed(call):
+        return False
+    if call.get("status") != TOOL_STATUS_FAILED:
+        return False
+    if not fingerprint:
+        return False
+    return fingerprint in _normalize(_call_text(call))
+
+
+def _kill_group(proc) -> None:
+    """Kill the live session's whole process group.
+
+    `mcode exec` spawns an agent process tree.  Killing only the direct child leaves that
+    tree alive with tools enabled after this tool has exited, so the timeout path must not
+    leave an orphan behind.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _dispatch_verdict(text: str, returncode: int, fingerprint: str) -> dict:
+    """Decide what the live run proved."""
+    calls = _completed_tool_calls(text)
+    tool_names = sorted({str(call.get("name")) for call in calls if call.get("name")})
+    canary_calls = [call for call in calls if _is_canary_call(call)]
+    if not canary_calls:
+        # The session never ran the canary, so the hook was never exercised.  That is
+        # neither a proof nor a failure of the guard: the check could not run.
+        return _stage_error(
+            "the live session never ran the canary command, so the hook was not exercised",
+            tool_names=tool_names,
+        )
+    ran = [call for call in canary_calls if _call_executed(call)]
+    denied = [call for call in canary_calls if _call_was_denied(call, fingerprint)]
+    if ran:
+        # The canary ran.  That is direct evidence the guard did not stop it, whatever
+        # the session's own exit code was afterwards.
+        return {
+            "ok": False,
+            "status": STATUS_FAIL,
+            "why": "the live session was not refused by the guard, so the hook never fired",
+            "exit_code": returncode,
+            "canary_calls": len(canary_calls),
+            "tool_names": tool_names,
+        }
+    if denied:
+        return {
+            "ok": True,
+            "status": STATUS_OK,
+            "why": f"the live session was refused by the installed guard ({len(denied)} of "
+            f"{len(canary_calls)} canary calls)",
+            "exit_code": returncode,
+            "canary_calls": len(canary_calls),
+            "tool_names": tool_names,
+        }
+    blocked = [call for call in canary_calls if call.get("status") == TOOL_STATUS_FAILED]
+    if blocked and not fingerprint:
+        return _stage_error(
+            "the live session refused the canary, but the installed hook's denial text was "
+            "not captured, so the refusal cannot be attributed to the guard",
+            tool_names=tool_names,
+        )
+    return _stage_error(
+        "the live session ran the canary but the runtime recorded neither a run nor a refusal",
+        tool_names=tool_names,
+    )
+
+
+def check_dispatch(model: str, timeout: int, fingerprint: str = "") -> dict:
     """Stage 3: run a real MiniMax session and see whether the guard stops the canary.
 
     The session output is never printed.  It can contain the runtime's own transcript, and
@@ -266,40 +572,47 @@ def check_dispatch(model: str, timeout: int) -> dict:
     if not shutil.which("mcode"):
         return _stage_error("mcode is not on PATH, so no live session can be run")
     prompt = (
-        "Run this one shell command exactly as written, with no changes: %s\n"
-        "Then say what happened." % CANARY
+        f"Run this one shell command exactly as written, with no changes: {CANARY}\n"
+        "Then say what happened."
     )
     with tempfile.TemporaryDirectory(prefix="muster-proof-") as tmp:
-        out_path = os.path.join(tmp, "session.txt")
+        out_path = os.path.join(tmp, "session.jsonl")
         cmd = [
             "mcode",
             "exec",
-            "--model",
-            model,
+            # One token, so a model name that starts with a dash cannot become an option.
+            f"--model={model}",
             "--permission",
             "off",
-            prompt,
+            "--prompt-mode",
+            "work",
+            "--output-format",
+            "stream-json",
+            "--input",
+            "-",
         ]
-        try:
-            with open(out_path, "w", encoding="utf-8") as handle:
-                proc = subprocess.run(cmd, stdout=handle, stderr=subprocess.STDOUT, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return _stage_error("the live session timed out after %ds" % timeout)
-        except OSError as exc:
-            return _stage_error("could not start the live session: %s" % exc)
+        with open(out_path, "w", encoding="utf-8") as handle:
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=handle,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                return _stage_error(f"could not start the live session: {exc}")
+            try:
+                proc.communicate(input=prompt, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_group(proc)
+                return _stage_error(f"the live session timed out after {timeout}s")
         try:
             text = Path(out_path).read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
-            return _stage_error("could not read the session output: %s" % exc)
-    markers = [m for m in DENY_MARKERS if m in text]
-    return {
-        "ok": bool(markers),
-        "status": STATUS_OK if markers else STATUS_FAIL,
-        "why": "the live session was refused by the guard (%s)" % ", ".join(markers)
-        if markers
-        else "the live session was not refused by the guard, so the hook never fired",
-        "exit_code": proc.returncode,
-    }
+            return _stage_error(f"could not read the session output: {exc}")
+    return _dispatch_verdict(text, proc.returncode, fingerprint)
 
 
 def main(argv=None) -> int:
@@ -311,13 +624,17 @@ def main(argv=None) -> int:
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args(argv)
 
+    if not args.model.strip() or "\n" in args.model or "\0" in args.model:
+        print("--model must be a single non-empty model identifier", file=sys.stderr)
+        return 2
+
     plugin = read_plugin(Path(args.plugin_dir))
     report = {
         "plugin": plugin,
         "stages": {},
     }
     if plugin["errors"]:
-        unreadable = "the plugin could not be read: %s" % "; ".join(plugin["errors"])
+        unreadable = "the plugin could not be read: " + "; ".join(plugin["errors"])
         report["stages"]["matcher"] = _stage_error(unreadable)
         report["stages"]["policy"] = _stage_error(unreadable)
         report["stages"]["dispatch"] = _stage_error(unreadable)
@@ -331,7 +648,11 @@ def main(argv=None) -> int:
                 "why": "skipped (--skip-live): the live dispatch was not proven",
             }
         else:
-            report["stages"]["dispatch"] = check_dispatch(args.model, args.timeout)
+            # The policy stage already ran the installed hook and captured the text it
+            # denies with.  The live stage needs that text to tell this guard's refusal
+            # apart from any other layer's refusal.
+            fingerprint = report["stages"]["policy"].get("denial_fingerprint", "")
+            report["stages"]["dispatch"] = check_dispatch(args.model, args.timeout, fingerprint)
 
     dispatch = report["stages"]["dispatch"].get("ok")
     dispatch_status = report["stages"]["dispatch"].get("status")
@@ -347,7 +668,7 @@ def main(argv=None) -> int:
     else:
         # The check could not be run.  Say so plainly: this is not a statement about
         # the guard, and the remediation for a broken tool is not a fix in the installer.
-        report["verdict"] = "INCOMPLETE: the live dispatch could not run: %s" % report["stages"][
+        report["verdict"] = "INCOMPLETE: the live dispatch could not run: " + report["stages"][
             "dispatch"
         ].get("why", "no reason given")
         report["ok"] = False
@@ -355,9 +676,9 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(report, indent=2))
     else:
-        print("Plugin: %s" % plugin["plugin_dir"])
+        print(f"Plugin: {plugin['plugin_dir']}")
         for hook in plugin["hooks"]:
-            print("  %s matcher=%r command=%s" % (hook["event"], hook["matcher"], hook["command"]))
+            print(f"  {hook['event']} matcher={hook['matcher']!r} command={hook['command']}")
         for name in ("matcher", "policy", "dispatch"):
             stage = report["stages"][name]
             flag = {
@@ -366,7 +687,7 @@ def main(argv=None) -> int:
                 STATUS_ERROR: "ERROR",
                 STATUS_SKIPPED: "skip",
             }.get(stage.get("status"), "?")
-            print("[%s] %-8s %s" % (flag, name, stage.get("why", "")))
+            print(f"[{flag}] {name:<8} {stage.get('why', '')}")
         print(report["verdict"])
         if report["verdict"].startswith("NOT PROVED"):
             print()
