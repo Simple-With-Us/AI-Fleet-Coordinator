@@ -36,6 +36,14 @@ QUEUE_REFUSAL = "X Cannot use `-d` or `--delete-branch` when merge queue enabled
 FAKE_GH = """#!/bin/bash
 printf '%s\\n' "$*" >> "$GH_CALLS"
 case "${GH_FAKE_MODE}" in
+  not_ready)
+    if [[ "$*" == "pr view "* ]]; then
+      echo "null"
+      exit 0
+    fi
+    echo "gh: private-path not mergeable" >&2
+    exit 1
+    ;;
   queue|queue_then_fail)
     if [[ "$*" == *"--delete-branch"* ]]; then
       echo "X Cannot use \\`-d\\` or \\`--delete-branch\\` when merge queue enabled" >&2
@@ -175,6 +183,13 @@ class ArmStep(unittest.TestCase):
         self.assertNotIn("--delete-branch", calls[1])
         self.assertNotIn("gh: some other failure", out)
         self.assertIn("status=failed code=outcome_unknown", out)
+
+    def test_not_ready_notice_omits_the_external_reason(self):
+        code, out, calls = run_arm("not_ready", "true")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("Auto-merge not armed: the PR is not ready", out)
+        self.assertNotIn("private-path", out)
 
     def test_the_queue_refusal_is_matched_with_its_backticks(self):
         # gh prints the flag in backticks, so a pattern that looks for the bare flag
