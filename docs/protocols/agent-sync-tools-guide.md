@@ -2,7 +2,7 @@
 
 The one guide to the Agent-Sync tools on every transport:  the stdio server (`agent-sync mcp`), the hosted server (`https://agent-sync.jays.services/mcp`) and the `agent-sync` CLI.  It is served four ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, `https://fleetlink.online/agent-sync-tools-guide/`, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a published copy.
 
-At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 255 tools and the hosted server 269 (the difference is explained under Tools by Family).
+At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 270 tools and the hosted server 269 (the difference is explained under Tools by Family).
 
 ## How to Pass Identity
 
