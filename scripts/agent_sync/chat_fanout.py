@@ -112,9 +112,14 @@ class Scope:
 def scope(visible: str, topic: str) -> Scope:
     """The scope of an owner's channel-wide mention:  the explicit `@all for X:` names, or `X @all` (the names just
     before the mention, starting the line), else the work topic's repo, else everyone."""
-    for regex in (_SCOPE_RE, _PREFIX_RE):
-        match = regex.search(visible)
-        named = named_repos(match.group(1)) if match else None
+    explicit = _SCOPE_RE.search(visible)
+    if explicit:
+        # An explicit scope is the owner's decision:  a name that resolves to no repo reaches nobody,
+        # it never widens to every chat (`None` repos means everyone, so an unresolved name is empty).
+        return Scope(named_repos(explicit.group(1)) or frozenset(), named_issues(explicit.group(1)))
+    match = _PREFIX_RE.search(visible)
+    if match:
+        named = named_repos(match.group(1))
         if named:
             return Scope(named, named_issues(match.group(1)))
     return Scope(named_repos(topic))

@@ -995,7 +995,11 @@ class ChatCatalog:
                     break
             excerpts.reverse()
             row["_excerpts"] = excerpts
-            self._records[record_id]["_excerpts"] = row["_excerpts"]
+            # A rescan can drop the record between resolve() and here, so publish onto whatever is
+            # live now rather than subscripting a key the fanout thread may already have replaced.
+            live = self._records.get(record_id)
+            if live is not None:
+                live["_excerpts"] = row["_excerpts"]
             return list(row["_excerpts"])
         if row.get("_source") == "cursor-cloud" and self._cursor is not None:
             try:
@@ -1009,7 +1013,9 @@ class ChatCatalog:
                     if text:
                         safe_rows.append({"role": item["role"], "text": text})
             row["_excerpts"] = safe_rows[-count:]
-            self._records[record_id]["_excerpts"] = row["_excerpts"]
+            live = self._records.get(record_id)
+            if live is not None:
+                live["_excerpts"] = row["_excerpts"]
         return (
             [
                 {"role": item["role"], "text": item["text"]}
