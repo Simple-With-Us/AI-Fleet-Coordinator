@@ -6,7 +6,7 @@ The listener permits OPERATOR with bot=Operator, creds=infisical and wake=inbox.
 
 ## Runtime identity settings
 
-Set OPERATOR_ZULIP_USER_ID and OPERATOR_ZULIP_EMAIL from the approved service registry on both listener and hosted Worker.  Both settings are required for Operator acceptance.  The authenticated bot must match that ID and email and belong to the pinned owner.  Missing settings or a mismatched owner fail closed.  Tests use synthetic identities.
+Set OPERATOR_ZULIP_USER_ID and OPERATOR_ZULIP_EMAIL from the approved service registry on the listener, hosted Worker, and every host running the Notes CLI.  Both settings are required for Operator acceptance.  The authenticated bot must match that ID and email and belong to the pinned owner.  Missing settings or a mismatched owner fail closed.  Tests use synthetic identities.
 
 The listener also requires INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID for the Notes credential store and ZULIP_SITE for the realm.  This dedicated project selection does not change the project used by other seats.  Named reads, caches, names listings and outage backoff remain separated by project.  Concrete project identifiers and secret-store coordinates belong in private deployment configuration.
 

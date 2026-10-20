@@ -49,6 +49,17 @@ class Tests(unittest.TestCase):
         with self.assertRaises(I.UnknownSeat):
             I.strict_seat("OPERATOR")
 
+    def test_notes_consumer_names_missing_identity_configuration(self):
+        from types import SimpleNamespace as NS
+        from agent_sync.mcp.tools import Tools
+
+        tools = Tools.__new__(Tools)
+        tools.notes_consumer = "OPERATOR"
+        tools.agent = NS(rt=NS(env={}))
+        tools.owner_user_id = 12
+        with self.assertRaisesRegex(Z.CredentialError, "OPERATOR_ZULIP_USER_ID"):
+            tools._relay_consumer_user({"user_id": OPERATOR_BOT_ID})
+
     def test_credential_names(self):
         seen = []
 

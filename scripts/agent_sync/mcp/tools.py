@@ -2285,10 +2285,7 @@ class Tools:
         if self.notes_consumer == "OPERATOR":
             from ..service_identity import operator_bot
 
-            try:
-                return operator_bot(user, self.agent.rt.env, self.owner_user_id)
-            except Z.CredentialError:
-                return False
+            return operator_bot(user, self.agent.rt.env, self.owner_user_id)
         return bool(user.get("is_bot")) and IDENT.seat_tag_for(user) == self.notes_consumer
 
     def _relay_consumer(self, user_id: Any) -> bool:
