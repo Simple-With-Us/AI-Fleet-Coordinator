@@ -6,16 +6,16 @@ the real home or writes to a real repository.  The tests that read the seeded
 
     cd scripts && python3 -m unittest discover -s fleet_config/tests -t .
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from fleet_config import manifest as manifest_module
 from fleet_config.manifest import (
@@ -37,9 +37,9 @@ REGISTRY_FILE = REPO / "fleet-apps.json"
 FIXTURE_SEATS = ("CLAUDE", "CODEX")
 
 
-def _rule(rule_id: str, kind: str, platforms: List[str], **overrides: Any) -> Dict[str, Any]:
+def _rule(rule_id: str, kind: str, platforms: list[str], **overrides: Any) -> dict[str, Any]:
     """One rule in the manifest's JSON shape, with the fields a test needs."""
-    rule: Dict[str, Any] = {
+    rule: dict[str, Any] = {
         "id": rule_id,
         "kind": kind,
         "platforms": list(platforms),
@@ -59,7 +59,7 @@ def _rule(rule_id: str, kind: str, platforms: List[str], **overrides: Any) -> Di
     return rule
 
 
-def _manifest_dict(seats: Dict[str, Any]) -> Dict[str, Any]:
+def _manifest_dict(seats: dict[str, Any]) -> dict[str, Any]:
     """A whole manifest document in its JSON shape."""
     return {"schemaVersion": 1, "seats": seats}
 
@@ -88,13 +88,13 @@ class ManifestFixture(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def write_manifest(self, document: Dict[str, Any]) -> Path:
+    def write_manifest(self, document: dict[str, Any]) -> Path:
         """Write a manifest document into the temporary directory and return its path."""
         path = self.root / "fleet-seats.json"
         path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return path
 
-    def load(self, document: Dict[str, Any]):
+    def load(self, document: dict[str, Any]):
         """Load a manifest document from the temporary directory."""
         return load_manifest(self.write_manifest(document), registry_path=self.registry_path)
 
@@ -131,9 +131,7 @@ class RosterTests(ManifestFixture):
         self.assertIn("MONET", str(caught.exception))
 
     def test_loader_refuses_a_live_seat_with_no_entry(self) -> None:
-        document = _manifest_dict(
-            {"CLAUDE": {"platforms": [], "rules": [], "notApplicable": []}}
-        )
+        document = _manifest_dict({"CLAUDE": {"platforms": [], "rules": [], "notApplicable": []}})
         with self.assertRaises(ManifestError) as caught:
             self.load(document)
         self.assertIn("CODEX", str(caught.exception))
@@ -518,7 +516,7 @@ class SeededManifestTests(unittest.TestCase):
         """The expected hash is the block body the installer writes, not the installed file."""
         if str(SCRIPTS) not in sys.path:
             sys.path.insert(0, str(SCRIPTS))
-        from fleet_lanes import install_rules  # noqa: PLC0415 - development tool only
+        from fleet_lanes import install_rules
 
         checked = 0
         for seat in self.manifest.seats:

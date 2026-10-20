@@ -4,13 +4,13 @@ The tests here never import the six per-kind check modules, so they pass while t
 modules are still being written.  The mac collector is driven with a registry the
 test supplies, which is the seam the real caller uses when it already has one.
 """
+
 from __future__ import annotations
 
 import inspect
-import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest import mock
 
 from fleet_config import collectors
@@ -58,7 +58,7 @@ class CollectorCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.ctx = CheckContext(
             home=self.tmp.name,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
             timeout=10,
         )
 
@@ -119,9 +119,7 @@ class MacCollectorTests(CollectorCase):
 
     def test_collect_dispatches_to_the_mac_collector(self):
         rule = make_rule()
-        with mock.patch.object(
-            collectors, "registry_for", return_value=self._registry()
-        ):
+        with mock.patch.object(collectors, "registry_for", return_value=self._registry()):
             result = collectors.collect(rule, "claude", self.ctx)
         self.assertIs(result.state, CheckState.PASS)
 
@@ -131,9 +129,8 @@ class MacCollectorTests(CollectorCase):
             collectors,
             "default_registry",
             side_effect=ImportError("No module named 'fleet_config.checks_hooks'"),
-        ):
-            with self.assertRaises(CheckError) as caught:
-                collectors.mac_collect(rule, "claude", self.ctx)
+        ), self.assertRaises(CheckError) as caught:
+            collectors.mac_collect(rule, "claude", self.ctx)
         self.assertIn("checks_hooks", str(caught.exception))
 
     def test_the_collector_module_does_not_import_the_check_modules(self):

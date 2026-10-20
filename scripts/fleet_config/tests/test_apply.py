@@ -11,14 +11,17 @@ The installer and the check are simulated:  the runner is injected,  so no test 
 starts a real installer,  and the guard plugin is a fixture file in a temporary home,  so
 no test ever touches Jay's Mac.
 """
+
 from __future__ import annotations
 
 import os
 import subprocess
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from fleet_config import aggregator, apply as apply_module, plan as plan_module, touchid
+from fleet_config import aggregator, touchid
+from fleet_config import apply as apply_module
+from fleet_config import plan as plan_module
 from fleet_config.checks import CheckContext, build_result
 from fleet_config.types import (
     CheckState,
@@ -31,7 +34,7 @@ from fleet_config.types import (
 
 from ._fake import FleetTestCase, make_manifest, make_rule, registry_with, snapshot_tree
 
-MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=timezone.utc)
+MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=UTC)
 
 GUARD_REL = ".minimax/plugins/fleet-guard/hooks/hooks.json"
 GUARD_MARKER = "deny the sentinel write"
@@ -96,7 +99,7 @@ class RecordingRunner:
 
 def allowing_gate(reason):
     """A gate that confirms without a prompt,  so a test can reach the write path."""
-    return None
+    return
 
 
 class ApplyTests(FleetTestCase):
@@ -273,7 +276,8 @@ class ApplyTests(FleetTestCase):
             reason="it differs",
             change="it would change",
             installer=plan_module.Installer(
-                key="install_tools", argv=("python3", "-m", "fleet_lanes.install_tools", "apply", "minimax"),
+                key="install_tools",
+                argv=("python3", "-m", "fleet_lanes.install_tools", "apply", "minimax"),
                 files=(str(outside),),
             ),
             files=(str(outside),),
@@ -285,7 +289,11 @@ class ApplyTests(FleetTestCase):
             blocked_reason="",
         )
         built = plan_module.Plan(
-            seat="MM", kind=None, platform=None, generated_at="2026-10-19T14:30:00Z", entries=(entry,)
+            seat="MM",
+            kind=None,
+            platform=None,
+            generated_at="2026-10-19T14:30:00Z",
+            entries=(entry,),
         )
         runner = RecordingRunner(home)
         result = apply_module.apply_plan(

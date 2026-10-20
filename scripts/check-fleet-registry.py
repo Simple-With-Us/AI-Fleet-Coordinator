@@ -322,8 +322,7 @@ def manifest_errors(
     worktree that has not seeded it yet must still pass this check.  The caller
     prints the note.
     """
-    from fleet_config.manifest import (  # noqa: PLC0415 - imported here so the
-        ManifestError,  # checker runs before the package is on the path
+    from fleet_config.manifest import (
         known_platforms,
         load_manifest,
         validate_coverage,

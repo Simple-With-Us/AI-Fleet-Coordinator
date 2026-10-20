@@ -5,13 +5,14 @@ applies:  a file another process wrote is only trusted when it is ours,  private
 and young.  Every test here runs in a temporary home,  so the real state directory is
 never touched.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import stat
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 from fleet_config import cache
@@ -27,7 +28,7 @@ from fleet_config.types import (
 
 from ._fake import FleetTestCase, make_manifest, make_rule
 
-MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=timezone.utc)
+MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=UTC)
 
 
 def _ctx():

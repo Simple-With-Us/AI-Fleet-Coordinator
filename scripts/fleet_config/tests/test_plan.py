@@ -4,10 +4,11 @@ The plan is read-only,  so the strongest thing a test can say about it is that i
 nothing:  the tree is snapshotted by mtime and by hash before and after,  and the two
 snapshots must be identical.
 """
+
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fleet_config import plan as plan_module
 from fleet_config.checks import build_result
@@ -21,7 +22,7 @@ from fleet_config.types import (
 
 from ._fake import FleetTestCase, make_manifest, make_rule, snapshot_tree
 
-MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=timezone.utc)
+MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=UTC)
 
 
 def a_result(rule, state=CheckState.DRIFT, reason="it differs"):
@@ -153,7 +154,12 @@ class PlanTests(FleetTestCase):
         rules = [
             make_rule("mm-a", ConfigKind.INSTRUCTIONS),
             make_rule("mm-b", ConfigKind.SKILLS, check_type=CheckType.SKILLS_INSTALLED),
-            make_rule("mm-c", ConfigKind.MCP, check_type=CheckType.MCP_SERVERS_REGISTERED, platform="codex"),
+            make_rule(
+                "mm-c",
+                ConfigKind.MCP,
+                check_type=CheckType.MCP_SERVERS_REGISTERED,
+                platform="codex",
+            ),
         ]
         manifest = make_manifest(rules)
         results = [a_result(rule) for rule in rules]
@@ -165,9 +171,7 @@ class PlanTests(FleetTestCase):
     def test_an_unknown_state_names_no_change(self):
         rule = make_rule("mm-a", ConfigKind.INSTRUCTIONS)
         manifest = make_manifest([rule])
-        built = plan_module.build_plan(
-            manifest, [a_result(rule, CheckState.UNKNOWN)], now=MOMENT
-        )
+        built = plan_module.build_plan(manifest, [a_result(rule, CheckState.UNKNOWN)], now=MOMENT)
         entry = built.entries[0]
         self.assertFalse(entry.auto_fixable)
         self.assertIn("no change is identified", entry.change)
@@ -216,7 +220,9 @@ class InstallerMirrorTests(unittest.TestCase):
     def test_the_mcp_targets_and_files_match_the_installer(self):
         from fleet_lanes import install_mcp
 
-        self.assertTrue(set(plan_module.MCP_TARGETS.values()).issubset(set(install_mcp.TARGET_KEYS)))
+        self.assertTrue(
+            set(plan_module.MCP_TARGETS.values()).issubset(set(install_mcp.TARGET_KEYS))
+        )
         for target, path in plan_module.MCP_FILES.items():
             if target == install_mcp.CLUTCH_KEY:
                 self.assertEqual(path, ".clutch/dsh/cordis.patch.yml")

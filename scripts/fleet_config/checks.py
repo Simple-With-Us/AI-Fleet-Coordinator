@@ -18,13 +18,14 @@ logic of its own:  the vocabulary lives in ``types.py`` and the verdict math liv
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
+
 from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, Mapping, Optional
+from datetime import UTC, datetime, timedelta
 
 from .types import (
     CheckResult,
@@ -39,15 +40,15 @@ from .types import (
 
 __all__ = [
     "CheckContext",
+    "CheckContextError",
     "CheckError",
     "CheckRegistry",
-    "CheckContextError",
     "build_result",
-    "sha256_text",
-    "iso_utc",
-    "utc_now",
-    "resolve_home",
     "expand_target",
+    "iso_utc",
+    "resolve_home",
+    "sha256_text",
+    "utc_now",
 ]
 
 
@@ -80,12 +81,12 @@ class CheckContext:
     caller did not put there.
     """
 
-    home: "os.PathLike[str]"
+    home: os.PathLike[str]
     now: datetime
     timeout: int = 10
     env: Mapping[str, str] = field(default_factory=dict)
 
-    def child_env(self) -> Dict[str, str]:
+    def child_env(self) -> dict[str, str]:
         """The environment for a child process:  the caller's plus the given overrides.
 
         A check that spawns a child uses this rather than ``os.environ`` directly, so
@@ -95,12 +96,12 @@ class CheckContext:
         merged.update(self.env)
         return merged
 
-    def path(self, *parts: str) -> "os.PathLike[str]":
+    def path(self, *parts: str) -> os.PathLike[str]:
         """A path under the home directory."""
         return os.path.join(self.home, *parts)
 
 
-def resolve_home(home: Optional["os.PathLike[str]"] = None) -> "os.PathLike[str]":
+def resolve_home(home: os.PathLike[str] | None = None) -> os.PathLike[str]:
     """The home directory the checks read, refusing an empty or missing one.
 
     An empty home would make every check report the same false MISSING, so it is an
@@ -116,14 +117,14 @@ def resolve_home(home: Optional["os.PathLike[str]"] = None) -> "os.PathLike[str]
 
 def utc_now() -> datetime:
     """The current time, timezone-aware and in UTC."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def iso_utc(moment: datetime) -> str:
     """A timestamp in the pinned format:  ISO 8601 UTC with a ``Z`` suffix."""
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def sha256_text(text: str) -> str:
@@ -137,7 +138,7 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def expand_target(target: str, home: "os.PathLike[str]") -> str:
+def expand_target(target: str, home: os.PathLike[str]) -> str:
     """Expand a manifest target into a real path.
 
     A target may start with ``~``, which means the home directory the checks are
@@ -162,8 +163,8 @@ def build_result(
     reason_code: ReasonCode,
     observed: ObservedState,
     ctx: CheckContext,
-    proof_level_achieved: Optional[ProofLevel] = None,
-    collector: Optional[Collector] = None,
+    proof_level_achieved: ProofLevel | None = None,
+    collector: Collector | None = None,
 ) -> CheckResult:
     """Build one checked result with consistent stamps.
 
@@ -204,22 +205,27 @@ class CheckRegistry:
     """
 
     def __init__(self) -> None:
-        self._checks: Dict[CheckType, Callable[[Rule, str, CheckContext], CheckResult]] = {}
+        self._checks: dict[CheckType, Callable[[Rule, str, CheckContext], CheckResult]] = {}
 
     def register(
         self, check_type: CheckType
-    ) -> Callable[[Callable[[Rule, str, CheckContext], CheckResult]], Callable[[Rule, str, CheckContext], CheckResult]]:
+    ) -> Callable[
+        [Callable[[Rule, str, CheckContext], CheckResult]],
+        Callable[[Rule, str, CheckContext], CheckResult],
+    ]:
         """Register the function that implements one check type."""
 
         def decorate(
-            function: Callable[[Rule, str, CheckContext], CheckResult]
+            function: Callable[[Rule, str, CheckContext], CheckResult],
         ) -> Callable[[Rule, str, CheckContext], CheckResult]:
             self._checks[check_type] = function
             return function
 
         return decorate
 
-    def get(self, check_type: CheckType) -> Optional[Callable[[Rule, str, CheckContext], CheckResult]]:
+    def get(
+        self, check_type: CheckType
+    ) -> Callable[[Rule, str, CheckContext], CheckResult] | None:
         """The function for one check type, or None when it is not implemented."""
         return self._checks.get(check_type)
 
@@ -234,8 +240,14 @@ def default_registry() -> CheckRegistry:
     Importing the check modules here rather than in the aggregator keeps the import
     order out of the aggregator's own body, and gives one place to see what exists.
     """
-    from . import checks_hooks, checks_instructions, checks_mcp  # noqa: F401
-    from . import checks_permissions, checks_skills, checks_subagents  # noqa: F401
+    from . import (
+        checks_hooks,
+        checks_instructions,
+        checks_mcp,
+        checks_permissions,
+        checks_skills,
+        checks_subagents,
+    )
 
     registry = CheckRegistry()
     registry._checks.update(checks_instructions.CHECKS)

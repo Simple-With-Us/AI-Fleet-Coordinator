@@ -36,6 +36,7 @@ bytes, so re-running the generator never produces a diff of its own.
 This module is a development and build tool.  It imports ``fleet_lanes`` inside its
 functions, which the runtime package never does (design doc, section 12).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -43,19 +44,19 @@ import hashlib
 import json
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
 
 __all__ = [
     "MARKER_BLOCK",
     "PACK_SKILLS_DIR",
     "SEAT_PLATFORMS",
     "build_manifest",
+    "instruction_hash",
+    "main",
+    "platform_rules_path",
     "render_manifest",
     "write_manifest",
-    "instruction_hash",
-    "platform_rules_path",
-    "main",
 ]
 
 # The marker block the rules installer writes into every platform's rules file.
@@ -70,16 +71,16 @@ PACK_SKILLS_DIR = "docs/fleet-skills"
 # The hook ids the check derives from an installed config.  A hook id is the entry's
 # own name, else its group name, else the script its command runs, and a trailing
 # "-hook" is ignored when two ids are compared.
-LANE_GUARD_HOOK = "lane-guard-hook"   # the five config-file platforms:  from the command
+LANE_GUARD_HOOK = "lane-guard-hook"  # the five config-file platforms:  from the command
 FLEET_GUARD_HOOK = "fleet-guard-hook"  # the clutch block and the minimax bundle
-NAMED_GROUP_HOOK = "lane-guard"       # the antigravity group, and the muse plugin hook
+NAMED_GROUP_HOOK = "lane-guard"  # the antigravity group, and the muse plugin hook
 
 # The seat to platform mapping.  Nothing in the registry maps a seat tag to a
 # platform id:  fleet-apps.json seatApps.bySeat uses app slugs (claude-code,
 # grok-terminal), which are not platform ids, so the mapping is pinned here, once per
 # seat.  A seat with no Mac harness surface lists no platform at all and carries one
 # seat-wide not-applicable entry per kind.
-SEAT_PLATFORMS: Dict[str, Tuple[str, ...]] = {
+SEAT_PLATFORMS: dict[str, tuple[str, ...]] = {
     "CLAUDE": ("claude",),
     "CODEX": ("codex",),
     "AG": ("antigravity",),
@@ -119,7 +120,7 @@ def _install_rules():
     """
     if str(_scripts_dir()) not in sys.path:
         sys.path.insert(0, str(_scripts_dir()))
-    from fleet_lanes import install_rules  # noqa: PLC0415 - development tool only
+    from fleet_lanes import install_rules
 
     return install_rules
 
@@ -128,7 +129,7 @@ def _install_tools():
     """The ``fleet_lanes.install_tools`` module, imported on demand."""
     if str(_scripts_dir()) not in sys.path:
         sys.path.insert(0, str(_scripts_dir()))
-    from fleet_lanes import install_tools  # noqa: PLC0415 - development tool only
+    from fleet_lanes import install_tools
 
     return install_tools
 
@@ -164,7 +165,7 @@ def instruction_hash(platform: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def pack_skill_names() -> Tuple[str, ...]:
+def pack_skill_names() -> tuple[str, ...]:
     """The fleet skill names, from the canonical pack, sorted.
 
     A directory counts as a skill when it holds a SKILL.md, which is the rule the
@@ -184,7 +185,7 @@ def pack_skill_names() -> Tuple[str, ...]:
     return tuple(names)
 
 
-def _registry() -> Dict[str, dict]:
+def _registry() -> dict[str, dict]:
     """The live seat rows of ``fleet-apps.json``, keyed by tag.
 
     The registry is the roster's source of truth:  the manifest never invents a seat.
@@ -198,7 +199,7 @@ def _registry() -> Dict[str, dict]:
     return rows
 
 
-def _credential(seat: str) -> Tuple[str, str]:
+def _credential(seat: str) -> tuple[str, str]:
     """The (path, reference name) of a seat's Zulip credential.
 
     The path comes from the registry's ``zulipFileCode``, and the reference name is
@@ -220,14 +221,14 @@ def _rule(
     rule_id: str,
     kind: str,
     platforms: Sequence[str],
-    check: Dict[str, str],
-    expected: Dict[str, object],
+    check: dict[str, str],
+    expected: dict[str, object],
     owner_seat: str,
     description: str,
     proof_level: str = "L0",
     autofix_allowed: bool = False,
     ttl_seconds: int = 900,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """One manifest rule, in the shape the design doc pins (section 6.1)."""
     return {
         "id": rule_id,
@@ -244,12 +245,12 @@ def _rule(
     }
 
 
-def _cover(kind: str, reason: str, platforms: Sequence[str] = ()) -> Dict[str, object]:
+def _cover(kind: str, reason: str, platforms: Sequence[str] = ()) -> dict[str, object]:
     """One not-applicable entry:  a kind this seat or platform does not have."""
     return {"kind": kind, "reason": reason, "platforms": list(platforms)}
 
 
-def _instructions_rule(seat: str, platform: str) -> Dict[str, object]:
+def _instructions_rule(seat: str, platform: str) -> dict[str, object]:
     """The rule that pins the marker block of a platform's rules file."""
     path = platform_rules_path(platform)
     return _rule(
@@ -278,7 +279,7 @@ def _hooks_rule(
     timeout_seconds: int,
     description: str,
     proof_level: str = "L1",
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """The rule that pins the guard hook of a platform."""
     return _rule(
         "%s-hooks-lane-guard" % seat.lower(),
@@ -297,7 +298,7 @@ def _hooks_rule(
     )
 
 
-def _mcp_rule(seat: str, platform: str, target: str, names: Sequence[str]) -> Dict[str, object]:
+def _mcp_rule(seat: str, platform: str, target: str, names: Sequence[str]) -> dict[str, object]:
     """The rule that pins the fleet MCP servers of a platform."""
     return _rule(
         "%s-mcp-fleet-servers" % seat.lower(),
@@ -315,7 +316,7 @@ def _mcp_rule(seat: str, platform: str, target: str, names: Sequence[str]) -> Di
     )
 
 
-def _skills_rule(seat: str, platform: str, target: str, names: Sequence[str]) -> Dict[str, object]:
+def _skills_rule(seat: str, platform: str, target: str, names: Sequence[str]) -> dict[str, object]:
     """The rule that pins the fleet skills of a seat."""
     return _rule(
         "%s-skills-fleet" % seat.lower(),
@@ -335,7 +336,7 @@ def _skills_rule(seat: str, platform: str, target: str, names: Sequence[str]) ->
 
 def _subagents_rule(
     seat: str, platform: str, target: str, names: Sequence[str], description: str = ""
-) -> Dict[str, object]:
+) -> dict[str, object]:
     """The rule that pins the sub-agent definitions of a seat."""
     return _rule(
         "%s-subagents-fleet" % seat.lower(),
@@ -348,12 +349,11 @@ def _subagents_rule(
             "names": list(names),
         },
         seat,
-        description
-        or "The comparison is a subset, and an empty list makes this a presence check.",
+        description or "The comparison is a subset, and an empty list makes this a presence check.",
     )
 
 
-def _credential_rule(seat: str, platform: str) -> Dict[str, object]:
+def _credential_rule(seat: str, platform: str) -> dict[str, object]:
     """The rule that pins the Zulip credential of a seat, by stat alone."""
     path, reference = _credential(seat)
     return _rule(
@@ -373,7 +373,7 @@ def _credential_rule(seat: str, platform: str) -> Dict[str, object]:
     )
 
 
-def _permissions_mode_rule(seat: str, platform: str, target: str) -> Dict[str, object]:
+def _permissions_mode_rule(seat: str, platform: str, target: str) -> dict[str, object]:
     """The rule that pins the mode of a settings file that holds permission rules."""
     return _rule(
         "%s-permissions-settings" % seat.lower(),
@@ -394,7 +394,7 @@ def _permissions_mode_rule(seat: str, platform: str, target: str) -> Dict[str, o
 # --------------------------------------------------------------------------- the seats
 
 
-def _hook_target(platform: str) -> Tuple[str, str, int, str]:
+def _hook_target(platform: str) -> tuple[str, str, int, str]:
     """The (target, event, timeout, hook id) of a platform's guard hook.
 
     The five platforms with a hook config file are read from the installer table, so a
@@ -442,7 +442,7 @@ def _mcp_target(platform: str) -> str:
     """
     if str(_scripts_dir()) not in sys.path:
         sys.path.insert(0, str(_scripts_dir()))
-    from fleet_lanes import install_mcp  # noqa: PLC0415 - development tool only
+    from fleet_lanes import install_mcp
 
     target = install_mcp.JSON_BY_KEY.get(platform)
     if target is None:
@@ -462,7 +462,7 @@ def _mcp_target(platform: str) -> str:
     raise ValueError("the platform %r has no MCP config file" % platform)
 
 
-def _mcp_servers(platform: str) -> Tuple[str, ...]:
+def _mcp_servers(platform: str) -> tuple[str, ...]:
     """The MCP servers the fleet registers for a platform.
 
     ``fleet-recall`` is registered everywhere.  ``agent-sync`` is registered only for
@@ -483,7 +483,7 @@ def _skills_target(seat: str) -> str:
     """The skills home of a seat, from the skill installer's seat table."""
     if str(_scripts_dir()) not in sys.path:
         sys.path.insert(0, str(_scripts_dir()))
-    from fleet_skill_identity import SEATS  # noqa: PLC0415 - development tool only
+    from fleet_skill_identity import SEATS
 
     for row in SEATS.values():
         if row.tag == seat and row.dest.startswith("~/"):
@@ -491,7 +491,7 @@ def _skills_target(seat: str) -> str:
     raise ValueError("the seat %r has no skills home" % seat)
 
 
-def _no_hooks_rule(seat: str, platform: str, target: str, description: str) -> Dict[str, object]:
+def _no_hooks_rule(seat: str, platform: str, target: str, description: str) -> dict[str, object]:
     """The rule that pins the absence of a hook, for a harness with no hook mechanism.
 
     ``expected.present`` false inverts the check:  the target must hold no hook for
@@ -513,14 +513,19 @@ def _no_hooks_rule(seat: str, platform: str, target: str, description: str) -> D
     )
 
 
-def _harness_seat(seat: str, platform: str, *, subagents: Optional[Tuple[str, Sequence[str]]],
-                  skip_mcp_reason: Optional[str] = None,
-                  skip_instructions_reason: Optional[str] = None,
-                  skip_skills_reason: Optional[str] = None,
-                  hook_absent_target: Optional[str] = None,
-                  hook_absent_description: str = "",
-                  subagents_description: str = "",
-                  extra_covers: Sequence[Dict[str, object]] = ()) -> Dict[str, object]:
+def _harness_seat(
+    seat: str,
+    platform: str,
+    *,
+    subagents: tuple[str, Sequence[str]] | None,
+    skip_mcp_reason: str | None = None,
+    skip_instructions_reason: str | None = None,
+    skip_skills_reason: str | None = None,
+    hook_absent_target: str | None = None,
+    hook_absent_description: str = "",
+    subagents_description: str = "",
+    extra_covers: Sequence[dict[str, object]] = (),
+) -> dict[str, object]:
     """One seat entry for a harness that has a Mac surface.
 
     The six kinds are the same for every such seat:  the rules file, the guard hook,
@@ -530,8 +535,8 @@ def _harness_seat(seat: str, platform: str, *, subagents: Optional[Tuple[str, Se
     rules file and one with no hook mechanism are covered the same way.
     """
     skills = pack_skill_names()
-    rules: List[Dict[str, object]] = []
-    covers: List[Dict[str, object]] = list(extra_covers)
+    rules: list[dict[str, object]] = []
+    covers: list[dict[str, object]] = list(extra_covers)
     if skip_instructions_reason is None:
         rules.append(_instructions_rule(seat, platform))
     else:
@@ -551,9 +556,7 @@ def _harness_seat(seat: str, platform: str, *, subagents: Optional[Tuple[str, Se
             )
         )
     else:
-        rules.append(
-            _no_hooks_rule(seat, platform, hook_absent_target, hook_absent_description)
-        )
+        rules.append(_no_hooks_rule(seat, platform, hook_absent_target, hook_absent_description))
     if skip_mcp_reason is None:
         rules.append(_mcp_rule(seat, platform, _mcp_target(platform), _mcp_servers(platform)))
     else:
@@ -578,7 +581,7 @@ def _harness_seat(seat: str, platform: str, *, subagents: Optional[Tuple[str, Se
     return {"platforms": [platform], "rules": rules, "notApplicable": covers}
 
 
-def _hosted_seat(seat: str, subject: str, credential_reason: str) -> Dict[str, object]:
+def _hosted_seat(seat: str, subject: str, credential_reason: str) -> dict[str, object]:
     """One seat entry for a seat with no Mac config surface.
 
     Such a seat lists no platform and carries one seat-wide not-applicable entry per
@@ -598,9 +601,9 @@ def _hosted_seat(seat: str, subject: str, credential_reason: str) -> Dict[str, o
     }
 
 
-def _build_seats() -> Dict[str, Dict[str, object]]:
+def _build_seats() -> dict[str, dict[str, object]]:
     """Every live seat's manifest entry, keyed by registry tag."""
-    seats: Dict[str, Dict[str, object]] = {}
+    seats: dict[str, dict[str, object]] = {}
 
     # The five harnesses with a rules file, a hook config file and an MCP config file.
     seats["CLAUDE"] = _harness_seat(
@@ -655,9 +658,7 @@ def _build_seats() -> Dict[str, Dict[str, object]]:
             )
         ],
     )
-    seats["FX"]["rules"].append(
-        _permissions_mode_rule("FX", "fx", "~/.fx/settings.json")
-    )
+    seats["FX"]["rules"].append(_permissions_mode_rule("FX", "fx", "~/.fx/settings.json"))
 
     # MiniMax Code:  the hook is a local plugin bundle, and the sub-agent definitions
     # are the Mavis ones the seat's identity names.
@@ -778,7 +779,7 @@ def _build_seats() -> Dict[str, Dict[str, object]]:
 # --------------------------------------------------------------------------- the manifest
 
 
-def build_manifest() -> Dict[str, object]:
+def build_manifest() -> dict[str, object]:
     """The whole manifest as a plain dict, ready to render as JSON.
 
     The seats come from the registry roster, so a seat that is added to
@@ -789,9 +790,7 @@ def build_manifest() -> Dict[str, object]:
     live = set(_registry())
     missing = sorted(live - set(seats))
     if missing:
-        raise ValueError(
-            "the seed has no entry for the live seat(s): %s" % ", ".join(missing)
-        )
+        raise ValueError("the seed has no entry for the live seat(s): %s" % ", ".join(missing))
     unknown = sorted(set(seats) - live)
     if unknown:
         raise ValueError(
@@ -801,7 +800,7 @@ def build_manifest() -> Dict[str, object]:
     return {"schemaVersion": 1, "seats": {tag: seats[tag] for tag in sorted(seats)}}
 
 
-def render_manifest(manifest: Dict[str, object]) -> str:
+def render_manifest(manifest: dict[str, object]) -> str:
     """The manifest as the text of ``fleet-seats.json``.
 
     Two-space indent, sorted keys and one trailing newline, so the file is stable in
@@ -810,7 +809,7 @@ def render_manifest(manifest: Dict[str, object]) -> str:
     return json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
-def write_manifest(path: Optional[Path] = None) -> Path:
+def write_manifest(path: Path | None = None) -> Path:
     """Write the manifest and return the path it was written to."""
     target = path if path is not None else _repo_root() / "fleet-seats.json"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -818,7 +817,7 @@ def write_manifest(path: Optional[Path] = None) -> Path:
     return target
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     """Write the manifest, or check that the file on disk is the one this seed builds."""
     parser = argparse.ArgumentParser(
         prog="python3 -m fleet_config.seed_manifest",

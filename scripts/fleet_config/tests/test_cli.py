@@ -7,6 +7,7 @@ field for field,  so an extra field or a wrapper fails here.
 Every test runs in a temporary home with a temporary registry and manifest,  so the real
 home and the real manifest are never touched.
 """
+
 from __future__ import annotations
 
 import io
@@ -37,7 +38,13 @@ SCRIPTS = pathlib.Path(__file__).resolve().parents[2]
 def passing_check(rule, platform, ctx):
     """A check that always passes,  so the CLI can be driven to each verdict."""
     return build_result(
-        rule, platform, CheckState.PASS, "the fake check says so", ReasonCode.OK, ObservedState(), ctx
+        rule,
+        platform,
+        CheckState.PASS,
+        "the fake check says so",
+        ReasonCode.OK,
+        ObservedState(),
+        ctx,
     )
 
 
@@ -104,7 +111,10 @@ class CliTests(FleetTestCase):
         registry = registry_with({CheckType.FILE_HASH: passing_check})
         code, out, _err = self.run_cli(self.base("status", "--json"), registry)
         document = json.loads(out)
-        self.assertEqual(list(document), ["schemaVersion", "tool", "command", "generatedAt", "summary", "results"])
+        self.assertEqual(
+            list(document),
+            ["schemaVersion", "tool", "command", "generatedAt", "summary", "results"],
+        )
         self.assertEqual(document["schemaVersion"], contract.SCHEMA_VERSION)
         self.assertEqual(document["tool"], "fleet-config")
         self.assertEqual(document["command"], "status")
@@ -173,9 +183,7 @@ class CliTests(FleetTestCase):
                 return passing_check(rule, platform, ctx)
             return failing_check(rule, platform, ctx)
 
-        registry = registry_with(
-            {CheckType.FILE_HASH: check, CheckType.SKILLS_INSTALLED: check}
-        )
+        registry = registry_with({CheckType.FILE_HASH: check, CheckType.SKILLS_INSTALLED: check})
         _code, out, _err = self.run_cli(self.base("status"), registry)
         self.assertLess(out.index("DRIFT"), out.index("PASS"))
 
@@ -185,9 +193,7 @@ class CliTests(FleetTestCase):
         target.write_text("the original file\n", encoding="utf-8")
         before = snapshot_tree(self.home)
         registry = registry_with({CheckType.FILE_HASH: failing_check})
-        code, out, _err = self.run_cli(
-            self.base("apply", "MM", "--plan"), registry
-        )
+        code, out, _err = self.run_cli(self.base("apply", "MM", "--plan"), registry)
         after = snapshot_tree(self.home)
         self.assertEqual(before, after)
         self.assertEqual(code, cli.EXIT_OK)
@@ -246,14 +252,13 @@ class CliTests(FleetTestCase):
             return 0, "installed\n", ""
 
         registry = registry_with({CheckType.HOOK_REGISTERED: failing_check})
-        with mock.patch("fleet_config.apply.default_runner", runner):
-            with mock.patch(
-                "fleet_config.apply.touchid.confirm",
-                side_effect=__import__(
-                    "fleet_config.touchid", fromlist=["TouchIdError"]
-                ).TouchIdError("Touch ID is not available on this machine", "unavailable"),
-            ):
-                code, out, _err = self.run_cli(self.base("apply", "MM", "--yes"), registry)
+        with mock.patch("fleet_config.apply.default_runner", runner), mock.patch(
+            "fleet_config.apply.touchid.confirm",
+            side_effect=__import__(
+                "fleet_config.touchid", fromlist=["TouchIdError"]
+            ).TouchIdError("Touch ID is not available on this machine", "unavailable"),
+        ):
+            code, out, _err = self.run_cli(self.base("apply", "MM", "--yes"), registry)
         self.assertEqual(code, cli.EXIT_REFUSED)
         self.assertEqual(calls, [], "the installer ran without a confirmation")
         self.assertIn("REFUSED", out)
@@ -309,11 +314,11 @@ class CliTests(FleetTestCase):
         registry = registry_with({CheckType.FILE_HASH: passing_check})
         out = io.StringIO()
         err = io.StringIO()
-        with mock.patch.object(
-            aggregator, "load_registry", return_value=(registry, ())
-        ):
+        with mock.patch.object(aggregator, "load_registry", return_value=(registry, ())):
             with mock.patch.object(
-                aggregator, "run_doctors", return_value=("doctor runtime:  ok  the runtime is there",)
+                aggregator,
+                "run_doctors",
+                return_value=("doctor runtime:  ok  the runtime is there",),
             ):
                 code = cli.main(self.base("status"), out=out, err=err)
         self.assertEqual(code, cli.EXIT_OK)

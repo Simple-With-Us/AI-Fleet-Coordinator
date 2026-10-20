@@ -21,10 +21,11 @@ and must hold an MCP section, and the names it holds are reported.
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
+
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from .checks import CheckContext, CheckError, build_result, expand_target
 from .checks_hooks import read_config_document
@@ -41,14 +42,14 @@ from .types import (
 __all__ = ["CHECKS"]
 
 
-def server_names(document: Dict[str, Any]) -> Optional[Tuple[str, ...]]:
+def server_names(document: dict[str, Any]) -> tuple[str, ...] | None:
     """The MCP server names a config document holds, sorted, or None when it holds none.
 
     None means the document is not an MCP config this reader understands, which is not
     the same as a document with no servers:  an empty ``mcpServers`` object is a
     readable config with no servers.
     """
-    found: List[str] = []
+    found: list[str] = []
     for key in ("mcpServers", "mcp_servers"):
         value = document.get(key)
         if isinstance(value, dict):

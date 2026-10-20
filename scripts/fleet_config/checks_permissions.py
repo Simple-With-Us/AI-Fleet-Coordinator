@@ -25,12 +25,13 @@ lists.
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
+
 from __future__ import annotations
 
 import os
 import stat as stat_module
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Set, Tuple
+from datetime import UTC, datetime
+from typing import Any
 
 from .checks import CheckContext, CheckError, build_result, expand_target, iso_utc
 from .checks_hooks import read_config_document
@@ -51,13 +52,13 @@ _PERMISSION_LIST_KEYS = ("allow", "deny", "ask")
 _FLAT_PERMISSION_KEYS = ("allowPermissions", "denyPermissions", "askPermissions")
 
 
-def permission_names(document: Dict[str, Any]) -> Tuple[str, ...]:
+def permission_names(document: dict[str, Any]) -> tuple[str, ...]:
     """The permission identifiers a config document holds, sorted.
 
     Only strings are read.  A permission entry that is not a string is ignored, because
     a name is all this check compares.
     """
-    found: Set[str] = set()
+    found: set[str] = set()
     permissions = document.get("permissions")
     if isinstance(permissions, dict):
         for key in _PERMISSION_LIST_KEYS:
@@ -78,13 +79,12 @@ def mode_string(mode: int) -> str:
     return "%04o" % stat_module.S_IMODE(mode)
 
 
-def _expected_mode(expected: Optional[str]) -> Optional[int]:
+def _expected_mode(expected: str | None) -> int | None:
     """The expected mode as an integer, or None when the rule does not name one."""
     if expected is None:
         return None
     text = expected.strip().lower()
-    if text.startswith("0o"):
-        text = text[2:]
+    text = text.removeprefix("0o")
     if not text:
         return None
     try:
@@ -301,7 +301,7 @@ def check_credential_stat(rule: Rule, platform: str, ctx: CheckContext) -> Check
         )
 
     mode = mode_string(info.st_mode)
-    mtime = iso_utc(datetime.fromtimestamp(info.st_mtime, tz=timezone.utc))
+    mtime = iso_utc(datetime.fromtimestamp(info.st_mtime, tz=UTC))
     observed = ObservedState(
         present=True,
         mode=mode,

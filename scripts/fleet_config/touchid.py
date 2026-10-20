@@ -17,19 +17,20 @@ The gate fails closed, always:
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
+
 from __future__ import annotations
 
 import os
 import shutil
 import subprocess
-from typing import Mapping, Optional, Sequence, Tuple
+from collections.abc import Mapping, Sequence
 
 from .types import ConfigKind
 
 __all__ = [
+    "HELPER_EXIT_FAILED",
     "HELPER_EXIT_OK",
     "HELPER_EXIT_UNAVAILABLE",
-    "HELPER_EXIT_FAILED",
     "PERSISTENCE_CLASS_KINDS",
     "TouchIdError",
     "confirm",
@@ -42,7 +43,7 @@ __all__ = [
 # The kinds whose writes persist and change what an agent may do, so they need a human
 # confirmation.  Hooks and plugins are the two the design names;  a new kind joins this
 # tuple deliberately, never by accident.
-PERSISTENCE_CLASS_KINDS: Tuple[ConfigKind, ...] = (ConfigKind.HOOKS,)
+PERSISTENCE_CLASS_KINDS: tuple[ConfigKind, ...] = (ConfigKind.HOOKS,)
 
 # The helper's exit codes, mirrored from the Swift source.
 HELPER_EXIT_OK = 0
@@ -84,7 +85,7 @@ def _package_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def helper_candidates() -> Tuple[str, ...]:
+def helper_candidates() -> tuple[str, ...]:
     """The places the helper may live, most specific first.
 
     The environment override comes first, so a test or an installed copy can name its own
@@ -103,7 +104,7 @@ def helper_candidates() -> Tuple[str, ...]:
     return tuple(candidates)
 
 
-def helper_path() -> Optional[str]:
+def helper_path() -> str | None:
     """The helper that will be used, or None when there is none."""
     for candidate in helper_candidates():
         if os.path.isfile(candidate):
@@ -147,9 +148,9 @@ def _test_bypass_allowed(env: Mapping[str, str], test_bypass: bool) -> bool:
 def confirm(
     reason: str,
     *,
-    helper: Optional[str] = None,
+    helper: str | None = None,
     timeout: int = DEFAULT_TIMEOUT,
-    env: Optional[Mapping[str, str]] = None,
+    env: Mapping[str, str] | None = None,
     test_bypass: bool = False,
 ) -> None:
     """Ask for a Touch ID confirmation, or raise ``TouchIdError``.

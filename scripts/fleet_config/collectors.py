@@ -16,9 +16,8 @@ aggregator applies them, in the design's step order, after the L0 result exists.
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from .checks import CheckContext, CheckError, CheckRegistry, build_result, default_registry
 from .types import CheckResult, CheckState, Collector, ObservedState, ReasonCode, Rule
@@ -26,8 +25,8 @@ from .types import CheckResult, CheckState, Collector, ObservedState, ReasonCode
 __all__ = [
     "collect",
     "mac_collect",
-    "unsupported_collector",
     "registry_for",
+    "unsupported_collector",
 ]
 
 
@@ -42,9 +41,7 @@ def registry_for() -> CheckRegistry:
     try:
         return default_registry()
     except ImportError as exc:
-        raise CheckError(
-            "the fleet_config check modules are not complete yet: %s" % exc
-        ) from exc
+        raise CheckError("the fleet_config check modules are not complete yet: %s" % exc) from exc
 
 
 def unsupported_collector(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
@@ -73,7 +70,7 @@ def mac_collect(
     rule: Rule,
     platform: str,
     ctx: CheckContext,
-    registry: Optional[CheckRegistry] = None,
+    registry: CheckRegistry | None = None,
 ) -> CheckResult:
     """Run a rule's check on the mac collector.
 

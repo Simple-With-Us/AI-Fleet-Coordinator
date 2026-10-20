@@ -25,6 +25,7 @@ The one seam this module expects from another lane is the proof machinery:  it c
 ``level``, ``reason`` and ``reason_code`` attributes.  A missing ``proof.py`` is not an
 error;  the rule then reads ``UNPROVEN``,  which is never healthy.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -32,9 +33,9 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from datetime import UTC, datetime
 
 from . import contract
 from .checks import (
@@ -82,14 +83,14 @@ DOCTOR_TIMEOUT = 120
 
 # The doctors whose results are folded into a status run.  They are MAC level checks,
 # not per-seat ones:  they run once per status run,  never once per seat.
-DOCTOR_COMMANDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+DOCTOR_COMMANDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("fleet-tools", ("fleet-tools-doctor.py", "--json", "--no-network")),
 )
 
 # Which check module implements which kind.  This mirrors the module ownership map in the
 # design document (section 10) and lets the aggregator say "the check module
 # checks_hooks is not present" instead of a bare "unsupported" when a lane has not landed.
-CHECK_MODULE_BY_KIND: Dict[ConfigKind, str] = {
+CHECK_MODULE_BY_KIND: dict[ConfigKind, str] = {
     ConfigKind.INSTRUCTIONS: "checks_instructions",
     ConfigKind.HOOKS: "checks_hooks",
     ConfigKind.MCP: "checks_mcp",
@@ -108,7 +109,7 @@ class ProofOutcome:
     when it did not run, and ``proof-failed`` when it ran and the hook did not deny.
     """
 
-    level: Optional[ProofLevel]
+    level: ProofLevel | None
     reason: str
     reason_code: ReasonCode = ReasonCode.PROOF_NOT_RUN
 
@@ -116,7 +117,8 @@ class ProofOutcome:
 # A caller-supplied proof function:  (rule, platform, ctx, prove) -> an outcome.
 ProofRunner = Callable[[Rule, str, CheckContext, bool], object]
 
-def load_registry() -> Tuple[CheckRegistry, Tuple[str, ...]]:
+
+def load_registry() -> tuple[CheckRegistry, tuple[str, ...]]:
     """The shared check registry plus the check modules that could not be imported.
 
     The registry comes from ``checks.default_registry()`` when every check module is
@@ -131,7 +133,7 @@ def load_registry() -> Tuple[CheckRegistry, Tuple[str, ...]]:
     except ImportError:
         pass
     registry = CheckRegistry()
-    missing: List[str] = []
+    missing: list[str] = []
     for module_name in sorted(set(CHECK_MODULE_BY_KIND.values())):
         try:
             module = importlib.import_module("." + module_name, __package__)
@@ -200,7 +202,9 @@ def _normalize_proof(value: object) -> ProofOutcome:
         level = value[0] if len(value) > 0 else None
         reason = str(value[1]) if len(value) > 1 else "the proof machinery said nothing"
         code = value[2] if len(value) > 2 else ReasonCode.PROOF_NOT_RUN
-        return ProofOutcome(level, reason, code if isinstance(code, ReasonCode) else ReasonCode.PROOF_NOT_RUN)
+        return ProofOutcome(
+            level, reason, code if isinstance(code, ReasonCode) else ReasonCode.PROOF_NOT_RUN
+        )
     level = getattr(value, "level", None)
     reason = getattr(value, "reason", None)
     code = getattr(value, "reason_code", None)
@@ -216,7 +220,7 @@ def _run_proof(
     platform: str,
     ctx: CheckContext,
     prove: bool,
-    runner: Optional[ProofRunner] = None,
+    runner: ProofRunner | None = None,
 ) -> ProofOutcome:
     """Ask the proof machinery what it can prove about one rule.
 
@@ -267,7 +271,7 @@ def _apply_proof(
     platform: str,
     ctx: CheckContext,
     prove: bool,
-    runner: Optional[ProofRunner] = None,
+    runner: ProofRunner | None = None,
 ) -> CheckResult:
     """Fold the proof outcome into a check result.
 
@@ -326,7 +330,7 @@ def _run_check(
     platform: str,
     ctx: CheckContext,
     registry: CheckRegistry,
-    missing_modules: Tuple[str, ...],
+    missing_modules: tuple[str, ...],
 ) -> CheckResult:
     """Run one rule's check and return its result, whatever happens.
 
@@ -338,7 +342,8 @@ def _run_check(
         return _unsupported(
             rule,
             platform,
-            "the collector %s is not implemented in this phase;  only mac is" % rule.collector.value,
+            "the collector %s is not implemented in this phase;  only mac is"
+            % rule.collector.value,
             ctx,
         )
     module_name = CHECK_MODULE_BY_KIND.get(rule.kind)
@@ -398,10 +403,10 @@ def _scripts_dir() -> str:
 def run_doctors(
     ctx: CheckContext,
     *,
-    commands: Optional[Sequence[Tuple[str, Tuple[str, ...]]]] = None,
-    scripts_dir: Optional[str] = None,
+    commands: Sequence[tuple[str, tuple[str, ...]]] | None = None,
+    scripts_dir: str | None = None,
     timeout: int = DOCTOR_TIMEOUT,
-) -> Tuple[str, ...]:
+) -> tuple[str, ...]:
     """Run the MAC level doctors once and return their findings as notes.
 
     The doctors are the fleet's own:  ``fleet-tools-doctor.py`` answers in under two
@@ -419,7 +424,7 @@ def run_doctors(
     directory instead of this checkout.
     """
     selected = commands if commands is not None else DOCTOR_COMMANDS
-    notes: List[str] = []
+    notes: list[str] = []
     scripts = scripts_dir if scripts_dir is not None else _scripts_dir()
     for name, argv in selected:
         path = os.path.join(scripts, argv[0])
@@ -445,7 +450,8 @@ def run_doctors(
         if result.returncode != 0:
             detail = (result.stderr or b"").decode("utf-8", "replace").strip()
             notes.append(
-                "the %s doctor exited %d:  %s" % (name, result.returncode, detail or "no reason given")
+                "the %s doctor exited %d:  %s"
+                % (name, result.returncode, detail or "no reason given")
             )
             continue
         try:
@@ -474,16 +480,16 @@ def run_doctors(
 def run_status(
     manifest: Manifest,
     *,
-    seat: Optional[str] = None,
-    kind: Optional[ConfigKind] = None,
-    platform: Optional[str] = None,
-    ctx: Optional[CheckContext] = None,
+    seat: str | None = None,
+    kind: ConfigKind | None = None,
+    platform: str | None = None,
+    ctx: CheckContext | None = None,
     prove: bool = False,
-    registry: Optional[CheckRegistry] = None,
-    home: Optional[str] = None,
-    missing_modules: Optional[Sequence[str]] = None,
+    registry: CheckRegistry | None = None,
+    home: str | None = None,
+    missing_modules: Sequence[str] | None = None,
     include_doctors: bool = False,
-    proof_runner: Optional[ProofRunner] = None,
+    proof_runner: ProofRunner | None = None,
 ) -> StatusReport:
     """Run every rule in `manifest` and build one ``StatusReport``.
 
@@ -505,15 +511,15 @@ def run_status(
     """
     if ctx is None:
         ctx = CheckContext(home=resolve_home(home), now=utc_now(), timeout=DEFAULT_TIMEOUT)
-    missing: Tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
     if registry is None:
         registry, missing = load_registry()
     if missing_modules is not None:
         missing = tuple(missing_modules)
-    notes: List[str] = []
+    notes: list[str] = []
     for name in missing:
         notes.append("the check module %s.py is not available in this build" % name)
-    results: List[CheckResult] = []
+    results: list[CheckResult] = []
     for seat_manifest in manifest.seats:
         if seat is not None and seat_manifest.seat != seat:
             continue
@@ -541,19 +547,21 @@ def run_status(
     )
 
 
-def result_expires_at(result: CheckResult) -> Optional[datetime]:
+def result_expires_at(result: CheckResult) -> datetime | None:
     """The moment a result goes stale, parsed from its ``expiresAt`` stamp.
 
     None when the stamp cannot be parsed, which the caller reads as "cannot tell", never
     as "fresh".
     """
     try:
-        return datetime.strptime(result.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(result.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=UTC
+        )
     except (TypeError, ValueError):
         return None
 
 
-def result_is_expired(result: CheckResult, now: Optional[datetime] = None) -> bool:
+def result_is_expired(result: CheckResult, now: datetime | None = None) -> bool:
     """True when `result` is past its TTL at `now`.
 
     A result whose expiry cannot be read counts as expired, so an unreadable stamp never
@@ -568,7 +576,7 @@ def result_is_expired(result: CheckResult, now: Optional[datetime] = None) -> bo
 
 def mark_stale_results(
     report: StatusReport,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
     force: bool = False,
 ) -> StatusReport:
     """Re-label every result whose TTL has passed as ``UNKNOWN`` with reason ``stale``.
@@ -584,7 +592,7 @@ def mark_stale_results(
     answer to the question that was asked.
     """
     moment = now if now is not None else utc_now()
-    relabelled: List[CheckResult] = []
+    relabelled: list[CheckResult] = []
     for result in report.results:
         if not force and not result_is_expired(result, moment):
             relabelled.append(result)

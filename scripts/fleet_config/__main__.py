@@ -30,6 +30,7 @@ say.  The design document (section 4) assigns 3 to UNKNOWN and 2 to a refused ru
 lane's task pins UNKNOWN to 2,  so the two numbers are swapped against that document.
 They live in the constants below,  so reconciling them is a one-line change.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,9 +38,23 @@ import json
 import os
 import pathlib
 import sys
-from typing import List, Optional, Sequence, TextIO
+from collections.abc import Sequence
+from typing import TextIO
 
-from . import aggregator, apply as apply_module, cache, contract, manifest as manifest_module, plan as plan_module
+from . import (
+    aggregator,
+    cache,
+    contract,
+)
+from . import (
+    apply as apply_module,
+)
+from . import (
+    manifest as manifest_module,
+)
+from . import (
+    plan as plan_module,
+)
 from .checks import CheckContext, CheckError, resolve_home, utc_now
 from .types import CheckResult, CheckState, ConfigKind, Manifest, OverallVerdict, StatusReport
 
@@ -106,7 +121,7 @@ def _verdict_exit(verdict: OverallVerdict) -> int:
     return EXIT_UNKNOWN
 
 
-def _sorted_results(results: Sequence[CheckResult]) -> List[CheckResult]:
+def _sorted_results(results: Sequence[CheckResult]) -> list[CheckResult]:
     """The results ordered worst state first,  then by seat, platform and rule id."""
     order = {state: index for index, state in enumerate(_SEVERITY)}
     return sorted(
@@ -125,7 +140,7 @@ def render_report(report: StatusReport) -> str:
 
     It adds no fact the JSON envelope lacks.
     """
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append("fleet-config status  (%s)" % report.generated_at)
     lines.append("verdict: %s" % report.summary.overall_verdict.value)
     for result in _sorted_results(report.results):
@@ -232,7 +247,9 @@ def _load_manifest(args: argparse.Namespace) -> Manifest:
     return manifest_module.load_manifest(path, registry)
 
 
-def _check_filters(loaded: Manifest, seat: Optional[str], kind: Optional[str], platform: Optional[str]) -> None:
+def _check_filters(
+    loaded: Manifest, seat: str | None, kind: str | None, platform: str | None
+) -> None:
     """Refuse an unknown seat, kind or platform.  An unknown value is a usage error."""
     if seat is not None and loaded.seat(seat) is None:
         raise UsageError(
@@ -311,7 +328,10 @@ def _confirm_or_refuse(plan: plan_module.Plan, assume_yes: bool, out: TextIO, er
         )
         return False
     out.write(plan.render())
-    out.write("Apply these %d change%s?  [y/N] " % (len(plan.autofixable()), "" if len(plan.autofixable()) == 1 else "s"))
+    out.write(
+        "Apply these %d change%s?  [y/N] "
+        % (len(plan.autofixable()), "" if len(plan.autofixable()) == 1 else "s")
+    )
     out.flush()
     answer = sys.stdin.readline().strip().lower()
     return answer in ("y", "yes")
@@ -360,7 +380,9 @@ def _apply(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
     return _verdict_exit(result.verdict)
 
 
-def main(argv: Optional[List[str]] = None, out: Optional[TextIO] = None, err: Optional[TextIO] = None) -> int:
+def main(
+    argv: list[str] | None = None, out: TextIO | None = None, err: TextIO | None = None
+) -> int:
     """Parse the arguments and dispatch.  Returns the exit code."""
     out = out if out is not None else sys.stdout
     err = err if err is not None else sys.stderr

@@ -31,12 +31,12 @@ absent, and its absence is the pass.
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
+
 from __future__ import annotations
 
 import hashlib
 import os
 import re
-from typing import List, Optional, Tuple
 
 from .checks import CheckContext, CheckError, build_result, expand_target, sha256_text
 from .types import (
@@ -67,19 +67,19 @@ class MarkerError(ValueError):
 
 
 def _locate(
-    lines: List[str],
+    lines: list[str],
     name: str,
-    begin_re: "re.Pattern[str]",
-    end_re: "re.Pattern[str]",
-) -> Optional[Tuple[int, int]]:
+    begin_re: re.Pattern[str],
+    end_re: re.Pattern[str],
+) -> tuple[int, int] | None:
     """The (begin index, end index) of the named block, or None when there is none.
 
     Raises MarkerError for a begin with no end, an end with no begin, an end before its
     begin, or the same name twice.  Blocks of other names are ignored, exactly as
     ``fleet_lanes.marked_block.find_block`` ignores them.
     """
-    begins: List[int] = []
-    ends: List[int] = []
+    begins: list[int] = []
+    ends: list[int] = []
     for index, raw in enumerate(lines):
         line = raw.rstrip("\r")
         match = begin_re.match(line)
@@ -101,13 +101,11 @@ def _locate(
     if not ends:
         raise MarkerError("the begin marker for %r has no end marker" % name)
     if ends[0] < begins[0]:
-        raise MarkerError(
-            "the end marker for %r comes before its begin marker" % name
-        )
+        raise MarkerError("the end marker for %r comes before its begin marker" % name)
     return begins[0], ends[0]
 
 
-def marked_block_body(text: str, name: str) -> Optional[Tuple[str, ...]]:
+def marked_block_body(text: str, name: str) -> tuple[str, ...] | None:
     """The lines of the named marker block, CR stripped and markers excluded, or None.
 
     The hash-comment family is read first and the HTML-comment family second.  A
@@ -120,10 +118,10 @@ def marked_block_body(text: str, name: str) -> Optional[Tuple[str, ...]]:
         loc = _locate(lines, name, _HTML_BEGIN_MARKER, _HTML_END_MARKER)
     if loc is None:
         return None
-    return tuple(line.rstrip("\r") for line in lines[loc[0] + 1:loc[1]])
+    return tuple(line.rstrip("\r") for line in lines[loc[0] + 1 : loc[1]])
 
 
-def block_body_hash(body: Tuple[str, ...]) -> str:
+def block_body_hash(body: tuple[str, ...]) -> str:
     """The SHA-256 of a marker block body.
 
     The lines are joined with a newline and one trailing newline is added, then the
@@ -209,15 +207,16 @@ def check_marked_block_hash(rule: Rule, platform: str, ctx: CheckContext) -> Che
         raw = _read_bytes(path)
     except OSError as exc:
         return _unreadable_result(
-            rule, platform, ctx, "The file %s cannot be read:  %s" % (target, exc.strerror or "unknown error")
+            rule,
+            platform,
+            ctx,
+            "The file %s cannot be read:  %s" % (target, exc.strerror or "unknown error"),
         )
 
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return _unreadable_result(
-            rule, platform, ctx, "The file %s is not valid UTF-8." % target
-        )
+        return _unreadable_result(rule, platform, ctx, "The file %s is not valid UTF-8." % target)
 
     name = rule.check.detail
     if not name:
@@ -343,7 +342,10 @@ def check_file_hash(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult
         raw = _read_bytes(path)
     except OSError as exc:
         return _unreadable_result(
-            rule, platform, ctx, "The file %s cannot be read:  %s" % (target, exc.strerror or "unknown error")
+            rule,
+            platform,
+            ctx,
+            "The file %s cannot be read:  %s" % (target, exc.strerror or "unknown error"),
         )
 
     # The hash is over the raw bytes, as the design doc pins it.  For a UTF-8 file

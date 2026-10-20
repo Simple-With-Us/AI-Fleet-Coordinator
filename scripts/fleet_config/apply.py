@@ -18,12 +18,13 @@ The rules, all enforced here:
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
+
 from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import plan as plan_module
 from . import touchid
@@ -57,7 +58,7 @@ OUTCOME_SKIPPED = "skipped"
 
 # A runner is called with the full argv and answers (returncode, stdout, stderr).  Tests
 # inject one,  so no test ever starts a real installer.
-InstallerRunner = Callable[[Sequence[str]], Tuple[int, str, str]]
+InstallerRunner = Callable[[Sequence[str]], tuple[int, str, str]]
 
 # A Touch ID gate is called with the sentence the owner reads and raises to refuse.
 TouchIdGate = Callable[[str], None]
@@ -71,8 +72,8 @@ class ApplyStep:
     seat: str
     platform: str
     kind: ConfigKind
-    command: Tuple[str, ...]
-    files: Tuple[str, ...]
+    command: tuple[str, ...]
+    files: tuple[str, ...]
     outcome: str
     detail: str
     persistence_class: bool = False
@@ -87,33 +88,34 @@ class ApplyStep:
 class ApplyResult:
     """What one apply did,  and the status that came after it."""
 
-    seat: Optional[str]
-    steps: Tuple[ApplyStep, ...]
-    report: Optional[StatusReport] = None
-    verdict: Optional[OverallVerdict] = None
+    seat: str | None
+    steps: tuple[ApplyStep, ...]
+    report: StatusReport | None = None
+    verdict: OverallVerdict | None = None
     refused: bool = False
     refusal_reason: str = ""
 
     @property
-    def applied(self) -> Tuple[ApplyStep, ...]:
+    def applied(self) -> tuple[ApplyStep, ...]:
         """The steps that wrote something."""
         return tuple(step for step in self.steps if step.outcome == OUTCOME_APPLIED)
 
     @property
-    def failed(self) -> Tuple[ApplyStep, ...]:
+    def failed(self) -> tuple[ApplyStep, ...]:
         """The steps that failed or were refused."""
         return tuple(step for step in self.steps if step.failed)
 
     @property
-    def skipped(self) -> Tuple[ApplyStep, ...]:
+    def skipped(self) -> tuple[ApplyStep, ...]:
         """The steps that were not eligible."""
         return tuple(step for step in self.steps if step.outcome == OUTCOME_SKIPPED)
 
     def render(self) -> str:
         """The apply as text for a human."""
-        lines: List[str] = []
+        lines: list[str] = []
         lines.append(
-            "Applied %d change%s;  %d skipped,  %d failed." % (
+            "Applied %d change%s;  %d skipped,  %d failed."
+            % (
                 len(self.applied),
                 "" if len(self.applied) == 1 else "s",
                 len(self.skipped),
@@ -121,7 +123,9 @@ class ApplyResult:
             )
         )
         for step in self.steps:
-            lines.append("  %-16s %s  %s  %s" % (step.outcome, step.rule_id, step.kind.value, step.platform))
+            lines.append(
+                "  %-16s %s  %s  %s" % (step.outcome, step.rule_id, step.kind.value, step.platform)
+            )
             if step.command:
                 lines.append("      command:  %s" % " ".join(step.command))
             for path in step.files:
@@ -135,7 +139,7 @@ class ApplyResult:
         return "\n".join(lines) + "\n"
 
 
-def default_runner(argv: Sequence[str], timeout: int = DEFAULT_TIMEOUT) -> Tuple[int, str, str]:
+def default_runner(argv: Sequence[str], timeout: int = DEFAULT_TIMEOUT) -> tuple[int, str, str]:
     """Run an installer as a child process and answer (returncode, stdout, stderr).
 
     The child inherits the environment,  so the installer sees the same PATH and HOME the
@@ -195,12 +199,12 @@ def _touchid_gate_reason(entry: plan_module.PlanEntry) -> str:
 def apply_plan(
     plan: plan_module.Plan,
     *,
-    home: Optional[str] = None,
-    runner: Optional[InstallerRunner] = None,
-    touchid_gate: Optional[TouchIdGate] = None,
-    manifest: Optional[Manifest] = None,
-    registry: Optional[CheckRegistry] = None,
-    ctx: Optional[CheckContext] = None,
+    home: str | None = None,
+    runner: InstallerRunner | None = None,
+    touchid_gate: TouchIdGate | None = None,
+    manifest: Manifest | None = None,
+    registry: CheckRegistry | None = None,
+    ctx: CheckContext | None = None,
     recheck: bool = True,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> ApplyResult:
@@ -218,7 +222,7 @@ def apply_plan(
     target_home = str(resolve_home(home))
     run = runner if runner is not None else (lambda argv: default_runner(argv, timeout))
     gate = touchid_gate if touchid_gate is not None else touchid.confirm
-    steps: List[ApplyStep] = []
+    steps: list[ApplyStep] = []
     refused = False
     refusal_reason = ""
 
@@ -292,7 +296,9 @@ def apply_plan(
         code, stdout, stderr = run(argv)
         if code == 0:
             outcome = OUTCOME_APPLIED
-            detail = (stdout or stderr).strip().splitlines()[-1] if (stdout or stderr).strip() else ""
+            detail = (
+                (stdout or stderr).strip().splitlines()[-1] if (stdout or stderr).strip() else ""
+            )
         else:
             outcome = OUTCOME_FAILED
             detail = (stderr or stdout).strip() or "the installer exited %d" % code
@@ -310,7 +316,7 @@ def apply_plan(
             )
         )
 
-    report: Optional[StatusReport] = None
+    report: StatusReport | None = None
     if recheck and manifest is not None:
         # The status that follows the writes is its own run,  so it gets its own clock.
         timeout = ctx.timeout if ctx is not None else DEFAULT_TIMEOUT

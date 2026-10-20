@@ -4,6 +4,7 @@ Every test builds its fixtures in a temporary home directory.  The real home is 
 read or written:  a check that escaped its context would show up as a MISSING result
 against a fixture that is right there in the temporary tree.
 """
+
 from __future__ import annotations
 
 import builtins
@@ -11,8 +12,8 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from fleet_config.checks import CheckContext, default_registry, sha256_text
 from fleet_config.checks_hooks import (
@@ -51,7 +52,7 @@ def make_rule(
     check_type: CheckType,
     target: str,
     detail: str = "",
-    expected: Optional[ExpectedState] = None,
+    expected: ExpectedState | None = None,
     kind: ConfigKind = ConfigKind.INSTRUCTIONS,
     seat: str = "CLAUDE",
     ttl_seconds: int = 900,
@@ -75,7 +76,7 @@ def make_context(home: str) -> CheckContext:
     """A context pinned to one home and one clock."""
     return CheckContext(
         home=home,
-        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+        now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
     )
 
 
@@ -123,7 +124,10 @@ class InstructionsTests(TempHome):
         self.assertEqual(result.observed.sha256, sha256_text(MARKED_BODY))
 
     def test_marked_block_hash_drifts_on_a_different_body(self):
-        self.write(".claude/CLAUDE.md", "# fleet:begin fleet-lane-map\nsomething else\n# fleet:end fleet-lane-map\n")
+        self.write(
+            ".claude/CLAUDE.md",
+            "# fleet:begin fleet-lane-map\nsomething else\n# fleet:end fleet-lane-map\n",
+        )
         rule = make_rule(
             CheckType.MARKED_BLOCK_HASH,
             "~/.claude/CLAUDE.md",
@@ -257,7 +261,7 @@ class InstructionsTests(TempHome):
 class HooksTests(TempHome):
     """The hook registrations of a harness settings file."""
 
-    def claude_settings(self) -> Dict[str, Any]:
+    def claude_settings(self) -> dict[str, Any]:
         """A Claude shaped settings file with the fleet hook."""
         return {
             "hooks": {
@@ -402,8 +406,8 @@ class HooksTests(TempHome):
     def test_hook_registered_reads_the_kimi_toml_shape(self):
         self.write(
             ".kimi-code/config.toml",
-            "[[hooks]]\nevent = \"PreToolUse\"\nmatcher = \"Bash\"\n"
-            "command = \"/x/lane-guard-hook --format kimi\"\ntimeout = 5\n",
+            '[[hooks]]\nevent = "PreToolUse"\nmatcher = "Bash"\n'
+            'command = "/x/lane-guard-hook --format kimi"\ntimeout = 5\n',
         )
         rule = make_rule(
             CheckType.HOOK_REGISTERED,
@@ -444,7 +448,9 @@ class HooksTests(TempHome):
         self.assertEqual(document["hooks"][0]["timeout"], 5)
 
     def test_the_event_name_does_not_depend_on_case_or_underscores(self):
-        entries = hook_entries({"hooks": {"pre_tool_use": [{"command": "/x/lane-guard-hook"}]}}, "PreToolUse")
+        entries = hook_entries(
+            {"hooks": {"pre_tool_use": [{"command": "/x/lane-guard-hook"}]}}, "PreToolUse"
+        )
         self.assertEqual([name for name, _timeout in entries], ["lane-guard-hook"])
 
 
@@ -636,7 +642,7 @@ class SubagentsTests(TempHome):
 class PermissionsTests(TempHome):
     """The permission identifiers of a settings file."""
 
-    def settings(self) -> Dict[str, Any]:
+    def settings(self) -> dict[str, Any]:
         """A settings file with the fleet's permissions."""
         return {
             "permissions": {

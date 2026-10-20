@@ -6,6 +6,7 @@ functions,  so a test can never write to Jay's Mac.
 
 Stdlib only,  and Python 3.9 safe.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -13,7 +14,7 @@ import json
 import pathlib
 import tempfile
 import unittest
-from typing import Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
 
 from fleet_config.checks import CheckContext, CheckRegistry, build_result
 from fleet_config.types import (
@@ -58,7 +59,7 @@ def make_rule(
     owner: str = "MM",
     collector: Collector = Collector.MAC,
     ttl: int = 900,
-    expected: Optional[ExpectedState] = None,
+    expected: ExpectedState | None = None,
 ) -> Rule:
     """One rule for a fake manifest."""
     return Rule(
@@ -77,7 +78,9 @@ def make_rule(
     )
 
 
-def make_manifest(rules: Sequence[Rule], *, seat: str = "MM", platforms: Sequence[str] = ("minimax",)) -> Manifest:
+def make_manifest(
+    rules: Sequence[Rule], *, seat: str = "MM", platforms: Sequence[str] = ("minimax",)
+) -> Manifest:
     """A manifest with one seat and the given rules."""
     return Manifest(
         schema_version=1,
@@ -86,11 +89,11 @@ def make_manifest(rules: Sequence[Rule], *, seat: str = "MM", platforms: Sequenc
     )
 
 
-def manifest_json(manifest: Manifest) -> Dict[str, object]:
+def manifest_json(manifest: Manifest) -> dict[str, object]:
     """The manifest as the JSON a loader reads."""
-    seats: Dict[str, object] = {}
+    seats: dict[str, object] = {}
     for entry in manifest.seats:
-        rules: List[Dict[str, object]] = []
+        rules: list[dict[str, object]] = []
         for rule in entry.rules:
             rules.append(
                 {
@@ -118,11 +121,15 @@ def manifest_json(manifest: Manifest) -> Dict[str, object]:
                     "description": rule.description,
                 }
             )
-        seats[entry.seat] = {"platforms": list(entry.platforms), "rules": rules, "notApplicable": []}
+        seats[entry.seat] = {
+            "platforms": list(entry.platforms),
+            "rules": rules,
+            "notApplicable": [],
+        }
     return {"schemaVersion": 1, "seats": seats}
 
 
-def registry_json(tags: Sequence[str]) -> Dict[str, object]:
+def registry_json(tags: Sequence[str]) -> dict[str, object]:
     """A fleet registry holding exactly these live seat tags."""
     return {"seats": [{"tag": tag, "app": tag.lower()} for tag in tags]}
 
@@ -131,8 +138,8 @@ def result_check(
     state: CheckState,
     reason: str = "the fake check says so",
     reason_code: ReasonCode = ReasonCode.OK,
-    observed: Optional[ObservedState] = None,
-    proof: Optional[ProofLevel] = None,
+    observed: ObservedState | None = None,
+    proof: ProofLevel | None = None,
 ):
     """A check function that always answers with this one result."""
 
@@ -151,7 +158,7 @@ def result_check(
     return check
 
 
-def registry_with(checks: Dict[CheckType, object]) -> CheckRegistry:
+def registry_with(checks: dict[CheckType, object]) -> CheckRegistry:
     """A registry holding exactly these check functions."""
     registry = CheckRegistry()
     for check_type, function in checks.items():
@@ -159,13 +166,13 @@ def registry_with(checks: Dict[CheckType, object]) -> CheckRegistry:
     return registry
 
 
-def snapshot_tree(root: pathlib.Path) -> Dict[str, Tuple[int, int, str]]:
+def snapshot_tree(root: pathlib.Path) -> dict[str, tuple[int, int, str]]:
     """A snapshot of every file under `root`:  path to (mtime_ns, size, sha256).
 
     The mtime and the hash are both kept,  because a write that keeps the bytes and moves
     the mtime is still a write.
     """
-    snapshot: Dict[str, Tuple[int, int, str]] = {}
+    snapshot: dict[str, tuple[int, int, str]] = {}
     if not root.exists():
         return snapshot
     for path in sorted(root.rglob("*")):
@@ -201,5 +208,7 @@ class FleetTestCase(unittest.TestCase):
 
     def write_manifest(self, manifest: Manifest) -> pathlib.Path:
         """Write a fake manifest file."""
-        self.manifest_path.write_text(json.dumps(manifest_json(manifest), indent=1), encoding="utf-8")
+        self.manifest_path.write_text(
+            json.dumps(manifest_json(manifest), indent=1), encoding="utf-8"
+        )
         return self.manifest_path

@@ -14,10 +14,10 @@ and the names it holds are reported.
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
+
 from __future__ import annotations
 
 import os
-from typing import Set, Tuple
 
 from .checks import CheckContext, CheckError, build_result, expand_target
 from .types import (
@@ -33,13 +33,13 @@ from .types import (
 __all__ = ["CHECKS"]
 
 
-def installed_names(directory: str) -> Tuple[str, ...]:
+def installed_names(directory: str) -> tuple[str, ...]:
     """The skill names a directory holds, sorted.
 
     A directory entry counts under its own name, and a ``.md`` file also counts under
     its stem.  Dot files are not skills and are left out.
     """
-    found: Set[str] = set()
+    found: set[str] = set()
     for entry in os.listdir(directory):
         if entry.startswith("."):
             continue

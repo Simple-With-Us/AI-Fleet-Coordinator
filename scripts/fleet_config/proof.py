@@ -30,6 +30,7 @@ Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.  This package never
 imports ``fleet_lanes`` at runtime:  the hook's CLI and its deny shapes are pinned
 here as data, re-implemented from what the installed hook does.
 """
+
 from __future__ import annotations
 
 import json
@@ -40,8 +41,8 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from typing import Dict, Iterator, List, Optional, Tuple
 
 from .checks import CheckContext, CheckError, build_result
 from .types import (
@@ -54,27 +55,27 @@ from .types import (
 )
 
 __all__ = [
-    "ProofOutcome",
-    "L1Outcome",
-    "L2Outcome",
-    "PlatformAdapter",
-    "prove_rule",
-    "L2Platform",
-    "PLATFORM_ADAPTERS",
+    "L2_DENY_PHRASE",
     "L2_PLATFORMS",
+    "L2_TIMEOUT_SECONDS",
+    "PLATFORM_ADAPTERS",
     "SENTINEL_PREFIX",
     "SENTINEL_SOURCE_NAME",
-    "L2_DENY_PHRASE",
-    "L2_TIMEOUT_SECONDS",
-    "platform_adapter",
+    "L1Outcome",
+    "L2Outcome",
+    "L2Platform",
+    "PlatformAdapter",
+    "ProofOutcome",
+    "apply_proof",
     "build_payload",
-    "hook_format",
-    "resolve_hook_command",
     "default_hook_command",
+    "hook_format",
+    "platform_adapter",
+    "proof_to_result",
+    "prove_rule",
+    "resolve_hook_command",
     "run_l1_probe",
     "run_l2_canary",
-    "proof_to_result",
-    "apply_proof",
 ]
 
 # --------------------------------------------------------------------------- pinned facts
@@ -121,7 +122,7 @@ class PlatformAdapter:
     config_rel: str = ""
 
 
-PLATFORM_ADAPTERS: Dict[str, PlatformAdapter] = {
+PLATFORM_ADAPTERS: dict[str, PlatformAdapter] = {
     "claude": PlatformAdapter("claude", "claude", "claude", ".claude/settings.json"),
     "codex": PlatformAdapter("codex", "claude", "codex", ".codex/hooks.json"),
     "grok": PlatformAdapter("grok", "claude", "grok", ".grok/hooks/lane-guard.json"),
@@ -148,11 +149,11 @@ class L2Platform:
 
     platform: str
     binary: str
-    argv: Tuple[str, ...]
+    argv: tuple[str, ...]
     timeout: int = L2_TIMEOUT_SECONDS
 
 
-L2_PLATFORMS: Dict[str, L2Platform] = {
+L2_PLATFORMS: dict[str, L2Platform] = {
     "claude": L2Platform(
         "claude",
         "claude",
@@ -216,13 +217,13 @@ class ProofOutcome:
     the level that was ACHIEVED, so it is None when no proof ran or the proof failed.
     """
 
-    level: Optional[ProofLevel]
+    level: ProofLevel | None
     passed: bool
     state: CheckState
     reason: str
     reason_code: ReasonCode
     detail: str = ""
-    achieved: Optional[ProofLevel] = None
+    achieved: ProofLevel | None = None
 
 
 @dataclass(frozen=True)
@@ -238,12 +239,12 @@ class L2Outcome(ProofOutcome):
 # --------------------------------------------------------------------------- helpers
 
 
-def platform_adapter(platform: str) -> Optional[PlatformAdapter]:
+def platform_adapter(platform: str) -> PlatformAdapter | None:
     """The adapter for a platform, or None when this phase has no L1 adapter for it."""
     return PLATFORM_ADAPTERS.get(platform)
 
 
-def build_payload(adapter: PlatformAdapter, command: str, cwd: str) -> Dict[str, object]:
+def build_payload(adapter: PlatformAdapter, command: str, cwd: str) -> dict[str, object]:
     """The synthetic PreToolUse payload for one platform.
 
     The shape is the one the platform's hook runner sends, because the guard reads
@@ -320,7 +321,7 @@ def _iter_commands(node: object) -> Iterator[str]:
                 yield found
 
 
-def resolve_hook_command(platform: str, ctx: CheckContext) -> Optional[str]:
+def resolve_hook_command(platform: str, ctx: CheckContext) -> str | None:
     """The installed hook command for a platform, read from its own config file.
 
     The command is the one the platform would run, verbatim, so the probe tests the
@@ -360,7 +361,7 @@ def default_hook_command(platform: str, ctx: CheckContext) -> str:
     return "%s --format %s" % (shlex.quote(shim), fmt)
 
 
-def _probe_env(ctx: CheckContext) -> Dict[str, str]:
+def _probe_env(ctx: CheckContext) -> dict[str, str]:
     """The environment a hook child gets.
 
     It is the caller's environment (``CheckContext.child_env()``), never
@@ -372,7 +373,7 @@ def _probe_env(ctx: CheckContext) -> Dict[str, str]:
     return env
 
 
-def _guard_disabled(env: Dict[str, str]) -> bool:
+def _guard_disabled(env: dict[str, str]) -> bool:
     """True when the environment carries the guard's own off switch.
 
     The switch is the owner's escape hatch.  A probe that hid it would report a pass
@@ -446,14 +447,14 @@ def _assert_sentinel_confined(sentinel: Sentinel) -> None:
 class _Run:
     """One child process's result.  ``timed_out`` means the budget ran out."""
 
-    returncode: Optional[int] = None
+    returncode: int | None = None
     stdout: bytes = b""
     stderr: bytes = b""
     timed_out: bool = False
     error: str = ""
 
 
-def _run_shell(command: str, stdin: bytes, env: Dict[str, str], timeout: int, cwd: str) -> _Run:
+def _run_shell(command: str, stdin: bytes, env: dict[str, str], timeout: int, cwd: str) -> _Run:
     """Run a hook command the way a platform runs one:  through a shell, on stdin.
 
     The process group is killed on a timeout, so a probe never leaves a hook running.
@@ -482,7 +483,7 @@ def _run_shell(command: str, stdin: bytes, env: Dict[str, str], timeout: int, cw
     return _Run(returncode=proc.returncode, stdout=out or b"", stderr=err or b"")
 
 
-def _run_argv(argv: List[str], stdin: bytes, env: Dict[str, str], timeout: int, cwd: str) -> _Run:
+def _run_argv(argv: list[str], stdin: bytes, env: dict[str, str], timeout: int, cwd: str) -> _Run:
     """Run an argument list directly, with exactly `env`, and kill the group on a timeout."""
     try:
         proc = subprocess.Popen(
@@ -511,7 +512,7 @@ def _run_argv(argv: List[str], stdin: bytes, env: Dict[str, str], timeout: int, 
 # --------------------------------------------------------------------------- deny shapes
 
 
-def _exit2_reason(text_out: str, text_err: str) -> Tuple[Optional[str], str]:
+def _exit2_reason(text_out: str, text_err: str) -> tuple[str | None, str]:
     """The reason of an exit-2 deny, and the problem with reading it.
 
     The exit-2 contract puts the reason on stderr.  A hook that also wrote to stdout
@@ -526,8 +527,8 @@ def _exit2_reason(text_out: str, text_err: str) -> Tuple[Optional[str], str]:
 
 
 def _read_deny(
-    fmt: str, stdout: bytes, stderr: bytes, returncode: Optional[int]
-) -> Tuple[Optional[str], str]:
+    fmt: str, stdout: bytes, stderr: bytes, returncode: int | None
+) -> tuple[str | None, str]:
     """The deny reason a hook printed, and the problem with reading it.
 
     The reason is None when the hook did not deny.  The problem names why the output
@@ -610,35 +611,53 @@ def _interpret_l1(run: _Run, fmt: str, marker: str, budget: int, guard_off: bool
     unknown, and unknown is failing.
     """
     if run.error:
-        return _l1_outcome(CheckState.UNKNOWN, "the hook could not be started: %s" % run.error,
-                           ReasonCode.ERROR, "no exit code")
+        return _l1_outcome(
+            CheckState.UNKNOWN,
+            "the hook could not be started: %s" % run.error,
+            ReasonCode.ERROR,
+            "no exit code",
+        )
     if run.timed_out:
-        return _l1_outcome(CheckState.UNKNOWN,
-                           "the hook did not answer within %ds, so the sentinel write was never judged"
-                           % budget,
-                           ReasonCode.TIMEOUT, "timed out")
+        return _l1_outcome(
+            CheckState.UNKNOWN,
+            "the hook did not answer within %ds, so the sentinel write was never judged" % budget,
+            ReasonCode.TIMEOUT,
+            "timed out",
+        )
     reason, problem = _read_deny(fmt, run.stdout, run.stderr, run.returncode)
     if problem:
-        return _l1_outcome(CheckState.UNKNOWN,
-                           "the hook's answer could not be read: %s" % problem,
-                           ReasonCode.UNPARSEABLE, "exit %s" % run.returncode)
+        return _l1_outcome(
+            CheckState.UNKNOWN,
+            "the hook's answer could not be read: %s" % problem,
+            ReasonCode.UNPARSEABLE,
+            "exit %s" % run.returncode,
+        )
     if reason is None:
         if run.returncode not in (0, 2):
-            return _l1_outcome(CheckState.UNKNOWN,
-                               "the hook exited %s instead of answering" % run.returncode,
-                               ReasonCode.ERROR, "exit %s" % run.returncode)
+            return _l1_outcome(
+                CheckState.UNKNOWN,
+                "the hook exited %s instead of answering" % run.returncode,
+                ReasonCode.ERROR,
+                "exit %s" % run.returncode,
+            )
         note = ""
         if guard_off:
             note = "  The FLEET_LANE_GUARD switch is off in this environment."
-        return _l1_outcome(CheckState.DRIFT,
-                           "the hook did not deny the sentinel write, so it does not enforce the lane "
-                           "guard.%s" % note,
-                           ReasonCode.PROOF_FAILED, "exit %s, no deny" % run.returncode)
+        return _l1_outcome(
+            CheckState.DRIFT,
+            "the hook did not deny the sentinel write, so it does not enforce the lane "
+            "guard.%s" % note,
+            ReasonCode.PROOF_FAILED,
+            "exit %s, no deny" % run.returncode,
+        )
     if marker not in reason:
-        return _l1_outcome(CheckState.DRIFT,
-                           "the hook denied, but its reason does not name the sentinel destination, "
-                           "so the deny cannot be attributed to this probe",
-                           ReasonCode.PROOF_FAILED, "exit %s" % run.returncode)
+        return _l1_outcome(
+            CheckState.DRIFT,
+            "the hook denied, but its reason does not name the sentinel destination, "
+            "so the deny cannot be attributed to this probe",
+            ReasonCode.PROOF_FAILED,
+            "exit %s" % run.returncode,
+        )
     return L1Outcome(
         level=ProofLevel.L1,
         passed=True,
@@ -653,8 +672,8 @@ def _interpret_l1(run: _Run, fmt: str, marker: str, budget: int, guard_off: bool
 def run_l1_probe(
     platform: str,
     ctx: CheckContext,
-    hook_command: Optional[str] = None,
-    timeout: Optional[int] = None,
+    hook_command: str | None = None,
+    timeout: int | None = None,
 ) -> L1Outcome:
     """Prove at L1 that a platform's installed hook denies a write into a sentinel lane.
 
@@ -684,7 +703,9 @@ def run_l1_probe(
             detail="",
             achieved=None,
         )
-    command = hook_command or resolve_hook_command(platform, ctx) or default_hook_command(platform, ctx)
+    command = (
+        hook_command or resolve_hook_command(platform, ctx) or default_hook_command(platform, ctx)
+    )
     fmt = hook_format(command, platform)
     budget = int(timeout) if timeout else int(ctx.timeout or 10)
     env = _probe_env(ctx)
@@ -739,7 +760,7 @@ def _l2_has_deny_evidence(text: str, marker: str) -> bool:
 def run_l2_canary(
     platform: str,
     ctx: CheckContext,
-    timeout: Optional[int] = None,
+    timeout: int | None = None,
 ) -> L2Outcome:
     """Prove at L2 that a platform actually loads the hook, by running it headless.
 
@@ -774,9 +795,7 @@ def run_l2_canary(
     budget = int(timeout) if timeout else max(int(spec.timeout), int(ctx.timeout or 0))
     workdir = tempfile.mkdtemp(prefix="fleet-config-l2-")
     try:
-        source = os.path.realpath(
-            os.path.join(os.fspath(ctx.home), "Code", SENTINEL_SOURCE_NAME)
-        )
+        source = os.path.realpath(os.path.join(os.fspath(ctx.home), "Code", SENTINEL_SOURCE_NAME))
         destination = os.path.join(workdir, "fleet-config-l2-sentinel-destination")
         prompt = L2_PROMPT_TEMPLATE.format(source=source, destination=destination)
         argv = [spec.binary]
@@ -786,8 +805,9 @@ def run_l2_canary(
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     if run.error:
-        return _l2_outcome(CheckState.UNKNOWN, "the canary could not be started: %s" % run.error,
-                           ReasonCode.ERROR)
+        return _l2_outcome(
+            CheckState.UNKNOWN, "the canary could not be started: %s" % run.error, ReasonCode.ERROR
+        )
     if run.timed_out:
         return _l2_outcome(
             CheckState.UNKNOWN,
@@ -795,7 +815,7 @@ def run_l2_canary(
             ReasonCode.TIMEOUT,
             "timed out",
         )
-    text = (run.stdout.decode("utf-8", "replace") + "\n" + run.stderr.decode("utf-8", "replace"))
+    text = run.stdout.decode("utf-8", "replace") + "\n" + run.stderr.decode("utf-8", "replace")
     marker = os.path.basename(destination)
     if _l2_has_deny_evidence(text, marker):
         return L2Outcome(
@@ -811,7 +831,8 @@ def run_l2_canary(
     if run.returncode not in (0, None):
         return _l2_outcome(
             CheckState.UNKNOWN,
-            "the %s canary exited %s, so it proved nothing about the hook" % (spec.binary, run.returncode),
+            "the %s canary exited %s, so it proved nothing about the hook"
+            % (spec.binary, run.returncode),
             ReasonCode.ERROR,
             "exit %s" % run.returncode,
         )
@@ -870,9 +891,7 @@ def prove_rule(
                 level=None,
                 passed=False,
                 state=CheckState.UNPROVEN,
-                reason=(
-                    "the L2 canary spends a model turn, so it runs only under --prove l2"
-                ),
+                reason=("the L2 canary spends a model turn, so it runs only under --prove l2"),
                 reason_code=ReasonCode.PROOF_NOT_RUN,
                 detail="L2 not requested",
                 achieved=None,

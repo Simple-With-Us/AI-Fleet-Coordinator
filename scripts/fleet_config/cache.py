@@ -20,6 +20,7 @@ to a file another process wrote:
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,8 +28,8 @@ import os
 import stat
 import tempfile
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from datetime import UTC, datetime
+from typing import Any
 
 from . import contract
 from .types import (
@@ -103,14 +104,10 @@ def _dir_is_private() -> bool:
         info = os.lstat(state_dir())
     except OSError:
         return False
-    return (
-        stat.S_ISDIR(info.st_mode)
-        and info.st_uid == os.getuid()
-        and not info.st_mode & 0o077
-    )
+    return stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o077
 
 
-def _expected_to_dict(expected: ExpectedState) -> Dict[str, Any]:
+def _expected_to_dict(expected: ExpectedState) -> dict[str, Any]:
     """The stored form of an expectation.  Set fields only, and names and booleans only."""
     return contract.expected_to_dict(expected)
 
@@ -142,7 +139,7 @@ def _observed_from_dict(raw: Any) -> ObservedState:
     )
 
 
-def _result_to_dict(result: CheckResult) -> Dict[str, Any]:
+def _result_to_dict(result: CheckResult) -> dict[str, Any]:
     """The stored form of one result.  It carries no secret value by construction."""
     return {
         "ruleId": result.rule_id,
@@ -202,7 +199,7 @@ def _result_from_dict(raw: Any) -> CheckResult:
     )
 
 
-def _report_to_dict(report: StatusReport) -> Dict[str, Any]:
+def _report_to_dict(report: StatusReport) -> dict[str, Any]:
     """The stored form of a whole report."""
     return {
         "schemaVersion": report.schema_version,
@@ -228,7 +225,7 @@ def _report_from_dict(raw: Any) -> StatusReport:
     )
 
 
-def save_report(report: StatusReport, now: Optional[float] = None) -> None:
+def save_report(report: StatusReport, now: float | None = None) -> None:
     """Atomically replace the cached copy with `report`.
 
     The copy is written to a temp file in the same directory and renamed over the old
@@ -265,7 +262,7 @@ def save_report(report: StatusReport, now: Optional[float] = None) -> None:
         raise
 
 
-def load_report(now: Optional[float] = None) -> Tuple[Optional[StatusReport], str]:
+def load_report(now: float | None = None) -> tuple[StatusReport | None, str]:
     """(report, note).  The report is None when there is no usable copy.
 
     The note says why in one token (``absent``, ``unsafe``, ``unreadable``,
@@ -316,7 +313,7 @@ def load_report(now: Optional[float] = None) -> Tuple[Optional[StatusReport], st
     return report, "ok"
 
 
-def report_is_stale(report: StatusReport, now: Optional[datetime] = None) -> bool:
+def report_is_stale(report: StatusReport, now: datetime | None = None) -> bool:
     """True when any result in `report` is past its TTL at `now`.
 
     A report with no results is not stale;  it is empty, and an empty run is
@@ -324,11 +321,11 @@ def report_is_stale(report: StatusReport, now: Optional[datetime] = None) -> boo
     """
     from . import aggregator
 
-    moment = now if now is not None else datetime.now(timezone.utc)
+    moment = now if now is not None else datetime.now(UTC)
     return any(aggregator.result_is_expired(result, moment) for result in report.results)
 
 
-def cached_age_seconds(now: Optional[float] = None) -> Optional[int]:
+def cached_age_seconds(now: float | None = None) -> int | None:
     """How old the cached copy is in seconds, or None when there is no copy."""
     epoch = time.time() if now is None else now
     try:

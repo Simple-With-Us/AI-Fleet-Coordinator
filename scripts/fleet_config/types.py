@@ -8,32 +8,32 @@ The names here are fixed.  A check state, a proof level or a config kind is neve
 to fit one platform, because the SwiftUI app, the contract tests and four parallel
 implementers all key off these spellings.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Optional, Tuple
 
 __all__ = [
-    "CheckState",
-    "ProofLevel",
-    "ConfigKind",
-    "Collector",
-    "CheckType",
-    "ReasonCode",
-    "OverallVerdict",
-    "CONFIG_KINDS",
     "CHECK_STATES",
-    "ExpectedState",
-    "ObservedState",
-    "CheckSpec",
-    "Rule",
-    "NotApplicable",
-    "SeatManifest",
-    "Manifest",
+    "CONFIG_KINDS",
     "CheckResult",
-    "StatusSummary",
+    "CheckSpec",
+    "CheckState",
+    "CheckType",
+    "Collector",
+    "ConfigKind",
+    "ExpectedState",
+    "Manifest",
+    "NotApplicable",
+    "ObservedState",
+    "OverallVerdict",
+    "ProofLevel",
+    "ReasonCode",
+    "Rule",
+    "SeatManifest",
     "StatusReport",
+    "StatusSummary",
 ]
 
 
@@ -53,7 +53,7 @@ class CheckState(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-CHECK_STATES: Tuple[CheckState, ...] = tuple(CheckState)
+CHECK_STATES: tuple[CheckState, ...] = tuple(CheckState)
 
 
 class ProofLevel(str, Enum):
@@ -75,12 +75,12 @@ class ProofLevel(str, Enum):
         """The ordering rank of this level, so levels compare without string tricks."""
         return _PROOF_RANK[self]
 
-    def at_least(self, other: "ProofLevel") -> bool:
+    def at_least(self, other: ProofLevel) -> bool:
         """True when this level proves at least as much as `other`."""
         return self.rank >= other.rank
 
 
-_PROOF_RANK: Dict[ProofLevel, int] = {ProofLevel.L0: 0, ProofLevel.L1: 1, ProofLevel.L2: 2}
+_PROOF_RANK: dict[ProofLevel, int] = {ProofLevel.L0: 0, ProofLevel.L1: 1, ProofLevel.L2: 2}
 
 
 class ConfigKind(str, Enum):
@@ -98,7 +98,7 @@ class ConfigKind(str, Enum):
     PERMISSIONS = "permissions"
 
 
-CONFIG_KINDS: Tuple[ConfigKind, ...] = tuple(ConfigKind)
+CONFIG_KINDS: tuple[ConfigKind, ...] = tuple(ConfigKind)
 
 
 class Collector(str, Enum):
@@ -173,11 +173,11 @@ class ExpectedState:
     """
 
     description: str
-    present: Optional[bool] = None
-    sha256: Optional[str] = None
-    names: Tuple[str, ...] = ()
-    mode: Optional[str] = None
-    timeout_seconds: Optional[int] = None
+    present: bool | None = None
+    sha256: str | None = None
+    names: tuple[str, ...] = ()
+    mode: str | None = None
+    timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -189,13 +189,13 @@ class ObservedState:
     contents, so a result cannot leak one by construction.
     """
 
-    present: Optional[bool] = None
-    sha256: Optional[str] = None
-    names: Tuple[str, ...] = ()
-    mode: Optional[str] = None
-    size_bytes: Optional[int] = None
-    mtime: Optional[str] = None
-    timeout_seconds: Optional[int] = None
+    present: bool | None = None
+    sha256: str | None = None
+    names: tuple[str, ...] = ()
+    mode: str | None = None
+    size_bytes: int | None = None
+    mtime: str | None = None
+    timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -226,7 +226,7 @@ class Rule:
 
     id: str
     kind: ConfigKind
-    platforms: Tuple[str, ...]
+    platforms: tuple[str, ...]
     check: CheckSpec
     expected: ExpectedState
     proof_level: ProofLevel
@@ -249,7 +249,7 @@ class NotApplicable:
 
     kind: ConfigKind
     reason: str
-    platforms: Tuple[str, ...] = ()
+    platforms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -257,9 +257,9 @@ class SeatManifest:
     """One seat's desired state:  its platforms, its rules and its explicit covers."""
 
     seat: str
-    platforms: Tuple[str, ...]
-    rules: Tuple[Rule, ...] = ()
-    not_applicable: Tuple[NotApplicable, ...] = ()
+    platforms: tuple[str, ...]
+    rules: tuple[Rule, ...] = ()
+    not_applicable: tuple[NotApplicable, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -267,10 +267,10 @@ class Manifest:
     """A whole loaded manifest.  ``seats`` is in manifest order, keyed by registry tag."""
 
     schema_version: int
-    seats: Tuple[SeatManifest, ...]
-    source_path: Optional[str] = None
+    seats: tuple[SeatManifest, ...]
+    source_path: str | None = None
 
-    def seat(self, tag: str) -> Optional[SeatManifest]:
+    def seat(self, tag: str) -> SeatManifest | None:
         """The entry for registry tag `tag`, or None.  Tags are compared exactly."""
         for entry in self.seats:
             if entry.seat == tag:
@@ -298,7 +298,7 @@ class CheckResult:
     expected: ExpectedState
     observed: ObservedState
     proof_level_required: ProofLevel
-    proof_level_achieved: Optional[ProofLevel]
+    proof_level_achieved: ProofLevel | None
     collector: Collector
     check_type: CheckType
     checked_at: str
@@ -312,7 +312,7 @@ class StatusSummary:
     """Counts for one status run.  ``by_state`` always carries all six states."""
 
     total: int
-    by_state: Dict[CheckState, int]
+    by_state: dict[CheckState, int]
     overall_verdict: OverallVerdict
 
 
@@ -322,7 +322,7 @@ class StatusReport:
 
     schema_version: int
     generated_at: str
-    results: Tuple[CheckResult, ...]
+    results: tuple[CheckResult, ...]
     summary: StatusSummary
-    manifest_source: Optional[str] = None
-    notes: Tuple[str, ...] = field(default_factory=tuple)
+    manifest_source: str | None = None
+    notes: tuple[str, ...] = field(default_factory=tuple)

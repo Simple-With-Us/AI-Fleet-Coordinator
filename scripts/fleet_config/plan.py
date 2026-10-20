@@ -19,11 +19,12 @@ import the engines.
 
 Stdlib only, and Python 3.9 safe, matching ``fleet_knobs``.
 """
+
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Sequence, Tuple
 
 from . import touchid
 from .checks import iso_utc, utc_now
@@ -56,7 +57,7 @@ __all__ = [
 # ``fleet_lanes.install_rules.PLATFORMS`` (``rel_path``).  ``home-agents`` is not a seat
 # platform and is deliberately absent;  ``conductor`` and ``muse-code`` have no rules file
 # and are absent too.
-RULES_FILES: Dict[str, str] = {
+RULES_FILES: dict[str, str] = {
     "claude": ".claude/CLAUDE.md",
     "codex": ".codex/AGENTS.md",
     "fx": ".fx/AGENTS.md",
@@ -73,11 +74,11 @@ RULES_FILES: Dict[str, str] = {
 
 # The platforms whose rules file belongs to the owner, so applying to it needs the
 # installer's ``--i-own-this-file`` flag.  Mirrors ``install_rules.Platform.owner_file``.
-RULES_NEEDS_OWN_FLAG: Tuple[str, ...] = ("claude",)
+RULES_NEEDS_OWN_FLAG: tuple[str, ...] = ("claude",)
 
 # The file each platform's hook registration lives in.  Mirrors
 # ``fleet_lanes.install_tools.PLATFORMS`` (``config_rel``).
-TOOLS_FILES: Dict[str, str] = {
+TOOLS_FILES: dict[str, str] = {
     "claude": ".claude/settings.json",
     "codex": ".codex/hooks.json",
     "grok": ".grok/hooks/lane-guard.json",
@@ -91,7 +92,7 @@ TOOLS_FILES: Dict[str, str] = {
 
 # The MCP config target each platform uses.  Mirrors ``fleet_lanes.install_mcp.TARGET_KEYS``
 # and the platform ids that reach them.
-MCP_TARGETS: Dict[str, str] = {
+MCP_TARGETS: dict[str, str] = {
     "opencode": "opencode",
     "kimi": "kimi",
     "copilot": "copilot",
@@ -103,7 +104,7 @@ MCP_TARGETS: Dict[str, str] = {
 }
 
 # The file each MCP target writes.  Mirrors ``fleet_lanes.install_mcp.JSON_TARGETS``.
-MCP_FILES: Dict[str, str] = {
+MCP_FILES: dict[str, str] = {
     "opencode": ".config/opencode/opencode.json",
     "kimi": ".kimi-code/mcp.json",
     "copilot": ".copilot/mcp-config.json",
@@ -115,7 +116,7 @@ MCP_FILES: Dict[str, str] = {
 
 # Every platform id this package knows about.  A platform the manifest names that is not
 # here is a usage error, never an empty pass.
-KNOWN_PLATFORMS: Tuple[str, ...] = tuple(
+KNOWN_PLATFORMS: tuple[str, ...] = tuple(
     sorted(set(RULES_FILES) | set(TOOLS_FILES) | set(MCP_TARGETS))
 )
 
@@ -127,7 +128,7 @@ SKILLS_INSTALLER_NOTE = (
 )
 
 
-def known_platforms() -> Tuple[str, ...]:
+def known_platforms() -> tuple[str, ...]:
     """The platform ids this package knows about."""
     return KNOWN_PLATFORMS
 
@@ -141,8 +142,8 @@ class Installer:
     """
 
     key: str
-    argv: Tuple[str, ...]
-    files: Tuple[str, ...]
+    argv: tuple[str, ...]
+    files: tuple[str, ...]
     note: str = ""
 
     def command(self, home: str = "<HOME>") -> str:
@@ -150,7 +151,7 @@ class Installer:
         return " ".join(self.argv) + " --home " + home
 
 
-def _rules_installer(platform: str) -> Optional[Installer]:
+def _rules_installer(platform: str) -> Installer | None:
     """The installer that writes a platform's rules file, or None."""
     path = RULES_FILES.get(platform)
     if path is None:
@@ -166,7 +167,7 @@ def _rules_installer(platform: str) -> Optional[Installer]:
     )
 
 
-def _tools_installer(platform: str) -> Optional[Installer]:
+def _tools_installer(platform: str) -> Installer | None:
     """The installer that writes a platform's hook registration, or None."""
     path = TOOLS_FILES.get(platform)
     if path is None:
@@ -179,7 +180,7 @@ def _tools_installer(platform: str) -> Optional[Installer]:
     )
 
 
-def _mcp_installer(platform: str) -> Optional[Installer]:
+def _mcp_installer(platform: str) -> Installer | None:
     """The installer that registers a platform's MCP servers, or None."""
     target = MCP_TARGETS.get(platform)
     if target is None:
@@ -193,7 +194,7 @@ def _mcp_installer(platform: str) -> Optional[Installer]:
     )
 
 
-def installer_for(rule: Rule, platform: Optional[str] = None) -> Optional[Installer]:
+def installer_for(rule: Rule, platform: str | None = None) -> Installer | None:
     """The installer that would make `rule`'s change, or None when there is none.
 
     `platform` names the platform the change is about;  when it is absent the rule's
@@ -228,8 +229,8 @@ class PlanEntry:
     state: CheckState
     reason: str
     change: str
-    installer: Optional[Installer]
-    files: Tuple[str, ...]
+    installer: Installer | None
+    files: tuple[str, ...]
     autofix_allowed: bool
     persistence_class: bool
     owner_seat: str
@@ -252,42 +253,48 @@ class Plan:
     entries into the ones an apply may do and the ones it must not.
     """
 
-    seat: Optional[str]
-    kind: Optional[ConfigKind]
-    platform: Optional[str]
+    seat: str | None
+    kind: ConfigKind | None
+    platform: str | None
     generated_at: str
-    entries: Tuple[PlanEntry, ...]
-    notes: Tuple[str, ...] = ()
+    entries: tuple[PlanEntry, ...]
+    notes: tuple[str, ...] = ()
 
-    def autofixable(self) -> Tuple[PlanEntry, ...]:
+    def autofixable(self) -> tuple[PlanEntry, ...]:
         """The entries an apply may act on."""
         return tuple(entry for entry in self.entries if entry.auto_fixable)
 
-    def blocked(self) -> Tuple[PlanEntry, ...]:
+    def blocked(self) -> tuple[PlanEntry, ...]:
         """The entries an apply must not act on, with the reason on each entry."""
         return tuple(entry for entry in self.entries if not entry.auto_fixable)
 
     def render(self, home: str = "<HOME>") -> str:
         """The plan as text for a human."""
-        lines: List[str] = []
+        lines: list[str] = []
         scope = self.seat or "every seat"
         if self.kind is not None:
             scope = "%s (%s)" % (scope, self.kind.value)
-        lines.append("Plan for %s:  %d entr%s,  %d auto-fixable." % (
-            scope,
-            len(self.entries),
-            "y" if len(self.entries) == 1 else "ies",
-            len(self.autofixable()),
-        ))
+        lines.append(
+            "Plan for %s:  %d entr%s,  %d auto-fixable."
+            % (
+                scope,
+                len(self.entries),
+                "y" if len(self.entries) == 1 else "ies",
+                len(self.autofixable()),
+            )
+        )
         if not self.entries:
             lines.append("  nothing to change:  every checked rule matches the manifest")
         for entry in self.entries:
-            lines.append("  %-11s %s  %s  %s" % (
-                entry.state.value,
-                entry.rule_id,
-                entry.kind.value,
-                entry.platform,
-            ))
+            lines.append(
+                "  %-11s %s  %s  %s"
+                % (
+                    entry.state.value,
+                    entry.rule_id,
+                    entry.kind.value,
+                    entry.platform,
+                )
+            )
             lines.append("      %s" % entry.change)
             if entry.installer is not None:
                 lines.append("      installer:  %s" % entry.command(home))
@@ -307,7 +314,7 @@ class Plan:
             lines.append("  note:  %s" % note)
         return "\n".join(lines) + "\n"
 
-    def to_dict(self) -> Dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         """The plan as plain data, for a caller that renders it as JSON."""
         return {
             "seat": self.seat,
@@ -339,7 +346,7 @@ class Plan:
         }
 
 
-def _change_text(rule: Rule, result: CheckResult, installer: Optional[Installer]) -> str:
+def _change_text(rule: Rule, result: CheckResult, installer: Installer | None) -> str:
     """One sentence saying what would change for this rule."""
     kind = rule.kind.value
     platform = result.platform
@@ -375,7 +382,7 @@ def _change_text(rule: Rule, result: CheckResult, installer: Optional[Installer]
 def _blocked_reason(
     rule: Rule,
     result: CheckResult,
-    installer: Optional[Installer],
+    installer: Installer | None,
 ) -> str:
     """Why the apply side must not touch this entry."""
     if not rule.autofix_allowed:
@@ -383,7 +390,10 @@ def _blocked_reason(
     if installer is None:
         if rule.kind is ConfigKind.SKILLS:
             return SKILLS_INSTALLER_NOTE
-        if rule.kind is ConfigKind.INSTRUCTIONS and rule.check.type is not CheckType.MARKED_BLOCK_HASH:
+        if (
+            rule.kind is ConfigKind.INSTRUCTIONS
+            and rule.check.type is not CheckType.MARKED_BLOCK_HASH
+        ):
             return "no installer writes this file;  only the marked rules block can be installed"
         return "no installer can make this change"
     if result.state not in (CheckState.MISSING, CheckState.DRIFT):
@@ -395,10 +405,10 @@ def build_plan(
     manifest: Manifest,
     observed_results: Sequence[CheckResult],
     *,
-    seat: Optional[str] = None,
-    kind: Optional[ConfigKind] = None,
-    platform: Optional[str] = None,
-    now: Optional[datetime] = None,
+    seat: str | None = None,
+    kind: ConfigKind | None = None,
+    platform: str | None = None,
+    now: datetime | None = None,
 ) -> Plan:
     """Build the read-only plan for the rules that differ from their desired state.
 
@@ -409,12 +419,12 @@ def build_plan(
     Nothing is written and nothing is run:  the plan is a description of what an apply
     would do.
     """
-    rules: Dict[str, Rule] = {}
+    rules: dict[str, Rule] = {}
     for seat_manifest in manifest.seats:
         for rule in seat_manifest.rules:
             rules[rule.id] = rule
-    entries: List[PlanEntry] = []
-    notes: List[str] = []
+    entries: list[PlanEntry] = []
+    notes: list[str] = []
     for result in observed_results:
         if seat is not None and result.seat != seat:
             continue

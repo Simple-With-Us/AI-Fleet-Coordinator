@@ -6,6 +6,7 @@ fake hook answers in the platform's own deny shapes, so the probe's deny detecti
 is exercised for real:  a Claude-shaped deny, the plain-text exit-2 deny, an allow, a
 crash, an unreadable answer and a hang.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,7 +15,7 @@ import shlex
 import stat
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest import mock
 
 from fleet_config import proof
@@ -34,7 +35,7 @@ from fleet_config.types import (
 # The fake hook.  It reads the payload the probe sends, takes the destination the
 # payload names, and answers in the shape the mode names.  It never writes anything
 # except the record file it is told to write.
-FAKE_HOOK = '''#!/usr/bin/env python3
+FAKE_HOOK = """#!/usr/bin/env python3
 import json
 import os
 import sys
@@ -85,7 +86,7 @@ if mode == "crash":
 if mode == "sleep":
     time.sleep(30)
 sys.exit(0)
-'''
+"""
 
 
 def make_rule(
@@ -100,8 +101,9 @@ def make_rule(
         id=rule_id,
         kind=ConfigKind.HOOKS,
         platforms=("claude",),
-        check=CheckSpec(type=CheckType.HOOK_REGISTERED, target="~/.claude/settings.json",
-                        detail="PreToolUse"),
+        check=CheckSpec(
+            type=CheckType.HOOK_REGISTERED, target="~/.claude/settings.json", detail="PreToolUse"
+        ),
         expected=ExpectedState(description="the lane guard is registered"),
         proof_level=proof_level,
         owner_seat="OPENCODE",
@@ -126,13 +128,17 @@ class FakeHookCase(unittest.TestCase):
         self.record = os.path.join(self.home, "payload.json")
         self.ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
             timeout=10,
         )
 
     def hook(self, mode: str) -> str:
         """The command that runs the fake hook in one mode."""
-        return "%s %s %s" % (shlex.quote(self.hook_path), shlex.quote(mode), shlex.quote(self.record))
+        return "%s %s %s" % (
+            shlex.quote(self.hook_path),
+            shlex.quote(mode),
+            shlex.quote(self.record),
+        )
 
     def recorded_payload(self) -> dict:
         """The payload the fake hook received."""
@@ -175,8 +181,10 @@ class L1DenyTests(FakeHookCase):
 
     def test_a_missing_hook_is_unknown(self):
         outcome = proof.run_l1_probe(
-            "claude", self.ctx, hook_command="%s --format claude" % shlex.quote(
-                os.path.join(self.home, "no-such-hook"))
+            "claude",
+            self.ctx,
+            hook_command="%s --format claude"
+            % shlex.quote(os.path.join(self.home, "no-such-hook")),
         )
         self.assertIs(outcome.state, CheckState.UNKNOWN)
         self.assertIs(outcome.reason_code, ReasonCode.ERROR)
@@ -204,7 +212,7 @@ class L1DenyTests(FakeHookCase):
     def test_the_guard_off_switch_is_named_in_the_reason(self):
         ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
             timeout=10,
             env={"FLEET_LANE_GUARD": "off"},
         )
@@ -219,7 +227,7 @@ class L1TimeoutTests(FakeHookCase):
     def test_a_hanging_hook_times_out(self):
         ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
             timeout=1,
         )
         outcome = proof.run_l1_probe("claude", ctx, hook_command=self.hook("sleep"))
@@ -230,7 +238,7 @@ class L1TimeoutTests(FakeHookCase):
     def test_the_timeout_argument_overrides_the_context(self):
         ctx = CheckContext(
             home=self.home,
-            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc),
+            now=datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC),
             timeout=600,
         )
         outcome = proof.run_l1_probe("claude", ctx, hook_command=self.hook("sleep"), timeout=1)

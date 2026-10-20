@@ -9,10 +9,11 @@ The rules under test,  from the design document's section 4:
   * every result in one report shares one clock
   * a result past its TTL is re-labelled ``UNKNOWN`` with the reason code ``stale``
 """
+
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fleet_config import aggregator, contract
 from fleet_config.checks import CheckContext, CheckError, CheckRegistry
@@ -30,8 +31,7 @@ from fleet_config.types import (
 
 from ._fake import make_manifest, make_rule, registry_with, result_check
 
-
-MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=timezone.utc)
+MOMENT = datetime(2026, 10, 19, 14, 30, 0, tzinfo=UTC)
 
 
 def context(home="/tmp/fleet-config-home", timeout: int = 10) -> CheckContext:
@@ -103,7 +103,9 @@ class AggregatorTests(unittest.TestCase):
     def test_a_check_that_returns_the_wrong_shape_is_unparseable(self):
         rule = make_rule("mm-hooks", ConfigKind.HOOKS, check_type=CheckType.HOOK_REGISTERED)
         manifest = make_manifest([rule])
-        registry = registry_with({CheckType.HOOK_REGISTERED: lambda rule, platform, ctx: "not a result"})
+        registry = registry_with(
+            {CheckType.HOOK_REGISTERED: lambda rule, platform, ctx: "not a result"}
+        )
         report = aggregator.run_status(manifest, registry=registry, ctx=context())
         result = report.results[0]
         self.assertIs(result.state, CheckState.UNKNOWN)
@@ -147,7 +149,12 @@ class AggregatorTests(unittest.TestCase):
         rules = [
             make_rule("mm-a", ConfigKind.INSTRUCTIONS),
             make_rule("mm-b", ConfigKind.SKILLS, check_type=CheckType.SKILLS_INSTALLED),
-            make_rule("mm-c", ConfigKind.MCP, check_type=CheckType.MCP_SERVERS_REGISTERED, platform="codex"),
+            make_rule(
+                "mm-c",
+                ConfigKind.MCP,
+                check_type=CheckType.MCP_SERVERS_REGISTERED,
+                platform="codex",
+            ),
         ]
         manifest = make_manifest(rules)
         registry = registry_with(
@@ -165,9 +172,7 @@ class AggregatorTests(unittest.TestCase):
             manifest, platform="codex", registry=registry, ctx=context()
         )
         self.assertEqual([result.rule_id for result in by_platform.results], ["mm-c"])
-        by_seat = aggregator.run_status(
-            manifest, seat="CLAUDE", registry=registry, ctx=context()
-        )
+        by_seat = aggregator.run_status(manifest, seat="CLAUDE", registry=registry, ctx=context())
         self.assertEqual(by_seat.results, ())
 
     def test_an_unproven_rule_is_never_a_pass(self):
@@ -326,7 +331,9 @@ class AggregatorTests(unittest.TestCase):
                 ctx,
             )
 
-        registry = registry_with({CheckType.FILE_HASH: state_for, CheckType.SKILLS_INSTALLED: state_for})
+        registry = registry_with(
+            {CheckType.FILE_HASH: state_for, CheckType.SKILLS_INSTALLED: state_for}
+        )
         report = aggregator.run_status(manifest, registry=registry, ctx=context())
         self.assertEqual(report.summary, contract.summarize(report.results))
         self.assertIs(report.summary.overall_verdict, OverallVerdict.FAIL)
@@ -376,7 +383,9 @@ class AggregatorTests(unittest.TestCase):
             "mm-credential",
             ConfigKind.PERMISSIONS,
             check_type=CheckType.CREDENTIAL_STAT,
-            expected=ExpectedState(description="the credential file is present", present=True, mode="0600"),
+            expected=ExpectedState(
+                description="the credential file is present", present=True, mode="0600"
+            ),
         )
         manifest = make_manifest([rule])
         registry = registry_with(
