@@ -714,18 +714,18 @@ _ROW = (
     r'(?:\s*(?:</p>|<div><br\s*/?></div>))*'
 )
 # The markdown converter leaves a spacer after the LAST paragraph, so the row is not literally last:
-# drop trailing spacers, then take the row off the end.  The trailing run is cut by walking the
-# spacer/whitespace matches back from the end, NOT by a `(...)+$` strip:  that repeated group is
-# anchored at `$`, so it backtracks once per candidate start and is quadratic in the number of
-# trailing spacers -- the converter emits one per paragraph, and MARKDOWN_MAX is 500_000 characters,
-# so one update could hold the notes lock for minutes.
-_trailing = list(re.finditer(r'(?:\s|<div><br\s*/?></div>)', inner))
-_cut = len(inner)
-for _match in reversed(_trailing):
-    if _match.end() != _cut:
+# drop trailing spacers, then take the row off the end.  The trailing run is cut from the end
+# inward, one \Z-anchored match at a time:  a repeated group ending at the anchor backtracks once per
+# candidate start, so it is quadratic in the number of trailing spacers (the converter emits one per
+# paragraph), and a whole-body finditer walks every whitespace run in the note and materialises a
+# match object for each -- MARKDOWN_MAX is 500_000 characters, so one update would allocate megabytes
+# inside the notes lock to trim a few trailing characters.
+inner = inner.rstrip()
+while True:
+    _spacer = re.search(r'<div><br\s*/?></div>\Z', inner)
+    if not _spacer:
         break
-    _cut = _match.start()
-inner = inner[:_cut]
+    inner = inner[:_spacer.start()].rstrip()
 inner = re.sub(r'^(?:<p>)?\s*' + _ROW + r'\s*', '', inner, flags=re.I)
 inner = re.sub(r'(?:^|\n|(?<=>))[>\s]*(?:<div><br\s*/?></div>)?\s*(?:<p>)?\s*' + _ROW + r'\s*$', '', inner, flags=re.I)
 session_p = ''
