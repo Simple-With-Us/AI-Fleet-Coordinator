@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import stat
 import sys
 import tempfile
 import time
@@ -242,13 +243,28 @@ class MusePinTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.paths = L.SeatPaths(self.tmp.name, "MM")
-        os.makedirs(self.paths.seat_dir, exist_ok=True)
+        # The seat dir is private state.  Build it the way the listener does, so a fixture
+        # cannot pass while production would leave it group- or world-readable.
+        L.private_dir(self.paths.seat_dir)
 
     def _muse(self, name: str) -> str:
         path = os.path.join(self.tmp.name, name)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("#!/bin/sh\n")
         return path
+
+    def test_the_seat_dir_is_private_under_a_permissive_umask(self) -> None:
+        # `os.makedirs(..., exist_ok=True)` obeys the umask, so a permissive shell left a
+        # group- or world-readable seat dir holding wake pins.  The fixture must build it the
+        # way the listener does, and it must hold even when the umask would not.
+        with tempfile.TemporaryDirectory() as tmp:
+            seat_dir = os.path.join(tmp, "MM")
+            previous = os.umask(0o000)
+            try:
+                L.private_dir(seat_dir)
+            finally:
+                os.umask(previous)
+            self.assertEqual(stat.S_IMODE(os.stat(seat_dir).st_mode), 0o700)
 
     def test_never_verified_holds_and_says_why(self) -> None:
         state = A.muse_pin_state(self.paths, self._muse("muse"))
@@ -499,7 +515,9 @@ class McodeFallbackTest(unittest.TestCase):
     def test_a_fallback_pin_is_its_own_and_never_self_heals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = L.SeatPaths(tmp, "MM")
-            os.makedirs(paths.seat_dir, exist_ok=True)
+            # The seat dir is private state.  Build it the way the listener does, so a
+            # fixture cannot pass while production would leave it group- or world-readable.
+            L.private_dir(paths.seat_dir)
             exe = os.path.join(tmp, "mcode")
             with open(exe, "w", encoding="utf-8") as fh:
                 fh.write("#!/bin/sh\n")
@@ -519,7 +537,9 @@ class McodeFallbackTest(unittest.TestCase):
         # model must not read as verified after the seat moves to another.
         with tempfile.TemporaryDirectory() as tmp:
             paths = L.SeatPaths(tmp, "MM")
-            os.makedirs(paths.seat_dir, exist_ok=True)
+            # The seat dir is private state.  Build it the way the listener does, so a
+            # fixture cannot pass while production would leave it group- or world-readable.
+            L.private_dir(paths.seat_dir)
             exe = os.path.join(tmp, "mcode")
             with open(exe, "w", encoding="utf-8") as fh:
                 fh.write("#!/bin/sh\n")
@@ -603,7 +623,9 @@ class McodeFallbackTest(unittest.TestCase):
     def test_a_fallback_candidate_from_another_model_is_not_pinned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = L.SeatPaths(tmp, "MM")
-            os.makedirs(paths.seat_dir, exist_ok=True)
+            # The seat dir is private state.  Build it the way the listener does, so a
+            # fixture cannot pass while production would leave it group- or world-readable.
+            L.private_dir(paths.seat_dir)
             exe = os.path.join(tmp, "mcode")
             with open(exe, "w", encoding="utf-8") as fh:
                 fh.write("#!/bin/sh\n")
