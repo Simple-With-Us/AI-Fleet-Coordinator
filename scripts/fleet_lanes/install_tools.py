@@ -1202,11 +1202,10 @@ const MAX_COMMAND_INPUT_BYTES = 64 * 1024;
 const MAX_COMMAND_INPUT_DEPTH = 16;
 const MAX_COMMAND_INPUT_NODES = 1000;
 
-// checkInputBounds refuses an untrusted document that is over any of those ceilings:  the
-// walk counts the nodes, measures the depth and finds a cycle, and the byte ceiling
-// measures the whole payload.  Every walk of untrusted input goes through it, so a second
-// caller cannot forget the bounds, and it runs before any field of the document is read.
-function checkInputBounds(value: unknown, label: string): void {
+// checkInputStructure refuses an untrusted document that is too deep, too wide or cyclic:
+// the walk counts the nodes, measures the depth and finds a cycle, and it runs before any
+// field of the document is read.
+function checkInputStructure(value: unknown, label: string): void {
   const seen = new WeakSet<object>();
   let nodes = 0;
   const walk = (current: unknown, depth: number): void => {
@@ -1230,6 +1229,13 @@ function checkInputBounds(value: unknown, label: string): void {
     seen.delete(current);
   };
   walk(value, 0);
+}
+
+// checkInputBounds adds the byte ceiling on the whole payload for callers whose input is a
+// bounded document (the permission prompt).  Every walk of untrusted input goes through one
+// of the two, so a second caller cannot forget the bounds.
+function checkInputBounds(value: unknown, label: string): void {
+  checkInputStructure(value, label);
   let serialized: string | undefined;
   try {
     serialized = JSON.stringify(value);
@@ -1242,9 +1248,13 @@ function checkInputBounds(value: unknown, label: string): void {
 }
 
 function commandFrom(value: unknown): string | null {
-  // The bounds are checked first, so the walk below is never handed a document that is
-  // too deep, too wide or cyclic.
-  checkInputBounds(value, "OpenCode command input");
+  // Structural bounds guard the walk below;  the byte ceiling is applied to the extracted
+  // command, not the whole payload.  The hook keys on the presence of a command rather
+  // than a tool name because OpenCode's shell tool name is not confirmed (v2 research
+  // recorded `shell`, current builds `bash`), and a file write or edit can legitimately
+  // carry more than 64 KiB of content:  a whole-payload ceiling would deny a call the
+  // guard never ruled on (sentry #757).
+  checkInputStructure(value, "OpenCode tool input");
   const walk = (current: unknown): string | null => {
     if (typeof current === "string") return current;
     if (Array.isArray(current)) {
@@ -1262,7 +1272,11 @@ function commandFrom(value: unknown): string | null {
     }
     return null;
   };
-  return walk(value);
+  const command = walk(value);
+  if (command !== null && Buffer.byteLength(command, "utf8") > MAX_COMMAND_INPUT_BYTES) {
+    throw new TypeError("OpenCode command input exceeds 64 KiB");
+  }
+  return command;
 }
 
 function cwdFrom(value: unknown, fallback: string): string {
@@ -1500,12 +1514,6 @@ export const server = async (input: { directory?: string; worktree?: string }) =
       hookInput: { tool: string; sessionID: string; callID: string },
       output: { args: unknown },
     ) => {
-      // The guard rules on shell commands only, and OpenCode's shell tool is `bash`.  Every
-      // other tool returns here:  a file write or edit can carry a payload over the
-      // command-input ceilings, and bounds-checking it would deny a call the guard never
-      // ruled on (sentry #757).  A missing tool name cannot be checked, so it falls through
-      // to the generic path below and still fails closed there.
-      if (hookInput.tool && hookInput.tool !== "bash") return;
       let command: string | null;
       try {
         command = commandFrom(output.args);

@@ -139,20 +139,21 @@ const before = plugin["tool.execute.before"] as unknown as (
   output: { args: unknown },
 ) => Promise<void>;
 
+const cyclic: Record<string, unknown> = {};
+cyclic.self = cyclic;
+let deep: unknown = "x";
+for (let i = 0; i < 20; i += 1) deep = { next: deep };
+
 const cases: Array<[string, unknown, unknown]> = [
-  // sentry #757:  a non-shell payload over the command ceiling must not be denied.
+  // sentry #757:  a non-shell payload over the command byte ceiling must not be denied.
   [
-    "a non-shell tool over the byte ceiling is not guarded",
+    "a non-shell payload over the byte ceiling is not guarded",
     { tool: "write", sessionID: "session-1", callID: "call-1" },
-    { content: "x".repeat(200000) },
+    { filePath: "/repo/src/a.ts", content: "x".repeat(200000) },
   ],
+  // The byte ceiling moved to the extracted command:  an oversized command still denies.
   [
-    "a non-shell tool with a command field is not guarded",
-    { tool: "write", sessionID: "session-1", callID: "call-1" },
-    { command: "git clone https://example.test/repo" },
-  ],
-  [
-    "an oversized shell payload still fails closed",
+    "an oversized command still fails closed",
     { tool: "bash", sessionID: "session-1", callID: "call-1" },
     { command: "x".repeat(200000) },
   ],
@@ -161,6 +162,9 @@ const cases: Array<[string, unknown, unknown]> = [
     { sessionID: "session-1", callID: "call-1" },
     { command: "x".repeat(200000) },
   ],
+  // Structural bounds (depth, width, cycles) still cover every payload,  command-shaped or not.
+  ["a cyclic payload still fails closed", { tool: "edit", sessionID: "session-1", callID: "call-1" }, cyclic],
+  ["a too-deep payload still fails closed", { tool: "edit", sessionID: "session-1", callID: "call-1" }, deep],
 ];
 
 const results: unknown[] = [];
@@ -754,8 +758,10 @@ class OpenCodePluginShapeTests(World):
         self.assertFalse(results[WELL_FORMED_PROMPT]["threw"], results[WELL_FORMED_PROMPT])
         self.assertEqual(results[WELL_FORMED_PROMPT]["status"], "ask")
 
-    def test_only_the_shell_tool_reaches_the_command_guard(self) -> None:
-        # sentry #757:  the bounds check ran for every tool,  so a file write over 64 KiB was denied.
+    def test_the_byte_ceiling_bounds_the_command_not_the_payload(self) -> None:
+        # sentry #757:  the whole-payload byte ceiling ran for every tool,  so a file write
+        # over 64 KiB was denied.  The ceiling now bounds the extracted command;  structural
+        # bounds (depth, width, cycles) still cover every payload.
         with tempfile.TemporaryDirectory(prefix="muster-plugin-") as tmp:
             plugin = Path(tmp) / "fleet-lane-guard.ts"
             plugin.write_text(self.plugin_text(), encoding="utf-8")
@@ -766,14 +772,15 @@ class OpenCodePluginShapeTests(World):
             run = self.run_node(["--experimental-strip-types", str(harness)], cwd=tmp)
             self.assertEqual(run.returncode, 0, run.stderr)
             results = {r["name"]: r for r in json.loads(run.stdout.splitlines()[-1])}
+        self.assertFalse(
+            results["a non-shell payload over the byte ceiling is not guarded"]["threw"],
+            results["a non-shell payload over the byte ceiling is not guarded"],
+        )
         for name in (
-            "a non-shell tool over the byte ceiling is not guarded",
-            "a non-shell tool with a command field is not guarded",
-        ):
-            self.assertFalse(results[name]["threw"], results[name])
-        for name in (
-            "an oversized shell payload still fails closed",
+            "an oversized command still fails closed",
             "a missing tool name falls through and fails closed",
+            "a cyclic payload still fails closed",
+            "a too-deep payload still fails closed",
         ):
             self.assertTrue(results[name]["threw"], results[name])
 
