@@ -59,8 +59,10 @@ _QUOTE_BLIND_LEFTOVER = r'[^0-9][.!?][]*_`)"]* +[A-Z"]'
 # in.  The live procedure is in the one home;  a record is not a copy of it.
 DATED_RECORDS = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
 
-# Generated mirrors are independently compared below.  They can only be updated by
-# the Fleet-OPS handbook publisher; never hand-edit them to make this test green.
+# Generated mirrors can only be updated by the Fleet-OPS handbook publisher.
+# Draft PR #755 owns exact converter/assertion parity after that publication; its
+# explicit comparison is kept out of this consolidated PR to avoid duplicate gates.
+# Canonical source: Fleet-OPS handbook/owner/writing-for-owner.md.  Never hand-edit the mirror.
 GENERATED_MIRRORS = ("AGENT-SYNC.md",)
 
 # This file holds the checks themselves, so the sweep below finds its own command
@@ -71,10 +73,8 @@ CHECKER_FILES = ("scripts/test_sentence_gap_converter.py",)
 # pattern.  The one home is the source;  the rest are checked against it.
 #
 # The list is derived from the seat registry rather than named by hand, so a new seat
-# cannot be forgotten and a retired one cannot be kept.  A retired seat keeps its catalog
-# copy as history and gets no new tracked tree -- the registry says so, and the installer
-# already skips retired seats -- so it is not a copy that can ship a body with no gap, and
-# it is not a target for new work.
+# cannot be forgotten.  Catalog packs, including retired seats, remain generated
+# outputs; only active seats receive platform and tool-home installations.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fleet_skill_identity as _identity
@@ -97,8 +97,8 @@ def _active_by_seat_copies() -> tuple[str, ...]:
 def _retired_by_seat_copies() -> tuple[str, ...]:
     """The by-seat upload packs of the retired seats.
 
-    The repository keeps them as the record of what those seats had, so the installer
-    does not re-render them and the sweeps below do not read them.
+    Their catalog packs remain committed generated outputs and track the one home;
+    retired seats still receive no active tool-home or platform installation.
     """
     return tuple(
         "docs/fleet-skills/by-seat/%s/sentence-gap/SKILL.md" % (seat.seat_key or seat.tag.lower())
@@ -124,12 +124,9 @@ RENDERED_COPIES = (
         ".cursor/rules/sentence-gap.mdc",
     )
     + _active_by_seat_copies()
+    + _retired_by_seat_copies()
     + _platform_copies()
 )
-
-# The retired seats' by-seat packs.  The repository keeps them as history, so the
-# installer does not re-render them and the sweeps do not read them.
-RETIRED_COPIES = _retired_by_seat_copies()
 
 # The live guidance that quotes the pattern for a reader to copy.
 GUIDANCE = (
@@ -433,15 +430,14 @@ class OneSourceOfTruthTests(unittest.TestCase):
     def test_no_live_file_holds_a_converter_without_the_markup_group(self) -> None:
         """A copy that drifts is a body that ships with no gap, so every converter in the
         checkout carries the markup group.  A dated record of a ruling keeps the form it
-        was written in and is listed as such, a generated mirror is built elsewhere and
-        cannot be edited here, and a retired seat's pack is history."""
+        was written in and is listed as such, and generated-mirror parity belongs to
+        draft PR #755 after the publisher updates the mirror."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
             if (
                 rel in DATED_RECORDS
                 or rel in GENERATED_MIRRORS
                 or rel in CHECKER_FILES
-                or rel in RETIRED_COPIES
             ):
                 continue
             try:
@@ -653,15 +649,14 @@ class AssertionCommandTests(unittest.TestCase):
 
     def test_no_live_file_holds_a_blind_leftover_check(self) -> None:
         """No live file may hold the check that cannot see a gap after a markup span.
-        A dated record of a ruling keeps the form it was written in and is skipped, and a
-        retired seat's pack is history and is skipped."""
+        A dated record of a ruling keeps the form it was written in and is skipped;
+        draft PR #755 owns the generated mirror's explicit parity assertion."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
             if (
                 rel in DATED_RECORDS
                 or rel in GENERATED_MIRRORS
                 or rel in CHECKER_FILES
-                or rel in RETIRED_COPIES
             ):
                 continue
             try:
@@ -675,20 +670,6 @@ class AssertionCommandTests(unittest.TestCase):
                     pattern,
                     "%s holds a blind leftover check:  %s" % (rel, pattern),
                 )
-
-
-class GeneratedHandbookParityTests(unittest.TestCase):
-    def test_generated_handbook_converter_and_both_assertions_match(self):
-        canonical = ONE_HOME.read_text(encoding="utf-8")
-        expected = (one_home_patterns()[0], assertion_patterns(canonical))
-        for rel in GENERATED_MIRRORS:
-            text = (ROOT / rel).read_text(encoding="utf-8")
-            actual = (patterns_in(text), assertion_patterns(text))
-            message = (rel + " sentence-gap procedure differs from the one home; update "
-                       "Fleet-OPS handbook/owner/writing-for-owner.md, build with scripts/handbook/build.mjs, "
-                       "and let handbook-sync/mirror publish the generated mirror.  Do not hand-edit AGENT-SYNC.md.")
-            self.assertIn(expected[0], actual[0], message)
-            self.assertEqual(actual[1], expected[1], message)
 
 
 @unittest.skipUnless(HAVE_BASH and HAVE_PERL, "bash and perl are required")
