@@ -2388,7 +2388,9 @@ PLATFORMS: dict[str, Platform] = {
                 "fails open only on a timeout.",
                 "OWNER-GATED: there is no live preToolUse record on this Mac, so the first install needs Jay to start a "
                 "new Copilot session and ask for a process listing, which must be refused.  `verify copilot` proves the "
-                "command in the written file denies, and ends with a SKIP for that live proof; it never claims it.",
+                "command in the written file denies, and ends with a SKIP for that live proof; it never claims it.  "
+                "Copilot CLI itself was retired on 2026-10-20 because it was not being used,  so the target SKIPs "
+                "with platform-not-installed until it is installed again;  nothing recreates the directory.",
             ),
             unverified=(
                 "That Copilot CLI fires a PreToolUse hook from ~/.copilot/hooks/fleet-lane-guard.json at all (only a "
@@ -3954,6 +3956,9 @@ def verify_platform(
         return verify_block(plat, paths, timeout=timeout, minimal_path=minimal_path)
     if plat.kind == "bundle":
         if plat.key == "copilot":
+            # Copilot CLI is retired on this Mac,  so the platform dir may be absent.  The
+            # per-platform verifier SKIPs that case,  and the dispatch must reach it
+            # rather than answer FAIL for a platform that is simply not installed.
             return verify_copilot(paths, timeout=timeout, minimal_path=minimal_path)
         return verify_minimax(paths, timeout=timeout, minimal_path=minimal_path)
     if not plat.supported:
