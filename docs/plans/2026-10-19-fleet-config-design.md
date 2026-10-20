@@ -64,9 +64,11 @@ A check that is stale (past its TTL), errors, times out or produces unparseable 
 
 A cached result read after its `expiresAt` is re-labelled before it reaches the envelope:  state `UNKNOWN`, reason code `stale`, `stale` true.  It keeps its original `checkedAt` as evidence.  The envelope builder does not do this relabelling;  the aggregator owns the clock.
 
+A status run has an overall budget as well as a per-check timeout.  When the budget is spent, the rules that have not run yet are reported as `UNKNOWN` with reason code `timeout` instead of being run, so one slow hook probe cannot turn a run into a queue of probes.  The budget adds no vocabulary:  the result it produces is step 4 of the table below.
+
 The verdict math lives in `contract.py` as pure functions, so every consumer shares it.  `is_failing` is true for `DRIFT` and `MISSING`, and for any result whose reason code is `stale`, `error`, `timeout`, `unparseable` or `proof-failed`.  `overall_verdict` is `FAIL` when any result is failing, else `PASS` when at least one result exists and every result is `PASS`, else `UNKNOWN`.  An empty run is `UNKNOWN`, never `PASS`.
 
-Finished CLI exit codes are pinned now:  0 for verdict `PASS`, 1 for verdict `FAIL`, 3 for verdict `UNKNOWN` (the `fleet_knobs` precedent for an unreachable source), 2 for a refused run (bad manifest, bad registry or an unimplemented verb in the skeleton), and 64 for a usage error.  The skeleton in `__main__.py` returns 2 for its stub verbs, which is a placeholder, not the finished mapping.
+Finished CLI exit codes are pinned now:  0 for verdict `PASS`, 1 for verdict `FAIL`, 3 for verdict `UNKNOWN` (the `fleet_knobs` precedent for an unreachable source), 2 for a refused run (bad manifest, bad registry, or a declined Touch ID confirmation), and 64 for a usage error.  The skeleton in `__main__.py` returns 2 for its stub verbs, which is a placeholder, not the finished mapping.
 
 ## 5. Check Types Per Kind
 
@@ -82,6 +84,15 @@ Finished CLI exit codes are pinned now:  0 for verdict `PASS`, 1 for verdict `FA
 | `subagents` | `subagents_installed` | Sub-agent definitions directory for the platform | `names` (file stems) |
 | `permissions` | `permissions_match` | Harness settings file | `names` (permission identifiers), `mode` |
 | `permissions` | `credential_stat` | Credential file path;  detail is the credential reference name | `present`, `mode` |
+| `permissions` | `credential_key_present` | Secret-store folder path, such as `/zulip`;  detail is the credential reference name | `names` (secret-store key names only), `present` |
+
+`credential_key_present` is how the fleet reaches a credential now that `~/.secrets` is retired (AFC-359).  It asks the `fleet-secrets` CLI for the KEY NAMES in one secret-store folder, using the `names` verb, which prints names and never values, so a secret cannot reach a result, a reason or a log by construction.  A key that is absent is step 3 (`MISSING`);  a secret store that cannot be reached, because the CLI is missing, the machine identity is gone, the call timed out or the output was unreadable, is step 4 (`UNKNOWN` with a failing reason code).  The listing is cached on the run context, so one status run asks the secret store once per folder rather than once per rule.
+
+The example above uses a placeholder for the retired file's path on purpose:  the real path is in the
+manifest,  which is generated from the registry,  and a concrete home-local path in a public
+document is both a disclosure and a stale literal the moment the file is retired.
+
+The `credential_stat` check keeps its own job:  it reports the stat data of a file, and it is what a rule that says a RETIRED file must be GONE uses, because `expected.present: false` inverts it.
 
 Hash rules are exact, so two implementations agree byte for byte.  `file_hash` is the lowercase hex SHA-256 of the raw file bytes.  `marked_block_hash` is the lowercase hex SHA-256 of the marked block body as `fleet_lanes.marked_block.block_body` returns it (CR stripped, markers excluded), encoded as the lines joined by `\n` with one trailing `\n`, in UTF-8.  A file with malformed markers is step 4 (`UNKNOWN`, `unparseable`), never a guessed hash.  This package reimplements that body extraction rather than importing `fleet_lanes`, for the packaging reason in section 12, and a test must pin the two implementations to the same digest on a shared fixture.
 
@@ -161,11 +172,23 @@ One seat entry, excerpted (a real file must carry every live seat, per section 7
           "ttlSeconds": 900
         },
         {
-          "id": "claude-permissions-zuliprc",
+          "id": "claude-permissions-zulip-key",
           "kind": "permissions",
           "platforms": ["claude"],
-          "check": {"type": "credential_stat", "target": "~/.secrets/Zulip/Claude-zuliprc", "detail": "ZULIP_CLAUDE"},
-          "expected": {"description": "Claude Zulip credential present with mode 0600, stat only", "present": true, "mode": "0600"},
+          "check": {"type": "credential_key_present", "target": "/zulip", "detail": "the CLAUDE Zulip credential"},
+          "expected": {"description": "The Zulip credential is reachable in the secret store at /zulip", "present": true, "names": ["CLAUDE_ZULIP_EMAIL", "CLAUDE_ZULIP_KEY", "CLAUDE_ZULIP_SITE"]},
+          "proofLevel": "L0",
+          "ownerSeat": "CLAUDE",
+          "autofixAllowed": false,
+          "collector": "mac",
+          "ttlSeconds": 900
+        },
+        {
+          "id": "claude-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "platforms": ["claude"],
+          "check": {"type": "credential_stat", "target": "<the-retired-flat-credential-file>", "detail": "ZULIP_CLAUDE"},
+          "expected": {"description": "The retired flat Zulip credential file is gone, stat only", "present": false},
           "proofLevel": "L0",
           "ownerSeat": "CLAUDE",
           "autofixAllowed": false,
@@ -288,6 +311,8 @@ L1 is a pure probe.  `proof.py` builds a synthetic PreToolUse payload per platfo
 
 L2 is a canary with a cost guard.  `proof.py` creates a throwaway lane, runs the platform's headless command (`claude -p`, `codex exec`, per adapter) with a read-only prompt that asks the model to attempt the sentinel write, and looks for deny evidence in the transcript.  Deny evidence with a clean exit achieves L2.  No deny evidence is step 7.  The lane is removed afterwards, pass or fail.  L2 runs only under `--prove l2` or from the daily job, it is the only part of this engine that may spend a model turn, and its result is cached under the rule's TTL like any other result.  A `status` run without `--prove` reuses a fresh cached L2 result and reports `UNPROVEN` for an L2 rule whose cache is absent or stale.
 
+The seam between the aggregator and the proof machinery is one function, `proof.prove_rule(rule, platform, ctx, prove_l2)`.  The aggregator decides WHICH rule needs a proof and this function decides HOW to get one, so neither side has to know the other's internals.  The outcome carries `level` as the level that was ACHIEVED, so a proof that ran and failed reports None and the aggregator folds it into step 7 (`DRIFT`, `proof-failed`) or step 4 (`UNKNOWN`, `error`), both of which are failing.  A proof that did not run at all reports `proof-not-run` and the rule reads `UNPROVEN`, which is never healthy but does not accuse the seat of drift.  The aggregator can be given a `proof_runner` instead, which is how a test drives this path without a real hook.
+
 ## 10. Module Ownership Map
 
 Every module in `scripts/fleet_config/`, with one owner lane each, so four parallel implementers never edit the same file.  Flat modules, matching `fleet_knobs`.
@@ -333,7 +358,9 @@ Stdlib only, Python 3.9 safe, type hints, a docstring on every public symbol, an
 
 Like `fleet_knobs`, this package must work as a stable copy run with `python3 -I` carrying just `scripts/fleet_config/`.  That is why it imports nothing outside the stdlib and never imports `fleet_lanes` at runtime:  shared facts (the registry roster, the platform id list, the marked-block hash) are read as files or passed in as data, and a parity test pins each mirror to its source.  The alternative, importing `fleet_lanes.layout` and `fleet_lanes.marked_block` directly, is simpler today and is rejected because it silently breaks the isolated copy that hooks and LaunchAgents run.
 
-Safety rules, non-negotiable:  no secret value is ever read into a result, a log or a plan (credential files are `stat` only);  `status` and `plan` write nothing outside `cache.py`'s state dir;  `apply` writes only through the existing installer engines, with their backup and atomic-replace discipline;  and every subprocess the checks run goes through one allowlisted runner with a timeout, on the `fleet_lanes/doctor.py` precedent, so a hung harness cannot hang the run.
+Safety rules, non-negotiable:  no secret value is ever read into a result, a log or a plan (credential files are `stat` only);  `status` and `plan` write nothing outside `cache.py`'s state dir;  `apply` writes only through the existing installer engines, with their backup and atomic-replace discipline;  and every subprocess this package starts goes through one allowlisted runner with a timeout, on the `fleet_lanes/doctor.py` precedent, so a hung harness cannot hang the run.
+
+That runner covers the apply side too, not only the checks:  the MAC level doctors, the secret-store listing and the installer engines the apply side drives all start through it, so a hung installer is a failed step rather than a blocked command, and a command that is not on the allowlist is refused before any process exists.
 
 ## 13. Testing
 
