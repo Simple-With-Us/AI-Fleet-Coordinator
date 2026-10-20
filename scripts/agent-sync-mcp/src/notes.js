@@ -308,6 +308,9 @@ export const NOTES_METHODS = {
   async notesFleetBot(userId, members) {
     const user = members.find((m) => m.user_id === userId);
     if (!user || user.is_bot !== true) return false;
+    if (this.config.notesRelayConsumer === "OPERATOR") {
+      return user.user_id === 1217148 && String(user.email ?? "").toLowerCase() === "operator-bot@simplewithus.zulipchat.com";
+    }
     return seatTagFor(user) === this.config.notesRelayConsumer;
   },
 
@@ -318,7 +321,7 @@ export const NOTES_METHODS = {
    * is skipped wherever it sits.  "" when none is found.
    */
   async notesRefusalReason(message, requestId, channelId, members) {
-    const consumer = members.find((m) => m.is_bot === true && seatTagFor(m) === this.config.notesRelayConsumer);
+    const consumer = members.find((m) => m.is_bot === true && (this.config.notesRelayConsumer === "OPERATOR" ? m.user_id === 1217148 && String(m.email ?? "").toLowerCase() === "operator-bot@simplewithus.zulipchat.com" : seatTagFor(m) === this.config.notesRelayConsumer));
     const narrow = [
       { operator: "channel", operand: channelId },
       { operator: "topic", operand: message.subject ?? message.topic ?? "" },

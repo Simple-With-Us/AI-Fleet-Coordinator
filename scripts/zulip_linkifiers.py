@@ -9,8 +9,8 @@ checking need only a member key, so any seat can run them:
     python3 scripts/zulip_linkifiers.py --check         # render CHECKS, and diff Linear's teams with rule 5119
     python3 scripts/zulip_linkifiers.py --apply --admin # realm-admin bot:  apply the plan, then check
 
-Credentials:  with --admin, only the realm-admin bot:  env REALM_ADMIN_ZULIP_EMAIL / _KEY / _SITE
-first, then Infisical Fleet-OPS /zulipadmin through `fleet-secrets get` (then /zulip, then the root).
+Credentials:  with --admin, only the realm-admin bot:  env ZULIP_OPERATOR_EMAIL / _API_KEY / _SITE
+first, then Infisical Fleet-OPS /zulip_operator through `fleet-secrets get` (no legacy-name fallback).
 Without --admin (plan and check), first hit wins:  --rc PATH, then env ZULIP_EMAIL + ZULIP_API_KEY, then
 Infisical CLAUDE_ZULIP_* (/zulip, then the root).  --apply needs --admin.  Keys are never printed.
 No credential file is read (AFC-359).
@@ -168,7 +168,7 @@ def _fleet_secret(name: str) -> str:
     """One Infisical value via `fleet-secrets get` (folder /zulip, else the root), or "" (never logged)."""
     binary = os.environ.get("FLEET_SECRETS_BIN") or os.path.expanduser("~/.local/bin/fleet-secrets")
     folders = (
-        ["/zulipadmin", "/zulip", None] if name.startswith("REALM_ADMIN_") else ["/zulip", None]
+        ["/zulip_operator"] if name.startswith("ZULIP_OPERATOR_") else ["/zulip", None]
     )
     for folder in folders:
         extra = ["--path", folder] if folder else []
@@ -190,14 +190,14 @@ def _fleet_secret(name: str) -> str:
 def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str]:
     if admin:
         email, key, site = (
-            os.environ.get(f"REALM_ADMIN_ZULIP_{part}", "").strip()
-            or _fleet_secret(f"REALM_ADMIN_ZULIP_{part}")
+            os.environ.get(f"ZULIP_OPERATOR_{'API_KEY' if part == 'KEY' else part}", "").strip()
+            or _fleet_secret(f"ZULIP_OPERATOR_{'API_KEY' if part == 'KEY' else part}")
             for part in ("EMAIL", "KEY", "SITE")
         )
         if not (email and key):
             sys.exit(
-                "no REALM_ADMIN_ZULIP_EMAIL / REALM_ADMIN_ZULIP_KEY in env or Infisical Fleet-OPS "
-                "/zulipadmin, /zulip, or the root"
+                "no ZULIP_OPERATOR_EMAIL / ZULIP_OPERATOR_API_KEY in env or Infisical Fleet-OPS "
+                "/zulip_operator"
             )
         return email, key, (site or REALM).rstrip("/")
     path = rc_path
@@ -208,7 +208,7 @@ def credentials(rc_path: str | None, admin: bool = False) -> tuple[str, str, str
             os.environ.get("ZULIP_SITE", REALM),
         )
     if not path:
-        bot = "REALM_ADMIN" if admin else "CLAUDE"
+        bot = "CLAUDE"
         email, key, site = (
             _fleet_secret(f"{bot}_ZULIP_{part}") for part in ("EMAIL", "KEY", "SITE")
         )
