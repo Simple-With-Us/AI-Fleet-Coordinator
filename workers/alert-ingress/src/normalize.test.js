@@ -142,3 +142,39 @@ test("a generic route name binds the state-key namespace, not the payload source
   assert.equal(e.source, "uptime-robot");
   assert.equal(e.key, "uptime-robot:real-id");
 });
+
+test("Better Stack's documented JSON:API incident body is accepted and read", () => {
+  // The default uptime incident body nests the fields in data.attributes and
+  // the monitor identity in data.relationships.monitor.data.  Rejecting it as
+  // an oversized text field 400'd every correctly authenticated delivery.
+  const incident = {
+    data: {
+      type: "incident",
+      id: "4242",
+      attributes: {
+        id: 4242,
+        status: "triggered",
+        title: "congress.trade is DOWN",
+        url: "https://uptime.betterstack.com/team/1/monitors/99887766",
+        started_at: "2026-10-20T20:00:00Z",
+      },
+      relationships: { monitor: { data: { type: "monitor", id: "99887766" } } },
+    },
+  };
+  const e = normalize("betterstack", incident);
+  assert.equal(e.firing, true, "a triggered incident is firing");
+  assert.equal(e.key, "betterstack:99887766", "the monitor id is the stable key");
+  assert.equal(e.link, "https://uptime.betterstack.com/team/1/monitors/99887766");
+  const resolved = {
+    ...incident,
+    data: { ...incident.data, attributes: { ...incident.data.attributes, status: "resolved" } },
+  };
+  assert.equal(normalize("betterstack", resolved).firing, false, "a resolved incident is not firing");
+});
+
+test("Better Stack keeps reading the flat custom-template body", () => {
+  for (const status of ["down", "failing", "failed", "triggered"])
+    assert.equal(fromBetterStack({ data: { check_name: "x", status } }).firing, true, status);
+  for (const status of ["up", "passing", "ok", "resolved"])
+    assert.equal(fromBetterStack({ data: { check_name: "x", status } }).firing, false, status);
+});

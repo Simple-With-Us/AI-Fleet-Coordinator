@@ -281,3 +281,30 @@ test("a stable key retains its original service without duplicate membership", a
   assert.deepEqual(Object.keys(topics), ["Old.svc"]);
   assert.equal(total, 1);
 });
+
+test("Datadog accepts the static custom header Datadog can actually send", async () => {
+  // Datadog's webhook integration cannot compute a per-body HMAC, so an
+  // HMAC-only gate rejected every real Datadog delivery with 401.
+  const env = { DATADOG_WEBHOOK_SECRET: "synthetic" };
+  const raw = JSON.stringify({ monitor_id: "1", alert_type: "triggered" });
+  const headers = (h) =>
+    verify(new Request("https://test/webhook/datadog", { headers: h }), raw, env, "datadog");
+  assert.equal(await headers({ "x-datadog-token": "synthetic" }), true, "the configured static header authenticates");
+  assert.equal(await headers({ "x-datadog-token": "wrong" }), false, "a wrong static header does not");
+  assert.equal(await headers({}), false, "an unconfigured source is rejected, never trusted");
+});
+
+test("the JSON:API payload shape passes the boundary validator", async () => {
+  const { validatePayload } = __testing;
+  const incident = {
+    data: {
+      type: "incident",
+      id: "4242",
+      attributes: { id: 4242, status: "triggered", url: "https://uptime.betterstack.com/team/1/monitors/99887766" },
+      relationships: { monitor: { data: { type: "monitor", id: "99887766" } } },
+    },
+  };
+  validatePayload(incident);
+  // Envelope nesting stays bounded rather than recursing without end.
+  assert.throws(() => validatePayload({ data: { attributes: { relationships: { monitor: { data: { attributes: { relationships: { monitor: { data: { attributes: {} } } } } } } } } } }));
+});
