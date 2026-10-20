@@ -24,7 +24,8 @@ import os
 import secrets
 import sqlite3
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -149,6 +150,21 @@ class SessionRegistry:
     def close_db(self) -> None:
         self._conn.close()
 
+    @contextmanager
+    def _write_txn(self) -> Iterator[sqlite3.Connection]:
+        """One write transaction that holds the SQLite write lock for its whole body.
+
+        BEGIN IMMEDIATE takes the lock before the first SELECT, so the identity and status
+        checks below cannot run in a window where a second writer has not yet committed:  a
+        concurrent registration now resumes the committed record instead of racing to an
+        unhandled IntegrityError on the identity UNIQUE constraint.  Callers mint their
+        timestamp inside this block, after the lock, so created_at follows commit order and
+        the outbox exports in the order the changes were committed.
+        """
+        with self._conn as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            yield conn
+
     # ---- reads -------------------------------------------------
 
     def _get(self, record_id: str) -> sqlite3.Row:
@@ -245,8 +261,8 @@ class SessionRegistry:
         missing = [k for k in required if not identity.get(k)]
         if missing:
             raise ValueError(f"missing identity fields: {', '.join(missing)}")
-        now = _utcnow()
-        with self._conn as conn:
+        with self._write_txn() as conn:
+            now = _utcnow()
             row = self._get_by_identity(*(identity[k] for k in IDENTITY_FIELDS))
             if row is not None:
                 record_id = row["record_id"]
@@ -334,8 +350,8 @@ class SessionRegistry:
             }
 
     def mark_seen(self, record_id: str, at: str | None = None) -> None:
-        at = at or _utcnow()
-        with self._conn as conn:
+        with self._write_txn() as conn:
+            at = at or _utcnow()
             self._get(record_id)
             conn.execute(
                 "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?", (at, record_id)
@@ -348,8 +364,8 @@ class SessionRegistry:
             raise ValueError(f"not mutable: {', '.join(bad)}")
         if not attrs:
             return
-        now = _utcnow()
-        with self._conn as conn:
+        with self._write_txn() as conn:
+            now = _utcnow()
             self._get(record_id)
             sets = ", ".join(f"{k} = ?" for k in attrs)
             conn.execute(
@@ -365,8 +381,8 @@ class SessionRegistry:
         source: str = "registry",
     ) -> bool:
         """Set closed_at once and retire the live alias.  Closing twice changes nothing."""
-        now = at or _utcnow()
-        with self._conn as conn:
+        with self._write_txn() as conn:
+            now = at or _utcnow()
             row = self._get(record_id)
             if row["closed_at"]:
                 return False
@@ -387,8 +403,8 @@ class SessionRegistry:
     def record_event(
         self, record_id: str, event: str, actor: str, outcome: str, source: str, details: str = ""
     ) -> str:
-        now = _utcnow()
-        with self._conn as conn:
+        with self._write_txn() as conn:
+            now = _utcnow()
             self._get(record_id)
             letter, _ = self._active_alias(conn, record_id)
             return self._insert_event(
@@ -403,9 +419,12 @@ def pending_outbox(db_path: str, limit: int = 50) -> list[dict[str, Any]]:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
+        # rowid is the commit order (one writer, appended under the write lock), so it breaks
+        # ties between rows sharing a created_at within a single transaction.  outbox_id alone
+        # cannot: it is a ULID whose random suffix does not sort with the event it accompanies.
         rows = conn.execute(
             "SELECT outbox_id, kind, payload, created_at FROM export_outbox"
-            " WHERE exported_at IS NULL ORDER BY created_at, outbox_id LIMIT ?",
+            " WHERE exported_at IS NULL ORDER BY created_at, rowid LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]

@@ -7,6 +7,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -136,6 +137,95 @@ class RegistryTest(unittest.TestCase):
     def test_missing_identity_fields_raise(self):
         with self.assertRaises(ValueError):
             self.reg.resolve_or_register({"seat": "MM"})
+
+    def test_concurrent_same_identity_resumes_instead_of_integrity_error(self):
+        """Two writers registering one identity:  the second must resume the committed record,
+        not race past the unlocked SELECT into an unhandled IntegrityError (review 18197523/1)."""
+        peer = R.SessionRegistry(self.db)  # second connection, same database file
+
+        real_get = R.SessionRegistry._get_by_identity
+        barrier = threading.Barrier(2, timeout=5)
+
+        def hooked(self, *args):
+            row = real_get(self, *args)
+            try:  # both peers have read; only BEGIN IMMEDIATE can keep this from interleaving
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+            return row
+
+        errs = []
+
+        def worker():
+            # Each connection is opened in the thread that uses it:  a registry is the one writer
+            # of the database, and the contended case is two of them, as separate processes.
+            reg = R.SessionRegistry(self.db)
+            try:
+                reg.resolve_or_register(ident())
+            except Exception as exc:  # noqa: BLE001 - surfaced through the assertion below
+                errs.append(exc)
+            finally:
+                reg.close_db()
+
+        R.SessionRegistry._get_by_identity = hooked
+        try:
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        finally:
+            R.SessionRegistry._get_by_identity = real_get
+
+        self.assertEqual(errs, [])
+        rows = sqlite3.connect(self.db).execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        self.assertEqual(rows, 1)  # one record, not a duplicate
+
+    def test_write_lock_is_held_before_the_first_read(self):
+        """The write lock must already be held when the identity/status checks run, or a second
+        writer can read the same pre-commit state (review 18197523/0 and /1)."""
+        seen = {}
+        real_get_by_identity = R.SessionRegistry._get_by_identity
+        real_get = R.SessionRegistry._get
+
+        def probe_identity(self, *args):
+            seen["identity"] = self._conn.in_transaction
+            return real_get_by_identity(self, *args)
+
+        def probe_get(self, record_id):
+            seen["get"] = self._conn.in_transaction
+            return real_get(self, record_id)
+
+        R.SessionRegistry._get_by_identity = probe_identity
+        R.SessionRegistry._get = probe_get
+        try:
+            a = self.reg.resolve_or_register(ident())
+            self.reg.close(a["record_id"])
+        finally:
+            R.SessionRegistry._get_by_identity = real_get_by_identity
+            R.SessionRegistry._get = real_get
+        self.assertTrue(seen["identity"])
+        self.assertTrue(seen["get"])
+
+    def test_outbox_ties_on_created_at_keep_commit_order(self):
+        """Rows written by one transaction share a created_at;  the tiebreak must follow commit
+        order (rowid) and not the ULID suffix, which would reorder an event against the session
+        row it announces (review 18197523/0)."""
+        stamp = "2026-10-20T00:00:00.000Z"
+        conn = sqlite3.connect(self.db)
+        # Same instant, inserted in commit order 1 then 2;  the ULIDs sort the other way round.
+        for outbox_id, tag in (("zzz-ulid-first-committed", "a"), ("aaa-ulid-second-committed", "b")):
+            conn.execute(
+                "INSERT INTO export_outbox(outbox_id, kind, payload, created_at)"
+                " VALUES (?, 'session_upsert', ?, ?)",
+                (outbox_id, json.dumps({"tag": tag}), stamp),
+            )
+        conn.commit()
+        conn.close()
+        self.assertEqual(
+            [json.loads(p["payload"])["tag"] for p in R.pending_outbox(self.db)],
+            ["a", "b"],  # commit order, not ULID order
+        )
 
     def test_session_cells_match_sessions_headers(self):
         a = self.reg.resolve_or_register(ident())
