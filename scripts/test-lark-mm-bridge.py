@@ -862,8 +862,22 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(session.buffer), 1)
 
     def test_lark_env_prepends_cli_prefix(self):
-        env = bridge_mod.lark_env()
-        self.assertIn(os.path.expanduser("~/.local/npm-global/bin"), env.get("PATH", ""))
+        # lark_env prepends the prefix only when it exists, so the assertion
+        # needs one.  Point HOME at a temporary directory instead of depending
+        # on the install layout of whichever machine runs the suite.
+        with tempfile.TemporaryDirectory() as home:
+            prefix = Path(home) / ".local" / "npm-global" / "bin"
+            prefix.mkdir(parents=True)
+            previous = os.environ.get("HOME")
+            os.environ["HOME"] = home
+            try:
+                env = bridge_mod.lark_env()
+            finally:
+                if previous is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = previous
+        self.assertIn(str(prefix), env.get("PATH", ""))
 
     def fake_session(self, script):
         """A MiniMaxSession wired to a FakeProcess, ready for _start()."""

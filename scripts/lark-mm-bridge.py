@@ -658,6 +658,10 @@ class Bridge:
             with self.seen_lock:
                 rows = list(self.rows.items())
                 jobs = dict(getattr(self, "jobs", {}))
+            # The rows are filtered against the snapshot and not self.rows read
+            # again: between the two, another thread can record a delivery and
+            # the persisted messages and jobs would disagree.
+            rows_by_id = dict(rows)
             kept = [pair for pair in rows if pair[1] != "ok"]
             room = DEDUP_WINDOW - len(kept)
             if room > 0:
@@ -674,7 +678,7 @@ class Bridge:
                             "jobs": {
                                 key: job
                                 for key, job in jobs.items()
-                                if self.rows.get(key) == "pending"
+                                if rows_by_id.get(key) == "pending"
                             },
                         },
                         handle,
@@ -682,6 +686,14 @@ class Bridge:
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.replace(tmp, self.state_file)
+                # The rename itself is a directory entry: without this the
+                # replace can still be lost on a crash and the old state comes
+                # back, which is what replays a delivered message.
+                dir_fd = os.open(str(self.state_file.parent), os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
                 return True
             except Exception as exc:
                 log("could not persist bridge state: %s" % type(exc).__name__)
@@ -835,7 +847,9 @@ class Bridge:
             log("ignoring message %s in %s: bot was not mentioned" % (message_id, chat_id))
             return
         if scan_secret(content):
-            log("incoming message refused: code=secret")
+            # The id and the field only: the content is the thing being kept
+            # out of the log, so it must not be named here either.
+            log("incoming message refused for %s: code=secret field=content" % message_id)
             return
         if not self._claim(message_id):
             return
@@ -897,6 +911,16 @@ class Bridge:
                     getattr(self, "jobs", {}).get(message_id, {}).update(attempt=attempt + 1)
                     self.stopping.wait(min(2**attempt, 8))
                     self.turns.put((message_id, chat_id, content, sender_id, attempt + 1))
+            except Exception as exc:
+                # One message must not take the worker down with it: the loop
+                # serves every later message, and an exception escaping here
+                # ended the thread and silently stopped the whole surface.
+                # Only the class reaches the log; the message may hold a
+                # conversation.  The outcome stays unknown, so the turn is
+                # never replayed into the chat on our own initiative.
+                log("turn dispatch failed for %s: %s" % (message_id, type(exc).__name__))
+                self._record_delivery(message_id, "unknown")
+                retry = False
             finally:
                 if not retry:
                     with self.seen_lock:
