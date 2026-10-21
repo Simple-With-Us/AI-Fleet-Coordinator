@@ -25,7 +25,7 @@ class NotesCliTests(Harness):
     def direct(self, run):
         return mock.patch.object(
             N, "direct_available", return_value=self.script
-        ), mock.patch.object(N.subprocess, "run", run)
+        ), mock.patch.object(N, "_run_helper", run)
 
     def test_a_create_on_a_mac_runs_the_script_with_the_body_from_stdin(self):
         run = FakeRun()
