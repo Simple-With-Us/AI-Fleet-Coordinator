@@ -631,7 +631,9 @@ class PinDecisionTests(unittest.TestCase):
             len(reasons), len(branches), "a case branch has no reason the length check can see"
         )
         self.assertEqual(
-            block.count("pin skipped:"), len(reasons), "a pin skipped line has an echo form the check misses"
+            block.count("pin skipped:"),
+            len(reasons),
+            "a pin skipped line has an echo form the check misses",
         )
         for template in reasons:
             reason = (
