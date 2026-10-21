@@ -59,6 +59,8 @@ def docs_fleet_skills_path() -> Path | None:
     if root is None:
         return None
     return root / "docs" / "fleet-skills"
+
+
 AGENT_CONFIG_ROOT = "fleet-agent-config"
 FLEET_SKILLS_ROOT = "fleet-skills"
 
@@ -90,21 +92,53 @@ def resolve_home_source(rel_paths: list[str]) -> Path | None:
 
 
 def copy_one_file(src: Path, dest: Path, retries: int = 5) -> None:
-    """Write via a sibling temp file, then replace.  Retry File Provider deadlocks."""
+    """Write via a sibling temp file, then replace.  Retry File Provider deadlocks.
+
+    A Google Drive file that has never been opened is a dataless placeholder,
+    and overwriting one in place is refused with EPERM: the File Provider
+    owns the inode and will not let a rename or a plain write land on it.
+    Creating a new file in the same folder works, so the fallback removes the
+    placeholder and writes the file again as a new one.  EPERM is not
+    retried: it is a permission state, not a transient lock, and retrying it
+    only turns one refused write into five.
+    """
     tmp = dest.with_name(f".{dest.name}.tmp-mirror")
     last: OSError | None = None
     for attempt in range(retries):
         try:
             shutil.copy2(src, tmp)
-            os.replace(tmp, dest)
-            return
+            try:
+                os.replace(tmp, dest)
+                return
+            except OSError as replace_err:
+                if replace_err.errno != errno.EPERM:
+                    raise
+                try:
+                    shutil.copy2(src, dest)
+                except OSError as direct_err:
+                    if direct_err.errno != errno.EPERM:
+                        raise
+                    # The destination is a placeholder.  Take it away and
+                    # write the file again as a new one.
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
+                    shutil.copy2(src, tmp)
+                    os.replace(tmp, dest)
+                    return
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                return
         except OSError as exc:
             last = exc
             try:
                 tmp.unlink()
             except OSError:
                 pass
-            if exc.errno in (errno.EDEADLK, errno.EAGAIN, errno.EBUSY, errno.EPERM) and attempt < retries - 1:
+            if exc.errno in (errno.EDEADLK, errno.EAGAIN, errno.EBUSY) and attempt < retries - 1:
                 time.sleep(0.25 * (attempt + 1))
                 continue
             raise
@@ -168,7 +202,15 @@ def rsync_mirror(src: Path, dest: Path) -> None:
     copy_mirror(src, dest)
 
 
-def mirror_agent_config(gdrive: Path) -> list[str]:
+def mirror_agent_config(gdrive: Path) -> tuple[list[str], list[str]]:
+    """Mirror the agent dotfolders into Drive.
+
+    Returns (mirrored, failures) instead of raising.  The mirror is the
+    optional half of the backup job: the repository zips are the part the
+    owner depends on, and a File Provider that refuses small writes was
+    killing the whole run after the zips were already safely in Drive.  A
+    failed subtree is reported loudly and the rest of the job continues.
+    """
     root = gdrive / AGENT_CONFIG_ROOT
     root.mkdir(parents=True, exist_ok=True)
     mirrored: list[str] = []
@@ -187,8 +229,6 @@ def mirror_agent_config(gdrive: Path) -> list[str]:
         except RuntimeError as exc:
             print(f"mirror failed {dest_rel}: {exc}", file=sys.stderr)
             failures.append(dest_rel)
-    if failures:
-        raise RuntimeError("failed subtrees: " + ", ".join(failures))
 
     readme = root / "README.md"
     body = "\n".join(
@@ -217,18 +257,31 @@ def mirror_agent_config(gdrive: Path) -> list[str]:
     staging = Path("/tmp/fleet-agent-config-README.md")
     staging.write_text(body)
     if not (readme.is_file() and readme.stat().st_size == staging.stat().st_size):
-        copy_one_file(staging, readme)
-    return mirrored
+        try:
+            copy_one_file(staging, readme)
+        except OSError as exc:
+            print(f"mirror error: {readme}: {exc}", file=sys.stderr)
+    return mirrored, failures
 
 
-def mirror_fleet_skills_catalog(gdrive: Path) -> None:
+def mirror_fleet_skills_catalog(gdrive: Path) -> bool:
+    """Refresh the canonical skill catalog in Drive.
+
+    Returns False when the catalog could not be mirrored, so the caller can
+    report it instead of losing the whole run to it.
+    """
     docs_fleet_skills = docs_fleet_skills_path()
     if docs_fleet_skills is None:
         print(f"skip {FLEET_SKILLS_ROOT} (AI-Fleet-Coordinator docs/fleet-skills not found)")
-        return
+        return False
     dest = gdrive / FLEET_SKILLS_ROOT
     print(f"mirror {docs_fleet_skills} -> {dest}")
-    rsync_mirror(docs_fleet_skills, dest)
+    try:
+        rsync_mirror(docs_fleet_skills, dest)
+    except RuntimeError as exc:
+        print(f"mirror failed {FLEET_SKILLS_ROOT}: {exc}", file=sys.stderr)
+        return False
+    return True
 
 
 def list_planned(gdrive: Path) -> None:
@@ -244,6 +297,11 @@ def list_planned(gdrive: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="Print planned mirrors and exit")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when any subtree fails to mirror (the default is to report and carry on)",
+    )
     return parser.parse_args()
 
 
@@ -254,8 +312,9 @@ def main() -> int:
         list_planned(gdrive)
         return 0
 
-    mirrored = mirror_agent_config(gdrive)
-    mirror_fleet_skills_catalog(gdrive)
+    mirrored, failures = mirror_agent_config(gdrive)
+    if not mirror_fleet_skills_catalog(gdrive):
+        failures.append(FLEET_SKILLS_ROOT)
 
     if not mirrored and docs_fleet_skills_path() is None:
         print("Nothing mirrored.", file=sys.stderr)
@@ -265,6 +324,18 @@ def main() -> int:
         f"Mirrored {len(mirrored)} agent subtrees to {gdrive / AGENT_CONFIG_ROOT}; "
         f"refreshed {gdrive / FLEET_SKILLS_ROOT}"
     )
+
+    if failures:
+        # A File Provider that refuses small writes is not a reason to fail
+        # the whole job.  The repository zips are the part the owner depends
+        # on, and they were already safely in Drive before this ran.  The
+        # failure is reported loudly, and the job carries on.
+        print(
+            "WARNING: these subtrees did not mirror: " + ", ".join(failures),
+            file=sys.stderr,
+        )
+        if args.strict:
+            return 1
     return 0
 
 
