@@ -8,6 +8,8 @@ import json
 import os
 import pathlib
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -441,6 +443,100 @@ class IngestTests(unittest.TestCase):
             os.close(fd)
         self.assertTrue(self._run()["ok"])       # released: runs again
         self.assertIsInstance(ingest.IngestLocked("x"), ingest.FleetRagError)
+
+    def test_the_nightly_pass_waits_for_the_lock_instead_of_failing(self) -> None:
+        # The sheet sync's partial refresh holds this same lock for as long as it runs, and it
+        # may hold it for its whole budget.  The nightly is the only run that attests the corpus
+        # health, so it must not be the one that gives up:  it waits out the lock and runs.
+        # Without the wait it exited 3 the moment the partial took the lock, left the health
+        # sentinel stale, and paged the fleet for a night that never ran.
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        released = []
+
+        def release_later() -> None:
+            # Hold the lock the way a partial run would, then let the nightly in.
+            time.sleep(0.2)
+            released.append(True)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
+        worker = threading.Thread(target=release_later, daemon=True)
+        worker.start()
+        try:
+            started = time.monotonic()
+            #  The budget is 0.6 s, not 30 s:  IngestLock polls at
+            #  min(5.0, max(0.1, deadline - now)),  so a large budget makes the first sleep a
+            #  full 5 s and the test then sits out a whole poll interval to prove a 0.2 s
+            #  release.  0.6 s still sleeps past the release at 0.2 s and keeps
+            #  elapsed > 0.15 true,  while keeping the whole test under a second.
+            rep = self._run(lock_timeout_s=0.6)
+            elapsed = time.monotonic() - started
+        finally:
+            worker.join(5)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        self.assertEqual(released, [True], "the wait gave up before the holder released")
+        self.assertGreater(elapsed, 0.15, "it waited for the lock rather than failing at once")
+        self.assertTrue(rep["ok"])
+
+    def test_the_wait_is_bounded_and_a_partial_refresh_still_fails_fast(self) -> None:
+        # Two properties the nightly wait must keep.  The wait is bounded, so a lock held by a
+        # hung run cannot hang the nightly forever.  A partial refresh keeps the fast exit,
+        # because the sheet sync's ingest is best-effort and a long wait there would hold its
+        # own budget open.
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            started = time.monotonic()
+            with self.assertRaises(ingest.IngestLocked):
+                self._run(lock_timeout_s=0.3)
+            bounded = time.monotonic() - started
+            self.assertGreaterEqual(bounded, 0.25, "it waited for the lock before giving up")
+            self.assertLess(bounded, 20.0, "the wait is bounded")
+            # A partial refresh, which is what the sheet sync runs, asks for no wait at all.
+            started = time.monotonic()
+            with self.assertRaises(ingest.IngestLocked):
+                self._run()
+            self.assertLess(time.monotonic() - started, 1.0, "a partial refresh fails at once")
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    def test_the_cli_gives_the_nightly_the_wait_and_a_partial_refresh_none(self) -> None:
+        # The wait is chosen by the command line, because that is where the run is identified:
+        # only the full nightly pass attests the corpus health, so only it waits.  An operator
+        # can override the budget, and 0 makes even the nightly fail at once.
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run:
+            self.assertEqual(ingest.main(["--all", "--prune", "--no-heartbeat"]), 0)
+        self.assertEqual(run.call_args.kwargs["lock_timeout_s"], 6000.0)
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run:
+            self.assertEqual(ingest.main(["--source", "doc", "--no-heartbeat"]), 0)
+        self.assertEqual(run.call_args.kwargs["lock_timeout_s"], 0.0)
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run:
+            self.assertEqual(
+                ingest.main(["--all", "--prune", "--lock-timeout", "0", "--no-heartbeat"]), 0
+            )
+        self.assertEqual(run.call_args.kwargs["lock_timeout_s"], 0.0)
+
+    def test_an_enumerated_nightly_run_gets_no_wait_even_though_it_writes_the_sentinel(self) -> None:
+        # The wait is keyed on the --all flag, but the sentinel is keyed on the resolved source
+        # set equalling NIGHTLY_SOURCES.  The two predicates disagree, so this run attests health
+        # (it writes the sentinel and last-run.json, per _run_locked) and yet is given no wait:
+        # a health-attesting run can still be locked out.  Asserted rather than fixed here,
+        # because the wait predicate belongs to the merged ingest.py and this PR is the tests
+        # and docs follow-up;  the mismatch is documented in RAG-FLEET-INFRA.md and tracked.
+        enumerated = ",".join(sources.NIGHTLY_SOURCES)
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run:
+            self.assertEqual(ingest.main(["--source", enumerated, "--prune", "--no-heartbeat"]), 0)
+        self.assertEqual(
+            run.call_args.kwargs["lock_timeout_s"],
+            0.0,
+            "this run is a sentinel-writing nightly, so it should have been given the wait",
+        )
 
     def test_gitleaks_drop_plumbing(self) -> None:
         staged: list[list[dict]] = []

@@ -56,8 +56,10 @@ from . import muse_bridge as MB
 from . import muse_bridge_mac as MBM
 from . import notes as NOTES
 from . import notes_relay as NR
+from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
+from . import session_ids as SI
 from . import subscribe_all as SUB
 from . import wakes as W
 from . import zulip as Z
@@ -3517,6 +3519,71 @@ class Daemon:
                 self._chat_queues[seat] = CN.ChatNudges(self.root, seat, recover=False)
             return self._chat_queues[seat]
 
+    def session_labels(self, rows: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
+        """The registered letter for each catalog row, keyed by the row's stable id.
+
+        The registry is the allocator (AFC-412) and the catalog is discovery, so this is
+        the join between them.  It is read-only and it never breaks the wake:  a row with
+        no registration simply has no letter, and a missing or broken registry leaves
+        every row unlettered.
+
+        The registry's host key is the fleet location (owner:  "location means server, mac,
+        cloud"),  not the OS hostname:  one namespace spans every host, so the Mac and the
+        server must agree on the same value for the same session.  The catalog's own
+        hostname stays on the row for diagnostics.
+
+        The identity is exact on all four fields, and each one is validated rather than
+        coerced:  a malformed session id is dropped, not rounded into someone else's
+        record.
+        """
+        location = str(getattr(self.config, "instance", "") or "")
+        identities: list[tuple[str, str, str, str]] = []
+        owners: dict[tuple[str, str, str, str], list[str]] = {}
+        for row in rows:
+            row_id = row.get("id")
+            platform = row.get("platform")
+            scope = row.get("profile_scope")
+            session_id = row.get("session_id")
+            if not isinstance(row_id, str) or not row_id:
+                continue
+            if not isinstance(platform, str) or not platform:
+                continue
+            if not isinstance(scope, str) or not scope:
+                continue
+            if not isinstance(session_id, str):
+                continue
+            try:
+                native = SI.check(session_id, "the catalog session id")
+            except ValueError:
+                continue
+            if not location:
+                continue
+            identity = (platform, location, scope, native)
+            if identity not in owners:
+                identities.append(identity)
+            owners.setdefault(identity, []).append(row_id)
+        try:
+            found = OR.lookup_many(OR.registry_db_path(self.root, self.env), identities)
+        except OR.RegistryUnavailable as exc:
+            # The registry could not be read at all:  a hot journal, a locked file.  Every
+            # row reads as unlettered, and the reason goes to the listener log, so a
+            # fleet-wide loss of letters is visible instead of silent.
+            self.log.write("session-registry-unavailable", error=str(exc))
+            return {}
+        except Exception as exc:
+            # Anything else in the registry is the same shape of problem for the wake:
+            # the rows are still worth showing, and only the letters are missing.
+            self.log.write("session-registry-unavailable", error=type(exc).__name__)
+            return {}
+        labels: dict[str, tuple[str, str]] = {}
+        for identity, row_ids in owners.items():
+            entry = found.get(identity)
+            if not entry:
+                continue
+            for row_id in row_ids:
+                labels[row_id] = (str(entry.get("label") or ""), str(entry.get("ref") or ""))
+        return labels
+
     def chat_context(
         self, runner: SeatRunner, pending: W.Pending, history: list[dict[str, Any]] | None = None
     ) -> list[dict[str, Any]]:
@@ -3575,6 +3642,7 @@ class Daemon:
                     )
                 ]
             rows = sorted(rows, key=relevance, reverse=True)[:24]
+            labels = self.session_labels(rows)
             context = []
             remaining = 24000
             for row in rows:
@@ -3593,6 +3661,14 @@ class Daemon:
                         "stale",
                     )
                 }
+                # The letter is the sayable handle for this session.  It travels with the
+                # platform, the seat and the location, because a letter alone never
+                # resolves a session across surfaces, and a recycled letter carries its
+                # generation.
+                letter, letter_ref = labels.get(str(row.get("id") or ""), ("", ""))
+                public["label"] = letter
+                public["label_ref"] = letter_ref
+                public["location"] = str(getattr(self.config, "instance", "") or "")
                 encoded = self.scrub(json.dumps(public, ensure_ascii=True))
                 if len(encoded) > remaining:
                     break

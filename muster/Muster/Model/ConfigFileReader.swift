@@ -138,11 +138,38 @@ enum ConfigFileReader {
     /// The text shown in place of a secret value.
     static let redactionMark = "<redacted>"
 
+    /// Whether a value looks like a secret whatever its key is called.
+    ///
+    /// A key name is the first defence and not the whole of it:  a config file can
+    /// carry a token under a name nobody thought of,  a URL with a password in it,  or a
+    /// header value.  So the reader also looks at the shape of the value,  because a
+    /// file that is read at all is a file that is on screen.
+    static func looksLikeSecretValue(_ value: String) -> Bool {
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= 12 else { return false }
+        // A URL is a secret only when it carries a password in its userinfo.
+        if text.contains("://") {
+            let afterScheme = text.split(separator: "://").last.map(String.init) ?? ""
+            let userinfo = String(afterScheme.prefix(while: { $0 != "/" && $0 != "?" && $0 != "#" }))
+            return userinfo.contains(":")
+        }
+        // A long opaque run with no spaces:  a token,  a key,  a signature.
+        if text.count >= 24 &&
+            text.contains { $0.isLetter || $0.isNumber } &&
+            !text.contains(" ") {
+            // A path is not a secret even when it is long.
+            if text.contains("/") { return false }
+            return true
+        }
+        return false
+    }
+
     /// Replace every secret value in a JSON or TOML text with a mark.
     ///
-    /// The replacement is by key name,  so a value is only hidden when its key says
-    /// it is a secret.  A key that holds a path,  a command or a server name is left
-    /// alone,  because that is the information the file is for.
+    /// The replacement is by key name and by the shape of the value,  so a value is
+    /// hidden when its key says it is a secret or when the value looks like one.  A key
+    /// that holds a path,  a command or a server name is left alone,  because that is
+    /// the information the file is for.
     static func redact(_ text: String) -> String {
         // A JSON document:  walk it and rewrite the secret values.
         if let data = text.data(using: .utf8),
@@ -170,6 +197,8 @@ enum ConfigFileReader {
             for (key, child) in map {
                 if isSecretKey(key) {
                     out[key] = redactionMark
+                } else if let text = child as? String, looksLikeSecretValue(text) {
+                    out[key] = redactionMark
                 } else {
                     out[key] = redactJSON(child)
                 }
@@ -190,12 +219,13 @@ enum ConfigFileReader {
         let key = String(line[line.startIndex..<separator]).trimmingCharacters(in: .whitespaces)
         // A TOML key can be quoted,  and a table header has no value at all.
         let bareKey = key.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-        guard !bareKey.isEmpty, isSecretKey(bareKey) else { return line }
         let valueStart = line.index(after: separator)
         let padding = line[valueStart...].prefix(while: { $0 == " " || $0 == "\t" })
         let rest = String(line[valueStart...].dropFirst(padding.count))
         // A section header such as `[headers]` carries no value.
         guard !rest.isEmpty, rest != "[]" else { return line }
+        let value = rest.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        guard isSecretKey(bareKey) || looksLikeSecretValue(value) else { return line }
         let quote = rest.first == "\"" || rest.first == "'"
         let prefix = String(line[..<valueStart]) + String(padding)
         return prefix + redactionMark + (quote ? String(rest.prefix(1)) : "")
