@@ -229,8 +229,12 @@ class ChatCatalog:
             "stale": status == "stale",
             "capabilities": {
                 "read": readable,
-                "wake": bool(wake),
-                "wake_status": "available" if wake else "unsupported",
+                "wake": bool(wake) and status != "stale",
+                "wake_status": "stale"
+                if status == "stale"
+                else "available"
+                if wake
+                else "unsupported",
             },
             "_source": source,
             "_internal_path": internal_path,

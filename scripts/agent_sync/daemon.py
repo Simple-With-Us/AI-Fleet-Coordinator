@@ -3445,8 +3445,8 @@ class Daemon:
                 wait_grok=True, grok_timeout=CT.discovery_wait_budget()
             )
             chosen = FAN.select(rows, self.clock.time(), where, places or FAN.ChatPlaces())
-        except Exception as exc:
-            self.log.write("fanout-error", id=message_id, error=self.scrub(str(exc))[:200])
+        except Exception:
+            self.log.write("fanout-error", id=message_id, error="catalog discovery failed")
             return dict(result, error="catalog")
         for row in chosen:
             platform = str(row.get("platform") or "")
@@ -3456,15 +3456,20 @@ class Daemon:
                 continue
             # A busy chat is queued too:  the nudge queue's preflight holds it until the chat is idle, so a chat
             # that was picked is never silently dropped.
-            binding = {
-                key: str(row.get(key) or "") for key in ("platform", "host", "session_id", "cwd")
-            }
+            fields = ("platform", "host", "session_id", "cwd")
+            if any(not isinstance(row.get(key), str) or not row[key].strip() for key in fields):
+                result["failed"] = result.get("failed", 0) + 1
+                self.log.write(
+                    "fanout-chat-error", id=message_id, error="invalid chat binding fields"
+                )
+                continue
+            binding = {key: row[key] for key in fields}
             binding.update(channel=channel, topic=topic)
             try:
                 added = self.chat_queue(runner.seat).enqueue_target(
                     binding, message_id, self.clock.time(), owner=True
                 )
-            except ValueError as exc:
+            except ValueError:
                 # The transport was vetted above, so a refusal here is a bad binding or an unreadable state
                 # file:  an error to log and count, not a platform with nowhere to send.
                 result["failed"] = result.get("failed", 0) + 1
@@ -3472,16 +3477,16 @@ class Daemon:
                     "fanout-chat-error",
                     id=message_id,
                     platform=platform,
-                    error=self.scrub(str(exc))[:200],
+                    error="chat queue refused binding",
                 )
                 continue
-            except Exception as exc:  # one chat's failure never stops the rest of the alert
+            except Exception:  # one chat's failure never stops the rest of the alert
                 result["failed"] = result.get("failed", 0) + 1
                 self.log.write(
                     "fanout-chat-error",
                     id=message_id,
                     platform=platform,
-                    error=self.scrub(str(exc))[:200],
+                    error="chat queue failed",
                 )
                 continue
             result["queued" if added else "already"] += 1
