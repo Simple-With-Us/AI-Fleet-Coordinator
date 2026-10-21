@@ -26,12 +26,12 @@ class AuditLog:
             else:
                 safe_detail[key] = value
         row = {
+            **safe_detail,
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "seat": seat,
             "action": action,
             "repo": repo,
             "result": result,
-            **safe_detail,
         }
         line = json.dumps(row, sort_keys=True) + "\n"
         fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)

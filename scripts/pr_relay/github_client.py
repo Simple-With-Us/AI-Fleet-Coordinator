@@ -8,6 +8,7 @@ leaking response bodies upstream.
 
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -59,6 +60,8 @@ class GitHubClient:
             raise RelayGitHubError(exc.code, message[:MAX_ERROR_PREVIEW]) from exc
         except urllib.error.URLError as exc:
             raise RelayGitHubError(0, f"connection failed: {exc.reason}") from exc
+        except (OSError, http.client.HTTPException) as exc:
+            raise RelayGitHubError(0, f"connection failed: {exc}") from exc
         if len(raw) > MAX_BODY:
             raise RelayGitHubError(0, "github response exceeded 1 MiB bound")
         if not raw:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import threading
 import time
 
 
@@ -64,6 +65,7 @@ class SeatPolicy:
             raise PolicyError("rate_per_hour must be at least 1")
         self._rate_per_hour = rate_per_hour
         self._calls: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
 
     def authenticate(self, token: str) -> str | None:
         """Return the seat whose token matches, or None.  Constant-time over seats."""
@@ -86,12 +88,13 @@ class SeatPolicy:
         return False
 
     def _rate_ok(self, seat: str, now: float) -> bool:
-        window = [t for t in self._calls.get(seat, []) if now - t < 3600]
-        self._calls[seat] = window
-        if len(window) >= self._rate_per_hour:
-            return False
-        window.append(now)
-        return True
+        with self._lock:
+            window = [t for t in self._calls.get(seat, []) if now - t < 3600]
+            self._calls[seat] = window
+            if len(window) >= self._rate_per_hour:
+                return False
+            window.append(now)
+            return True
 
     def authorize(self, seat: str, action: str, repo: str, now: float | None = None) -> str | None:
         """Return None when allowed, else a short denial reason (safe to return to the caller)."""
