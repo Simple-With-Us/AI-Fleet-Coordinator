@@ -880,7 +880,9 @@ class Bridge:
             # answer in Lark either way.
             log("could not mirror the Lark exchange to Zulip: %s" % exc)
 
-    def _record_in_seat_inbox(self, chat_id, message_id, session_id, question, answer, sender_id=None):
+    def _record_in_seat_inbox(
+        self, chat_id, message_id, session_id, question, answer, sender_id=None
+    ):
         """Put the exchange in the seat inbox, the queue a Zulip DM lands in.
 
         This is how the seat hears about Lark traffic at all.  The listener
