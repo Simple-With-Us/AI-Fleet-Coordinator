@@ -14,7 +14,7 @@ import Foundation
 /// presence is not something this reader can say,  because the copy never
 /// carries one.
 struct KnobRegistry {
-    /// One knob, as the registry declares it.
+    /// One knob,  as the registry declares it.
     struct Knob: Identifiable {
         let name: String
         /// Who owns the knob,  which is the accountable team.
@@ -25,6 +25,12 @@ struct KnobRegistry {
         let defaultValue: String
         /// Whether the knob holds a secret.
         let isSecret: Bool
+        /// The secret column,  as the registry wrote it.
+        ///
+        /// The column is "no" or "secret".  The panel treats anything else as a
+        /// secret,  and this is the raw text,  so a change in the generator's
+        /// wording shows up in a test rather than in a value on the screen.
+        let secretColumn: String
         /// How far a local file may move it.
         let localMay: String
         /// What the knob does.
@@ -58,12 +64,59 @@ struct KnobRegistry {
         }
     }
 
+    /// One knob,  as the panel shows it.
+    ///
+    /// The panel renders this,  and the tests read it,  so what a secret row shows is a
+    /// thing that can be checked rather than a thing buried in a view.
+    struct Row: Identifiable {
+        /// The knob's name.
+        let name: String
+        /// Who owns it.
+        let owner: String
+        /// The kind of value it takes.
+        let kind: String
+        /// The value it holds now,  as the panel shows it.
+        let now: String
+        /// True when the "Now" cell belongs to a secret,  so it is marked as one.
+        let nowIsSecret: Bool
+        /// How far a local file may move it.
+        let localMay: String
+        /// What the knob does,  in full.
+        ///
+        /// The panel puts the note on a line of its own,  because the notes are far
+        /// longer than a column of a table can hold.
+        let note: String
+
+        var id: String { name }
+    }
+
     /// The knobs,  in the order the registry lists them.
     let knobs: [Knob]
-    /// When the last-known-good copy was written,  and whether it is fresh.
+    /// The age of the copy,  or why there is no copy to read.
     let copyAge: String
-    /// True when the copy is older than the engine's own freshness window.
+    /// True when the copy is older than the engine rewrites it.
     let copyIsStale: Bool
+    /// The sentence the panel shows about the copy.
+    let copyHeadline: String
+    /// How many rows of the generated block were there but could not be read.
+    let unreadableRows: Int
+    /// Why the registry itself could not be read,  when it could not.
+    let problem: String?
+
+    /// The knobs,  as the panel shows them.
+    var rows: [Row] {
+        knobs.map { knob in
+            Row(
+                name: knob.name,
+                owner: knob.owner,
+                kind: knob.kind,
+                now: knob.current.displayText,
+                nowIsSecret: knob.isSecret,
+                localMay: knob.localMay,
+                note: knob.note
+            )
+        }
+    }
 }
 
 enum KnobReader {
@@ -71,20 +124,28 @@ enum KnobReader {
     static let blockStart = "<!-- fleet-knobs:begin"
     static let blockEnd = "<!-- fleet-knobs:end -->"
 
-    /// The last-known-good copy of the non-secret knobs.
-    static let copyPath = "~/.local/state/fleet-knobs/lkg.json"
+    /// How many columns a row of the generated block has.
+    ///
+    /// The block is a table of seven:  key,  owner,  kind,  default,  secret,  the
+    /// direction a local file may move it,  and what the knob does.  A row with any
+    /// other number of columns is not a row,  and a row that is not read is a knob
+    /// the panel would not show,  so the count of them is reported.
+    static let columnCount = 7
 
     /// Read the registry and the current values.
     ///
     /// The registry is a table in a markdown file,  so the read is a table read and not
     /// a parse of somebody's code.  A missing or unreadable file yields an empty
-    /// registry and a reason,  and never a guessed knob.
+    /// registry and the reason,  and never a guessed knob.
     static func read(repoRoot: URL, home: URL) -> KnobRegistry {
         let table = readTable(in: repoRoot.appendingPathComponent("INFISICAL.md"))
         let copy = readCopy(in: home)
-        let knobs = table.map { row -> KnobRegistry.Knob in
+        let knobs = table.rows.map { row -> KnobRegistry.Knob in
             let name = row.value(at: 0)
-            let secret = row.value(at: 4).lowercased() == "secret"
+            // The secret column fails closed.  A column that says anything other
+            // than "no" is treated as a secret,  so a wording the app does not know
+            // cannot have a secret's value shown in plain text.
+            let secret = row.value(at: 4).lowercased() != "no"
             let current: KnobRegistry.Knob.CurrentValue
             if secret {
                 // The copy holds the non-secret knobs only,  so a secret is never in
@@ -96,8 +157,10 @@ enum KnobReader {
             } else if copy.isReadable, let value = copy.knobs[name] {
                 current = .current(value)
             } else if copy.isReadable {
-                // The copy is there and it does not carry this knob,  so the knob
-                // holds whatever the registry says it holds.
+                // The copy is there and it does not carry this knob.  The engine
+                // writes the copy after a good fetch and leaves out every knob that
+                // is unset,  so a knob missing from a copy the engine wrote holds
+                // whatever the registry says it holds.
                 current = .defaultValue
             } else {
                 // There is no copy to read,  so the value is not known.  Saying
@@ -112,6 +175,7 @@ enum KnobReader {
                 kind: row.value(at: 2),
                 defaultValue: row.value(at: 3),
                 isSecret: secret,
+                secretColumn: row.value(at: 4),
                 localMay: row.value(at: 5),
                 note: row.value(at: 6),
                 current: current
@@ -120,7 +184,10 @@ enum KnobReader {
         return KnobRegistry(
             knobs: knobs,
             copyAge: copy.ageText,
-            copyIsStale: copy.isStale
+            copyIsStale: copy.isStale,
+            copyHeadline: copy.headline,
+            unreadableRows: table.unreadable,
+            problem: table.problem
         )
     }
 
@@ -137,29 +204,100 @@ enum KnobReader {
         }
     }
 
-    /// The rows of the generated table.
-    private static func readTable(in file: URL) -> [Row] {
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return [] }
+    /// The rows of the generated table,  and what was wrong with the rest.
+    private struct Table {
+        let rows: [Row]
+        /// The rows that were there but were not a row this app can read.
+        let unreadable: Int
+        /// Why the block could not be read at all,  when it could not.
+        let problem: String?
+    }
+
+    /// Read the generated table.
+    ///
+    /// A row is split on its pipes with the empty cells kept,  because a knob with no
+    /// default or no note is a row with an empty cell in it,  and dropping the empty
+    /// cells would move every later value one column to the left.
+    private static func readTable(in file: URL) -> Table {
+        let text: String
+        do {
+            text = try String(contentsOf: file, encoding: .utf8)
+        } catch {
+            // A file that is missing,  unreadable or not UTF-8 is not the same thing
+            // as a file without a block,  and the panel says which it was.
+            return Table(rows: [], unreadable: 0, problem: describe(error))
+        }
         var rows: [Row] = []
+        var unreadable = 0
         var inside = false
+        var found = false
         for line in text.components(separatedBy: "\n") {
             if line.hasPrefix(blockStart) {
                 inside = true
+                found = true
                 continue
             }
             if line.hasPrefix(blockEnd) { break }
             guard inside else { continue }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("|") else { continue }
-            let cells = trimmed.split(separator: "|", omittingEmptySubsequences: false)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
+            let cells = splitRow(trimmed)
             // The header row and the rule under it are not knobs.
-            guard cells.count >= 7, cells[0] != "Key" else { continue }
+            guard cells[0] != "Key" else { continue }
             if cells.allSatisfy({ $0.allSatisfy { $0 == "-" } }) { continue }
+            guard cells.count == columnCount else {
+                // A row that is not the right shape is a knob the panel would not
+                // show,  so it is counted rather than dropped in silence.
+                unreadable += 1
+                continue
+            }
             rows.append(Row(cells: cells))
         }
-        return rows
+        if !found {
+            return Table(rows: [], unreadable: 0, problem: "the registry block is not in the file")
+        }
+        return Table(rows: rows, unreadable: unreadable, problem: nil)
+    }
+
+    /// Split one table row into its cells,  keeping the empty ones.
+    ///
+    /// The outer pipes are the row's delimiters and are not cells.  A pipe inside a
+    /// cell is escaped with a backslash and does not split it.
+    private static func splitRow(_ line: String) -> [String] {
+        var body = Substring(line)
+        if body.hasPrefix("|") { body = body.dropFirst() }
+        if body.hasSuffix("|") { body = body.dropLast() }
+        var cells: [String] = []
+        var current = ""
+        var escaped = false
+        for character in body {
+            if escaped {
+                current.append(character == "|" ? "|" : character)
+                escaped = false
+                continue
+            }
+            if character == "\\" {
+                escaped = true
+                continue
+            }
+            if character == "|" {
+                cells.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+                continue
+            }
+            current.append(character)
+        }
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        return cells
+    }
+
+    /// Say what went wrong with the registry file,  in the app's own words.
+    private static func describe(_ error: Error) -> String {
+        let reason = (error as NSError).localizedDescription
+        if reason.isEmpty {
+            return "the registry file could not be read"
+        }
+        return "the registry file could not be read: \(reason)"
     }
 
     /// The last-known-good copy,  with the age of the copy.
@@ -172,6 +310,8 @@ enum KnobReader {
         let isReadable: Bool
         /// Why the copy is not readable,  when it is not.
         let reason: String?
+        /// The sentence the panel shows about the copy.
+        let headline: String
     }
 
     /// How often the engine rewrites an unchanged copy,  in seconds.
@@ -192,16 +332,42 @@ enum KnobReader {
     static let copyEnvironment = "prod"
     /// The engine treats a copy more than this far in the future as expired.
     static let futureToleranceSeconds = 300
+    /// The largest copy the engine will read,  in bytes.
+    static let maxCopyBytes = 256 * 1024
 
     /// The copy the fleet's own tool wrote.
     ///
     /// It holds the non-secret knobs only,  and the tool refuses to write a secret
     /// value into it,  so reading it cannot put a secret on the screen.
+    ///
+    /// The file is checked the way the engine checks it:  a file that is a symlink,
+    /// not a regular file, owned by somebody else, readable by the group or by
+    /// others, or too large is never trusted.
     private static func readCopy(in home: URL) -> Copy {
-        let path = home.appendingPathComponent(
-            ".local/state/fleet-knobs/lkg.json",
-            isDirectory: false
-        )
+        let directory = home.appendingPathComponent(".local/state/fleet-knobs", isDirectory: true)
+        let path = directory.appendingPathComponent("lkg.json", isDirectory: false)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path.path, isDirectory: &isDirectory),
+              isDirectory.boolValue == false else {
+            return Copy(
+                knobs: [:],
+                ageText: "no local copy",
+                isStale: true,
+                isReadable: false,
+                reason: "no local copy",
+                headline: "No local copy of the knobs."
+            )
+        }
+        guard isPrivateFile(at: path, in: directory) else {
+            return Copy(
+                knobs: [:],
+                ageText: "no usable copy",
+                isStale: true,
+                isReadable: false,
+                reason: "the copy is not a private file of this user",
+                headline: "No local copy of the knobs."
+            )
+        }
         guard
             let data = try? Data(contentsOf: path),
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -211,7 +377,8 @@ enum KnobReader {
                 ageText: "no local copy",
                 isStale: true,
                 isReadable: false,
-                reason: "no local copy"
+                reason: "no local copy",
+                headline: "No local copy of the knobs."
             )
         }
         // The engine accepts a copy only when it carries its own identity,  a map of
@@ -235,7 +402,21 @@ enum KnobReader {
                 ageText: "not a copy this app knows",
                 isStale: true,
                 isReadable: false,
-                reason: "the copy is not one the engine wrote"
+                reason: "the copy is not one the engine wrote",
+                headline: "The local copy is not one the engine wrote."
+            )
+        }
+        // A time that is not a number a clock could hold is not a time.  A value such
+        // as 1e300 is valid JSON and would trap the conversion to an integer,  so it
+        // is refused before anything tries to read it as an age.
+        guard saved.isFinite, saved > 0, saved < 4_102_444_800 else {
+            return Copy(
+                knobs: [:],
+                ageText: "no usable copy",
+                isStale: true,
+                isReadable: false,
+                reason: "the copy has no time this app can read",
+                headline: "The local copy has no time this app can read."
             )
         }
         var values: [String: String] = [:]
@@ -248,12 +429,52 @@ enum KnobReader {
         // The panel says the same thing the engine does.
         let stale = age > Double(refreshSeconds)
         let expired = age > Double(maxAgeSeconds) || age < -Double(futureToleranceSeconds)
+        if expired {
+            return Copy(
+                knobs: [:],
+                ageText: "past its expiry",
+                isStale: true,
+                isReadable: false,
+                reason: "the copy is past its expiry",
+                headline: "The local copy is past its expiry,  so it says nothing."
+            )
+        }
+        let ageText = age <= 0 ? "just now" : FleetTime.age(Int(age))
         return Copy(
             knobs: values,
-            ageText: age <= 0 ? "just now" : FleetTime.age(Int(age)),
+            ageText: ageText,
             isStale: stale,
-            isReadable: !expired,
-            reason: expired ? "the copy is past its expiry" : nil
+            isReadable: true,
+            reason: nil,
+            headline: "Local copy \(ageText) old."
         )
+    }
+
+    /// Check a file the way the engine's own reader checks it.
+    ///
+    /// The engine reads the copy without following a symlink,  and refuses a file
+    /// that is not a regular file of this user that nobody else can read.  A file
+    /// that does not pass is never trusted here either.
+    private static func isPrivateFile(at path: URL, in directory: URL) -> Bool {
+        guard let values = try? path.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .fileSizeKey,
+        ]) else { return false }
+        guard values.isSymbolicLink != true, values.isRegularFile == true else { return false }
+        guard (values.fileSize ?? 0) <= maxCopyBytes else { return false }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path.path) else {
+            return false
+        }
+        let owner = (attributes[.ownerAccountID] as? NSNumber)?.uint32Value
+        guard owner == getuid() else { return false }
+        let mode = (attributes[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+        guard mode & 0o077 == 0 else { return false }
+        // The directory the copy sits in is private too,  or the file's name could be
+        // pointed somewhere else by whoever made the directory.
+        guard let directoryAttributes = try? FileManager.default
+            .attributesOfItem(atPath: directory.path) else { return false }
+        let directoryMode = (directoryAttributes[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+        return directoryMode & 0o077 == 0
     }
 }

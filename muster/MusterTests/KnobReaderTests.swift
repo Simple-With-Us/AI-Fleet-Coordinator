@@ -11,9 +11,15 @@ final class KnobReaderTests: XCTestCase {
             at: root.appendingPathComponent("scripts", isDirectory: true),
             withIntermediateDirectories: true
         )
+        let copyDirectory = home.appendingPathComponent(".local/state/fleet-knobs", isDirectory: true)
         try FileManager.default.createDirectory(
-            at: home.appendingPathComponent(".local/state/fleet-knobs", isDirectory: true),
+            at: copyDirectory,
             withIntermediateDirectories: true
+        )
+        // The engine keeps the copy's directory private,  and the reader checks it.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: copyDirectory.path
         )
         try """
         # Infisical
@@ -47,7 +53,8 @@ final class KnobReaderTests: XCTestCase {
         schema: Int = 1,
         project: String = KnobReader.copyProject,
         environment: String = KnobReader.copyEnvironment,
-        omitTime: Bool = false
+        omitTime: Bool = false,
+        permissions: NSNumber = 0o600
     ) throws {
         var body: [String: Any] = [
             "schema": schema,
@@ -59,7 +66,12 @@ final class KnobReaderTests: XCTestCase {
             body["saved_epoch"] = Date().timeIntervalSince1970 - age
         }
         let data = try JSONSerialization.data(withJSONObject: body)
-        try data.write(to: home.appendingPathComponent(".local/state/fleet-knobs/lkg.json"))
+        let path = home.appendingPathComponent(".local/state/fleet-knobs/lkg.json")
+        try data.write(to: path)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: permissions],
+            ofItemAtPath: path.path
+        )
     }
 
     /// The registry is read from the generated block,  and only the knobs in it.
@@ -115,6 +127,84 @@ final class KnobReaderTests: XCTestCase {
         XCTAssertFalse(secret?.current.displayText.contains("a-secret-value") ?? true)
     }
 
+    /// A secret row shows no value,  and the row model says it is a secret.
+    func test_a_secret_row_shows_no_value() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"])
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let row = registry.rows.first { $0.name == "FLEET_FACTS_SIGNING_KEY" }
+        XCTAssertEqual(row?.nowIsSecret, true)
+        XCTAssertEqual(row?.now, "not known (secret)")
+        // The whole row carries no value anywhere.
+        let text = [row?.now, row?.owner, row?.kind, row?.localMay, row?.note]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        XCTAssertFalse(text.contains("a-secret-value"))
+    }
+
+    /// A secret column that says something the app does not know still fails closed.
+    ///
+    /// The column is "no" or "secret".  Any other wording must not have a secret's
+    /// value shown in plain text,  so anything but "no" is treated as a secret.
+    func test_an_unknown_secret_column_fails_closed() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try """
+        # Infisical
+
+        <!-- fleet-knobs:begin -->
+
+        | Key | Owner | Kind | Default | Secret | Local files may | What it does |
+        |---|---|---|---|---|---|---|
+        | `FLEET_FACTS_SIGNING_KEY` | F7 | str | none | YES | nothing | HMAC key |
+
+        <!-- fleet-knobs:end -->
+        """.write(
+            to: root.appendingPathComponent("INFISICAL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try writeCopy(in: home, knobs: ["FLEET_FACTS_SIGNING_KEY": "a-secret-value"])
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let knob = registry.knobs.first { $0.name == "FLEET_FACTS_SIGNING_KEY" }
+        XCTAssertEqual(knob?.isSecret, true)
+        XCTAssertEqual(knob?.current, KnobRegistry.Knob.CurrentValue.secretUnconfirmed)
+        XCTAssertFalse(knob?.current.displayText.contains("a-secret-value") ?? true)
+    }
+
+    /// A row with a missing cell is counted,  not dropped in silence.
+    ///
+    /// The engine leaves out a knob with no note,  so the row has an empty cell in
+    /// it.  Dropping the empty cells would move every later value one column to the
+    /// left,  so the reader keeps them and counts a row it cannot read.
+    func test_a_row_with_a_missing_cell_is_counted() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try """
+        # Infisical
+
+        <!-- fleet-knobs:begin -->
+
+        | Key | Owner | Kind | Default | Secret | Local files may | What it does |
+        |---|---|---|---|---|---|---|
+        | `FLEET_IDLE_HOURS` | C1 | int 1 to 168 | `2` | no | only raise it |
+        | `FLEET_AUTOPUSH_MODE` | C1 | enum: off < report | `off` | no | only move toward `off` | what the autopush hooks may do |
+
+        <!-- fleet-knobs:end -->
+        """.write(
+            to: root.appendingPathComponent("INFISICAL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        XCTAssertEqual(registry.unreadableRows, 1)
+        // The good row beside it still reads,  and its columns are in the right places.
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(knob?.owner, "C1")
+        XCTAssertEqual(knob?.localMay, "only move toward off")
+    }
+
     /// With no copy at all,  the value is not known.
     ///
     /// Saying "default" would claim the knob equals its default,  which is a
@@ -125,6 +215,40 @@ final class KnobReaderTests: XCTestCase {
         let registry = KnobReader.read(repoRoot: root, home: home)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(knob?.current, KnobRegistry.Knob.CurrentValue.unknown("no local copy"))
+    }
+
+    /// The copy's age and staleness are reported,  and the headline reads as a sentence.
+    func test_the_copy_age_and_staleness_are_reported() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"], age: 30)
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        XCTAssertFalse(registry.copyIsStale)
+        XCTAssertEqual(registry.copyAge, "30s")
+        XCTAssertEqual(registry.copyHeadline, "Local copy 30s old.")
+    }
+
+    /// A copy older than the engine's refresh is stale,  and the header says so.
+    func test_a_copy_older_than_the_refresh_is_stale() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(
+            in: home,
+            knobs: ["FLEET_AUTOPUSH_MODE": "report"],
+            age: 2 * 3600
+        )
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        XCTAssertTrue(registry.copyIsStale)
+        XCTAssertTrue(registry.copyHeadline.hasPrefix("Local copy "))
+    }
+
+    /// With no copy,  the header says there is no copy,  and says nothing silly.
+    func test_the_headline_with_no_copy_reads_as_a_sentence() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        XCTAssertEqual(registry.copyHeadline, "No local copy of the knobs.")
+        XCTAssertFalse(registry.copyHeadline.contains("old."))
     }
 
     /// The staleness window is the engine's,  not a guess.
@@ -194,6 +318,30 @@ final class KnobReaderTests: XCTestCase {
         )
     }
 
+    /// A time no clock could hold is not a time,  and it does not crash the app.
+    ///
+    /// A value such as 1e300 is valid JSON,  and converting it to an integer traps.
+    func test_a_time_no_clock_could_hold_is_refused() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"])
+        let path = home.appendingPathComponent(".local/state/fleet-knobs/lkg.json")
+        try """
+        {"schema": 1, "project": "\(KnobReader.copyProject)", "environment": "prod",
+        "knobs": {"FLEET_AUTOPUSH_MODE": "report"}, "saved_epoch": 1e300}
+        """.write(to: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: path.path
+        )
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(
+            knob?.current,
+            .unknown("the copy has no time this app can read")
+        )
+    }
+
     /// A copy past the engine's expiry is not a reading.
     func test_a_copy_past_its_expiry_is_not_read() throws {
         let (root, home) = try makeRepo()
@@ -228,6 +376,67 @@ final class KnobReaderTests: XCTestCase {
         )
     }
 
+    /// A copy other people can read is not the engine's copy,  and is not trusted.
+    func test_a_world_readable_copy_is_not_trusted() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(
+            in: home,
+            knobs: ["FLEET_AUTOPUSH_MODE": "report"],
+            permissions: 0o644
+        )
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(
+            knob?.current,
+            .unknown("the copy is not a private file of this user")
+        )
+    }
+
+    /// A registry file that cannot be read says so,  rather than claiming no block.
+    func test_an_unreadable_registry_file_says_why() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let path = root.appendingPathComponent("INFISICAL.md")
+        try Data([0xff, 0xfe, 0x00, 0x01]).write(to: path)
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        XCTAssertTrue(registry.knobs.isEmpty)
+        XCTAssertNotNil(registry.problem)
+        XCTAssertTrue(registry.problem?.contains("could not be read") ?? false)
+    }
+
+    /// The repo's own generated block parses,  and every row is the right shape.
+    ///
+    /// The fixture above is three rows.  The real block is the one the fleet ships,
+    /// so a change to the generator's format shows up here first.
+    func test_the_real_generated_block_parses() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        guard FileManager.default.fileExists(
+            atPath: repoRoot.appendingPathComponent("INFISICAL.md").path
+        ) else {
+            throw XCTSkip("The repository's INFISICAL.md is not beside this test.")
+        }
+        let registry = KnobReader.read(
+            repoRoot: repoRoot,
+            home: FileManager.default.homeDirectoryForCurrentUser
+        )
+        XCTAssertGreaterThan(registry.knobs.count, 20, "the block should hold every knob")
+        XCTAssertEqual(registry.unreadableRows, 0, "every row of the block should be readable")
+        // The secret column is "no" or "secret",  and nothing else.
+        for knob in registry.knobs {
+            XCTAssertTrue(
+                knob.secretColumn == "no" || knob.secretColumn == "secret",
+                "\(knob.name) has the secret column \(knob.secretColumn)"
+            )
+        }
+        // The block names one secret,  and it is the signing key.
+        let secrets = registry.knobs.filter { $0.isSecret }
+        XCTAssertEqual(secrets.map { $0.name }, ["FLEET_FACTS_SIGNING_KEY"])
+    }
+
     /// A file with no registry block yields no knobs and no guess.
     func test_a_file_with_no_block_yields_no_knobs() throws {
         let (root, home) = try makeRepo()
@@ -239,5 +448,6 @@ final class KnobReaderTests: XCTestCase {
         )
         let registry = KnobReader.read(repoRoot: root, home: home)
         XCTAssertTrue(registry.knobs.isEmpty)
+        XCTAssertNotNil(registry.problem)
     }
 }

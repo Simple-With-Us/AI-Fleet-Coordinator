@@ -27,7 +27,7 @@ struct ControlsView: View {
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
         }
-        .task { load() }
+        .task { await load() }
     }
 
     private var header: some View {
@@ -39,7 +39,7 @@ struct ControlsView: View {
                 .foregroundStyle(.secondary)
             if let registry {
                 HStack(spacing: 6) {
-                    Text("Local copy \(registry.copyAge) old.")
+                    Text(registry.copyHeadline)
                         .font(.caption)
                         .foregroundStyle(registry.copyIsStale ? Color.orange : Color.secondary)
                     if registry.copyIsStale {
@@ -51,41 +51,79 @@ struct ControlsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if registry.unreadableRows > 0 {
+                    Text("\(registry.unreadableRows) row(s) of the registry could not be read.")
+                        .font(.caption)
+                        .foregroundStyle(Color.orange)
+                }
             }
         }
     }
 
     private func table(_ registry: KnobRegistry) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            GridRowHeader(labels: ["Knob", "Owner", "Kind", "Now", "Local files may", "What it does"])
-            ForEach(registry.knobs) { knob in
-                GridRow(cells: [
-                    GridCellText(value: knob.name),
-                    GridCellText(value: knob.owner),
-                    GridCellText(value: knob.kind),
-                    GridCellText(
-                        value: knob.current.displayText,
-                        emphasised: knob.isSecret
-                    ),
-                    GridCellText(value: knob.localMay),
-                    GridCellText(value: knob.note),
-                ])
+            GridRowHeader(labels: ["Knob", "Owner", "Kind", "Now", "Local files may"])
+            ForEach(registry.rows) { row in
+                KnobRowView(row: row)
             }
         }
     }
 
-    private func load() {
+    /// Read the registry,  off the main actor.
+    ///
+    /// The registry file and the copy are both read from disk,  and the app's other
+    /// engine work stays off the main thread,  so this does too.
+    private func load() async {
         guard let root = store.engineRoot else {
             reason = "No engine checkout was found,  so the registry was not read."
             return
         }
-        let loaded = KnobReader.read(
-            repoRoot: root,
-            home: FileManager.default.homeDirectoryForCurrentUser
-        )
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let loaded = await Task.detached(priority: .userInitiated) {
+            KnobReader.read(repoRoot: root, home: home)
+        }.value
         registry = loaded
-        reason = loaded.knobs.isEmpty
+        reason = loaded.problem ?? (loaded.knobs.isEmpty
             ? "The registry block was not found in INFISICAL.md."
-            : nil
+            : nil)
+    }
+}
+
+/// One knob,  with what it does on a line of its own.
+///
+/// The shared grid row truncates every cell to two lines,  and the registry notes run
+/// far longer than a column of a table can hold,  so the controls tab does not use
+/// it.  The note goes under the row at the full width,  where it can be read.
+private struct KnobRowView: View {
+    let row: KnobRegistry.Row
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 12) {
+                GridCellText(value: row.name)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                GridCellText(value: row.owner)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                GridCellText(value: row.kind)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(row.kind)
+                // The "Now" cell of a secret row is marked,  and never carries a
+                // tooltip,  so a secret's value cannot be read off a secret row.
+                GridCellText(value: row.now, emphasised: row.nowIsSecret)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                GridCellText(value: row.localMay)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.vertical, 2)
+            if !row.note.isEmpty {
+                Text(row.note)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 6)
+            }
+        }
     }
 }

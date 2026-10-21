@@ -1,4 +1,6 @@
 import XCTest
+@testable import Muster
+
 /// The grid's ages:  one shared check time,  and a cell that is the exception.
 ///
 /// The engine checks every rule in one pass,  so every cell carried the same age and
