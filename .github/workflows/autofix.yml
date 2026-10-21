@@ -31,6 +31,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+      issues: write
       actions: read
     uses: ./.github/workflows/pr-autofix-reusable.yml
     secrets:
