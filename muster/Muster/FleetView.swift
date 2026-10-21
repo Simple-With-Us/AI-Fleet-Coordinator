@@ -90,7 +90,7 @@ struct FleetView: View {
                             }
                             Spacer()
                             if claim.expired {
-                                Text("EXPIRED · \(FleetTime.age(claim.ageSeconds))")
+                                Text(claim.ageSeconds < 0 ? "EXPIRED · age unknown" : "EXPIRED · \(FleetTime.age(claim.ageSeconds))")
                                     .font(.caption.weight(.bold)).foregroundStyle(.red)
                             } else {
                                 Text(FleetTime.age(claim.ageSeconds))

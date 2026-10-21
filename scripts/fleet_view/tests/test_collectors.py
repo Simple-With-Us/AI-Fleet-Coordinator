@@ -44,6 +44,23 @@ class LaneTests(unittest.TestCase):
         self.assertEqual(item.dirty_files, 2)
         self.assertEqual(item.state, "OK")
 
+    def test_lane_scan_never_takes_the_index_lock(self):
+        seen = []
+
+        def runner(argv):
+            seen.append(list(argv))
+            return git_runner(argv)
+
+        index = collectors.SeatIndex(SEATS)
+        with tempfile.TemporaryDirectory() as tmp:
+            lane = pathlib.Path(tmp) / "AI-Fleet-Coordinator" / "claude-x"
+            lane.mkdir(parents=True)
+            collectors.collect_lanes(pathlib.Path(tmp), index, runner, NOW)
+        status_calls = [argv for argv in seen if "status" in argv]
+        self.assertTrue(status_calls)
+        for argv in status_calls:
+            self.assertIn("--no-optional-locks", argv)
+
     def test_retired_seat_lane_reads_unknown(self):
         index = collectors.SeatIndex(SEATS)
         self.assertEqual(index.seat_for_lane_name("monet-old-work"), "UNKNOWN")
@@ -81,6 +98,12 @@ class BlockerTests(unittest.TestCase):
         )
         failing = [{**base, "statusCheckRollup": [{"conclusion": "FAILURE"}]}][0]
         self.assertEqual(collectors.blocker_for(failing), "failing checks")
+        context = {**base, "statusCheckRollup": [{"state": "FAILURE"}]}
+        self.assertEqual(collectors.blocker_for(context), "failing checks")
+        startup = {**base, "statusCheckRollup": [{"conclusion": "STARTUP_FAILURE"}]}
+        self.assertEqual(collectors.blocker_for(startup), "failing checks")
+        pending = {**base, "statusCheckRollup": [{"state": "PENDING"}]}
+        self.assertEqual(collectors.blocker_for(pending), "checks pending")
 
 
 class PullRequestTests(unittest.TestCase):
@@ -196,6 +219,18 @@ class ClaimTests(unittest.TestCase):
         self.assertTrue(by_id["AFC-394"].expired)
         self.assertFalse(by_id["AFC-389"].expired)
         self.assertEqual(by_id["AFC-390"].seat, "UNCLAIMED")
+
+    def test_unreadable_stamp_flags_the_claim_never_fresh(self):
+        payload = json.dumps([
+            {"identifier": "AFC-1", "title": "x", "labels": ["claimed:MC"], "updated_at": "not-a-date"},
+        ])
+
+        def runner(argv):
+            return 0, payload
+
+        section = collectors.collect_claims(runner, RequestBudget(), NOW, expiry_hours=72)
+        self.assertEqual(section.items[0].age_seconds, -1)
+        self.assertTrue(section.items[0].expired)
 
     def test_board_garbage_is_unknown(self):
         def runner(argv):

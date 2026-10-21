@@ -162,7 +162,9 @@ def _lane_record(repo, lane_dir, index, runner, now) -> LaneRecord:
     try:
         code, out = runner(["git", "-C", str(lane_dir), "rev-parse", "--abbrev-ref", "HEAD"])
         branch = out.strip() if code == 0 else ""
-        code2, out2 = runner(["git", "-C", str(lane_dir), "status", "--porcelain"])
+        # --no-optional-locks:  a read-only scan of hundreds of live lanes
+        # must never contend for an index lock with the agent working there.
+        code2, out2 = runner(["git", "--no-optional-locks", "-C", str(lane_dir), "status", "--porcelain"])
         dirty = len([ln for ln in out2.splitlines() if ln.strip()]) if code2 == 0 else -1
     except (TimeoutError, RuntimeError, ValueError):
         return LaneRecord(repo, lane_dir.name, seat, "", -1, age, "UNKNOWN")
@@ -180,8 +182,17 @@ def blocker_for(pr: dict) -> str:
         return "changes requested"
     checks = pr.get("statusCheckRollup") or []
     for check in checks:
-        if (check.get("conclusion") or "") in ("FAILURE", "TIMED_OUT", "CANCELLED"):
+        # CheckRun entries carry a conclusion;  StatusContext entries carry
+        # a state instead.  Both can fail, and neither may read as ready.
+        if (check.get("conclusion") or "") in ("FAILURE", "STARTUP_FAILURE", "TIMED_OUT", "CANCELLED"):
             return "failing checks"
+        if (check.get("state") or "") in ("FAILURE", "ERROR"):
+            return "failing checks"
+    for check in checks:
+        if (check.get("state") or "") in ("PENDING", "EXPECTED"):
+            return "checks pending"
+        if (check.get("status") or "") in ("IN_PROGRESS", "QUEUED", "PENDING"):
+            return "checks pending"
     mergeable = pr.get("mergeable") or "UNKNOWN"
     state_status = pr.get("mergeStateStatus") or ""
     if mergeable == "CONFLICTING" or state_status == "DIRTY":
@@ -244,6 +255,10 @@ def collect_pull_requests(
         if not isinstance(rows, list):
             failures.append("gh output not a list for %s" % repo)
             continue
+        if len(rows) >= 50:
+            # A full page may be a truncated one.  Say so (UNKNOWN) instead
+            # of silently dropping the PRs past the limit.
+            failures.append("results may be truncated at 50 for %s" % repo)
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -305,17 +320,25 @@ def collect_claims(
             if isinstance(label, str) and label.startswith("claimed:"):
                 seat = label.split(":", 1)[1] or "UNCLAIMED"
         stamp = row.get("updated_at") or row.get("created_at") or ""
+        # An unreadable stamp must not read as a fresh claim:  age -1 with
+        # the expired flag set renders red (needs attention), never green.
         try:
-            age = max(0, int((now - parse_iso(stamp)).total_seconds())) if stamp else 0
+            age = max(0, int((now - parse_iso(stamp)).total_seconds())) if stamp else -1
         except ValueError:
-            age = 0
+            age = -1
         items.append(
             ClaimRecord(
                 identifier=row.get("identifier") or "",
                 title=row.get("title") or "",
                 seat=seat,
                 age_seconds=age,
-                expired=bool(expiry_hours > 0 and age > expiry_hours * 3600),
+                expired=bool(age < 0 or (expiry_hours > 0 and age > expiry_hours * 3600)),
             )
+        )
+    if len(items) >= 200:
+        return Section(
+            state="UNKNOWN",
+            reason="%d claim(s) observed; results may be truncated at 200" % len(items),
+            items=tuple(items),
         )
     return Section(state="OK", reason="%d claim(s)" % len(items), items=tuple(items))
