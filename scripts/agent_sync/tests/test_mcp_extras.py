@@ -173,6 +173,24 @@ class NotesToolTests(McpHarness):
         self.assertNotIn("the body text", " ".join(run.calls[0]["argv"]))
         self.assertEqual(self.relay_messages(), [], "a direct write posts nothing")
 
+    def test_a_direct_create_whose_pin_was_skipped_says_so_in_the_reply(self):
+        """AFC-454:  the helper exits 0 with the note saved unpinned, and the reply must not hide it."""
+        run = FakeRun(stderr="pin skipped: Pin Coding Note Shortcut failed; note saved unpinned\n")
+        with (
+            mock.patch.object(
+                N, "direct_available", return_value=Path("/fake/apple-notes-coding.sh")
+            ),
+            mock.patch.object(N, "_run_helper", run),
+        ):
+            result = self.session().call(
+                "notes_create", {"title": "[AFC, Claude] unpinned", "markdown": "the body text"}
+            )
+        data = self.assert_structured("notes_create", result)
+        self.assertEqual(data["status"], "done")
+        self.assertEqual(
+            data["pin_skipped"], "Pin Coding Note Shortcut failed; note saved unpinned"
+        )
+
     def direct(self, run=None):
         run = run or FakeRun()
         return (

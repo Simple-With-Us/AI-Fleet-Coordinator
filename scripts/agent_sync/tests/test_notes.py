@@ -402,6 +402,23 @@ class DirectRunnerTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, expected)
                 self.assertLess(len(caught.exception.message), 400)
 
+    def test_a_skipped_pin_is_carried_out_in_the_result_and_a_clean_run_has_no_such_key(self):
+        """A create or update whose pin was skipped exits 0 (AFC-454), so the stderr warning is the only sign.
+
+        The caller used to return only {"status": "done"}, and an agent was told the note was pinned."""
+        warning = "pin skipped: Pin Coding Note Shortcut failed; note saved unpinned\n"
+        skipped = self.run_direct(envelope(), FakeRun(code=0, stderr=warning))
+        self.assertEqual(skipped["status"], "done")
+        self.assertEqual(
+            skipped["pin_skipped"], "Pin Coding Note Shortcut failed; note saved unpinned"
+        )
+        for stderr in ("", "some other warning\n", "the line pin skipped: is not at the start\n"):
+            with self.subTest(stderr=stderr):
+                self.assertNotIn("pin_skipped", self.run_direct(envelope(), FakeRun(stderr=stderr)))
+        #  the reason is the line itself, even with other stderr lines around it, and it is bounded
+        noisy = "warming up\n" + "pin skipped: " + "x" * 400 + "\ntrailing\n"
+        self.assertEqual(len(self.run_direct(envelope(), FakeRun(stderr=noisy))["pin_skipped"]), 200)
+
     def test_exit_4_names_the_pin_or_unpin_that_failed(self):
         """The helper has no GUI fallback (owner 2026-10-20):  exit 4 means the Shortcut did not pin or unpin."""
         for action, word in (("pin", "pinned"), ("unpin", "unpinned")):

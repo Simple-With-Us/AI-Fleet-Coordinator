@@ -44,6 +44,30 @@ class NotesCliTests(Harness):
         )
         self.assertEqual([r.path for r in self.fake.requests], [])
 
+    def test_a_create_whose_pin_was_skipped_says_so_in_the_json(self):
+        """AFC-454:  the helper exits 0 with the note saved unpinned, and the CLI result must not hide it."""
+        run = FakeRun(stderr="pin skipped: Pin Coding Note Shortcut failed; note saved unpinned\n")
+        a, b = self.direct(run)
+        with a, b:
+            result = self.run_cli("notes", "create", TITLE, "--json", stdin="body\n")
+        self.assertEqual(result.code, 0, result.err)
+        info = json.loads(result.out)
+        self.assertEqual(info["status"], "done")
+        self.assertEqual(
+            info["pin_skipped"], "Pin Coding Note Shortcut failed; note saved unpinned"
+        )
+        clean_run = FakeRun()
+        a, b = self.direct(clean_run)
+        with a, b:
+            clean = self.run_cli(
+                "notes", "create", TITLE, "--json", "--request-id", "clean-request-01", stdin="body\n"
+            )
+        self.assertNotIn("pin_skipped", json.loads(clean.out))
+        a, b = self.direct(FakeRun(stderr="pin skipped: the Shortcut list could not be read; note saved unpinned\n"))
+        with a, b:
+            text = self.run_cli("notes", "create", TITLE, "--request-id", "text-request-01", stdin="body\n")
+        self.assertIn("pin skipped:  the Shortcut list could not be read", text.out)
+
     def test_the_body_comes_from_a_private_file_or_an_html_file_and_flags_pass_through(self):
         run = FakeRun()
         body = self.tmp / "body.md"

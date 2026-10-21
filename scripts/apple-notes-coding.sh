@@ -90,8 +90,8 @@ NOTES_SHORTCUT_TIMEOUT_S="${NOTES_SHORTCUT_TIMEOUT_S:-30}"
 # its own calls).  Two overlapping runs of the Shortcut fight over the same Find Notes picker on the
 # owner's screen and make each other fail, so a run takes this lock first.  macOS has no flock(1), so the
 # lock is a directory made with mkdir, which is atomic, holding the owner's pid.  A lock whose pid is gone,
-# or that is older than any live run could be (3 minutes;  the longest bounded run is about 100 s), is
-# stale and is taken over.  A caller that cannot get the lock in NOTES_PIN_LOCK_WAIT_S seconds skips the
+# or that is older than any live run could be (the pin phase is bounded by NOTES_SHORTCUT_TIMEOUT_S, see
+# _pin_lock_stale), is stale and is taken over.  A caller that cannot get the lock in NOTES_PIN_LOCK_WAIT_S seconds skips the
 # pin and says so, rather than queueing a second Shortcut behind the first.
 NOTES_PIN_LOCK_DIR="${NOTES_PIN_LOCK_DIR:-${HOME:-/tmp}/Library/Caches/apple-notes-coding/pin.lock}"
 NOTES_PIN_LOCK_WAIT_S="${NOTES_PIN_LOCK_WAIT_S:-20}"
@@ -371,13 +371,28 @@ _run_shortcuts_bounded() {  # $@ = the shortcuts command
   fi
 }
 
+# Is process $1 running?  kill -0 fails both for a process that is gone and, with EPERM, for a live process
+# owned by another user.  Only the first means the holder is dead, so the failure text decides:  "not
+# permitted" is a live process, and a lock held by it is not taken over.
+_pin_pid_alive() {
+  local out
+  out="$(LC_ALL=C kill -0 "$1" 2>&1)" && return 0
+  [[ "$out" == *"not permitted"* ]]
+}
+
+# A lock is stale when its holder is gone, or when it is older than any live run could be.  The age is
+# derived from NOTES_SHORTCUT_TIMEOUT_S, because a raised bound makes a live run last longer:  one bounded
+# list lookup, one bounded run, a bounded retry and its 3 s pause, plus the 5 s app start and a minute of
+# slack, rounded up to whole minutes for find -mmin.  The default 30 s gives 3 minutes.
 _pin_lock_stale() {
-  local holder
+  local holder stale_min
   holder="$(cat "$NOTES_PIN_LOCK_DIR/pid" 2>/dev/null || true)"
-  if [[ "$holder" =~ ^[0-9]+$ ]] && ! kill -0 "$holder" 2>/dev/null; then
+  if [[ "$holder" =~ ^[0-9]+$ ]] && ! _pin_pid_alive "$holder"; then
     return 0
   fi
-  [[ -n "$(find "$NOTES_PIN_LOCK_DIR" -maxdepth 0 -mmin +3 2>/dev/null)" ]]
+  stale_min=$(( (3 * NOTES_SHORTCUT_TIMEOUT_S + 3 + 5 + 60) / 60 + 1 ))
+  (( stale_min >= 3 )) || stale_min=3
+  [[ -n "$(find "$NOTES_PIN_LOCK_DIR" -maxdepth 0 -mmin "+$stale_min" 2>/dev/null)" ]]
 }
 
 # Take the pin lock.  Returns 0 when held, 1 when it could not be had in NOTES_PIN_LOCK_WAIT_S seconds
@@ -386,11 +401,18 @@ _pin_lock_stale() {
 # each other, and the worst that costs is two overlapping runs, which is what happened every time before
 # this lock existed.
 _pin_lock_acquire() {
-  local waited=0
+  local waited=0 takeovers=0
   mkdir -p "$(dirname "$NOTES_PIN_LOCK_DIR")" 2>/dev/null || return 1
   until mkdir "$NOTES_PIN_LOCK_DIR" 2>/dev/null; do
     if _pin_lock_stale && mv "$NOTES_PIN_LOCK_DIR" "$NOTES_PIN_LOCK_DIR.stale.$$" 2>/dev/null; then
       rm -rf "$NOTES_PIN_LOCK_DIR.stale.$$"
+      #  A takeover takes no time, so it does not move the wait counter,  and the counter alone would
+      #  never stop a lock that keeps coming back stale.  Takeovers have their own small cap:  a fourth
+      #  one in a single call means something is recreating dead locks,  and the pin is skipped.
+      takeovers=$((takeovers + 1))
+      if (( takeovers > 3 )); then
+        return 1
+      fi
       continue
     fi
     if (( waited >= NOTES_PIN_LOCK_WAIT_S )); then

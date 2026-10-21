@@ -317,6 +317,7 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
                         "status": "done",
                         "transport": "direct",
                         **({"note_id": done["note_id"]} if done.get("note_id") else {}),
+                        **({"pin_skipped": done["pin_skipped"]} if done.get("pin_skipped") else {}),
                     }
 
                 # The same persistent rows the MCP tools use (<state>/<SEAT>/mcp-idem.json):  a repeated --request-id
@@ -382,4 +383,6 @@ def _print(rt: Any, info: dict[str, Any], use_json: bool) -> None:
         line += ", message %s" % info["message_id"]
     if info.get("reason"):
         line += ", reason:  %s" % info["reason"]
+    if info.get("pin_skipped"):
+        line += ", pin skipped:  %s" % info["pin_skipped"]
     rt.out(line + "\n")
