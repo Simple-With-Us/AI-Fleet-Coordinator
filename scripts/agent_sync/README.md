@@ -273,3 +273,11 @@ cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
 The tests use only `unittest` and a fake Zulip server (`tests/fake_zulip.py`, a `ThreadingHTTPServer` on 127.0.0.1 with a random port that records every request).  They never touch `~/.secrets`, `~/.agent-sync`, the real `fleet-secrets` (a test fakes Infisical by patching `zulip._default_infisical_fetch`, or for a subprocess with `FLEET_SECRETS_BIN` pointed at `tests/fixtures/fake-fleet-secrets`) or the live realm: every environment is an explicit dict passed to `cli.main(env=...)`.  The fake API key is generated at run time, so the source holds no key-looking literal, and every test fails if the key or its base64 form shows up in anything a command printed.
 
 The listener tests add a fake clock, multi-bot support in the fake server (`message`, `update_message`, `user_topic`, `realm_user` and heartbeat events), and a fake `claude` executable written to a temp directory that dumps its argv, environment and stdin.  No test runs a real claude, osascript, board or launchctl, and the listener tests also scan every file under the temp state directory for the keys.
+
+### Retrying A Held Chat Nudge
+
+After correcting a definite pre-enqueue rejection, release only that pending hold with
+`agent-sync daemon chats retry --target-seat CODEX --item-id <id>`.
+The existing item and dedupe key stay intact, and the dispatcher rechecks all delivery gates.
+Unknown, dispatching, accepted and cancelled items cannot be retried through this command.
+This changes a queue hold only; it never creates, resumes or restarts an agent session.

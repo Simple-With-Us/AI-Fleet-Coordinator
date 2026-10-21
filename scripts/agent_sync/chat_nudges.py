@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import time
@@ -12,7 +13,7 @@ from typing import Any, Protocol
 from . import live as L
 
 SUPPORTED_PLATFORM = "grok-leader"
-SUPPORTED_PLATFORMS = {"grok-leader", "cursor-cloud"}
+SUPPORTED_PLATFORMS = {"grok-leader", "cursor-cloud", "codex"}
 TERMINAL_KEEP_SECONDS = 90 * 86400
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 _BINDING_FIELDS = ("channel", "topic", "platform", "host", "session_id", "cwd")
@@ -113,6 +114,18 @@ class ChatNudges:
                 or not isinstance(item.get("dedupe_key"), str)
             ):
                 raise ValueError("chat nudge item is invalid")
+            if "receipt_checked_at" in item:
+                value = item["receipt_checked_at"]
+                # Magnitude is compared before isfinite: a persisted JSON integer wider than the
+                # float range makes math.isfinite raise OverflowError, escaping the fail-closed
+                # ValueError contract this guard exists to enforce.
+                if (
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or abs(value) > 1e308
+                    or not math.isfinite(value)
+                ):
+                    raise ValueError("chat nudge receipt_checked_at must be a finite number")
         return data
 
     @staticmethod
@@ -242,6 +255,20 @@ class ChatNudges:
         data = self._read()
         return json.loads(json.dumps(data, ensure_ascii=False))
 
+    def retry(self, item_id: str, now: float) -> bool:
+        """Explicitly release a pending hold; uncertain or completed sends cannot be retried."""
+        if not isinstance(item_id, str) or not item_id:
+            return False
+        with L.locked(self.path):
+            data = self._read()
+            item = next((row for row in data["items"] if row.get("id") == item_id), None)
+            if not item or item.get("status") != "pending" or not item.get("hold_reason"):
+                return False
+            item["hold_reason"] = None
+            item["updated_at"] = float(now)
+            L.write_json(self.path, data)
+            return True
+
     def cancel(self, item_id: str, now: float) -> bool:
         """Cancel a held/pending item.  An in-flight or accepted delivery cannot be recalled."""
         if not isinstance(item_id, str) or not item_id:
@@ -263,11 +290,17 @@ class ChatNudges:
         with L.locked(self.path + ".reconcile"):
             with L.locked(self.path):
                 data = self._read()
-                unknown = [
-                    (row["id"], dict(row["binding"]), row["text"])
-                    for row in data["items"]
-                    if row.get("status") == "unknown"
-                ]
+                # Bound expensive native receipts and rotate fairly across permanent unknowns.
+                # Persist scan order so a listener restart cannot starve later deliveries.
+                rows = sorted(
+                    (row for row in data["items"] if row.get("status") == "unknown"),
+                    key=lambda row: row.get("receipt_checked_at", float("-inf")),
+                )[:4]
+                unknown = [(row["id"], dict(row["binding"]), row["text"]) for row in rows]
+                for row in rows:
+                    row["receipt_checked_at"] = float(now)
+                if rows:
+                    L.write_json(self.path, data)
             for item_id, binding, text in unknown:
                 try:
                     found = bool(transport.receipt(binding, text))

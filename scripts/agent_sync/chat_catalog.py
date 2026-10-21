@@ -392,14 +392,43 @@ class ChatCatalog:
         return rows or [self._unavailable("claude", "CLAUDE", "no local project transcripts")]
 
     def _scan_codex(self) -> list[dict[str, Any]]:
+        from .codex_chat_transport import BINARY, loaded_rollouts
+
+        names = {}
+        for entry in _jsonl(self.home / ".codex" / "session_index.jsonl"):
+            sid = entry.get("id")
+            title = entry.get("thread_name")
+            if (
+                not isinstance(sid, str)
+                or not sid.strip()
+                or not isinstance(title, str)
+                or not title.strip()
+            ):
+                continue
+            stamp = _timestamp(entry.get("updated_at"))
+            if sid not in names or stamp >= names[sid][0]:
+                # Index metadata is untrusted display text; _row also scrubs credentials.
+                title = re.sub(r"[\x00-\x1f\x7f]", " ", title).strip()[:180]
+                if title:
+                    names[sid] = (stamp, title)
         base = self.home / ".codex" / "sessions"
         files = self._list_files(base, recursive=True)
+        loaded = (
+            loaded_rollouts()
+            if (
+                files
+                and os.access(BINARY, os.X_OK)
+                and (self.home / ".codex/queue_1.sqlite").is_file()
+            )
+            else frozenset()
+        )
         rows = []
         for path in files:
             events = _jsonl(path)
             if not events:
                 continue
             sid, cwd, title, updated = path.stem, None, "Codex chat " + path.stem[:12], 0.0
+            transcript_title = False
             header = _first_jsonl(path)
             ordered_events = ([header] if header else []) + events
             for event in ordered_events:
@@ -407,13 +436,18 @@ class ChatCatalog:
                     meta = event["payload"]
                     sid = str(meta.get("id") or sid)
                     cwd = meta.get("cwd") if isinstance(meta.get("cwd"), str) else cwd
-                    title = _safe_text(meta.get("title"), max_chars=180) or title
+                    named = _safe_text(meta.get("title"), max_chars=180)
+                    if named:
+                        title, transcript_title = named, True
                 updated = max(updated, _timestamp(event.get("timestamp"), event.get("ts")))
+            if not transcript_title and sid in names:
+                title = names[sid][1]
             rows.append(
                 self._row(
                     "codex",
                     "CODEX",
                     sid,
+                    wake=str(path) in loaded and bool(cwd) and os.path.isdir(cwd),
                     cwd=cwd,
                     title=title,
                     updated_at=updated,

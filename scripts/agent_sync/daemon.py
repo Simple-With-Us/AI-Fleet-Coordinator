@@ -2215,7 +2215,7 @@ class Daemon:
                 done.add("wake")
             if d.wake and not d.delivered_to and "wake" not in done:
                 matched = False
-                if runner.seat in ("GROK", "CURSOR") and not c.dm:
+                if runner.seat in ("GROK", "CURSOR", "CODEX") and not c.dm:
                     matched = self.chat_queue(runner.seat).enqueue(
                         c.channel,
                         c.topic,
@@ -2311,7 +2311,7 @@ class Daemon:
                     )
 
             L.update_json(state_path, rename_cursor)
-        if runner.seat in ("GROK", "CURSOR"):
+        if runner.seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(runner.seat).rename(
                 old_channel, old_topic, new_channel, new_topic, self.clock.time()
             )
@@ -5385,7 +5385,10 @@ class Daemon:
                     runner.jobs_cond.wait(timeout=1.0)
             if runner.jobs:
                 self.run_jobs(runner.seat, limit=1)
-            if runner.seat in ("GROK", "CURSOR") and self.clock.monotonic() - last_nudge >= 30.0:
+            if (
+                runner.seat in ("GROK", "CURSOR", "CODEX")
+                and self.clock.monotonic() - last_nudge >= 30.0
+            ):
                 last_nudge = self.clock.monotonic()
                 try:
                     self.dispatch_chat_nudge(runner)
@@ -5419,9 +5422,9 @@ class Daemon:
                 self.wake_id = ""
                 self.pending: dict[str, Any] = {}
 
-            def preflight(inner, binding: dict[str, str]) -> str:
+            def gates(inner, binding: dict[str, str]) -> str:
                 if (
-                    runner.seat not in ("GROK", "CURSOR")
+                    runner.seat not in ("GROK", "CURSOR", "CODEX")
                     or not runner.cfg.enabled
                     or not runner.connected
                     or runner.me is None
@@ -5478,14 +5481,25 @@ class Daemon:
                 if blocked:
                     return "busy"
                 inner.pending = row
+                return "ready"
+
+            def preflight(inner, binding: dict[str, str]) -> str:
+                readiness = inner.gates(binding)
+                if readiness != "ready":
+                    return readiness
                 if not hasattr(daemon, "_chat_transport"):
                     daemon._chat_transport = CT.ChatTransport()
                 return daemon._chat_transport.preflight(binding)
 
             def send(inner, binding: dict[str, str], text: str) -> str:
+                inner.hold_reason = None
                 # Repeat every daemon gate immediately before accounting and transport; a pause,
                 # budget change or loop-guard trip may have raced the earlier preflight.
-                readiness = inner.preflight(binding)
+                readiness = (
+                    inner.gates(binding)
+                    if binding.get("platform") == "codex"
+                    else inner.preflight(binding)
+                )
                 if readiness == "busy":
                     return "deferred"
                 if readiness != "ready":
@@ -5497,10 +5511,23 @@ class Daemon:
                     if not hasattr(daemon, "_chat_transport"):
                         daemon._chat_transport = CT.ChatTransport()
                     outcome = daemon._chat_transport.send(
-                        binding, text, permit=lambda: inner.preflight(binding) == "ready"
+                        binding,
+                        text,
+                        permit=lambda: (
+                            (
+                                inner.gates(binding)
+                                if binding.get("platform") == "codex"
+                                else inner.preflight(binding)
+                            )
+                            == "ready"
+                        ),
                     )
                 except Exception:
                     outcome = "unknown"
+                if outcome in ("held", "deferred", "failed"):
+                    inner.hold_reason = (
+                        getattr(daemon._chat_transport, "hold_reason", None) or inner.hold_reason
+                    )
                 if outcome == "deferred" and getattr(inner, "hold_reason", None):
                     outcome = "held"
                 # Local delivery uses no model tokens.  Downstream chat spend is unmeasured; count
@@ -5603,7 +5630,7 @@ class Daemon:
         self._configure_outgoing_webhook()
         self._configure_listener_api()
         self._configure_notes_relay()
-        for seat in ("GROK", "CURSOR"):
+        for seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(seat).recover_interrupted()
         os.ftruncate(lock_fd, 0)
         os.write(lock_fd, str(os.getpid()).encode())
@@ -5650,7 +5677,8 @@ class Daemon:
                         (
                             "wake",
                             self.worker_loop,
-                            runner.cfg.wake in C.WORKER_WAKES or runner.seat in ("GROK", "CURSOR"),
+                            runner.cfg.wake in C.WORKER_WAKES
+                            or runner.seat in ("GROK", "CURSOR", "CODEX"),
                         ),
                     ):
                         thread = runner.threads.get(role)
