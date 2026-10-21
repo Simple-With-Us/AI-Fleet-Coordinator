@@ -204,3 +204,39 @@ test('org variable retargets model and endpoint fleet-wide, pins stay the fallba
   const varIdx = workflow.indexOf('if [ -n "$VAR_MODEL" ]; then model="$VAR_MODEL"; fi');
   assert(fileIdx !== -1 && varIdx !== -1 && varIdx > fileIdx, 'VAR_MODEL must be applied after the trusted-file pin');
 });
+
+test('model switch is guarded:  endpoint and model move as one valid pair (Kody 2026-10-21)', () => {
+  for (const [name, text] of [['pr-autofix', workflow], ['claude-code', claudeReusable], ['codex', codexReusable]]) {
+    assert.match(text, /name: Validate Model Switch/, name);
+    assert.match(text, /"" \| https:\/\/api\.minimax\.io\/anthropic\) route=minimax ;;/, name);
+    assert.match(text, /https:\/\/api\.meta\.ai\) route=meta ;;/, name);
+    assert.match(text, /\[Mm\]\[Ii\]\[Nn\]\[Ii\]\[Mm\]\[Aa\]\[Xx\]\*\) model_minimax=yes ;;/, name);
+    assert.match(text, /\[ "\$route" = "meta" \] && \[ -n "\$VAR_MODEL" \] && \[ -n "\$META_TOKEN" \] && \[ "\$model_minimax" = "no" \]/, name);
+    assert.match(text, /META_MODEL_API_TOKEN provisioned/, name);
+    assert.match(text, /must be unset or https:\/\/api\.minimax\.io\/anthropic \(MiniMax\) or exactly https:\/\/api\.meta\.ai/, name);
+    assert.match(text, /names a non-MiniMax model id while SWU_AUTOFIX_MODEL_BASE_URL selects the MiniMax host/, name);
+    // Caller-controlled values must never reach the workflow command:  only set/unset
+    // flags are echoed, so a hostile var cannot inject runner commands (Kody 2026-10-21).
+    const guardScript = text.slice(text.indexOf('name: Validate Model Switch'), text.indexOf('name: Autofix Request Gate') === -1 ? undefined : text.length);
+    assert.doesNotMatch(guardScript, /::error::[^"]*'\$VAR_(BASE|MODEL)'/, name);
+    // The guard runs before the request gate / policy loader, so a bad pair fails before any run starts.
+    const guardIdx = text.indexOf('name: Validate Model Switch');
+    const nextIdx = Math.max(text.indexOf('name: Autofix Request Gate'), text.indexOf('name: Load Trusted Autofix Policy'));
+    assert(guardIdx !== -1 && nextIdx > guardIdx, name);
+  }
+  // The guard honors the proceed gate so skipped closed / fork / mirror runs skip
+  // instead of failing (Kody 2026-10-21).
+  const prGuard = workflow.slice(workflow.indexOf('name: Validate Model Switch'));
+  assert.match(prGuard.slice(0, 200), /if: steps\.pr\.outputs\.proceed == 'true'/);
+  // anthropic_api_key feeds claude-code-action directly (its inline-comment classifier
+  // ignores ANTHROPIC_BASE_URL),  so in the action-based reusables it must follow the
+  // same closed host preset as ANTHROPIC_AUTH_TOKEN instead of always sending the
+  // MiniMax key (Kody review on congress-trading-shared#394).
+  for (const [name, text] of [['claude-code', claudeReusable], ['codex', codexReusable]]) {
+    assert.match(
+      text,
+      /anthropic_api_key: \$\{\{ vars\.SWU_AUTOFIX_MODEL_BASE_URL == 'https:\/\/api\.meta\.ai' && \(secrets\.META_MODEL_API_TOKEN \|\| 'MISSING-[A-Z-]+'\) \|\| secrets\.MINIMAX_API_KEY \}\}/,
+      name,
+    );
+  }
+});
