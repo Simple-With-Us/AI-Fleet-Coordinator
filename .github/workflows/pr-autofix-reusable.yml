@@ -308,8 +308,8 @@ jobs:
           grep -q '[^[:space:]]' "$dir/comment.txt" || skip "Empty comment body, skipping"
 
           # Owner rule 2026-10-21:  a comment or review is an autofix request only when the
-          # tag OPENS it — the first non-blank line after fenced code and quoted text are
-          # stripped.  A review or verification reply that mentions the tag while discussing
+          # tag is the FIRST TOKEN of the first non-blank line after fenced code and quoted
+          # text are stripped.  A review or verification reply that mentions the tag while discussing
           # it (Kody quoting the trigger phrase, AFC run 39608718486) is discussion, not a
           # request.  Sentry is exempt from the tag, the once-per-PR cap, and the
           # notification (owner:  "Sentry can request all you want").
@@ -318,11 +318,28 @@ jobs:
           GATE_TAG='@pr-autofix'
           # REQUEST-GATE-BEGIN - scripts/test_autofix_request_gate.py runs this exact block.
           awk '
-            /^[[:space:]]*```/ { if (fence == "") fence = "code"; else if (fence == "code") fence = ""; next }
-            /^[[:space:]]*~~~/ { if (fence == "") fence = "tilde"; else if (fence == "tilde") fence = ""; next }
-            fence != "" { next }
-            /^[[:space:]]*>/ { next }
-            { print }
+            fence == "" && /^[[:space:]]*>/ { next }
+            fence == "" {
+              s = $0
+              sub(/^[[:space:]]*/, "", s)
+              c = substr(s, 1, 1)
+              n = 0
+              if (c != "") { while (substr(s, n + 1, 1) == c) n++ }
+              if ((c == "`" || c == "~") && n >= 3) { fence = c; flen = n; next }
+              print
+              next
+            }
+            {
+              s = $0
+              sub(/^[[:space:]]*/, "", s)
+              c = substr(s, 1, 1)
+              n = 0
+              if (c != "") { while (substr(s, n + 1, 1) == c) n++ }
+              # Only a pure run of the same marker as the opener, at least as
+              # long as the opener and carrying no info string, closes the fence.
+              if (c == fence && n >= flen && substr(s, n + 1) ~ /^[[:space:]]*$/) { fence = ""; flen = 0 }
+              next
+            }
           ' "$GATE_BODY_FILE" > "$RUNNER_TEMP/request_text.txt"
           gate_line=$(grep -m1 -E '[^[:space:]]' "$RUNNER_TEMP/request_text.txt" || true)
           if printf '%s' "$gate_line" | grep -qiE "^[[:space:]]*${GATE_TAG}([^A-Za-z0-9_-]|\$)"; then
@@ -330,8 +347,14 @@ jobs:
           else
             gate_verdict=discussion
           fi
-          # REQUEST-GATE-END
+          # The skip decision lives inside the marked block so the polarity of
+          # this comparison is covered by the extracted-block test.
+          gate_skip=false
           if [ "$requester" != "sentry" ] && [ "$gate_verdict" != "request" ]; then
+            gate_skip=true
+          fi
+          # REQUEST-GATE-END
+          if [ "$gate_skip" = "true" ]; then
             skip "No @pr-autofix request at the start of the comment, skipping"
           fi
 

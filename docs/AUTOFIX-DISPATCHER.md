@@ -26,8 +26,11 @@ variable `SWU_AUTOFIX_DISPATCHER_ENABLED` is `true`.  Each tick:
    and `total_cost_usd` from the run log.  A tick that learns anything saves
    even when a later step fails.
 
-The tag gate itself is unchanged — bots and Jay can still start runs by tagging
-`@pr-autofix` directly.  The dispatcher only adds untried-PR pickups on top.
+The tag gate still decides what counts as a request:  `@pr-autofix` must be the
+first token of the first non-blank line after fenced code and quoted text are
+stripped.  A tag mentioned mid-sentence, inside a quote, or inside a fence is
+discussion and never starts a run.  The dispatcher only adds untried-PR pickups
+on top.
 
 ## Boundaries
 
