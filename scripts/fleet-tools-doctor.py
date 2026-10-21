@@ -928,6 +928,11 @@ def check_mac_runtime(
         )
     elif same_as_before:
         rt["grace"], why = False, "still behind the same tip as in the previous report"
+    elif updater.get("advanced") is None:
+        rt["grace"], why = (
+            True,
+            "behind within grace:  no previous report old enough to show the updater moving",
+        )
     else:
         rt["grace"], why = False, "no previous report shows the updater moving"
     status = "WARN" if rt["grace"] else "FAIL"
@@ -2460,6 +2465,11 @@ def state_counts(doc: dict) -> str:
     return ", ".join(f"{counts[s]} {s}" for s in order if counts.get(s)) or "no rows"
 
 
+def stable_failing(line: str) -> str:
+    """Dedup key for a failing line:  elapsed-minute counters tick every run."""
+    return re.sub(r"\b\d+ minutes ago\b", "<N> minutes ago", line)
+
+
 def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
     """Post once per change in the failing set, so a standing problem is not repeated every run."""
     failing = sorted(f"{r['check']}: {r['detail']}" for r in report.rows if r["status"] == "FAIL")
@@ -2467,7 +2477,7 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
         previous = json.loads(STATE.read_text()).get("failing", [])
     except (OSError, ValueError):
         previous = []
-    if failing == previous:
+    if [stable_failing(f) for f in failing] == [stable_failing(p) for p in previous]:
         return False
     host = os.uname().nodename
     if failing:
