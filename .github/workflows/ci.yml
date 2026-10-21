@@ -113,6 +113,11 @@ jobs:
     - name: fleet_config tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_config/tests -t . -v
+    # fleet_view (AFC-394):  the Fleet View collectors for lanes, open PRs and Linear claims, the
+    # request budget, the blocker mapping and the pinned envelope.  Fake runners only;  no network.
+    - name: fleet_view tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_view/tests -t . -v
     # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
     # unresolved-reference guard, auth selection, and no secret in argv or error text.
     - name: fleet_secrets tests
