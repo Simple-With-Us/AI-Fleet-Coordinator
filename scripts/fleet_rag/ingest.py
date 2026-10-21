@@ -570,10 +570,7 @@ def _attests_health(names: list[str], prune: bool, since_ms: int | None, limit: 
     held, which is the exact hole the wait was added to close (AFC-423).
     """
     return (
-        prune
-        and set(names) == set(sources.NIGHTLY_SOURCES)
-        and since_ms is None
-        and limit is None
+        prune and set(names) == set(sources.NIGHTLY_SOURCES) and since_ms is None and limit is None
     )
 
 
@@ -974,7 +971,9 @@ def main(argv: list[str] | None = None) -> int:
         # PR #800):  keying them differently let a health-attesting run be locked out.
         names = _resolve_names("all" if args.all else args.source)
         attests = _attests_health(names, args.prune, _parse_since(args.since), args.limit)
-        lock_timeout = args.lock_timeout if args.lock_timeout is not None else (6000.0 if attests else 0.0)
+        lock_timeout = (
+            args.lock_timeout if args.lock_timeout is not None else (6000.0 if attests else 0.0)
+        )
         report = run(
             "all" if args.all else args.source,
             dry_run=args.dry_run,
