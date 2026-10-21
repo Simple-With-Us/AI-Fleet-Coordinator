@@ -82,6 +82,10 @@ FIXTURES = [
     ("{tag}-2 a different handle", "discussion"),
     ("{tag}er a longer handle", "discussion"),
     ("`{tag}` in inline code mid-sentence", "discussion"),
+    ("~~~\n{tag} inside a tilde fence\n~~~", "discussion"),
+    ("~~~\n{tag} tilde-fenced\n~~~\n{tag} the real ask below", "request"),
+    ("~~~\n```\n{tag} backtick fence nested in a tilde fence\n```\n~~~", "discussion"),
+    ("```\n{tag} unbalanced fence swallows the rest (fail-closed)", "discussion"),
     ("", "discussion"),
     ("   \n  \n", "discussion"),
 ]

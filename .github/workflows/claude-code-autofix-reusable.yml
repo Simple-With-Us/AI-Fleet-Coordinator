@@ -207,7 +207,13 @@ jobs:
             GATE_BODY_FILE="$RUNNER_TEMP/request_body.txt"
             GATE_TAG='@claude-code-autofix'
             # REQUEST-GATE-BEGIN - scripts/test_autofix_request_gate.py runs this exact block.
-            sed -e '/^[[:space:]]*```/,/^[[:space:]]*```/d' -e '/^[[:space:]]*>/d' "$GATE_BODY_FILE" > "$RUNNER_TEMP/request_text.txt"
+            awk '
+            /^[[:space:]]*```/ { if (fence == "") fence = "code"; else if (fence == "code") fence = ""; next }
+            /^[[:space:]]*~~~/ { if (fence == "") fence = "tilde"; else if (fence == "tilde") fence = ""; next }
+            fence != "" { next }
+            /^[[:space:]]*>/ { next }
+            { print }
+          ' "$GATE_BODY_FILE" > "$RUNNER_TEMP/request_text.txt"
             gate_line=$(grep -m1 -E '[^[:space:]]' "$RUNNER_TEMP/request_text.txt" || true)
             if printf '%s' "$gate_line" | grep -qiE "^[[:space:]]*${GATE_TAG}([^A-Za-z0-9_-]|\$)"; then
               gate_verdict=request
