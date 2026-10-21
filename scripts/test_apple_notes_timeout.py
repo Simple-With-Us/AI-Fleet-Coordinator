@@ -40,10 +40,13 @@ TIMEOUT_NAME = "NOTES_APPLE_EVENT_TIMEOUT_S"
 #  the bound one Shortcuts invocation runs under (NOTES_SHORTCUT_TIMEOUT_S in the helper)
 SHORTCUT_TIMEOUT_NAME = "NOTES_SHORTCUT_TIMEOUT_S"
 SHORTCUT_TIMEOUT_DEFAULT_S = 30
-#  the pin phase that follows the write:  a 2 s settle for the note index,  up to 5 s for the
-#  Shortcuts app to start,  one bounded list lookup,  and up to two bounded runs with a 3 s pause
-#  between them
-PIN_BUDGET_S = 2 + 5 + 3 * SHORTCUT_TIMEOUT_DEFAULT_S + 3
+#  how long the helper waits for its cross-process pin lock before it skips the pin
+PIN_LOCK_WAIT_NAME = "NOTES_PIN_LOCK_WAIT_S"
+PIN_LOCK_WAIT_DEFAULT_S = 20
+#  the pin phase that follows the write:  a 2 s settle for the note index,  up to the lock wait for
+#  another pin run to finish,  up to 5 s for the Shortcuts app to start,  one bounded list lookup,
+#  and up to two bounded runs with a 3 s pause between them
+PIN_BUDGET_S = 2 + PIN_LOCK_WAIT_DEFAULT_S + 5 + 3 * SHORTCUT_TIMEOUT_DEFAULT_S + 3
 
 
 class AppleEventTimeoutTests(unittest.TestCase):
@@ -150,6 +153,15 @@ class AppleEventTimeoutTests(unittest.TestCase):
         self.assertEqual(self.text.count("_run_shortcuts_bounded shortcuts"), 2)
         self.assertIn("alarm shift; exec @ARGV", self.text)
 
+    def test_the_pin_lock_wait_is_defined_once_and_matches_the_budget(self) -> None:
+        """The wait for the pin lock is part of the pin phase the caller's cap has to cover."""
+        pattern = re.compile(
+            rf'^{PIN_LOCK_WAIT_NAME}="\$\{{{PIN_LOCK_WAIT_NAME}:-(\d+)\}}"$', re.MULTILINE
+        )
+        found = pattern.findall(self.text)
+        self.assertEqual(len(found), 1, f"the pin lock wait is not defined exactly once: {found}")
+        self.assertEqual(int(found[0]), PIN_LOCK_WAIT_DEFAULT_S)
+
     def test_the_create_and_update_blocks_both_carry_it(self) -> None:
         #  The update block writes the system attribute path,  the create block the $TMP path.
         self.assertIn('set htmlPath to POSIX file (system attribute "TMP")', self.text)
@@ -188,13 +200,13 @@ class AppleEventTimeoutTests(unittest.TestCase):
         """The timeout constant is a shell variable,  so the heredoc has to expand it.
 
         In a quoted heredoc osascript receives the literal text of the constant and the
-        "with timeout of" clause does not compile,  which breaks the write.  The pin block is
-        the other way round:  it has no shell variable and stays quoted.
+        "with timeout of" clause does not compile,  which breaks the write.  There is no
+        quoted heredoc left:  it belonged to the GUI pin fallback,  which is gone.
         """
         self.assertIn("osascript <<EOF\n", self.text)
         self.assertNotIn("osascript <<'EOF'\nset titlePath", self.text)
         self.assertEqual(self.text.count("osascript <<EOF"), 2)
-        self.assertEqual(self.text.count("osascript <<'EOF'"), 1)
+        self.assertEqual(self.text.count("osascript <<'EOF'"), 0)
 
     @unittest.skipUnless(shutil.which("osacompile"), "needs osacompile")
     def test_the_update_block_still_compiles(self) -> None:
@@ -261,6 +273,8 @@ class AppleEventTimeoutTests(unittest.TestCase):
             # title is not one of the single-thread ones,  so the probe carries a
             # session id  (the same one the real helper would be given).
             env["AGENT_SESSION"] = "ses_probe0000000000000000"
+            #  the pin lock lives in the probe's own directory,  never in the real ~/Library/Caches
+            env["NOTES_PIN_LOCK_DIR"] = str(Path(tmp) / "pin.lock")
             proc = subprocess.run(
                 [str(SCRIPT), *flags, "[AFC, TEST] notes timeout probe"],
                 input="a body\n",

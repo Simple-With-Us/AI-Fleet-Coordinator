@@ -402,6 +402,15 @@ class DirectRunnerTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, expected)
                 self.assertLess(len(caught.exception.message), 400)
 
+    def test_exit_4_names_the_pin_or_unpin_that_failed(self):
+        """The helper has no GUI fallback (owner 2026-10-20):  exit 4 means the Shortcut did not pin or unpin."""
+        for action, word in (("pin", "pinned"), ("unpin", "unpinned")):
+            with self.subTest(action):
+                with self.assertRaises(N.NotesError) as caught:
+                    self.run_direct(envelope(action, markdown=""), FakeRun(code=4))
+                self.assertEqual(caught.exception.code, "unavailable")
+                self.assertIn("could not be %s" % word, caught.exception.message)
+
     def test_a_timeout_is_an_unknown_outcome_and_the_temp_file_still_goes(self):
         def slow(argv, **kwargs):
             raise subprocess.TimeoutExpired(argv, 1)

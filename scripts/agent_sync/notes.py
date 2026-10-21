@@ -73,14 +73,15 @@ SCRIPT_NAME = "apple-notes-coding.sh"
 #  scripts/apple-notes-coding.sh),  because a body the size of the master list takes longer than
 #  AppleScript's two-minute default.  This cap has to sit above that timeout:  a cap below it
 #  kills the write while osascript is still working,  and the later completion creates a second
-#  note.  It has to sit above the pin phase that follows the write as well (about 100 s:  the
-#  Shortcut runs are bounded by NOTES_SHORTCUT_TIMEOUT_S):  a cap that cuts the pin phase short
+#  note.  It has to sit above the pin phase that follows the write as well (about 120 s:  the
+#  Shortcut runs are bounded by NOTES_SHORTCUT_TIMEOUT_S, and the helper waits up to
+#  NOTES_PIN_LOCK_WAIT_S for its own cross-process pin lock):  a cap that cuts the pin phase short
 #  reports outcome_unknown for a note that was written,  and the request id is then refused.
 #  The wait for the run lock is counted inside this cap:  a request waits LOCK_WAIT_S for the
 #  lock and the script then gets what is left of it,  so the whole request stays inside the cap
 #  instead of outliving it by the wait.
 #  scripts/test_apple_notes_timeout.py holds the two together (AFC-436).
-SCRIPT_TIMEOUT_S = 1080.0
+SCRIPT_TIMEOUT_S = 1200.0
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 UPLOAD_PATH_RE = re.compile(r"^/user_uploads/[A-Za-z0-9_./-]{1,200}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
@@ -93,7 +94,7 @@ _FENCE_OPEN = "```json\n"
 _FENCE_CLOSE = "\n```"
 
 # Script exit codes (scripts/apple-notes-coding.sh header).
-EXIT_USAGE, EXIT_NOT_FOUND, EXIT_UNPIN = 2, 3, 4
+EXIT_USAGE, EXIT_NOT_FOUND, EXIT_PIN_FAILED = 2, 3, 4
 # The environment the script gets:  nothing that holds a credential.
 CHILD_ENV_KEYS = (
     "PATH",
@@ -871,10 +872,19 @@ def run_direct(
         )
     if code == EXIT_NOT_FOUND:
         raise NotesError("not_found", "no note with that title in the Coding folder")
-    if code == EXIT_UNPIN:
+    if code == EXIT_PIN_FAILED:
+        #  The helper has no GUI fallback (owner 2026-10-20):  when the Shortcut does not pin or unpin,
+        #  the note is left as it was and this is the whole story.  A create or update never gets here,
+        #  because it exits 0 with a stderr warning when only its pin was skipped.
+        if action == "pin":
+            raise NotesError(
+                "unavailable",
+                "the note could not be pinned:  the Pin Coding Note shortcut is missing, failed or busy, "
+                "and the helper never falls back to the Notes window",
+            )
         raise NotesError(
             "unavailable",
-            "the note could not be unpinned:  the Unpin Coding Note shortcut is missing or failed",
+            "the note could not be unpinned:  the Unpin Coding Note shortcut is missing, failed or busy",
         )
     raise NotesError(
         "internal",

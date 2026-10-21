@@ -26,6 +26,14 @@ AFC-436 adds the Shortcuts-app precondition to the same harness:  `open` and `pg
 the test records that the app was asked to open in the background, and never launches the real app on the
 host.  The precondition was live-only until AFC-436, and the AFC-431 rewrite of _run_note_shortcut dropped it.
 
+There is no GUI fallback (owner 2026-10-20):  the helper used to bring Notes to the front and click its
+Pin menu item when the Shortcut did not pin, and that is what kept popping Notes open on the owner's screen.
+A failed Shortcut now leaves the note saved unpinned with a warning on stderr (exit 0 for create and update,
+exit 4 for --pin-only), nothing else touches the Notes window, one pin or unpin Shortcut runs at a time
+across processes, and a run that hit its time bound is never repeated.  The end-to-end tests at the bottom
+run the whole script with `osascript`, `shortcuts`, `open`, `pgrep` and `sleep` stubbed on PATH and assert on
+what reached the stubs, so they never touch Notes.
+
 Run:  cd scripts && python3 -m unittest test_apple_notes_pin
 """
 
@@ -36,6 +44,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -62,6 +71,13 @@ printf '%s' "$n" > "$STUB_COUNTER"
 if [ "${STUB_RECORD_INPUT:-0}" = "1" ] && [ -n "$input_file" ]; then
   #  a record-per-line record, so a test can assert attempt N passed input M
   printf '%s\\n' "$(cat "$input_file" 2>/dev/null || printf '')" >> "$STUB_COUNTER.inputs"
+fi
+if [ "${STUB_HOLD:-0}" = "1" ]; then
+  #  a run that lasts a moment, so two overlapping runs can be seen:  the second one to start finds the marker
+  if [ -f "$STUB_COUNTER.active" ]; then printf x >> "$STUB_COUNTER.overlap"; fi
+  : > "$STUB_COUNTER.active"
+  sleep 1.5
+  rm -f "$STUB_COUNTER.active"
 fi
 if [ "${STUB_HANG:-0}" = "1" ]; then sleep 30; exit 0; fi
 if [ "${STUB_FAIL_FIRST:-0}" -gt 0 ] && [ "$n" -le "${STUB_FAIL_FIRST:-0}" ]; then exit 1; fi
@@ -93,15 +109,16 @@ exit 0
 HARNESS = """set -uo pipefail
 TITLE="${HARNESS_TITLE:-AFC test note}"
 MODE="${HARNESS_MODE:-update}"
-WANT_PIN="${HARNESS_WANT_PIN:-0}"
 APPLE_NOTES_PIN="${HARNESS_APPLE_NOTES_PIN:-1}"
 #  the knob's resolved value, as the caller forwards it:  set here so the tests never shell out to
 #  fleet_knobs, and so APPLE_NOTES_PIN_RETRY in the environment keeps meaning a narrowing override
 APPLE_NOTES_PIN_RETRY="${HARNESS_APPLE_NOTES_PIN_RETRY-1}"
 #  the bound one Shortcuts invocation runs under,  as the helper sets it
 NOTES_SHORTCUT_TIMEOUT_S="${HARNESS_SHORTCUT_TIMEOUT_S:-30}"
-#  the real block waits 2 s for the note index and 3 s between attempts;  the test only needs the shape
-sleep() { :; }
+#  the real block waits 2 s for the note index, 3 s between attempts and up to the lock wait for the pin
+#  lock;  the test only needs the shape,  except the tests that run two pins at once
+[ "${HARNESS_REAL_SLEEP:-0}" = "1" ] || sleep() { :; }
+{constants}
 {function}
 {block}
 """
@@ -124,17 +141,25 @@ def _extract(source: str) -> tuple[str, str]:
     bounded = re.search(
         r"^_run_shortcuts_bounded\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE
     )
+    #  the cross-process pin lock is the 2026-10-20 guard:  its constants, its three helpers and the
+    #  locked body of the runner that the public runner wraps
+    constants = re.search(r"^NOTES_PIN_LOCK_DIR=(?:.*\n)*?^_PIN_LOCK_HELD=0\n", source, re.MULTILINE)
     assert fn, "the _run_note_shortcut function is gone from apple-notes-coding.sh"
     assert knob, "the _pin_retry_on knob resolver is gone from apple-notes-coding.sh"
+    assert constants, "the pin lock constants are gone from apple-notes-coding.sh"
+    functions = ""
+    for name in ("_pin_lock_stale", "_pin_lock_acquire", "_pin_lock_release", "_run_note_shortcut_locked"):
+        found = re.search(rf"^{name}\(\) \{{[^\n]*\n(?:.*\n)*?^\}}\n", source, re.MULTILINE)
+        assert found, f"{name} is gone from apple-notes-coding.sh"
+        functions += found.group(0)
     start = source.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.")
-    want = source.index('if [[ "$WANT_PIN" != "1" ]]; then')
-    end = source.index("\nfi\n", want) + len("\nfi\n")
     parts = knob.group(0)
     if ensure:
         parts += ensure.group(0)
     if bounded:
         parts += bounded.group(0)
-    return parts + fn.group(0), source[start:end]
+    #  the pin block is the end of the script:  there is nothing after it to cut off, which is the point
+    return constants.group(0) + parts + functions + fn.group(0), source[start:]
 
 
 def _extract_unpin(source: str) -> str:
@@ -187,17 +212,38 @@ class PinDecisionTests(unittest.TestCase):
             counter = Path(tmp) / "counter"
             script = Path(tmp) / "harness.sh"
             #  a plain replace, because the harness carries shell ${...} braces that str.format would eat
-            script.write_text(HARNESS.replace("{function}", function).replace("{block}", block))
+            script.write_text(
+                HARNESS.replace("{constants}", "").replace("{function}", function).replace("{block}", block)
+            )
             child = dict(os.environ)
             child["PATH"] = f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}"
             child["STUB_COUNTER"] = str(counter)
+            #  the lock lives in the test's own directory:  a test never touches the real ~/Library/Caches
+            child["NOTES_PIN_LOCK_DIR"] = str(Path(tmp) / "pin.lock")
+            lock_dir = Path(tmp) / "pin.lock"
+            holder = None
+            pre_lock = env.pop("PRE_LOCK", "")
+            if pre_lock:
+                #  a lock somebody else holds:  "live" names a process that is still running, "dead" one that
+                #  has exited, and "old" a live process whose lock is older than any run could be
+                holder = subprocess.Popen(["sleep", "60"])
+                if pre_lock == "dead":
+                    holder.kill()
+                    holder.wait()
+                lock_dir.mkdir(mode=0o700)
+                (lock_dir / "pid").write_text(f"{holder.pid}\n")
+                if pre_lock == "old":
+                    old = time.time() - 600
+                    os.utime(lock_dir, (old, old))
             if env.get("NO_PERL"):
                 #  A host without perl:  the bound on a Shortcut run comes from an alarm,  and it
                 #  must not depend on perl alone.  Only the tools the pin block needs are linked
                 #  in,  and perl is deliberately left out of the PATH.
                 plain = Path(tmp) / "plain"
                 plain.mkdir(mode=0o700)
-                for name in ("bash", "cat", "grep", "mktemp", "python3", "rm", "sleep"):
+                for name in (
+                    "bash", "cat", "dirname", "find", "grep", "mkdir", "mktemp", "mv", "python3", "rm", "sed", "sleep"
+                ):
                     found = shutil.which(name)
                     self.assertIsNotNone(found, f"{name} is missing on this host")
                     (plain / name).symlink_to(found)
@@ -206,19 +252,27 @@ class PinDecisionTests(unittest.TestCase):
             if env.get("STUB_MANAGED_KNOBS"):
                 child["HOME"] = tmp
                 child.pop("AGENT_SYNC_RUNTIME", None)
-            p = subprocess.run(
-                ["bash", str(script)],
-                capture_output=True,
-                text=True,
-                env=child,
-                timeout=60,
-                check=False,
-            )
+            try:
+                p = subprocess.run(
+                    ["bash", str(script)],
+                    capture_output=True,
+                    text=True,
+                    env=child,
+                    timeout=60,
+                    check=False,
+                )
+            finally:
+                if holder is not None:
+                    holder.kill()
+                    holder.wait()
+            self.lock_left = lock_dir.exists()
             runs = int(counter.read_text()) if counter.exists() else 0
             marker = Path(str(counter) + ".knob")
             self.knob_reads = len(marker.read_text()) if marker.exists() else 0
             opened = Path(str(counter) + ".open")
             self.opens = opened.read_text().splitlines() if opened.exists() else []
+            overlap = Path(str(counter) + ".overlap")
+            self.overlaps = len(overlap.read_text()) if overlap.exists() else 0
             inputs = Path(str(counter) + ".inputs")
             self.inputs = inputs.read_text().splitlines() if inputs.exists() else []
             return p, runs
@@ -263,7 +317,7 @@ class PinDecisionTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("shortcut run failed", p.stdout)
         self.assertNotIn("is not installed", p.stdout)
-        self.assertIn("ran but did not complete", p.stderr)
+        self.assertIn("pin skipped: Pin Coding Note Shortcut failed; note saved unpinned", p.stderr)
         self.assertEqual(runs, 2)
 
     def test_a_hanging_shortcut_is_bounded_and_reported_as_a_run_failure(self):
@@ -276,10 +330,15 @@ class PinDecisionTests(unittest.TestCase):
         """
         p, runs = self.run_block(STUB_HANG="1", HARNESS_SHORTCUT_TIMEOUT_S="1")
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("ran but did not complete", p.stderr)
+        self.assertIn("pin skipped: Pin Coding Note Shortcut failed; note saved unpinned", p.stderr)
         self.assertIn("shortcut run failed", p.stdout)
         self.assertNotIn("is not installed", p.stdout)
-        self.assertEqual(runs, 2, "the hanging run was not retried once")
+        self.assertEqual(
+            runs,
+            1,
+            "a run that hit its time bound was run again:  a hang is a picker waiting on the owner's "
+            "screen, and a second run only opens a second picker",
+        )
 
     def test_a_host_without_perl_bounds_the_run_all_the_same(self):
         """The bound on a Shortcut run is an alarm,  and it must not depend on perl alone.
@@ -290,17 +349,18 @@ class PinDecisionTests(unittest.TestCase):
         """
         p, runs = self.run_block(NO_PERL="1", STUB_HANG="1", HARNESS_SHORTCUT_TIMEOUT_S="1")
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("ran but did not complete", p.stderr)
+        self.assertIn("pin skipped: Pin Coding Note Shortcut failed; note saved unpinned", p.stderr)
         self.assertIn("shortcut run failed", p.stdout)
         self.assertNotIn("is not installed", p.stdout)
-        self.assertEqual(runs, 2, "the hanging run was not retried once")
+        self.assertEqual(runs, 1, "the run that hit its time bound was run again")
 
     def test_a_missing_shortcut_is_named_as_a_missing_shortcut(self):
         p, runs = self.run_block(STUB_INSTALLED="0")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("is not installed", p.stdout)
         self.assertNotIn("run failed", p.stdout)
-        self.assertIn("is not installed", p.stderr)
+        self.assertIn("pin skipped: the 'Pin Coding Note' Shortcut is not installed", p.stderr)
+        self.assertIn("note saved unpinned", p.stderr)
         self.assertEqual(runs, 0, "the Shortcut ran even though it is not installed")
 
     def test_disabling_pinning_is_not_reported_as_a_failure(self):
@@ -318,7 +378,7 @@ class PinDecisionTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("could not be read", p.stdout)
         self.assertNotIn("is not installed", p.stdout)
-        self.assertIn("could not be read", p.stderr)
+        self.assertIn("pin skipped: the Shortcut list could not be read", p.stderr)
         self.assertEqual(runs, 0, "the Shortcut ran even though the list could not be read")
 
     def test_the_retry_can_be_switched_off(self):
@@ -384,12 +444,141 @@ class PinDecisionTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(runs, 2, "the retry did not run even though the knob turned it on")
 
-    def test_the_gui_fallback_is_still_reachable_after_a_failed_run(self):
-        """--pin still has to reach the GUI path when the Shortcut fails, so the skip line must not fire."""
-        p, _ = self.run_block(HARNESS_WANT_PIN="1", STUB_FAIL_FIRST="99")
+    def test_a_failed_run_warns_on_stderr_and_succeeds_for_create_and_update(self):
+        """The Shortcut did not pin, and there is nothing else to try:  the note is saved unpinned.
+
+        The helper used to bring Notes to the front and click its Pin menu item here, which is what
+        kept popping Notes open on the owner's screen (2026-10-20).  Now a create or an update still
+        succeeds, says on stderr that the pin was skipped, and touches nothing else.
+        """
+        for mode in ("create", "update"):
+            with self.subTest(mode=mode):
+                p, runs = self.run_block(HARNESS_MODE=mode, STUB_FAIL_FIRST="99")
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertIn(
+                    "pin skipped: Pin Coding Note Shortcut failed; note saved unpinned", p.stderr
+                )
+                self.assertNotIn("pinned: yes", p.stdout)
+
+    def test_a_failed_run_fails_pin_only(self):
+        """--pin-only was asked to pin and nothing else, so a pin that did not happen is exit 4."""
+        p, runs = self.run_block(HARNESS_MODE="pin", STUB_FAIL_FIRST="99")
+        self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
+        self.assertIn("pin skipped: Pin Coding Note Shortcut failed; nothing was pinned", p.stderr)
+        self.assertNotIn("note saved unpinned", p.stderr)
+
+    def test_pin_only_exits_4_for_every_way_the_pin_can_fail(self):
+        for label, env in (
+            ("missing", {"STUB_INSTALLED": "0"}),
+            ("list unreadable", {"STUB_LIST_FAILS": "1"}),
+            ("disabled", {"HARNESS_APPLE_NOTES_PIN": "0"}),
+            ("hang", {"STUB_HANG": "1", "HARNESS_SHORTCUT_TIMEOUT_S": "1"}),
+        ):
+            with self.subTest(label):
+                p, _ = self.run_block(HARNESS_MODE="pin", **env)
+                self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
+                self.assertIn("pin skipped:", p.stderr)
+
+    def test_pin_only_succeeds_when_the_shortcut_pins(self):
+        p, runs = self.run_block(HARNESS_MODE="pin")
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertNotIn("pinned: skipped", p.stdout)
-        self.assertIn("ran but did not complete", p.stderr)
+        self.assertIn("pinned: yes", p.stdout)
+        self.assertEqual(runs, 1)
+
+    def test_a_fast_failure_is_still_retried_but_a_hang_is_not(self):
+        """The retry exists for the index race, which fails fast.  A run that hit its bound is a hang."""
+        fast, fast_runs = self.run_block(STUB_FAIL_FIRST="1")
+        self.assertEqual(fast_runs, 2)
+        hang, hang_runs = self.run_block(STUB_HANG="1", HARNESS_SHORTCUT_TIMEOUT_S="1")
+        self.assertEqual(hang_runs, 1)
+
+    def test_the_lock_is_given_back_after_a_pin_and_after_a_failed_pin(self):
+        self.run_block()
+        self.assertFalse(self.lock_left, "the lock was left behind after a pin")
+        self.run_block(STUB_FAIL_FIRST="99")
+        self.assertFalse(self.lock_left, "the lock was left behind after a failed pin")
+        self.run_block(STUB_HANG="1", HARNESS_SHORTCUT_TIMEOUT_S="1")
+        self.assertFalse(self.lock_left, "the lock was left behind after a hung pin")
+
+    def test_a_pin_that_cannot_get_the_lock_is_skipped_and_never_runs_the_shortcut(self):
+        """Another process holds the lock the whole wait:  skip with a clear line, do not stack a second run."""
+        p, runs = self.run_block(PRE_LOCK="live", NOTES_PIN_LOCK_WAIT_S="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pin skipped: another pin or unpin run held the lock", p.stderr)
+        self.assertIn("note saved unpinned", p.stderr)
+        self.assertEqual(runs, 0, "the Shortcut ran although another run held the lock")
+        self.assertTrue(self.lock_left, "the waiter removed a lock it did not own")
+
+    def test_pin_only_that_cannot_get_the_lock_exits_4(self):
+        p, runs = self.run_block(HARNESS_MODE="pin", PRE_LOCK="live", NOTES_PIN_LOCK_WAIT_S="1")
+        self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
+        self.assertEqual(runs, 0)
+
+    def test_unpin_that_cannot_get_the_lock_exits_4(self):
+        p, runs = self.run_unpin_block(
+            HARNESS_MODE="unpin", STUB_NAME="Unpin Coding Note", PRE_LOCK="live", NOTES_PIN_LOCK_WAIT_S="1"
+        )
+        self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
+        self.assertIn("held the lock", p.stderr)
+        self.assertEqual(runs, 0)
+
+    def test_a_lock_whose_holder_is_gone_is_taken_over(self):
+        p, runs = self.run_block(PRE_LOCK="dead")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pinned: yes", p.stdout)
+        self.assertEqual(runs, 1)
+        self.assertFalse(self.lock_left)
+
+    def test_a_lock_older_than_any_run_could_be_is_taken_over_even_if_its_pid_is_alive(self):
+        """A pid can be reused after a crash, so age settles it too."""
+        p, runs = self.run_block(PRE_LOCK="old")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pinned: yes", p.stdout)
+        self.assertEqual(runs, 1)
+
+    def test_two_pins_at_once_never_overlap(self):
+        """The reason for the lock:  overlapping runs fight over the Find Notes picker and fail each other."""
+        source = SCRIPT.read_text()
+        function, block = _extract(source)
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir(mode=0o700)
+            for name, body in (("shortcuts", STUB), ("pgrep", PGREP_STUB), ("open", OPEN_STUB)):
+                side = bindir / name
+                side.write_text(body)
+                side.chmod(0o700)
+            script = Path(tmp) / "harness.sh"
+            script.write_text(
+                HARNESS.replace("{constants}", "").replace("{function}", function).replace("{block}", block)
+            )
+            counter = Path(tmp) / "counter"
+            child = dict(os.environ)
+            child.update(
+                PATH=f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+                STUB_COUNTER=str(counter),
+                STUB_HOLD="1",
+                NOTES_PIN_LOCK_DIR=str(Path(tmp) / "pin.lock"),
+                HARNESS_MODE="pin",
+                HARNESS_REAL_SLEEP="1",
+            )
+            procs = [
+                subprocess.Popen(
+                    ["bash", str(script)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=child,
+                )
+                for _ in range(2)
+            ]
+            results = [proc.communicate(timeout=60) for proc in procs]
+            self.assertEqual([proc.returncode for proc in procs], [0, 0], results)
+            self.assertTrue(all("pinned: yes" in out for out, _ in results), results)
+            self.assertEqual(int(counter.read_text()), 2)
+            self.assertFalse(
+                Path(str(counter) + ".overlap").exists(), "two Shortcut runs overlapped"
+            )
+            self.assertFalse((Path(tmp) / "pin.lock").exists())
 
     def test_unpin_reports_a_missing_shortcut_as_a_missing_shortcut(self):
         p, runs = self.run_unpin_block(HARNESS_MODE="unpin")
@@ -459,6 +648,195 @@ class PinDecisionTests(unittest.TestCase):
             ["AFC test note", "AFC test note"],
             "a title with no leading non-alnum run should not be rewritten on retry",
         )
+
+
+#  a stand-in for `osascript`:  it records every call (the arguments, WANT_ACTIVATE and the AppleScript on
+#  stdin) and answers with a note id, so the whole script runs without Notes being touched
+OSASCRIPT_STUB = """#!/bin/bash
+n=0
+if [ -f "$STUB_OSA/count" ]; then n=$(cat "$STUB_OSA/count"); fi
+n=$((n+1))
+printf '%s' "$n" > "$STUB_OSA/count"
+{
+  printf 'ARGV: %s\\n' "$*"
+  printf 'WANT_ACTIVATE=%s\\n' "${WANT_ACTIVATE-unset}"
+  cat
+} > "$STUB_OSA/call.$n"
+printf 'x-coredata://stub/note/1\\n'
+"""
+
+#  `sleep` returns at once, so the 2 s settle and the retry pause cost nothing
+SLEEP_STUB = """#!/bin/bash
+exit 0
+"""
+
+
+@unittest.skipUnless(
+    SCRIPT.is_file() and Path("/usr/bin/python3").exists(), "needs the script and /usr/bin/python3"
+)
+class NoGuiPinTests(unittest.TestCase):
+    """The whole script, with `osascript`, `shortcuts`, `open`, `pgrep` and `sleep` stubbed on PATH.
+
+    What the assertions read is what reached the stubs.  `osascript` is the only way this script could
+    reach the Notes window, so a count of its calls and a look at their text show whether anything beyond
+    the note write and the id lookup was ever attempted.
+    """
+
+    def run_script(self, *args: str, **env: str) -> tuple[subprocess.CompletedProcess, list[str], int]:
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir(mode=0o700)
+            osa = Path(tmp) / "osa"
+            osa.mkdir(mode=0o700)
+            for name, body in (
+                ("osascript", OSASCRIPT_STUB),
+                ("shortcuts", STUB),
+                ("pgrep", PGREP_STUB),
+                ("open", OPEN_STUB),
+                ("sleep", SLEEP_STUB),
+            ):
+                side = bindir / name
+                side.write_text(body)
+                side.chmod(0o700)
+            counter = Path(tmp) / "counter"
+            child = {
+                "PATH": f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+                "HOME": tmp,
+                "LANG": "en_US.UTF-8",
+                "AGENT_SEAT": "CLAUDE",
+                "STUB_COUNTER": str(counter),
+                "STUB_OSA": str(osa),
+                "NOTES_PIN_LOCK_DIR": str(Path(tmp) / "pin.lock"),
+                #  one attempt unless a test asks for the retry:  the stub fails every run
+                "APPLE_NOTES_PIN_RETRY": "0",
+            }
+            child.update(env)
+            p = subprocess.run(
+                ["bash", str(SCRIPT), *args],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                env=child,
+                timeout=60,
+                check=False,
+            )
+            calls = [
+                (osa / f"call.{n}").read_text()
+                for n in range(1, (int((osa / "count").read_text()) if (osa / "count").exists() else 0) + 1)
+            ]
+            runs = int(counter.read_text()) if counter.exists() else 0
+            return p, calls, runs
+
+    def assert_no_window_automation(self, calls: list[str]) -> None:
+        for call in calls:
+            for needle in ("System Events", "show note", "click", "menu item", "process \"Notes\""):
+                self.assertNotIn(needle, call)
+
+    def test_create_with_a_failing_shortcut_succeeds_unpinned_and_never_touches_the_window(self):
+        p, calls, runs = self.run_script(
+            "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.", STUB_FAIL_FIRST="99"
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("created note id=", p.stdout)
+        self.assertIn("pin skipped: Pin Coding Note Shortcut failed; note saved unpinned", p.stderr)
+        self.assertEqual(runs, 1, "the Shortcut should have been tried once")
+        self.assertEqual(len(calls), 1, "osascript ran more than the one note write: %r" % calls)
+        self.assertIn("WANT_ACTIVATE=0", calls[0])
+        self.assert_no_window_automation(calls)
+
+    def test_update_with_a_failing_shortcut_succeeds_unpinned_and_never_touches_the_window(self):
+        p, calls, _ = self.run_script(
+            "--update", "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.", STUB_FAIL_FIRST="99"
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("updated note id=", p.stdout)
+        self.assertIn("pin skipped: Pin Coding Note Shortcut failed; note saved unpinned", p.stderr)
+        self.assertEqual(len(calls), 1, "osascript ran more than the one note write: %r" % calls)
+        self.assertIn("WANT_ACTIVATE=0", calls[0])
+        self.assert_no_window_automation(calls)
+
+    def test_pin_only_with_a_failing_shortcut_exits_4_and_only_looks_the_note_up(self):
+        p, calls, _ = self.run_script("--pin-only", "[AFC, Claude] topic", STUB_FAIL_FIRST="99")
+        self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
+        self.assertIn("pin skipped: Pin Coding Note Shortcut failed; nothing was pinned", p.stderr)
+        self.assertEqual(len(calls), 1, "osascript ran more than the id lookup: %r" % calls)
+        self.assertIn("get id of note", calls[0])
+        self.assert_no_window_automation(calls)
+
+    def test_pin_only_with_a_missing_shortcut_exits_4_and_never_touches_the_window(self):
+        p, calls, runs = self.run_script("--pin-only", "[AFC, Claude] topic", STUB_INSTALLED="0")
+        self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
+        self.assertEqual(runs, 0)
+        self.assertEqual(len(calls), 1, calls)
+
+    def test_pin_only_that_pins_exits_0(self):
+        p, calls, runs = self.run_script("--pin-only", "[AFC, Claude] topic")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pinned: yes", p.stdout)
+        self.assertEqual(runs, 1)
+        self.assertEqual(len(calls), 1, calls)
+
+    def test_the_old_pin_switches_still_parse_and_no_longer_reach_a_gui_path(self):
+        """--pin and APPLE_NOTES_PIN=1 used to switch on the menu-click fallback.  They are accepted and do nothing more."""
+        for args, env in (
+            (("--pin",), {}),
+            ((), {"APPLE_NOTES_PIN": "1"}),
+            (("--pin",), {"APPLE_NOTES_PIN": "1"}),
+        ):
+            with self.subTest(args=args, env=env):
+                p, calls, _ = self.run_script(
+                    *args, "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.",
+                    STUB_FAIL_FIRST="99", **env,
+                )
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertIn("pin skipped:", p.stderr)
+                self.assertEqual(len(calls), 1, "a second osascript call reached for the window: %r" % calls)
+                self.assert_no_window_automation(calls)
+
+    def test_activate_is_still_the_one_explicit_way_to_bring_notes_forward(self):
+        p, calls, _ = self.run_script(
+            "--activate", "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.",
+            STUB_FAIL_FIRST="99",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("WANT_ACTIVATE=1", calls[0])
+        env_p, env_calls, _ = self.run_script(
+            "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.",
+            STUB_FAIL_FIRST="99", APPLE_NOTES_ACTIVATE="1",
+        )
+        self.assertEqual(env_p.returncode, 0, env_p.stderr)
+        self.assertIn("WANT_ACTIVATE=1", env_calls[0])
+
+    def test_pinning_disabled_leaves_create_quiet_and_still_exits_0(self):
+        p, calls, runs = self.run_script(
+            "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.", APPLE_NOTES_PIN="0"
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pinning is disabled", p.stdout)
+        self.assertEqual(p.stderr, "")
+        self.assertEqual(runs, 0)
+        self.assertEqual(len(calls), 1, calls)
+
+    def test_the_script_carries_no_window_automation_on_the_pin_path(self):
+        """Read the source, minus comments:  nothing here may reach the Notes window except the opt-in."""
+        text = SCRIPT.read_text()
+        code = "\n".join(line for line in text.split("\n") if not line.lstrip().startswith("#"))
+        for needle in ("System Events", "show note id", "PIN_RESULT", "menu item", "pin-menu-not-found"):
+            self.assertNotIn(needle, code)
+        #  the pin block is the end of the script and holds no osascript at all
+        pin_block = text[text.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.") :]
+        self.assertNotIn("osascript", pin_block)
+        self.assertNotIn("activate", "\n".join(l for l in pin_block.split("\n") if not l.lstrip().startswith("#")))
+        #  every show or activate left in the script sits right under the WANT_ACTIVATE opt-in
+        lines = code.split("\n")
+        found = 0
+        for index, line in enumerate(lines):
+            if re.match(r"^\s*(show|activate)\b", line):
+                found += 1
+                window = "\n".join(lines[max(0, index - 3) : index])
+                self.assertIn('(system attribute "WANT_ACTIVATE") is "1"', window, line)
+        self.assertEqual(found, 4, "expected the create and update opt-ins only (a show and an activate in each)")
 
 
 if __name__ == "__main__":
