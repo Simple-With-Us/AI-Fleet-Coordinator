@@ -50,6 +50,14 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "apple-notes-coding.sh"
+#  the lock wait the script defaults to, read from the script so the two cannot drift apart
+LOCK_WAIT_S = int(
+    re.search(
+        r'^NOTES_PIN_LOCK_WAIT_S="\$\{NOTES_PIN_LOCK_WAIT_S:-(\d+)\}"$',
+        SCRIPT.read_text(),
+        re.MULTILINE,
+    ).group(1)
+)
 
 #  the stub records every `shortcuts run` in this file, so a test can count the attempts
 STUB = """#!/bin/bash
@@ -612,8 +620,18 @@ class PinDecisionTests(unittest.TestCase):
         )
         self.assertGreaterEqual(len(lock_path), 100)
         reasons = re.findall(r'echo "pin skipped: ([^"]*)" >&2', block)
-        self.assertGreaterEqual(
-            len(reasons), 8, "a pin skipped reason is missing from the case block"
+        #  The count is exact, from two sources the reason regex does not share:  each branch of the case block
+        #  (a number or the default) carries exactly one reason, and the text "pin skipped:" appears once per
+        #  reason.  A branch rewritten so the regex no longer matches it, or a new branch whose reason has a
+        #  different echo shape, changes one side of the comparison and fails the test, instead of its reason
+        #  silently escaping the length check.
+        branches = re.findall(r"^  (?:[0-9]+|\*)\)\s*$", block, re.MULTILINE)
+        self.assertGreaterEqual(len(branches), 8, "a branch is missing from the case block")
+        self.assertEqual(
+            len(reasons), len(branches), "a case branch has no reason the length check can see"
+        )
+        self.assertEqual(
+            block.count("pin skipped:"), len(reasons), "a pin skipped line has an echo form the check misses"
         )
         for template in reasons:
             reason = (
@@ -666,7 +684,9 @@ class PinDecisionTests(unittest.TestCase):
                 self.assertIn("pin skipped: the pin lock directory", p.stderr)
                 self.assertIn("could not be made", p.stderr)
                 self.assertNotIn("another pin or unpin run held the lock", p.stderr)
-                self.assertLess(elapsed, 10, "the lock wait was not skipped")
+                #  bounded by the wait that was skipped, not a fixed number of seconds, so a loaded runner
+                #  cannot trip it:  a run that waited would take at least the whole wait
+                self.assertLess(elapsed, LOCK_WAIT_S, "the lock wait was not skipped")
                 self.assertEqual(runs, 0)
 
     def test_unpin_names_a_lock_directory_that_cannot_be_made(self):
