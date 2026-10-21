@@ -51,22 +51,51 @@ final class FleetStore: ObservableObject {
     /// not start another interpreter.  The read runs off the main actor,  and the
     /// task is the store's,  so a surface that goes away leaves the answer cached
     /// rather than the work in flight.
+    ///
+    /// A read that fails is not kept.  The engine can fail for a moment  (it is
+    /// another program,  on another machine's answer),  and a tab that could never
+    /// recover until the app was relaunched would be worse than a second read.
     func engineAnswer() async -> EngineIdentity.Answer {
-        if let answerTask { return await answerTask.value }
-        guard let location else {
+        let box: AnswerBox
+        answerLock.lock()
+        if let existing = answerBox {
+            box = existing
+            answerLock.unlock()
+        } else if let location = self.location {
+            let made = AnswerBox(
+                task: Task<EngineIdentity.Answer, Never>.detached(priority: .userInitiated) {
+                    EngineIdentity.read(
+                        location: location,
+                        home: FileManager.default.homeDirectoryForCurrentUser
+                    )
+                }
+            )
+            answerBox = made
+            box = made
+            answerLock.unlock()
+        } else {
+            answerLock.unlock()
             return EngineIdentity.Answer(identity: nil, reason: "the engine was not found")
         }
-        let task = Task<EngineIdentity.Answer, Never>.detached(priority: .userInitiated) {
-            EngineIdentity.read(
-                location: location,
-                home: FileManager.default.homeDirectoryForCurrentUser
-            )
+        let answer = await box.task.value
+        if answer.identity == nil {
+            answerLock.lock()
+            // Only the task that failed is dropped:  a newer one may already be
+            // running,  and dropping it would start a second interpreter.
+            if answerBox === box { answerBox = nil }
+            answerLock.unlock()
         }
-        answerTask = task
-        return await task.value
+        return answer
     }
 
-    private var answerTask: Task<EngineIdentity.Answer, Never>?
+    /// The one read of the engine's answer,  and the lock that guards it.
+    private final class AnswerBox {
+        let task: Task<EngineIdentity.Answer, Never>
+        init(task: Task<EngineIdentity.Answer, Never>) { self.task = task }
+    }
+
+    private let answerLock = NSLock()
+    private var answerBox: AnswerBox?
     private let manifest: SeatManifest?
     private let registry: FleetRegistry?
     private var results: [CheckResult] = []

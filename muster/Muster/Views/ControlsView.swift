@@ -105,9 +105,17 @@ struct ControlsView: View {
             KnobReader.read(repoRoot: root, home: home, identity: answer.identity)
         }.value
         registry = loaded
-        reason = answer.reason
-            ?? loaded.problem
-            ?? (loaded.knobs.isEmpty ? "The registry block has no readable rows." : nil)
+        // Two things can fail on their own:  the engine may not answer,  and the
+        // registry file may not be readable.  Both are said,  so the operator is
+        // not sent to the wrong cause.
+        let combined = [answer.reason, loaded.problem]
+            .compactMap { $0 }
+            .joined(separator: "  ")
+        if combined.isEmpty {
+            reason = loaded.knobs.isEmpty ? "The registry block has no readable rows." : nil
+        } else {
+            reason = combined
+        }
     }
 }
 
