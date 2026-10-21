@@ -24,6 +24,7 @@ import os
 import secrets
 import sqlite3
 import time
+import urllib.parse
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -165,7 +166,16 @@ class SessionRegistry:
             # for a plain SELECT, so the wake path never contends with the Operator's
             # registration writes.  This handle runs no DDL and inserts no migration row:
             # it never writes.
-            self._conn = sqlite3.connect(self.db_path)
+            #
+            # mode=rw and not a plain connect:  the handle is read-write, and it still
+            # never creates the file, so a lookup can never bring a registry into being.
+            # The cost of the hot-journal recovery is that the wake path needs write
+            # permission on the registry file, which the store the Operator owns gives
+            # it anyway.
+            self._conn = sqlite3.connect(
+                "file:%s?mode=rw" % urllib.parse.quote(os.path.abspath(self.db_path)),
+                uri=True,
+            )
             self._conn.row_factory = sqlite3.Row
             return
         self._conn = sqlite3.connect(self.db_path)
@@ -493,6 +503,7 @@ class RegistryUnavailable(RuntimeError):
 def lookup_many(
     db_path: str,
     identities: list[tuple[str, str, str, str]],
+    failures: list[tuple[str, str, str, str]] | None = None,
 ) -> dict[tuple[str, str, str, str], dict[str, Any]]:
     """Read-only lookups for many identities, over one connection.
 
@@ -504,6 +515,10 @@ def lookup_many(
     reading.  A registry that cannot be read at all raises RegistryUnavailable, so the
     caller can report that instead of silently showing every session as unlettered.
 
+    A partial failure is not a miss:  one unreadable session losing its letter is not the
+    same as that session never having one, so the identities that failed are collected
+    for the caller to report.
+
     The reference form carries the generation when a letter has been recycled, so
     "MM A" and "MM A (gen 2)" never read as the same session.
     """
@@ -514,13 +529,13 @@ def lookup_many(
         registry = SessionRegistry(str(db_path), read_only=True)
     except Exception as exc:
         raise RegistryUnavailable(type(exc).__name__) from exc
-    failures = 0
+    failed: list[tuple[str, str, str, str]] = []
     try:
         for identity in identities:
             try:
                 found = registry.lookup(*identity)
             except Exception:
-                failures += 1
+                failed.append(identity)
                 continue
             if not found or not found.get("label"):
                 continue
@@ -539,7 +554,9 @@ def lookup_many(
             registry.close_db()
         except Exception:
             pass
-    if failures and failures == len(identities):
+    if failures is not None:
+        failures.extend(failed)
+    if failed and len(failed) == len(identities):
         # Every read failed, so the registry is unreadable rather than empty.
         raise RegistryUnavailable("every lookup failed")
     return result

@@ -182,6 +182,56 @@ class RegistryLookupTests(unittest.TestCase):
             finally:
                 writer.rollback()
 
+    def test_the_lookup_handle_never_creates_the_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            self.assertFalse(os.path.exists(db))
+            # The handle is read-write so it can recover a hot journal, but it must never
+            # bring a registry into being.
+            with self.assertRaises(sqlite3.OperationalError):
+                OR.SessionRegistry(db, read_only=True)
+            self.assertFalse(os.path.exists(db))
+
+    def test_the_alias_lookup_is_indexed_by_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            registry = OR.SessionRegistry(db)
+            self.addCleanup(registry.close_db)
+            registry.resolve_or_register(dict(IDENTITY))
+            names = [
+                row[0]
+                for row in registry._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                )
+            ]
+            # The wake path looks a session's live alias up by record for every catalog
+            # row it shows, so that lookup has to be indexed.
+            self.assertIn("idx_alias_record", names)
+
+    def test_a_partial_failure_is_reported_rather_than_shown_as_a_miss(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            registry = OR.SessionRegistry(db)
+            self.addCleanup(registry.close_db)
+            registry.resolve_or_register(dict(IDENTITY))
+            registry.resolve_or_register(dict(IDENTITY, native_session_id="mvs_def"))
+            good = ("minimax", "mac", "default", "mvs_abc")
+            bad = ("minimax", "mac", "default", "mvs_def")
+            real = OR.SessionRegistry.lookup
+
+            def one_fails(self, platform, verified_host, profile_scope, native_session_id):
+                if native_session_id == "mvs_def":
+                    raise sqlite3.OperationalError("corrupt row")
+                return real(self, platform, verified_host, profile_scope, native_session_id)
+
+            failed: list[tuple[str, str, str, str]] = []
+            with mock.patch.object(OR.SessionRegistry, "lookup", one_fails):
+                found = OR.lookup_many(db, [good, bad], failures=failed)
+            # The good session still has its letter, and the bad one is reported.
+            self.assertEqual(found[good]["label"], "A")
+            self.assertNotIn(bad, found)
+            self.assertEqual(failed, [bad])
+
     def test_the_catalog_public_projection_keeps_the_profile_scope(self) -> None:
         row = CC.ChatCatalog._public(
             {
