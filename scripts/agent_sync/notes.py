@@ -68,7 +68,18 @@ UPLOAD_MAX = 1024 * 1024
 INLINE_JSON_MAX = 8500  # an envelope longer than this (as JSON) travels as an uploaded .md file
 ENVELOPE_PARSE_MAX = 20_000  # the longest message body the parser looks at
 SCRIPT_NAME = "apple-notes-coding.sh"
-SCRIPT_TIMEOUT_S = 120.0
+#  The helper wraps its Notes calls in a 900 s AppleEvent timeout (NOTES_APPLE_EVENT_TIMEOUT_S in
+#  scripts/apple-notes-coding.sh),  because a body the size of the master list takes longer than
+#  AppleScript's two-minute default.  This cap has to sit above that timeout:  a cap below it
+#  kills the write while osascript is still working,  and the later completion creates a second
+#  note.  It has to sit above the pin phase that follows the write as well (about 100 s:  the
+#  Shortcut runs are bounded by NOTES_SHORTCUT_TIMEOUT_S):  a cap that cuts the pin phase short
+#  reports outcome_unknown for a note that was written,  and the request id is then refused.
+#  The wait for the run lock is counted inside this cap:  a request waits LOCK_WAIT_S for the
+#  lock and the script then gets what is left of it,  so the whole request stays inside the cap
+#  instead of outliving it by the wait.
+#  scripts/test_apple_notes_timeout.py holds the two together (AFC-436).
+SCRIPT_TIMEOUT_S = 1080.0
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 UPLOAD_PATH_RE = re.compile(r"^/user_uploads/[A-Za-z0-9_./-]{1,200}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
@@ -97,7 +108,7 @@ CHILD_ENV_KEYS = (
     #  knob (whether the script may run the pin Shortcut twice;  a miss can pop a note
     #  picker).  It can only turn the retry off, never on.  Listed here because the
     #  allow-list is otherwise the only thing that decides reachability, and this
-    #  caller drives the script under a lock and a 120 s timeout (AFC-431).
+    #  caller drives the script under a lock and the SCRIPT_TIMEOUT_S cap (AFC-431).
     "APPLE_NOTES_PIN_RETRY",
 )
 
@@ -558,6 +569,12 @@ Runner = Callable[..., "subprocess.CompletedProcess[bytes]"]
 _RUN_LOCK = (
     threading.Lock()
 )  # one osascript at a time:  Notes.app is a single shared document store
+#  How long a request waits for that lock.  The lock is held for the whole write,  and the write
+#  budget is SCRIPT_TIMEOUT_S,  so a wedged write would hold it for that long;  the wait has its
+#  own bound,  and a request that cannot get the lock is told the notes are busy instead of
+#  waiting the whole budget out (AFC-436).  The wait is counted inside SCRIPT_TIMEOUT_S:  the
+#  script gets the cap minus this wait,  so a request never outlives the cap by the wait.
+LOCK_WAIT_S = 60.0
 
 
 def script_candidates(env: Mapping[str, str], home: Path) -> list[Path]:
@@ -702,7 +719,8 @@ def run_direct(
 ) -> dict[str, Any]:
     """Run the script for `envelope` (markdown already inline).  Returns {"status": "done", "note_id": ...}
     or raises NotesError.  The body goes on stdin (markdown) or in a mode-600 temporary file (HTML);  never
-    on the command line."""
+    on the command line.  The timeout is the budget for the whole request:  the script gets it minus
+    the wait for the run lock."""
     action = envelope["action"]
     flags = envelope.get("flags") or {}
     markdown = str(envelope.get("markdown") or "")
@@ -721,16 +739,29 @@ def run_direct(
             else:
                 stdin_data = markdown.encode("utf-8")
         argv, extra = build_argv(script, envelope, html_file)
+        #  The lock wait is counted inside the cap:  the script gets the cap minus the wait,  so
+        #  the whole request (the wait and the run) stays inside it.  A request that could wait
+        #  the lock out and then take the full cap would outlive the budget the timeout test
+        #  holds together (AFC-436).
+        child_timeout = max(1.0, timeout - LOCK_WAIT_S)
         try:
-            with _RUN_LOCK:
+            if not _RUN_LOCK.acquire(timeout=LOCK_WAIT_S):
+                raise NotesError(
+                    "unavailable",
+                    "another notes write is still running, so this one was refused as busy; "
+                    "try again in a moment",
+                )
+            try:
                 proc = (runner or subprocess.run)(
                     argv,
                     input=stdin_data if stdin_data is not None else b"",
                     capture_output=True,
-                    timeout=timeout,
+                    timeout=child_timeout,
                     env=child_env(env, extra),
                     check=False,
                 )
+            finally:
+                _RUN_LOCK.release()
         except subprocess.TimeoutExpired:
             # A timeout does not prove nothing was written (the script may have created the note and then hung),
             # so it is an unknown outcome, never a safe failure that a retry may repeat.
@@ -738,7 +769,7 @@ def run_direct(
                 "outcome_unknown",
                 "the notes script did not finish within %d seconds, so the note may or may not "
                 "have been written.  Check the Coding folder before sending it again."
-                % int(timeout),
+                % int(child_timeout),
             ) from None
         except OSError as exc:
             raise NotesError(

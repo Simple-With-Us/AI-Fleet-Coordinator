@@ -411,6 +411,41 @@ class DirectRunnerTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "outcome_unknown")
         self.assertIn("may or may not", caught.exception.message)
 
+    def test_a_busy_lock_is_refused_as_busy_and_not_waited_out(self):
+        """One wedged write must not hold every other write for the whole write budget.
+
+        The lock is held for the whole subprocess run and the budget is SCRIPT_TIMEOUT_S,  so the
+        wait for the lock has its own bound:  a queued request is refused as busy instead of
+        waiting the write out (AFC-436).
+        """
+        original = N.LOCK_WAIT_S
+        N.LOCK_WAIT_S = 0.05
+        N._RUN_LOCK.acquire()
+        try:
+            with self.assertRaises(N.NotesError) as caught:
+                self.run_direct(envelope(), FakeRun())
+        finally:
+            N._RUN_LOCK.release()
+            N.LOCK_WAIT_S = original
+        self.assertEqual(caught.exception.code, "unavailable")
+        self.assertIn("busy", caught.exception.message)
+
+    def test_the_lock_is_released_after_a_write(self):
+        """A finished write must not hold the lock against the next one."""
+        self.run_direct(envelope(), FakeRun())
+        self.run_direct(envelope(rid="requestid-0002"), FakeRun())
+        self.assertFalse(N._RUN_LOCK.locked())
+
+    def test_the_script_gets_the_cap_minus_the_lock_wait(self):
+        """The wait for the lock is counted inside the cap,  so the request cannot outlive it.
+
+        A request that waits the lock out and then takes the full cap would run for longer than
+        the budget the timeout test holds together (AFC-436).
+        """
+        run = FakeRun()
+        self.run_direct(envelope(), run)
+        self.assertEqual(run.calls[0]["kwargs"]["timeout"], N.SCRIPT_TIMEOUT_S - N.LOCK_WAIT_S)
+
     def test_text_fields_cover_the_title_the_body_and_the_text_flags(self):
         env = envelope(markdown="body", flags={"summary": "sum", "pr": "46", "notify": True})
         self.assertEqual(

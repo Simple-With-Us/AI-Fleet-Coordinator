@@ -250,6 +250,13 @@ jobs:
     - name: Notes pin decision (AFC-431)
       run: |
         cd scripts && python3 -m unittest test_apple_notes_pin
+    # AFC-436:  the canonical helper must carry the 900 s AppleEvent timeout around its Notes calls.
+    # The fix existed only in the live copy at ~/apps/apple-notes-coding.sh,  so the repository copy
+    # lost it and an install from the repository would have dropped it again.  These tests read the
+    # script as text, so they touch no Notes and run here.
+    - name: Notes AppleEvent timeout (AFC-436)
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_timeout
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
