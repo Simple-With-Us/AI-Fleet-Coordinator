@@ -5,6 +5,7 @@
   ~/.local/state/fleet-tools/report.json (0600, atomic), for the Mac and the Hetzner server.
   It runs the managed runtime's copy of the doctor, so the checker moves with main, under
   /usr/bin/python3 -I (Python 3.9 on macOS).  It installs nothing and changes nothing.
+  Standard, not throttled:  with LowPriorityIO most `version` probes missed their 5 second cap.
   The server half needs the read-only `fleet-tools-ro` SSH key (docs/protocols/fleet-tool-parity.md);
   until it exists, the doctor reports the server as unknown, "no read-only route to the server".
   Install:  cp this file to ~/Library/LaunchAgents/ and
@@ -29,8 +30,8 @@
   <integer>900</integer>
   <key>RunAtLoad</key>
   <true/>
-  <key>LowPriorityIO</key>
-  <true/>
+  <key>ProcessType</key>
+  <string>Standard</string>
   <key>StandardOutPath</key>
   <string>/Users/jay/apps/logs/fleet-tools-doctor.launchd.out.log</string>
   <key>StandardErrorPath</key>

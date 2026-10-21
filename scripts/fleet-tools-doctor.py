@@ -173,6 +173,10 @@ MAX_REMOTE_BYTES = 1024 * 1024  # the same bound fleet_config puts on a doctor's
 PROBE_TIMEOUT = 5  # each `<tool> --version`
 LATEST_TIMEOUT = 20  # each npm view / brew info
 GITHUB_TIMEOUT = 8
+# Probes run four at a time:  a burst of a dozen Node and Bun CLIs on a loaded Mac starved each
+# other past the 5 second cap under launchd (AFC-461).  A probe or lookup that timed out gets one
+# more try afterwards, on its own.
+REGISTRY_WORKERS = 4
 GRACE_MINUTES = 70  # an hourly timer that fired within this window is still on schedule
 MAC_UPDATER_LABEL = "com.jay.agent-sync-runtime-sync"
 SERVER_TIMERS = ("fleet-cli-git-update.timer", "fleet-tools-doctor.timer")
@@ -1976,6 +1980,7 @@ def probe_version(entry: dict, path: str, runner: Callable = subprocess.run) -> 
             "version": None,
             "raw": None,
             "error": f"--version did not answer within {PROBE_TIMEOUT} seconds",
+            "timedOut": True,
         }
     except (OSError, subprocess.SubprocessError) as exc:
         return {
@@ -2032,7 +2037,11 @@ def npm_latest(package: str, runner: Callable = subprocess.run) -> dict:
             env=tool_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"version": None, "error": f"npm view failed ({type(exc).__name__})"}
+        return {
+            "version": None,
+            "error": f"npm view failed ({type(exc).__name__})",
+            "timedOut": isinstance(exc, subprocess.TimeoutExpired),
+        }
     version = parse_version(out.stdout) if out.returncode == 0 else None
     return {"version": version, "error": None if version else f"npm view exited {out.returncode}"}
 
@@ -2187,7 +2196,7 @@ def check_registry(
             if kind:
                 sources[entry["name"]] = (kind, ident)
     latest: dict = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=REGISTRY_WORKERS) as pool:
         probes = {
             e["name"]: pool.submit(probe_version, e, paths[e["name"]], runner)
             for e in entries
@@ -2216,6 +2225,14 @@ def check_registry(
                 name, {"source": kind, "version": None, "error": "not read (--no-network)"}
             )
         results = {name: job.result() for name, job in probes.items()}
+    # One more try, alone, for whatever timed out while it shared the machine with the others.
+    by_name = {e["name"]: e for e in entries}
+    for name, result in results.items():
+        if result.get("timedOut"):
+            results[name] = probe_version(by_name[name], paths[name], runner)
+    for name, found in latest.items():
+        if found.get("timedOut") and sources.get(name, (None,))[0] == "npm":
+            latest[name] = dict(npm_latest(sources[name][1], runner), source="npm")
     for entry in entries:
         name = entry["name"]
         fields = registry_row(entry, host, paths[name], results.get(name), latest.get(name))

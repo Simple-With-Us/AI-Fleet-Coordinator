@@ -695,6 +695,27 @@ class RegistryCheckTests(HomeCase):
         self.assertEqual(rows["tool:fx"]["status"], "WARN")
         self.assertIn("did not answer", rows["tool:fx"]["detail"])
 
+    def test_a_probe_or_npm_lookup_that_timed_out_gets_one_more_try_alone(self):
+        tries: dict = {}
+
+        def answer(argv, **kw):
+            key = "view" if "view" in argv else Path(argv[0]).name
+            tries[key] = tries.get(key, 0) + 1
+            if tries[key] == 1:
+                raise subprocess.TimeoutExpired(argv, 5)
+            out = "2.1.306\n" if key == "view" else "2.1.306 (Claude Code)\n"
+            return subprocess.CompletedProcess(argv, 0, out, "")
+
+        report = doctor.Report()
+        with mock.patch.object(doctor, "TOOL_REGISTRY", self.registry[:1]):
+            doctor.check_registry(report, "mac", True, answer)
+        row = report.row("tool:claude")
+        self.assertEqual(
+            (row["state"], row["version"], row["latest"]), ("current", "2.1.306", "2.1.306")
+        )
+        self.assertEqual(tries, {"claude": 2, "view": 2})
+        self.assertEqual(doctor.REGISTRY_WORKERS, 4)
+
     def test_brew_is_the_source_for_a_cellar_install(self):
         cellar = self.home / "opt/homebrew/Cellar/gitleaks/8.29.0/bin"
         cellar.mkdir(parents=True)
