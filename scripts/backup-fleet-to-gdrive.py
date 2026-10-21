@@ -38,6 +38,15 @@ GDRIVE_CANDIDATES = [
 
 CODE_ROOT = Path("/Users/jay/Code")
 
+# The dated folder this job writes into Drive.  Retention only ever touches
+# folders that match this prefix exactly, so nothing else in Drive is at risk.
+BACKUP_FOLDER_PREFIX = "Website & App Source Backups - "
+
+# How many daily backups to keep.  Two weeks of daily source backups is
+# plenty of history to restore from, and the job was writing one folder a day
+# with no retention at all.
+DEFAULT_KEEP = 14
+
 # Same denylist as code-main-keeper.sh.  Pionex is a leftover checkout, not a fleet app.
 SKIP_NAMES = {
     "copilot-worktrees",
@@ -143,6 +152,58 @@ def should_skip_file(name: str) -> bool:
     return ext in EXCLUDE_EXTS
 
 
+def dated_backup_folders(gdrive: Path) -> list[tuple[datetime.date, Path]]:
+    """The dated backup folders in Drive, oldest first.
+
+    Only a folder whose name is the prefix plus a real ISO date counts, so
+    nothing else in Drive can be mistaken for a backup set.
+    """
+    found: list[tuple[datetime.date, Path]] = []
+    if not gdrive.is_dir():
+        return found
+    for entry in sorted(gdrive.iterdir(), key=lambda p: p.name):
+        if not entry.is_dir() or not entry.name.startswith(BACKUP_FOLDER_PREFIX):
+            continue
+        stamp = entry.name[len(BACKUP_FOLDER_PREFIX) :]
+        try:
+            day = datetime.date.fromisoformat(stamp)
+        except ValueError:
+            continue
+        found.append((day, entry))
+    found.sort(key=lambda item: item[0])
+    return found
+
+
+def prune_old_backups(gdrive: Path, keep: int, dry_run: bool = False) -> list[Path]:
+    """Drop the dated backup folders beyond the newest `keep`.
+
+    The job wrote one folder a day with no retention at all, so the backup
+    set grew without bound: 48 folders of roughly 1.5 GB each by 2026-10-20.
+    Two weeks of daily source backups is plenty of history, and the oldest
+    ones are the ones nobody will ever restore.
+
+    A dry run reports what would go and touches nothing.
+    """
+    if keep < 0:
+        return []
+    folders = dated_backup_folders(gdrive)
+    doomed = folders[: max(0, len(folders) - keep)]
+    removed: list[Path] = []
+    for _day, path in doomed:
+        if dry_run:
+            print(f"would remove {path}")
+            removed.append(path)
+            continue
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            print(f"WARN: could not remove {path}: {exc}", file=sys.stderr)
+            continue
+        print(f"removed {path}")
+        removed.append(path)
+    return removed
+
+
 def zip_repo(repo_path: Path, zip_out: Path) -> int:
     file_count = 0
     with zipfile.ZipFile(zip_out, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -218,6 +279,23 @@ def parse_args() -> argparse.Namespace:
         metavar="REPO",
         help="Backup only these repo folder names",
     )
+    parser.add_argument(
+        "--keep",
+        type=int,
+        default=DEFAULT_KEEP,
+        metavar="N",
+        help=f"How many daily backup folders to keep (default {DEFAULT_KEEP}; 0 keeps none)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what retention would remove and change nothing",
+    )
+    parser.add_argument(
+        "--prune-only",
+        action="store_true",
+        help="Apply retention without taking a new backup",
+    )
     return parser.parse_args()
 
 
@@ -242,6 +320,13 @@ def main() -> int:
         return 0
 
     gdrive = find_gdrive()
+
+    if args.prune_only:
+        removed = prune_old_backups(gdrive, args.keep, dry_run=args.dry_run)
+        verb = "would remove" if args.dry_run else "removed"
+        print(f"{verb} {len(removed)} backup folder(s), keeping the newest {args.keep}")
+        return 0
+
     dest_dir = gdrive / f"Website & App Source Backups - {DATE_STR}"
     dest_dir.mkdir(parents=True, exist_ok=True)
     print(f"Target Google Drive folder: {dest_dir}")
@@ -280,6 +365,10 @@ def main() -> int:
         print("No repositories were backed up.", file=sys.stderr)
         return 1
     print(f"Backed up {len(backed_up)} repositories to {dest_dir}")
+
+    removed = prune_old_backups(gdrive, args.keep, dry_run=args.dry_run)
+    verb = "would remove" if args.dry_run else "removed"
+    print(f"Retention: {verb} {len(removed)} old backup folder(s), keeping the newest {args.keep}")
     return 0
 
 

@@ -212,6 +212,11 @@ jobs:
     # boundaries, and the plan and reorder logic.  No network.
     - name: Zulip linkifier tests
       run: cd scripts && python3 -m unittest test_zulip_linkifiers -v
+    # The Google Drive backup:  the File Provider-safe copy, the rule that a refused subtree is
+    # reported rather than raised, and the retention that drops the dated backup folders beyond
+    # the newest N.  Temp directories only, so nothing in Drive is read or written.
+    - name: Google Drive backup tests
+      run: python3 scripts/test_sync_fleet_agent_config.py -v
     # Fleet work backup (restic to B2):  temp repos and a temp home, stub restic and gitleaks, git
     # with no user config.  Nothing is uploaded and no real path is read.
     # restic is installed so the init, backup, check and restore round trip runs for real against a
