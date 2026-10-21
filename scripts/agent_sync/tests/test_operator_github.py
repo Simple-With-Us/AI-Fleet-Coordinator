@@ -37,9 +37,11 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(Refused) as c:self.request(sig='0'*64)
         self.assertEqual(c.exception.status,401);self.assertEqual(self.router.calls,[])
     def test_replay(self):
-        self.request()
-        with self.assertRaises(Refused) as c:self.request()
-        self.assertEqual(c.exception.status,409);self.assertEqual(len(self.router.calls),1)
+        first=self.request()
+        again=self.request()
+        # Idempotency: a lost first response is served the recorded success
+        # instead of minting twice; the HMAC and skew window bound real replay.
+        self.assertEqual(again['token'],first['token']);self.assertEqual(len(self.router.calls),1)
     def test_stale(self):
         with self.assertRaises(Refused):self.request(stamp='939')
     def test_future(self):
@@ -90,9 +92,31 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(Refused) as c:self.request()
         self.assertEqual(c.exception.status,503)
     def test_restart_replay(self):
-        self.request()
+        first=self.request()
         self.broker.nonce_ledger=NonceLedger(Path(self.temp.name)/'replay')
+        again=self.request()
+        self.assertEqual(again['token'],first['token']);self.assertEqual(len(self.router.calls),1)
+    def test_definite_provider_rejection_releases_nonce(self):
+        from agent_sync.github_token_router import RoutingError
+        calls=self.router.calls
+        def fail_once(*args):
+            calls.append(args)
+            if len(calls)==1:raise RoutingError('GitHub request failed, HTTP 401', status=401)
+            return 'MOCK-TOKEN-NOT-A-CREDENTIAL'
+        self.router.token_for=fail_once
         with self.assertRaises(Refused) as c:self.request()
+        self.assertEqual(c.exception.status,502)
+        result=self.request()
+        self.assertEqual(result['token'],'MOCK-TOKEN-NOT-A-CREDENTIAL')
+    def test_unknown_outcome_refuses_same_nonce(self):
+        from agent_sync.github_token_router import RoutingError
+        def boom(*args):raise RoutingError('GitHub transport or response failed')
+        self.router.token_for=boom
+        with self.assertRaises(Refused) as c:self.request()
+        self.assertEqual(c.exception.status,502)
+        self.router.token_for=lambda *args:'MOCK-TOKEN-NOT-A-CREDENTIAL'
+        with self.assertRaises(Refused) as c:self.request()
+        self.assertEqual(c.exception.status,409)
         self.assertEqual(c.exception.status,409)
     def test_no_store_fails_closed(self):
         self.broker.nonce_ledger=None

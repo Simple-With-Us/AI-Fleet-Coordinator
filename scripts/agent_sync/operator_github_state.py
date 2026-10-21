@@ -37,7 +37,7 @@ class NonceLedger:
             os.close(fd)
         with self.connect() as db:
             db.execute(
-                "CREATE TABLE IF NOT EXISTS nonces (seat TEXT, nonce TEXT, expires REAL NOT NULL, PRIMARY KEY(seat,nonce))"
+                "CREATE TABLE IF NOT EXISTS nonces (seat TEXT, nonce TEXT, expires REAL NOT NULL, outcome TEXT NOT NULL, response TEXT, PRIMARY KEY(seat,nonce))"
             )
 
     def connect(self):
@@ -45,18 +45,47 @@ class NonceLedger:
         db.execute("PRAGMA synchronous=FULL")
         return db
 
-    def consume(self, seat, nonce, expires, now, capacity):
+    def begin(self, seat, nonce, expires, now, capacity):
+        """Claim a nonce as pending, or report the recorded outcome of a repeat.
+
+        Returns "fresh", "capacity", or ("repeat", outcome, response).  A
+        "pending"/"outcome_unknown" repeat means the first attempt's result is
+        not known, so the caller must refuse rather than risk a duplicate mint.
+        """
         try:
             with contextlib.closing(self.connect()) as db, db:
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("DELETE FROM nonces WHERE expires < ?", (now,))
-                if db.execute(
-                    "SELECT 1 FROM nonces WHERE seat=? AND nonce=?", (seat, nonce)
-                ).fetchone():
-                    return "replay"
+                row = db.execute(
+                    "SELECT outcome, response FROM nonces WHERE seat=? AND nonce=?",
+                    (seat, nonce),
+                ).fetchone()
+                if row:
+                    return ("repeat", row[0], row[1])
                 if db.execute("SELECT count(*) FROM nonces").fetchone()[0] >= capacity:
                     return "capacity"
-                db.execute("INSERT INTO nonces VALUES (?,?,?)", (seat, nonce, expires))
-            return "ok"
+                db.execute(
+                    "INSERT INTO nonces VALUES (?,?,?,'pending',NULL)", (seat, nonce, expires)
+                )
+            return "fresh"
+        except (sqlite3.Error, OSError):
+            raise LedgerError("replay storage unavailable") from None
+
+    def settle(self, seat, nonce, outcome, response=None):
+        """Record the final outcome of a begun nonce: ok or outcome_unknown."""
+        try:
+            with contextlib.closing(self.connect()) as db, db:
+                db.execute(
+                    "UPDATE nonces SET outcome=?, response=? WHERE seat=? AND nonce=?",
+                    (outcome, response, seat, nonce),
+                )
+        except (sqlite3.Error, OSError):
+            raise LedgerError("replay storage unavailable") from None
+
+    def release(self, seat, nonce):
+        """Free a nonce after a definite refusal, so a corrected request may retry."""
+        try:
+            with contextlib.closing(self.connect()) as db, db:
+                db.execute("DELETE FROM nonces WHERE seat=? AND nonce=?", (seat, nonce))
         except (sqlite3.Error, OSError):
             raise LedgerError("replay storage unavailable") from None

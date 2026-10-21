@@ -79,99 +79,146 @@ class Broker:
         self.rates = {}
 
     def issue(self, path: str, stamp: str, nonce: str, sig: str, body: bytes):
-        if not self.enabled:
-            raise Refused(404, "disabled")
-        match = PATH.fullmatch(path)
-        if not match or len(body) > MAX_BODY:
-            raise Refused(400, "invalid request")
-        seat = match[1]
-        if not isinstance(stamp, str) or not re.fullmatch(r"[0-9]{1,12}", stamp):
-            raise Refused(401, "authentication failed")
-        now = self.clock()
-        if (
-            abs(now - int(stamp)) > MAX_SKEW
-            or not isinstance(nonce, str)
-            or not NONCE.fullmatch(nonce)
-        ):
-            raise Refused(401, "authentication failed")
-        with self.lock:
-            bucket = [t for t in self.rates.get(seat, []) if t > now - 60]
-            if len(bucket) >= MAX_REQUESTS_PER_MINUTE:
-                raise Refused(429, "rate limited")
-            self.rates[seat] = bucket + [now]
-        key = self.key_for(seat)
-        if not isinstance(key, str) or len(key) < 32:
-            raise Refused(401, "authentication failed")
-        if (
-            not isinstance(sig, str)
-            or not re.fullmatch(r"[a-f0-9]{64}", sig)
-            or not hmac.compare_digest(signature(key, path, stamp, nonce, body), sig)
-        ):
-            raise Refused(401, "authentication failed")
-        with self.lock:
-            # Retain until even the future edge of this timestamp is stale.
+        # Exactly one audit row per call, emitted from the finally below so no
+        # return path or exception - validation, authentication, refusal, or
+        # issuance - leaves the trail without a record.
+        seat = None
+        outcome = "refused"
+        extra = {}
+        try:
+            if not self.enabled:
+                raise Refused(404, "disabled")
+            match = PATH.fullmatch(path)
+            if not match or len(body) > MAX_BODY:
+                raise Refused(400, "invalid request")
+            seat = match[1]
+            if not isinstance(stamp, str) or not re.fullmatch(r"[0-9]{1,12}", stamp):
+                raise Refused(401, "authentication failed")
+            now = self.clock()
+            if (
+                abs(now - int(stamp)) > MAX_SKEW
+                or not isinstance(nonce, str)
+                or not NONCE.fullmatch(nonce)
+            ):
+                raise Refused(401, "authentication failed")
+            with self.lock:
+                bucket = [t for t in self.rates.get(seat, []) if t > now - 60]
+                if len(bucket) >= MAX_REQUESTS_PER_MINUTE:
+                    raise Refused(429, "rate limited")
+                self.rates[seat] = bucket + [now]
+            key = self.key_for(seat)
+            if not isinstance(key, str) or len(key) < 32:
+                raise Refused(401, "authentication failed")
+            if (
+                not isinstance(sig, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", sig)
+                or not hmac.compare_digest(signature(key, path, stamp, nonce, body), sig)
+            ):
+                raise Refused(401, "authentication failed")
             if self.nonce_ledger is None:
                 raise Refused(503, "replay storage unavailable")
+            # The ledger serializes itself with BEGIN IMMEDIATE; it does not
+            # need the broker's global lock.
             try:
-                outcome = self.nonce_ledger.consume(
+                state = self.nonce_ledger.begin(
                     seat, nonce, int(stamp) + MAX_SKEW + 1, now, MAX_NONCES
                 )
             except LedgerError:
                 raise Refused(503, "replay storage unavailable") from None
-            if outcome != "ok":
-                raise Refused(
-                    409 if outcome == "replay" else 503,
-                    "replay refused" if outcome == "replay" else "request capacity exceeded",
-                )
-        try:
-            data = json.loads(body, object_pairs_hook=_unique)
-            _bounded(data)
-            if not isinstance(data, dict) or set(data) != {"repo", "permissions"}:
-                raise ValueError()
-            target_parts(data["repo"])
-            requested = permission_set(data["permissions"])
-        except (ValueError, TypeError, KeyError, RoutingError, RecursionError):
-            raise Refused(400, "invalid request") from None
-        policy = self.policy_for(seat)
-        if not isinstance(policy, CallerPolicy):
-            raise Refused(403, "caller not authorized")
-        allowed = policy.repositories.get(data["repo"].casefold())
-        if not isinstance(allowed, Mapping):
-            raise Refused(403, "repository not authorized")
-        ranks = {"read": 1, "write": 2}
-        if any(ranks.get(allowed.get(k), 0) < ranks[v] for k, v in requested.items()):
-            raise Refused(403, "permission not authorized")
-        try:
-            identity = self.bot_identity(policy.app_slug)
-            if (
-                identity["login"] != policy.app_slug + "[bot]"
-                or not isinstance(identity["id"], int)
-                or identity["id"] <= 0
-            ):
-                raise ValueError()
-            token = self.router.token_for(policy.app_slug, data["repo"], requested)
-        except (RoutingError, ValueError, TypeError, KeyError):
-            self.audit(seat=seat, repo=data["repo"], outcome="failed", at=now)
-            raise Refused(502, "token issuance failed") from None
-        self.audit(
-            seat=seat,
-            repo=data["repo"],
-            permissions=requested,
-            app=policy.app_slug,
-            outcome="issued",
-            at=now,
-        )
-        return {
-            "token": token,
-            "repo": data["repo"],
-            "permissions": requested,
-            "app_slug": policy.app_slug,
-            "git_author_name": identity["login"],
-            "git_author_email": str(identity["id"])
-            + "+"
-            + identity["login"]
-            + "@users.noreply.github.com",
-        }
+            if state == "capacity":
+                raise Refused(503, "request capacity exceeded")
+            if state != "fresh":
+                _, prior_outcome, prior_response = state
+                if prior_outcome == "ok" and prior_response:
+                    # Idempotent retry: the first response was lost, so serve
+                    # the recorded success instead of minting again.  Replay
+                    # stays bounded by the HMAC and the timestamp-skew window.
+                    outcome = "served-retry"
+                    return json.loads(prior_response)
+                # pending or outcome_unknown: the first attempt's result is
+                # not known, so refuse rather than risk a duplicate mint.
+                raise Refused(409, "prior outcome unknown; retry with a fresh nonce")
+            # The nonce is now consumed (pending).  Definite refusals release
+            # it; uncertain failures settle it as outcome_unknown.
+            try:
+                data = json.loads(body, object_pairs_hook=_unique)
+                _bounded(data)
+                if not isinstance(data, dict) or set(data) != {"repo", "permissions"}:
+                    raise ValueError()
+                target_parts(data["repo"])
+                requested = permission_set(data["permissions"])
+            except (ValueError, TypeError, KeyError, RoutingError, RecursionError):
+                self.nonce_ledger.release(seat, nonce)
+                raise Refused(400, "invalid request") from None
+            policy = self.policy_for(seat)
+            if not isinstance(policy, CallerPolicy):
+                self.nonce_ledger.release(seat, nonce)
+                raise Refused(403, "caller not authorized")
+            allowed = policy.repositories.get(data["repo"].casefold())
+            if not isinstance(allowed, Mapping):
+                self.nonce_ledger.release(seat, nonce)
+                raise Refused(403, "repository not authorized")
+            ranks = {"read": 1, "write": 2}
+            if any(ranks.get(allowed.get(k), 0) < ranks[v] for k, v in requested.items()):
+                self.nonce_ledger.release(seat, nonce)
+                raise Refused(403, "permission not authorized")
+            try:
+                identity = self.bot_identity(policy.app_slug)
+                if (
+                    identity["login"] != policy.app_slug + "[bot]"
+                    or not isinstance(identity["id"], int)
+                    or identity["id"] <= 0
+                ):
+                    raise ValueError()
+                token = self.router.token_for(policy.app_slug, data["repo"], requested)
+            except Exception as exc:
+                if not _classifiable(exc):
+                    self.nonce_ledger.settle(seat, nonce, "outcome_unknown")
+                    raise
+                status = getattr(exc, "status", None)
+                if status in (401, 403, 429):
+                    # Definite provider rejection: the mint never happened, so
+                    # a corrected request may reuse the nonce.
+                    self.nonce_ledger.release(seat, nonce)
+                    raise Refused(502, "token issuance refused") from None
+                self.nonce_ledger.settle(seat, nonce, "outcome_unknown")
+                if status == 408 or (isinstance(status, int) and status >= 500):
+                    raise Refused(
+                        503, "token issuance uncertain; retry with a fresh nonce"
+                    ) from None
+                raise Refused(502, "token issuance failed") from None
+            response = {
+                "token": token,
+                "repo": data["repo"],
+                "permissions": requested,
+                "app_slug": policy.app_slug,
+                "git_author_name": identity["login"],
+                "git_author_email": str(identity["id"])
+                + "+"
+                + identity["login"]
+                + "@users.noreply.github.com",
+            }
+            self.nonce_ledger.settle(seat, nonce, "ok", json.dumps(response))
+            outcome = "issued"
+            extra = {
+                "repo": data["repo"],
+                "permissions": requested,
+                "app": policy.app_slug,
+            }
+            return response
+        finally:
+            # Auditing must never mask the request's own outcome.
+            try:
+                self.audit(seat=seat, outcome=outcome, at=self.clock(), **extra)
+            except Exception:
+                pass
+
+
+def _classifiable(exc):
+    """The router boundary is duck-typed; both RoutingError trees are accepted."""
+    return (
+        isinstance(exc, (ValueError, TypeError, KeyError)) or type(exc).__name__ == "RoutingError"
+    )
 
 
 def _bounded(value, _depth=0, _budget=None):

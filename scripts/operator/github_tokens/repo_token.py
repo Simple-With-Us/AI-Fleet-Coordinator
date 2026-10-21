@@ -26,7 +26,9 @@ API = "https://api.github.com"
 
 
 class RoutingError(Exception):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 def secret_names(slug):
@@ -136,7 +138,7 @@ def github_call(method, path, bearer, body=None):
             return json.load(r)
     except urllib.error.HTTPError as e:
         # Never include response bodies or headers in exceptions/logs.
-        raise RoutingError("GitHub request failed, HTTP " + str(e.code)) from None
+        raise RoutingError("GitHub request failed, HTTP " + str(e.code), status=e.code) from None
     except (OSError, ValueError):
         raise RoutingError("GitHub transport or response failed") from None
 

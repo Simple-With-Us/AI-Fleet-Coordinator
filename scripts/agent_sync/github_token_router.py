@@ -26,7 +26,9 @@ API = "https://api.github.com"
 
 
 class RoutingError(Exception):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 def secret_names(slug):
