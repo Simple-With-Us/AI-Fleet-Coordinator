@@ -48,10 +48,21 @@ if [ "${1:-}" = "list" ]; then
   if [ "${STUB_INSTALLED:-1}" = "1" ]; then printf '%s\\n' "${STUB_NAME:-Pin Coding Note}"; fi
   exit 0
 fi
+input_file=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -i) input_file="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
 n=0
 if [ -f "$STUB_COUNTER" ]; then n=$(cat "$STUB_COUNTER"); fi
 n=$((n+1))
 printf '%s' "$n" > "$STUB_COUNTER"
+if [ "${STUB_RECORD_INPUT:-0}" = "1" ] && [ -n "$input_file" ]; then
+  #  a record-per-line record, so a test can assert attempt N passed input M
+  printf '%s\\n' "$(cat "$input_file" 2>/dev/null || printf '')" >> "$STUB_COUNTER.inputs"
+fi
 if [ "${STUB_HANG:-0}" = "1" ]; then sleep 30; exit 0; fi
 if [ "${STUB_FAIL_FIRST:-0}" -gt 0 ] && [ "$n" -le "${STUB_FAIL_FIRST:-0}" ]; then exit 1; fi
 exit 0
@@ -80,7 +91,7 @@ exit 0
 """
 
 HARNESS = """set -uo pipefail
-TITLE="AFC test note"
+TITLE="${HARNESS_TITLE:-AFC test note}"
 MODE="${HARNESS_MODE:-update}"
 WANT_PIN="${HARNESS_WANT_PIN:-0}"
 APPLE_NOTES_PIN="${HARNESS_APPLE_NOTES_PIN:-1}"
@@ -208,6 +219,8 @@ class PinDecisionTests(unittest.TestCase):
             self.knob_reads = len(marker.read_text()) if marker.exists() else 0
             opened = Path(str(counter) + ".open")
             self.opens = opened.read_text().splitlines() if opened.exists() else []
+            inputs = Path(str(counter) + ".inputs")
+            self.inputs = inputs.read_text().splitlines() if inputs.exists() else []
             return p, runs
 
     def test_a_working_shortcut_pins_the_note_on_the_first_try(self):
@@ -411,6 +424,41 @@ class PinDecisionTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("unpinned: yes", p.stdout)
         self.assertEqual(runs, 1)
+
+    def test_a_retry_falls_back_to_a_stripped_prefix_when_the_title_starts_with_one(self):
+        """A note whose user-given title starts with a non-alphanumeric run (an emoji pin glyph,
+        a bullet, a leading space) is the same note once that run is dropped, because Apple
+        Notes' contains-match is a substring check.  The first attempt passes the full title;
+        the retry rewrites the input to the stripped-prefix form so the Shortcut's Find Notes
+        action can return the same note.  This avoids the only path that has worked so far for
+        those notes:  --pin, which steals focus and pops a note picker on the owner's screen.
+        """
+        title = "[FLEET, Oracle] \u2b50\ufe0f Background Jobs Master List"
+        p, runs = self.run_block(HARNESS_TITLE=title, STUB_FAIL_FIRST="1", STUB_RECORD_INPUT="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pinned: yes", p.stdout)
+        self.assertEqual(runs, 2, "the failed first attempt was not retried")
+        self.assertEqual(
+            self.inputs,
+            [title, "Background Jobs Master List"],
+            "attempt 1 should pass the full title and attempt 2 the stripped-prefix form",
+        )
+
+    def test_a_retry_keeps_the_full_title_when_there_is_no_leading_non_alnum_run(self):
+        """The stripped-prefix rewrite is a no-op when the title starts with an alphanumeric
+        character, so the input the Shortcut sees is identical on both attempts and a reviewer
+        can read the diff against a title that has no prefix and see no behaviour change.
+        """
+        p, runs = self.run_block(
+            HARNESS_TITLE="AFC test note", STUB_FAIL_FIRST="1", STUB_RECORD_INPUT="1"
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(runs, 2, "the failed first attempt was not retried")
+        self.assertEqual(
+            self.inputs,
+            ["AFC test note", "AFC test note"],
+            "a title with no leading non-alnum run should not be rewritten on retry",
+        )
 
 
 if __name__ == "__main__":

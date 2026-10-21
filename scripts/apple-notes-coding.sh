@@ -359,9 +359,29 @@ _run_note_shortcut() {  # $1 = shortcut name
   #  Code 5:  it could not be started,  which is a different fault from a failed run and needs
   #  its own message (AFC-431)  —  reporting it as "the run failed" hides the action that fixes it.
   _ensure_shortcuts_running || return 5
-  local tmp attempt attempts
+  local tmp attempt attempts stripped
   tmp="$(mktemp).txt"
   printf '%s' "$TITLE" > "$tmp"
+  #  A note whose user-given title starts with a non-alphanumeric run (an
+  #  emoji pin glyph is the real case observed 2026-10-20, e.g. a title whose
+  #  first char is U+2B50 U+FE0F instead of an alphanumeric) is the same
+  #  note once that run is dropped, because the Find Notes action matches
+  #  by *contains* against the note's name and the drop is a substring of
+  #  the original.  Coding-note titles in this helper come out as
+  #  `[TEAM_KEY, Agent] Topic`, so the bracketed prefix is its own pattern;
+  #  matching Apple Notes' contains-match against the NOTE'S NAME succeeds
+  #  when the retry passes the bare topic, which is the bracketed prefix
+  #  and any leading non-alnum run stripped away.  Strip is a sed one-liner
+  #  so it works on bash 3.2 (macOS) and POSIX sed alike;  it is no-op when
+  #  nothing matches, so a retry only rewrites $tmp when there is something
+  #  meaningful to fall back to.  An empty strip means the title was
+  #  all-non-alnum, and that is its own failure mode that the caller
+  #  surfaces through the regular `shortcut run failed` path rather than a
+  #  third attempt that has nothing to pass.
+  stripped="$(printf '%s' "$TITLE" | sed -E '
+    s/^\[[^]]*\][[:space:]]+//
+    s/^[^[:alnum:]]+//
+  ')"
   # A just-written note may not be visible to the Shortcut's Find step yet, and
   # that miss fails the run (observed 2026-10-20).  Retry once before giving up,
   # so a timing race does not leave a coding note unpinned.  A miss can also pop
@@ -380,6 +400,15 @@ _run_note_shortcut() {  # $1 = shortcut name
     if [[ "$attempt" -ge 2 ]] || ! _pin_retry_on; then break; fi
     attempt=2
     sleep 3
+    #  On retry, fall back to the stripped-prefix form so a note whose title
+    #  begins with an emoji or other non-alphanumeric run can still be found.
+    #  Skip the rewrite when stripping produced an empty string or the same
+    #  string (no leading run was present), so a title with no prefix keeps
+    #  the same input on both attempts and the retry does not silently change
+    #  what the Shortcut sees.
+    if [[ -n "$stripped" && "$stripped" != "$TITLE" ]]; then
+      printf '%s' "$stripped" > "$tmp"
+    fi
   done
   rm -f "$tmp"
   return 1

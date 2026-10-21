@@ -161,7 +161,7 @@ class NotesToolTests(McpHarness):
             mock.patch.object(
                 N, "direct_available", return_value=Path("/fake/apple-notes-coding.sh")
             ),
-            mock.patch.object(N.subprocess, "run", run),
+            mock.patch.object(N, "_run_helper", run),
         ):
             result = self.session().call(
                 "notes_create", {"title": "[AFC, Claude] direct", "markdown": "the body text"}
@@ -180,7 +180,7 @@ class NotesToolTests(McpHarness):
             mock.patch.object(
                 N, "direct_available", return_value=Path("/fake/apple-notes-coding.sh")
             ),
-            mock.patch.object(N.subprocess, "run", run),
+            mock.patch.object(N, "_run_helper", run),
         )
 
     def test_the_direct_path_applies_the_agent_title_rule_the_listener_applies(self):
@@ -295,7 +295,7 @@ class NotesToolTests(McpHarness):
 
         session = self.session()
         args = {"title": "[AFC, Claude] hangs", "markdown": "x", "request_id": "timeout-request-01"}
-        with self.direct(hang)[1], mock.patch.object(N.subprocess, "run", hang):
+        with self.direct(hang)[1], mock.patch.object(N, "_run_helper", hang):
             first = self.assert_tool_error(session.call("notes_create", args), "outcome_unknown")
         self.assertIn("may or may not", first["message"])
         run, a, b = self.direct()
@@ -319,7 +319,7 @@ class NotesToolTests(McpHarness):
             "markdown": "x",
             "request_id": "interrupt-request-9",
         }
-        with self.direct(interrupted)[1], mock.patch.object(N.subprocess, "run", interrupted):
+        with self.direct(interrupted)[1], mock.patch.object(N, "_run_helper", interrupted):
             with self.assertRaises(AssertionError, msg="the interrupt ends the server"):
                 session.call("notes_create", args)
         session = self.session()

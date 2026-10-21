@@ -24,6 +24,13 @@ final class FleetStore: ObservableObject {
     @Published private(set) var generatedAt: Date?
     @Published private(set) var engineRoot: URL?
     @Published private(set) var commandLine: String = ""
+    /// The check time the run shares,  which is one timestamp for nearly every rule.
+    ///
+    /// The engine checks every rule in one pass,  so every cell would otherwise carry
+    /// the same age and the grid would read as ninety copies of one number.  The shared
+    /// time goes beside the table once,  and a cell shows an age only when it is the
+    /// exception:  a rule served from the cache and checked earlier than the rest.
+    @Published private(set) var commonCheckedAt: Date?
 
     private let location: EngineLocation?
     private let manifest: SeatManifest?
@@ -156,6 +163,7 @@ final class FleetStore: ObservableObject {
             results = []
             summary = nil
             generatedAt = nil
+            commonCheckedAt = nil
             phase = .failed(run.failure ?? "the engine did not answer")
             rebuild()
             return
@@ -163,8 +171,25 @@ final class FleetStore: ObservableObject {
         results = envelope.results
         summary = envelope.summary
         generatedAt = FleetTime.parse(envelope.generatedAt)
+        commonCheckedAt = Self.commonCheckTime(in: results)
         phase = .loaded
         rebuild()
+    }
+
+    /// The check time the run shares,  which is the one most rules carry.
+    ///
+    /// The engine checks every rule in one pass,  so the shared time is the time the
+    /// run happened.  A rule served from the cache was checked earlier,  and its cell
+    /// is the exception the grid calls out.
+    static func commonCheckTime(in results: [CheckResult]) -> Date? {
+        var counts: [Date: Int] = [:]
+        for result in results {
+            guard let checkedAt = FleetTime.parse(result.checkedAt) else { continue }
+            counts[checkedAt, default: 0] += 1
+        }
+        return counts.max { lhs, rhs in
+            lhs.value == rhs.value ? lhs.key < rhs.key : lhs.value < rhs.value
+        }?.key
     }
 
     /// Rebuild the grid from what is known.
