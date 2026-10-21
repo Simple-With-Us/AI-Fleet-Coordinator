@@ -40,7 +40,7 @@ and kimi, and `verify` the same.
 copilot, opencode and fx (AFC-387).  copilot is a fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json
 (version 1, hooks.PreToolUse, matcher Bash, the fleet hook with --format claude and timeoutSec 5); this tool never
 edits ~/.copilot/settings.json, and whether Copilot fires a preToolUse hook at all is UNVERIFIED on this Mac, so the
-first install is owner-gated and `verify copilot` ends with a SKIP for the live proof.  opencode is a
+live proof is owner-gated (the CLI is installed, and Jay starts a new session) and `verify copilot` ends with a SKIP for it.  opencode is a
 local TypeScript plugin in the stable dir (opencode-plugin/fleet-lane-guard.ts) listed by absolute path in the
 plugin array of ~/.config/opencode/opencode.json; it inspects tool.execute.before and denies through
 permission.ask, and whether permission.ask is reached for a denied call is UNVERIFIED.  fx has NO hook surface at
@@ -2632,7 +2632,7 @@ NEXT_STEPS: dict[str, str] = {
     "kimi": "start a new Kimi Code session, ask it to run `ps`, and expect a refusal",
     "minimax": "start a new MiniMax Code session, ask it to run `ps`, and expect a refusal (a local plugin is enabled by "
     "default: nothing to install or approve)",
-    "copilot": "OWNER STEP (first install): start a new Copilot CLI session, ask it to run a process listing, and "
+    "copilot": "OWNER STEP (live proof): the CLI is installed, so start a new Copilot CLI session, ask it to run a process listing, and "
     "expect a refusal.  No live preToolUse firing is recorded on this Mac, so until that proof exists the guard is "
     "written but UNVERIFIED",
     "opencode": "OWNER STEP: start a new OpenCode session, ask it to run a process listing, and expect a refusal.  "
