@@ -23,22 +23,9 @@ PRs and comments are authored as whoever the GitHub token belongs to (a scoped f
 on the owner's account, PR write only). Seats cannot push, merge, or resolve threads through this
 service; those stay with the swu-echo app.
 
-## Expansion: all of GitHub, tiered (owner direction 2026-10-21)
+## Scope (owner direction 2026-10-21)
 
-The relay grows from PR actions to every GitHub action seats need, so seats stop holding App
-ids/secrets and stop handling 1-hour installation-token expiry: the relay mints and refreshes
-tokens itself. Non-PR actions are registered in policy but REFUSED until the owner picks the
-backing credential per tier; nothing holds GITHUB_UNIVERSAL_PAT or any wider token yet.
-
-| Tier | Actions | Backing credential | Status |
-| --- | --- | --- | --- |
-| 1 | open_pr, edit_pr, reply_thread, comment_pr | Owner's scoped PR-only token (env GITHUB_TOKEN) | live |
-| 2 | push, merge_pr, workflow_dispatch | Relay-held App key per seat app (Infisical); relay mints + caches installation tokens (1 h, refresh 5 min early) | registered, disabled |
-| 3 | repo_admin | Owner-chosen admin credential, TBD | registered, disabled |
-
-Relay-wide enable switch: PR_RELAY_ENABLED_ACTIONS (comma list) intersects with each seat's own
-allowlist; both must name an action, and a tier without an implementation fails closed even when
-enabled. Per-seat policy, rate caps and the audit log apply unchanged to every tier.
+The relay covers only what seat bot tokens cannot do since the PR:read change:  open_pr, edit_pr, inline review-thread replies and PR comments - actions that must be authored as the owner so Kody reviews them.  Every other GitHub task (push, merge, workflows, admin) stays on each bot's own App token;  the relay never holds App keys or wider tokens.
 
 ## MCP wrapper
 

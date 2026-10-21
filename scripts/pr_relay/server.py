@@ -82,16 +82,12 @@ class Relay:
         return 200, result
 
     def _dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
-        if action not in SeatPolicy.ALL_ACTIONS:
+        if action not in SeatPolicy.VALID_ACTIONS:
             raise ValueError(f"unknown action {action!r}")
         repo = _text(repo, "repo")
         denial = self.policy.authorize(seat, action, repo)
         if denial:
             raise PolicyDenied(denial)
-        if action not in SeatPolicy.VALID_ACTIONS:
-            # Enabled in policy but not implemented yet:  fail closed.  Tier 2/3
-            # actions land only with their backing credential and implementation.
-            raise ValueError(f"action {action!r} is not implemented yet")
         number = args.get("number")
         if action == "open_pr":
             return self.client.open_pr(
@@ -174,11 +170,9 @@ def make_handler(relay: Relay):
 
 def from_env() -> Relay:
     try:
-        enabled = os.environ.get("PR_RELAY_ENABLED_ACTIONS", "")
         policy = SeatPolicy(
             os.environ.get("PR_RELAY_SEATS_JSON", ""),
             rate_per_hour=int(os.environ.get("PR_RELAY_RATE_PER_HOUR", "120")),
-            enabled_actions=[a.strip() for a in enabled.split(",") if a.strip()] or None,
         )
     except PolicyError as exc:
         raise SystemExit(f"pr-relay config: {exc}") from exc

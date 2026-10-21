@@ -292,35 +292,15 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestActionTiers(unittest.TestCase):
-    def test_tier2_actions_are_refused_until_enabled_relay_wide(self):
-        seats = json.dumps(
-            {
-                "swu-echo": {
-                    "token": SEAT_TOKEN,
-                    "actions": ["open_pr", "push"],
-                    "repos": ["Simple-With-Us/*"],
-                }
-            }
-        )
-        policy = SeatPolicy(seats)
-        denial = policy.authorize("swu-echo", "push", "Simple-With-Us/x")
-        self.assertIn("not enabled relay-wide", denial)
-        policy_on = SeatPolicy(seats, enabled_actions=["open_pr", "push"])
-        self.assertIsNone(policy_on.authorize("swu-echo", "push", "Simple-With-Us/x"))
-
-    def test_unregistered_action_is_rejected_at_config(self):
+class TestNonPrActionsRejected(unittest.TestCase):
+    def test_push_and_admin_are_not_valid_actions(self):
         with self.assertRaises(PolicyError):
             SeatPolicy(
-                json.dumps(
-                    {
-                        "seat": {
-                            "token": "x" * 16,
-                            "actions": ["delete_repo"],
-                            "repos": ["a/b"],
-                        }
-                    }
-                )
+                json.dumps({"seat": {"token": "x" * 16, "actions": ["push"], "repos": ["a/b"]}})
+            )
+        with self.assertRaises(PolicyError):
+            SeatPolicy(
+                json.dumps({"seat": {"token": "x" * 16, "actions": ["merge_pr"], "repos": ["a/b"]}})
             )
 
 
