@@ -211,6 +211,13 @@ jobs:
           fi
           if [ "$requester" = "jaywedgeworth22" ] || [ "$requester" = "sentry" ]; then
             echo "::notice::$author is exempt from the one-run-per-bot rule"
+            marker="swu-autofix-run: bot=$requester"
+            # Exempt runs still leave their run-id marker:  the auto-merge gate
+            # reads these to hold a merge while the run is in flight (owner rule
+            # 2026-10-21).
+            gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+              -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  Owner/sentry request:  exempt from the per-bot cap (owner rule 2026-10-20)." \
+              > /dev/null
             exit 0
           fi
           marker="swu-autofix-run: bot=$requester"
