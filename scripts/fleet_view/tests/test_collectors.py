@@ -6,6 +6,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+import unittest.mock
 from datetime import UTC, datetime, timedelta
 
 from fleet_view import collectors
@@ -73,6 +74,26 @@ class LaneTests(unittest.TestCase):
         )
         self.assertEqual(section.state, "UNKNOWN")
         self.assertEqual(section.items, ())
+
+    def test_unreadable_lane_tree_is_unknown_never_ok(self):
+        index = collectors.SeatIndex(SEATS)
+        real_iterdir = pathlib.Path.iterdir
+
+        def fake_iterdir(self):
+            if self.name == "Locked-Repo":
+                raise PermissionError(13, "Permission denied")
+            return real_iterdir(self)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / "Locked-Repo").mkdir()
+            (pathlib.Path(tmp) / "AI-Fleet-Coordinator" / "claude-x").mkdir(parents=True)
+            with unittest.mock.patch.object(pathlib.Path, "iterdir", fake_iterdir):
+                section = collectors.collect_lanes(pathlib.Path(tmp), index, git_runner, NOW)
+        # The tree that could not be listed is named, and the section fails
+        # closed:  an unreadable tree is not an empty one.
+        self.assertEqual(section.state, "UNKNOWN")
+        self.assertIn("Locked-Repo", section.reason)
+        self.assertEqual(len(section.items), 1)
 
 
 class BlockerTests(unittest.TestCase):

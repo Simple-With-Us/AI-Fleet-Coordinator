@@ -135,21 +135,31 @@ def collect_lanes(
 
     Read only.  A lane whose git calls fail keeps its record with state
     ``UNKNOWN``;  a lanes root that cannot be listed fails the whole section.
+    A tree that cannot be listed is named and fails the section closed, so an
+    unreadable tree never reads as an empty one.
     """
     try:
         repo_dirs = sorted(p for p in lanes_root.iterdir() if p.is_dir())
     except OSError as exc:
         return Section(state="UNKNOWN", reason="lanes root unreadable: %s" % exc)
     items: list = []
+    failures: list = []
     for repo_dir in repo_dirs:
         if repo_dir.name.startswith("_"):
             continue  # tool-owned trees (_codex) are not seat lanes
         try:
             lane_dirs = sorted(p for p in repo_dir.iterdir() if p.is_dir())
-        except OSError:
+        except OSError as exc:
+            failures.append("lanes unreadable for %s: %s" % (repo_dir.name, exc))
             continue
         for lane_dir in lane_dirs:
             items.append(_lane_record(repo_dir.name, lane_dir, index, runner, now))
+    if failures:
+        return Section(
+            state="UNKNOWN",
+            reason="%d lane(s); %s" % (len(items), "; ".join(failures)),
+            items=tuple(items),
+        )
     return Section(state="OK", reason="%d lane(s)" % len(items), items=tuple(items))
 
 
