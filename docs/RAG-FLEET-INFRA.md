@@ -423,6 +423,30 @@ rate-limited Pushover path on FAIL) now calls `fleet-qdrant-health.sh`, which fa
 The sentinel is the dead-man switch for the Oracle routine: if BotFleet stops running it, the
 box pages.  No credential leaves the box for this check.
 
+### The ingest lock: the nightly has priority
+
+The sheet sync and the nightly pass share one lock file (`state/ingest.lock`), because
+`save_state()` writes one shared state file, so two runs must not interleave.
+
+A partial refresh — the sheet sync's `recall ingest --source doc` — may hold that lock for its
+whole budget, and the sheet sync allows it 90 minutes.  The nightly is the only run that writes
+the sentinel, so it is the only run that can attest health, and therefore the only run that must
+not be locked out.  Before this, the two were the same case: the nightly exited 3 the moment the
+partial took the lock, the sentinel went stale, and `fleet-qdrant-health.sh` paged for a night
+that never ran.
+
+The command line decides which run it is, and gives the wait accordingly:
+
+- a full `recall ingest --all --prune` with no `--since` and no `--limit` is the nightly, and
+  waits up to 100 minutes (6000 s) for the lock, which covers the longest partial run the fleet
+  schedules;
+- every other invocation is a partial refresh and fails at once with exit 3, because the sheet
+  sync's ingest is best-effort and a long wait there would hold its own budget open.
+
+`--lock-timeout SECONDS` overrides both, and `--lock-timeout 0` makes even the nightly fail at
+once, which is what the tests use.  The wait is polled, never blocking forever, so a lock held by
+a hung run cannot hang the nightly.
+
 ## Observability (added 2026-09-10)
 
 Prompted by a Sentry review that found **zero** instrumentation in this package (the only "rag"
