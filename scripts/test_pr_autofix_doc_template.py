@@ -30,7 +30,7 @@ def fail(msg):
 
 def template_yaml():
     text = DOC.read_text()
-    for fence in re.findall(r"```(?:yaml|yml)?\n(.*?)```", text, re.S):
+    for fence in re.findall(r"```(?:yaml|yml)?\n(.*?)```", text, re.DOTALL):
         if "pr-autofix-reusable.yml@<sha>" in fence:
             return fence
     fail("docs/PR-AUTOFIX.md has no caller template fence naming pr-autofix-reusable.yml@<sha>")
