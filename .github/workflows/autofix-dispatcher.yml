@@ -1,0 +1,57 @@
+name: Autofix Dispatcher
+
+# Trial (owner 2026-10-21): once an hour, start one autofix run for the oldest open
+# fleet PR with review findings that autofix has not attempted.  The run itself is the
+# repo's existing pr-autofix lane;  this workflow only posts the @pr-autofix tag as
+# swu-echo[bot], so the reusable's per-PR marker stays the single tried record.
+# Disabled unless the org variable SWU_AUTOFIX_DISPATCHER_ENABLED is 'true';  a manual
+# dispatch always runs and defaults to --dry-run.
+
+on:
+  schedule:
+    - cron: '37 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Pick and report without tagging or tallying
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autofix-dispatcher
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: vars.SWU_AUTOFIX_DISPATCHER_ENABLED == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/autofix-dispatcher
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app
+        with:
+          app-id: ${{ vars.SWU_AUTOFIX_GITHUB_APP_ID }}
+          private-key: ${{ secrets.SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY }}
+          owner: Simple-With-Us
+
+      - name: Dispatch one untried PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          if [ "${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}" = "true" ]; then
+            node scripts/autofix-dispatcher/dispatcher.mjs --dry-run
+          else
+            node scripts/autofix-dispatcher/dispatcher.mjs
+          fi

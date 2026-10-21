@@ -43,12 +43,22 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "apple-notes-coding.sh"
+#  the lock wait the script defaults to, read from the script so the two cannot drift apart.  A missing or
+#  reshaped default leaves None here instead of failing the import, so only the test that needs it fails, and
+#  it says why.  The pattern ignores the quoting around the value.
+_LOCK_WAIT_MATCH = re.search(
+    r"^NOTES_PIN_LOCK_WAIT_S=[\"']?\$\{NOTES_PIN_LOCK_WAIT_S:-(\d+)\}[\"']?\s*$",
+    SCRIPT.read_text(),
+    re.MULTILINE,
+)
+LOCK_WAIT_S = int(_LOCK_WAIT_MATCH.group(1)) if _LOCK_WAIT_MATCH else None
 
 #  the stub records every `shortcuts run` in this file, so a test can count the attempts
 STUB = """#!/bin/bash
@@ -71,6 +81,10 @@ printf '%s' "$n" > "$STUB_COUNTER"
 if [ "${STUB_RECORD_INPUT:-0}" = "1" ] && [ -n "$input_file" ]; then
   #  a record-per-line record, so a test can assert attempt N passed input M
   printf '%s\\n' "$(cat "$input_file" 2>/dev/null || printf '')" >> "$STUB_COUNTER.inputs"
+fi
+if [ -n "${STUB_LOCK_MODE_FILE:-}" ]; then
+  #  the lock directory's mode while this run holds it:  drwx------ is owner-only
+  ls -ld "$NOTES_PIN_LOCK_DIR" | cut -c1-10 > "$STUB_LOCK_MODE_FILE"
 fi
 if [ "${STUB_HOLD:-0}" = "1" ]; then
   #  a run that lasts a moment, so two overlapping runs can be seen:  the second one to start finds the marker
@@ -107,6 +121,7 @@ exit 0
 """
 
 HARNESS = """set -uo pipefail
+[ -z "${HARNESS_UMASK:-}" ] || umask "$HARNESS_UMASK"
 TITLE="${HARNESS_TITLE:-AFC test note}"
 MODE="${HARNESS_MODE:-update}"
 APPLE_NOTES_PIN="${HARNESS_APPLE_NOTES_PIN:-1}"
@@ -589,6 +604,118 @@ class PinDecisionTests(unittest.TestCase):
         self.assertIn("pin skipped: another pin or unpin run held the lock", kept.stderr)
         self.assertTrue(self.lock_left)
 
+    def test_every_pin_skipped_reason_fits_the_consumers_cap_with_its_tail(self):
+        """agent_sync.notes keeps 200 characters of the reason, and the tail says the note was saved.
+
+        A reason that runs over loses exactly that tail, so a caller could not tell a saved, unpinned note from a
+        failed write.  Every `pin skipped:` line of the real script is rendered with the longest outcome, a
+        three-digit lock wait and a 100-character lock path (a long HOME), then read back through the consumer."""
+        sys.path.insert(0, str(SCRIPT.parent))
+        from agent_sync import notes as N
+
+        text = SCRIPT.read_text()
+        start = text.index('case "$_pin_rc" in\n  1)')
+        block = text[start : text.index("\nesac\n", start)]
+        lock_path = (
+            "/Users/" + "u" * 20 + "/Library/Caches/apple-notes-coding/" + "p" * 31 + "/pin.lock"
+        )
+        self.assertGreaterEqual(len(lock_path), 100)
+        reasons = re.findall(r'echo "pin skipped: ([^"]*)" >&2', block)
+        #  The count is exact, from two sources the reason regex does not share:  each branch of the case block
+        #  (a number or the default) carries exactly one reason, and the text "pin skipped:" appears once per
+        #  reason.  A branch rewritten so the regex no longer matches it, or a new branch whose reason has a
+        #  different echo shape, changes one side of the comparison and fails the test, instead of its reason
+        #  silently escaping the length check.
+        branches = re.findall(r"^  (?:[0-9]+|\*)\)\s*$", block, re.MULTILINE)
+        self.assertGreaterEqual(len(branches), 8, "a branch is missing from the case block")
+        self.assertEqual(
+            len(reasons), len(branches), "a case branch has no reason the length check can see"
+        )
+        self.assertEqual(
+            block.count("pin skipped:"),
+            len(reasons),
+            "a pin skipped line has an echo form the check misses",
+        )
+        for template in reasons:
+            reason = (
+                template.replace("$_pin_outcome", "note saved unpinned")
+                .replace("${NOTES_PIN_LOCK_DIR}", lock_path)
+                .replace("${NOTES_PIN_LOCK_WAIT_S}", "999")
+            )
+            with self.subTest(reason=reason[:60]):
+                self.assertLessEqual(len(reason), 200, reason)
+                self.assertTrue(reason.endswith("note saved unpinned"), reason)
+                carried = N._pin_skipped(f"pin skipped: {reason}\n".encode())
+                self.assertEqual(carried, reason, "the consumer cut the reason off")
+
+    def test_a_lock_directory_that_cannot_be_made_is_named_as_that(self):
+        """Not a busy lock:  the parent of the lock directory is a file, so no run holds anything."""
+        for mode, expect in (("update", 0), ("pin", 4)):
+            with self.subTest(mode=mode):
+                with tempfile.TemporaryDirectory() as tmp:
+                    blocker = Path(tmp) / "blocker"
+                    blocker.write_text("not a directory")
+                    p, runs = self.run_block(
+                        HARNESS_MODE=mode, NOTES_PIN_LOCK_DIR=str(blocker / "pin.lock")
+                    )
+                self.assertEqual(p.returncode, expect, p.stdout + p.stderr)
+                self.assertIn("pin skipped: the pin lock directory", p.stderr)
+                self.assertIn("could not be made", p.stderr)
+                self.assertNotIn("another pin or unpin run held the lock", p.stderr)
+                self.assertEqual(runs, 0)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can write into an unwritable directory")
+    def test_an_unwritable_lock_parent_is_skipped_at_once_and_named_as_that(self):
+        """Not contention:  mkdir fails with no lock there, so waiting the full lock wait would only stall."""
+        for mode, expect in (("update", 0), ("pin", 4)):
+            with self.subTest(mode=mode):
+                with tempfile.TemporaryDirectory() as tmp:
+                    parent = Path(tmp) / "readonly"
+                    parent.mkdir(mode=0o500)
+                    try:
+                        started = time.monotonic()
+                        #  real sleeps, so a wait that is not skipped would take the whole lock wait
+                        p, runs = self.run_block(
+                            HARNESS_MODE=mode,
+                            HARNESS_REAL_SLEEP="1",
+                            NOTES_PIN_LOCK_DIR=str(parent / "pin.lock"),
+                        )
+                        elapsed = time.monotonic() - started
+                    finally:
+                        parent.chmod(0o700)
+                self.assertEqual(p.returncode, expect, p.stdout + p.stderr)
+                self.assertIn("pin skipped: the pin lock directory", p.stderr)
+                self.assertIn("could not be made", p.stderr)
+                self.assertNotIn("another pin or unpin run held the lock", p.stderr)
+                #  bounded by the wait that was skipped, not a fixed number of seconds, so a loaded runner
+                #  cannot trip it:  a run that waited would take at least the whole wait
+                self.assertIsNotNone(
+                    LOCK_WAIT_S, "the NOTES_PIN_LOCK_WAIT_S default in the script has a new shape"
+                )
+                self.assertLess(elapsed, LOCK_WAIT_S, "the lock wait was not skipped")
+                self.assertEqual(runs, 0)
+
+    def test_unpin_names_a_lock_directory_that_cannot_be_made(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / "blocker"
+            blocker.write_text("not a directory")
+            p, runs = self.run_unpin_block(
+                HARNESS_MODE="unpin",
+                STUB_NAME="Unpin Coding Note",
+                NOTES_PIN_LOCK_DIR=str(blocker / "pin.lock"),
+            )
+        self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
+        self.assertIn("could not be made", p.stderr)
+        self.assertEqual(runs, 0)
+
+    def test_the_lock_directory_is_private_to_the_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "lock-mode"
+            #  a permissive umask is the case that matters:  mkdir -m must not depend on it
+            p, runs = self.run_block(STUB_LOCK_MODE_FILE=str(record), HARNESS_UMASK="000")
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertEqual(record.read_text().strip(), "drwx------")
+
     def test_a_lock_that_keeps_coming_back_stale_is_given_up_on(self):
         """Takeovers take no time, so the wait counter alone never stopped a lock recreated dead every time."""
         source = SCRIPT.read_text()
@@ -603,7 +730,7 @@ class PinDecisionTests(unittest.TestCase):
                 ("shortcuts", STUB),
                 ("pgrep", PGREP_STUB),
                 ("open", OPEN_STUB),
-                ("mv", f'#!/bin/bash\n{real_mv} "$@" && mkdir "$1"\n'),
+                ("mv", f'#!/bin/bash\n{real_mv} "$@" && mkdir -m 700 -- "$1"\n'),
             ):
                 side = bindir / name
                 side.write_text(body)
@@ -633,7 +760,8 @@ class PinDecisionTests(unittest.TestCase):
             )
             self.assertLess(time.monotonic() - started, 20, "the lock loop did not give up")
             self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
-            self.assertIn("pin skipped: another pin or unpin run held the lock", p.stderr)
+            self.assertIn("pin skipped: the pin lock kept coming back stale", p.stderr)
+            self.assertNotIn("another pin or unpin run held the lock", p.stderr)
             self.assertFalse((Path(tmp) / "counter").exists(), "the Shortcut ran without the lock")
 
     def test_two_pins_at_once_never_overlap(self):
