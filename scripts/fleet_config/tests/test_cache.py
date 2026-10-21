@@ -17,8 +17,6 @@ from unittest import mock
 
 from fleet_config import cache
 from fleet_config.checks import build_result
-from dataclasses import replace
-
 from fleet_config.types import (
     CheckState,
     CheckType,
@@ -26,7 +24,6 @@ from fleet_config.types import (
     ExpectedState,
     ObservedState,
     ReasonCode,
-    UncoveredSurface,
 )
 
 from ._fake import FleetTestCase, make_manifest, make_rule
