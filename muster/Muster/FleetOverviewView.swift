@@ -18,6 +18,8 @@ struct FleetOverviewView: View {
                     .tabItem { Label("Fleet Grid", systemImage: "square.grid.3x3") }
                 FleetView()
                     .tabItem { Label("Fleet", systemImage: "list.bullet.rectangle") }
+                ControlsView()
+                    .tabItem { Label("Controls", systemImage: "slider.horizontal.3") }
             }
             Divider()
             ApplyActivityView()
