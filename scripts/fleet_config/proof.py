@@ -138,12 +138,29 @@ NATIVE_SHELL_TOOL_NAMES: dict[str, tuple[str, ...]] = {
 # lane guard evaluates shell commands only and fails open on file payloads, so a file
 # probe that is allowed is a genuine DRIFT, not a harness error:  the seat is
 # unguarded for file writes.
-NATIVE_FILE_TOOLS: tuple[tuple[str, str], ...] = (
-    ("Write", "file_path"),
-    ("Edit", "file_path"),
-    ("write", "path"),
-    ("edit", "path"),
-)
+# The file tools are per platform,  for the same reason the shell names are:  a probe
+# that names a tool the runtime never delivers proves nothing,  and fails the seat for
+# a tool it does not have.  The MiniMax runtime delivers its native ``write`` (which
+# carries ``path``) and its native ``edit`` (which carries ``file_path``);  the
+# claude-shaped runtimes deliver ``Write`` and ``Edit`` (which carry ``file_path``).
+# The platforms whose payload shape carries no file tool are empty,  because the probe
+# cannot express a file write for them.
+NATIVE_FILE_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
+    "claude": (("Write", "file_path"), ("Edit", "file_path")),
+    "codex": (("Write", "file_path"), ("Edit", "file_path")),
+    "grok": (("Write", "file_path"), ("Edit", "file_path")),
+    "kimi": (("Write", "file_path"), ("Edit", "file_path")),
+    "clutch": (("Write", "file_path"), ("Edit", "file_path")),
+    "minimax": (("write", "path"), ("edit", "file_path")),
+    "muse": (("Write", "file_path"), ("Edit", "file_path")),
+    "muse-code": (("Write", "file_path"), ("Edit", "file_path")),
+    # The cursor payload shape is a shell event with no tool input at all,  and the
+    # antigravity one carries a command line rather than a path,  so neither can carry
+    # a file tool.  Their file surface is therefore not probed,  and the L1 outcome
+    # says so instead of reporting a bare pass.
+    "cursor": (),
+    "antigravity": (),
+}
 
 
 @dataclass(frozen=True)
@@ -1181,22 +1198,41 @@ def run_l1_probe(
             outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
             if not outcome.passed:
                 return outcome
-        if adapter.payload_shape in ("claude", "muse"):
-            for file_tool, path_field in NATIVE_FILE_TOOLS:
-                payload = build_file_payload(
-                    adapter, sentinel.destination, sentinel.root, file_tool, path_field
+        file_tools = NATIVE_FILE_TOOLS.get(platform, ())
+        if not file_tools:
+            # The file surface of this platform cannot be probed,  so the proof is not
+            # complete.  A bare PASS would claim the seat is guarded for file writes
+            # when nothing was checked;  UNPROVEN says the check was not run.
+            return L1Outcome(
+                level=ProofLevel.L1,
+                passed=False,
+                state=CheckState.UNPROVEN,
+                reason=(
+                    "the shell sentinel was denied,  but the file surface of this "
+                    "platform is not probed,  because its hook carries no file tool"
+                ),
+                reason_code=ReasonCode.PROOF_NOT_RUN,
+                detail="the shell sentinel was denied;  no file tool was probed",
+                achieved=None,
+            )
+        for file_tool, path_field in file_tools:
+            payload = build_file_payload(
+                adapter, sentinel.destination, sentinel.root, file_tool, path_field
+            )
+            outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
+            if not outcome.passed:
+                return L1Outcome(
+                    level=outcome.level,
+                    passed=False,
+                    state=outcome.state,
+                    reason=(
+                        "the guard did not deny the %s tool's write,  so a file write "
+                        "into a forbidden tree is not policed" % file_tool
+                    ),
+                    reason_code=outcome.reason_code,
+                    detail=outcome.detail,
+                    achieved=None,
                 )
-                outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
-                if not outcome.passed:
-                    return L1Outcome(
-                        level=outcome.level,
-                        passed=False,
-                        state=outcome.state,
-                        reason="%s (tool %r)" % (outcome.reason, file_tool),
-                        reason_code=outcome.reason_code,
-                        detail=outcome.detail,
-                        achieved=None,
-                    )
     finally:
         shutil.rmtree(sentinel.root, ignore_errors=True)
     return L1Outcome(

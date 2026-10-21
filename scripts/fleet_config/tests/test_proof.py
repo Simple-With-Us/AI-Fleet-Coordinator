@@ -308,12 +308,49 @@ class L1SafetyTests(FakeHookCase):
 
     def test_the_file_payload_carries_its_path_field(self):
         adapter = proof.PLATFORM_ADAPTERS["claude"]
-        for tool_name, path_field in proof.NATIVE_FILE_TOOLS:
+        for tool_name, path_field in proof.NATIVE_FILE_TOOLS["claude"]:
             payload = proof.build_file_payload(
                 adapter, "/tmp/sentinel/dst", "/tmp/work", tool_name, path_field
             )
             self.assertEqual(payload["tool_name"], tool_name)
             self.assertEqual(payload["tool_input"][path_field], "/tmp/sentinel/dst")
+
+    def test_the_file_tools_are_per_platform(self):
+        """A platform is never failed for a tool name its runtime never delivers.
+
+        The MiniMax runtime delivers its native ``write`` and ``edit``,  not the
+        capitalised ``Write`` and ``Edit`` of the claude-shaped runtimes,  so the
+        capitalised pair must not be probed against it.
+        """
+        self.assertEqual(
+            proof.NATIVE_FILE_TOOLS["minimax"], (("write", "path"), ("edit", "file_path"))
+        )
+        self.assertNotIn("Write", [name for name, _ in proof.NATIVE_FILE_TOOLS["minimax"]])
+        # The muse payload shape carries a tool input,  so the muse platforms can
+        # carry a file tool and are probed for it.
+        self.assertEqual(
+            proof.NATIVE_FILE_TOOLS["muse"], (("Write", "file_path"), ("Edit", "file_path"))
+        )
+        # The cursor shape is a shell event with no tool input,  so the file surface
+        # cannot be probed there.
+        self.assertEqual(proof.NATIVE_FILE_TOOLS["cursor"], ())
+
+    def test_the_minimax_edit_tool_carries_the_file_path_field(self):
+        self.assertIn(("edit", "file_path"), proof.NATIVE_FILE_TOOLS["minimax"])
+
+    def test_a_platform_whose_file_surface_cannot_be_probed_is_unproven(self):
+        """A bare PASS would claim the seat is guarded for file writes,  and nothing
+        was checked.
+
+        The command names the claude format,  because the fake hook answers in the
+        claude deny shape,  and the point of the test is the file surface and not the
+        deny format.
+        """
+        command = self.hook("deny") + " --format claude"
+        outcome = proof.run_l1_probe("cursor", self.ctx, hook_command=command)
+        self.assertFalse(outcome.passed)
+        self.assertIs(outcome.state, CheckState.UNPROVEN)
+        self.assertIn("not probed", outcome.reason)
 
 
 class HookResolutionTests(FakeHookCase):

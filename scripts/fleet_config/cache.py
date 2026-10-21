@@ -45,6 +45,7 @@ from .types import (
     ProofLevel,
     ReasonCode,
     StatusReport,
+    UncoveredSurface,
 )
 
 __all__ = [
@@ -201,6 +202,22 @@ def _result_from_dict(raw: Any) -> CheckResult:
     )
 
 
+def _uncovered_to_dict(item: UncoveredSurface) -> dict[str, Any]:
+    """The stored form of one uncovered surface."""
+    return {"seat": item.seat, "surface": item.surface, "reason": item.reason}
+
+
+def _uncovered_from_dict(raw: Any) -> UncoveredSurface:
+    """Read one stored uncovered surface back."""
+    if not isinstance(raw, dict):
+        raise ValueError("the stored uncovered surface is not an object")
+    return UncoveredSurface(
+        surface=str(raw.get("surface") or ""),
+        reason=str(raw.get("reason") or ""),
+        seat=str(raw.get("seat") or ""),
+    )
+
+
 def _report_to_dict(report: StatusReport) -> dict[str, Any]:
     """The stored form of a whole report."""
     return {
@@ -209,6 +226,7 @@ def _report_to_dict(report: StatusReport) -> dict[str, Any]:
         "manifestSource": report.manifest_source,
         "notes": list(report.notes),
         "results": [_result_to_dict(result) for result in report.results],
+        "uncovered": [_uncovered_to_dict(item) for item in report.uncovered],
     }
 
 
@@ -224,6 +242,7 @@ def _report_from_dict(raw: Any) -> StatusReport:
         summary=contract.summarize(results),
         manifest_source=raw.get("manifestSource"),
         notes=tuple(str(note) for note in raw.get("notes") or ()),
+        uncovered=tuple(_uncovered_from_dict(item) for item in raw.get("uncovered") or ()),
     )
 
 

@@ -35,6 +35,7 @@ from .types import (
     ProofLevel,
     Rule,
     SeatManifest,
+    UncoveredSurface,
 )
 
 __all__ = [
@@ -229,11 +230,25 @@ def _parse_seat(tag: str, raw: object) -> SeatManifest:
                 ),
             )
         )
+    uncovered: list[UncoveredSurface] = []
+    for item in raw.get("uncovered") or []:
+        if not isinstance(item, dict):
+            raise ManifestError("seat %s holds an uncovered entry that is not an object" % tag)
+        surface = item.get("surface")
+        if not isinstance(surface, str) or not surface.strip():
+            raise ManifestError("seat %s holds an uncovered entry without a surface" % tag)
+        uncovered.append(
+            UncoveredSurface(
+                surface=surface.strip(),
+                reason=str(item.get("reason") or ""),
+            )
+        )
     return SeatManifest(
         seat=tag,
         platforms=_str_tuple(raw.get("platforms"), "seat %s platforms" % tag),
         rules=rules,
         not_applicable=tuple(covers),
+        uncovered=tuple(uncovered),
     )
 
 

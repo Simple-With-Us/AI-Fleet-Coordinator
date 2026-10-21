@@ -2001,6 +2001,16 @@
           "source": "",
           "ttlSeconds": 900
         }
+      ],
+      "uncovered": [
+        {
+          "reason": "The channel configuration fits none of the six kinds.",
+          "surface": "~/.minimax/config.json"
+        },
+        {
+          "reason": "The identity file fits none of the six kinds.",
+          "surface": "~/.minimax/identity.yaml"
+        }
       ]
     },
     "OPENCODE": {

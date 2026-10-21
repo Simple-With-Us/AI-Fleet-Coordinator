@@ -640,7 +640,37 @@ def _harness_seat(
         )
     rules.append(_credential_rule(seat, platform))
     rules.append(_retired_credential_rule(seat, platform))
-    return {"platforms": [platform], "rules": rules, "notApplicable": covers}
+    entry: dict[str, object] = {"platforms": [platform], "rules": rules, "notApplicable": covers}
+    uncovered = _uncovered_surfaces(platform)
+    if uncovered:
+        entry["uncovered"] = uncovered
+    return entry
+
+
+# The config surfaces that fit none of the six kinds,  named per platform.  A file
+# with no kind has no rule and no cover,  so without this list the seat would read as
+# fully checked while the file went unchecked.  The MiniMax runtime's channel
+# configuration and its identity files are the ones the MM seat named in AFC-416.
+UNCOVERED_SURFACES = {
+    "minimax": (
+        {
+            "surface": "~/.minimax/config.json",
+            "reason": "The channel configuration fits none of the six kinds.",
+        },
+        {
+            "surface": "~/.minimax/identity.yaml",
+            "reason": "The identity file fits none of the six kinds.",
+        },
+    ),
+}
+
+
+def _uncovered_surfaces(platform: str) -> list:
+    """The surfaces this platform has that no kind covers,  or an empty list."""
+    surfaces = UNCOVERED_SURFACES.get(platform)
+    if not surfaces:
+        return []
+    return [dict(item) for item in surfaces]
 
 
 def _hosted_seat(seat: str, subject: str, credential_reason: str) -> dict[str, object]:
