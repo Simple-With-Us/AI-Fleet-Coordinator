@@ -1,7 +1,7 @@
 """Private persistent replay ledger. Mount parent directory on durable storage."""
 
-import os
 import contextlib
+import os
 import sqlite3
 import stat
 from pathlib import Path
