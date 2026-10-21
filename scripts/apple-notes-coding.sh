@@ -314,7 +314,9 @@ _run_note_shortcut() {  # $1 = shortcut name
   printf '%s\n' "$listing" | grep -qxF "$1" || return 2
   #  The Shortcuts app must be up before the run:  its Find Notes action is an app intent
   #  served by that app,  and a closed app fails the run for every title (AFC-436).
-  _ensure_shortcuts_running || true
+  #  Code 5:  it could not be started,  which is a different fault from a failed run and needs
+  #  its own message (AFC-431)  —  reporting it as "the run failed" hides the action that fixes it.
+  _ensure_shortcuts_running || return 5
   local tmp attempt attempts
   tmp="$(mktemp).txt"
   printf '%s' "$TITLE" > "$tmp"
@@ -354,6 +356,9 @@ if [[ "$MODE" == "unpin" ]]; then
     exit 4
   elif [[ "$_unpin_rc" == "3" ]]; then
     echo "unpinned: no — the Shortcut list could not be read, so it is unknown whether 'Unpin Coding Note' exists" >&2
+    exit 4
+  elif [[ "$_unpin_rc" == "5" ]]; then
+    echo "unpinned: no — the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry" >&2
     exit 4
   else
     echo "unpinned: no — 'Unpin Coding Note' shortcut run failed" >&2
@@ -1028,7 +1033,8 @@ fi
 # Set APPLE_NOTES_PIN=0 to skip pinning entirely.
 # _pin_rc: 0 pinned, 1 the run failed, 2 the Shortcut is not installed,
 # 3 the Shortcut list could not be read, 4 pinning was disabled
-# (APPLE_NOTES_PIN=0).  These are different problems and must not be reported
+# (APPLE_NOTES_PIN=0), 5 the Shortcuts app could not be started (AFC-436).
+# These are different problems and must not be reported
 # as one (AFC-431).
 _pin_rc=4
 if [[ "${APPLE_NOTES_PIN:-}" != "0" ]]; then
@@ -1045,6 +1051,8 @@ if [[ "${APPLE_NOTES_PIN:-}" != "0" ]]; then
     echo "pinned: the 'Pin Coding Note' shortcut ran but did not complete; falling back to GUI path if requested" >&2
   elif [[ "$_pin_rc" == "2" ]]; then
     echo "pinned: the 'Pin Coding Note' shortcut is not installed; falling back to GUI path if requested" >&2
+  elif [[ "$_pin_rc" == "5" ]]; then
+    echo "pinned: the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry, or pass --pin for the GUI pin, which steals focus" >&2
   else
     echo "pinned: the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; falling back to GUI path if requested" >&2
   fi
@@ -1058,6 +1066,7 @@ if [[ "$WANT_PIN" != "1" ]]; then
     2) echo "pinned: skipped ('Pin Coding Note' shortcut is not installed; pass --pin for GUI pin, which steals focus)" ;;
     3) echo "pinned: skipped (the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; pass --pin for GUI pin, which steals focus)" ;;
     4) echo "pinned: skipped (pinning is disabled; APPLE_NOTES_PIN=0)" ;;
+    5) echo "pinned: skipped (the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry, or pass --pin for the GUI pin, which steals focus)" ;;
     *) echo "pinned: skipped ('Pin Coding Note' shortcut run failed; pass --pin for GUI pin, which steals focus)" ;;
   esac
   exit 0
