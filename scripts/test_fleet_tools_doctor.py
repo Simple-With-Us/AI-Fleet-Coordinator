@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -354,6 +355,24 @@ class RegisteredEnvTests(unittest.TestCase):
                 (home / ".claude.json").write_text(json.dumps(bad))
                 with self.assertRaises(doctor.ClientConfigError):
                     doctor.registered_env("CLAUDE", home)
+
+    def test_codex_config_without_tomllib_falls_back_to_table_headers(self):
+        # Python < 3.11 has no tomllib:  names come from the headers, env is never read, nothing fails.
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".codex").mkdir()
+            (home / ".codex/config.toml").write_text(
+                '[mcp_servers.agent-sync]\ncommand = "x"\n\n[mcp_servers.agent-sync.env]\nLANG = "C"\n\n'
+                '[mcp_servers."fleetlink"]\ncommand = "y"\n'
+            )
+            with mock.patch.dict(sys.modules, {"tomllib": None}):
+                self.assertEqual(sorted(doctor.client_servers("CODEX", home)), ["agent-sync", "fleetlink"])
+                self.assertEqual(doctor.registered_env("CODEX", home), {})
+                report = doctor.Report()
+                with mock.patch.object(doctor, "HOME", home):
+                    doctor.check_mcp(report)
+        codex = [row for row in report.rows if row["check"] == "mcp:codex"]
+        self.assertEqual(codex[0]["status"], "OK")
 
     def test_client_secrets_and_lookup_redirects_are_never_forwarded(self):
         with tempfile.TemporaryDirectory() as tmp:

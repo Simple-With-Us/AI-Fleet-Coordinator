@@ -526,7 +526,12 @@ def client_servers(seat: str, home: Path = HOME) -> dict:
             field = "mcpServers"
         elif seat == "CODEX":
             text = (home / ".codex/config.toml").read_text()
-            import tomllib
+            try:
+                import tomllib
+            except ImportError:
+                # Python < 3.11 (a Mac's /usr/bin/python3 is 3.9) has no TOML parser:  fall back to the
+                # table headers for the server names.  Their env cannot be read, so none is forwarded.
+                return {name: {} for name in codex_mcp_names(text)}
             data = tomllib.loads(text)
             field = "mcp_servers"
         else:
