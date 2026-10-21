@@ -78,9 +78,15 @@ struct ControlsView: View {
             reason = "No engine checkout was found,  so the registry was not read."
             return
         }
+        let location = store.engineLocation
         let home = FileManager.default.homeDirectoryForCurrentUser
         let loaded = await Task.detached(priority: .userInitiated) {
-            KnobReader.read(repoRoot: root, home: home)
+            // The engine is asked which project its copy belongs to,  because the app
+            // does not know and does not guess:  a private identifier does not belong
+            // in the app's source,  and a copy whose project cannot be confirmed is
+            // not this fleet's copy.
+            let identity = location.flatMap { EngineIdentity.read(location: $0, home: home) }
+            return KnobReader.read(repoRoot: root, home: home, identity: identity)
         }.value
         registry = loaded
         reason = loaded.problem ?? (loaded.knobs.isEmpty

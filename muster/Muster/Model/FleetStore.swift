@@ -24,6 +24,11 @@ final class FleetStore: ObservableObject {
     @Published private(set) var generatedAt: Date?
     @Published private(set) var engineRoot: URL?
     @Published private(set) var commandLine: String = ""
+    /// Why the manifest could not be read,  when it is there and cannot be read.
+    ///
+    /// It is kept for the whole session,  because the manifest is read once and a
+    /// refusal does not go away when the next run succeeds.
+    @Published private(set) var manifestProblem: String?
     /// The check time the run shares,  which is one timestamp for nearly every rule.
     ///
     /// The engine checks every rule in one pass,  so every cell would otherwise carry
@@ -33,6 +38,9 @@ final class FleetStore: ObservableObject {
     @Published private(set) var commonCheckedAt: Date?
 
     private let location: EngineLocation?
+
+    /// Where the engine lives,  for a surface that runs it.
+    var engineLocation: EngineLocation? { location }
     private let manifest: SeatManifest?
     private let registry: FleetRegistry?
     private var results: [CheckResult] = []
@@ -43,11 +51,33 @@ final class FleetStore: ObservableObject {
         location = located
         engineRoot = located?.root
         commandLine = located?.commandLine ?? ""
-        manifest = located.flatMap { try? FleetDataReader.loadManifest(at: $0.manifestURL) }
+        // A manifest that is a version this app does not read is refused,  and the
+        // refusal is kept.  A refused manifest is not the same as no manifest:  the
+        // roster falls back to the registry's tags,  and without the reason the
+        // operator sees a grid of unknown rows and no idea why.
+        var loadedManifest: SeatManifest?
+        var manifestProblem: String?
+        if let located, FileManager.default.fileExists(atPath: located.manifestURL.path) {
+            do {
+                loadedManifest = try FleetDataReader.loadManifest(at: located.manifestURL)
+            } catch {
+                manifestProblem = Self.describe(error)
+            }
+        }
+        manifest = loadedManifest
+        self.manifestProblem = manifestProblem
         registry = located.flatMap { try? FleetDataReader.loadRegistry(at: $0.registryURL) }
         roster = Self.roster(from: registry, manifest: manifest)
         rebuild()
         refresh()
+    }
+
+    /// Why the manifest could not be read,  in the app's own words.
+    private static func describe(_ error: Error) -> String {
+        if let version = error as? SeatManifest.ManifestVersionError {
+            return version.errorDescription ?? "the manifest is a version this app does not read"
+        }
+        return "the manifest could not be read:  \(error.localizedDescription)"
     }
 
     /// The rows of the grid:  the live roster, in registry order.

@@ -135,6 +135,14 @@ struct EngineRunner {
     /// `PATH` below names that directory, and the secret store is the only outside
     /// thing the checks reach for.
     var environment: [String: String] {
+        EngineRunner.childEnvironment(location: location, home: home)
+    }
+
+    /// The environment every run of the engine sees.
+    ///
+    /// It is the same for the full run and for the smaller questions the app asks the
+    /// engine,  so both reach the engine's own modules the same way.
+    static func childEnvironment(location: EngineLocation, home: URL) -> [String: String] {
         var environment: [String: String] = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:\(home.appendingPathComponent(".local/bin").path)",
             "HOME": home.path,

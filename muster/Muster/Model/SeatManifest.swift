@@ -30,8 +30,18 @@ struct SeatManifest: Decodable {
     }
 
     /// A manifest version this app does not read.
-    enum ManifestVersionError: Error {
+    ///
+    /// The error names the version it found and the version it reads,  because a
+    /// refusal nobody can act on is a refusal nobody acts on.
+    enum ManifestVersionError: LocalizedError {
         case unsupported(Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupported(let found):
+                return "the manifest is version \(found);  this app reads version \(SeatManifest.supportedSchemaVersion)"
+            }
+        }
     }
 }
 

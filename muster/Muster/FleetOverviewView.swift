@@ -11,6 +11,12 @@ struct FleetOverviewView: View {
             if case .failed(let reason) = store.phase {
                 FailureBanner(reason: reason)
             }
+            if let problem = store.manifestProblem {
+                FailureBanner(
+                    reason: problem,
+                    title: "The manifest could not be read,  so the roster is not the manifest's."
+                )
+            }
             TabView {
                 MiniMaxDetailView()
                     .tabItem { Label("MiniMax", systemImage: "bolt.shield") }
@@ -120,6 +126,7 @@ struct FleetOverviewView: View {
 /// The banner that says why the last run cannot be trusted.
 struct FailureBanner: View {
     let reason: String
+    var title: String = "The engine did not answer, so every cell reads unknown."
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -127,7 +134,7 @@ struct FailureBanner: View {
                 .foregroundStyle(.red)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text("The engine did not answer, so every cell reads unknown.")
+                Text(title)
                     .font(.callout.weight(.medium))
                 Text(reason)
                     .font(.system(size: 11, design: .monospaced))

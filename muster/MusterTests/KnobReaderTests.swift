@@ -1,6 +1,17 @@
 import XCTest
 /// The controls registry reader:  what it reads,  and what it refuses to show.
 final class KnobReaderTests: XCTestCase {
+    /// The project and environment the engine's own copy carries.
+    ///
+    /// The app does not know these,  so the tests use the shape the engine answers
+    /// with rather than a value of the engine's own.
+    static let project = "test-infisical-project"
+    static let environment = "prod"
+
+    /// The identity the engine would give.
+    private var identity: EngineIdentity.Identity {
+        EngineIdentity.Identity(project: Self.project, environment: Self.environment)
+    }
     /// A repo with a generated registry block,  and a local copy beside it.
     private func makeRepo() throws -> (root: URL, home: URL) {
         let base = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -51,8 +62,8 @@ final class KnobReaderTests: XCTestCase {
         knobs: [String: String] = [:],
         age: TimeInterval = 60,
         schema: Int = 1,
-        project: String = KnobReader.copyProject,
-        environment: String = KnobReader.copyEnvironment,
+        project: String = KnobReaderTests.project,
+        environment: String = KnobReaderTests.environment,
         omitTime: Bool = false,
         permissions: NSNumber = 0o600
     ) throws {
@@ -78,7 +89,7 @@ final class KnobReaderTests: XCTestCase {
     func test_the_registry_is_read_from_the_generated_block() throws {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertEqual(registry.knobs.count, 3)
         XCTAssertEqual(registry.knobs.first?.name, "FLEET_AUTOPUSH_MODE")
         XCTAssertEqual(registry.knobs.first?.owner, "C1")
@@ -96,7 +107,7 @@ final class KnobReaderTests: XCTestCase {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         try writeCopy(in: home, knobs: ["FLEET_IDLE_HOURS": "3"])
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(knob?.current, .defaultValue)
     }
@@ -106,7 +117,7 @@ final class KnobReaderTests: XCTestCase {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"])
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertEqual(registry.knobs.first?.current, .current("report"))
     }
 
@@ -120,7 +131,7 @@ final class KnobReaderTests: XCTestCase {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"])
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let secret = registry.knobs.first { $0.name == "FLEET_FACTS_SIGNING_KEY" }
         XCTAssertEqual(secret?.isSecret, true)
         XCTAssertEqual(secret?.current, KnobRegistry.Knob.CurrentValue.secretUnconfirmed)
@@ -132,7 +143,7 @@ final class KnobReaderTests: XCTestCase {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"])
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let row = registry.rows.first { $0.name == "FLEET_FACTS_SIGNING_KEY" }
         XCTAssertEqual(row?.nowIsSecret, true)
         XCTAssertEqual(row?.now, "not known (secret)")
@@ -166,7 +177,7 @@ final class KnobReaderTests: XCTestCase {
             encoding: .utf8
         )
         try writeCopy(in: home, knobs: ["FLEET_FACTS_SIGNING_KEY": "a-secret-value"])
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_FACTS_SIGNING_KEY" }
         XCTAssertEqual(knob?.isSecret, true)
         XCTAssertEqual(knob?.current, KnobRegistry.Knob.CurrentValue.secretUnconfirmed)
@@ -197,7 +208,7 @@ final class KnobReaderTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertEqual(registry.unreadableRows, 1)
         // The good row beside it still reads,  and its columns are in the right places.
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
@@ -212,7 +223,7 @@ final class KnobReaderTests: XCTestCase {
     func test_with_no_copy_the_value_is_unknown() throws {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(knob?.current, KnobRegistry.Knob.CurrentValue.unknown("no local copy"))
     }
@@ -222,7 +233,7 @@ final class KnobReaderTests: XCTestCase {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"], age: 30)
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertFalse(registry.copyIsStale)
         XCTAssertEqual(registry.copyAge, "30s")
         XCTAssertEqual(registry.copyHeadline, "Local copy 30s old.")
@@ -237,7 +248,7 @@ final class KnobReaderTests: XCTestCase {
             knobs: ["FLEET_AUTOPUSH_MODE": "report"],
             age: 2 * 3600
         )
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertTrue(registry.copyIsStale)
         XCTAssertTrue(registry.copyHeadline.hasPrefix("Local copy "))
     }
@@ -246,7 +257,7 @@ final class KnobReaderTests: XCTestCase {
     func test_the_headline_with_no_copy_reads_as_a_sentence() throws {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertEqual(registry.copyHeadline, "No local copy of the knobs.")
         XCTAssertFalse(registry.copyHeadline.contains("old."))
     }
@@ -271,7 +282,7 @@ final class KnobReaderTests: XCTestCase {
             knobs: ["FLEET_AUTOPUSH_MODE": "report"],
             project: "11111111-2222-3333-4444-555555555555"
         )
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(
             knob?.current,
@@ -284,7 +295,7 @@ final class KnobReaderTests: XCTestCase {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"], environment: "dev")
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(
             knob?.current,
@@ -297,7 +308,7 @@ final class KnobReaderTests: XCTestCase {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"], schema: 99)
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(
             knob?.current,
@@ -310,7 +321,7 @@ final class KnobReaderTests: XCTestCase {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"], omitTime: true)
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(
             knob?.current,
@@ -327,14 +338,14 @@ final class KnobReaderTests: XCTestCase {
         try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"])
         let path = home.appendingPathComponent(".local/state/fleet-knobs/lkg.json")
         try """
-        {"schema": 1, "project": "\(KnobReader.copyProject)", "environment": "prod",
+        {"schema": 1, "project": "\(KnobReaderTests.project)", "environment": "\(KnobReaderTests.environment)",
         "knobs": {"FLEET_AUTOPUSH_MODE": "report"}, "saved_epoch": 1e300}
         """.write(to: path, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600],
             ofItemAtPath: path.path
         )
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(
             knob?.current,
@@ -351,7 +362,7 @@ final class KnobReaderTests: XCTestCase {
             knobs: ["FLEET_AUTOPUSH_MODE": "report"],
             age: 3 * 24 * 3600
         )
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(
             knob?.current,
@@ -368,7 +379,7 @@ final class KnobReaderTests: XCTestCase {
             knobs: ["FLEET_AUTOPUSH_MODE": "report"],
             age: -3600
         )
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(
             knob?.current,
@@ -385,7 +396,7 @@ final class KnobReaderTests: XCTestCase {
             knobs: ["FLEET_AUTOPUSH_MODE": "report"],
             permissions: 0o644
         )
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(
             knob?.current,
@@ -399,7 +410,7 @@ final class KnobReaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         let path = root.appendingPathComponent("INFISICAL.md")
         try Data([0xff, 0xfe, 0x00, 0x01]).write(to: path)
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertTrue(registry.knobs.isEmpty)
         XCTAssertNotNil(registry.problem)
         XCTAssertTrue(registry.problem?.contains("could not be read") ?? false)
@@ -421,7 +432,8 @@ final class KnobReaderTests: XCTestCase {
         }
         let registry = KnobReader.read(
             repoRoot: repoRoot,
-            home: FileManager.default.homeDirectoryForCurrentUser
+            home: FileManager.default.homeDirectoryForCurrentUser,
+            identity: identity
         )
         XCTAssertGreaterThan(registry.knobs.count, 20, "the block should hold every knob")
         XCTAssertEqual(registry.unreadableRows, 0, "every row of the block should be readable")
@@ -437,6 +449,47 @@ final class KnobReaderTests: XCTestCase {
         XCTAssertEqual(secrets.map { $0.name }, ["FLEET_FACTS_SIGNING_KEY"])
     }
 
+    /// A knob holding its default says which value that is.
+    ///
+    /// A column that says only "default" does not tell the operator what the knob is
+    /// holding,  and the registry declares that value.
+    func test_a_knob_holding_its_default_says_which_value() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_IDLE_HOURS": "3"])
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
+        let row = registry.rows.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(row?.now, "default (off)")
+    }
+
+    /// A secret knob's default is not shown,  because the secret is what is unknown.
+    func test_a_secret_knob_does_not_show_its_default() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"])
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
+        let row = registry.rows.first { $0.name == "FLEET_FACTS_SIGNING_KEY" }
+        XCTAssertEqual(row?.now, "not known (secret)")
+        XCTAssertFalse(row?.now.contains("fails closed") ?? true)
+    }
+
+    /// With no identity from the engine,  the copy is not read at all.
+    ///
+    /// The app does not know the project id,  so it asks the engine.  If the engine
+    /// cannot answer,  the copy cannot be confirmed as this fleet's,  and a copy that
+    /// cannot be confirmed is not read.
+    func test_without_an_identity_the_copy_is_not_read() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"])
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: nil)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(
+            knob?.current,
+            .unknown("the engine did not say which project its copy belongs to")
+        )
+    }
+
     /// A file with no registry block yields no knobs and no guess.
     func test_a_file_with_no_block_yields_no_knobs() throws {
         let (root, home) = try makeRepo()
@@ -446,7 +499,7 @@ final class KnobReaderTests: XCTestCase {
             atomically: true,
             encoding: .utf8
         )
-        let registry = KnobReader.read(repoRoot: root, home: home)
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         XCTAssertTrue(registry.knobs.isEmpty)
         XCTAssertNotNil(registry.problem)
     }

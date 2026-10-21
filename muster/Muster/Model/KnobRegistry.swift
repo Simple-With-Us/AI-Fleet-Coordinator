@@ -40,6 +40,22 @@ struct KnobRegistry {
 
         var id: String { name }
 
+        /// The text the panel shows in the "Now" column.
+        ///
+        /// A knob that holds its default says which value that is,  because a column
+        /// that says only "default" does not tell the operator what the knob is
+        /// holding.  A secret's default is not shown:  the secret's own presence is
+        /// the thing that is unknown.
+        var nowText: String {
+            switch current {
+            case .current(let value): return value
+            case .defaultValue:
+                return defaultValue.isEmpty ? "default" : "default (\(defaultValue))"
+            case .secretUnconfirmed: return "not known (secret)"
+            case .unknown(let reason): return reason
+            }
+        }
+
         /// The value a knob holds now.
         enum CurrentValue: Equatable {
             /// The last-known-good copy has a value for it.
@@ -110,7 +126,7 @@ struct KnobRegistry {
                 name: knob.name,
                 owner: knob.owner,
                 kind: knob.kind,
-                now: knob.current.displayText,
+                now: knob.nowText,
                 nowIsSecret: knob.isSecret,
                 localMay: knob.localMay,
                 note: knob.note
@@ -137,9 +153,18 @@ enum KnobReader {
     /// The registry is a table in a markdown file,  so the read is a table read and not
     /// a parse of somebody's code.  A missing or unreadable file yields an empty
     /// registry and the reason,  and never a guessed knob.
-    static func read(repoRoot: URL, home: URL) -> KnobRegistry {
+    ///
+    /// The identity is the engine's own:  the project and environment the engine's
+    /// copies carry.  The app does not know them by itself,  so the caller asks the
+    /// engine.  Without that answer the copy cannot be confirmed as this fleet's,  and
+    /// the panel says so rather than reading a copy it cannot vouch for.
+    static func read(
+        repoRoot: URL,
+        home: URL,
+        identity: EngineIdentity.Identity?
+    ) -> KnobRegistry {
         let table = readTable(in: repoRoot.appendingPathComponent("INFISICAL.md"))
-        let copy = readCopy(in: home)
+        let copy = readCopy(in: home, identity: identity)
         let knobs = table.rows.map { row -> KnobRegistry.Knob in
             let name = row.value(at: 0)
             // The secret column fails closed.  A column that says anything other
@@ -322,14 +347,12 @@ enum KnobReader {
     static let refreshSeconds = 3600
     static let maxAgeSeconds = 48 * 3600
 
-    /// The engine's own identity for a copy,  from `lkg.py` and `source.py`.
+    /// The engine's own identity for a copy,  asked of the engine.
     ///
-    /// The engine only trusts a copy that carries these,  so the panel reads it the
-    /// same way:  a copy without them is not a reading of anything,  even when it
+    /// The engine only trusts a copy that carries its own identity,  so the panel reads
+    /// it the same way:  a copy without it is not a reading of anything,  even when it
     /// parses and holds a plausible value.
     static let copySchema = 1
-    static let copyProject = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
-    static let copyEnvironment = "prod"
     /// The engine treats a copy more than this far in the future as expired.
     static let futureToleranceSeconds = 300
     /// The largest copy the engine will read,  in bytes.
@@ -343,7 +366,7 @@ enum KnobReader {
     /// The file is checked the way the engine checks it:  a file that is a symlink,
     /// not a regular file, owned by somebody else, readable by the group or by
     /// others, or too large is never trusted.
-    private static func readCopy(in home: URL) -> Copy {
+    private static func readCopy(in home: URL, identity: EngineIdentity.Identity?) -> Copy {
         let directory = home.appendingPathComponent(".local/state/fleet-knobs", isDirectory: true)
         let path = directory.appendingPathComponent("lkg.json", isDirectory: false)
         var isDirectory: ObjCBool = false
@@ -385,6 +408,18 @@ enum KnobReader {
         // knobs,  and a time.  This reader takes the same conditions,  because a copy
         // the engine would refuse is not a reading of a knob,  and reading one anyway
         // would put a value on the screen that the fleet's own tools do not believe.
+        guard let identity else {
+            // The engine did not say which project its copy belongs to,  so the copy
+            // cannot be confirmed as this fleet's.  It is not read at all.
+            return Copy(
+                knobs: [:],
+                ageText: "not a copy this app knows",
+                isStale: true,
+                isReadable: false,
+                reason: "the engine did not say which project its copy belongs to",
+                headline: "The engine did not say which project its copy belongs to,  so the copy is not read."
+            )
+        }
         let schema = (object["schema"] as? NSNumber)?.doubleValue
         let project = object["project"] as? String
         let environment = object["environment"] as? String
@@ -392,8 +427,8 @@ enum KnobReader {
         let saved = (object["saved_epoch"] as? NSNumber)?.doubleValue
         guard
             schema == Double(copySchema),
-            project == copyProject,
-            environment == copyEnvironment,
+            project == identity.project,
+            environment == identity.environment,
             let knobs,
             let saved
         else {
