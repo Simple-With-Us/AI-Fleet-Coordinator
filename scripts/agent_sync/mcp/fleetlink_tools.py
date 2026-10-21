@@ -14,7 +14,7 @@ in order:
      names this same seat, so one connection acting as several bots never lends one bot's token to another;  the
      server sets AGENT_SEAT to the seat it resolved from --as or --default-seat when the environment named none, so
      a seat that came from a flag is as binding as one from the environment;
-  3. FLEETLINK_TOKEN_<SEAT> in Infisical Fleet-OPS /fleetlink, read through `fleet-secrets get` (AFC-359:  the old
+  3. FLEETLINK_TOKEN_<SEAT> in Infisical AI Fleet Coordinator /fleetlink, read through `fleet-secrets get` (AFC-359:  the old
      per-seat FleetLink env file is retired and never read), held in memory and handed to the child as
      FLEETLINK_TOKEN.
 
@@ -54,10 +54,16 @@ ENV_CLI = "AGENT_SYNC_FLEETLINK_CLI"
 CLI_NAME = "fleet-share"
 ENV_TOKEN = "FLEETLINK_TOKEN"
 TOKEN_PREFIX = "FLEETLINK_TOKEN_"
-INFISICAL_PATH = (
-    "/fleetlink"  # Fleet-OPS folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
-)
+INFISICAL_PATH = "/fleetlink"  # folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
+INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (Fleet-OPS has none)
+INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
+FETCH_TIMEOUT_S = (
+    60.0  # one `fleet-secrets get`:  the machine-identity login and the export, under load
+)
+KEY_ABSENT_EXIT = (
+    3  # fleet-secrets: the key is not there (a failure of any other kind says nothing about it)
+)
 TIMEOUT_S = 120.0
 OUTPUT_LIMIT = (
     8_000_000  # bytes of CLI output;  read_file returns up to 1 MB of text, pretty-printed
@@ -172,8 +178,9 @@ _token_cache: dict[str, tuple[float, str | None]] = {}
 
 def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str | None:
     """`fleet-secrets get NAME --path /fleetlink`, or None when absent or unreadable.  Cached in memory per
-    process (a miss too, so a seat with no token does not pay the Infisical round trip on every call).  Its
-    output is never logged and its stderr never read."""
+    process (a clean miss too, exit 3, so a seat with no token does not pay the Infisical round trip on every
+    call;  a timeout or any other failure is not cached, so a passing fault cannot hide a good token for ten
+    minutes).  Its output is never logged and its stderr never read."""
     import time
 
     from .. import zulip as Z
@@ -183,25 +190,30 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
     if held is not None and now - held[0] < TOKEN_CACHE_TTL:
         return held[1]
     value: str | None = None
+    definitive = True  # a token, or a clean "no such key" (exit 3);  anything else may pass, so it is not cached
     binary = Z.fleet_secrets_bin(env, home) if Z.infisical_enabled(env) else None
     if binary:
         child = dict(env)
         child.setdefault("PATH", os.environ.get("PATH") or os.defpath)
         try:
             proc = subprocess.run(
-                [binary, "get", name, "--path", INFISICAL_PATH],
+                [binary, "get", name, "--path", INFISICAL_PATH, "--project", INFISICAL_PROJECT],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                timeout=15,
+                timeout=FETCH_TIMEOUT_S,
                 cwd="/",
                 env=child,
                 check=False,
             )
             if proc.returncode == 0:
                 value = proc.stdout.decode("utf-8").strip() or None
+            else:
+                definitive = proc.returncode == KEY_ABSENT_EXIT
         except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
             value = None
-    _token_cache[name] = (now, value)
+            definitive = False
+    if definitive:
+        _token_cache[name] = (now, value)
     return value
 
 
@@ -222,11 +234,11 @@ def resolve_credential(seat: str, env: Mapping[str, str], home: Path) -> tuple[s
         return "env", ENV_TOKEN, token
     token = _default_token_fetch(own, env, home)
     if token and not any(ch in token for ch in "\r\n\x00"):
-        return "infisical", "Infisical Fleet-OPS %s %s" % (INFISICAL_PATH, own), token
+        return "infisical", "%s %s %s" % (INFISICAL_LABEL, INFISICAL_PATH, own), token
     raise FleetLinkFailure(
         "not_configured",
-        "FleetLink has no credential for %s here:  set %s, or store %s in Infisical Fleet-OPS %s.  "
-        "Every other tool still works." % (seat, own, own, INFISICAL_PATH),
+        "FleetLink has no credential for %s here:  set %s, or store %s in %s %s.  "
+        "Every other tool still works." % (seat, own, own, INFISICAL_LABEL, INFISICAL_PATH),
     )
 
 
@@ -334,7 +346,9 @@ def run(
     timeout = TIMEOUT_S if timeout is None else timeout
     cli = find_cli(env)
     credential = resolve_credential(seat, env, home)
-    extra_known = [credential[2]] if credential[0] == "env" else []
+    extra_known = [
+        credential[2]
+    ]  # the token's own value, whatever its source, never leaves in text
     for field in SCANNED_FIELDS:
         value = args.get(field)
         if isinstance(value, str) and value:

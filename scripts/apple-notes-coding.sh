@@ -3,8 +3,8 @@
 # Owner preference 2026-08-05: coding notes always go to Coding + pin to top.
 # Owner 2026-08-09: title + timestamp shape (ALL apps, ALL agents):
 #
-#   Title:  "[APP, Agent] short topic"   e.g. "[UM, Grok] TestFlight first ship"
-#           Multi-app: "[ST, CT, Grok] …"  Acronyms: UM ST CT CTS FLEET
+#   Title:  "[TEAM_KEY, Agent] Topic"  e.g. "[UM, Claude] TestFlight first ship"
+#           Multi-app: "[ST, CT, MM] …"  Acronyms: UM ST CT CTS AFC (TEAM_KEY is the team key)
 #   Row 2:  "Sun, Aug 9, 3:52pm"         local create/update stamp (auto-injected)
 #
 # Usage:
@@ -26,7 +26,7 @@
 # CODEX_THREAD_ID, Cursor CURSOR_CONVERSATION_ID, Grok GROK_SESSION_ID, OpenCode OPENCODE_SESSION_ID, MiniMax
 # __MAVIS_RUNTIME_SESSION_ID).  With none the script exits 2 before it touches Notes.  A seat with one thread with the
 # owner (Grok bots, MA/Rob, JET, WISE, ECHO) needs none.  The seat is $AGENT_LAUNCH_SEAT (with $AGENT_LAUNCHER),
-# else $AGENT_SEAT, else the Agent named in the title ("[APP, Wise] topic", how Instinct's bots call this over ssh);
+# else $AGENT_SEAT, else the agent named in the title ("[TEAM_KEY, WISE] topic", how Instinct's bots call this over ssh);
 # it is never a flag.  Data copy of fleet-apps.json `sessionIds`;  scripts/test_session_ids_parity.py keeps it equal.
 # APPLE_NOTES_PRINT_HTML=1 prints the note HTML and exits before Notes is touched (the tests use it).
 #
@@ -56,6 +56,24 @@ PR_NUMBERS="${PR_NUMBERS:-${APPLE_NOTES_PR:-}}"
 HTML_PATH=""
 TITLE=""
 SESSION_ARG=""
+# How long an AppleEvent to Notes may run.  AppleScript's own default is two minutes, and a
+# body the size of the Background Jobs Master List needs longer, so every "tell application
+# \"Notes\"" below is wrapped in "with timeout of NOTES_APPLE_EVENT_TIMEOUT_S seconds".  A
+# caller that runs this script must allow more than this, or it kills the write while
+# osascript is still working and the later completion creates a duplicate note (AFC-436).
+# The number is this long because that body failed with
+# "AppleEvent timed out. (-1712)" before this timeout existed.
+NOTES_APPLE_EVENT_TIMEOUT_S="${NOTES_APPLE_EVENT_TIMEOUT_S:-900}"
+#  The value goes straight into the AppleScript source,  so it has to be a plain number of
+#  seconds:  a typo ("900s") or a value carrying a quote makes osascript reject the program and
+#  aborts the write with an opaque syntax error instead of a message about the override.
+#  Anything that is not digits falls back to the default (AFC-436).
+[[ "$NOTES_APPLE_EVENT_TIMEOUT_S" =~ ^[0-9]+$ ]] || NOTES_APPLE_EVENT_TIMEOUT_S=900
+# How long one Shortcuts invocation may run.  The "Pin Coding Note" Shortcut can wait on a note
+# picker on the owner's screen,  so an unbounded run can outlast the caller's cap:  the note is
+# written and the caller is then told the outcome is unknown and refuses the retry (AFC-436).
+NOTES_SHORTCUT_TIMEOUT_S="${NOTES_SHORTCUT_TIMEOUT_S:-30}"
+[[ "$NOTES_SHORTCUT_TIMEOUT_S" =~ ^[0-9]+$ ]] || NOTES_SHORTCUT_TIMEOUT_S=30
 
 # Env overrides (agents may set these explicitly).
 [[ "${APPLE_NOTES_PIN:-0}" == "1" || "${APPLE_NOTES_PIN:-}" == "true" ]] && WANT_PIN=1
@@ -145,8 +163,21 @@ if [[ -z "$TITLE" ]]; then
   exit 2
 fi
 
-# Strip accidental backslash escaping on title brackets e.g. \[APP, Agent\]
+# Strip accidental backslash escaping on title brackets e.g. \[TEAM_KEY, Agent\]
 TITLE=$(printf '%s' "$TITLE" | sed -e 's/^\\\[/[/' -e 's/\\\]$/]/' -e 's/\\\[/[/g' -e 's/\\\]/]/g')
+
+# Secret scan on the title (AFC-422).  The title reaches AppleScript source, the relay envelope, the
+# owner notification and two stderr lines, so a credential pasted into it would leak four ways.  Reject
+# it here, before any of those, and never echo the value back: a rejection that printed the title would
+# put the credential in the very log it is protecting.
+_title_looks_secret() {
+  printf '%s' "$1" | grep -Eqi -e \
+    '-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.|(api[_-]?key|secret|password|passwd|token)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_./+-]{12,}'
+}
+if _title_looks_secret "$TITLE"; then
+  echo "apple-notes-coding: field 'title' rejected: it looks like it holds a credential.  The value is not echoed." >&2
+  exit 2
+fi
 
 
 # ---- Session id (AFC-361) ---------------------------------------------------------------------------------------
@@ -238,7 +269,7 @@ fi
 
 if [[ "$MODE" == "pin" || "$MODE" == "unpin" ]]; then
   NOTE_ID=$(osascript -e "tell application \"Notes\" to get id of note \"$TITLE\" of folder \"Coding\" of account \"iCloud\"" 2>/dev/null || true)
-  [[ -n "$NOTE_ID" ]] || { echo "$MODE-only: note not found in Coding: $TITLE" >&2; exit 3; }
+  [[ -n "$NOTE_ID" ]] || { echo "$MODE-only: no note with that title in Coding" >&2; exit 3; }
   SKIP_BODY=1
 else
   SKIP_BODY=0
@@ -282,12 +313,52 @@ _pin_retry_on() {
   [[ "$_PIN_RETRY" == "1" ]]
 }
 
+# The Shortcuts app has to be running before the shortcut runs.  Its "Find
+# Notes" action is an app intent served by the Shortcuts app itself, and when
+# that app is not running the intent cannot be dispatched: the shortcut fails
+# with "The action 'Find Notes' could not run because an unknown error
+# occurred", for every title, including one that does not exist.  Opening the
+# app in the background costs nothing and does not steal focus.
+_ensure_shortcuts_running() {
+  pgrep -x Shortcuts >/dev/null 2>&1 && return 0
+  open -g -a Shortcuts >/dev/null 2>&1 || return 1
+  local waited=0
+  while (( waited < 20 )); do
+    pgrep -x Shortcuts >/dev/null 2>&1 && return 0
+    sleep 0.25
+    (( waited++ ))
+  done
+  return 1
+}
+
+# Run a Shortcuts command under a bound.  macOS has no GNU "timeout",  so the bound is perl's
+# alarm,  the same idiom the runtime sync script uses for its git call.  The bound cannot rest on
+# perl alone:  an unbounded run can outlast the caller's cap,  and the note is then written while
+# the caller is told the outcome is unknown and refuses the retry (AFC-436).  python3 sets the same
+# alarm and this script needs it for the HTML conversion anyway,  so it is the second way to bound
+# the run;  without either one the run is refused rather than left unbounded.
+_run_shortcuts_bounded() {  # $@ = the shortcuts command
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$NOTES_SHORTCUT_TIMEOUT_S" "$@"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os,signal,sys; signal.alarm(int(sys.argv[1])); os.execvp(sys.argv[2], sys.argv[2:])' "$NOTES_SHORTCUT_TIMEOUT_S" "$@"
+  else
+    echo "notes: the Shortcut run cannot be bounded (no perl and no python3 on this host), so it was not attempted" >&2
+    return 124
+  fi
+}
+
 _run_note_shortcut() {  # $1 = shortcut name
   local listing
-  if ! listing="$(shortcuts list 2>/dev/null)"; then
+  if ! listing="$(_run_shortcuts_bounded shortcuts list 2>/dev/null)"; then
     return 3
   fi
   printf '%s\n' "$listing" | grep -qxF "$1" || return 2
+  #  The Shortcuts app must be up before the run:  its Find Notes action is an app intent
+  #  served by that app,  and a closed app fails the run for every title (AFC-436).
+  #  Code 5:  it could not be started,  which is a different fault from a failed run and needs
+  #  its own message (AFC-431)  —  reporting it as "the run failed" hides the action that fixes it.
+  _ensure_shortcuts_running || return 5
   local tmp attempt attempts
   tmp="$(mktemp).txt"
   printf '%s' "$TITLE" > "$tmp"
@@ -302,7 +373,7 @@ _run_note_shortcut() {  # $1 = shortcut name
   # retry is the less likely of the two to miss it.
   attempt=1
   while :; do
-    if shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
+    if _run_shortcuts_bounded shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
       rm -f "$tmp"
       return 0
     fi
@@ -328,6 +399,9 @@ if [[ "$MODE" == "unpin" ]]; then
   elif [[ "$_unpin_rc" == "3" ]]; then
     echo "unpinned: no — the Shortcut list could not be read, so it is unknown whether 'Unpin Coding Note' exists" >&2
     exit 4
+  elif [[ "$_unpin_rc" == "5" ]]; then
+    echo "unpinned: no — the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry" >&2
+    exit 4
   else
     echo "unpinned: no — 'Unpin Coding Note' shortcut run failed" >&2
     exit 4
@@ -343,7 +417,7 @@ fi
 # - Formats code blocks with SF Mono font and light styling.
 # - Formats tables with clean border-collapse.
 _convert_body_to_html() {
-  local _md_py _md_dir
+  local _md_py _md_dir _rc
   # A private temp DIRECTORY with the converter inside it.  macOS mktemp does not substitute an X
   # template that does not end the name, so `mktemp /tmp/apple-notes-md.XXXXXX.py` returns a FIXED
   # path:  two seats writing at once collide, and a stale file (a crash, or a cleanup the runtime's
@@ -355,6 +429,7 @@ _convert_body_to_html() {
     return 1
   fi
   _md_py="${_md_dir}/convert.py"
+  _rc=0
   cat >"${_md_py}" <<'PY'
 import html, os, re, sys
 
@@ -601,13 +676,15 @@ while i < len(lines):
 close_lists()
 sys.stdout.write("<div>" + "".join(out) + "</div>")
 PY
-  /usr/bin/python3 "${_md_py}"
-  local _rc=$?
+  # `|| _rc=$?` keeps `set -e` (line 46) from aborting here, before the cleanup below:  a converter
+  # failure would otherwise skip the cleanup, leak the scratch directory, and surface as a bare
+  # command failure instead of the note's own error.
+  /usr/bin/python3 "${_md_py}" || _rc=$?
   # The scratch file and its directory go when they can:  a cleanup the runtime refuses must not
   # fail the note, and the next call gets a fresh directory either way.  Its output goes nowhere:
   # this runs inside the body capture, so a word on stdout would land in the note.
-  rm -f "${_md_py}" >/dev/null 2>&1
-  rmdir "${_md_dir}" >/dev/null 2>&1
+  rm -f "${_md_py}" >/dev/null 2>&1 || true
+  rmdir "${_md_dir}" >/dev/null 2>&1 || true
   return ${_rc}
 }
 
@@ -648,10 +725,10 @@ if [[ "$SKIP_BODY" == "0" ]]; then
 fi
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
-# Title: "[APP, Agent] topic" — multi-app OK. Body first line: "Sun, Aug 9, 3:52pm".
+# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52pm".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
-  echo "warning: title should start with [APP, Agent] e.g. \"[UM, Grok] topic\" (got: $TITLE)" >&2
+  echo "warning: title should start with [TEAM_KEY, Agent] e.g. \"[UM, Claude] Topic\"" >&2
 fi
 if printf '%s' "$TITLE" | grep -Eiq 'session'; then
   echo "warning: do not put 'session' in Apple Note titles" >&2
@@ -992,11 +1069,18 @@ printf '%s' "$TITLE" >"$TITLE_FILE"
 trap 'rm -f "$TMP" "$TITLE_FILE"' EXIT
 
 if [[ "$MODE" == "update" ]]; then
-  NOTE_ID=$(TITLE_FILE="$TITLE_FILE" TMP="$TMP" WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<'EOF'
+  #  Unquoted so ${NOTES_APPLE_EVENT_TIMEOUT_S} expands:  in a quoted heredoc osascript would
+  #  receive the literal text and the "with timeout of" clause would not compile.  The block still
+  #  reads its paths through "system attribute",  so nothing else here expands.
+  NOTE_ID=$(TITLE_FILE="$TITLE_FILE" TMP="$TMP" WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<EOF
 set titlePath to POSIX file (system attribute "TITLE_FILE")
 set noteTitle to read titlePath as «class utf8»
 set htmlPath to POSIX file (system attribute "TMP")
 set htmlBody to read htmlPath as «class utf8»
+--- A large body takes longer than the default two-minute AppleEvent timeout:
+--- the master list is a quarter of a megabyte of markdown, and the write timed
+--- out with "AppleEvent timed out. (-1712)" before this.
+with timeout of ${NOTES_APPLE_EVENT_TIMEOUT_S} seconds
 tell application "Notes"
   set codingFolder to missing value
   try
@@ -1024,14 +1108,16 @@ tell application "Notes"
   end if
   return id of targetNote
 end tell
+end timeout
 EOF
 )
-  echo "updated note id=$NOTE_ID in folder Coding title=$TITLE"
+  echo "updated note id=$NOTE_ID in folder Coding"
 else
   NOTE_ID=$(WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<EOF
 set htmlPath to POSIX file "$TMP"
 set htmlBody to read htmlPath as «class utf8»
 
+with timeout of ${NOTES_APPLE_EVENT_TIMEOUT_S} seconds
 tell application "Notes"
   set codingFolder to missing value
   try
@@ -1050,6 +1136,7 @@ tell application "Notes"
   end if
   return id of newNote
 end tell
+end timeout
 EOF
 )
   echo "created note id=$NOTE_ID in folder Coding"
@@ -1068,7 +1155,8 @@ fi
 # Set APPLE_NOTES_PIN=0 to skip pinning entirely.
 # _pin_rc: 0 pinned, 1 the run failed, 2 the Shortcut is not installed,
 # 3 the Shortcut list could not be read, 4 pinning was disabled
-# (APPLE_NOTES_PIN=0).  These are different problems and must not be reported
+# (APPLE_NOTES_PIN=0), 5 the Shortcuts app could not be started (AFC-436).
+# These are different problems and must not be reported
 # as one (AFC-431).
 _pin_rc=4
 if [[ "${APPLE_NOTES_PIN:-}" != "0" ]]; then
@@ -1085,6 +1173,8 @@ if [[ "${APPLE_NOTES_PIN:-}" != "0" ]]; then
     echo "pinned: the 'Pin Coding Note' shortcut ran but did not complete; falling back to GUI path if requested" >&2
   elif [[ "$_pin_rc" == "2" ]]; then
     echo "pinned: the 'Pin Coding Note' shortcut is not installed; falling back to GUI path if requested" >&2
+  elif [[ "$_pin_rc" == "5" ]]; then
+    echo "pinned: the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry, or pass --pin for the GUI pin, which steals focus" >&2
   else
     echo "pinned: the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; falling back to GUI path if requested" >&2
   fi
@@ -1098,6 +1188,7 @@ if [[ "$WANT_PIN" != "1" ]]; then
     2) echo "pinned: skipped ('Pin Coding Note' shortcut is not installed; pass --pin for GUI pin, which steals focus)" ;;
     3) echo "pinned: skipped (the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; pass --pin for GUI pin, which steals focus)" ;;
     4) echo "pinned: skipped (pinning is disabled; APPLE_NOTES_PIN=0)" ;;
+    5) echo "pinned: skipped (the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry, or pass --pin for the GUI pin, which steals focus)" ;;
     *) echo "pinned: skipped ('Pin Coding Note' shortcut run failed; pass --pin for GUI pin, which steals focus)" ;;
   esac
   exit 0

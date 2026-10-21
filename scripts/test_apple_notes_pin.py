@@ -22,6 +22,10 @@ decision block are cut out of scripts/apple-notes-coding.sh and run in a harness
 PATH, so the assertions cover the shipped text and not a copy of it.  Nothing here touches Notes, and it
 runs anywhere bash and python3 exist.
 
+AFC-436 adds the Shortcuts-app precondition to the same harness:  `open` and `pgrep` are stubbed as well, so
+the test records that the app was asked to open in the background, and never launches the real app on the
+host.  The precondition was live-only until AFC-436, and the AFC-431 rewrite of _run_note_shortcut dropped it.
+
 Run:  cd scripts && python3 -m unittest test_apple_notes_pin
 """
 
@@ -29,6 +33,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -47,6 +52,7 @@ n=0
 if [ -f "$STUB_COUNTER" ]; then n=$(cat "$STUB_COUNTER"); fi
 n=$((n+1))
 printf '%s' "$n" > "$STUB_COUNTER"
+if [ "${STUB_HANG:-0}" = "1" ]; then sleep 30; exit 0; fi
 if [ "${STUB_FAIL_FIRST:-0}" -gt 0 ] && [ "$n" -le "${STUB_FAIL_FIRST:-0}" ]; then exit 1; fi
 exit 0
 """
@@ -58,6 +64,21 @@ printf x >> "$STUB_COUNTER.knob"
 printf '%s\\n' "${STUB_KNOB}"
 """
 
+#  a stand-in for `pgrep -x Shortcuts`,  which tells the script whether the Shortcuts app is up.
+#  Without this stub the test would find the real Shortcuts app on the host and skip the open.
+PGREP_STUB = """#!/bin/bash
+if [ "${STUB_SHORTCUTS_RUNNING:-0}" = "1" ]; then exit 0; fi
+if [ -f "$STUB_COUNTER.running" ]; then exit 0; fi
+exit 1
+"""
+
+#  a stand-in for `open -g -a Shortcuts`,  which records the request and marks the app as up
+OPEN_STUB = """#!/bin/bash
+printf '%s\\n' "$*" >> "$STUB_COUNTER.open"
+: > "$STUB_COUNTER.running"
+exit 0
+"""
+
 HARNESS = """set -uo pipefail
 TITLE="AFC test note"
 MODE="${HARNESS_MODE:-update}"
@@ -66,6 +87,8 @@ APPLE_NOTES_PIN="${HARNESS_APPLE_NOTES_PIN:-1}"
 #  the knob's resolved value, as the caller forwards it:  set here so the tests never shell out to
 #  fleet_knobs, and so APPLE_NOTES_PIN_RETRY in the environment keeps meaning a narrowing override
 APPLE_NOTES_PIN_RETRY="${HARNESS_APPLE_NOTES_PIN_RETRY-1}"
+#  the bound one Shortcuts invocation runs under,  as the helper sets it
+NOTES_SHORTCUT_TIMEOUT_S="${HARNESS_SHORTCUT_TIMEOUT_S:-30}"
 #  the real block waits 2 s for the note index and 3 s between attempts;  the test only needs the shape
 sleep() { :; }
 {function}
@@ -81,12 +104,26 @@ def _extract(source: str) -> tuple[str, str]:
     """
     knob = re.search(r"^_PIN_RETRY=\"\"\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
     fn = re.search(r"^_run_note_shortcut\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
+    #  the Shortcuts-app precondition is optional:  it was live-only until AFC-436 put it in the
+    #  canonical script,  so the extraction still works against a script that does not have it
+    ensure = re.search(
+        r"^_ensure_shortcuts_running\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE
+    )
+    #  the bounded Shortcut runner is optional for the same reason:  it came with AFC-436
+    bounded = re.search(
+        r"^_run_shortcuts_bounded\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE
+    )
     assert fn, "the _run_note_shortcut function is gone from apple-notes-coding.sh"
     assert knob, "the _pin_retry_on knob resolver is gone from apple-notes-coding.sh"
     start = source.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.")
     want = source.index('if [[ "$WANT_PIN" != "1" ]]; then')
     end = source.index("\nfi\n", want) + len("\nfi\n")
-    return knob.group(0) + fn.group(0), source[start:end]
+    parts = knob.group(0)
+    if ensure:
+        parts += ensure.group(0)
+    if bounded:
+        parts += bounded.group(0)
+    return parts + fn.group(0), source[start:end]
 
 
 def _extract_unpin(source: str) -> str:
@@ -118,6 +155,12 @@ class PinDecisionTests(unittest.TestCase):
             stub = bindir / "shortcuts"
             stub.write_text(STUB)
             stub.chmod(0o700)
+            #  the script opens the Shortcuts app in the background before the run,  so `open` and
+            #  `pgrep` are stubbed too:  the test must never launch the real app on the host
+            for name, body in (("pgrep", PGREP_STUB), ("open", OPEN_STUB)):
+                side = bindir / name
+                side.write_text(body)
+                side.chmod(0o700)
             if "STUB_KNOB" in env:
                 #  the script reads the knob through the fleet_knobs package next to it and the
                 #  python3 that runs it:  both live here, so `python3 -m fleet_knobs get` is the stub
@@ -137,6 +180,17 @@ class PinDecisionTests(unittest.TestCase):
             child = dict(os.environ)
             child["PATH"] = f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}"
             child["STUB_COUNTER"] = str(counter)
+            if env.get("NO_PERL"):
+                #  A host without perl:  the bound on a Shortcut run comes from an alarm,  and it
+                #  must not depend on perl alone.  Only the tools the pin block needs are linked
+                #  in,  and perl is deliberately left out of the PATH.
+                plain = Path(tmp) / "plain"
+                plain.mkdir(mode=0o700)
+                for name in ("bash", "cat", "grep", "mktemp", "python3", "rm", "sleep"):
+                    found = shutil.which(name)
+                    self.assertIsNotNone(found, f"{name} is missing on this host")
+                    (plain / name).symlink_to(found)
+                child["PATH"] = f"{bindir}:{plain}"
             child.update(env)
             if env.get("STUB_MANAGED_KNOBS"):
                 child["HOME"] = tmp
@@ -152,12 +206,36 @@ class PinDecisionTests(unittest.TestCase):
             runs = int(counter.read_text()) if counter.exists() else 0
             marker = Path(str(counter) + ".knob")
             self.knob_reads = len(marker.read_text()) if marker.exists() else 0
+            opened = Path(str(counter) + ".open")
+            self.opens = opened.read_text().splitlines() if opened.exists() else []
             return p, runs
 
     def test_a_working_shortcut_pins_the_note_on_the_first_try(self):
         p, runs = self.run_block()
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("pinned: yes", p.stdout)
+        self.assertEqual(runs, 1)
+
+    def test_the_shortcuts_app_is_opened_in_the_background_when_it_is_not_running(self):
+        """The Find Notes action is an app intent served by the Shortcuts app itself.
+
+        With that app closed the intent cannot be dispatched, and the shortcut fails for every
+        title, including one that does not exist.  The app is opened with `open -g`, so it does
+        not steal focus.  This precondition was live-only until AFC-436 put it in the canonical
+        script, and the AFC-431 rewrite of _run_note_shortcut dropped it.
+        """
+        p, runs = self.run_block()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pinned: yes", p.stdout)
+        self.assertTrue(self.opens, "the Shortcuts app was never opened")
+        self.assertIn("-g", self.opens[0])
+        self.assertIn("Shortcuts", self.opens[0])
+
+    def test_the_shortcuts_app_is_not_opened_when_it_is_already_running(self):
+        p, runs = self.run_block(STUB_SHORTCUTS_RUNNING="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pinned: yes", p.stdout)
+        self.assertEqual(self.opens, [], "the app was opened although it was already up")
         self.assertEqual(runs, 1)
 
     def test_a_failed_first_run_is_retried_and_the_note_ends_up_pinned(self):
@@ -174,6 +252,35 @@ class PinDecisionTests(unittest.TestCase):
         self.assertNotIn("is not installed", p.stdout)
         self.assertIn("ran but did not complete", p.stderr)
         self.assertEqual(runs, 2)
+
+    def test_a_hanging_shortcut_is_bounded_and_reported_as_a_run_failure(self):
+        """The Shortcut can wait on a note picker on the owner's screen.
+
+        An unbounded run can outlast the caller's cap:  the note is written and the caller is
+        then told the outcome is unknown and refuses the retry of a request that did succeed.
+        The run is bounded instead,  and the bound is reported as a failed run,  not as a
+        missing Shortcut (AFC-436).
+        """
+        p, runs = self.run_block(STUB_HANG="1", HARNESS_SHORTCUT_TIMEOUT_S="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("ran but did not complete", p.stderr)
+        self.assertIn("shortcut run failed", p.stdout)
+        self.assertNotIn("is not installed", p.stdout)
+        self.assertEqual(runs, 2, "the hanging run was not retried once")
+
+    def test_a_host_without_perl_bounds_the_run_all_the_same(self):
+        """The bound on a Shortcut run is an alarm,  and it must not depend on perl alone.
+
+        macOS ships perl,  but the run was unbounded without it,  and an unbounded run can
+        outlast the caller's cap:  the note is written and the caller is then told the outcome
+        is unknown and refuses the retry of a request that did succeed (AFC-436).
+        """
+        p, runs = self.run_block(NO_PERL="1", STUB_HANG="1", HARNESS_SHORTCUT_TIMEOUT_S="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("ran but did not complete", p.stderr)
+        self.assertIn("shortcut run failed", p.stdout)
+        self.assertNotIn("is not installed", p.stdout)
+        self.assertEqual(runs, 2, "the hanging run was not retried once")
 
     def test_a_missing_shortcut_is_named_as_a_missing_shortcut(self):
         p, runs = self.run_block(STUB_INSTALLED="0")

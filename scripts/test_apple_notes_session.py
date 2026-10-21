@@ -422,6 +422,176 @@ class SessionIdTests(unittest.TestCase):
         )
         self.assertNotIn("TOPSECRETBODY", p.stderr + p.stdout)
 
+    def test_four_concurrent_script_runs_do_not_collide(self):
+        """Owner 2026-10-19 (AFC-422):  four rapid notes writes on one Mac must not trip over a temp file.
+
+        The bug was the helper quoting `mktemp /tmp/foo.XXXXXX.py` in a way that made macOS
+        return a FIXED path, so two seats writing at once wrote the same converter file.  The
+        fix is in `_convert_body_to_html` (`scripts/apple-notes-coding.sh`):  a private
+        `mktemp -d` per call, so the converter inside it is unique and a stale directory can
+        never break the next call.
+
+        This drives the real script rather than re-implementing `mktemp`.  A test that shells out
+        to `mktemp` directly passes even if the script regresses to the fixed-path pattern, so it
+        guards nothing.  The script runs under `bash -x` and the expanded converter path is read
+        back out of the trace, which shows the actual per-call directory.
+        """
+        import os
+        import re
+        import subprocess
+        import tempfile
+        import threading
+
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apple-notes-coding.sh")
+        import signal
+
+        temporary = tempfile.TemporaryDirectory(prefix="afc422-")
+        self.addCleanup(temporary.cleanup)
+        names = [f"conc-id-{i:04d}" for i in range(4)]
+        live = set()
+        lock = threading.Lock()
+        cancelled = threading.Event()
+        results = {}
+
+        def stop(proc):
+            # A shell may exit while its converter still holds the pipes.  The
+            # private process group lets interruption clean up both processes.
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait(timeout=5)
+
+        def worker(name):
+            env = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "HOME": temporary.name,
+                "APPLE_NOTES_PRINT_HTML": "1",
+                "AGENT_SESSION": name,
+                "AGENT_SEAT": "CLAUDE",
+                "LANG": "en_US.UTF-8",
+            }
+            cmd = ["bash", "-x", script, f"[AFC, CLAUDE] Notes {name}", f"Body of {name}."]
+            with lock:
+                if cancelled.is_set():
+                    return
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                )
+                live.add(proc)
+            try:
+                out, err = proc.communicate(timeout=60)
+                with lock:
+                    results[name] = (proc.returncode, out, err)
+            except BaseException:
+                stop(proc)
+                raise
+            finally:
+                with lock:
+                    live.discard(proc)
+
+        threads = [threading.Thread(target=worker, args=(name,), daemon=True) for name in names]
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=70)
+                self.assertFalse(thread.is_alive(), "concurrent note helper did not finish")
+        finally:
+            with lock:
+                cancelled.set()
+                pending = list(live)
+            for proc in pending:
+                stop(proc)
+            for thread in threads:
+                if thread.ident is not None:
+                    thread.join(timeout=5)
+
+        self.assertEqual(sorted(results), sorted(names))
+
+        converter_re = re.compile(r"(/tmp/apple-notes-md\.[A-Za-z0-9]+)/convert\.py")
+        paths = []
+        for name in names:
+            rc, out, err = results[name]
+            self.assertEqual(rc, 0, f"{name} exited {rc}: {err[-400:]}")
+            # The body that went in is the body that came out:  no clobbering.
+            self.assertIn(f"Body of {name}.", out)
+            self.assertIn("Session: " + name, out)
+            # The trace names the directory once per reference;  one call means one directory.
+            found = set(converter_re.findall(err))
+            self.assertEqual(
+                len(found), 1, f"{name} used {len(found)} converter directories: {found}"
+            )
+            paths.extend(found)
+
+        # Every call used its OWN directory.  A shared one is the original bug.
+        self.assertEqual(len(paths), len(names))
+        self.assertEqual(len(set(paths)), len(names))
+
+        # The converter file inside each directory is removed, so a later call cannot inherit it.
+        # (The directory itself is removed too, but Finder drops a .DS_Store into new /tmp
+        # subdirectories and `rmdir` cannot clear that;  that is /tmp litter, not the collision fix.)
+        for path in set(paths):
+            self.assertFalse(
+                os.path.exists(os.path.join(path, "convert.py")),
+                f"{path}/convert.py was left behind",
+            )
+
+
+class TitleSecretScanTests(unittest.TestCase):
+    """AFC-422:  the title reaches AppleScript source, the relay envelope, the owner notification and
+    stderr, so a credential pasted into it would leak four ways.  It is rejected before any of those,
+    and the rejection never echoes the value:  a complaint that printed the title would put the
+    credential into the very log it exists to protect."""
+
+    def run_script(self, title, body="Body."):
+        env = dict(os.environ, APPLE_NOTES_PRINT_HTML="1", AGENT_SESSION="scan-test-session-01")
+        return subprocess.run(
+            ["/bin/bash", str(SCRIPT), title, body],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+
+    def test_a_credential_shaped_title_is_refused_and_the_value_is_never_echoed(self):
+        for secret in (
+            "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            "AKIAIOSFODNN7EXAMPLE",
+            "sk-abcdefghijklmnopqrstuvwxyz0123",
+            "api_key: ZZZZZZZZZZZZZZZZZZZZ",
+        ):
+            with self.subTest(secret[:6]):
+                out = self.run_script(f"[AFC, MM] rollout {secret}")
+                self.assertEqual(out.returncode, 2, out.stderr[-300:])
+                self.assertIn("field 'title' rejected", out.stderr)
+                self.assertNotIn(secret, out.stdout + out.stderr)
+
+    def test_an_ordinary_title_is_accepted_and_still_converts(self):
+        for title in (
+            "[AFC, MM] Notes Title Ruling",
+            "[AFC, CT, Grok Web] token rotation notes",
+            "[AFC, Claude] roadmap",
+        ):
+            with self.subTest(title):
+                out = self.run_script(title, "Body of the note.")
+                self.assertEqual(out.returncode, 0, out.stderr[-300:])
+                self.assertIn("Body of the note.", out.stdout)
+
 
 class NotesSafeHTMLTests(unittest.TestCase):
     run_script = SessionIdTests.run_script

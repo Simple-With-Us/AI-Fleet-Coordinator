@@ -7,6 +7,10 @@ from pathlib import Path
 
 OPERATOR = "OPERATOR"
 PROJECT_ENV = "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"
+#: The Infisical folder that holds the Operator's own three names.  The seat keys
+#: are in /zulip; the Operator keeps its own folder, so the read has to name the
+#: folder or the names are not there to be found.
+OPERATOR_INFISICAL_PATH = "/zulip_operator"
 
 
 def operator_identity(env):
@@ -65,6 +69,7 @@ def operator_credentials(env, home=None, fetch=None):
                     names,
                     child,
                     home if home is not None else Path(env.get("HOME") or os.path.expanduser("~")),
+                    OPERATOR_INFISICAL_PATH,
                 )
             except Z.CredentialError as exc:  # a reason token, never a value
                 raise Z.CredentialError(f"{where}: {exc}") from None

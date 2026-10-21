@@ -16,6 +16,7 @@ import os
 import re
 import signal
 import socket
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ from . import chat_transport as CT
 from . import config as C
 from . import heldback as HELD
 from . import identity as I
-from . import launchd
+from . import launchd, systemd
 from . import listener_records as LR
 from . import live as L
 from . import wakes as W
@@ -185,12 +186,21 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         if not getattr(args, "target_seat", None) or Z.normalise_seat(args.target_seat) not in (
             "GROK",
             "CURSOR",
+            "CODEX",
         ):
-            raise Z.UsageError("daemon chats requires --target-seat GROK or CURSOR")
+            raise Z.UsageError("daemon chats requires --target-seat GROK, CURSOR or CODEX")
         registry = CN.ChatNudges(root, Z.normalise_seat(args.target_seat), recover=False)
         action = args.chats_action
         if action == "list":
-            if Z.normalise_seat(args.target_seat) == "CURSOR":
+            if Z.normalise_seat(args.target_seat) == "CODEX":
+                from .chat_catalog import ChatCatalog
+
+                rows = [
+                    row
+                    for row in ChatCatalog(home=_home(rt), max_records=120).discover()
+                    if row.get("platform") == "codex"
+                ]
+            elif Z.normalise_seat(args.target_seat) == "CURSOR":
                 from .cursor_chat_transport import CursorCloudTransport
 
                 rows = CursorCloudTransport().discover()
@@ -215,6 +225,14 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
             removed = registry.unbind(args.channel, args.topic)
             rt.out("unbound\n" if removed else "no binding\n")
             return 0
+        if action == "retry":
+            released = registry.retry(args.item_id, time.time())
+            rt.out(
+                "hold released; delivery gates will be rechecked\n"
+                if released
+                else "not retryable (requires a pending held item)\n"
+            )
+            return 0 if released else 1
         if action == "cancel":
             cancelled = registry.cancel(args.item_id, time.time())
             rt.out(
@@ -226,7 +244,7 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         if action == "bind":
             if Z.normalise_seat(args.target_seat) != "GROK":
                 raise Z.UsageError(
-                    "manual binding currently requires GROK; Cursor Cloud uses catalog selection"
+                    "manual binding currently requires GROK; Cursor Cloud and Codex use catalog selection"
                 )
             host = socket.gethostname()
             target = next(
@@ -258,12 +276,25 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         return Daemon(env=env, root=root, home=_home(rt), stderr=rt.stderr, stdout=rt.stdout).run(
             wait_lock=bool(getattr(args, "wait_lock", False))
         )
+    if sub in ("install", "uninstall"):
+        if sys.platform == "darwin":
+            service = launchd
+        elif sys.platform.startswith("linux"):
+            service = systemd
+        else:
+            raise Z.UsageError("daemon installation supports only macOS and Linux")
     if sub == "install":
-        return launchd.install(
-            rt.env, _home(rt), rt.stdout, dry_run=args.dry_run, python=args.python, program=args.bin
+        return service.install(
+            rt.env,
+            _home(rt),
+            rt.stdout,
+            dry_run=args.dry_run,
+            python=args.python,
+            program=args.bin,
+            **({"err": rt.stderr} if service is systemd else {}),
         )
     if sub == "uninstall":
-        return launchd.uninstall(_home(rt), rt.stdout, dry_run=args.dry_run)
+        return service.uninstall(_home(rt), rt.stdout, dry_run=args.dry_run)
     if sub == "status":
         return cmd_status(rt, args)
     if sub == "pause":
@@ -325,6 +356,8 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
         "plugin": {"repo": repo_version, "installed": installed_plugin_version(home)},
         "launch_agent": os.path.exists(launchd.plist_path(home)),
     }
+    if sys.platform.startswith("linux"):
+        info["systemd_user_service"] = systemd.status(home)
     probe_result: dict[str, Any] | None = None
     if getattr(args, "probe", False):
         probe_result = run_probe(rt, args, root, bool(pid))
@@ -336,11 +369,25 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
         "listener: %s%s"
         % ("running" if pid else "not running", " (pid %d)" % pid if pid and pid > 0 else "")
     ]
-    lines.append(
-        "LaunchAgent: %s" % ("installed" if info["launch_agent"] else "not installed")
-        + "; plugin: repo %s, installed %s"
-        % (repo_version or "?", info["plugin"]["installed"] or "no")
+    if "systemd_user_service" in info:
+        service_info = info["systemd_user_service"]
+        lines.append(
+            "systemd user service: %s; state: %s"
+            % (
+                "installed" if service_info["installed"] else "not installed",
+                service_info["active_state"],
+            )
+        )
+    plugin_line = "plugin: repo %s, installed %s" % (
+        repo_version or "?",
+        info["plugin"]["installed"] or "no",
     )
+    if sys.platform == "darwin":
+        plugin_line = (
+            "LaunchAgent: %s; " % ("installed" if info["launch_agent"] else "not installed")
+            + plugin_line
+        )
+    lines.append(plugin_line)
     if status:
         lines.append(
             "status updated %s; instance %s; owner pinned: %s; rewake verified: terminal %s, Desktop %s"
@@ -770,7 +817,11 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
             if is_mcode
             else (A.muse_pin_candidate if is_muse else A.pin_candidate)
         )
-        problem = pin_fn(paths, binary, time.time())
+        problem = (
+            A.mcode_pin_candidate(paths, binary, time.time(), model=seat_cfg.mcode_model)
+            if is_mcode
+            else pin_fn(paths, binary, time.time())
+        )
         if problem:
             rt.out("NOT PINNED: %s\n" % problem)
             return 1
@@ -788,9 +839,9 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         elif is_mcode:
             pin = L.read_json(paths.wake_pin_mcode)
             rt.out(
-                "pinned %s for %s as the FALLBACK (fallback-only:  mcode has no sandbox toggle and no "
-                "--disable-shell/--disable-write/--disable-web-tools, and cannot be HOME-isolated)\n"
-                % (binary, seat)
+                "pinned %s for %s as the FALLBACK (model %s;  fallback-only:  mcode has no sandbox "
+                "toggle and no --disable-shell/--disable-write/--disable-web-tools, and cannot be "
+                "HOME-isolated)\n" % (binary, seat, pin.get("model") or seat_cfg.mcode_model)
             )
         else:
             pin = L.read_json(paths.wake_pin)
@@ -839,7 +890,7 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
     argv = (
         A.muse_argv(binary, seat_cfg.model)
         if is_muse
-        else A.mcode_argv(binary)
+        else A.mcode_argv(binary, seat_cfg.mcode_model)
         if is_mcode
         else A.claude_argv(binary, seat_cfg.model, C.fleet_tags(partition))
     )
@@ -917,7 +968,7 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
         if is_muse:
             A.record_muse_candidate(paths, binary, time.time(), model=seat_cfg.model)
         elif is_mcode:
-            A.record_mcode_candidate(paths, binary, time.time(), model=seat_cfg.model)
+            A.record_mcode_candidate(paths, binary, time.time(), model=seat_cfg.mcode_model)
         else:
             A.record_candidate(
                 paths,
@@ -1351,19 +1402,21 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     )
     q = add(
         "install",
-        "write the LaunchAgent plist and a sample listener.toml; prints the launchctl command",
+        "write the platform service and sample listener.toml; prints activation commands",
         dsub,
     )
     q.add_argument("--dry-run", action="store_true", help="only print what would change")
     q.add_argument(
         "--python",
         metavar="PATH",
-        help="python 3.11+ for the plist (default: %s)" % launchd.DEFAULT_PYTHON,
+        default=None,
+        help="python 3.11+ for the service (default: %s)"
+        % (systemd.DEFAULT_PYTHON if sys.platform.startswith("linux") else launchd.DEFAULT_PYTHON),
     )
     q.add_argument(
         "--bin", metavar="PATH", help="the agent-sync program (default: ~/.local/bin/agent-sync)"
     )
-    q = add("uninstall", "remove the LaunchAgent plist; prints the launchctl bootout command", dsub)
+    q = add("uninstall", "remove the platform service; prints stop commands", dsub)
     q.add_argument("--dry-run", action="store_true", help="only print what would change")
     q = add(
         "status",
@@ -1385,7 +1438,7 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     c.add_argument("--chat-id", required=True)
     for action in ("list", "status"):
         c = csub.add_parser(action, parents=[common])
-        c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR")
+        c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR|CODEX")
     c = csub.add_parser("bind", parents=[common])
     c.add_argument("--target-seat", required=True, metavar="GROK")
     c.add_argument("--channel", required=True)
@@ -1393,11 +1446,14 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     c.add_argument("--session-id", required=True)
     c.add_argument("--cwd", required=True)
     c = csub.add_parser("unbind", parents=[common])
-    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR")
+    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR|CODEX")
     c.add_argument("--channel", required=True)
     c.add_argument("--topic", required=True)
+    c = csub.add_parser("retry", parents=[common])
+    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR|CODEX")
+    c.add_argument("--item-id", required=True)
     c = csub.add_parser("cancel", parents=[common])
-    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR")
+    c.add_argument("--target-seat", required=True, metavar="GROK|CURSOR|CODEX")
     c.add_argument("--item-id", required=True)
     q = add("init", "pin owner_user_id and eligible_user_ids in listener.toml (asks first)", dsub)
     q.add_argument(

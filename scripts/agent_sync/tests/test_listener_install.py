@@ -12,6 +12,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent_sync import config as C
 from agent_sync import live as L
@@ -23,6 +24,12 @@ ENTRY = REPO / "scripts" / "agent-sync"
 
 
 class InstallTests(ListenerHarness):
+    def setUp(self):
+        super().setUp()
+        platform = patch("agent_sync.listener_cli.sys.platform", "darwin")
+        platform.start()
+        self.addCleanup(platform.stop)
+
     def install_env(self):
         return self.env(AGENT_SYNC_STATE_DIR=None)
 

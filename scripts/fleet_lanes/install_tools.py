@@ -18,12 +18,12 @@ non-zero, times out, or prints nothing is a FAIL.
     python3 -m fleet_lanes.install_tools verify [--home H] [tools | PLATFORM ... | all]
     python3 -m fleet_lanes.install_tools --self-test
 
-PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch, kimi, copilot, vibe, opencode
+PLATFORM is claude, codex, grok, antigravity, cursor, minimax (alias mm), muse, clutch, kimi, copilot, opencode
 or fx.  The first five get a hook entry in their config file.  minimax is a plugin DIRECTORY that this tool owns:
 MiniMax Code reads no settings
 file for hooks, it loads them from a real directory under ~/.minimax/plugins/<name>/ (a symlink is skipped), so `apply
 minimax` writes ~/.minimax/plugins/fleet-guard/ (.claude-plugin/plugin.json and hooks/hooks.json: PreToolUse, matcher
-Bash, the fleet hook with --format claude), refuses a directory it did not write, and `verify minimax` runs the command
+Bash|Read|Write|Edit|bash|read|write|edit, its own minimax-guard-hook), refuses a directory it did not write, and `verify minimax` runs the command
 it reads back out of that hooks.json.  muse is different: Muse Code takes hooks from a PLUGIN, so `apply tools` writes a plugin
 bundle into the stable dir (with everything else, atomically), `plan muse` shows it and the OWNER ACTIONS
 that finish the job, `apply muse` is `apply tools` (the bundle is part of the stable copy, and an unchanged
@@ -34,17 +34,13 @@ found on PATH, with HOME, the XDG dirs, TMPDIR and Muse's credential path inside
 caller's XDG_ or MUSE_ variables except the plugin switch, and MUSE_NO_AUTO_UPDATE=1 and MUSE_LOGIN=0 (see
 muse_validate_env).  That is confined, not proven read-only: the launcher still runs from its own install dir.
 `all` is `tools` plus the five config platforms plus minimax (an own directory, no owner step afterwards), plus
-copilot, vibe, opencode and fx.  `apply` needs a target; `plan` defaults to all plus muse, clutch
+copilot, opencode and fx.  `apply` needs a target; `plan` defaults to all plus muse, clutch
 and kimi, and `verify` the same.
 
-copilot, vibe, opencode and fx (AFC-387).  copilot is a fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json
+copilot, opencode and fx (AFC-387).  copilot is a fleet-owned file, ~/.copilot/hooks/fleet-lane-guard.json
 (version 1, hooks.PreToolUse, matcher Bash, the fleet hook with --format claude and timeoutSec 5); this tool never
 edits ~/.copilot/settings.json, and whether Copilot fires a preToolUse hook at all is UNVERIFIED on this Mac, so the
-first install is owner-gated and `verify copilot` ends with a SKIP for the live proof.  vibe is a marked [[hooks]]
-block in ~/.vibe/hooks.toml (name fleet-lane-guard, type before_tool, match bash, the fleet hook with --format vibe,
-timeout 5, strict true) plus the gate `enable_experimental_hooks = true` in ~/.vibe/config.toml, without which Vibe
-loads no hooks at all; `match` is bash because that is Vibe's shell tool name, and a wrong exact name would
-silently never fire.  Vibe is an engine-only CLI with no fleet seat, so no seat is claimed for it.  opencode is a
+first install is owner-gated and `verify copilot` ends with a SKIP for the live proof.  opencode is a
 local TypeScript plugin in the stable dir (opencode-plugin/fleet-lane-guard.ts) listed by absolute path in the
 plugin array of ~/.config/opencode/opencode.json; it inspects tool.execute.before and denies through
 permission.ask, and whether permission.ask is reached for a denied call is UNVERIFIED.  fx has NO hook surface at
@@ -271,6 +267,7 @@ EXIT_USAGE = 64
 
 PACKAGE = "fleet_lanes"
 HOOK_NAME = "lane-guard-hook"
+MINIMAX_HOOK_NAME = "minimax-guard-hook"
 FLEET_HOOK_NAME = "fleet-guard-hook"  # the lane guard and the secret guard in one command
 SECRET_GUARD_MODULE = "secret_guard.py"  # fleet_lanes/secret_guard.py in the stable copy
 SECRET_GUARD_SOURCE = ("hooks", "secret-guard-pretooluse.py")  # under the source's scripts dir
@@ -290,9 +287,6 @@ MINIMAX_HOOK_TIMEOUT_S = (
 )
 PLATFORM_ALIASES = {"mm": "minimax"}  # the seat tag works as a target
 COPILOT_HOOKS_REL = ".copilot/hooks/fleet-lane-guard.json"  # a fleet-owned file; ~/.copilot/settings.json is not ours
-VIBE_CONFIG_REL = ".vibe/config.toml"  # holds only the enable_experimental_hooks gate for this tool
-VIBE_HOOKS_REL = ".vibe/hooks.toml"
-VIBE_SHELL_TOOL = "bash"  # Vibe's shell tool name; a wrong exact name silently never fires
 OPENCODE_CONFIG_REL = ".config/opencode/opencode.json"
 OPENCODE_PLUGIN_FILE = "opencode-plugin/fleet-lane-guard.ts"  # relative to the stable dir
 OPENCODE_PLUGIN_ID = "fleet-lane-guard"
@@ -316,6 +310,7 @@ REQUIRED_MODULES = (
     "guard.py",
     "lane_guard_hook.py",
     "fleet_guard_hook.py",
+    "minimax_guard_hook.py",
 )
 LANE_MODULE = "lane.py"
 AG_GROUP = "lane-guard"
@@ -398,6 +393,8 @@ _OURS_RE = re.compile(
     + re.escape(HOOK_NAME)
     + "|"
     + re.escape(FLEET_HOOK_NAME)
+    + "|"
+    + re.escape(MINIMAX_HOOK_NAME)
     + r")(?=$|[\s'\"])"
 )
 
@@ -461,14 +458,6 @@ class Paths:
     @property
     def copilot_hooks(self) -> str:
         return os.path.join(self.home, *COPILOT_HOOKS_REL.split("/"))
-
-    @property
-    def vibe_config(self) -> str:
-        return os.path.join(self.home, *VIBE_CONFIG_REL.split("/"))
-
-    @property
-    def vibe_hooks(self) -> str:
-        return os.path.join(self.home, *VIBE_HOOKS_REL.split("/"))
 
     @property
     def opencode_config(self) -> str:
@@ -1196,17 +1185,17 @@ const deniedCalls = new Map<string, string>();
 type AnyRecord = Record<string, unknown>;
 
 // Tool-call data and permission prompts are untrusted and walked recursively, so the walk
-// carries bounds:  a payload that is too large, too deep, too wide, or cyclic is refused
-// before it can exhaust the stack or the CPU ahead of the guard.
+// carries bounds:  the depth, width and cycle ceilings apply to every payload, and the byte
+// ceiling applies to the extracted command and to the whole permission prompt.  Anything
+// over a ceiling is refused before it can exhaust the stack or the CPU ahead of the guard.
 const MAX_COMMAND_INPUT_BYTES = 64 * 1024;
 const MAX_COMMAND_INPUT_DEPTH = 16;
 const MAX_COMMAND_INPUT_NODES = 1000;
 
-// checkInputBounds refuses an untrusted document that is over any of those ceilings:  the
-// walk counts the nodes, measures the depth and finds a cycle, and the byte ceiling
-// measures the whole payload.  Every walk of untrusted input goes through it, so a second
-// caller cannot forget the bounds, and it runs before any field of the document is read.
-function checkInputBounds(value: unknown, label: string): void {
+// checkInputStructure refuses an untrusted document that is too deep, too wide or cyclic:
+// the walk counts the nodes, measures the depth and finds a cycle, and it runs before any
+// field of the document is read.
+function checkInputStructure(value: unknown, label: string): void {
   const seen = new WeakSet<object>();
   let nodes = 0;
   const walk = (current: unknown, depth: number): void => {
@@ -1230,6 +1219,13 @@ function checkInputBounds(value: unknown, label: string): void {
     seen.delete(current);
   };
   walk(value, 0);
+}
+
+// checkInputBounds adds the byte ceiling on the whole payload for callers whose input is a
+// bounded document (the permission prompt).  Every walk of untrusted input goes through one
+// of the two, so a second caller cannot forget the bounds.
+function checkInputBounds(value: unknown, label: string): void {
+  checkInputStructure(value, label);
   let serialized: string | undefined;
   try {
     serialized = JSON.stringify(value);
@@ -1242,9 +1238,13 @@ function checkInputBounds(value: unknown, label: string): void {
 }
 
 function commandFrom(value: unknown): string | null {
-  // The bounds are checked first, so the walk below is never handed a document that is
-  // too deep, too wide or cyclic.
-  checkInputBounds(value, "OpenCode command input");
+  // Structural bounds guard the walk below;  the byte ceiling is applied to the extracted
+  // command, not the whole payload.  The hook keys on the presence of a command rather
+  // than a tool name because OpenCode's shell tool name is not confirmed (v2 research
+  // recorded `shell`, current builds `bash`), and a file write or edit can legitimately
+  // carry more than 64 KiB of content:  a whole-payload ceiling would deny a call the
+  // guard never ruled on (sentry #757).
+  checkInputStructure(value, "OpenCode tool input");
   const walk = (current: unknown): string | null => {
     if (typeof current === "string") return current;
     if (Array.isArray(current)) {
@@ -1262,7 +1262,11 @@ function commandFrom(value: unknown): string | null {
     }
     return null;
   };
-  return walk(value);
+  const command = walk(value);
+  if (command !== null && Buffer.byteLength(command, "utf8") > MAX_COMMAND_INPUT_BYTES) {
+    throw new TypeError("OpenCode command input exceeds 64 KiB");
+  }
+  return command;
 }
 
 function cwdFrom(value: unknown, fallback: string): string {
@@ -1596,6 +1600,15 @@ def hook_command(paths: Paths, fmt: str) -> str:
     return f"{shlex.quote(paths.hook_shim)} --format {fmt}"
 
 
+def render_minimax_hook_shim() -> str:
+    """MM owns its adapter.  No shell prefilter: native file paths need Python too."""
+    return render_hook_shim(
+        GuardFacts(),
+        module=f"{PACKAGE}.minimax_guard_hook",
+        purpose=("# MiniMax shell and file guards.  No seat is assigned or overwritten here.",),
+    )
+
+
 def fleet_hook_command(paths: Paths, fmt: str) -> str:
     """The fleet hook (lane guard plus secret guard) as a command string."""
     return f"{shlex.quote(paths.fleet_shim)} --format {fmt}"
@@ -1657,6 +1670,7 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
     facts = read_guard_facts(src.scripts_dir)
     files[HOOK_NAME] = render_hook_shim(facts).encode("utf-8")
     files[FLEET_HOOK_NAME] = render_fleet_hook_shim(facts).encode("utf-8")
+    files[MINIMAX_HOOK_NAME] = render_minimax_hook_shim().encode("utf-8")
     secret_src = os.path.join(src.scripts_dir, *SECRET_GUARD_SOURCE)
     try:
         files[f"{PACKAGE}/{SECRET_GUARD_MODULE}"] = _read_bytes(secret_src)
@@ -1677,7 +1691,11 @@ def build_files(src: Source, paths: Paths) -> dict[str, bytes]:
 
 
 def file_mode(rel: str) -> int:
-    return 0o755 if rel in (HOOK_NAME, FLEET_HOOK_NAME, MUSE_SEAT_NAME, MUSE_WRAPPER) else 0o644
+    return (
+        0o755
+        if rel in (HOOK_NAME, FLEET_HOOK_NAME, MINIMAX_HOOK_NAME, MUSE_SEAT_NAME, MUSE_WRAPPER)
+        else 0o644
+    )
 
 
 def read_tree(root: str) -> dict[str, bytes]:
@@ -1700,6 +1718,7 @@ _TOP_FILES = (
     REGISTRY_NAME,
     HOOK_NAME,
     FLEET_HOOK_NAME,
+    MINIMAX_HOOK_NAME,
     CLUTCH_HOOKS_FILE,
     OPENCODE_PLUGIN_FILE,
 ) + _MUSE_FILES
@@ -2114,7 +2133,7 @@ def check_deny_output(fmt: str, out: bytes, marker: str = DENY_MARKER) -> str | 
         if hso.get("hookEventName") != "PreToolUse" or hso.get("permissionDecision") != "deny":
             return "hookSpecificOutput is not a PreToolUse deny"
         reason = hso.get("permissionDecisionReason")
-    elif fmt in ("grok", "antigravity", "vibe"):
+    elif fmt in ("grok", "antigravity"):
         if set(body) != {"decision", "reason"} or body.get("decision") != "deny":
             return 'expected exactly {"decision": "deny", "reason": ...}'
         reason = body.get("reason")
@@ -2477,16 +2496,16 @@ PLATFORMS: dict[str, Platform] = {
                 f"MiniMax Code reads no settings.json for hooks.  It loads them from a LOCAL PLUGIN: this tool writes the "
                 f"directory ~/{MINIMAX_PLUGIN_REL}/ (a real directory, copied in, never a symlink: MiniMax skips symlinks) "
                 f"with {MINIMAX_MANIFEST_FILE} and {MINIMAX_HOOKS_FILE}, in the Claude-compatible plugin flavour, so the "
-                "matcher is the Claude tool name `Bash`.  Local plugins are enabled by default: there is no install or "
+                "matchers are the compatible tool names `Bash|Read|Write|Edit|bash|read|write|edit`.  Local plugins are enabled by default: there is no install or "
                 "approve step.  Nothing else under ~/.minimax is touched.",
-                "The hook is the fleet hook (lane guard, then secret guard) with `--format claude`, by absolute path into "
+                "The hook is MM-owned minimax-guard-hook (shared shell policy plus file guards), by absolute path into "
                 "the stable dir.  Deny is the Claude shape; MiniMax honours it, and a timeout, a crash or invalid output "
-                "FAILS OPEN, so only `verify` proves it works.  Hook stdin is Claude-shaped JSON; MiniMax gives a hook only "
+                "FAILS OPEN.  `verify` probes policy; native dispatch remains a separate proof step.  MiniMax gives a hook only "
                 "a small allowlist of environment variables, so no seat or switch reaches it and none is passed.",
                 "It is part of `all` (the owner runs MiniMax Code), and a missing ~/.minimax makes it a skip.  An existing "
                 "directory that holds anything but our two files, or is a symlink, is refused and left alone.",
-                "No SessionStart seat hook is wired: the only one that exists is ~/.claude/monet-sync/session-hook.sh, a "
-                "home-local file with no source in this repo, and this tool installs nothing it cannot copy from the repo.",
+                "No SessionStart seat hook is wired.  MiniMax omits seat variables from hook subprocesses; the adapter never "
+                "assigns MM or overwrites a launcher seat.  Other-seat lane protection requires trusted identity.",
             ),
             unverified=(
                 "That MiniMax Code fires the hook for its shell tool (verify runs the exact command, not MiniMax): the "
@@ -2531,47 +2550,6 @@ PLATFORMS: dict[str, Platform] = {
                 "That Copilot CLI fires a PreToolUse hook from ~/.copilot/hooks/fleet-lane-guard.json at all (only a "
                 "postToolUse firing, from agent-hook-otlp.json, is recorded on this Mac).",
                 "That a running Copilot session picks up the new file: start a new session.",
-            ),
-        ),
-        Platform(
-            "vibe",
-            "Mistral Vibe (hooks.toml plus the experimental-hooks gate)",
-            "vibe",
-            "claude",
-            "claude",
-            "before_tool",
-            VIBE_SHELL_TOOL,
-            ".vibe",
-            VIBE_HOOKS_REL,
-            supported=False,
-            kind="block",
-            in_all=True,
-            notes=(
-                "ONE marked [[hooks]] block in ~/.vibe/hooks.toml: name fleet-lane-guard, type before_tool, match "
-                "bash, the fleet hook with --format vibe (Vibe's deny contract is {decision: deny, reason: ...}), "
-                "timeout 5, strict true, so a hook failure denies too (fail-closed).  Plus `enable_experimental_hooks "
-                "= true` at the top level of ~/.vibe/config.toml: Vibe's hook loader returns no hooks at all while that "
-                "gate is false or absent, which is the only reason Vibe was unguarded.",
-                "match is bash because that is Vibe's shell tool name: the tool's class is `Bash`, `get_name()` "
-                "snake-cases the class name, the live config.toml keys its tool tables by that same name, and a tool "
-                "call only resolves when the name the model sent is the registered one, so the name the hook sees is "
-                "bash.  A wrong exact name silently never fires, so the name is pinned here rather than left as a "
-                "wildcard, and a Vibe that renames the tool would silently stop the hook (the same risk the Kimi "
-                "entry records).",
-                "bash and not * on purpose: strict true turns a hook FAILURE into a deny, so a wildcard would make "
-                "every harmless tool call (read, grep, web_fetch, todo) fail closed whenever the guard process "
-                "misbehaves.  bash keeps that blast radius on the one tool that can run a fleet clone, and the guard "
-                "reads the command from the same payload keys Vibe sends (tool_name, tool_input.command, cwd).",
-                "Vibe is an engine-only CLI with no fleet identity and no seat, so nothing here claims a seat for it; "
-                "this tool only makes the installer able to write the guard and records the state.",
-            ),
-            unverified=(
-                "That Vibe loads a user-level ~/.vibe/hooks.toml and fires a before_tool hook in a live session (the "
-                "mechanism is read from the installed package source, not run): the live proof is a new Vibe session "
-                "asked to run a fleet clone into /tmp, which must be refused.",
-                "That Vibe keeps naming its shell tool `bash`: the name is read from the installed package source and "
-                "the live config.toml, never seen in a live hook firing.  A rename would silently stop the hook.",
-                "That a running Vibe session picks up the new hooks.toml and gate: start a new session.",
             ),
         ),
         Platform(
@@ -2658,7 +2636,6 @@ NEXT_STEPS: dict[str, str] = {
     "copilot": "OWNER STEP (first install): start a new Copilot CLI session, ask it to run a process listing, and "
     "expect a refusal.  No live preToolUse firing is recorded on this Mac, so until that proof exists the guard is "
     "written but UNVERIFIED",
-    "vibe": "start a new Vibe session, ask it to clone a fleet repo into /tmp, and expect a refusal",
     "opencode": "OWNER STEP: start a new OpenCode session, ask it to run a process listing, and expect a refusal.  "
     "Whether permission.ask denies live is UNVERIFIED until that proof exists",
     "fx": "no installer step exists: fx stays RED (UNSUPPORTED) until Jay merges the prepared compensating control "
@@ -3523,7 +3500,13 @@ def apply_tools(
     lane_text = plan.lane_shim_text
     runnable = all(
         os.access(p, os.X_OK)
-        for p in (paths.hook_shim, paths.fleet_shim, paths.muse_seat, paths.muse_wrapper)
+        for p in (
+            paths.hook_shim,
+            paths.fleet_shim,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            paths.muse_seat,
+            paths.muse_wrapper,
+        )
     )
     if (
         plan.state == "current"
@@ -3563,6 +3546,37 @@ def apply_tools(
                     secret=True,
                 )
                 bad.extend(c for c in got if c.status == "FAIL")
+            staged_mm = shlex.quote(os.path.join(stage, MINIMAX_HOOK_NAME))
+            bad.extend(
+                c
+                for c in probe_minimax_files(
+                    staged_mm,
+                    paths.home,
+                    os.path.join(stage, REGISTRY_NAME),
+                    timeout,
+                    minimal_path,
+                    source_registry=src.registry,
+                )
+                if c.status == "FAIL"
+            )
+            # MM has its own adapter, so the shared shell probes above prove nothing for it.  Probe
+            # the staged copy with compatible (Bash) and native (bash) shell payloads, including
+            # secret denials, or a broken decide() shell branch could be swapped in and fail open.
+            for shape in ("claude", "muse"):
+                bad.extend(
+                    c
+                    for c in probe_command(
+                        staged_mm,
+                        target="staged-mm",
+                        fmt="claude",
+                        shape=shape,
+                        home=paths.home,
+                        timeout=timeout,
+                        minimal_path=minimal_path,
+                        secret=True,
+                    )
+                    if c.status == "FAIL"
+                )
             if bad:
                 for c in bad:
                     emit(c.line())
@@ -3957,6 +3971,14 @@ def verify_tools(paths: Paths, *, timeout: float = PROBE_TIMEOUT_S) -> list[Chec
             )
         )
     out.append(_check_shim(t, FLEET_HOOK_NAME, paths.fleet_shim, render_fleet_hook_shim(facts)))
+    out.append(
+        _check_shim(
+            t,
+            MINIMAX_HOOK_NAME,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            render_minimax_hook_shim(),
+        )
+    )
     if f"{PACKAGE}/{SECRET_GUARD_MODULE}" in have:
         out.append(
             Check(
@@ -4672,8 +4694,6 @@ def verify_muse(
 def block_path(plat: Platform, paths: Paths) -> str:
     if plat.key == "clutch":
         return paths.clutch_patch
-    if plat.key == "vibe":
-        return paths.vibe_hooks
     return paths.kimi_config
 
 
@@ -4691,16 +4711,6 @@ def block_body(plat: Platform, paths: Paths) -> list[str]:
             "      name: '@deepseek-ai/dsh-hooks-claude-code'",
             "      config:",
             f"        configPath: {json.dumps(paths.clutch_hooks)}",
-        ]
-    if plat.key == "vibe":
-        return [
-            "[[hooks]]",
-            'name = "fleet-lane-guard"',
-            'type = "before_tool"',
-            'match = "%s"' % VIBE_SHELL_TOOL,
-            f"command = {json.dumps(block_command(plat, paths))}",
-            f"timeout = {HOOK_TIMEOUT_S}",
-            "strict = true",
         ]
     return [
         "[[hooks]]",
@@ -4721,33 +4731,12 @@ def kimi_fields(plat: Platform, paths: Paths) -> dict:
     }
 
 
-def vibe_fields(plat: Platform, paths: Paths) -> dict:
-    """The fields of the Vibe `[[hooks]]` entry this tool writes, as values (what a parse of the file gives).  The
-    match is Vibe's shell tool name, `bash`:  the tool's class is `Bash`, `get_name()` snake-cases the class name, the
-    live config.toml keys its tables by that same name, and a tool call only resolves when the name the model sent is
-    the registered one, so the name the hook sees is `bash`.  A wrong exact name silently never fires, so it is
-    pinned here and a rename is called out as UNVERIFIED."""
-    return {
-        "name": "fleet-lane-guard",
-        "type": "before_tool",
-        "match": VIBE_SHELL_TOOL,
-        "command": block_command(plat, paths),
-        "timeout": HOOK_TIMEOUT_S,
-        "strict": True,
-    }
-
-
 def block_fields(plat: Platform, paths: Paths) -> dict:
-    """The `[[hooks]]` fields this tool writes for a TOML block platform (Kimi or Vibe)."""
-    return vibe_fields(plat, paths) if plat.key == "vibe" else kimi_fields(plat, paths)
+    """The `[[hooks]]` fields this tool writes for the TOML block platform (Kimi)."""
+    return kimi_fields(plat, paths)
 
 
-_VIBE_GATE_KEY = "enable_experimental_hooks"
-_VIBE_GATE_RE = re.compile(
-    r"^[ \t]*enable_experimental_hooks[ \t]*=[ \t]*([^#\n]*?)[ \t]*(?:#.*)?$"
-)
-_VIBE_TABLE_RE = re.compile(r"^[ \t]*\[")
-_VIBE_KV_RE = re.compile(r"^[ \t]*([A-Za-z0-9_.-]+)[ \t]*=")
+_TOML_TABLE_RE = re.compile(r"^[ \t]*\[")
 
 # A top-level TOML key, as the structural check sees it:  a bare name, a quoted name or
 # a single-quoted name, then an equals sign.  It is the line shape a well-formed
@@ -4758,7 +4747,7 @@ _TOML_KEY_RE = re.compile(
 )
 
 
-def _vibe_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | None]:
+def _toml_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | None]:
     """The bracket depth and the open string delimiter after reading `line`, both carried across lines.  A value may
     span lines, so `depth` and `quote` are the whole state of a TOML value: inside them the lines are the value's
     text and not keys or tables of their own."""
@@ -4794,68 +4783,18 @@ def _vibe_scan(line: str, depth: int, quote: str | None) -> tuple[int, str | Non
     return depth, quote
 
 
-def _vibe_value_end(lines: list[str], start: int) -> int:
+def _toml_value_end(lines: list[str], start: int) -> int:
     """The index just past the value that begins on `lines[start]`: a multi-line array, inline table or
     triple-quoted string ends on the line that closes it, not on the line its key is on."""
     depth = 0
     quote: str | None = None
     for i in range(start, len(lines)):
-        depth, quote = _vibe_scan(lines[i], depth, quote)
+        depth, quote = _toml_scan(lines[i], depth, quote)
         if quote is None and depth <= 0:
             return i + 1
     return len(lines)
 
 
-def vibe_gate(text: str | None) -> bool | None:
-    """The top-level `enable_experimental_hooks` value in a Vibe config.toml (True, False or None when absent).
-    Only the top level counts: the key under a table belongs to that table, and a line inside a value that spans
-    lines is that value's text rather than a key."""
-    if text is None:
-        return None
-    depth = 0
-    quote: str | None = None
-    for line in text.splitlines():
-        at_top = quote is None and depth <= 0
-        depth, quote = _vibe_scan(line, depth, quote)
-        if not at_top:
-            continue
-        if _VIBE_TABLE_RE.match(line):
-            break
-        m = _VIBE_GATE_RE.match(line)
-        if m:
-            return True if m.group(1) == "true" else (False if m.group(1) == "false" else None)
-    return None
-
-
-def vibe_set_gate(text: str) -> str:
-    """`text` with the top-level gate set to true.  An existing top-level key is replaced in place; a missing one is
-    inserted after the last top-level key, or at the top when there is none.  A key whose value spans lines ends
-    where that value ends, so the gate never lands inside it.  Nothing else is changed."""
-    lines = text.split("\n")
-    depth = 0
-    quote: str | None = None
-    insert_at = 0
-    for i, line in enumerate(lines):
-        at_top = quote is None and depth <= 0
-        depth, quote = _vibe_scan(line, depth, quote)
-        if not at_top:
-            continue
-        if _VIBE_TABLE_RE.match(line):
-            break
-        if _VIBE_GATE_RE.match(line):
-            # The value of the key may span lines,  and replacing only its first line
-            # leaves the rest of it behind as orphan text,  which is not valid TOML.
-            # The value ends where the scan says it ends,  so the whole value goes.
-            # For a single-line value the end is the next line,  so the result is
-            # byte-identical to replacing the line alone.
-            end = _vibe_value_end(lines, i)
-            lines[i:end] = [_VIBE_GATE_KEY + " = true"]
-            return "\n".join(lines)
-        if _VIBE_KV_RE.match(line):
-            insert_at = _vibe_value_end(lines, i)
-    lines.insert(insert_at, _VIBE_GATE_KEY + " = true")
-    out = "\n".join(lines)
-    return out if out.endswith("\n") or not out else out + "\n"
 
 
 @dataclass
@@ -4872,12 +4811,6 @@ class BlockPlan:
     command: str = ""
     body: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    gate_path: str = ""  # vibe: ~/.vibe/config.toml, which holds enable_experimental_hooks
-    gate_action: str = "none"  # vibe: replace when the gate is not already true
-    gate_new_text: str | None = None
-    gate_raw: bytes | None = None
-    gate_mode: int | None = None
-    gate_exists: bool = False
 
 
 def _toml_structure_problem(text: str) -> str | None:
@@ -4888,20 +4821,20 @@ def _toml_structure_problem(text: str) -> str | None:
     writer like this one can do:  a value or a string that is never closed,  and a line
     left over from a value that was replaced.
 
-    It reuses ``_vibe_scan``,  which already carries the bracket depth and the open
+    It reuses ``_toml_scan``,  which already carries the bracket depth and the open
     string across lines,  so a line inside a value is that value's text and not a key.
     """
     depth = 0
     quote: str | None = None
     for lineno, line in enumerate(text.splitlines(), 1):
         at_top = quote is None and depth <= 0
-        depth, quote = _vibe_scan(line, depth, quote)
+        depth, quote = _toml_scan(line, depth, quote)
         if not at_top:
             continue
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if _VIBE_TABLE_RE.match(line):
+        if _TOML_TABLE_RE.match(line):
             continue
         if not _TOML_KEY_RE.match(line):
             return "config.toml line %d is neither a table header nor a key" % lineno
@@ -4926,8 +4859,8 @@ def _has_top_level_key(text: str, name: str) -> bool:
     pattern = re.compile(r"^[ \t]*%s[ \t]*=" % re.escape(name))
     for line in text.splitlines():
         at_top = quote is None and depth <= 0
-        depth, quote = _vibe_scan(line, depth, quote)
-        if at_top and _VIBE_TABLE_RE.match(line):
+        depth, quote = _toml_scan(line, depth, quote)
+        if at_top and _TOML_TABLE_RE.match(line):
             # A table header ends the top level:  the keys under it are that table's.
             in_table = True
             continue
@@ -4994,46 +4927,6 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
                 f"{path} is read-only (mode {bp.mode:04o}); not overriding the owner's choice",
             )
             return bp
-    if plat.key == "vibe":
-        bp.gate_path = paths.vibe_config
-        if os.path.islink(bp.gate_path):
-            bp.state, bp.reason = "refuse", f"{bp.gate_path} is a symlink; not writing through it"
-            return bp
-        if not os.path.lexists(bp.gate_path):
-            bp.state, bp.reason = (
-                "refuse",
-                f"{bp.gate_path} does not exist, so the enable_experimental_hooks gate cannot be set; "
-                "Vibe looks installed (~/.vibe exists) but not configured",
-            )
-            return bp
-        try:
-            gst = os.stat(bp.gate_path)
-            if not stat.S_ISREG(gst.st_mode):
-                bp.state, bp.reason = "refuse", f"{bp.gate_path} is not a regular file"
-                return bp
-            bp.gate_raw = _read_bytes(bp.gate_path)
-            bp.gate_mode, bp.gate_exists = stat.S_IMODE(gst.st_mode), True
-            gate_text = bp.gate_raw.decode("utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            bp.state, bp.reason = "refuse", f"{bp.gate_path} cannot be read as UTF-8 text ({exc})"
-            return bp
-        gate = vibe_gate(gate_text)
-        bp.gate_action = "none" if gate is True else "replace"
-        bp.gate_new_text = gate_text if gate is True else vibe_set_gate(gate_text)
-        if bp.gate_action != "none" and bp.gate_mode is not None and not bp.gate_mode & 0o200:
-            bp.state, bp.reason = (
-                "refuse",
-                f"{bp.gate_path} is read-only (mode {bp.gate_mode:04o}); not overriding the owner's choice",
-            )
-            return bp
-        bp.notes.append(
-            f"{bp.gate_path}: enable_experimental_hooks is "
-            + (
-                "already true"
-                if gate is True
-                else "not true, so Vibe loads no hooks; apply sets it to true"
-            )
-        )
     try:
         if plat.key == "clutch":
             if text is not None and text.strip() and not CP.is_list_patch(text):
@@ -5053,16 +4946,10 @@ def plan_block(plat: Platform, paths: Paths) -> BlockPlan:
         bp.state, bp.reason = "refuse", f"{path}: {exc}"
         return bp
     bp.new_text = new
-    if plat.key == "vibe" and bp.gate_action != "none" and bp.action == "none":
-        bp.action = "replace"  # the hooks entry is current, but the gate still has to be set
-    if plat.key in ("kimi", "vibe"):
+    if plat.key == "kimi":
         problem = _toml_problem(new)
         if problem:
             bp.state, bp.reason = "refuse", problem
-    if plat.key == "vibe" and bp.gate_new_text is not None:
-        problem = _toml_problem(bp.gate_new_text)
-        if problem:
-            bp.state, bp.reason = "refuse", f"{bp.gate_path}: {problem}"
     if bp.state == "ok" and bp.exists and not os.access(os.path.dirname(path), os.W_OK | os.X_OK):
         bp.state, bp.reason = "refuse", f"the directory {os.path.dirname(path)} is not writable"
     return bp
@@ -5214,10 +5101,6 @@ def apply_block(
             notes.append(detail)
         else:
             notes.append("the patch was NOT checked with the engine (--no-dsh-check)")
-    elif plat.key == "vibe":
-        notes.append(
-            "both TOML files parse (when tomllib is available); no Vibe binary check is run"
-        )
     else:
         if check_kimi:
             status, detail = _kimi_doctor(bp.new_text, timeout, paths.home)
@@ -5232,86 +5115,6 @@ def apply_block(
             notes.append(detail)
         else:
             notes.append("config.toml was NOT checked with `kimi doctor` (--no-kimi-check)")
-    if plat.key == "vibe":
-        assert bp.gate_new_text is not None
-        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
-        backups: list[str] = []
-        # The lock covers the re-read,  both writes,  the validation and the rollback:
-        # without it a second installer can pass the same check first and then erase
-        # what this one just wrote.
-        with _target_lock(paths.home, bp.path, bp.gate_path):
-            try:
-                _makedirs_private(os.path.dirname(bp.path))
-                _makedirs_private(os.path.dirname(bp.gate_path))
-                if bp.gate_exists and bp.gate_action != "none":
-                    assert bp.gate_raw is not None
-                    backups.append(_make_backup(bp.gate_path, bp.gate_raw, bp.gate_mode, stamp))
-                if bp.exists:
-                    assert bp.raw is not None
-                    backups.append(_make_backup(bp.path, bp.raw, bp.mode, stamp))
-                changed = _reread_matches(bp.path, bp.raw or b"", bp.exists) and _reread_matches(
-                    bp.gate_path, bp.gate_raw or b"", bp.gate_exists
-                )
-                if not changed:
-                    for b in backups:
-                        os.unlink(b)
-                    return Result(
-                        plat.key,
-                        "failed",
-                        f"{bp.path} or {bp.gate_path} changed while it was being edited; nothing written, retry",
-                    )
-                if bp.gate_action != "none":
-                    atomic_write(
-                        bp.gate_path,
-                        bp.gate_new_text.encode("utf-8"),
-                        bp.gate_mode if bp.gate_mode is not None else 0o644,
-                    )
-                if bp.new_text.encode("utf-8") != (bp.raw or b""):
-                    atomic_write(
-                        bp.path, bp.new_text.encode("utf-8"), bp.mode if bp.mode is not None else 0o644
-                    )
-            except OSError as exc:
-                return Result(
-                    plat.key,
-                    "failed",
-                    f"{bp.path} not changed: {type(exc).__name__}: {exc}",
-                    backups[0] if backups else None,
-                )
-            again = plan_block(plat, paths)
-            if again.state != "ok" or again.action != "none" or again.gate_action != "none":
-                try:
-                    if bp.gate_exists and bp.gate_raw is not None:
-                        atomic_write(
-                            bp.gate_path,
-                            bp.gate_raw,
-                            bp.gate_mode if bp.gate_mode is not None else 0o644,
-                        )
-                    elif os.path.lexists(bp.gate_path):
-                        os.unlink(bp.gate_path)
-                    if bp.exists and bp.raw is not None:
-                        atomic_write(bp.path, bp.raw, bp.mode if bp.mode is not None else 0o644)
-                    elif os.path.lexists(bp.path):
-                        os.unlink(bp.path)
-                except OSError:
-                    pass
-                return Result(
-                    plat.key,
-                    "failed",
-                    f"{bp.path} failed validation after the write; the originals were restored",
-                    backups[0] if backups else None,
-                )
-        detail = f"{bp.path} and the gate in {bp.gate_path}"
-        if backups:
-            detail += " (backups " + ", ".join(backups) + ")"
-        all_notes = bp.notes + notes
-        if all_notes:
-            detail += "; " + "; ".join(all_notes)
-        return Result(
-            plat.key,
-            "added" if bp.action in ("create", "append") else "updated",
-            detail,
-            backups[0] if backups else None,
-        )
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     backup: str | None = None
     try:
@@ -5425,7 +5228,7 @@ def verify_block(
         ]
     info: TH.Inspection | None = None
     try:
-        if plat.key in ("kimi", "vibe"):
+        if plat.key == "kimi":
             # Kimi rewrites config.toml without comments, so the markers can be gone while the hook is still wired:
             # the entry is found by what it says (see toml_hooks)
             info = TH.inspect(text, BLOCK_NAME, block_fields(plat, paths), is_ours)
@@ -5545,52 +5348,6 @@ def verify_block(
                 + "; whether the running engine has loaded the plugin is not visible from here",
             )
         )
-    elif plat.key == "vibe":
-        problem = _toml_problem(text)
-        out.append(
-            Check(
-                t,
-                "hooks.toml",
-                "FAIL" if problem else "PASS",
-                problem or "parses (or no tomllib to ask)",
-            )
-        )
-        try:
-            gate_text = _read_bytes(paths.vibe_config).decode("utf-8")
-            gate = vibe_gate(gate_text)
-            gate_problem = _toml_problem(gate_text)
-        except (OSError, UnicodeDecodeError) as exc:
-            gate, gate_problem = None, f"{paths.vibe_config} cannot be read ({exc})"
-        if gate_problem:
-            out.append(Check(t, "hooks gate", "FAIL", gate_problem))
-        elif gate is True:
-            out.append(
-                Check(
-                    t,
-                    "hooks gate",
-                    "PASS",
-                    f"{paths.vibe_config} has enable_experimental_hooks = true, so Vibe loads hooks",
-                )
-            )
-        else:
-            out.append(
-                Check(
-                    t,
-                    "hooks gate",
-                    "FAIL",
-                    f"{paths.vibe_config} does not set enable_experimental_hooks = true, so Vibe loads "
-                    "no hooks at all and the block above is inert; re-run `apply vibe`",
-                )
-            )
-        out.append(
-            Check(
-                t,
-                "fires",
-                "SKIP",
-                "whether Vibe fires a before_tool hook is not visible from here (UNVERIFIED); ask a new "
-                "Vibe session to clone a fleet repo into /tmp and expect a refusal",
-            )
-        )
     else:
         problem = _toml_problem(text)
         out.append(
@@ -5622,15 +5379,15 @@ def render_minimax_manifest() -> str:
     """.claude-plugin/plugin.json.  MiniMax needs at least a name; the other two keys are the Claude plugin manifest's."""
     doc = {
         "name": MINIMAX_PLUGIN_ID,
-        "version": "1.0.0",
-        "description": "Fleet lane guard and secret guard for shell calls (written by fleet_lanes.install_tools)",
+        "version": "2.0.0",
+        "description": "MiniMax shell and file guards (written by fleet_lanes.install_tools)",
     }
     return json.dumps(doc, indent=2) + "\n"
 
 
 def minimax_hook_command(paths: Paths) -> str:
-    """The command the plugin runs: the fleet hook (lane guard, then secret guard), Claude deny shape, absolute path."""
-    return fleet_hook_command(paths, "claude")
+    """MM-owned adapter, compatible deny shape, absolute stable path."""
+    return shlex.quote(os.path.join(paths.stable, MINIMAX_HOOK_NAME))
 
 
 def render_minimax_hooks(paths: Paths) -> str:
@@ -5639,7 +5396,7 @@ def render_minimax_hooks(paths: Paths) -> str:
         "hooks": {
             "PreToolUse": [
                 {
-                    "matcher": "Bash",
+                    "matcher": "Bash|Read|Write|Edit|bash|read|write|edit",
                     "hooks": [
                         {
                             "type": "command",
@@ -5660,6 +5417,112 @@ def minimax_expected(paths: Paths) -> dict[str, str]:
         MINIMAX_MANIFEST_FILE: render_minimax_manifest(),
         MINIMAX_HOOKS_FILE: render_minimax_hooks(paths),
     }
+
+
+def registry_tree(registry: str) -> str:
+    """The first registered ~/Code folder name.  Probes follow the registry, not a literal.
+
+    The registry is required input to a security probe, so an unreadable, unparseable, or
+    misshapen one is refused by name instead of degrading to no tree: silently returning ""
+    would drop the integration-tree deny probes and let the probe pass without ever running them.
+    """
+    try:
+        payload = json.loads(_read_bytes(registry).decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refused(
+            f"required integration registry is unavailable or invalid: {registry}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise Refused(f"required integration registry {registry}: top level must be an object")
+    apps = payload.get("apps")
+    if not isinstance(apps, list):
+        raise Refused(f"required integration registry {registry}: 'apps' must be a list")
+    for app in apps:
+        if not isinstance(app, dict):
+            raise Refused(f"required integration registry {registry}: app entries must be objects")
+        for candidate in (app.get("codeDir"), app.get("repo")):
+            if candidate is None:
+                continue
+            if not isinstance(candidate, str):
+                raise Refused(
+                    f"required integration registry {registry}: app paths must be strings"
+                )
+            # Only the folder name under ~/Code identifies the tree: a registry value
+            # spelled as a path or `owner/name` would otherwise probe outside ~/Code.
+            name = os.path.basename(candidate.strip().rstrip("/"))
+            if name and name not in (".", ".."):
+                return name
+    raise Refused(f"required integration registry {registry} contains no registered tree")
+
+
+def probe_minimax_files(
+    command: str,
+    home: str,
+    registry: str,
+    timeout: float,
+    minimal_path: bool,
+    source_registry: str | None = None,
+) -> list[Check]:
+    """Run MM's compatible file payloads in its restricted subprocess environment.
+
+    `source_registry` names the registry the operator has to repair when `registry` is a staged
+    copy that is deleted with the stage; it is reported with the refusal.
+    """
+    env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
+    env.update(HOME=home, PATH=MINIMAL_PATH if minimal_path else os.environ.get("PATH", ""))
+    try:
+        tree = registry_tree(registry)
+    except Refused as exc:
+        # An unreadable/invalid registry is a failed check, not an abort: letting
+        # Refused escape here unwinds through apply_minimax and skips the
+        # remaining platforms in `apply all`.
+        detail = str(exc)
+        if source_registry and source_registry != registry:
+            # The staged copy is removed with the stage, so its path is not actionable:
+            # name the registry the operator must repair.
+            detail = f"{detail}; source registry: {source_registry}"
+        return [Check("minimax", "registry-tree", "FAIL", detail)]
+    integration = os.path.join("Code", tree, "probe-placeholder")
+    out = []
+    for tool, path, deny in (
+        ("Read", ".secrets/probe-placeholder", True),
+        ("Read", ".env", True),
+        ("Write", integration, True),
+        ("Edit", ".secrets/probe-placeholder", True),
+        ("Read", "public-placeholder", False),
+        ("Write", "public-placeholder", False),
+        ("read", ".secrets/probe-placeholder", True),
+        ("write", integration, True),
+        ("edit", ".secrets/probe-placeholder", True),
+    ):
+        field = "path" if tool in ("read", "write") else "file_path"
+        payload = {"tool_name": tool, "tool_input": {field: os.path.join(home, path)}, "cwd": home}
+        res = run_shell(command, json.dumps(payload).encode("utf-8"), env, timeout)
+        problem = res.error or ("timed out" if res.timed_out else None)
+        if not problem and res.returncode != 0:
+            problem = f"exit {res.returncode}, expected 0"
+        if not problem:
+            problem = (
+                check_deny_output("claude", res.stdout, "MiniMax")
+                if deny
+                else ("unexpected output" if res.stdout.strip() or res.stderr.strip() else None)
+            )
+        missing_sources = [
+            source.decode("ascii")
+            for source in (b"SECRET_FILE_PATTERNS", b"FLEET_APPS_JSON")
+            if source in res.stdout
+        ]
+        if not problem and missing_sources:
+            problem = "required file policy is unavailable or invalid: " + ", ".join(missing_sources)
+        out.append(
+            Check(
+                "minimax",
+                f"{tool}/{os.path.basename(path)}/{'deny' if deny else 'allow'}/hook-env",
+                "FAIL" if problem else "PASS",
+                problem or f"compatible file payload checked ({path})",
+            )
+        )
+    return out
 
 
 @dataclass
@@ -5804,11 +5667,14 @@ def apply_minimax(
     if mp.state == "refuse":
         return Result("minimax", "refused", mp.reason)
     if not shim_proven:
-        if not (os.path.isfile(paths.fleet_shim) and os.access(paths.fleet_shim, os.X_OK)):
+        if not (
+            os.path.isfile(os.path.join(paths.stable, MINIMAX_HOOK_NAME))
+            and os.access(os.path.join(paths.stable, MINIMAX_HOOK_NAME), os.X_OK)
+        ):
             return Result(
                 "minimax",
                 "refused",
-                f"the fleet hook {paths.fleet_shim} is missing or not executable; run `apply tools` first",
+                f"the MiniMax hook {minimax_hook_command(paths)} is missing or not executable; run `apply tools` first",
             )
         bad = [
             c
@@ -5824,6 +5690,13 @@ def apply_minimax(
             )
             if c.status == "FAIL"
         ]
+        bad.extend(
+            c
+            for c in probe_minimax_files(
+                mp.command, paths.home, paths.registry, timeout, minimal_path
+            )
+            if c.status == "FAIL"
+        )
         if bad:
             return Result(
                 "minimax",
@@ -5891,8 +5764,10 @@ def _minimax_hook_from_file(path: str, paths: Paths) -> tuple[str | None, list[C
                 f"expected exactly 1 PreToolUse group, found {len(groups) if isinstance(groups, list) else type(groups).__name__}"
             )
         group = groups[0]
-        if group.get("matcher") != "Bash":
-            raise ValueError(f"matcher is {group.get('matcher')!r}, expected 'Bash'")
+        if group.get("matcher") != "Bash|Read|Write|Edit|bash|read|write|edit":
+            raise ValueError(
+                f"matcher is {group.get('matcher')!r}, expected 'Bash|Read|Write|Edit|bash|read|write|edit'"
+            )
         hooks = group.get("hooks")
         if not isinstance(hooks, list) or len(hooks) != 1:
             raise ValueError("expected exactly 1 hook in the group")
@@ -5909,7 +5784,10 @@ def _minimax_hook_from_file(path: str, paths: Paths) -> tuple[str | None, list[C
         return None, [Check(t, "hooks.json", "FAIL", f"{path}: {exc}")]
     out = [
         Check(
-            t, "hooks.json", "PASS", f"PreToolUse, matcher Bash, type command, timeout {timeout}s"
+            t,
+            "hooks.json",
+            "PASS",
+            f"PreToolUse, matcher Bash|Read|Write|Edit|bash|read|write|edit, type command, timeout {timeout}s",
         )
     ]
     if raw != render_minimax_hooks(paths).encode("utf-8"):
@@ -5990,9 +5868,9 @@ def verify_minimax(
     out.append(
         _check_shim(
             t,
-            FLEET_HOOK_NAME,
-            paths.fleet_shim,
-            render_fleet_hook_shim(read_guard_facts(paths.stable)),
+            MINIMAX_HOOK_NAME,
+            os.path.join(paths.stable, MINIMAX_HOOK_NAME),
+            render_minimax_hook_shim(),
         )
     )
     cmd, got = _minimax_hook_from_file(paths.minimax_hooks, paths)
@@ -6045,6 +5923,12 @@ def verify_minimax(
                 + f"exit={res.returncode} stdout={_brief(res.stdout)}",
             )
         )
+    # The verify CLI surfaces an invalid registry as a structured refusal
+    # (main prints `REFUSED ...`), not a downgraded check FAIL: verify runs a
+    # single platform, so the `apply all` unwind the downgrade inside
+    # probe_minimax_files protects against does not apply here.
+    registry_tree(paths.registry)
+    out.extend(probe_minimax_files(cmd, paths.home, paths.registry, timeout, minimal_path))
     switch, _off = guard_switch()
     if _is_off(os.environ.get(switch, "")):
         out.append(
@@ -7160,11 +7044,6 @@ def _emit_block_plan(
             emit(f"   hooks file {paths.clutch_hooks} (written by `apply tools`):")
             for ln in render_clutch_hooks(paths.stable).splitlines():
                 emit(f"     | {ln}")
-        if plat.key == "vibe":
-            emit(
-                f"   gate {bp.gate_path} [{bp.gate_action}]: enable_experimental_hooks = true "
-                "(only that one top-level key is changed; the rest of config.toml is never printed)"
-            )
     for n in plat.notes:
         emit(f"   note: {n}")
     for u in plat.unverified:
@@ -7588,7 +7467,7 @@ def self_test(
             _fails, checks = run_verify(
                 "with the fleet hook shim allowing everything, expect FAIL on muse", ("FAIL",)
             )
-            for key in ("muse", "minimax"):
+            for key in ("muse",):
                 if not any(
                     c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
                     for c in checks
@@ -7614,7 +7493,7 @@ def self_test(
                 _fails, checks = run_verify(
                     "with the fleet hook prefilter emptied, expect FAIL on muse", ("FAIL",)
                 )
-                for key in ("muse", "minimax"):
+                for key in ("muse",):
                     if not any(
                         c.target == key and c.name.startswith("deny/") and c.status == "FAIL"
                         for c in checks
@@ -7626,11 +7505,48 @@ def self_test(
             finally:
                 with open(paths.fleet_shim, "wb") as fh:
                     fh.write(fleet_bytes)
+
+        # MiniMax owns its shim and adapter.  Damage those paths independently:
+        # changing Muse's shared fleet shim must not be treated as MM coverage.
+        def require_minimax_damage(checks: list[Check], damage: str) -> None:
+            for name in (
+                "deny/login-PATH",
+                "Read/probe-placeholder/deny/hook-env",
+                "Write/probe-placeholder/deny/hook-env",
+            ):
+                if not any(
+                    c.target == "minimax" and c.name == name and c.status == "FAIL" for c in checks
+                ):
+                    failures.append(f"verify did NOT fail minimax {name} {damage}")
+            if not any(c.target == "tools" and c.status == "FAIL" for c in checks):
+                failures.append(f"verify tools did not notice MiniMax damage {damage}")
+
+        mm_shim = os.path.join(paths.stable, MINIMAX_HOOK_NAME)
+        mm_bytes = _read_bytes(mm_shim)
+        with open(mm_shim, "wb") as fh:
+            fh.write(b"#!/bin/sh\nexit 0\n")
+        try:
+            _fails, checks = run_verify(
+                "with the MiniMax hook shim allowing everything, expect FAIL on minimax", ("FAIL",)
+            )
+            require_minimax_damage(checks, "with an allow-everything MiniMax hook")
+        finally:
+            with open(mm_shim, "wb") as fh:
+                fh.write(mm_bytes)
+        mm_adapter = os.path.join(paths.package_dir, "minimax_guard_hook.py")
+        os.rename(mm_adapter, mm_adapter + ".disabled")
+        try:
+            _fails, checks = run_verify(
+                "with the MiniMax adapter renamed, expect FAIL on minimax", ("FAIL",)
+            )
+            require_minimax_damage(checks, "with the MiniMax adapter missing")
+        finally:
+            os.rename(mm_adapter + ".disabled", mm_adapter)
         secret = os.path.join(paths.package_dir, SECRET_GUARD_MODULE)
         os.rename(secret, secret + ".disabled")
         try:
             _fails, checks = run_verify(
-                "with the secret guard module renamed, expect FAIL on muse", ("FAIL",)
+                "with the secret guard module renamed, expect FAIL on muse and minimax", ("FAIL",)
             )
             for key in ("muse", "minimax"):
                 if not any(
@@ -7651,7 +7567,8 @@ def self_test(
         return EXIT_FAIL
     emit(
         "self-test PASS: the install verifies, a renamed guard module, an emptied prefilter, an allow-everything fleet hook "
-        "and a missing secret guard each make verify FAIL, and each repair verifies again"
+        "and independent MiniMax shim/adapter damage and a missing secret guard each make verify FAIL, "
+        "and each repair verifies again"
     )
     return EXIT_OK
 

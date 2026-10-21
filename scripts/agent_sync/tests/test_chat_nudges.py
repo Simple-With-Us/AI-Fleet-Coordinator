@@ -17,6 +17,7 @@ class FakeTransport:
     def __init__(self, *, readiness: str = "ready", outcome: str = "accepted") -> None:
         self.readiness = readiness
         self.outcome = outcome
+        self.held_cause: str | None = None
         self.receipt_found = False
         self.receipt_calls: list[tuple[dict[str, str], str]] = []
         self.preflights: list[dict[str, str]] = []
@@ -42,6 +43,10 @@ class FakeTransport:
             if self.release:
                 self.release.wait(timeout=5)
             self.deliveries.append((dict(binding), text))
+            # A real producer sets its hold cause during the attempt, because dispatch_one
+            # clears transport.hold_reason before each candidate.
+            if self.outcome == "held" and self.held_cause:
+                self.hold_reason = self.held_cause
             return self.outcome
         finally:
             with self.guard:
@@ -69,6 +74,34 @@ class ChatNudgesTest(unittest.TestCase):
 
     def _item(self) -> dict:
         return self.queue.snapshot()["items"][0]
+
+    def test_reconcile_is_bounded_and_rotates_after_restart(self):
+        for mid in range(9):
+            self.queue.enqueue(self.binding["channel"], self.binding["topic"], mid, 10)
+        with L.locked(self.queue.path):
+            data = self.queue._read()
+            for item in data["items"]:
+                item["status"] = "unknown"
+            L.write_json(self.queue.path, data)
+        transport = FakeTransport()
+        for now in (11, 12, 13):
+            # Reconstruct to prove the fairness cursor survives process replacement.
+            self.queue = ChatNudges(self.tmp.name, "GROK")
+            before = len(transport.receipt_calls)
+            self.queue.reconcile(transport, now)
+            self.assertLessEqual(len(transport.receipt_calls) - before, 4)
+        self.assertEqual(len({text for _, text in transport.receipt_calls}), 9)
+        self.assertTrue(all(row["status"] == "unknown" for row in self.queue.snapshot()["items"]))
+
+    def test_reconcile_rejects_invalid_persisted_receipt_timestamp(self):
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 42, 10)
+        for value in (None, "bad", True, float("nan"), float("inf"), 10**400, -(10**400)):
+            with L.locked(self.queue.path):
+                data = L.read_json(self.queue.path)
+                data["items"][0]["receipt_checked_at"] = value
+                L.write_json(self.queue.path, data)
+            with self.assertRaisesRegex(ValueError, "receipt_checked_at must be a finite number"):
+                self.queue.reconcile(FakeTransport(), 11)
 
     def test_nudge_is_deterministic_json_quoted_and_contains_no_body(self) -> None:
         text = nudge_text('channel "quote"', "topic\nline", "12345")
@@ -386,6 +419,40 @@ class ChatNudgesTest(unittest.TestCase):
         self.assertTrue(self._item()["hold_reason"])
         self.assertEqual(self.queue.dispatch_one(transport, 12)["status"], "idle")
         self.assertEqual(len(transport.deliveries), 1)
+
+    def test_explicit_retry_releases_only_definitely_unsent_pending_holds(self):
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        transport = FakeTransport(outcome="failed")
+        self.queue.dispatch_one(transport, 11)
+        item_id = self._item()["id"]
+        self.assertTrue(self.queue.retry(item_id, 12))
+        self.assertFalse(self.queue.retry(item_id, 12))
+        transport.outcome = "accepted"
+        self.assertEqual(self.queue.dispatch_one(transport, 13)["status"], "accepted")
+        self.assertFalse(self.queue.retry(item_id, 14))
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 15)
+        transport.outcome = "unknown"
+        self.queue.dispatch_one(transport, 16)
+        unknown_id = self.queue.snapshot()["items"][1]["id"]
+        self.assertFalse(self.queue.retry(unknown_id, 17))
+        self.assertEqual(len(transport.deliveries), 3)
+
+    def test_held_outcome_records_cause_and_never_blocks_other_wakes(self) -> None:
+        # A "held" outcome must stay pending without a permanent retry, and it must not block a
+        # later wake to the same destination.
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)
+        self.queue.enqueue(self.binding["channel"], self.binding["topic"], 2, 10)
+        transport = FakeTransport(outcome="held")
+        transport.held_cause = "Thread is not writable"
+        self.assertEqual(self.queue.dispatch_one(transport, 11)["status"], "pending")
+        items = self.queue.snapshot()["items"]
+        self.assertEqual(items[0]["hold_reason"], "Thread is not writable")
+        # The held row is skipped, so the second wake still reaches the destination.
+        transport.outcome = "accepted"
+        transport.held_cause = None
+        self.assertEqual(self.queue.dispatch_one(transport, 12)["status"], "accepted")
+        self.assertEqual(len(transport.deliveries), 2)
+        self.assertEqual(self.queue.snapshot()["items"][1]["status"], "accepted")
 
     def test_unbind_and_rebind_never_reroutes_queued_item(self) -> None:
         self.queue.enqueue(self.binding["channel"], self.binding["topic"], 1, 10)

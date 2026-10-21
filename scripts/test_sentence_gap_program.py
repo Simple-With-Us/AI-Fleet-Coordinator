@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+"""Tests for the fleet's code-aware sentence-gap program.
+
+The program in `scripts/sentence_gap_convert.pl` is what converts a body that carries
+code:  it holds the code aside, makes the gap with the canonical pattern, collapses the
+prose runs, and puts the code back byte for byte.  The same program is embedded in every
+surface that documents the recipe, so a seat without the checkout can still run it.
+
+Two things are checked here.  First, that every surface carries the same program, so a
+copy that drifts is not a body that ships with a different converter.  Second, that the
+program does what it says:  the code comes out untouched, the gaps are made, the prose
+runs collapse, a hard break survives, a numbered marker stays a numbered marker, and the
+whole thing is idempotent, which is the check that sees a prose double space that no
+grep over the body can see.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PROGRAM = ROOT / "scripts" / "sentence_gap_convert.pl"
+
+#  The surfaces that document the recipe.  Each one embeds the program, so each one can
+#  be read by a seat that has no checkout of its own.
+SURFACES = (
+    "docs/fleet-skills/sentence-gap/SKILL.md",
+    "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
+    ".cursor/rules/sentence-gap.mdc",
+    "scripts/pr_sweep/rules.md",
+)
+
+#  The heredoc the documentation writes the program with.  A quoted heredoc, so the
+#  backticks and the dollars in the program stay literal.
+_HEREDOC_RE = re.compile(r"cat > gap\.pl <<'PERL'\n(?P<program>.*?)\nPERL\n", re.DOTALL)
+
+#  The one home's converter, as it is written in the documentation:  a perl
+#  substitution with a sentence-end group.
+_ONE_LINER_RE = re.compile(r"perl -CSDA -pe '(s/.*?/g)'")
+
+#  The canonical one-liner:  the pattern the two greps are written against, and the
+#  pattern the program applies.  The program must not quietly change what a gap is.
+_CANONICAL = (
+    r"""s/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +"""
+    r"""(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g"""
+)
+
+NBSP = "\u00a0"
+
+HAVE_PERL = shutil.which("perl") is not None
+
+#  The code regions the program has to give back byte for byte.
+CODE_REGIONS = (
+    "```js\nconst x = 1.  // a comment.  Another.\nreturn x.  More\n```",
+    "~~~python\ndef f():\n    return True.  Something\n~~~",
+    '  ```sh\n  echo "hello.  world"\n  ```',
+    "> ```\n> quoted fence body.  More\n> ```",
+    "    indented code line.  More\n    second indented line.  More",
+    "repo:  AI-Fleet-Coordinator  |  DONE",
+)
+
+HARD_BREAK = "A hard break at the end of this line follows.  \n"
+
+BODY = """repo:  AI-Fleet-Coordinator  |  DONE
+
+A plain sentence.  A second plain sentence.
+
+**Bold sentence.**  Next sentence.
+
+`Code span here.`  Next sentence.
+
+```js
+const x = 1.  // a comment.  Another.
+return x.  More
+```
+
+~~~python
+def f():
+    return True.  Something
+~~~
+
+- List item with a fence:
+
+  ```sh
+  echo "hello.  world"
+  ```
+
+> Quoted prose.  Next sentence.
+
+> ```
+> quoted fence body.  More
+> ```
+
+    indented code line.  More
+    second indented line.  More
+
+A hard break at the end of this line follows.
+And the next line continues.
+
+1. Numbered marker stays a marker.
+2. Second item here.
+
+The answer is 42. Next thing.
+
+e.g. this keeps its plain space.
+
+A colon:  two spaces after a colon.
+A semicolon;  two spaces after a semicolon.
+A dash -  two spaces after a dash.
+
+Trailing text with a double  space inside a sentence.
+""".replace(
+    "A hard break at the end of this line follows.\n",
+    HARD_BREAK,
+)
+
+
+def run_program(program: str, body: str) -> str:
+    """Run the program over a body, the way the documentation says to."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "gap.pl"
+        path.write_text(program, encoding="utf-8")
+        try:
+            proc = subprocess.run(
+                ["perl", "-CSDA", "-0777", "-p", str(path)],
+                input=body,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError("the program did not finish within 30 seconds") from exc
+        if proc.returncode != 0:
+            raise AssertionError("the program failed: %s" % proc.stderr.strip())
+        return proc.stdout
+
+
+def program_text() -> str:
+    """The program, from the checkout."""
+    return PROGRAM.read_text(encoding="utf-8").rstrip("\n")
+
+
+class SurfaceTests(unittest.TestCase):
+    """Every surface carries the same program."""
+
+    def test_the_program_file_exists(self) -> None:
+        self.assertTrue(PROGRAM.is_file(), "%s is missing" % PROGRAM)
+
+    def test_every_surface_embeds_the_same_program(self) -> None:
+        canonical = program_text()
+        for rel in SURFACES:
+            path = ROOT / rel
+            self.assertTrue(path.is_file(), "%s is missing" % rel)
+            text = path.read_text(encoding="utf-8")
+            match = _HEREDOC_RE.search(text)
+            self.assertIsNotNone(match, "%s embeds no program" % rel)
+            self.assertEqual(
+                match.group("program"),
+                canonical,
+                "%s carries a program that has drifted from the one in the checkout" % rel,
+            )
+
+    def test_the_program_applies_the_one_home_pattern(self) -> None:
+        """The program applies the one home's pattern, so a change to the one home
+        cannot leave the program converting with an older rule.
+
+        The one home's pattern is the one the two greps are written against, so a
+        program that carried a different one would make gaps the checks cannot see.
+        """
+        one_home = (ROOT / "docs/fleet-skills/sentence-gap/SKILL.md").read_text(encoding="utf-8")
+        match = _ONE_LINER_RE.search(one_home)
+        self.assertIsNotNone(match, "the one home holds no converter pattern")
+        self.assertIn(
+            match.group(1),
+            program_text(),
+            "the program does not carry the one home's pattern",
+        )
+
+
+@unittest.skipUnless(HAVE_PERL, "perl is not on PATH")
+class ProgramBehaviourTests(unittest.TestCase):
+    """The program does what the documentation says it does."""
+
+    def setUp(self) -> None:
+        self.program = program_text()
+        self.out = run_program(self.program, BODY)
+
+    def test_every_code_region_comes_back_byte_for_byte(self) -> None:
+        for region in CODE_REGIONS:
+            with self.subTest(region=region[:40]):
+                self.assertIn(region, self.out)
+
+    def test_the_gaps_are_made(self) -> None:
+        for line in (
+            "A plain sentence." + NBSP + " A second plain sentence.",
+            "**Bold sentence.**" + NBSP + " Next sentence.",
+            "`Code span here.`" + NBSP + " Next sentence.",
+            "> Quoted prose." + NBSP + " Next sentence.",
+        ):
+            with self.subTest(line=line):
+                self.assertIn(line, self.out)
+
+    def test_the_prose_runs_collapse(self) -> None:
+        for line in (
+            "A colon: two spaces after a colon.",
+            "A semicolon; two spaces after a semicolon.",
+            "A dash - two spaces after a dash.",
+            "Trailing text with a double space inside a sentence.",
+        ):
+            with self.subTest(line=line):
+                self.assertIn(line, self.out)
+
+    def test_the_repo_header_keeps_its_template_spacing(self) -> None:
+        self.assertIn("repo:  AI-Fleet-Coordinator  |  DONE", self.out)
+
+    def test_a_markdown_hard_break_survives(self) -> None:
+        self.assertIn("A hard break at the end of this line follows.  \n", self.out)
+
+    def test_a_numbered_marker_stays_a_numbered_marker(self) -> None:
+        self.assertIn("1. Numbered marker stays a marker.\n", self.out)
+
+    def test_a_digit_ended_sentence_is_left_alone(self) -> None:
+        """The known cost of the lookbehind:  a sentence that ends in a digit is not
+        gapped, because the lookbehind that keeps a numbered marker a marker also skips
+        a period that follows a digit."""
+        self.assertIn("The answer is 42. Next thing.", self.out)
+
+    def test_the_program_is_idempotent(self) -> None:
+        """The third check.  A body that differs on the second run carried a prose double
+        space the collapse did not reach, or a code region the mask did not hold."""
+        again = run_program(self.program, self.out)
+        self.assertEqual(
+            again,
+            self.out,
+            "the program is not idempotent:  the second run changed the body",
+        )
+
+    def test_the_program_agrees_with_the_canonical_pattern(self) -> None:
+        """On a body that carries no code, the program and the one-liner must produce the
+        same bytes, so the program never quietly changes what a gap is."""
+        prose = "\n".join(
+            [
+                "Plain sentence.  Next sentence.",
+                "**Bold sentence.**  Next sentence.",
+                "~~Deleted sentence.~~  Next sentence.",
+                "*Italic sentence.*  Next sentence.",
+                "`Code sentence.`  Next sentence.",
+                "(**Paren sentence.**)  Next sentence.",
+                'He said "Quoted sentence."  Next sentence.',
+                "'Quoted sentence.'  Next sentence.",
+                "\u201cCurly quoted sentence.\u201d  Next sentence.",
+                "\u2018Curly single quoted sentence.\u2019  Next sentence.",
+                "First.  Second.  'Quoted sentence.'",
+                "1. Numbered marker stays a marker.",
+                "The answer is 42. Next thing.",
+                "e.g. this keeps its plain space.",
+                "Plain sentence. Next sentence.",
+            ]
+        )
+        one = subprocess.run(
+            ["perl", "-CSDA", "-pe", _CANONICAL],
+            input=prose,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(one.returncode, 0, "the canonical one-liner failed")
+        self.assertEqual(
+            run_program(self.program, prose),
+            one.stdout,
+            "the program and the canonical one-liner disagree on a body with no code",
+        )
+
+    def test_the_program_holds_a_fence_that_is_never_closed(self) -> None:
+        """An unclosed fence holds the rest of the body, so the rest is not converted.
+
+        The prose in front of the fence is still converted:  the fence is code, and
+        what came before it is prose.
+        """
+        body = "A sentence.  Next sentence.\n```js\nconst x = 1.  More\n"
+        out = run_program(self.program, body)
+        self.assertIn("```js\nconst x = 1.  More\n", out)
+        after = out.split("```js\n", 1)[1]
+        self.assertNotIn(NBSP, after)
+
+
+if __name__ == "__main__":
+    unittest.main()

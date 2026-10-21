@@ -1,12 +1,12 @@
 ---
 name: apple-notes
 description: >-
-  Write owner-facing Apple Notes in the `Coding` folder (local on this Mac) — plans, designs, reviews, handoffs, rollouts, living Completion notes. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Title [APP, Agent] … with a refreshed timestamp.
+  Write owner-facing Apple Notes in the `Coding` folder (local on this Mac) — plans, designs, reviews, handoffs, rollouts, living Completion notes. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Title [TEAM_KEY, Agent] Topic (Title Case) with a refreshed timestamp.
 ---
 
 # Apple Notes (Universal)
 
-> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Lanes `~/apps/lanes/<Repo>/muse-assist-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM):  use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
@@ -35,10 +35,11 @@ Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do
 ## Title
 
 ```
-[APP, Agent] short topic
+[TEAM_KEY, Agent] Topic
 ```
 
-- Acronyms first, then `<Agent>` (Title Case, not an all-caps seat tag).
+- Team key first, then the agent, then the topic in Title Case (owner 2026-10-19:  never the app's long name, never the seat's long name).
+- Agent is your verified seat’s canonical Title Case `notesName`, such as `Codex` or `Claude`; the exact uppercase seat tag is compatible.
 - Multi-app: `[ST, CT, Agent] …` (impact order).
 - No date in the title.  No word "session".  Do not repeat the title as an H1 in the body.
 
@@ -100,7 +101,7 @@ Background-jobs inventory note is `⭐️ Background Jobs Master List` — refre
 
 ### Handoff Reports (Immediate & Living)
 When generating a handoff report for a peer agent to take over (e.g. before hitting quota or upon owner stop request):
-- **Title Format:** `⭐️ [APP, Agent] HANDOFF REPORT: Short topic` (or `*** [APP, Agent] HANDOFF REPORT: Short topic`)
+- **Title Format:** `⭐️ [TEAM_KEY, Agent] HANDOFF REPORT: Short topic` (or `*** [TEAM_KEY, Agent] HANDOFF REPORT: Short topic`)
 - **6-Section Body:**
   1. Executive Summary & Objective
   2. Current Work State & Artifacts (worktree path, branch, commit SHA, PR status, dirty/stashed files)

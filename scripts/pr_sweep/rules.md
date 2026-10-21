@@ -35,7 +35,9 @@ RULES (binding, read all of them):
 10. OWNER-NEEDED TEST (owner ruling 2026-10-17: "deploy it unless it really needs me, for every app").  The default is MERGE.  Hold a PR ONLY if one of these is true, and say which in owner_action: (a) a human, not a bot, has an unanswered request or CHANGES_REQUESTED that you cannot clear; (b) the PR text or a thread explicitly asks the owner to decide something; (c) the PR changes the merge-safety controls themselves: CODEOWNERS, branch protection, or the merge-gate and auto-merge workflows and their permissions; (d) it turns on live trading or live-order behavior by default, or makes an irreversible production change (destructive data migration, secret rotation, deleting data) that its tests do not cover; (e) it duplicates or is superseded by another open PR: say which, and do not merge both.  Touching money-path code, a broker, scheduler, auth or identity code is NOT by itself a reason to hold: such a PR needs green CI, every thread resolved, and a diff you have actually read for correctness.  A MAJOR dependency bump (Renovate or otherwise) merges only if every CI check is green and you find no breaking change in its release notes that applies to this repo; if its CI is red, report blocked and do not start a migration.
 11. MERGING: normal path = arm auto-merge with gh pr merge <N> --squash --auto.  Labels do-not-automerge / needs-human-merge and the CODEOWNERS gate only stop AUTO-merge: if the PR passes rule 10, CI is green, threads are resolved and it is up to date, merge it directly with gh pr merge <N> --squash (no --auto, never --admin).  Do not remove labels and do not edit the gate.  If branch protection refuses, report blocked with the exact message.  A stacked PR whose base is not the default branch is never merged into its parent branch.  If you hold a PR under rule 10, disarm nothing that a human armed and merge nothing.
 12. WAIT: after your last push on a merge-mode PR you may do ONE bounded wait: timeout 1500 gh pr checks <N> --watch.  If it has not merged by then, report armed-waiting-ci or the real blocker.  Do not poll again.
-13. WRITING: two spaces between sentences in commit messages; in GitHub replies and comments convert them to a real U+00A0 plus a space with: ``perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g'``.  Quote that expression with SINGLE quotes: the character class holds a backtick, and inside double quotes bash opens a command substitution and then fails with "unexpected EOF while looking for matching backticks".  The one-or-more space class matters: a double space written into a tool call sometimes arrives collapsed to one, and that collapse is intermittent, so both a two-space and a single-space pattern can silently match nothing, exit 0, and post with no gap.  The (?<![0-9]) lookbehind keeps a numbered list marker as "1. Item" instead of "1.<NBSP>Item", which would stop CommonMark parsing it as a list; its cost is that a sentence ending in a digit ("The answer is 42. Next") is not gapped, so fix that one by hand.  Before posting run both greps — grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' <file> | wc -l must not print 0, and grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' <file> must print 0 — and do not post if either fails.  Both greps carry the converter's markup group, because a gap that sits after a markup span is emitted as <punctuation><markup><U+00A0><space>:  a check that looks for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a space straight after the punctuation cannot see the one that was missed.  Source files (Swift, TypeScript, shell, markdown read as source) are unaffected and keep two literal ASCII spaces; never put a U+00A0 into a committed source file.  {{TRAILER_RULE}}
+13. WRITING: two spaces between sentences in commit messages; in GitHub replies and comments convert them to a real U+00A0 plus a space with: ``umask 077
+perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g'``.  Quote that expression with SINGLE quotes: the character class holds a backtick, and inside double quotes bash opens a command substitution and then fails with "unexpected EOF while looking for matching backticks".  The one-or-more space class matters: a double space written into a tool call sometimes arrives collapsed to one, and that collapse is intermittent, so both a two-space and a single-space pattern can silently match nothing, exit 0, and post with no gap.  The (?<![0-9]) lookbehind keeps a numbered list marker as "1. Item" instead of "1.<NBSP>Item", which would stop CommonMark parsing it as a list; its cost is that a sentence ending in a digit ("The answer is 42. Next") is not gapped, so fix that one by hand.  Before posting run both greps — grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' <file> | wc -l must not print 0, and grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' <file> must print 0 — and do not post if either fails.  Both greps carry the converter's markup group, because a gap that sits after a markup span is emitted as <punctuation><markup><U+00A0><space>:  a check that looks for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a space straight after the punctuation cannot see the one that was missed.  Source files (Swift, TypeScript, shell, markdown read as source) are unaffected and keep two literal ASCII spaces; never put a U+00A0 into a committed source file.
+  A body that carries code is converted by the code-aware program in `skills/sentence-gap/SKILL.md`, not by the bare one-liner:  it holds the code aside, makes the gap, and puts the code back byte for byte.  {{TRAILER_RULE}}
 14. DONE: before answering re-query the PR with gh and report what is true NOW (state, mergeStateStatus, unresolved thread count, CI rollup, autoMergeRequest), not what you intended.  If the PR is merged, retire your lane from outside it: cd ~ && AGENT_SEAT={{SEAT}} ~/apps/lane retire pr<N>-sweep --repo <Repo> (it refuses, and you leave the lane, if anything in it is not safe on GitHub).  The parent checks production after merges; you do not deploy.
 
 ## RESULT
@@ -55,3 +57,114 @@ The owner instruction was "deploy all".  Load the deploy-verify skill and follow
 FORBIDDEN: TestFlight or App Store upload, ios-ship or any iOS release; enabling any trading flag or live-order mode; rotating or printing secrets; touching other apps; force-anything.  If the repo ships only through an iOS release or a manual owner step, report deployed=no and put the step in owner_action.  Docs-only repos with no runtime: mechanism "none", deployed "n/a".
 Never print a credential.  Use AGENT_SEAT={{SEAT}} and --as {{SEAT}} for any fleet command.
 Answer with: repo, mechanism, deployed (yes | no | n/a | unhealthy | unknown), evidence, owner_action.
+
+### The program that runs it — one pass, code-aware
+
+The two greps above are the assertions, and something has to produce the file they check.  The
+one-liner further up this file is the *pattern*:  it is what makes a gap, and it is what the two
+greps are written against.  Run on a whole body it is not safe by itself.  It applies the pattern
+to every line, so a fenced code block gets a U+00A0 inside it, and a prose collapse that follows
+it can rewrite the interior of an inline code span, a tilde fence, an indented code block, or a
+fence nested in a list or a quote.  A body that carries code comes out with the code changed, and
+a body that carries a shell command comes out with a command that no longer runs.
+
+So the body is converted by a program that holds the code aside first and puts it back byte for
+byte afterwards.  Write it once, then run it twice.  The second run is the third check, and it is
+the one that sees a prose double space that survived, which no grep over the body can see.
+
+```sh
+umask 077
+cat > gap.pl <<'PERL'
+#!/usr/bin/perl
+#
+#  The fleet's code-aware sentence-gap converter.
+#
+#  One run does four things, in this order:
+#
+#    1.  hold aside the regions whose bytes must not change:  a fenced code block
+#        (three backticks or three tildes, including one nested in a list or a
+#        quote), an indented code block, and the house `repo:` header;
+#    2.  make the gap, with the canonical pattern, unchanged;
+#    3.  hold aside the inline code spans, so the collapse cannot reach inside one;
+#    4.  collapse the prose runs, and put every held region back byte for byte.
+#
+#  A held region is replaced by a printable placeholder, so no control character can
+#  reach the output, and it is written back exactly as it came in.  A body that
+#  carries code comes out with the code untouched.
+#
+#  The program is idempotent:  running it on its own output changes nothing.  That
+#  is the third check, and it is the one that sees a prose double space that
+#  survived, which no grep over the body can see.
+
+my @keep;
+my $hold = sub { push @keep, $_[0]; return "GAP" . $#keep . "END" };
+
+#  1.  Fenced code blocks that are closed.  The closing fence carries the same
+#      marker, and it may sit in a list or a quote like the opening one.
+s/^([ \t]*(?:>[ \t]*)*(?:[-+*]|\d{1,9}[.)])?[ \t]*)((?:`{3,})|(?:~{3,}))[^\n]*\n(?:.*?^[ \t]*(?:>[ \t]*)*(?:[-+*]|\d{1,9}[.)])?[ \t]*\2[ \t]*$)/$hold->($&)/gems;
+
+#  2.  A fence that is never closed holds the rest of the body.  This is a second
+#      substitution on purpose:  one alternation cannot express it, because the
+#      branch that looks for the closing fence scans to the end of the body before
+#      it fails, and the fallback branch is only reached once that scan is over --
+#      at which point the position is back at the opening fence and the end of the
+#      body is behind it.  So the two cases are two substitutions.
+s/^([ \t]*(?:>[ \t]*)*(?:[-+*]|\d{1,9}[.)])?[ \t]*)((?:`{3,})|(?:~{3,}))[^\n]*\n.*\z/$hold->($&)/gmes;
+
+#  3.  The house closeout header.  It is a template, not prose.
+s/^([ \t]*repo:.*)$/$hold->($1)/gme;
+
+#  4.  Indented code blocks.
+s/((?:^(?:>[ \t]*)*(?: {4,}|\t).*\n?)+)/$hold->($1)/gme;
+
+#  5.  The gap.  This is the canonical pattern, unchanged:  the lookbehind keeps a
+#      numbered list a list, the markup group catches a sentence end inside a span
+#      or at the end of a markdown link, and the lookahead skips a follower it
+#      does not know.
+s/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g;
+
+#  6.  Inline code spans.  A span's interior is code, so the collapse must not
+#      reach inside one.
+s/(`+)([^\n]*?)\1/$hold->("`$2`")/ge;
+
+#  7.  Collapse the prose runs:  two or more spaces between two non-space
+#      characters become one.  The lookarounds keep a Markdown hard break (two
+#      spaces at the end of a line) and the indentation of a list.
+s/(?<=\S) {2,}(?=\S)/ /g;
+
+#  8.  Put the code back.
+s/GAP(\d+)END/$keep[$1]/ge;
+PERL
+perl -CSDA -0777 -p gap.pl body.txt > body.nbsp.txt
+perl -CSDA -0777 -p gap.pl body.nbsp.txt > body.check.txt
+cmp body.nbsp.txt body.check.txt     # must be silent:  the program is idempotent
+rm -f gap.pl body.check.txt
+```
+
+The program also lives in the checkout at `scripts/sentence_gap_convert.pl`, and the copy above is
+byte-identical to it.  A test in CI compares the two and runs the file over a fixture that carries
+every shape the converter has to survive.
+
+What it does, in order:
+
+1.  **Holds the code aside.**  A fenced code block (three backticks or three tildes, including
+    one nested in a list or a quote), an indented code block, and the house `repo:` header are
+    replaced by a printable placeholder and written back byte for byte at the end.
+2.  **Makes the gap**, with the canonical pattern above, unchanged.  On a body that carries no
+    code the program and the one-liner produce the same bytes, and the CI test asserts it, so the
+    program never quietly changes what a gap is.
+3.  **Holds the inline code spans aside**, so the collapse cannot reach inside one.
+4.  **Collapses the prose runs**:  two or more spaces between two non-space characters become one.
+    A Markdown hard break (two spaces at the end of a line) and the indentation of a list are left
+    alone, because the lookarounds require a non-space on both sides of the run.
+5.  **Puts the code back.**
+
+Two more costs it carries, and both are deliberate:
+
+-  A sentence end *inside* an inline code span, with a space after the period, is still gapped,
+    because the canonical pattern is what the two greps are written against.  The span
+    `` `foo. Bar` `` comes out as `` `foo.` `` plus the gap plus ` Bar`.  The common shape, where
+    the span closes before the space, puts the gap outside the span and leaves the span itself
+    untouched.
+-  A fenced block that is never closed holds the rest of the body, and the rest of the body is not
+    converted.  Close the fence.

@@ -106,9 +106,10 @@ class Tests(unittest.TestCase):
     def test_the_production_reader_is_pinned_to_the_afc_project_and_the_two_names(self):
         seen = {}
 
-        def fake(names, env, home):
+        def fake(names, env, home, path=None):
             seen["names"] = names
             seen["env"] = dict(env)
+            seen["path"] = path
             return {"ZULIP_OPERATOR_EMAIL": OPERATOR_EMAIL, "ZULIP_OPERATOR_API_KEY": "test-key"}
 
         with mock.patch.object(Z, "_default_infisical_fetch", fake):
@@ -119,6 +120,10 @@ class Tests(unittest.TestCase):
         )
         # the AFC /zulip store, not Fleet-OPS /zulip and not the ambient environment
         self.assertEqual(seen["env"][Z.ENV_INFISICAL_PROJECT], AFC_PROJECT)
+        # and the Operator's own folder: the seat keys are in /zulip and the
+        # Operator's names are in /zulip_operator, so a read that does not name
+        # the folder looks in the wrong store and finds nothing.
+        self.assertEqual(seen["path"], "/zulip_operator")
 
     def test_wrong_owner_refused(self):
         self.assertFalse(check_bot({"bot_owner_id":99,"is_bot":True,"user_id":OPERATOR_BOT_ID,"email":OPERATOR_EMAIL}))

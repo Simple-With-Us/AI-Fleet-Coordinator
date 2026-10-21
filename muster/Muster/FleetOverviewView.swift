@@ -1,76 +1,173 @@
 import SwiftUI
 
+/// The window's root:  the MiniMax panel, the fleet grid and the fleet view, over one
+/// shared run.
 struct FleetOverviewView: View {
+    @EnvironmentObject private var store: FleetStore
+    @State private var theme: ThemeChoice = .system
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 32) {
-            HStack(spacing: 14) {
-                Image(systemName: "square.stack.3d.up")
-                    .font(.system(size: 27, weight: .medium))
+        VStack(spacing: 0) {
+            if case .failed(let reason) = store.phase {
+                FailureBanner(reason: reason)
+            }
+            TabView {
+                MiniMaxDetailView()
+                    .tabItem { Label("MiniMax", systemImage: "bolt.shield") }
+                FleetGridView()
+                    .tabItem { Label("Fleet Grid", systemImage: "square.grid.3x3") }
+                FleetView()
+                    .tabItem { Label("Fleet", systemImage: "list.bullet.rectangle") }
+            }
+            Divider()
+            ApplyActivityView()
+            footer
+        }
+        .preferredColorScheme(theme.colorScheme)
+        // The plan sheet hangs off the window root,  so the apply flow can present a
+        // plan from any view that holds a red cell.
+        .applyPlanSheet()
+        .toolbar {
+            ToolbarItemGroup {
+                Picker("Theme", selection: $theme) {
+                    ForEach(ThemeChoice.allCases) { choice in
+                        Text(choice.title).tag(choice)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 210)
+
+                Button {
+                    store.refresh()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(store.phase == .running)
+                .help("Run the engine again")
+            }
+        }
+    }
+
+    /// The bar under the panels:  the verdict, the command the app ran, and the clock.
+    private var footer: some View {
+        HStack(spacing: 14) {
+            verdict
+            Divider().frame(height: 14)
+            Text(store.commandLine.isEmpty ? "no engine located" : store.commandLine)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .help(store.commandLine)
+            Spacer(minLength: 8)
+            Text(generatedText)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 9)
+        .background(.bar)
+    }
+
+    private var verdict: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(verdictColor)
+                .frame(width: 8, height: 8)
+            Text(verdictText)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            if let summary = store.summary {
+                Text("\(summary.failing) failing of \(summary.total)")
+                    .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Muster")
-                        .font(.largeTitle.weight(.semibold))
-                    Text("Fleet Overview")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
             }
+        }
+        .foregroundStyle(verdictColor)
+    }
 
-            VStack(alignment: .leading, spacing: 24) {
-                HStack {
-                    Label("Fleet Status", systemImage: "network")
-                        .font(.headline)
+    private var verdictText: String {
+        switch store.phase {
+        case .idle: return "IDLE"
+        case .running: return "RUNNING"
+        case .loaded: return store.summary?.overallVerdict ?? "UNKNOWN"
+        case .failed: return "UNKNOWN"
+        }
+    }
 
-                    Spacer()
-
-                    Label("Unavailable", systemImage: "minus.circle")
-                        .font(.callout.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .background(.quaternary, in: Capsule())
-                }
-
-                Divider()
-
-                VStack(spacing: 16) {
-                    Image(systemName: "tray")
-                        .font(.system(size: 42, weight: .light))
-                        .foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
-
-                    Text("Waiting for Fleet Data")
-                        .font(.title2.weight(.semibold))
-
-                    Text("Fleet status is unavailable until a data source is connected.")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 420)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 52)
+    private var verdictColor: Color {
+        switch store.phase {
+        case .idle: return .secondary
+        case .running: return .secondary
+        case .loaded:
+            switch store.summary?.overallVerdict {
+            case "PASS": return .green
+            case "FAIL": return .red
+            default: return .orange
             }
-            .padding(24)
-            .background(.background, in: RoundedRectangle(cornerRadius: 16))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16)
-                    .strokeBorder(.quaternary, lineWidth: 1)
-            }
+        case .failed: return .red
+        }
+    }
 
+    private var generatedText: String {
+        guard let generatedAt = store.generatedAt else { return "—" }
+        return "read at " + generatedAt.formatted(date: .omitted, time: .standard)
+    }
+}
+
+/// The banner that says why the last run cannot be trusted.
+struct FailureBanner: View {
+    let reason: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("The engine did not answer, so every cell reads unknown.")
+                    .font(.callout.weight(.medium))
+                Text(reason)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Spacer(minLength: 0)
         }
-        .padding(36)
-        .frame(minWidth: 660, minHeight: 520)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(Color.red.opacity(0.10))
+    }
+}
+
+/// The theme the window follows.
+enum ThemeChoice: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    /// The scheme the window asks for;  nil leaves the system in charge.
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
     }
 }
 
 #Preview {
     FleetOverviewView()
-        .preferredColorScheme(.light)
+        .environmentObject(FleetStore())
 }
