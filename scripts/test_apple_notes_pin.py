@@ -50,14 +50,15 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "apple-notes-coding.sh"
-#  the lock wait the script defaults to, read from the script so the two cannot drift apart
-LOCK_WAIT_S = int(
-    re.search(
-        r'^NOTES_PIN_LOCK_WAIT_S="\$\{NOTES_PIN_LOCK_WAIT_S:-(\d+)\}"$',
-        SCRIPT.read_text(),
-        re.MULTILINE,
-    ).group(1)
+#  the lock wait the script defaults to, read from the script so the two cannot drift apart.  A missing or
+#  reshaped default leaves None here instead of failing the import, so only the test that needs it fails, and
+#  it says why.  The pattern ignores the quoting around the value.
+_LOCK_WAIT_MATCH = re.search(
+    r"^NOTES_PIN_LOCK_WAIT_S=[\"']?\$\{NOTES_PIN_LOCK_WAIT_S:-(\d+)\}[\"']?\s*$",
+    SCRIPT.read_text(),
+    re.MULTILINE,
 )
+LOCK_WAIT_S = int(_LOCK_WAIT_MATCH.group(1)) if _LOCK_WAIT_MATCH else None
 
 #  the stub records every `shortcuts run` in this file, so a test can count the attempts
 STUB = """#!/bin/bash
@@ -673,7 +674,7 @@ class PinDecisionTests(unittest.TestCase):
                     parent.mkdir(mode=0o500)
                     try:
                         started = time.monotonic()
-                        #  real sleeps, so a wait that is not skipped would take the whole 20 s
+                        #  real sleeps, so a wait that is not skipped would take the whole lock wait
                         p, runs = self.run_block(
                             HARNESS_MODE=mode,
                             HARNESS_REAL_SLEEP="1",
@@ -688,6 +689,9 @@ class PinDecisionTests(unittest.TestCase):
                 self.assertNotIn("another pin or unpin run held the lock", p.stderr)
                 #  bounded by the wait that was skipped, not a fixed number of seconds, so a loaded runner
                 #  cannot trip it:  a run that waited would take at least the whole wait
+                self.assertIsNotNone(
+                    LOCK_WAIT_S, "the NOTES_PIN_LOCK_WAIT_S default in the script has a new shape"
+                )
                 self.assertLess(elapsed, LOCK_WAIT_S, "the lock wait was not skipped")
                 self.assertEqual(runs, 0)
 
