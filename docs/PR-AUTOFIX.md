@@ -49,12 +49,14 @@ jobs:
     uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/pr-autofix-reusable.yml@<sha>
     secrets:
       MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+      META_MODEL_API_TOKEN: ${{ secrets.META_MODEL_API_TOKEN }}
+      USAGE_INGEST_TOKEN: ${{ secrets.USAGE_INGEST_TOKEN }}
       AUTOFIX_GITHUB_APP_PRIVATE_KEY: ${{ secrets.SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY }}
 ```
 
 The `concurrency` group is shared on purpose by every autofix caller in a repo (another autofix bot uses the same group name), so pushes to one PR branch are serialized.  The group belongs in the caller only:  the reusable job must not repeat it, because a job that asks for the group its own run already holds is cancelled as a deadlock before any step runs.  That is what stopped every PR Autofix run from `2e671004` (#520) until the job-level copy was removed, so a caller pinned to any commit from `2e671004` up to that fix (BotFleet and DealDex were on `3fac4c3c`) needs a repin.  `cancel-in-progress` is `false` so one bot never cancels the other mid-push;  keep the group name and that setting exactly as shown.
 
-`MINIMAX_API_KEY` is an org secret visible to every repo.  Pair it with org secret `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and org/repo variable `SWU_AUTOFIX_GITHUB_APP_ID` so autofix pushes re-trigger CI (see below).  The job-level `permissions:` block caps the token the reusable receives, so the caller must grant `issues: write` for the run-marker comment and `actions: read` for the `meter` job's usage-artifact download;  a caller missing them fails at startup, when GitHub validates the called workflow's requested scopes against the caller's grants.  The caller-level `if:` keeps a human comment from starting a runner at all;  the reusable job repeats the same checks and also requires the PR to be open.
+`MINIMAX_API_KEY` is an org secret visible to every repo.  Pair it with org secret `SWU_AUTOFIX_GITHUB_APP_PRIVATE_KEY` and org/repo variable `SWU_AUTOFIX_GITHUB_APP_ID` so autofix pushes re-trigger CI (see below).  The job-level `permissions:` block caps the token the reusable receives, so the caller must grant `issues: write` for the run-marker comment and `actions: read` for the `meter` job's usage-artifact download;  a caller missing them fails at startup, when GitHub validates the called workflow's requested scopes against the caller's grants.  `META_MODEL_API_TOKEN` is only consumed when `SWU_AUTOFIX_MODEL_BASE_URL` points at `api.meta.ai`, and `USAGE_INGEST_TOKEN` only feeds the usage report (the run is unchanged without it), but the reusable can only read a secret the caller maps, so the template passes both through.  The caller-level `if:` keeps a human comment from starting a runner at all;  the reusable job repeats the same checks and also requires the PR to be open.
 
 ## Inputs
 

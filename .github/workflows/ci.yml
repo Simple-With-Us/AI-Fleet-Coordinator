@@ -99,6 +99,10 @@ jobs:
         python3 scripts/test_fleet_cli_sync.py
         python3 scripts/test_fleet_cli_runtime.py
         bash -n scripts/agent-sync-runtime-sync.sh
+    # Keeps the docs/PR-AUTOFIX.md caller template's permissions and secrets
+    # block in step with what the pr-autofix reusable declares and consumes.
+    - name: Autofix caller template guard
+      run: python3 scripts/test_pr_autofix_doc_template.py
     - name: agent-sync CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
