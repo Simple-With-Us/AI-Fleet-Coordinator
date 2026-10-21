@@ -63,7 +63,7 @@ All optional, passed with `with:` on the calling job.
 | `allowed_bots` | `kody-ai[bot],chatgpt-codex-connector[bot],cursor[bot],claude[bot]` | Comma-separated logins whose comments may start a run. |
 | `max_iterations` | `5` | Most autofix commits on one PR (overridden by trusted file on default branch). |
 | `claude_code_version` | `2.1.295` | Version of `@anthropic-ai/claude-code` to install. |
-| `model` | `MiniMax-M3.1-Flash-Preview` | MiniMax model id (overridden by trusted file on default branch). |
+| `model` | `MiniMax-M3.1-Flash` | MiniMax model id (overridden by trusted file on default branch). |
 | `max_turns` | `60` | Claude Code turn budget (overridden by trusted file on default branch). |
 | `verify_command` | empty | Shell run after the model and before push; trusted file may supply this instead. |
 
@@ -74,7 +74,7 @@ The allowlist is authoritative.  A comment from a bot that is not listed never s
 Add `.github/pr-autofix-trusted.yml` on the **default branch** of each repo that uses PR Autofix:
 
 ```yaml
-model: MiniMax-M3.1-Flash-Preview
+model: MiniMax-M3.1-Flash
 max_turns: 60
 max_iterations: 5
 verify_command: |

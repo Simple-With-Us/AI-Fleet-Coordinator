@@ -16,6 +16,7 @@ either gapped or deliberately left alone.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -97,8 +98,16 @@ def _active_by_seat_copies() -> tuple[str, ...]:
 def _retired_by_seat_copies() -> tuple[str, ...]:
     """The by-seat upload packs of the retired seats.
 
-    Their catalog packs remain committed generated outputs and track the one home;
-    retired seats still receive no active tool-home or platform installation.
+    A retired seat's catalog pack is frozen at its retirement text:  the review
+    rule for this repo (Rule 12) holds that a retired artifact is not maintained,
+    so a change to the one home must not write new text into a seat nobody runs.
+    The installer honours that too -- it renders every live catalog seat and
+    leaves a retired seat's pack as it was.
+
+    That makes these packs frozen history rather than copies of the one home, so
+    the gates below must not compare them with it:  a gate that demands a
+    retired pack carry today's converter would push every future change to the
+    one home back into the retired seats, which is the drift Rule 12 forbids.
     """
     return tuple(
         "docs/fleet-skills/by-seat/%s/sentence-gap/SKILL.md" % (seat.seat_key or seat.tag.lower())
@@ -124,7 +133,6 @@ RENDERED_COPIES = (
         ".cursor/rules/sentence-gap.mdc",
     )
     + _active_by_seat_copies()
-    + _retired_by_seat_copies()
     + _platform_copies()
 )
 
@@ -431,10 +439,20 @@ class OneSourceOfTruthTests(unittest.TestCase):
         """A copy that drifts is a body that ships with no gap, so every converter in the
         checkout carries the markup group.  A dated record of a ruling keeps the form it
         was written in and is listed as such, and generated-mirror parity belongs to
-        draft PR #755 after the publisher updates the mirror."""
+        draft PR #755 after the publisher updates the mirror.
+
+        A retired seat's catalog pack is exempt for the same reason a dated record is:
+        it is frozen history, not a body that ships (Rule 12).  Demanding today's
+        converter there would push every change to the one home back into the retired
+        seats, which is the drift the rule forbids."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
+            if (
+                rel in DATED_RECORDS
+                or rel in GENERATED_MIRRORS
+                or rel in CHECKER_FILES
+                or rel in _retired_by_seat_copies()
+            ):
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -447,6 +465,45 @@ class OneSourceOfTruthTests(unittest.TestCase):
                     pattern,
                     "%s holds a converter without the markup group:  %s" % (rel, pattern),
                 )
+
+
+class RetiredCatalogPackTests(unittest.TestCase):
+    """A retired seat's catalog pack is frozen:  the renderer must not write into it.
+
+    Rule 12 holds that a retired artifact is not maintained.  The renderer is the one
+    program that writes those packs, so the rule is pinned here against the renderer
+    itself:  a run over the checkout must leave every retired pack byte for byte as
+    it was.  Without this, the next change to the one home would drag the retired
+    seats along with it, which is the drift the rule forbids.
+    """
+
+    def test_the_renderer_leaves_the_retired_packs_alone(self) -> None:
+        packs = _retired_by_seat_copies()
+        self.assertTrue(packs, "the registry names no retired seat")
+
+        def digests() -> dict:
+            out = {}
+            for rel in packs:
+                path = ROOT / rel
+                self.assertTrue(path.is_file(), "%s is missing" % rel)
+                out[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+            return out
+
+        before = digests()
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "install-fleet-skills.py"), "--repo-only"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+        self.assertEqual(proc.returncode, 0, "the renderer failed:  %s" % proc.stderr.strip())
+        self.assertEqual(
+            before,
+            digests(),
+            "the renderer wrote into a retired seat's pack",
+        )
 
 
 @unittest.skipUnless(HAVE_PERL and HAVE_BASH, "perl or bash is not on PATH")

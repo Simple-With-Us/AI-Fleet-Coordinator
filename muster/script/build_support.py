@@ -107,7 +107,7 @@ def installed_pids(binary):
     for pid in dict.fromkeys(pids):
         try:
             inspected = subprocess.run(
-                ["/usr/sbin/lsof", "-a", "-p", pid, "-d", "txt", "-Fn"],
+                ["/usr/sbin/lsof", "-b", "-nP", "-a", "-p", pid, "-d", "txt", "-Fn"],
                 capture_output=True,
                 text=True,
                 timeout=5,

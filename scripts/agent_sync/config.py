@@ -79,16 +79,18 @@ WAKE_MAX_BUDGET_USD = 0.25
 # seat can be moved to another tier deliberately and the change shows up in the config.
 MUSE_DEFAULT_MODEL = "muse-spark-1.3-contributor"
 # The MiniMax Code fallback runtime's model (AFC-291).  `mcode exec` inherits MiniMax Code's own
-# `defaultModel` when it is given no `--model`, and that default names
-# `minimax/MiniMax-M3.1-Flash-Preview`:  an id the MiniMax Code RUNTIME CATALOG does not carry (it
-# holds `MiniMax-M3` and `MiniMax-M3.1-Flash` only), so a headless fallback run on it times out
-# with `usageSource: unavailable` and no answer.  The fallback therefore names its model on the
-# command line, so the backup runtime runs on a model the catalog serves instead of inheriting a
-# stale default.  A seat can still move deliberately:  `seat.X.mcode_model` wins over this.
+# `defaultModel` when it is given no `--model`, and a backup runtime must not be left to whatever
+# that install happens to carry.  The fallback therefore names its model on the command line, so the
+# backup runtime runs on a model the catalog serves instead of inheriting a stale default.  A seat
+# can still move deliberately: `seat.X.mcode_model` wins over this.
 #
-# Two namespaces, one name:  `MiniMax-M3.1-Flash-Preview` IS the public API model id (the CI
-# autofix workflows send it to api.minimax.io), so it stays there.  The MiniMax Code runtime on this
-# Mac is a different catalog, and it does not have that id.
+# Two namespaces, one name, and the trap in it.  The MiniMax Code RUNTIME CATALOG and the public
+# MiniMax API id list are different catalogs, and "not in the catalog" does not mean "dead".
+# `MiniMax-M3.1-Flash-Preview` was dropped from the runtime catalog on 2026-10-18 (BF-2494) while
+# api.minimax.io kept serving it, so the same id fails on one route and answers on another.  An id
+# must never be rewritten from one route's evidence; see contrib/MM/2026-10-19/f11f7046.  The
+# fallback pins the id the runtime catalog actually carries, which is now also the id the CI
+# autofix workflows send to api.minimax.io.
 MCODE_DEFAULT_MODEL = "minimax/MiniMax-M3.1-Flash"
 # A MiniMax Code model id is `provider/model`, so the case and the slash are part of it (unlike a
 # muse model alias, which is lowercase).  This is the shape the fallback's `--model` value must have.

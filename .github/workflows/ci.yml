@@ -175,6 +175,12 @@ jobs:
     - name: Sentence gap program tests
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_program -v
+    # The MiniMax model id the autofix bots dispatch: the trusted policy, every
+    # reusable workflow default, and the reference doc all name one id, and a
+    # retired spelling may appear in a comment but never as a value.
+    - name: Autofix model default tests
+      run: |
+        cd scripts && python3 -m unittest test_autofix_model_defaults -v
     # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
