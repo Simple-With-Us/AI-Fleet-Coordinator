@@ -277,6 +277,30 @@ class SeatAndMcpTests(unittest.TestCase):
             doctor.check_fleet_mode_doc(report)
             self.assertEqual(report.rows[-1]["status"], "OK")
 
+    def test_elapsed_minutes_do_not_repost_a_standing_failure(self):
+        # Sentry 4339724488:  a timer row's "last fired N minutes ago" ticks every run.
+        calls = []
+
+        def runner(argv, **kw):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        def report_at(minutes):
+            report = doctor.Report()
+            report.add(
+                "updater:fleet-cli-git-update.timer",
+                "FAIL",
+                f"fleet-cli-git-update.timer last fired {minutes} minutes ago",
+            )
+            return report
+
+        self.assertTrue(doctor.post_changes(report_at(80), runner))
+        self.assertFalse(doctor.post_changes(report_at(140), runner))
+        self.assertEqual(len(calls), 1)
+        report = report_at(200)
+        report.add("tool:gitleaks", "FAIL", "not installed;  required on the server")
+        self.assertTrue(doctor.post_changes(report, runner))  # a real change still posts
+
     def test_post_survives_a_missing_agent_sync(self):
         def runner(argv, **kw):
             raise FileNotFoundError("agent-sync")
@@ -812,6 +836,15 @@ class MacRuntimeTests(HomeCase):
         _, row = self.runtime(previous=previous)
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("same tip", row["reason"])
+        # A previous report too recent to judge the counter is no evidence of a stuck updater.
+        _, row = self.runtime(previous=previous, updater=dict(self.HEALTHY, advanced=None))
+        self.assertEqual((row["state"], row["status"], row["grace"]), ("stale", "WARN", None))
+
+    def test_a_first_run_behind_is_amber_without_claiming_grace(self):
+        # Sentry 4339724496:  no previous report (advanced is None) must not be red.
+        _, row = self.runtime(updater=dict(self.HEALTHY, advanced=None))
+        self.assertEqual((row["state"], row["status"], row["grace"]), ("stale", "WARN", None))
+        self.assertIn("no previous report", row["reason"])
 
 
 class MacUpdaterTests(HomeCase):

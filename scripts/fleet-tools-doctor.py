@@ -914,6 +914,9 @@ def check_mac_runtime(
         and prev_rt.get("installed") == head
         and prev_rt.get("expectedRev") == tip
     )
+    # `grace` is True only on evidence that the updater will catch up, False on evidence that it
+    # will not, and None when this run cannot tell (no previous report old enough to judge the
+    # run counter, as on a first run):  that is amber, never red, and never a claimed grace.
     if blocking:
         rt["grace"], why = False, ";  ".join(blocking)
     elif bad and bad == tip:
@@ -921,21 +924,22 @@ def check_mac_runtime(
             True,
             f"main {short(tip)} failed the runtime smoke test;  the updater waits for main to move",
         )
-    elif updater.get("advanced") and not same_as_before:
+    elif updater.get("advanced") is None:
+        # Not judged yet, so a "same tip as before" from a report minutes old is no evidence either.
+        rt["grace"], why = (
+            None,
+            "behind;  no previous report old enough to show whether the updater is moving",
+        )
+    elif same_as_before:
+        rt["grace"], why = False, "still behind the same tip as in the previous report"
+    elif updater.get("advanced"):
         rt["grace"], why = (
             True,
             "behind within grace:  the updater is running and moves it within 2 minutes",
         )
-    elif same_as_before:
-        rt["grace"], why = False, "still behind the same tip as in the previous report"
-    elif updater.get("advanced") is None:
-        rt["grace"], why = (
-            True,
-            "behind within grace:  no previous report old enough to show the updater moving",
-        )
     else:
         rt["grace"], why = False, "no previous report shows the updater moving"
-    status = "WARN" if rt["grace"] else "FAIL"
+    status = "FAIL" if rt["grace"] is False else "WARN"
     return finish(
         status, f"runtime at {short(head)}, main {short(tip)} ({count}):  {why}", "stale", why
     )
