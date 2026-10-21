@@ -32,10 +32,14 @@ const OWNER = 'Simple-With-Us';
 const STATE_REPO = 'AI-Fleet-Coordinator';
 const STATE_BRANCH = 'autofix-dispatcher-state';
 const STATE_PATH = 'autofix-dispatcher/tally.jsonl';
+// Every fleet workflow whose runs spend model tokens, including BotFleet's
+// manual-dispatch paid pilot.  Run `path` values are the caller file names,
+// never the reusables they call.
 const AUTOFIX_WORKFLOW_FILES = new Set([
   '.github/workflows/autofix.yml',
   '.github/workflows/claude-code-autofix.yml',
   '.github/workflows/kody-fleet-autofix.yml',
+  '.github/workflows/kody-autofix-pilot.yml',
 ]);
 // At most this many tally entries are reconciled per tick, so a long backlog
 // cannot stretch the scheduled job past its window.
@@ -111,7 +115,7 @@ function autofixRunsActive(repos) {
   const active = [];
   for (const repo of repos) {
     for (const status of ['in_progress', 'queued']) {
-      const data = ghApiObject(`repos/${OWNER}/${repo}/actions/runs?status=${status}&per_page=20`);
+      const data = ghApiObject(`repos/${OWNER}/${repo}/actions/runs?status=${status}&per_page=100`);
       for (const run of data?.workflow_runs || []) {
         if (AUTOFIX_WORKFLOW_FILES.has(run.path)) {
           active.push({ repo, run_id: run.id, status, path: run.path });
@@ -127,7 +131,9 @@ function findCandidates(repos) {
   for (const repo of repos) {
     const pulls = ghApiList(`repos/${OWNER}/${repo}/pulls?state=open&per_page=100`);
     for (const pr of pulls) {
-      if (pr.draft || !pr.created_at) continue;
+      // A missing or unparseable created_at would sort to epoch 0 and look
+      // like the oldest PR, so such candidates are skipped, never coerced.
+      if (pr.draft || Number.isNaN(Date.parse(pr.created_at))) continue;
       const issueComments = ghApiList(
         `repos/${OWNER}/${repo}/issues/${pr.number}/comments?per_page=100`,
         '.[] | {body} | @json',

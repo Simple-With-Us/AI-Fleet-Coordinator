@@ -59,8 +59,8 @@ test('extractCostUsd reads the last total_cost_usd in a log', () => {
 });
 
 test('extractRunId reads the run id from the marker comment', () => {
-  const body = '<!-- swu-autofix-run: bot=swu-echo --> Autofix run https://example.com/org/repo/actions/runs/39568680329 started';
-  assert.equal(extractRunId(body), '39568680329');
+  const body = '<!-- swu-autofix-run: bot=swu-echo --> Autofix run https://example.com/org/repo/actions/runs/123456789 started';
+  assert.equal(extractRunId(body), '123456789');
   assert.equal(extractRunId('no link'), null);
 });
 
