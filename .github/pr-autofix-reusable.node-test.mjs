@@ -182,3 +182,21 @@ test('autofix requires an explicit tag per type; untagged bot comments fire noth
   }
   assert(workflow.indexOf('No @pr-autofix tag in the comment') < workflow.indexOf('swu-autofix-run: bot='), 'pr-autofix order');
 });
+
+test('org variable retargets model and endpoint fleet-wide, pins stay the fallback (owner switch 2026-10-21)', () => {
+  for (const [name, text] of [['pr-autofix', workflow], ['claude-code', claudeReusable], ['codex', codexReusable]]) {
+    assert.match(text, /vars\.SWU_AUTOFIX_MODEL/, name);
+    assert.match(text, /vars\.SWU_AUTOFIX_MODEL_BASE_URL/, name);
+    assert.match(text, /META_MODEL_API_TOKEN/, name);
+    // Unset variables keep exactly the MiniMax configuration that ran before the switch.
+    assert.match(text, /https:\/\/api\.minimax\.io\/anthropic/, name);
+    assert.match(text, /MiniMax-M3\.1-Flash/, name);
+    // The key follows the host, never a mixed pair.
+    assert.match(text, /contains\(vars\.SWU_AUTOFIX_MODEL_BASE_URL, 'meta\.ai'\)/, name);
+  }
+  // In the trusted-policy loader the variable is applied after the default-branch file,
+  // so the owner-controlled switch outranks the in-repo pin.
+  const fileIdx = workflow.indexOf('if [ -n "$file_model" ]; then model="$file_model"; fi');
+  const varIdx = workflow.indexOf('if [ -n "$VAR_MODEL" ]; then model="$VAR_MODEL"; fi');
+  assert(fileIdx !== -1 && varIdx !== -1 && varIdx > fileIdx, 'VAR_MODEL must be applied after the trusted-file pin');
+});

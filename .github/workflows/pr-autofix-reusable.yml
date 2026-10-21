@@ -65,6 +65,10 @@ on:
     secrets:
       MINIMAX_API_KEY:
         required: true
+      # Org secret (org settings > Secrets and variables > Actions).  Used only when
+      # SWU_AUTOFIX_MODEL_BASE_URL points at api.meta.ai;  callers pass it through.
+      META_MODEL_API_TOKEN:
+        required: false
       AUTOFIX_GITHUB_APP_PRIVATE_KEY:
         required: false
         description: >-
@@ -102,8 +106,13 @@ jobs:
       # Marker comments record which bot already used its one run on a PR.
       issues: write
     env:
-      ANTHROPIC_BASE_URL: https://api.minimax.io/anthropic
-      ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAX_API_KEY }}
+      # Owner switch 2026-10-21:  org/repo Actions variables SWU_AUTOFIX_MODEL and
+      # SWU_AUTOFIX_MODEL_BASE_URL retarget every caller at once;  unset,  the MiniMax
+      # pins below are exactly what ran before.  The key follows the host:  Meta's API
+      # takes META_MODEL_API_TOKEN,  everything else takes MINIMAX_API_KEY.
+      ANTHROPIC_BASE_URL: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL || 'https://api.minimax.io/anthropic' }}
+      ANTHROPIC_AUTH_TOKEN: ${{ contains(vars.SWU_AUTOFIX_MODEL_BASE_URL, 'meta.ai') && secrets.META_MODEL_API_TOKEN || secrets.MINIMAX_API_KEY }}
+      VAR_MODEL: ${{ vars.SWU_AUTOFIX_MODEL }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
@@ -186,6 +195,9 @@ jobs:
             ' "$RUNNER_TEMP/trusted.yml" | tr -d "\"'" | paste -sd, -)
             if [ -n "$file_bots" ]; then echo "allowed_bots=$file_bots" >> "$GITHUB_OUTPUT"; fi
           fi
+          # The org/repo variable is the owner-controlled fleet switch (org admins only,
+          # no PR branch can set it),  so it outranks even the trusted-file pin.
+          if [ -n "$VAR_MODEL" ]; then model="$VAR_MODEL"; fi
           {
             echo "model=$model"
             echo "max_turns=$turns"
