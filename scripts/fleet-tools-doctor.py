@@ -90,6 +90,8 @@ SHIPPED_EXACT = frozenset(
         "scripts/agent_sync/mcp/recall-tools.json",
         "scripts/linear-board/catalog/core-tools.json",
         "scripts/agent_sync/mcp/fleetlink-tools.json",
+        # AFC-412 PR2:  mirrors the release EXACT entry for the operator registry outbox exporter.
+        "scripts/agent_sync/operator_sheets_export.mjs",
         "docs/protocols/agent-sync-tools-guide.md",
         "scripts/agent_sync/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",

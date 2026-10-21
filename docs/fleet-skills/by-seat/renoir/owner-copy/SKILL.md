@@ -1,6 +1,6 @@
 ---
 name: owner-copy
-description: Fleet human-facing prose — two spaces between sentences, light theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation. Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read. Also when changing theme defaults or taking screenshots.
+description: Fleet human-facing prose — two spaces between sentences, system theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation. Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read. Also when changing theme defaults or taking screenshots.
 ---
 
 # Owner-facing copy (RENOIR)
@@ -34,9 +34,22 @@ HTML/JSX/SwiftUI that collapse spaces: NBSP+space or `SENTENCE_GAP`.  Do not "fi
 
 Does not apply: identifiers, log lines, API enums, commit **subjects** that are fragments with no terminator.
 
-## Theme default = light
+## Theme default = system
 
-First visit / no stored preference = **light**.  Do not boot dark from `prefers-color-scheme` unless the user chose System or Dark.  Dark is optional.  Screenshots, ASC, marketing: light unless the owner asked for dark.
+First visit / no stored preference = **system**, following the OS appearance.  Owner ruling
+2026-09-19, which supersedes the 2026-08-10 light ruling and was reconfirmed 2026-10-20.
+Do not pin a light or dark default on first paint, and do not treat a dark Mac as a reason to
+default to light: that is the dev-Mac optical illusion the ruling exists to remove.
+
+- **Stored preferences are never rewritten.**  A returning user who chose Light or Dark stays
+  on it; only a first paint with no record defaults to system.
+- **Light, Dark and System all remain available** wherever a picker ships.  System is the
+  default, not the only choice.
+- **Screenshots, App Store Connect, marketing, design previews: light**, unless the owner asks
+  for dark.  The product default is system; the capture default is still light, because those
+  assets need a deterministic palette regardless of who is developing.
+- Applies to every fleet app (web, iOS, Android, BotFleet chrome, CodeCaps).  Each seat lands
+  the default flip in its own app; this file is the canonical signal, not the per-app change.
 
 ## Headings vs values
 

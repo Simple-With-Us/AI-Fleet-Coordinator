@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin:__HOME__/.local/npm-global/bin</string>
+		<key>HOME</key>
+		<string>__HOME__</string>
+	</dict>
+	<key>Label</key>
+	<string>com.jay.lark-mm-bridge</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>__BRIDGE_SCRIPT__</string>
+		<string>--cwd</string>
+		<string>__HOME__/apps</string>
+		<string>--allow-sender</string>
+		<string>__ALLOWED_SENDER_OPEN_ID__</string>
+		<string>--bot-open-id</string>
+		<string>__BOT_OPEN_ID__</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ProcessType</key>
+	<string>Standard</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/lark-mm-bridge/bridge.err.log</string>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/lark-mm-bridge/bridge.out.log</string>
+</dict>
+</plist>
