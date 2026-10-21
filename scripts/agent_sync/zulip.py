@@ -263,12 +263,18 @@ def seat_from_rc_path(path: str | os.PathLike[str]) -> str | None:
     return None
 
 
+#:  How many characters of the session id make the tag.  It is a name for the id, so an id must
+#:  always be strictly LONGER than this:  an id this long is indistinguishable from its own tag,
+#:  and writing one where the id belongs would make a resume-wake correlate the wrong session.
+SESSION_TAG_LEN = 8
+
+
 def session_tag(session_id: str | None) -> str | None:
     """First 8 characters of the id with hyphens removed, lowercase.  Only [a-z0-9] survive,
     because the tag names a state directory."""
     if not session_id:
         return None
-    cleaned = re.sub(r"[^a-z0-9]", "", session_id.replace("-", "").lower())[:8]
+    cleaned = re.sub(r"[^a-z0-9]", "", session_id.replace("-", "").lower())[:SESSION_TAG_LEN]
     return cleaned or None
 
 
@@ -487,7 +493,7 @@ _PRINT_NAMED_ENV = (
 )
 
 _cache_lock = threading.Lock()
-_value_cache: dict[tuple[str, str, str], tuple[float, str]] = {}  # (bin, project, name)
+_value_cache: dict[tuple[str, str, str, str], tuple[float, str]] = {}  # (bin, project, path, name)
 _names_cache: dict[tuple[str, str], tuple[float, frozenset[str]]] = {}  # (bin, project) -> names
 _failures: dict[
     tuple[str, ...], tuple[float, str]
@@ -542,11 +548,17 @@ def _run_fleet_secrets(argv: list[str], env: Mapping[str, str]) -> bytes:
 
 
 def _fetch_from_fleet_secrets(
-    names: tuple[str, ...], env: Mapping[str, str], home: Path
+    names: tuple[str, ...], env: Mapping[str, str], home: Path, path: str = INFISICAL_PATH
 ) -> Mapping[str, str]:
-    """Just these /zulip names, through `fleet-secrets run --only` (one Infisical call for all of them).
+    """Just these names, through `fleet-secrets run --only` (one Infisical call for all of them).
     Cached in memory for INFISICAL_CACHE_TTL;  a failed refresh returns the values this process already
-    holds.  Raises CredentialError with a reason token, never output."""
+    holds.  Raises CredentialError with a reason token, never output.
+
+    `path` is the Infisical folder that holds the names.  It is a parameter because the
+    Operator service keeps its own folder, /zulip_operator, and the seat keys are in
+    /zulip: the two stores are separate, and the cache and the outage memory are keyed
+    by folder so one store's outage never refuses the other store's fetch.
+    """
     wanted = tuple(sorted(set(names)))
     binary = fleet_secrets_bin(env, home)
     if not binary:
@@ -554,15 +566,15 @@ def _fetch_from_fleet_secrets(
     now = time.monotonic()
     with _cache_lock:
         project = _project_scope(env, home)
-        held = {n: _value_cache.get((binary, project, n)) for n in wanted}
+        held = {n: _value_cache.get((binary, project, path, n)) for n in wanted}
         if all(v is not None and now - v[0] < INFISICAL_CACHE_TTL for v in held.values()):
             return {n: v[1] for n, v in held.items() if v is not None}
-        failure_key = (binary, project, "values", *wanted)
+        failure_key = (binary, project, path, "values", *wanted)
         # A timeout or an auth or fetch failure is about Infisical, not about these names:  it is remembered
-        # per binary and project, so the seats after a failed prefetch fail at once instead of each
+        # per binary, project and folder, so the seats after a failed prefetch fail at once instead of each
         # waiting out the cap, without one store's outage refusing another store's fetch.
         # A missing key stays a failure of this request only.
-        outage_key = (binary, project, "outage")
+        outage_key = (binary, project, path, "outage")
         recent = _recent_failure(failure_key, now) or _recent_failure(outage_key, now)
         if recent is not None and not all(v is not None for v in held.values()):
             raise CredentialError(
@@ -572,7 +584,7 @@ def _fetch_from_fleet_secrets(
             binary,
             "run",
             "--path",
-            INFISICAL_PATH,
+            path,
             "--only",
             ",".join(wanted),
             "--",
@@ -605,7 +617,7 @@ def _fetch_from_fleet_secrets(
         _failures.pop(failure_key, None)
         _failures.pop(outage_key, None)
         for n, v in got.items():
-            _value_cache[(binary, project, n)] = (now, v)
+            _value_cache[(binary, project, path, n)] = (now, v)
         return got
 
 

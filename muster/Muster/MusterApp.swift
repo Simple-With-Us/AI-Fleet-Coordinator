@@ -2,12 +2,14 @@ import SwiftUI
 
 @main
 struct MusterApp: App {
+    @StateObject private var store = FleetStore()
+
     var body: some Scene {
         WindowGroup {
             FleetOverviewView()
-                .preferredColorScheme(.light)
+                .environmentObject(store)
         }
-        .defaultSize(width: 900, height: 620)
+        .defaultSize(width: 1080, height: 820)
         .windowResizability(.contentMinSize)
     }
 }

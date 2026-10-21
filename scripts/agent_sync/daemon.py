@@ -2215,7 +2215,7 @@ class Daemon:
                 done.add("wake")
             if d.wake and not d.delivered_to and "wake" not in done:
                 matched = False
-                if runner.seat in ("GROK", "CURSOR") and not c.dm:
+                if runner.seat in ("GROK", "CURSOR", "CODEX") and not c.dm:
                     matched = self.chat_queue(runner.seat).enqueue(
                         c.channel,
                         c.topic,
@@ -2311,7 +2311,7 @@ class Daemon:
                     )
 
             L.update_json(state_path, rename_cursor)
-        if runner.seat in ("GROK", "CURSOR"):
+        if runner.seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(runner.seat).rename(
                 old_channel, old_topic, new_channel, new_topic, self.clock.time()
             )
@@ -2756,7 +2756,7 @@ class Daemon:
         mcode = A.resolve_mcode(runner.cfg.mcode, self.wake_path)
         if not mcode:
             return None, "no_mcode"
-        state = A.mcode_pin_state(runner.paths, mcode)
+        state = A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model)
         if not state["pinned"]:
             return None, str(state["why"] or "not_pinned")
         return str(state["mcode"]), None
@@ -2822,7 +2822,7 @@ class Daemon:
         )
         if runner.cfg.fallback == "mcode":
             return self.mcode_runner.run(
-                A.mcode_argv(binary),
+                A.mcode_argv(binary, runner.cfg.mcode_model),
                 A.mcode_env(self.env, self.home, self.wake_path, seat=runner.seat),
                 runner.paths.wake_dir,
                 prompt,
@@ -3445,8 +3445,8 @@ class Daemon:
                 wait_grok=True, grok_timeout=CT.discovery_wait_budget()
             )
             chosen = FAN.select(rows, self.clock.time(), where, places or FAN.ChatPlaces())
-        except Exception as exc:
-            self.log.write("fanout-error", id=message_id, error=self.scrub(str(exc))[:200])
+        except Exception:
+            self.log.write("fanout-error", id=message_id, error="catalog discovery failed")
             return dict(result, error="catalog")
         for row in chosen:
             platform = str(row.get("platform") or "")
@@ -3456,15 +3456,20 @@ class Daemon:
                 continue
             # A busy chat is queued too:  the nudge queue's preflight holds it until the chat is idle, so a chat
             # that was picked is never silently dropped.
-            binding = {
-                key: str(row.get(key) or "") for key in ("platform", "host", "session_id", "cwd")
-            }
+            fields = ("platform", "host", "session_id", "cwd")
+            if any(not isinstance(row.get(key), str) or not row[key].strip() for key in fields):
+                result["failed"] = result.get("failed", 0) + 1
+                self.log.write(
+                    "fanout-chat-error", id=message_id, error="invalid chat binding fields"
+                )
+                continue
+            binding = {key: row[key] for key in fields}
             binding.update(channel=channel, topic=topic)
             try:
                 added = self.chat_queue(runner.seat).enqueue_target(
                     binding, message_id, self.clock.time(), owner=True
                 )
-            except ValueError as exc:
+            except ValueError:
                 # The transport was vetted above, so a refusal here is a bad binding or an unreadable state
                 # file:  an error to log and count, not a platform with nowhere to send.
                 result["failed"] = result.get("failed", 0) + 1
@@ -3472,16 +3477,16 @@ class Daemon:
                     "fanout-chat-error",
                     id=message_id,
                     platform=platform,
-                    error=self.scrub(str(exc))[:200],
+                    error="chat queue refused binding",
                 )
                 continue
-            except Exception as exc:  # one chat's failure never stops the rest of the alert
+            except Exception:  # one chat's failure never stops the rest of the alert
                 result["failed"] = result.get("failed", 0) + 1
                 self.log.write(
                     "fanout-chat-error",
                     id=message_id,
                     platform=platform,
-                    error=self.scrub(str(exc))[:200],
+                    error="chat queue failed",
                 )
                 continue
             result["queued" if added else "already"] += 1
@@ -5088,6 +5093,13 @@ class Daemon:
                 if runner.cfg.wake == "muse"
                 else None
             )
+            # The fallback is opt-in (`fallback = "mcode"`), so its pin is only read for a seat that
+            # actually configured one -- the same gate `_pinned_fallback` uses.
+            mcode = (
+                A.resolve_mcode(runner.cfg.mcode, self.wake_path)
+                if runner.cfg.fallback == "mcode"
+                else None
+            )
             routine = None
             if runner.cfg.wake == "http":
                 target, why, detail = self.routine(runner)
@@ -5135,12 +5147,24 @@ class Daemon:
             # exhausted quota must be visibly held BY THE QUOTA, or it looks exactly like a seat
             # nobody configured (the CLAUDE seat at its weekly cap is the case the gate exists for).
             muse_pin = A.muse_pin_state(runner.paths, muse) if muse else None
-            if muse_pin and muse_pin["why"] == "pin_stale":
-                red.append(
-                    "wake pin is stale: muse moved to %s (pinned %s); run "
-                    "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
-                    % (muse_pin["muse"], muse_pin["pinned_muse"], seat)
-                )
+            if muse_pin and muse_pin["why"] in ("pin_stale", "pin_unverified", "pin_unreadable"):
+                # The cause, the label ("stale" vs "unverifiable") and the remediation all live
+                # in adapters, so the wording is testable without standing up a daemon.  An
+                # unreadable contract is NOT fixed by re-pinning, so the entry must say
+                # "unverifiable" and not prefix "run" before a remediation that begins with
+                # "restore the wake contract".
+                red.append(A.muse_pin_red_entry(muse_pin, seat))
+            # The fallback pin reports on its own file too.  It gates the fallback on its own, so a
+            # stale one holds every fallback wake; without a red entry here a seat whose fallback
+            # silently stopped looks exactly as healthy as a seat that never configured one.
+            mcode_pin = (
+                A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model) if mcode else None
+            )
+            if mcode_pin and mcode_pin["why"] in ("pin_stale", "pin_unverified", "pin_unreadable"):
+                # The cause, the label and the remediation all live in adapters.  Mirror of the
+                # muse entry:  no "run " prefix when the remediation begins with its own verb, and
+                # the unreadable remediation carries `--runtime fallback` in BOTH halves.
+                red.append(A.mcode_pin_red_entry(mcode_pin, seat))
             for problem in runner.cfg.config_problems:
                 red.append(
                     "config problem, so wakes are inbox-only (mentions still queue): %s"
@@ -5361,7 +5385,10 @@ class Daemon:
                     runner.jobs_cond.wait(timeout=1.0)
             if runner.jobs:
                 self.run_jobs(runner.seat, limit=1)
-            if runner.seat in ("GROK", "CURSOR") and self.clock.monotonic() - last_nudge >= 30.0:
+            if (
+                runner.seat in ("GROK", "CURSOR", "CODEX")
+                and self.clock.monotonic() - last_nudge >= 30.0
+            ):
                 last_nudge = self.clock.monotonic()
                 try:
                     self.dispatch_chat_nudge(runner)
@@ -5395,9 +5422,9 @@ class Daemon:
                 self.wake_id = ""
                 self.pending: dict[str, Any] = {}
 
-            def preflight(inner, binding: dict[str, str]) -> str:
+            def gates(inner, binding: dict[str, str]) -> str:
                 if (
-                    runner.seat not in ("GROK", "CURSOR")
+                    runner.seat not in ("GROK", "CURSOR", "CODEX")
                     or not runner.cfg.enabled
                     or not runner.connected
                     or runner.me is None
@@ -5454,14 +5481,25 @@ class Daemon:
                 if blocked:
                     return "busy"
                 inner.pending = row
+                return "ready"
+
+            def preflight(inner, binding: dict[str, str]) -> str:
+                readiness = inner.gates(binding)
+                if readiness != "ready":
+                    return readiness
                 if not hasattr(daemon, "_chat_transport"):
                     daemon._chat_transport = CT.ChatTransport()
                 return daemon._chat_transport.preflight(binding)
 
             def send(inner, binding: dict[str, str], text: str) -> str:
+                inner.hold_reason = None
                 # Repeat every daemon gate immediately before accounting and transport; a pause,
                 # budget change or loop-guard trip may have raced the earlier preflight.
-                readiness = inner.preflight(binding)
+                readiness = (
+                    inner.gates(binding)
+                    if binding.get("platform") == "codex"
+                    else inner.preflight(binding)
+                )
                 if readiness == "busy":
                     return "deferred"
                 if readiness != "ready":
@@ -5473,10 +5511,23 @@ class Daemon:
                     if not hasattr(daemon, "_chat_transport"):
                         daemon._chat_transport = CT.ChatTransport()
                     outcome = daemon._chat_transport.send(
-                        binding, text, permit=lambda: inner.preflight(binding) == "ready"
+                        binding,
+                        text,
+                        permit=lambda: (
+                            (
+                                inner.gates(binding)
+                                if binding.get("platform") == "codex"
+                                else inner.preflight(binding)
+                            )
+                            == "ready"
+                        ),
                     )
                 except Exception:
                     outcome = "unknown"
+                if outcome in ("held", "deferred", "failed"):
+                    inner.hold_reason = (
+                        getattr(daemon._chat_transport, "hold_reason", None) or inner.hold_reason
+                    )
                 if outcome == "deferred" and getattr(inner, "hold_reason", None):
                     outcome = "held"
                 # Local delivery uses no model tokens.  Downstream chat spend is unmeasured; count
@@ -5579,7 +5630,7 @@ class Daemon:
         self._configure_outgoing_webhook()
         self._configure_listener_api()
         self._configure_notes_relay()
-        for seat in ("GROK", "CURSOR"):
+        for seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(seat).recover_interrupted()
         os.ftruncate(lock_fd, 0)
         os.write(lock_fd, str(os.getpid()).encode())
@@ -5626,7 +5677,8 @@ class Daemon:
                         (
                             "wake",
                             self.worker_loop,
-                            runner.cfg.wake in C.WORKER_WAKES or runner.seat in ("GROK", "CURSOR"),
+                            runner.cfg.wake in C.WORKER_WAKES
+                            or runner.seat in ("GROK", "CURSOR", "CODEX"),
                         ),
                     ):
                         thread = runner.threads.get(role)

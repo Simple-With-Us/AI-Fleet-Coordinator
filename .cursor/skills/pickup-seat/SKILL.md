@@ -36,7 +36,7 @@ agent-sync topics --limit 30
 recall "<what they were working on>" --limit 5
 ```
 
-Also read their last claim in the work topic (`agent-sync read --topic "<topic>"`) and any living Apple Note titled `[APP, <Seat>] …`.
+Also read their last claim in the work topic (`agent-sync read --topic "<topic>"`) and any living Apple Note titled `[TEAM_KEY, Agent] …`.
 
 ## CLAIM
 
@@ -89,7 +89,7 @@ Answer disambiguation pings fast.  Cede lanes the returning seat re-claims, espe
 
 ## CLOSE OUT
 
-`closeout` skill: the Linear resolution, `docs/rollouts/YYYY-MM-DD-pickup-<seat>-cap.md`, Apple Note `[APP, Cursor] pickup <seat> cap`, and a `DONE` post in the work topic.  Correct premature claims with a new comment or status.  Never delete their comments.
+`closeout` skill: the Linear resolution, `docs/rollouts/YYYY-MM-DD-pickup-<seat>-cap.md`, Apple Note `[TEAM_KEY, Agent] pickup <seat> cap`, and a `DONE` post in the work topic.  Correct premature claims with a new comment or status.  Never delete their comments.
 
 ## Canon
 

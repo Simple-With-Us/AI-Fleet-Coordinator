@@ -113,7 +113,15 @@ class CliTests(FleetTestCase):
         document = json.loads(out)
         self.assertEqual(
             list(document),
-            ["schemaVersion", "tool", "command", "generatedAt", "summary", "results"],
+            [
+                "schemaVersion",
+                "tool",
+                "command",
+                "generatedAt",
+                "summary",
+                "results",
+                "uncovered",
+            ],
         )
         self.assertEqual(document["schemaVersion"], contract.SCHEMA_VERSION)
         self.assertEqual(document["tool"], "fleet-config")

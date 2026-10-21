@@ -1,0 +1,420 @@
+{
+ "schemaVersion": 1,
+ "tool": "fleet-config",
+ "command": "status",
+ "generatedAt": "2026-10-21T02:07:06Z",
+ "summary": {
+  "total": 65,
+  "byState": {
+   "PASS": 53,
+   "DRIFT": 11,
+   "MISSING": 0,
+   "UNPROVEN": 0,
+   "UNSUPPORTED": 0,
+   "UNKNOWN": 1
+  },
+  "overallVerdict": "FAIL",
+  "failing": 12
+ },
+ "results": [
+  {
+   "ruleId": "claude-instructions-lane-map",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "instructions",
+   "state": "PASS",
+   "reason": "The marked block 'fleet-lane-map' in ~/.claude/CLAUDE.md matches the expected hash.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "The fleet-lane-map block in ~/.claude/CLAUDE.md matches the installer template",
+    "present": true,
+    "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+   },
+   "observed": {
+    "present": true,
+    "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": "L0",
+   "collector": "mac",
+   "checkType": "marked_block_hash",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  },
+  {
+   "ruleId": "claude-hooks-lane-guard",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "hooks",
+   "state": "PASS",
+   "reason": "The PreToolUse hook 'lane-guard-hook' is registered in ~/.claude/settings.json.  Proof L1 achieved.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "The fleet guard hook is registered for PreToolUse in ~/.claude/settings.json",
+    "present": true,
+    "names": [
+     "lane-guard-hook"
+    ],
+    "timeoutSeconds": 5
+   },
+   "observed": {
+    "present": true,
+    "names": [
+     "lane-guard-hook"
+    ],
+    "timeoutSeconds": 5
+   },
+   "proofLevelRequired": "L1",
+   "proofLevelAchieved": "L1",
+   "collector": "mac",
+   "checkType": "hook_registered",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  },
+  {
+   "ruleId": "claude-mcp-fleet-servers",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "mcp",
+   "state": "PASS",
+   "reason": "The MCP server 'fleet-recall' is registered in ~/.claude.json.  2 other servers are registered there.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "The fleet MCP servers are registered in ~/.claude.json",
+    "present": true,
+    "names": [
+     "fleet-recall"
+    ]
+   },
+   "observed": {
+    "present": true,
+    "names": [
+     "fleet-recall"
+    ]
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": "L0",
+   "collector": "mac",
+   "checkType": "mcp_servers_registered",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  },
+  {
+   "ruleId": "claude-skills-fleet",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "skills",
+   "state": "PASS",
+   "reason": "The skill 'agent-sync-tools-guide', 'apple-notes', 'board-ops', 'closeout', 'codex-triage', 'deploy-verify', 'dns-and-registrars', 'drive-grok-tui', 'fleet-coordination', 'fleet-infra', 'fleet-recall', 'housekeeper', 'land-lane', 'mac-cleanup', 'owner-copy', 'pickup-seat', 'pr-sweep', 'secret-handoff', 'sentence-gap', 'session-start', 'unstick-pr' is installed in ~/.claude/skills.  25 other skills are installed there.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "The fleet skill pack is installed in ~/.claude/skills",
+    "present": true,
+    "names": [
+     "agent-sync-tools-guide",
+     "apple-notes",
+     "board-ops",
+     "closeout",
+     "codex-triage",
+     "deploy-verify",
+     "dns-and-registrars",
+     "drive-grok-tui",
+     "fleet-coordination",
+     "fleet-infra",
+     "fleet-recall",
+     "housekeeper",
+     "land-lane",
+     "mac-cleanup",
+     "owner-copy",
+     "pickup-seat",
+     "pr-sweep",
+     "secret-handoff",
+     "sentence-gap",
+     "session-start",
+     "unstick-pr"
+    ]
+   },
+   "observed": {
+    "present": true,
+    "names": [
+     "agent-sync-tools-guide",
+     "apple-notes",
+     "board-ops",
+     "closeout",
+     "codex-triage",
+     "deploy-verify",
+     "dns-and-registrars",
+     "drive-grok-tui",
+     "fleet-coordination",
+     "fleet-infra",
+     "fleet-recall",
+     "housekeeper",
+     "land-lane",
+     "mac-cleanup",
+     "owner-copy",
+     "pickup-seat",
+     "pr-sweep",
+     "secret-handoff",
+     "sentence-gap",
+     "session-start",
+     "unstick-pr"
+    ]
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": "L0",
+   "collector": "mac",
+   "checkType": "skills_installed",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  },
+  {
+   "ruleId": "claude-subagents-fleet",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "subagents",
+   "state": "PASS",
+   "reason": "The sub-agent 'code-scout', 'docs-scribe' is installed in ~/.claude/agents.  2 other definitions are installed there.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "The fleet sub-agent definitions are installed in ~/.claude/agents",
+    "present": true,
+    "names": [
+     "code-scout",
+     "docs-scribe"
+    ]
+   },
+   "observed": {
+    "present": true,
+    "names": [
+     "code-scout",
+     "docs-scribe"
+    ]
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": "L0",
+   "collector": "mac",
+   "checkType": "subagents_installed",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  },
+  {
+   "ruleId": "claude-permissions-zulip-key",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "permissions",
+   "state": "PASS",
+   "reason": "The credential key CLAUDE_ZULIP_EMAIL, CLAUDE_ZULIP_KEY, CLAUDE_ZULIP_SITE is in the secret store at /zulip.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "The Zulip credential is reachable in the secret store at /zulip",
+    "present": true,
+    "names": [
+     "CLAUDE_ZULIP_EMAIL",
+     "CLAUDE_ZULIP_KEY",
+     "CLAUDE_ZULIP_SITE"
+    ]
+   },
+   "observed": {
+    "present": true,
+    "names": [
+     "CLAUDE_ZULIP_EMAIL",
+     "CLAUDE_ZULIP_KEY",
+     "CLAUDE_ZULIP_SITE"
+    ]
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": "L0",
+   "collector": "mac",
+   "checkType": "credential_key_present",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  },
+  {
+   "ruleId": "claude-permissions-zulip-retired-file",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "permissions",
+   "state": "DRIFT",
+   "reason": "The credential ZULIP_CLAUDE exists, which the rule says must be absent.",
+   "reasonCode": "drift",
+   "expected": {
+    "description": "The retired flat Zulip credential file is gone, stat only",
+    "present": false
+   },
+   "observed": {
+    "present": true,
+    "mode": "0600",
+    "sizeBytes": 127,
+    "mtime": "2026-10-07T23:08:52Z"
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": null,
+   "collector": "mac",
+   "checkType": "credential_stat",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": true
+  },
+  {
+   "ruleId": "opencode-instructions-lane-map",
+   "seat": "OPENCODE",
+   "platform": "opencode",
+   "kind": "instructions",
+   "state": "PASS",
+   "reason": "The marked block 'fleet-lane-map' in ~/.config/opencode/AGENTS.md matches the expected hash.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "The fleet-lane-map block in ~/.config/opencode/AGENTS.md matches the installer template",
+    "present": true,
+    "sha256": "93c7889583e32a7c37671de28334375ae4783fe2d110f43728af03929ccc81a1"
+   },
+   "observed": {
+    "present": true,
+    "sha256": "93c7889583e32a7c37671de28334375ae4783fe2d110f43728af03929ccc81a1"
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": "L0",
+   "collector": "mac",
+   "checkType": "marked_block_hash",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  },
+  {
+   "ruleId": "opencode-hooks-none",
+   "seat": "OPENCODE",
+   "platform": "opencode",
+   "kind": "hooks",
+   "state": "PASS",
+   "reason": "No PreToolUse hook is registered in ~/.config/opencode/opencode.json, as the rule expects.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "No hook is registered for PreToolUse in ~/.config/opencode/opencode.json",
+    "present": false
+   },
+   "observed": {
+    "present": false
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": "L0",
+   "collector": "mac",
+   "checkType": "hook_registered",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  },
+  {
+   "ruleId": "opencode-mcp-fleet-servers",
+   "seat": "OPENCODE",
+   "platform": "opencode",
+   "kind": "mcp",
+   "state": "UNKNOWN",
+   "reason": "The MCP config file ~/.config/opencode/opencode.json holds no MCP server section this reader understands.",
+   "reasonCode": "unparseable",
+   "expected": {
+    "description": "The fleet MCP servers are registered in ~/.config/opencode/opencode.json",
+    "present": true,
+    "names": [
+     "fleet-recall"
+    ]
+   },
+   "observed": {},
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": null,
+   "collector": "mac",
+   "checkType": "mcp_servers_registered",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": true
+  },
+  {
+   "ruleId": "opencode-permissions-zulip-key",
+   "seat": "OPENCODE",
+   "platform": "opencode",
+   "kind": "permissions",
+   "state": "PASS",
+   "reason": "The credential key OPENCODE_ZULIP_EMAIL, OPENCODE_ZULIP_KEY, OPENCODE_ZULIP_SITE is in the secret store at /zulip.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "The Zulip credential is reachable in the secret store at /zulip",
+    "present": true,
+    "names": [
+     "OPENCODE_ZULIP_EMAIL",
+     "OPENCODE_ZULIP_KEY",
+     "OPENCODE_ZULIP_SITE"
+    ]
+   },
+   "observed": {
+    "present": true,
+    "names": [
+     "OPENCODE_ZULIP_EMAIL",
+     "OPENCODE_ZULIP_KEY",
+     "OPENCODE_ZULIP_SITE"
+    ]
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": "L0",
+   "collector": "mac",
+   "checkType": "credential_key_present",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  },
+  {
+   "ruleId": "opencode-permissions-zulip-retired-file",
+   "seat": "OPENCODE",
+   "platform": "opencode",
+   "kind": "permissions",
+   "state": "DRIFT",
+   "reason": "The credential ZULIP_OPENCODE exists, which the rule says must be absent.",
+   "reasonCode": "drift",
+   "expected": {
+    "description": "The retired flat Zulip credential file is gone, stat only",
+    "present": false
+   },
+   "observed": {
+    "present": true,
+    "mode": "0600",
+    "sizeBytes": 129,
+    "mtime": "2026-10-10T09:14:12Z"
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": null,
+   "collector": "mac",
+   "checkType": "credential_stat",
+   "checkedAt": "2026-10-21T02:07:06Z",
+   "expiresAt": "2026-10-21T02:22:06Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": true
+  }
+ ]
+}

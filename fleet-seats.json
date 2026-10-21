@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "seats": {
     "AG": {
       "notApplicable": [
@@ -36,6 +36,7 @@
             "antigravity"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -62,6 +63,7 @@
             "antigravity"
           ],
           "proofLevel": "L1",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -87,6 +89,7 @@
             "antigravity"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -132,6 +135,7 @@
             "antigravity"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -159,6 +163,7 @@
             "antigravity"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -181,6 +186,7 @@
             "antigravity"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         }
       ]
@@ -212,6 +218,7 @@
             "claude"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -238,6 +245,7 @@
             "claude"
           ],
           "proofLevel": "L1",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -263,6 +271,7 @@
             "claude"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -308,6 +317,7 @@
             "claude"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -334,6 +344,7 @@
             "claude"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -361,6 +372,7 @@
             "claude"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -383,6 +395,7 @@
             "claude"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         }
       ]
@@ -429,6 +442,7 @@
             "clutch"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -455,6 +469,7 @@
             "clutch"
           ],
           "proofLevel": "L1",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -500,6 +515,7 @@
             "clutch"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -527,6 +543,7 @@
             "clutch"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -549,6 +566,7 @@
             "clutch"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         }
       ]
@@ -580,6 +598,7 @@
             "codex"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -606,6 +625,7 @@
             "codex"
           ],
           "proofLevel": "L1",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -631,6 +651,7 @@
             "codex"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -676,6 +697,7 @@
             "codex"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -702,6 +724,7 @@
             "codex"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -729,6 +752,7 @@
             "codex"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -751,6 +775,7 @@
             "codex"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         }
       ]
@@ -790,6 +815,7 @@
             "cursor"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -816,6 +842,7 @@
             "cursor"
           ],
           "proofLevel": "L1",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -841,6 +868,7 @@
             "cursor"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -886,6 +914,7 @@
             "cursor"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -913,6 +942,7 @@
             "cursor"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -935,6 +965,7 @@
             "cursor"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         }
       ]
@@ -1017,6 +1048,7 @@
             "fx"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1039,6 +1071,7 @@
             "fx"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1065,6 +1098,7 @@
             "fx"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1110,6 +1144,7 @@
             "fx"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1137,6 +1172,7 @@
             "fx"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1159,6 +1195,7 @@
             "fx"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1182,6 +1219,7 @@
             "fx"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         }
       ]
@@ -1221,6 +1259,7 @@
             "grok"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1247,6 +1286,7 @@
             "grok"
           ],
           "proofLevel": "L1",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1272,6 +1312,7 @@
             "grok"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1317,6 +1358,7 @@
             "grok"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1344,6 +1386,7 @@
             "grok"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1366,6 +1409,7 @@
             "grok"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         }
       ]
@@ -1495,6 +1539,7 @@
             "muse"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1520,6 +1565,7 @@
             "muse"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1547,6 +1593,7 @@
             "muse"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1569,6 +1616,7 @@
             "muse"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         }
       ]
@@ -1619,6 +1667,7 @@
             "muse-code"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1645,6 +1694,7 @@
             "muse-code"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1690,6 +1740,7 @@
             "muse-code"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1717,6 +1768,7 @@
             "muse-code"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1739,6 +1791,7 @@
             "muse-code"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         }
       ]
@@ -1770,6 +1823,7 @@
             "minimax"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1796,6 +1850,7 @@
             "minimax"
           ],
           "proofLevel": "L1",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1822,6 +1877,7 @@
             "minimax"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1867,6 +1923,7 @@
             "minimax"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1890,6 +1947,7 @@
             "minimax"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1917,6 +1975,7 @@
             "minimax"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -1939,7 +1998,18 @@
             "minimax"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
+        }
+      ],
+      "uncovered": [
+        {
+          "reason": "The channel configuration fits none of the six kinds.",
+          "surface": "~/.minimax/config.json"
+        },
+        {
+          "reason": "The identity file fits none of the six kinds.",
+          "surface": "~/.minimax/identity.yaml"
         }
       ]
     },
@@ -1992,6 +2062,7 @@
             "opencode"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -2014,6 +2085,7 @@
             "opencode"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -2039,6 +2111,7 @@
             "opencode"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -2066,6 +2139,7 @@
             "opencode"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         },
         {
@@ -2088,6 +2162,7 @@
             "opencode"
           ],
           "proofLevel": "L0",
+          "source": "",
           "ttlSeconds": 900
         }
       ]

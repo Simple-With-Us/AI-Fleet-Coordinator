@@ -113,6 +113,11 @@ jobs:
     - name: fleet_config tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_config/tests -t . -v
+    # fleet_view (AFC-394):  the Fleet View collectors for lanes, open PRs and Linear claims, the
+    # request budget, the blocker mapping and the pinned envelope.  Fake runners only;  no network.
+    - name: fleet_view tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_view/tests -t . -v
     # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
     # unresolved-reference guard, auth selection, and no secret in argv or error text.
     - name: fleet_secrets tests
@@ -168,6 +173,19 @@ jobs:
     - name: Sentence gap converter tests
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_converter -v
+    # The code-aware sentence-gap program:  every surface embeds the same program,
+    # the program carries the one home's pattern, the code comes back byte for byte,
+    # the gaps are made, the prose runs collapse, and the program is idempotent --
+    # the check that sees a prose double space no grep over the body can see.
+    - name: Sentence gap program tests
+      run: |
+        cd scripts && python3 -m unittest test_sentence_gap_program -v
+    # The MiniMax model id the autofix bots dispatch: the trusted policy, every
+    # reusable workflow default, and the reference doc all name one id, and a
+    # retired spelling may appear in a comment but never as a value.
+    - name: Autofix model default tests
+      run: |
+        cd scripts && python3 -m unittest test_autofix_model_defaults -v
     # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
@@ -232,6 +250,13 @@ jobs:
     - name: Notes pin decision (AFC-431)
       run: |
         cd scripts && python3 -m unittest test_apple_notes_pin
+    # AFC-436:  the canonical helper must carry the 900 s AppleEvent timeout around its Notes calls.
+    # The fix existed only in the live copy at ~/apps/apple-notes-coding.sh,  so the repository copy
+    # lost it and an install from the repository would have dropped it again.  These tests read the
+    # script as text, so they touch no Notes and run here.
+    - name: Notes AppleEvent timeout (AFC-436)
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_timeout
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
@@ -274,6 +299,10 @@ jobs:
         python3 scripts/mac-collab/test_app_normalization.py
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    # Shared alert ingress: state transitions, vendor normalization, and the
+    # Zulip status rendering.  Pure functions, so no Workers runtime needed.
+    - name: Alert ingress unit tests
+      run: node --test workers/alert-ingress/src/
     # Hosted agent-sync MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
     - name: agent-sync MCP Worker unit tests
@@ -297,7 +326,7 @@ jobs:
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
     # network:  the tests import the script, which runs main() only as an entry point.
     - name: Fleet Reference Sheet registry sync tests
-      run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs
+      run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs scripts/fleet-apps-sheet-sync.ingest.test.mjs
     # The TestFlight freshness deploy check (AFC-341).  App Store Connect, gh, build-window.sh,
     # the state file and Zulip are stubbed;  the last test validates testflight-apps.json.
     - name: TestFlight freshness check tests

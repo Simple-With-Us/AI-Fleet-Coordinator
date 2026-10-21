@@ -41,7 +41,19 @@ class SeatAndMcpTests(unittest.TestCase):
             "/linear": frozenset(),
             "/fleetlink": None,
         }
-        with mock.patch.object(doctor, "infisical_names", lambda folder, env: names[folder]):
+        # AFC-359:  the mock must honour `project`, so this test actually asserts
+        # check_seat queries AI Fleet Coordinator (not Fleet-OPS) for /fleetlink.
+        projects = {
+            "/zulip": "fleet-ops",
+            "/linear": "fleet-ops",
+            "/fleetlink": "ai-fleet-coordinator",
+        }
+
+        def fake_names(folder, env, project="fleet-ops"):
+            self.assertEqual(project, projects[folder], f"wrong Infisical project for {folder}")
+            return names[folder]
+
+        with mock.patch.object(doctor, "infisical_names", fake_names):
             report = doctor.Report()
             doctor.check_seat(report, "GROK-WEB", {})
             self.assertEqual(report.rows[0]["status"], "FAIL")

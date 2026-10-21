@@ -61,7 +61,7 @@ def _rule(rule_id: str, kind: str, platforms: list[str], **overrides: Any) -> di
 
 def _manifest_dict(seats: dict[str, Any]) -> dict[str, Any]:
     """A whole manifest document in its JSON shape."""
-    return {"schemaVersion": 1, "seats": seats}
+    return {"schemaVersion": 2, "seats": seats}
 
 
 class ManifestFixture(unittest.TestCase):
@@ -155,6 +155,62 @@ class RosterTests(ManifestFixture):
     def test_loader_refuses_a_missing_file(self) -> None:
         with self.assertRaises(ManifestError):
             load_manifest(self.root / "absent.json", registry_path=self.registry_path)
+
+
+class UncoveredSurfaceTests(ManifestFixture):
+    """A file that fits none of the six kinds is named,  so the blindness is visible.
+
+    A ``notApplicable`` cover carries a kind,  so using one for a surface that fits no
+    kind would force the surface into a kind it does not fit.  The ``uncovered`` list
+    names the surface itself.
+    """
+
+    def _rule(self) -> dict[str, Any]:
+        return {
+            "id": "claude-instructions-lane-map",
+            "kind": "instructions",
+            "platforms": ["claude"],
+            "check": {"type": "file_hash", "target": "~/.claude/CLAUDE.md"},
+            "expected": {"description": "the rules file matches"},
+            "proofLevel": "L0",
+            "ownerSeat": "CLAUDE",
+            "autofixAllowed": False,
+        }
+
+    def _document(self, uncovered: list | None = None) -> dict[str, Any]:
+        seat: dict[str, Any] = {"platforms": ["claude"], "rules": [self._rule()]}
+        if uncovered is not None:
+            seat["uncovered"] = uncovered
+        codex = dict(self._rule())
+        codex["id"] = "codex-instructions-lane-map"
+        codex["ownerSeat"] = "CODEX"
+        return _manifest_dict(
+            {"CLAUDE": seat, "CODEX": {"platforms": ["claude"], "rules": [codex]}}
+        )
+
+    def test_a_seat_may_name_a_surface_it_does_not_check(self) -> None:
+        manifest = self.load(
+            self._document(
+                [
+                    {
+                        "surface": "~/.minimax/config.json",
+                        "reason": "The channel configuration fits none of the six kinds.",
+                    }
+                ]
+            )
+        )
+        uncovered = manifest.seat("CLAUDE").uncovered
+        self.assertEqual(len(uncovered), 1)
+        self.assertEqual(uncovered[0].surface, "~/.minimax/config.json")
+        self.assertIn("none of the six kinds", uncovered[0].reason)
+
+    def test_a_seat_with_no_uncovered_surfaces_carries_an_empty_list(self) -> None:
+        manifest = self.load(self._document())
+        self.assertEqual(manifest.seat("CLAUDE").uncovered, ())
+
+    def test_an_uncovered_entry_without_a_surface_is_rejected(self) -> None:
+        with self.assertRaises(manifest_module.ManifestError):
+            self.load(self._document([{"reason": "no surface named"}]))
 
 
 class CoverageTests(ManifestFixture):

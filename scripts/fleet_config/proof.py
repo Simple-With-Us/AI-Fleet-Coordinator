@@ -57,6 +57,8 @@ __all__ = [
     "L2_DENY_PHRASE",
     "L2_PLATFORMS",
     "L2_TIMEOUT_SECONDS",
+    "NATIVE_FILE_TOOLS",
+    "NATIVE_SHELL_TOOL_NAMES",
     "PLATFORM_ADAPTERS",
     "SENTINEL_PREFIX",
     "SENTINEL_SOURCE_NAME",
@@ -67,6 +69,7 @@ __all__ = [
     "PlatformAdapter",
     "ProofOutcome",
     "apply_proof",
+    "build_file_payload",
     "build_payload",
     "default_hook_command",
     "hook_format",
@@ -109,6 +112,55 @@ L2_TIMEOUT_SECONDS = 300
 
 # The session id the synthetic payload carries.  It is a fixed string, not a real one.
 SENTINEL_SESSION_ID = "fleet-config-l1"
+
+# The shell tool names each platform's runtime really delivers (AFC-416).  A matcher
+# has to cover every name in its platform's tuple to prove anything here, because the
+# policy stage drives a shell canary:  MiniMax delivers lowercase ``bash`` on
+# ``mcode exec`` and ``Bash`` in the Desktop app, so a matcher of ``Bash`` alone
+# misses the headless surface and a Claude-flavoured sentinel lets a broken matcher
+# pass.  The single-name platforms keep a one-tuple, so their behaviour is unchanged.
+NATIVE_SHELL_TOOL_NAMES: dict[str, tuple[str, ...]] = {
+    "claude": ("Bash",),
+    "codex": ("Bash",),
+    "grok": ("Bash",),
+    "kimi": ("Bash",),
+    "clutch": ("Bash",),
+    "minimax": ("bash", "Bash"),
+    "muse": ("bash",),
+    "muse-code": ("bash",),
+    "cursor": (),
+    "antigravity": (),
+}
+
+# The file tool names the L1 sentinel set must also cover (AFC-416).  The native
+# ``write`` tool carries ``path`` and the native ``edit`` tool carries ``file_path``,
+# so a sentinel set of shell payloads alone leaves file writes unproven.  The current
+# lane guard evaluates shell commands only and fails open on file payloads, so a file
+# probe that is allowed is a genuine DRIFT, not a harness error:  the seat is
+# unguarded for file writes.
+# The file tools are per platform,  for the same reason the shell names are:  a probe
+# that names a tool the runtime never delivers proves nothing,  and fails the seat for
+# a tool it does not have.  The MiniMax runtime delivers its native ``write`` (which
+# carries ``path``) and its native ``edit`` (which carries ``file_path``);  the
+# claude-shaped runtimes deliver ``Write`` and ``Edit`` (which carry ``file_path``).
+# The platforms whose payload shape carries no file tool are empty,  because the probe
+# cannot express a file write for them.
+NATIVE_FILE_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
+    "claude": (("Write", "file_path"), ("Edit", "file_path")),
+    "codex": (("Write", "file_path"), ("Edit", "file_path")),
+    "grok": (("Write", "file_path"), ("Edit", "file_path")),
+    "kimi": (("Write", "file_path"), ("Edit", "file_path")),
+    "clutch": (("Write", "file_path"), ("Edit", "file_path")),
+    "minimax": (("write", "path"), ("edit", "file_path")),
+    "muse": (("Write", "file_path"), ("Edit", "file_path")),
+    "muse-code": (("Write", "file_path"), ("Edit", "file_path")),
+    # The cursor payload shape is a shell event with no tool input at all,  and the
+    # antigravity one carries a command line rather than a path,  so neither can carry
+    # a file tool.  Their file surface is therefore not probed,  and the L1 outcome
+    # says so instead of reporting a bare pass.
+    "cursor": (),
+    "antigravity": (),
+}
 
 
 @dataclass(frozen=True)
@@ -249,12 +301,16 @@ def platform_adapter(platform: str) -> PlatformAdapter | None:
     return PLATFORM_ADAPTERS.get(platform)
 
 
-def build_payload(adapter: PlatformAdapter, command: str, cwd: str) -> dict[str, object]:
+def build_payload(
+    adapter: PlatformAdapter, command: str, cwd: str, tool_name: str | None = None
+) -> dict[str, object]:
     """The synthetic PreToolUse payload for one platform.
 
     The shape is the one the platform's hook runner sends, because the guard reads
     the command out of the payload by shape.  The command is a TEXT:  the payload
-    describes a write, it does not perform one.
+    describes a write, it does not perform one.  ``tool_name`` overrides the shell
+    tool name the payload carries, so the L1 probe can send the platform-native name
+    the runtime really delivers (AFC-416);  without it the platform default is used.
     """
     if adapter.payload_shape == "cursor":
         return {
@@ -275,7 +331,7 @@ def build_payload(adapter: PlatformAdapter, command: str, cwd: str) -> dict[str,
             "hook_event_name": "PreToolUse",
             "cwd": cwd,
             "permission_mode": "default",
-            "tool_name": "bash",
+            "tool_name": tool_name or "bash",
             "tool_input": {
                 "command": command,
                 "description": "fleet-config L1 sentinel probe",
@@ -284,11 +340,49 @@ def build_payload(adapter: PlatformAdapter, command: str, cwd: str) -> dict[str,
     return {
         "session_id": SENTINEL_SESSION_ID,
         "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
+        "tool_name": tool_name or "Bash",
         "tool_input": {
             "command": command,
             "description": "fleet-config L1 sentinel probe",
         },
+        "cwd": cwd,
+    }
+
+
+def build_file_payload(
+    adapter: PlatformAdapter, destination: str, cwd: str, tool_name: str, path_field: str
+) -> dict[str, object]:
+    """The synthetic PreToolUse file payload for one platform-native file tool.
+
+    ``tool_name`` is the file tool the runtime really delivers (for example
+    ``Write`` or ``write``) and ``path_field`` is the field that tool carries the
+    path in (``file_path`` for the capitalised tools, ``path`` for the lowercase
+    native ones).  The payload carries the sentinel destination in its path field
+    and in a content field, so a guard that polices file tools can deny it by
+    string match, and a guard that ignores file payloads fails open (ALLOW), which
+    the L1 probe correctly folds into DRIFT.  Cursor and Antigravity gate shell
+    calls on a different event, so they have no file payload in Phase 2.
+    """
+    tool_input: dict[str, object] = {
+        path_field: destination,
+        "content": "fleet-config L1 sentinel probe %s" % destination,
+        "command": "fleet-config L1 sentinel probe %s" % destination,
+        "description": "fleet-config L1 sentinel probe",
+    }
+    if adapter.payload_shape == "muse":
+        return {
+            "session_id": SENTINEL_SESSION_ID,
+            "hook_event_name": "PreToolUse",
+            "cwd": cwd,
+            "permission_mode": "default",
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+        }
+    return {
+        "session_id": SENTINEL_SESSION_ID,
+        "hook_event_name": "PreToolUse",
+        "tool_name": tool_name,
+        "tool_input": tool_input,
         "cwd": cwd,
     }
 
@@ -1003,6 +1097,25 @@ def _interpret_l1(run: _Run, fmt: str, marker: str, budget: int, guard_off: bool
     )
 
 
+def _run_one_payload(
+    command: str,
+    payload: dict[str, object],
+    fmt: str,
+    sentinel: Sentinel,
+    env: dict[str, str],
+    budget: int,
+) -> L1Outcome:
+    """Pipe one payload into the hook and interpret the answer, fail closed."""
+    run = _run_shell(
+        command,
+        json.dumps(payload, sort_keys=True).encode("utf-8"),
+        env,
+        budget,
+        sentinel.root,
+    )
+    return _interpret_l1(run, fmt, sentinel.marker, budget, _guard_disabled(env))
+
+
 def run_l1_probe(
     platform: str,
     ctx: CheckContext,
@@ -1014,7 +1127,11 @@ def run_l1_probe(
     The probe builds a synthetic PreToolUse payload whose command names a write into
     a throwaway sentinel lane, pipes it into the installed hook on stdin, and reads
     the platform's deny signal.  A deny that names the sentinel is a pass;  anything
-    else fails closed.
+    else fails closed.  The payload carries the tool name the platform runtime really
+    delivers (AFC-416):  a platform with two shell spellings is probed on both, so a
+    matcher that covers only one cannot pass, and the sentinel set also covers the
+    file tools (``Write``/``Edit`` and their lowercase native spellings), so a seat
+    whose guard ignores file payloads correctly reports DRIFT instead of PASS.
 
     ``hook_command`` overrides the command, which is how a caller proves a command it
     resolved itself.  Without it the command is read from the platform's own config
@@ -1059,17 +1176,74 @@ def run_l1_probe(
     sentinel = _make_sentinel(ctx)
     try:
         _assert_sentinel_confined(sentinel)
-        payload = build_payload(adapter, sentinel.command, sentinel.root)
-        run = _run_shell(
-            command,
-            json.dumps(payload, sort_keys=True).encode("utf-8"),
-            env,
-            budget,
-            sentinel.root,
-        )
+        shell_names = NATIVE_SHELL_TOOL_NAMES.get(platform)
+        if shell_names:
+            for shell_tool in shell_names:
+                payload = build_payload(
+                    adapter, sentinel.command, sentinel.root, tool_name=shell_tool
+                )
+                outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
+                if not outcome.passed:
+                    return L1Outcome(
+                        level=outcome.level,
+                        passed=False,
+                        state=outcome.state,
+                        reason="%s (tool %r)" % (outcome.reason, shell_tool),
+                        reason_code=outcome.reason_code,
+                        detail=outcome.detail,
+                        achieved=None,
+                    )
+        else:
+            payload = build_payload(adapter, sentinel.command, sentinel.root)
+            outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
+            if not outcome.passed:
+                return outcome
+        file_tools = NATIVE_FILE_TOOLS.get(platform, ())
+        if not file_tools:
+            # The file surface of this platform cannot be probed,  so the proof is not
+            # complete.  A bare PASS would claim the seat is guarded for file writes
+            # when nothing was checked;  UNPROVEN says the check was not run.
+            return L1Outcome(
+                level=ProofLevel.L1,
+                passed=False,
+                state=CheckState.UNPROVEN,
+                reason=(
+                    "the shell sentinel was denied,  but the file surface of this "
+                    "platform is not probed,  because its hook carries no file tool"
+                ),
+                reason_code=ReasonCode.PROOF_NOT_RUN,
+                detail="the shell sentinel was denied;  no file tool was probed",
+                achieved=None,
+            )
+        for file_tool, path_field in file_tools:
+            payload = build_file_payload(
+                adapter, sentinel.destination, sentinel.root, file_tool, path_field
+            )
+            outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
+            if not outcome.passed:
+                return L1Outcome(
+                    level=outcome.level,
+                    passed=False,
+                    state=outcome.state,
+                    reason=(
+                        "the guard did not deny the %s tool's write,  so a file write "
+                        "into a forbidden tree is not policed" % file_tool
+                    ),
+                    reason_code=outcome.reason_code,
+                    detail=outcome.detail,
+                    achieved=None,
+                )
     finally:
         shutil.rmtree(sentinel.root, ignore_errors=True)
-    return _interpret_l1(run, fmt, sentinel.marker, budget, _guard_disabled(env))
+    return L1Outcome(
+        level=ProofLevel.L1,
+        passed=True,
+        state=CheckState.PASS,
+        reason="the installed hook denied the sentinel write at L1",
+        reason_code=ReasonCode.OK,
+        detail="exit 0, the %s deny named the sentinel" % fmt,
+        achieved=ProofLevel.L1,
+    )
 
 
 # --------------------------------------------------------------------------- L2

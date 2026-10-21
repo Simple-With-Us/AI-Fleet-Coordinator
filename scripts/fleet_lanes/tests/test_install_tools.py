@@ -1610,6 +1610,11 @@ class CliTests(World):
         self.assertEqual(rc, 0, text)
         self.assertIn("self-test PASS", text)
         self.assertIn("with guard.py renamed", text)
+        self.assertIn("with the MiniMax hook shim allowing everything", text)
+        self.assertIn("with the MiniMax adapter renamed", text)
+        self.assertIn("FAIL  minimax", text)
+        self.assertIn("Read/probe-placeholder/deny/hook-env", text)
+        self.assertIn("Write/probe-placeholder/deny/hook-env", text)
         self.assertIn("FAIL  claude", text)  # the failures it provoked are printed
         self.assertNotIn("self-test FAIL", text)
 
@@ -1624,6 +1629,7 @@ class CliTests(World):
             rc = T.self_test(lines.append, timeout=TIMEOUT, minimal_path=False, source=self.source)
         self.assertEqual(rc, 1, "\n".join(lines))
         self.assertIn("did NOT fail", "\n".join(lines))
+        self.assertIn("did NOT fail minimax Read/probe-placeholder/deny/hook-env", "\n".join(lines))
 
 
 # --------------------------------------------------------------------------- review round 2: confirmed findings
@@ -1766,6 +1772,7 @@ class StableDirOwnershipTests(World):
                 "fleet-guard-hook",
                 "fleet_lanes",
                 "lane-guard-hook",
+                "minimax-guard-hook",
                 "muse-plugin",
                 "muse-seat",
                 "opencode-plugin",
@@ -2466,7 +2473,7 @@ class ApplyAllProbeTests(World):
         hook = Path(src.scripts_dir) / "fleet_lanes" / "lane_guard_hook.py"
         text = hook.read_text(encoding="utf-8")
         broken = text.replace(
-            'if fmt in ("grok", "antigravity", "vibe"):', 'if fmt in ("antigravity", "vibe"):'
+            'if fmt in ("grok", "antigravity"):', 'if fmt in ("antigravity"):'
         )
         self.assertNotEqual(broken, text, "the grok output branch moved; update this test")
         hook.write_text(broken, encoding="utf-8")
@@ -2539,7 +2546,7 @@ class ApplyAllProbeTests(World):
         text = hook.read_text(encoding="utf-8")
         hook.write_text(
             text.replace(
-                'if fmt in ("grok", "antigravity", "vibe"):', 'if fmt in ("antigravity", "vibe"):'
+                'if fmt in ("grok", "antigravity"):', 'if fmt in ("antigravity"):'
             ),
             encoding="utf-8",
         )
@@ -4882,7 +4889,7 @@ class FleetHookStableCopyTests(World):
             r = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertTrue(r.ok, r)
         fleet = [c for c in calls if "fleet-guard-hook" in c[0]]
-        self.assertEqual({c[2] for c in fleet}, {"muse", "claude", "kimi", "vibe"})
+        self.assertEqual({c[2] for c in fleet}, {"muse", "claude", "kimi"})
         self.assertTrue(all(c[1] for c in fleet))
 
     def test_a_staged_fleet_shim_that_cannot_deny_a_ps_is_never_swapped_in(self) -> None:
@@ -4891,6 +4898,76 @@ class FleetHookStableCopyTests(World):
         r = T.apply_tools(self.source, self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertEqual(r.status, "refused", r)
         self.assertFalse(os.path.exists(self.paths.stable))
+
+    def test_a_staged_minimax_adapter_that_cannot_deny_a_shell_call_is_never_swapped_in(
+        self,
+    ) -> None:
+        # MM owns its adapter, so a copy whose Bash branch no longer matches tool names would allow
+        # every shell call.  The shared shell probes say nothing about it; the staged MM copy is
+        # probed through its own hook, compatible (Bash) and native (bash).
+        adapter = Path(self.source.scripts_dir) / "fleet_lanes" / "minimax_guard_hook.py"
+        text = adapter.read_text()
+        damaged = text.replace(
+            'if payload.get("tool_name") in ("Bash", "bash"):',
+            'if payload.get("tool_name") in ():',
+        )
+        self.assertNotEqual(damaged, text, "the Bash branch is not where it was expected")
+        adapter.write_text(damaged)
+        lines: list[str] = []
+        r = T.apply_tools(
+            self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+        )
+        self.assertEqual(r.status, "refused", r)
+        self.assertFalse(os.path.exists(self.paths.stable))
+        self.assertTrue(any(line.startswith("FAIL  staged-mm") for line in lines), "\n".join(lines))
+        self.assertFalse(
+            any(line.startswith("FAIL  staged-mm") and "/hook-env" in line for line in lines),
+            "the file probes should still pass, so this is shell coverage",
+        )
+
+    def test_staged_minimax_secret_shell_denials_cover_both_tool_spellings(self) -> None:
+        adapter = Path(self.source.scripts_dir) / "fleet_lanes" / "minimax_guard_hook.py"
+        original = adapter.read_text()
+        forwarding = "denial = fleet.decide(normalized, secret_guard)"
+        self.assertIn(forwarding, original)
+        for tool in ("Bash", "bash"):
+            with self.subTest(tool=tool):
+                adapter.write_text(
+                    original.replace(
+                        forwarding,
+                        f'denial = (None, "") if payload.get("tool_name") == {tool!r} '
+                        'and command.strip() == "ps aux" else fleet.decide(normalized, secret_guard)',
+                    )
+                )
+                lines: list[str] = []
+                r = T.apply_tools(
+                    self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+                )
+                self.assertEqual(r.status, "refused", r)
+                self.assertFalse(os.path.exists(self.paths.stable))
+                failed = [line for line in lines if line.startswith("FAIL  staged-mm")]
+                self.assertTrue(failed, "\n".join(lines))
+                self.assertTrue(all("secret/" in line for line in failed), "\n".join(failed))
+
+    def test_staged_minimax_requires_the_module_backed_file_secret_policy(self) -> None:
+        secret = Path(self.source.scripts_dir) / "hooks" / "secret-guard-pretooluse.py"
+        original = secret.read_text()
+        for damage in ("SECRET_FILE_PATTERNS = ()", "del SECRET_FILE_PATTERNS"):
+            with self.subTest(damage=damage):
+                secret.write_text(original + "\n" + damage + "\n")
+                lines: list[str] = []
+                r = T.apply_tools(
+                    self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+                )
+                self.assertEqual(r.status, "refused", r)
+                self.assertFalse(os.path.exists(self.paths.stable))
+                self.assertTrue(
+                    any(
+                        "FAIL  minimax" in line and "Read/.env/deny/hook-env" in line
+                        for line in lines
+                    ),
+                    "\n".join(lines),
+                )
 
     def test_probe_command_secret_case_fails_a_lane_only_command(self) -> None:
         self.install(())
@@ -5762,6 +5839,27 @@ class KimiBlockTests(World):
 # --------------------------------------------------------------------------- minimax: a plugin bundle under ~/.minimax/plugins
 
 
+class MinimaxProbeBytesTests(unittest.TestCase):
+    def test_configuration_refusal_is_not_a_successful_policy_probe(self):
+        def run(command, payload, env, timeout):
+            doc = json.loads(payload)
+            path = next(iter(doc["tool_input"].values()))
+            reason = "MiniMax SECRET_FILE_PATTERNS is unavailable"
+            output = json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny", "permissionDecisionReason": reason
+            }}).encode() if ".env" in path else b""
+            return T.RunResult(0, output, b"")
+
+        with mock.patch.object(T, "registry_tree", return_value="ExampleRepo"):
+            with mock.patch.object(T, "run_shell", side_effect=run):
+                checks = T.probe_minimax_files("hook", "/synthetic-home", "registry", 1, True)
+        env_check = next(check for check in checks if check.name == "Read/.env/deny/hook-env")
+        self.assertEqual(env_check.status, "FAIL")
+        self.assertIn("required file policy", env_check.detail)
+        self.assertIn("SECRET_FILE_PATTERNS", env_check.detail)
+
+
 class MinimaxBundleTests(World):
     """MiniMax Code takes hooks from a local plugin: a real directory with .claude-plugin/plugin.json and hooks/hooks.json."""
 
@@ -5799,6 +5897,42 @@ class MinimaxBundleTests(World):
     def verify_mm(self) -> list:
         return T.verify_minimax(self.paths, timeout=TIMEOUT, minimal_path=False)
 
+    def test_required_registry_refusal_is_structured_by_the_verify_cli(self) -> None:
+        self.assertEqual(self.apply().status, "added")
+        registry = Path(self.paths.registry)
+        for raw in (None, "[]", '{"apps": []}'):
+            with self.subTest(registry=raw):
+                if raw is None:
+                    registry.unlink()
+                else:
+                    registry.write_text(raw)
+                rc, out, err = run_main(
+                    "verify",
+                    "--home",
+                    str(self.home),
+                    "--timeout",
+                    str(TIMEOUT),
+                    "--no-minimal-path",
+                    "minimax",
+                )
+                self.assertEqual(rc, 1, out)
+                self.assertIn("REFUSED required integration registry", out)
+                self.assertIn(str(registry), out)
+                self.assertEqual(err, "")
+
+    def test_the_registry_refusal_names_the_source_registry_not_the_staged_copy(self) -> None:
+        # The staged copy is deleted with the stage, so its path is not actionable: the refusal
+        # has to name the registry the operator must repair.
+        Path(self.source.registry).write_text(json.dumps({"apps": [], "seats": []}))
+        lines: list[str] = []
+        r = T.apply_tools(
+            self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+        )
+        self.assertEqual(r.status, "refused", r)
+        failed = [line for line in lines if "registry-tree" in line]
+        self.assertTrue(failed, "\n".join(lines))
+        self.assertIn(self.source.registry, failed[0])
+
     # -- where it sits in the platform table
 
     def test_it_is_in_all_but_not_a_config_file_platform(self) -> None:
@@ -5832,8 +5966,8 @@ class MinimaxBundleTests(World):
             "[new]",
             ".claude-plugin/plugin.json",
             "hooks/hooks.json",
-            '"matcher": "Bash"',
-            "--format claude",
+            '"matcher": "Bash|Read|Write|Edit|bash|read|write|edit"',
+            "minimax-guard-hook",
             '"timeout": 10',
             "UNVERIFIED",
             "No SessionStart seat hook",
@@ -5867,11 +6001,11 @@ class MinimaxBundleTests(World):
         self.assertEqual(set(doc), {"hooks"})
         self.assertEqual(set(doc["hooks"]), {"PreToolUse"})
         (group,) = doc["hooks"]["PreToolUse"]
-        self.assertEqual(group["matcher"], "Bash")
+        self.assertEqual(group["matcher"], "Bash|Read|Write|Edit|bash|read|write|edit")
         (hook,) = group["hooks"]
         self.assertEqual(hook["type"], "command")
-        self.assertEqual(hook["command"], T.fleet_hook_command(self.paths, "claude"))
-        self.assertTrue(hook["command"].endswith("fleet-guard-hook --format claude"))
+        self.assertEqual(hook["command"], T.minimax_hook_command(self.paths))
+        self.assertTrue(hook["command"].endswith("minimax-guard-hook"))
         self.assertTrue(os.path.isabs(hook["command"].split()[0]))
         self.assertIs(type(hook["timeout"]), int)
         self.assertTrue(1 <= hook["timeout"] <= 10, hook)
@@ -6036,9 +6170,22 @@ class MinimaxBundleTests(World):
         self.assertIn("dangling", r.detail)
 
     def test_it_is_never_wired_in_when_the_fleet_hook_cannot_deny(self) -> None:
-        shim = Path(self.paths.fleet_shim)
+        shim = Path(self.paths.stable) / T.MINIMAX_HOOK_NAME
         shim.write_text("#!/bin/sh\nexit 0\n")
         os.chmod(shim, 0o755)
+        r = self.apply()
+        self.assertEqual(r.status, "refused", r)
+        self.assertIn("fails its probes", r.detail)
+        self.assertFalse(self.bundle.exists())
+
+    def test_file_policy_must_pass_before_the_plugin_is_wired(self) -> None:
+        adapter = Path(self.paths.package_dir) / "minimax_guard_hook.py"
+        adapter.write_text(
+            adapter.read_text().replace(
+                'if __name__ == "__main__":',
+                'def file_reason(*args, **kwargs):\n    return None\n\nif __name__ == "__main__":',
+            )
+        )
         r = self.apply()
         self.assertEqual(r.status, "refused", r)
         self.assertIn("fails its probes", r.detail)
@@ -6073,7 +6220,7 @@ class MinimaxBundleTests(World):
             self.assertEqual(by[n].status, "PASS", by[n].line())
         self.assertIn("permissionDecision", by["deny/login-PATH"].detail)
         self.assertIn("deny", by["secret/hook-env"].detail)
-        self.assertEqual(by["hook command"].detail, T.fleet_hook_command(self.paths, "claude"))
+        self.assertEqual(by["hook command"].detail, T.minimax_hook_command(self.paths))
         self.assertEqual(by["fires"].status, "SKIP")
         self.assertAllPass(
             [
@@ -6099,7 +6246,7 @@ class MinimaxBundleTests(World):
 
     def test_verify_fails_when_the_fleet_hook_allows_everything(self) -> None:
         self.apply()
-        shim = Path(self.paths.fleet_shim)
+        shim = Path(self.paths.stable) / T.MINIMAX_HOOK_NAME
         shim.write_text("#!/bin/sh\nexit 0\n")
         os.chmod(shim, 0o755)
         checks = self.verify_mm()

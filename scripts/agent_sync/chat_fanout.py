@@ -109,6 +109,25 @@ class Scope:
     issues: frozenset[str] = field(default_factory=frozenset)
 
 
+def _prefix_target(text: str) -> str:
+    """Only a complete trailing repository name, issue or PR reference scopes an alert."""
+    parts = text.strip().split()
+    aliases = {"".join(_words(repo)) for repos in TEAM_REPOS.values() for repo in repos}
+    aliases.update(team.casefold() for team in TEAM_REPOS if len(team) > 1)
+    for count in range(min(4, len(parts)), 0, -1):
+        candidate = " ".join(parts[-count:]).strip(" ,:;")
+        normalized = re.sub(r"[\s._-]+", "", candidate).casefold()
+        if (
+            normalized in aliases
+            or _ISSUE_RE.fullmatch(candidate)
+            or _PR_REF_RE.fullmatch(candidate)
+        ):
+            return candidate
+        if _PR_URL_RE.search(candidate) and " " not in candidate:
+            return candidate
+    return ""
+
+
 def scope(visible: str, topic: str) -> Scope:
     """The scope of an owner's channel-wide mention:  the explicit `@all for X:` names, or `X @all` (the names just
     before the mention, starting the line), else the work topic's repo, else everyone."""
@@ -117,9 +136,12 @@ def scope(visible: str, topic: str) -> Scope:
     # app name therefore reminds every platform's few recent chats, which only tells them to read Zulip.
     for regex in (_SCOPE_RE, _PREFIX_RE):
         match = regex.search(visible)
-        named = named_repos(match.group(1)) if match else None
+        target = match.group(1) if match else ""
+        if regex is _PREFIX_RE:
+            target = _prefix_target(target)
+        named = named_repos(target)
         if named:
-            return Scope(named, named_issues(match.group(1)))
+            return Scope(named, named_issues(target))
     return Scope(named_repos(topic))
 
 

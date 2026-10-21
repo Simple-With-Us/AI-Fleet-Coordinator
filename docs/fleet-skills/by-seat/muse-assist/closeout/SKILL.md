@@ -5,7 +5,7 @@ description: Finish a Muse Assist work unit — the Linear issue, the PR link, Z
 
 # Closeout (MA)
 
-> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Lanes `~/apps/lanes/<Repo>/muse-assist-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM):  use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
@@ -62,7 +62,7 @@ Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`sl
 
 ## 5. Apple Notes
 
-Substantial work: living Completion note, `--update` in place.  Title `[APP, Muse Assist] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
+Substantial work: living Completion note, `--update` in place.  Title `[TEAM_KEY, Agent] Topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
 
 ## 6. Mac local processes
 
@@ -70,16 +70,9 @@ If this unit created, loaded, bootout, or retired a LaunchAgent, cron, login ite
 
 Do not SIGKILL `com.jay.claude-remote-control`.
 
-## 7. Retire the lane
+## 7. Retain The Durable VM Checkout
 
-Once the PR is merged (or closed on purpose) and nothing is left in the lane, remove it from OUTSIDE the lane, so your own shell does not count as a process using it:
-
-```bash
-cd ~ && ~/apps/lane retire <slug>    # or the lane's path; --repo <app> if the slug is in two repos
-~/apps/lane prune                    # a table of all your lanes; add --apply to remove the removable ones
-```
-
-`lane retire` refuses (exit 64, with the reason) a lane that is dirty, has unpushed commits no merged or closed PR holds, has an open PR, or is in use; fix that or leave the lane.  It uses `git worktree remove` without `--force` and `git branch -d`, never `rm -rf` or `-D`.  A parked lane stays.  Rules: `docs/protocols/lane-map.md` (Retiring A Lane).
+After merge, verify the remote result and keep the per-repo VM checkout for the next task.  Do not run Mac lane retirement or delete local work.
 
 ## 8. Default-off features
 

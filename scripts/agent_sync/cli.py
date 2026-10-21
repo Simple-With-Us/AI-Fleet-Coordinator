@@ -214,6 +214,10 @@ class Agent:
             or env.get("AGENT_SESSION")
         )
         self.tag = Z.session_tag(session_id)
+        # The FULL session id, kept beside the 8-character tag:  the tag is what a post carries, so
+        # only the full id can name the session it came from (and it is written into the session's
+        # state file, so a resume-wake can map one to the other).
+        self.session_id = session_id
         # `credentials` is set only by `agent-sync mcp`, for an identity whose key comes from its own per-seat
         # environment variables (the server instance, AFC-331);  the CLI's parser never sets it.
         given = getattr(args, "credentials", None)
@@ -242,7 +246,7 @@ class Agent:
         )
         self._verified = False
         self._gate_client()
-        self.state = State(state_root(env, rt.home), self.seat, self.tag)
+        self.state = State(state_root(env, rt.home), self.seat, self.tag, session_id=session_id)
         self._me: dict[str, Any] | None = None
         self._users: list[dict[str, Any]] | None = None
         self._users_at = 0.0
@@ -1193,6 +1197,7 @@ def cmd_whoami(agent: Agent, args: argparse.Namespace) -> int:
         "verified": problem is None,
         "problem": problem,
         "session": agent.tag,
+        "session_id": agent.session_id,
         "credential": agent.creds.source,
         "realm": agent.realm,
         "owner_user_id": pinned_owner_id(agent),
