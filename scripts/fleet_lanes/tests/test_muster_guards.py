@@ -14,6 +14,7 @@ Those tests skip cleanly when node is not on PATH;  every other test runs everyw
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import io
 import json
@@ -125,6 +126,54 @@ for (const [name, input] of cases) {
     results.push({ name, threw: false, status: output.status });
   } catch (error) {
     results.push({ name, threw: true, status: output.status, message: String(error) });
+  }
+}
+console.log(JSON.stringify(results));
+'''
+
+EXECUTE_HARNESS = '''import { server } from "PLUGIN_URL";
+
+const plugin = await server({ directory: process.cwd() });
+const before = plugin["tool.execute.before"] as unknown as (
+  input: unknown,
+  output: { args: unknown },
+) => Promise<void>;
+
+const cyclic: Record<string, unknown> = {};
+cyclic.self = cyclic;
+let deep: unknown = "x";
+for (let i = 0; i < 20; i += 1) deep = { next: deep };
+
+const cases: Array<[string, unknown, unknown]> = [
+  // sentry #757:  a non-shell payload over the command byte ceiling must not be denied.
+  [
+    "a non-shell payload over the byte ceiling is not guarded",
+    { tool: "write", sessionID: "session-1", callID: "call-1" },
+    { filePath: "/repo/src/a.ts", content: "x".repeat(200000) },
+  ],
+  // The byte ceiling moved to the extracted command:  an oversized command still denies.
+  [
+    "an oversized command still fails closed",
+    { tool: "bash", sessionID: "session-1", callID: "call-1" },
+    { command: "x".repeat(200000) },
+  ],
+  [
+    "a missing tool name falls through and fails closed",
+    { sessionID: "session-1", callID: "call-1" },
+    { command: "x".repeat(200000) },
+  ],
+  // Structural bounds (depth, width, cycles) still cover every payload,  command-shaped or not.
+  ["a cyclic payload still fails closed", { tool: "edit", sessionID: "session-1", callID: "call-1" }, cyclic],
+  ["a too-deep payload still fails closed", { tool: "edit", sessionID: "session-1", callID: "call-1" }, deep],
+];
+
+const results: unknown[] = [];
+for (const [name, input, args] of cases) {
+  try {
+    await before(input, { args });
+    results.push({ name, threw: false });
+  } catch (error) {
+    results.push({ name, threw: true, message: String(error) });
   }
 }
 console.log(JSON.stringify(results));
@@ -501,6 +550,32 @@ class OpenCodePluginShapeTests(World):
         self.assertFalse(results[WELL_FORMED_PROMPT]["threw"], results[WELL_FORMED_PROMPT])
         self.assertEqual(results[WELL_FORMED_PROMPT]["status"], "ask")
 
+    def test_the_byte_ceiling_bounds_the_command_not_the_payload(self) -> None:
+        # sentry #757:  the whole-payload byte ceiling ran for every tool,  so a file write
+        # over 64 KiB was denied.  The ceiling now bounds the extracted command;  structural
+        # bounds (depth, width, cycles) still cover every payload.
+        with tempfile.TemporaryDirectory(prefix="muster-plugin-") as tmp:
+            plugin = Path(tmp) / "fleet-lane-guard.ts"
+            plugin.write_text(self.plugin_text(), encoding="utf-8")
+            harness = Path(tmp) / "harness.ts"
+            harness.write_text(
+                EXECUTE_HARNESS.replace("PLUGIN_URL", plugin.as_uri()), encoding="utf-8"
+            )
+            run = self.run_node(["--experimental-strip-types", str(harness)], cwd=tmp)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            results = {r["name"]: r for r in json.loads(run.stdout.splitlines()[-1])}
+        self.assertFalse(
+            results["a non-shell payload over the byte ceiling is not guarded"]["threw"],
+            results["a non-shell payload over the byte ceiling is not guarded"],
+        )
+        for name in (
+            "an oversized command still fails closed",
+            "a missing tool name falls through and fails closed",
+            "a cyclic payload still fails closed",
+            "a too-deep payload still fails closed",
+        ):
+            self.assertTrue(results[name]["threw"], results[name])
+
     def test_an_oversized_or_cyclic_permission_prompt_is_denied(self) -> None:
         # The bounds the command boundary already carries apply to the permission
         # prompt too,  and they are checked before any field is read:  a payload that is
@@ -518,7 +593,7 @@ class OpenCodeTests(World):
         self.config = self.home / ".config" / "opencode" / "opencode.json"
         doc = {
             "mcp": {
-                "verde": {
+                "fixture-mcp": {
                     "type": "remote",
                     "headers": {"Authorization": "Bearer " + DUMMY_TOKEN},
                 }
@@ -766,6 +841,65 @@ class FxTests(World):
             T.PLATFORMS["fx"], self.paths, timeout=TIMEOUT, minimal_path=False
         )
         self.assertEqual(checks[0].status, "SKIP")
+
+
+class InstallLockAndPrivateDirTests(World):
+    """The install writes into a private directory, and the check and the write are one unit.
+
+    The re-read that guards against a concurrent edit used to run outside any lock,  so two
+    installers could both pass the check and the second write erased the first.  An
+    exclusive per-target lock now covers the check,  the write,  the validation and the
+    rollback,  and the lock files live in the fleet's own state directory,  never beside
+    the file they guard.
+    """
+
+    def test_a_private_directory_is_created_owner_only(self) -> None:
+        target = self.home / "private" / "nested"
+        T._makedirs_private(str(target))
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(target.parent.stat().st_mode), 0o700)
+
+    def test_an_existing_directory_keeps_its_own_permissions(self) -> None:
+        target = self.home / "already"
+        target.mkdir(mode=0o750)
+        T._makedirs_private(str(target))
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o750)
+
+    def test_a_symlinked_directory_is_refused_and_nothing_is_written(self) -> None:
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        (self.home / "link").symlink_to(elsewhere)
+        with self.assertRaises(OSError):
+            T._makedirs_private(str(self.home / "link"))
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_the_lock_is_exclusive_and_lives_outside_the_platform_home(self) -> None:
+        target = self.home / ".vibe" / "hooks.toml"
+        lock_dir = self.home / ".local" / "state" / "fleet-lanes" / "locks"
+        with T._target_lock(str(self.home), str(target)):
+            self.assertTrue(lock_dir.is_dir())
+            locks = list(lock_dir.iterdir())
+            self.assertEqual(len(locks), 1)
+            # The lock is held:  a second open file description cannot take it.
+            other = os.open(str(locks[0]), os.O_RDWR)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(other)
+        # Released:  the same lock is free again.
+        other = os.open(str(locks[0]), os.O_RDWR)
+        try:
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(other)
+
+    def test_the_lock_file_is_not_left_in_the_platform_directory(self) -> None:
+        vibe = self.home / ".vibe"
+        vibe.mkdir()
+        with T._target_lock(str(self.home), str(vibe / "hooks.toml")):
+            pass
+        self.assertEqual(sorted(p.name for p in vibe.iterdir()), [])
 
 
 if __name__ == "__main__":

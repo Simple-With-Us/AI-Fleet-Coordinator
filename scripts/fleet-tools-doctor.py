@@ -19,8 +19,8 @@ Checks:
               once AFC-329 lands, the board Linear catalog
   tool-file   the files the recall, lane and fleet-mode tools run from ship with the runtime
   fleet-mode-doc  the Mac's ~/apps/FLEET-MODE.md equals the repo's docs/FLEET-MODE.md (WARN if not)
-  seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical Fleet-OPS
-              (/zulip, /linear, /fleetlink;  AFC-359:  no credential file is read)
+  seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical
+              (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
   mcp:codex   Codex registers agent-sync (and FleetLink when a token exists)
   mcp:claude  Claude Code registers agent-sync (and FleetLink likewise)
 
@@ -90,6 +90,8 @@ SHIPPED_EXACT = frozenset(
         "scripts/agent_sync/mcp/recall-tools.json",
         "scripts/linear-board/catalog/core-tools.json",
         "scripts/agent_sync/mcp/fleetlink-tools.json",
+        # AFC-412 PR2:  mirrors the release EXACT entry for the operator registry outbox exporter.
+        "scripts/agent_sync/operator_sheets_export.mjs",
         "docs/protocols/agent-sync-tools-guide.md",
         "scripts/agent_sync/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",
@@ -428,11 +430,14 @@ ZULIP_PREFIX_OVERRIDES = {"GROK": "GROK_BUILD"}
 _names_cache: dict[str, frozenset[str] | None] = {}
 
 
-def infisical_names(folder: str, env: dict[str, str]) -> frozenset[str] | None:
-    """Key NAMES in one Fleet-OPS folder (`fleet-secrets names`:  no value reaches this process), or None when
-    fleet-secrets is missing or fails.  Once per folder per run."""
-    if folder in _names_cache:
-        return _names_cache[folder]
+def infisical_names(
+    folder: str, env: dict[str, str], project: str = "fleet-ops"
+) -> frozenset[str] | None:
+    """Key NAMES in one Infisical folder (`fleet-secrets names`:  no value reaches this process), or None when
+    fleet-secrets is missing or fails.  Fleet-OPS unless `project` says otherwise.  Once per folder per run."""
+    cache_key = folder if project == "fleet-ops" else f"{project}:{folder}"
+    if cache_key in _names_cache:
+        return _names_cache[cache_key]
     binary = (
         env.get("FLEET_SECRETS_BIN")
         or shutil.which("fleet-secrets")
@@ -441,7 +446,7 @@ def infisical_names(folder: str, env: dict[str, str]) -> frozenset[str] | None:
     names: frozenset[str] | None = None
     try:
         proc = subprocess.run(
-            [binary, "names", "--path", folder],
+            [binary, "names", "--path", folder, "--project", project],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -452,7 +457,7 @@ def infisical_names(folder: str, env: dict[str, str]) -> frozenset[str] | None:
             names = frozenset(line.strip() for line in proc.stdout.splitlines() if line.strip())
     except (OSError, subprocess.SubprocessError):
         names = None
-    _names_cache[folder] = names
+    _names_cache[cache_key] = names
     return names
 
 
@@ -472,7 +477,7 @@ def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
         linear_env or {f"{code}_LINEAR_CLIENT_ID", f"{code}_LINEAR_CLIENT_SECRET"} <= linear_names
     )
     fleetlink = bool(env.get(f"FLEETLINK_TOKEN_{code}")) or f"FLEETLINK_TOKEN_{code}" in (
-        infisical_names("/fleetlink", env) or frozenset()
+        infisical_names("/fleetlink", env, "ai-fleet-coordinator") or frozenset()
     )
     missing = [
         label

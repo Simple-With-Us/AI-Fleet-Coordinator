@@ -1,0 +1,2197 @@
+{
+  "schemaVersion": 2,
+  "seats": {
+    "AG": {
+      "notApplicable": [
+        {
+          "kind": "subagents",
+          "platforms": [
+            "antigravity"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the antigravity harness."
+        }
+      ],
+      "platforms": [
+        "antigravity"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.gemini/config/AGENTS.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.gemini/config/AGENTS.md matches the installer template",
+            "present": true,
+            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+          },
+          "id": "ag-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "AG",
+          "platforms": [
+            "antigravity"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.gemini/config/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.gemini/config/hooks.json",
+            "names": [
+              "lane-guard"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "ag-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "AG",
+          "platforms": [
+            "antigravity"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.gemini/config/mcp_config.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.gemini/config/mcp_config.json",
+            "names": [
+              "fleet-recall"
+            ],
+            "present": true
+          },
+          "id": "ag-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "AG",
+          "platforms": [
+            "antigravity"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.gemini/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.gemini/skills",
+            "names": [
+              "agent-sync-tools-guide",
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "sentence-gap",
+              "session-start",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "ag-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "AG",
+          "platforms": [
+            "antigravity"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the AG Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "AG_ZULIP_EMAIL",
+              "AG_ZULIP_KEY",
+              "AG_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "ag-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "AG",
+          "platforms": [
+            "antigravity"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_AG",
+            "target": "~/.secrets/Zulip/AG-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "ag-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "AG",
+          "platforms": [
+            "antigravity"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "CLAUDE": {
+      "notApplicable": [],
+      "platforms": [
+        "claude"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.claude/CLAUDE.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.claude/CLAUDE.md matches the installer template",
+            "present": true,
+            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+          },
+          "id": "claude-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "CLAUDE",
+          "platforms": [
+            "claude"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.claude/settings.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.claude/settings.json",
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "claude-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CLAUDE",
+          "platforms": [
+            "claude"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.claude.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.claude.json",
+            "names": [
+              "fleet-recall"
+            ],
+            "present": true
+          },
+          "id": "claude-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "CLAUDE",
+          "platforms": [
+            "claude"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.claude/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.claude/skills",
+            "names": [
+              "agent-sync-tools-guide",
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "sentence-gap",
+              "session-start",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "claude-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "CLAUDE",
+          "platforms": [
+            "claude"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.claude/agents",
+            "type": "subagents_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset, and an empty list makes this a presence check.",
+          "expected": {
+            "description": "The fleet sub-agent definitions are installed in ~/.claude/agents",
+            "names": [
+              "code-scout",
+              "docs-scribe"
+            ],
+            "present": true
+          },
+          "id": "claude-subagents-fleet",
+          "kind": "subagents",
+          "ownerSeat": "CLAUDE",
+          "platforms": [
+            "claude"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the CLAUDE Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "CLAUDE_ZULIP_EMAIL",
+              "CLAUDE_ZULIP_KEY",
+              "CLAUDE_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "claude-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "CLAUDE",
+          "platforms": [
+            "claude"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_CLAUDE",
+            "target": "~/.secrets/Zulip/Claude-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "claude-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "CLAUDE",
+          "platforms": [
+            "claude"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "CLUTCH": {
+      "notApplicable": [
+        {
+          "kind": "mcp",
+          "platforms": [
+            "clutch"
+          ],
+          "reason": "The Clutch MCP registration is a marked block in the YAML cordis patch (~/.clutch/dsh/cordis.patch.yml), which the standard-library MCP reader cannot parse;  Clutch carries fleet-recall as a native agent preset."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [
+            "clutch"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the clutch harness."
+        }
+      ],
+      "platforms": [
+        "clutch"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.clutch/dsh/AGENTS.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
+            "present": true,
+            "sha256": "04a6a61d0f7a7e92aa3ff7f4930beb8b48f2511867164e05d90836fa4bd31853"
+          },
+          "id": "clutch-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "CLUTCH",
+          "platforms": [
+            "clutch"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/apps/lane-tools/clutch/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/apps/lane-tools/clutch/hooks.json",
+            "names": [
+              "fleet-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "clutch-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CLUTCH",
+          "platforms": [
+            "clutch"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.clutch/dsh/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.clutch/dsh/skills",
+            "names": [
+              "agent-sync-tools-guide",
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "sentence-gap",
+              "session-start",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "clutch-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "CLUTCH",
+          "platforms": [
+            "clutch"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the CLUTCH Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "CLUTCH_ZULIP_EMAIL",
+              "CLUTCH_ZULIP_KEY",
+              "CLUTCH_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "clutch-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "CLUTCH",
+          "platforms": [
+            "clutch"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_CLUTCH",
+            "target": "~/.secrets/Zulip/Clutch-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "clutch-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "CLUTCH",
+          "platforms": [
+            "clutch"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "CODEX": {
+      "notApplicable": [],
+      "platforms": [
+        "codex"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.codex/AGENTS.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.codex/AGENTS.md matches the installer template",
+            "present": true,
+            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+          },
+          "id": "codex-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "CODEX",
+          "platforms": [
+            "codex"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.codex/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.codex/hooks.json",
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "codex-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CODEX",
+          "platforms": [
+            "codex"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.codex/config.toml",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.codex/config.toml",
+            "names": [
+              "fleet-recall"
+            ],
+            "present": true
+          },
+          "id": "codex-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "CODEX",
+          "platforms": [
+            "codex"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.codex/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.codex/skills",
+            "names": [
+              "agent-sync-tools-guide",
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "sentence-gap",
+              "session-start",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "codex-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "CODEX",
+          "platforms": [
+            "codex"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.codex/agents",
+            "type": "subagents_installed"
+          },
+          "collector": "mac",
+          "description": "Codex keeps its sub-agent definitions as TOML files, and the check names a definition by its file name, so the expected names carry the .toml suffix.",
+          "expected": {
+            "description": "The fleet sub-agent definitions are installed in ~/.codex/agents",
+            "names": [
+              "code-scout.toml",
+              "docs-scribe.toml"
+            ],
+            "present": true
+          },
+          "id": "codex-subagents-fleet",
+          "kind": "subagents",
+          "ownerSeat": "CODEX",
+          "platforms": [
+            "codex"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the CODEX Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "CODEX_ZULIP_EMAIL",
+              "CODEX_ZULIP_KEY",
+              "CODEX_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "codex-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "CODEX",
+          "platforms": [
+            "codex"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_CODEX",
+            "target": "~/.secrets/Zulip/Codex-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "codex-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "CODEX",
+          "platforms": [
+            "codex"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "CURSOR": {
+      "notApplicable": [
+        {
+          "kind": "subagents",
+          "platforms": [
+            "cursor"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the cursor harness."
+        }
+      ],
+      "platforms": [
+        "cursor"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.cursor/rules/fleet-lane-map.mdc",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.cursor/rules/fleet-lane-map.mdc matches the installer template",
+            "present": true,
+            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+          },
+          "id": "cursor-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "CURSOR",
+          "platforms": [
+            "cursor"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "beforeShellExecution",
+            "target": "~/.cursor/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for beforeShellExecution in ~/.cursor/hooks.json",
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "cursor-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "CURSOR",
+          "platforms": [
+            "cursor"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.cursor/mcp.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.cursor/mcp.json",
+            "names": [
+              "fleet-recall"
+            ],
+            "present": true
+          },
+          "id": "cursor-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "CURSOR",
+          "platforms": [
+            "cursor"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.cursor/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.cursor/skills",
+            "names": [
+              "agent-sync-tools-guide",
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "sentence-gap",
+              "session-start",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "cursor-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "CURSOR",
+          "platforms": [
+            "cursor"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the CURSOR Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "CURSOR_ZULIP_EMAIL",
+              "CURSOR_ZULIP_KEY",
+              "CURSOR_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "cursor-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "CURSOR",
+          "platforms": [
+            "cursor"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_CURSOR",
+            "target": "~/.secrets/Zulip/Cursor-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "cursor-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "CURSOR",
+          "platforms": [
+            "cursor"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "ECHO": {
+      "notApplicable": [
+        {
+          "kind": "instructions",
+          "platforms": [],
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no rules file for it."
+        },
+        {
+          "kind": "hooks",
+          "platforms": [],
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no hook config for it."
+        },
+        {
+          "kind": "mcp",
+          "platforms": [],
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no MCP config for it."
+        },
+        {
+          "kind": "skills",
+          "platforms": [],
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no skills home for it."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [],
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no sub-agent definitions for it."
+        },
+        {
+          "kind": "permissions",
+          "platforms": [],
+          "reason": "Echo's credential is held by the hosted listener's secret store, not by a Mac file of its own."
+        }
+      ],
+      "platforms": [],
+      "rules": []
+    },
+    "FX": {
+      "notApplicable": [
+        {
+          "kind": "hooks",
+          "platforms": [
+            "fx"
+          ],
+          "reason": "Fx has no hook mechanism:  fx --help lists no hook, plugin or extension command and the published docs have no hooks page, so no guard hook can be installed for this seat."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [
+            "fx"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the fx harness."
+        }
+      ],
+      "platforms": [
+        "fx"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.fx/AGENTS.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.fx/AGENTS.md matches the installer template",
+            "present": true,
+            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+          },
+          "id": "fx-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "FX",
+          "platforms": [
+            "fx"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.fx/settings.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Fx has no hook mechanism at all:  fx --help lists no hook, plugin or extension command and the published docs have no hooks page, so no guard hook can be installed for this seat.  The rule pins the absence of one.",
+          "expected": {
+            "description": "No hook is registered for PreToolUse in ~/.fx/settings.json",
+            "present": false
+          },
+          "id": "fx-hooks-none",
+          "kind": "hooks",
+          "ownerSeat": "FX",
+          "platforms": [
+            "fx"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.fx/mcp.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.fx/mcp.json",
+            "names": [
+              "fleet-recall",
+              "agent-sync"
+            ],
+            "present": true
+          },
+          "id": "fx-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "FX",
+          "platforms": [
+            "fx"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.fx/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.fx/skills",
+            "names": [
+              "agent-sync-tools-guide",
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "sentence-gap",
+              "session-start",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "fx-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "FX",
+          "platforms": [
+            "fx"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the FX Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "FX_ZULIP_EMAIL",
+              "FX_ZULIP_KEY",
+              "FX_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "fx-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "FX",
+          "platforms": [
+            "fx"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_FX",
+            "target": "~/.secrets/Zulip/FX-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "fx-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "FX",
+          "platforms": [
+            "fx"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.fx/settings.json",
+            "type": "permissions_match"
+          },
+          "collector": "mac",
+          "description": "The permission identifiers of this file belong to the harness, not to the fleet, so the rule pins the mode alone and lists no identifier.",
+          "expected": {
+            "description": "The permission settings file ~/.fx/settings.json is owner-only",
+            "mode": "0600",
+            "present": true
+          },
+          "id": "fx-permissions-settings",
+          "kind": "permissions",
+          "ownerSeat": "FX",
+          "platforms": [
+            "fx"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "GROK": {
+      "notApplicable": [
+        {
+          "kind": "subagents",
+          "platforms": [
+            "grok"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the grok harness."
+        }
+      ],
+      "platforms": [
+        "grok"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.grok/GROK.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.grok/GROK.md matches the installer template",
+            "present": true,
+            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+          },
+          "id": "grok-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "GROK",
+          "platforms": [
+            "grok"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.grok/hooks/lane-guard.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.grok/hooks/lane-guard.json",
+            "names": [
+              "lane-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 5
+          },
+          "id": "grok-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "GROK",
+          "platforms": [
+            "grok"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.grok/config.toml",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.grok/config.toml",
+            "names": [
+              "fleet-recall"
+            ],
+            "present": true
+          },
+          "id": "grok-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "GROK",
+          "platforms": [
+            "grok"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.grok/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.grok/skills",
+            "names": [
+              "agent-sync-tools-guide",
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "sentence-gap",
+              "session-start",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "grok-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "GROK",
+          "platforms": [
+            "grok"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the GROK Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "GROK_BUILD_ZULIP_EMAIL",
+              "GROK_BUILD_ZULIP_KEY",
+              "GROK_BUILD_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "grok-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "GROK",
+          "platforms": [
+            "grok"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_GROK_BUILD",
+            "target": "~/.secrets/Zulip/Grok-Build-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "grok-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "GROK",
+          "platforms": [
+            "grok"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "GROK-BOT": {
+      "notApplicable": [
+        {
+          "kind": "instructions",
+          "platforms": [],
+          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no rules file for it."
+        },
+        {
+          "kind": "hooks",
+          "platforms": [],
+          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no hook config for it."
+        },
+        {
+          "kind": "mcp",
+          "platforms": [],
+          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no MCP config for it."
+        },
+        {
+          "kind": "skills",
+          "platforms": [],
+          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no skills home for it."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [],
+          "reason": "The Grok Bot personas run as Cursor cloud agents, so this Mac holds no sub-agent definitions for it."
+        },
+        {
+          "kind": "permissions",
+          "platforms": [],
+          "reason": "Grok Bot has no Zulip credential of its own:  its GB-<ROLE> personas are owner-managed and hold no zuliprc."
+        }
+      ],
+      "platforms": [],
+      "rules": []
+    },
+    "GROK-WEB": {
+      "notApplicable": [
+        {
+          "kind": "instructions",
+          "platforms": [],
+          "reason": "Grok Web runs in the web app and the iOS app, so this Mac holds no rules file for it."
+        },
+        {
+          "kind": "hooks",
+          "platforms": [],
+          "reason": "Grok Web runs in the web app and the iOS app, so this Mac holds no hook config for it."
+        },
+        {
+          "kind": "mcp",
+          "platforms": [],
+          "reason": "Grok Web runs in the web app and the iOS app, so this Mac holds no MCP config for it."
+        },
+        {
+          "kind": "skills",
+          "platforms": [],
+          "reason": "Grok Web runs in the web app and the iOS app, so this Mac holds no skills home for it."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [],
+          "reason": "Grok Web runs in the web app and the iOS app, so this Mac holds no sub-agent definitions for it."
+        },
+        {
+          "kind": "permissions",
+          "platforms": [],
+          "reason": "Grok Web's credential is held by the server listener's secret store, not by a Mac file of its own."
+        }
+      ],
+      "platforms": [],
+      "rules": []
+    },
+    "MA": {
+      "notApplicable": [
+        {
+          "kind": "hooks",
+          "platforms": [],
+          "reason": "Muse takes its hooks from a plugin bundle, whose manifest holds the hook table under capabilities.hooks with an argv command;  the Phase 2 hook reader reads neither, so there is no hook file this check can read."
+        },
+        {
+          "kind": "instructions",
+          "platforms": [
+            "muse"
+          ],
+          "reason": "Muse has no user-level rules file of its own:  install_rules lists the muse-code platform as unsupported, and Muse reads ~/.claude/CLAUDE.md as its fallback, which the claude platform covers."
+        },
+        {
+          "kind": "skills",
+          "platforms": [
+            "muse"
+          ],
+          "reason": "Muse Assist runs on a cloud VM and takes its skills from the by-seat pack (docs/fleet-skills/by-seat/muse-assist), so this Mac holds no skills home for it."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [
+            "muse"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the muse harness."
+        }
+      ],
+      "platforms": [
+        "muse"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.config/muse/settings.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Muse takes its hooks from a plugin bundle, not from a settings file, so no hook is registered in the settings file.  The plugin manifest holds the hook table in a shape the Phase 2 hook reader does not parse.",
+          "expected": {
+            "description": "No hook is registered for PreToolUse in ~/.config/muse/settings.json",
+            "present": false
+          },
+          "id": "ma-hooks-none",
+          "kind": "hooks",
+          "ownerSeat": "MA",
+          "platforms": [
+            "muse"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.config/muse/settings.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.config/muse/settings.json",
+            "names": [
+              "fleet-recall"
+            ],
+            "present": true
+          },
+          "id": "ma-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "MA",
+          "platforms": [
+            "muse"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the MA Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "MA_ZULIP_EMAIL",
+              "MA_ZULIP_KEY",
+              "MA_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "ma-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "MA",
+          "platforms": [
+            "muse"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_MA",
+            "target": "~/.secrets/Zulip/MA-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "ma-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "MA",
+          "platforms": [
+            "muse"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "MC": {
+      "notApplicable": [
+        {
+          "kind": "hooks",
+          "platforms": [],
+          "reason": "Muse takes its hooks from a plugin bundle, whose manifest holds the hook table under capabilities.hooks with an argv command;  the Phase 2 hook reader reads neither, so there is no hook file this check can read."
+        },
+        {
+          "kind": "instructions",
+          "platforms": [
+            "muse-code"
+          ],
+          "reason": "Muse Code has no user-level rules file of its own:  install_rules lists the muse-code platform as unsupported, and Muse reads ~/.claude/CLAUDE.md as its fallback, which the claude platform covers."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [
+            "muse-code"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the muse-code harness."
+        }
+      ],
+      "platforms": [
+        "muse-code"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.config/muse/settings.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "Muse takes its hooks from a plugin bundle, not from a settings file, so no hook is registered in the settings file.  The plugin manifest holds the hook table in a shape the Phase 2 hook reader does not parse.",
+          "expected": {
+            "description": "No hook is registered for PreToolUse in ~/.config/muse/settings.json",
+            "present": false
+          },
+          "id": "mc-hooks-none",
+          "kind": "hooks",
+          "ownerSeat": "MC",
+          "platforms": [
+            "muse-code"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.config/muse/settings.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.config/muse/settings.json",
+            "names": [
+              "fleet-recall",
+              "agent-sync"
+            ],
+            "present": true
+          },
+          "id": "mc-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "MC",
+          "platforms": [
+            "muse-code"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.config/muse/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.config/muse/skills",
+            "names": [
+              "agent-sync-tools-guide",
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "sentence-gap",
+              "session-start",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "mc-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "MC",
+          "platforms": [
+            "muse-code"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the MC Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "MC_ZULIP_EMAIL",
+              "MC_ZULIP_KEY",
+              "MC_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "mc-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "MC",
+          "platforms": [
+            "muse-code"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_MC",
+            "target": "~/.secrets/Zulip/MC-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "mc-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "MC",
+          "platforms": [
+            "muse-code"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "MM": {
+      "notApplicable": [],
+      "platforms": [
+        "minimax"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.minimax/memory/user.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.minimax/memory/user.md matches the installer template",
+            "present": true,
+            "sha256": "a826d43e37461ba49ec35cd67265c81800c7305688a1d2f194eab5f2b91e039b"
+          },
+          "id": "mm-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "MM",
+          "platforms": [
+            "minimax"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.minimax/plugins/fleet-guard/hooks/hooks.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "The hook id is the one the check derives from the installed config, and the timeout is the one the installer writes.",
+          "expected": {
+            "description": "The fleet guard hook is registered for PreToolUse in ~/.minimax/plugins/fleet-guard/hooks/hooks.json",
+            "names": [
+              "fleet-guard-hook"
+            ],
+            "present": true,
+            "timeoutSeconds": 10
+          },
+          "id": "mm-hooks-lane-guard",
+          "kind": "hooks",
+          "ownerSeat": "MM",
+          "platforms": [
+            "minimax"
+          ],
+          "proofLevel": "L1",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.minimax/mcp.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.minimax/mcp.json",
+            "names": [
+              "fleet-recall",
+              "agent-sync"
+            ],
+            "present": true
+          },
+          "id": "mm-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "MM",
+          "platforms": [
+            "minimax"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.minimax/skills",
+            "type": "skills_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  a seat may hold skills of its own, and only a missing fleet skill is drift.",
+          "expected": {
+            "description": "The fleet skill pack is installed in ~/.minimax/skills",
+            "names": [
+              "agent-sync-tools-guide",
+              "apple-notes",
+              "board-ops",
+              "closeout",
+              "codex-triage",
+              "deploy-verify",
+              "dns-and-registrars",
+              "drive-grok-tui",
+              "fleet-coordination",
+              "fleet-infra",
+              "fleet-recall",
+              "housekeeper",
+              "land-lane",
+              "mac-cleanup",
+              "owner-copy",
+              "pickup-seat",
+              "pr-sweep",
+              "secret-handoff",
+              "sentence-gap",
+              "session-start",
+              "unstick-pr"
+            ],
+            "present": true
+          },
+          "id": "mm-skills-fleet",
+          "kind": "skills",
+          "ownerSeat": "MM",
+          "platforms": [
+            "minimax"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.minimax/agents",
+            "type": "subagents_installed"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset, and an empty list makes this a presence check.",
+          "expected": {
+            "description": "The fleet sub-agent definitions are installed in ~/.minimax/agents",
+            "names": [],
+            "present": true
+          },
+          "id": "mm-subagents-fleet",
+          "kind": "subagents",
+          "ownerSeat": "MM",
+          "platforms": [
+            "minimax"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the MM Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "MM_ZULIP_EMAIL",
+              "MM_ZULIP_KEY",
+              "MM_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "mm-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "MM",
+          "platforms": [
+            "minimax"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_MM",
+            "target": "~/.secrets/Zulip/MM-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "mm-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "MM",
+          "platforms": [
+            "minimax"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "OPENCODE": {
+      "notApplicable": [
+        {
+          "kind": "hooks",
+          "platforms": [
+            "opencode"
+          ],
+          "reason": "OpenCode has no hooks key in its config:  its guard will be a local plugin, because the plugin API has tool.execute.before and permission.ask hooks.  The plugin is not installed yet, so the hooks rule asserts that no config hook is registered and L1 arrives with it."
+        },
+        {
+          "kind": "skills",
+          "platforms": [
+            "opencode"
+          ],
+          "reason": "OpenCode loads the fleet skills from the project tree (skills/), not from a user-level skills home, so this Mac holds no skills directory to check."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [
+            "opencode"
+          ],
+          "reason": "The fleet installs no sub-agent definitions for the opencode harness."
+        }
+      ],
+      "platforms": [
+        "opencode"
+      ],
+      "rules": [
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "fleet-lane-map",
+            "target": "~/.config/opencode/AGENTS.md",
+            "type": "marked_block_hash"
+          },
+          "collector": "mac",
+          "description": "The expected hash is the body the rules installer writes, read from the installer source, so a template change shows as drift instead of hiding.",
+          "expected": {
+            "description": "The fleet-lane-map block in ~/.config/opencode/AGENTS.md matches the installer template",
+            "present": true,
+            "sha256": "93c7889583e32a7c37671de28334375ae4783fe2d110f43728af03929ccc81a1"
+          },
+          "id": "opencode-instructions-lane-map",
+          "kind": "instructions",
+          "ownerSeat": "OPENCODE",
+          "platforms": [
+            "opencode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "PreToolUse",
+            "target": "~/.config/opencode/opencode.json",
+            "type": "hook_registered"
+          },
+          "collector": "mac",
+          "description": "OpenCode has no hooks key in its config file, so the desired state is that none is registered there.  Its guard will be a local plugin, because the plugin API has tool.execute.before and permission.ask hooks;  L1 becomes available once that plugin lands.",
+          "expected": {
+            "description": "No hook is registered for PreToolUse in ~/.config/opencode/opencode.json",
+            "present": false
+          },
+          "id": "opencode-hooks-none",
+          "kind": "hooks",
+          "ownerSeat": "OPENCODE",
+          "platforms": [
+            "opencode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "",
+            "target": "~/.config/opencode/opencode.json",
+            "type": "mcp_servers_registered"
+          },
+          "collector": "mac",
+          "description": "The comparison is a subset:  the harness may hold servers of its own, and only a missing fleet server is drift.",
+          "expected": {
+            "description": "The fleet MCP servers are registered in ~/.config/opencode/opencode.json",
+            "names": [
+              "fleet-recall"
+            ],
+            "present": true
+          },
+          "id": "opencode-mcp-fleet-servers",
+          "kind": "mcp",
+          "ownerSeat": "OPENCODE",
+          "platforms": [
+            "opencode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "the OPENCODE Zulip credential",
+            "target": "/zulip",
+            "type": "credential_key_present"
+          },
+          "collector": "mac",
+          "description": "The check asks the fleet-secrets CLI for key NAMES and never for a value, so a secret cannot reach a result, a reason or a log.  A secret store that cannot be reached is a failing UNKNOWN, never a pass.",
+          "expected": {
+            "description": "The Zulip credential is reachable in the secret store at /zulip",
+            "names": [
+              "OPENCODE_ZULIP_EMAIL",
+              "OPENCODE_ZULIP_KEY",
+              "OPENCODE_ZULIP_SITE"
+            ],
+            "present": true
+          },
+          "id": "opencode-permissions-zulip-key",
+          "kind": "permissions",
+          "ownerSeat": "OPENCODE",
+          "platforms": [
+            "opencode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        },
+        {
+          "autofixAllowed": false,
+          "check": {
+            "detail": "ZULIP_OPENCODE",
+            "target": "~/.secrets/Zulip/OpenCode-zuliprc",
+            "type": "credential_stat"
+          },
+          "collector": "mac",
+          "description": "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The check reads stat data only and never opens the file.",
+          "expected": {
+            "description": "The retired flat Zulip credential file is gone, stat only",
+            "present": false
+          },
+          "id": "opencode-permissions-zulip-retired-file",
+          "kind": "permissions",
+          "ownerSeat": "OPENCODE",
+          "platforms": [
+            "opencode"
+          ],
+          "proofLevel": "L0",
+          "source": "",
+          "ttlSeconds": 900
+        }
+      ]
+    },
+    "WISE": {
+      "notApplicable": [
+        {
+          "kind": "instructions",
+          "platforms": [],
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no rules file for it."
+        },
+        {
+          "kind": "hooks",
+          "platforms": [],
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no hook config for it."
+        },
+        {
+          "kind": "mcp",
+          "platforms": [],
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no MCP config for it."
+        },
+        {
+          "kind": "skills",
+          "platforms": [],
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no skills home for it."
+        },
+        {
+          "kind": "subagents",
+          "platforms": [],
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no sub-agent definitions for it."
+        },
+        {
+          "kind": "permissions",
+          "platforms": [],
+          "reason": "Wise's credential is held by the hosted listener's secret store, not by a Mac file of its own."
+        }
+      ],
+      "platforms": [],
+      "rules": []
+    }
+  }
+}

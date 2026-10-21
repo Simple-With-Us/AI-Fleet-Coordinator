@@ -200,8 +200,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import copy
 import difflib
+import fcntl
 import functools
 import hashlib
 import json
@@ -1179,17 +1181,17 @@ const deniedCalls = new Map<string, string>();
 type AnyRecord = Record<string, unknown>;
 
 // Tool-call data and permission prompts are untrusted and walked recursively, so the walk
-// carries bounds:  a payload that is too large, too deep, too wide, or cyclic is refused
-// before it can exhaust the stack or the CPU ahead of the guard.
+// carries bounds:  the depth, width and cycle ceilings apply to every payload, and the byte
+// ceiling applies to the extracted command and to the whole permission prompt.  Anything
+// over a ceiling is refused before it can exhaust the stack or the CPU ahead of the guard.
 const MAX_COMMAND_INPUT_BYTES = 64 * 1024;
 const MAX_COMMAND_INPUT_DEPTH = 16;
 const MAX_COMMAND_INPUT_NODES = 1000;
 
-// checkInputBounds refuses an untrusted document that is over any of those ceilings:  the
-// walk counts the nodes, measures the depth and finds a cycle, and the byte ceiling
-// measures the whole payload.  Every walk of untrusted input goes through it, so a second
-// caller cannot forget the bounds, and it runs before any field of the document is read.
-function checkInputBounds(value: unknown, label: string): void {
+// checkInputStructure refuses an untrusted document that is too deep, too wide or cyclic:
+// the walk counts the nodes, measures the depth and finds a cycle, and it runs before any
+// field of the document is read.
+function checkInputStructure(value: unknown, label: string): void {
   const seen = new WeakSet<object>();
   let nodes = 0;
   const walk = (current: unknown, depth: number): void => {
@@ -1213,6 +1215,13 @@ function checkInputBounds(value: unknown, label: string): void {
     seen.delete(current);
   };
   walk(value, 0);
+}
+
+// checkInputBounds adds the byte ceiling on the whole payload for callers whose input is a
+// bounded document (the permission prompt).  Every walk of untrusted input goes through one
+// of the two, so a second caller cannot forget the bounds.
+function checkInputBounds(value: unknown, label: string): void {
+  checkInputStructure(value, label);
   let serialized: string | undefined;
   try {
     serialized = JSON.stringify(value);
@@ -1225,9 +1234,13 @@ function checkInputBounds(value: unknown, label: string): void {
 }
 
 function commandFrom(value: unknown): string | null {
-  // The bounds are checked first, so the walk below is never handed a document that is
-  // too deep, too wide or cyclic.
-  checkInputBounds(value, "OpenCode command input");
+  // Structural bounds guard the walk below;  the byte ceiling is applied to the extracted
+  // command, not the whole payload.  The hook keys on the presence of a command rather
+  // than a tool name because OpenCode's shell tool name is not confirmed (v2 research
+  // recorded `shell`, current builds `bash`), and a file write or edit can legitimately
+  // carry more than 64 KiB of content:  a whole-payload ceiling would deny a call the
+  // guard never ruled on (sentry #757).
+  checkInputStructure(value, "OpenCode tool input");
   const walk = (current: unknown): string | null => {
     if (typeof current === "string") return current;
     if (Array.isArray(current)) {
@@ -1245,7 +1258,11 @@ function commandFrom(value: unknown): string | null {
     }
     return null;
   };
-  return walk(value);
+  const command = walk(value);
+  if (command !== null && Buffer.byteLength(command, "utf8") > MAX_COMMAND_INPUT_BYTES) {
+    throw new TypeError("OpenCode command input exceeds 64 KiB");
+  }
+  return command;
 }
 
 function cwdFrom(value: unknown, fallback: string): string {
@@ -1262,6 +1279,11 @@ function cwdFrom(value: unknown, fallback: string): string {
 // hung or missing fleet-guard-hook never reads as authorization.  Nothing here resolves null
 // except a guard that answered and did not deny.
 const GUARD_TIMEOUT_MS = 5000;
+
+// A child that ignores SIGTERM must not outlive the runner:  after the grace period the
+// child is SIGKILLed,  and the runner waits for its close so the child is reaped on the
+// interruption paths as well as on the timeout path.
+const GUARD_KILL_GRACE_MS = 500;
 
 class GuardFailure extends Error {
   readonly exitCode: number;
@@ -1280,14 +1302,35 @@ function runGuard(command: string, cwd: string): Promise<string | null> {
       let out = "";
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const terminate = () => {
-        if (!child.killed) child.kill("SIGTERM");
-      };
-      terminateChild = terminate;
-      const onParentExit = () => terminate();
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      // `child.killed` only says a signal was SENT,  not that the child died,  so liveness
+      //  is read off the exit state:  a child still running has neither code nor signal.
+      const alive = () => child.exitCode === null && child.signalCode === null;
       const cleanup = () => {
         if (timer !== undefined) clearTimeout(timer);
         process.off("exit", onParentExit);
+        process.off("SIGINT", onParentSignal as () => void);
+        process.off("SIGTERM", onParentSignal as () => void);
+      };
+      // SIGTERM first,  then SIGKILL if the child is still there after the grace period,
+      //  so a guard that ignores SIGTERM cannot outlive the runner.
+      const terminate = () => {
+        if (alive()) child.kill("SIGTERM");
+        if (killTimer === undefined) {
+          killTimer = setTimeout(() => {
+            killTimer = undefined;
+            if (alive()) child.kill("SIGKILL");
+          }, GUARD_KILL_GRACE_MS);
+        }
+      };
+      terminateChild = terminate;
+      const onParentExit = () => terminate();
+      // An interruption is not a reason to leave the guard running:  terminate the child
+      //  first,  drop our own handlers so the signal takes its normal course,  then re-raise.
+      const onParentSignal = (signal: NodeJS.Signals) => {
+        terminate();
+        cleanup();
+        process.kill(process.pid, signal);
       };
       const fail = (error: GuardFailure) => {
         if (settled) return;
@@ -1299,10 +1342,14 @@ function runGuard(command: string, cwd: string): Promise<string | null> {
       const succeed = (reason: string | null) => {
         if (settled) return;
         settled = true;
+        if (killTimer !== undefined) clearTimeout(killTimer);
+        killTimer = undefined;
         cleanup();
         resolve(reason);
       };
       process.once("exit", onParentExit);
+      process.once("SIGINT", onParentSignal as () => void);
+      process.once("SIGTERM", onParentSignal as () => void);
       timer = setTimeout(() => {
         fail(new GuardFailure(`fleet guard at ${guardCommand} timed out after ${GUARD_TIMEOUT_MS}ms`, 124));
       }, GUARD_TIMEOUT_MS);
@@ -3522,6 +3569,79 @@ def _reread_matches(real: str, raw: bytes, existed: bool) -> bool:
     except OSError:
         return False
     return now == raw if existed else now is None
+
+
+def _makedirs_private(dirpath: str) -> None:
+    """Create `dirpath` (and parents) owner-only, refusing a symlinked final component.
+
+    A config directory the fleet writes credentials into must not be created with the
+    process umask's permissions,  and `os.makedirs` follows a symlink at the target,  so
+    the link is refused here rather than written through.  Every level this call creates
+    is 0700,  because `os.makedirs` gives its intermediate levels the umask's default.
+    `exist_ok=True` keeps an existing directory's own permissions:  only a directory this
+    call creates is 0700.
+    """
+    if os.path.islink(dirpath):
+        raise OSError(f"{dirpath} is a symlink; not creating a directory through it")
+    missing = []
+    current = dirpath
+    while current and not os.path.isdir(current):
+        missing.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    for level in reversed(missing):
+        try:
+            os.mkdir(level, 0o700)
+        except FileExistsError:
+            pass
+    if os.path.islink(dirpath):
+        raise OSError(f"{dirpath} is a symlink; not creating a directory through it")
+
+
+# The lock files live in the fleet's own state directory,  never beside the file they
+# guard,  so a lock never appears in a platform's home as a file this tool does not own.
+LOCK_DIR_REL = ".local/state/fleet-lanes/locks"
+
+
+@contextlib.contextmanager
+def _target_lock(home: str, *targets: str):
+    """Hold an exclusive lock over the targets for the whole check-and-write.
+
+    The re-read that guards against a concurrent edit runs outside any lock,  so two
+    installers can both pass the check and the second write then erases the first.
+    The lock is taken before the re-read and released after the last write,  its
+    validation and its rollback,  so the check and the write are one unit.
+    """
+    directory = os.path.join(home, *LOCK_DIR_REL.split("/"))
+    missing = []
+    current = directory
+    while current and not os.path.isdir(current):
+        missing.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    for level in reversed(missing):
+        try:
+            os.mkdir(level, 0o700)
+        except FileExistsError:
+            pass
+    handles = []
+    try:
+        for target in sorted(set(targets)):
+            name = hashlib.sha256(target.encode("utf-8")).hexdigest()[:16] + ".lock"
+            handle = open(os.path.join(directory, name), "a+")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            handles.append(handle)
+        yield
+    finally:
+        for handle in handles:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
 
 
 def _make_backup(real: str, raw: bytes, mode: int | None, stamp: str) -> str:
@@ -5806,43 +5926,46 @@ def apply_copilot(
         return Result("copilot", "unchanged", f"{cp.path} already holds the hook")
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     backup: str | None = None
-    try:
-        os.makedirs(os.path.dirname(cp.path), exist_ok=True)
-        if cp.exists:
-            assert cp.raw is not None
-            backup = _make_backup(cp.path, cp.raw, cp.mode, stamp)
-        if not _reread_matches(cp.path, cp.raw or b"", cp.exists):
-            if backup:
-                os.unlink(backup)
+    # The lock covers the re-read,  the write,  the validation and the rollback,  so a
+    # second installer cannot write between this check and this write.
+    with _target_lock(paths.home, cp.path):
+        try:
+            _makedirs_private(os.path.dirname(cp.path))
+            if cp.exists:
+                assert cp.raw is not None
+                backup = _make_backup(cp.path, cp.raw, cp.mode, stamp)
+            if not _reread_matches(cp.path, cp.raw or b"", cp.exists):
+                if backup:
+                    os.unlink(backup)
+                return Result(
+                    "copilot",
+                    "failed",
+                    f"{cp.path} changed while it was being written; nothing written, retry",
+                )
+            atomic_write(cp.path, cp.text.encode("utf-8"), cp.mode if cp.mode is not None else 0o644)
+        except OSError as exc:
+            return Result(
+                "copilot", "failed", f"{cp.path} not changed: {type(exc).__name__}: {exc}", backup
+            )
+        try:
+            after = json.loads(_read_bytes(cp.path).decode("utf-8"))
+            ok = after == copilot_expected(paths) and bool(locate(after, PLATFORMS["copilot"]))
+        except (OSError, ValueError):
+            ok = False
+        if not ok:
+            try:
+                if cp.exists and cp.raw is not None:
+                    atomic_write(cp.path, cp.raw, cp.mode if cp.mode is not None else 0o644)
+                else:
+                    os.unlink(cp.path)
+            except OSError:
+                pass
             return Result(
                 "copilot",
                 "failed",
-                f"{cp.path} changed while it was being written; nothing written, retry",
+                f"{cp.path} failed validation after the write; the original was restored",
+                backup,
             )
-        atomic_write(cp.path, cp.text.encode("utf-8"), cp.mode if cp.mode is not None else 0o644)
-    except OSError as exc:
-        return Result(
-            "copilot", "failed", f"{cp.path} not changed: {type(exc).__name__}: {exc}", backup
-        )
-    try:
-        after = json.loads(_read_bytes(cp.path).decode("utf-8"))
-        ok = after == copilot_expected(paths) and bool(locate(after, PLATFORMS["copilot"]))
-    except (OSError, ValueError):
-        ok = False
-    if not ok:
-        try:
-            if cp.exists and cp.raw is not None:
-                atomic_write(cp.path, cp.raw, cp.mode if cp.mode is not None else 0o644)
-            else:
-                os.unlink(cp.path)
-        except OSError:
-            pass
-        return Result(
-            "copilot",
-            "failed",
-            f"{cp.path} failed validation after the write; the original was restored",
-            backup,
-        )
     detail = cp.path + (f" (backup {backup})" if backup else " (new file)")
     return Result("copilot", "added" if cp.state == "new" else "updated", detail, backup)
 
@@ -6123,43 +6246,46 @@ def apply_opencode(
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     backup: str | None = None
     real = cfg.real
-    try:
-        os.makedirs(os.path.dirname(real), exist_ok=True)
-        if cfg.exists:
-            backup = _make_backup(real, cfg.raw, cfg.mode, stamp)
-        if not _reread_matches(real, cfg.raw, cfg.exists):
-            if backup:
-                os.unlink(backup)
+    # The lock covers the re-read,  the write,  the validation and the rollback,  so a
+    # second installer cannot write between this check and this write.
+    with _target_lock(paths.home, real):
+        try:
+            _makedirs_private(os.path.dirname(real))
+            if cfg.exists:
+                backup = _make_backup(real, cfg.raw, cfg.mode, stamp)
+            if not _reread_matches(real, cfg.raw, cfg.exists):
+                if backup:
+                    os.unlink(backup)
+                return Result(
+                    "opencode",
+                    "failed",
+                    f"{op.config} changed while it was being merged; nothing written, retry",
+                )
+            atomic_write(real, op.new_text.encode("utf-8"), cfg.mode if cfg.mode is not None else 0o600)
+        except OSError as exc:
+            return Result(
+                "opencode", "failed", f"{op.config} not changed: {type(exc).__name__}: {exc}", backup
+            )
+        try:
+            after = json.loads(_read_bytes(real).decode("utf-8"))
+            _doc, act = opencode_merge(after, paths)
+            ok = act == "unchanged"
+        except (OSError, ValueError, Refused):
+            ok = False
+        if not ok:
+            try:
+                if cfg.exists:
+                    atomic_write(real, cfg.raw, cfg.mode if cfg.mode is not None else 0o600)
+                else:
+                    os.unlink(real)
+            except OSError:
+                pass
             return Result(
                 "opencode",
                 "failed",
-                f"{op.config} changed while it was being merged; nothing written, retry",
+                f"{op.config} failed validation after the write; the original was restored",
+                backup,
             )
-        atomic_write(real, op.new_text.encode("utf-8"), cfg.mode if cfg.mode is not None else 0o600)
-    except OSError as exc:
-        return Result(
-            "opencode", "failed", f"{op.config} not changed: {type(exc).__name__}: {exc}", backup
-        )
-    try:
-        after = json.loads(_read_bytes(real).decode("utf-8"))
-        _doc, act = opencode_merge(after, paths)
-        ok = act == "unchanged"
-    except (OSError, ValueError, Refused):
-        ok = False
-    if not ok:
-        try:
-            if cfg.exists:
-                atomic_write(real, cfg.raw, cfg.mode if cfg.mode is not None else 0o600)
-            else:
-                os.unlink(real)
-        except OSError:
-            pass
-        return Result(
-            "opencode",
-            "failed",
-            f"{op.config} failed validation after the write; the original was restored",
-            backup,
-        )
     detail = op.config + (f" (backup {backup})" if backup else " (new file)")
     return Result("opencode", "added" if not cfg.exists else "updated", detail, backup)
 

@@ -94,12 +94,16 @@ on:
       allowed_bots:
         required: false
         type: string
-        default: "chatgpt-codex-connector,chatgpt-codex-connector[bot],kody-ai,kody-ai[bot],cursor,cursor[bot]"
+        default: "chatgpt-codex-connector,chatgpt-codex-connector[bot],kody-ai,kody-ai[bot],cursor,cursor[bot],swu-ag,swu-ag[bot],swu-bf-builder,swu-bf-builder[bot],swu-bf-compiler,swu-bf-compiler[bot],swu-bf-deployer,swu-bf-deployer[bot],swu-bf-designer,swu-bf-designer[bot],swu-bf-director,swu-bf-director[bot],swu-bf-fixer,swu-bf-fixer[bot],swu-bf-housekeeper,swu-bf-housekeeper[bot],swu-bf-monitor,swu-bf-monitor[bot],swu-bf-oracle,swu-bf-oracle[bot],swu-bf-plumber,swu-bf-plumber[bot],swu-bf-publisher,swu-bf-publisher[bot],swu-claude,swu-claude[bot],swu-clutch,swu-clutch[bot],swu-codex,swu-codex[bot],swu-cursor,swu-cursor[bot],swu-cursor-cloud,swu-cursor-cloud[bot],swu-echo,swu-echo[bot],swu-fx,swu-fx[bot],swu-gb-compiler,swu-gb-compiler[bot],swu-gb-deployer,swu-gb-deployer[bot],swu-gb-designer,swu-gb-designer[bot],swu-gb-director,swu-gb-director[bot],swu-gb-engineer,swu-gb-engineer[bot],swu-gb-fixer,swu-gb-fixer[bot],swu-gb-housekeeper,swu-gb-housekeeper[bot],swu-gb-monitor,swu-gb-monitor[bot],swu-gb-oracle,swu-gb-oracle[bot],swu-gb-plumber,swu-gb-plumber[bot],swu-gb-publisher,swu-gb-publisher[bot],swu-gb-trader,swu-gb-trader[bot],swu-grok-build,swu-grok-build[bot],swu-grok-web,swu-grok-web[bot],swu-jet,swu-jet[bot],swu-mc,swu-mc[bot],swu-minimax,swu-minimax[bot],swu-opencode,swu-opencode[bot],swu-operator,swu-operator[bot],swu-rob,swu-rob[bot],swu-wise,swu-wise[bot]"
         description: "Allowed bot actors (normalised by the action: lowercased, [bot] stripped)"
+      # The id the owner chose for all fleet MiniMax use on 2026-10-20.  A model id that is
+      # absent from the MiniMax Code runtime catalog can still be a valid public API id, and an
+      # id must never be rewritten from one route's evidence (contrib/MM/2026-10-19/f11f7046),
+      # so the retired spelling is named here in a comment and never as a value.
       model:
         required: false
         type: string
-        default: "MiniMax-M3.1-Flash-Preview"
+        default: "MiniMax-M3.1-Flash"
         description: "MiniMax model id sent as ANTHROPIC_MODEL / ANTHROPIC_SMALL_FAST_MODEL"
     secrets:
       MINIMAX_API_KEY:
@@ -114,6 +118,8 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # Marker comments record which bot already used its one run on a PR.
+  issues: write
 
 jobs:
   autofix:
@@ -129,19 +135,86 @@ jobs:
     outputs:
       usage: ${{ steps.usage.outputs.json }}
     steps:
+      - name: Autofix Request Gate
+        id: request_gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          NOTIFY_URL: ${{ vars.SWU_AUTOFIX_NOTIFY_URL }}
+        run: |
+          set -euo pipefail
+          # Owner rule 2026-10-20:  one autofix run per bot per PR;  the owner
+          # (jaywedgeworth22) is unlimited,  and Sentry is exempt from the limit and the
+          # notification.  The record is a marker comment the accepted run leaves on the PR —
+          # deleting that comment is the manual reset.
+          # Owner rule 2026-10-20:  a review is an autofix request only when it carries the
+          # @codex-autofix tag — an untagged bot review is discussion, not a request.  A
+          # workflow_dispatch run IS the request,  so it needs no tag.  Sentry is exempt
+          # from the tag,  the once-per-PR cap,  and the notification ("Sentry can request
+          # all you want").
+          case "$GITHUB_EVENT_NAME" in
+            pull_request_review)
+              author=$(jq -r '.review.user.login' "$GITHUB_EVENT_PATH")
+              jq -r '.review.body // empty' "$GITHUB_EVENT_PATH" > "$RUNNER_TEMP/request_body.txt"
+              needs_tag=true ;;
+            workflow_dispatch)
+              author="$TRIGGERING_ACTOR"
+              needs_tag=false ;;
+            *) author=$(jq -r '.sender.login' "$GITHUB_EVENT_PATH")
+              needs_tag=false ;;
+          esac
+          requester=$(printf '%s' "$author" | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
+          if [ "$requester" != "sentry" ] && [ "$needs_tag" = "true" ] && \
+             ! grep -qiE '(^|[^A-Za-z0-9_-])@codex-autofix([^A-Za-z0-9_-]|$)' "$RUNNER_TEMP/request_body.txt"; then
+            echo "::notice::No @codex-autofix tag in the review, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$requester" = "jaywedgeworth22" ] || [ "$requester" = "sentry" ]; then
+            echo "::notice::$author is exempt from the one-run-per-bot rule"
+            exit 0
+          fi
+          marker="swu-autofix-run: bot=$requester"
+          prior=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
+            --jq ".[].body | select(contains(\"$marker\"))" 2> /dev/null | head -1 || true)
+          accepted=true
+          if [ -n "$prior" ]; then accepted=false; fi
+          if [ -n "${NOTIFY_URL:-}" ]; then
+            jq -n --arg repo "$GH_REPO" --arg pr "$PR_NUMBER" --arg bot "$requester" \
+              --arg event "$GITHUB_EVENT_NAME" --arg accepted "$accepted" \
+              --arg run "$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID" \
+              '{repo:$repo, pr:$pr, bot:$bot, event:$event, accepted:$accepted, run:$run}' \
+            | curl -sfS -m 10 -X POST -H 'Content-Type: application/json' --data-binary @- "$NOTIFY_URL" \
+              || echo "::notice::owner notification for $requester's request failed (non-blocking)"
+          else
+            echo "::notice::SWU_AUTOFIX_NOTIFY_URL is not set, owner notification for $requester's request skipped"
+          fi
+          if [ "$accepted" = "false" ]; then
+            echo "::notice::$author already used its one autofix run on this PR, skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+            -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  One autofix run per bot per PR (owner rule 2026-10-20);  delete this comment to reset." \
+            > /dev/null
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: ${{ steps.request_gate.outputs.skip != 'true' }}
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run Claude Autofix
         id: claude
+        if: ${{ steps.request_gate.outputs.skip != 'true' }}
         uses: anthropics/claude-code-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1
         # Routed to MiniMax via its Anthropic-compatible endpoint:  claude-code-action
         # drives the Claude Code CLI, which honors ANTHROPIC_BASE_URL / _AUTH_TOKEN /
         # _MODEL, so this bills the org MINIMAX_API_KEY instead of Anthropic.  Same
         # endpoint and key wiring as the fleet's other autofix workflows.  The model
-        # id comes from the `model` input (MiniMax-M3.1-Flash-Preview, the id the
+        # id comes from the `model` input (MiniMax-M3.1-Flash, the id the
         # fleet's Harness route already uses over api anthropic-messages).
         env:
           ANTHROPIC_BASE_URL: https://api.minimax.io/anthropic
@@ -164,11 +237,12 @@ jobs:
           classify_inline_comments: "false"
 
       - name: Summarize Autofix Diagnostics
-        if: ${{ always() }}
+        if: ${{ always() && steps.request_gate.outputs.skip != 'true' }}
         id: diagnostics
         uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-diagnostics@070fdbfacadbd9e90cbb54098123df7d3fef737f
 
       - name: Extract Usage Counts
+        if: ${{ always() && steps.request_gate.outputs.skip != 'true' }}
         id: usage
         # Only the counters of Claude Code's final result message leave this job (UM-1593):  no prompt,
         # diff, or tool output.  The ingest credential is never present here, because the model runs
@@ -183,7 +257,7 @@ jobs:
           fi
 
       - name: Retain Sanitized Autofix Diagnostics
-        if: ${{ always() && steps.diagnostics.outputs.summary-path != '' }}
+        if: ${{ always() && steps.request_gate.outputs.skip != 'true' && steps.diagnostics.outputs.summary-path != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: claude-autofix-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}

@@ -2,32 +2,31 @@
 
 > Moved from `AGENT-SYNC.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in AGENT-SYNC.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
 
-**Title (note name / first heading row) — ALWAYS start with app acronym(s) + agent:**
+**Title (note name / first heading row) — ALWAYS start with team key acronym(s) + SEAT_TAG:**
 
 ```
-[APP, Agent] short topic title
+[TEAM_KEY, SEAT_TAG] Topic
 ```
 
 Examples:
 - `[UM, Grok] TestFlight first ship + export compliance`
-- `[ST, Monet] Pinecone WU breaker and embed staging`
+- `[ST, Codex] Pinecone WU breaker and embed staging`
 - `[CT, Claude] stuck-filing recovery (deterministic)`
-- `[ST, CT, Grok] R2 free-tier labels and peer checks`  ← multi-app
+- `[ST, CT, Grok] R2 free-tier labels and peer checks`  ← multi-team key
 - `[AFC, Grok] Apple Notes title/timestamp standard`
 
 Rules:
-- **App acronyms FIRST, then agent name**, comma-separated inside `[]`, then a space,
-  then the short topic. **No** bare `App — topics` titles; **no** "session" in the title.
+- **TEAM_KEY FIRST, then SEAT_TAG**, comma-separated inside `[]`, then a space,
+  then the short topic. **No** bare `Team key — topics` titles; **no** "session" in the title.
 - **Multiple apps** when more than one is impacted: list each acronym
-  (`[ST, CT, UM, Grok] …`). Order = impact order (primary first).
-- **Agent display name** (Title Case, not the ALL-CAPS chat tag):  
-  `Grok` | `Grok Build` | `Claude` | `Codex` | `Cursor` | `AG` | `Kimi` | `MiniMax` | `DeepSeek Harness` | …
+  (`[ST, CT, UM, GROK] …`). Order = impact order (primary first).
+- **SEAT_TAG rendering:** use the canonical Title Case `notesName` for the verified calling seat, such as `Claude`, `Codex` or `Grok Web`.  The exact uppercase seat tag remains accepted for compatibility; another seat’s name is refused.
 - **Never put the date in the title** — date lives on the **second row** (body).
 - **Never repeat the title as an H1 inside the body** — Notes already shows the title.
 
-**App acronym table (generalized — extend when new apps join the fleet):**
+**Team key acronym table (generalized — extend when new apps join the fleet):**
 
-| Acronym | App / Scope | Repo / Details |
+| Acronym | Team key / Scope | Repo / Details |
 |---------|-------------|----------------|
 | `ST` | Socratic.Trade | `Simple-With-Us/Socratic-Trade` |
 | `CT` | Congress.Trade | `Simple-With-Us/Congress.Trade` |

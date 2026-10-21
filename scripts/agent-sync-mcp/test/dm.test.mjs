@@ -290,7 +290,7 @@ test("dm_read:  a conversation the bot is not in is empty, and an unknown email 
 
 test("dm_send:  the tag with the recipient, the sentence gap, ids only in the answer, one Zulip direct message", async () => {
   const { fake, tools, jay } = harness();
-  const data = ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "First.  Second @**Jay Wedgeworth** and @**all**.", session: "s1" }), "zulip_dm_send");
+  const data = ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "First.  Second @**Jay Wedgeworth** and @**all**.", session: "session-fixture-001" }), "zulip_dm_send");
   assert.deepEqual(Object.keys(data).sort(), ["duplicate", "id", "user_ids"]);
   assert.deepEqual(data.user_ids, [jay.user_id]);
   assert.equal(data.duplicate, false);
@@ -298,7 +298,7 @@ test("dm_send:  the tag with the recipient, the sentence gap, ids only in the an
   assert.equal(post.params.type, "direct");
   assert.equal(post.params.to, JSON.stringify([jay.user_id]));
   // Tag with the recipient's label, the gap as U+00A0 plus a space, raw mentions silenced.
-  assert.equal(post.params.content, `[GROK-WEB·s1→JAY] First.${NBSP} Second @_**Jay Wedgeworth** and @_**all**.`);
+  assert.equal(post.params.content, `[GROK-WEB·sessionf→JAY] First.${NBSP} Second @_**Jay Wedgeworth** and @_**all**.`);
   const message = fake.messages.at(-1);
   assert.equal(message.id, data.id);
   assert.equal(message.type, "private");

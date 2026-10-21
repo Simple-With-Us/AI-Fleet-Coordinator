@@ -1,4 +1,5 @@
 """State store: modes, atomicity, monotonic cursors, the 500-id ledger, concurrency."""
+
 from __future__ import annotations
 
 import json
@@ -56,6 +57,20 @@ class StateTests(unittest.TestCase):
         state.record_posted(1)
         self.assertTrue((self.root / "CLAUDE" / "nosession" / "state.json").exists())
 
+    def test_the_full_session_id_is_recorded_next_to_its_short_tag(self) -> None:
+        # The tag in a post is 8 characters, so it cannot carry the id;  a resume-wake that reads
+        # `[SEAT·tag]` needs this to find the session that wrote it.
+        state = S.State(self.root, "CLAUDE", "abcd1234", session_id="abcd1234-full-session-id")
+        state.record_posted(1)
+        data = json.loads(state.path.read_text())
+        self.assertEqual(data.get("session"), "abcd1234-full-session-id")
+
+    def test_a_seat_with_no_session_id_records_none(self) -> None:
+        state = S.State(self.root, "ECHO", None)
+        state.record_posted(1)
+        data = json.loads(state.path.read_text())
+        self.assertNotIn("session", data)
+
     def test_cursors_never_move_backwards_and_keys_ignore_case(self) -> None:
         state = S.State(self.root, "CLAUDE", "t")
         state.advance_cursor("Agent-Sync", "Roll Call", 10)
@@ -67,7 +82,9 @@ class StateTests(unittest.TestCase):
         state = S.State(self.root, "CLAUDE", "t")
         state.record_posted(1)
         data = json.loads(state.path.read_text())
-        data["posted"] = list(range(1, 601))  # seeded: 600 separate fsynced writes would only be slow
+        data["posted"] = list(
+            range(1, 601)
+        )  # seeded: 600 separate fsynced writes would only be slow
         state.path.write_text(json.dumps(data))
         state.record_posted(601)
         posted = state.posted()
@@ -123,7 +140,9 @@ class StateTests(unittest.TestCase):
         self.assertIsNone(S.State(self.root, "CODEX", "a").inbox_cursor())
 
     def test_state_root_resolution(self) -> None:
-        self.assertEqual(S.state_root({"AGENT_SYNC_STATE_DIR": str(self.tmp / "x")}), self.tmp / "x")
+        self.assertEqual(
+            S.state_root({"AGENT_SYNC_STATE_DIR": str(self.tmp / "x")}), self.tmp / "x"
+        )
         self.assertEqual(S.state_root({"HOME": str(self.tmp)}), self.tmp / ".agent-sync")
 
 

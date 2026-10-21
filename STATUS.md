@@ -1,5 +1,11 @@
 # Status
 
+## 2026-10-19 CODEX — Linux Interactive Listener (AFC-411)
+
+PR #722 adds Linux user-service installation and status while preserving macOS launchd and pause/resume semantics.  The server Claude plugin is installed and enabled, and the systemd user unit is installed but inactive with a no-seat sample config.  Local routing tests prove sibling CLI inbox reads cannot consume an owning session live queue.  Current-head Codex review and required CI remain gates; persistent scoped Infisical authentication and real two-session wake acceptance remain pending.
+
+Rollout: `docs/rollouts/2026-10-19-server-zulip-wake-routing.md`.
+
 ## 2026-10-15 CURSOR — fleet-work-backup Mac watch wiring (OPS-907)
 
 Closes the remaining coordinator-repo work for fleet-work-backup:  `mac-process-watch.sh`

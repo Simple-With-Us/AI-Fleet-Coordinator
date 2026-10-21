@@ -58,7 +58,7 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     nsub = p.add_subparsers(dest="notes_action", metavar="ACTION", required=True)
     for action in ("create", "update"):
         q = add(nsub, action, "%s a note (body from stdin, --body-file or --html)" % action)
-        q.add_argument("title", metavar="TITLE", help="[APP, Agent] short topic")
+        q.add_argument("title", metavar="TITLE", help="[TEAM_KEY, SEAT_TAG] Topic")
         q.add_argument(
             "body",
             nargs="*",
@@ -334,14 +334,14 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
     # Relay (and status):  the MCP tool's own code over this identity's verified bot.
     agent = CLI.Agent(rt, args)
     CLI._check_agent_identity(rt, agent)
-    consumer, consumer_label, _ = N.relay_consumer(
-        C.load(str(state_root(rt.env, home))).notes_relay_seat
-    )
+    cfg = C.load(str(state_root(rt.env, home)))
+    consumer, consumer_label, _ = N.relay_consumer(cfg.notes_relay_seat)
     tools = T.Tools(
         agent,
         me=agent.me(),
         process_tag=agent.tag,
         session_source="flag",
+        owner_user_id=cfg.owner_user_id,  # the pinned owner, or the OPERATOR consumer is never trusted
         notes_consumer=consumer,
         notes_consumer_label=consumer_label,
         sleep=rt.sleep,

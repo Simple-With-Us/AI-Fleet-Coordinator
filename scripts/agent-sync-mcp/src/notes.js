@@ -42,6 +42,16 @@ const CHECK_NAMES = Object.freeze({
 const REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const UPLOAD_PATH_RE = /^\/user_uploads\/[A-Za-z0-9_./-]{1,200}$/;
 const TITLE_BAD_RE = /["\\\u0000-\u001f\u007f\u0085\u2028\u2029]/;
+const TITLE_SCOPE_RE = /^\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*)\] \S.*$/;
+
+// The title shape `[TEAM_KEY, SEAT_TAG] Topic`:  one or more capitalised team keys, then the
+// seat tag, then a non-empty topic.  A leading-bracket test alone lets `[AFC` and `[]` reach
+// the relay envelope, so the whole scope is validated here.  Mirrors `title_agent` in notes.py.
+export function titleScope(title) {
+  const match = TITLE_SCOPE_RE.exec(title);
+  if (!match) return null;
+  return { keys: match[1], seat: match[2] };
+}
 const PR_RE = /^[0-9#, ]{1,40}$/;
 const FENCE_OPEN = "```json\n";
 const FENCE_CLOSE = "\n```";
@@ -139,8 +149,9 @@ export function checkTitle(raw) {
   const title = raw.trim();
   if (!title) throw invalid("argument 'title' must not be empty");
   if (points(title).length > TITLE_MAX) throw invalid(`argument 'title' is ${points(title).length} characters; at most ${TITLE_MAX}`);
-  if (!title.startsWith("[")) throw invalid('argument \'title\' must start with [APP, Agent], such as "[AFC, Claude] topic"');
+  if (!title.startsWith("[")) throw invalid('argument \'title\' must start with [TEAM_KEY, SEAT_TAG], such as "[AFC, Codex] Topic"');
   if (TITLE_BAD_RE.test(title)) throw invalid("argument 'title' must not hold a double quote, a backslash or a control character");
+  if (!titleScope(title)) throw invalid('argument \'title\' must read "[TEAM_KEY, SEAT_TAG] Topic", such as "[AFC, Codex] Topic"');
   return title;
 }
 
@@ -305,9 +316,16 @@ export const NOTES_METHODS = {
    * it, so a check mark, a cross mark or a refusal reply counts only from the bot of the configured consumer seat
    * (NOTES_RELAY_CONSUMER, default CLAUDE), resolved to its user id from the realm's users.
    */
-  async notesFleetBot(userId, members) {
-    const user = members.find((m) => m.user_id === userId);
+  async notesFleetBot(userId, members, index = null) {
+    const user = index ? index.get(userId) : members.find((m) => m.user_id === userId);
     if (!user || user.is_bot !== true) return false;
+    if (this.config.notesRelayConsumer === "OPERATOR") {
+      return Number.isSafeInteger(this.config.operatorZulipUserId) && this.config.operatorZulipUserId > 0
+        && user.user_id === this.config.operatorZulipUserId
+        && Number.isSafeInteger(this.config.ownerUserId) && this.config.ownerUserId > 0
+        && user.bot_owner_id === this.config.ownerUserId
+        && String(user.email ?? "").toLowerCase() === this.config.operatorZulipEmail;
+    }
     return seatTagFor(user) === this.config.notesRelayConsumer;
   },
 
@@ -317,8 +335,12 @@ export const NOTES_METHODS = {
    * message is reached, at most NOTES_REASON_PAGES pages.  Only the consumer's bot counts, so a peer's forged reply
    * is skipped wherever it sits.  "" when none is found.
    */
-  async notesRefusalReason(message, requestId, channelId, members) {
-    const consumer = members.find((m) => m.is_bot === true && seatTagFor(m) === this.config.notesRelayConsumer);
+  async notesRefusalReason(message, requestId, channelId, members, index = null) {
+    index ??= new Map(members.map((member) => [member.user_id, member]));
+    let consumer;
+    for (const member of members) {
+      if (await this.notesFleetBot(member.user_id, members, index)) { consumer = member; break; }
+    }
     const narrow = [
       { operator: "channel", operand: channelId },
       { operator: "topic", operand: message.subject ?? message.topic ?? "" },
@@ -332,7 +354,7 @@ export const NOTES_METHODS = {
       );
       for (const reply of rows) {
         const text = (reply.content ?? "").trimStart();
-        if (reply.id > message.id && text.startsWith(prefix) && (await this.notesFleetBot(reply.sender_id, members))) {
+        if (reply.id > message.id && text.startsWith(prefix) && (await this.notesFleetBot(reply.sender_id, members, index))) {
           return clean(text.slice(prefix.length).trim(), 300)[0];
         }
       }
@@ -384,6 +406,7 @@ export const NOTES_METHODS = {
     }
     if (!message) throw new ToolError("not_found", `no relay request with that request_id from this identity in #${RELAY_CHANNEL}`);
     const members = await this.users();
+    const index = new Map(members.map((member) => [member.user_id, member]));
     let done = false;
     let refused = false;
     for (const raw of message.reactions ?? []) {
@@ -391,7 +414,7 @@ export const NOTES_METHODS = {
       if (!parsed.success) continue;
       const reaction = parsed.data;
       const userId = reaction.user_id ?? reaction.user?.id;
-      if (!(await this.notesFleetBot(userId, members))) continue;
+      if (!(await this.notesFleetBot(userId, members, index))) continue;
       const code = reaction.emoji_code ?? "";
       const name = reaction.emoji_name ?? "";
       if (CHECK_NAMES.refusedCodes.includes(code) || CHECK_NAMES.refused.includes(name)) refused = true;
@@ -400,7 +423,7 @@ export const NOTES_METHODS = {
     // The consumer's refusal reply is authoritative on its own:  a cross mark Zulip refused to take must not leave a
     // refused request reading as queued.  A done mark is not second-guessed.
     let reason = null;
-    if (refused || !done) reason = await this.notesRefusalReason(message, requestId, channelId, members);
+    if (refused || !done) reason = await this.notesRefusalReason(message, requestId, channelId, members, index);
     if (reason !== null) refused = true;
     const info = { request_id: requestId, message_id: message.id, status: refused ? "refused" : done ? "done" : "queued" };
     if (refused && reason) info.reason = reason;

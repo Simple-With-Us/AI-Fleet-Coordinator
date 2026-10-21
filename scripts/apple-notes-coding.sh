@@ -3,8 +3,8 @@
 # Owner preference 2026-08-05: coding notes always go to Coding + pin to top.
 # Owner 2026-08-09: title + timestamp shape (ALL apps, ALL agents):
 #
-#   Title:  "[APP, Agent] short topic"   e.g. "[UM, Grok] TestFlight first ship"
-#           Multi-app: "[ST, CT, Grok] …"  Acronyms: UM ST CT CTS FLEET
+#   Title:  "[TEAM_KEY, SEAT_TAG] Topic"  e.g. "[UM, MM] TestFlight first ship"
+#           Multi-app: "[ST, CT, MM] …"  Acronyms: UM ST CT CTS AFC (TEAM_KEY is the team key)
 #   Row 2:  "Sun, Aug 9, 3:52pm"         local create/update stamp (auto-injected)
 #
 # Usage:
@@ -17,6 +17,7 @@
 #   apple-notes-coding.sh --pin-only "Exact Note Title"
 #   apple-notes-coding.sh --unpin-only "Exact Note Title"
 #   APPLE_NOTES_PIN=0 apple-notes-coding.sh "Title" ...        # skip pinning
+#   APPLE_NOTES_PIN_RETRY=0 apple-notes-coding.sh "Title" ...  # pin Shortcut: one attempt, no retry
 #   APPLE_NOTES_ACTIVATE=1 apple-notes-coding.sh "Title" ... # bring Notes to front
 #
 # Session id (AFC-361, owner 2026-10-19):  create and update stamp the writer's session id into the note, so a
@@ -25,7 +26,7 @@
 # CODEX_THREAD_ID, Cursor CURSOR_CONVERSATION_ID, Grok GROK_SESSION_ID, OpenCode OPENCODE_SESSION_ID, MiniMax
 # __MAVIS_RUNTIME_SESSION_ID).  With none the script exits 2 before it touches Notes.  A seat with one thread with the
 # owner (Grok bots, MA/Rob, JET, WISE, ECHO) needs none.  The seat is $AGENT_LAUNCH_SEAT (with $AGENT_LAUNCHER),
-# else $AGENT_SEAT, else the Agent named in the title ("[APP, Wise] topic", how Instinct's bots call this over ssh);
+# else $AGENT_SEAT, else the SEAT_TAG named in the title ("[TEAM_KEY, WISE] topic", how Instinct's bots call this over ssh);
 # it is never a flag.  Data copy of fleet-apps.json `sessionIds`;  scripts/test_session_ids_parity.py keeps it equal.
 # APPLE_NOTES_PRINT_HTML=1 prints the note HTML and exits before Notes is touched (the tests use it).
 #
@@ -144,8 +145,21 @@ if [[ -z "$TITLE" ]]; then
   exit 2
 fi
 
-# Strip accidental backslash escaping on title brackets e.g. \[APP, Agent\]
+# Strip accidental backslash escaping on title brackets e.g. \[TEAM_KEY, SEAT_TAG\]
 TITLE=$(printf '%s' "$TITLE" | sed -e 's/^\\\[/[/' -e 's/\\\]$/]/' -e 's/\\\[/[/g' -e 's/\\\]/]/g')
+
+# Secret scan on the title (AFC-422).  The title reaches AppleScript source, the relay envelope, the
+# owner notification and two stderr lines, so a credential pasted into it would leak four ways.  Reject
+# it here, before any of those, and never echo the value back: a rejection that printed the title would
+# put the credential in the very log it is protecting.
+_title_looks_secret() {
+  printf '%s' "$1" | grep -Eqi -e \
+    '-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.|(api[_-]?key|secret|password|passwd|token)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_./+-]{12,}'
+}
+if _title_looks_secret "$TITLE"; then
+  echo "apple-notes-coding: field 'title' rejected: it looks like it holds a credential.  The value is not echoed." >&2
+  exit 2
+fi
 
 
 # ---- Session id (AFC-361) ---------------------------------------------------------------------------------------
@@ -237,34 +251,95 @@ fi
 
 if [[ "$MODE" == "pin" || "$MODE" == "unpin" ]]; then
   NOTE_ID=$(osascript -e "tell application \"Notes\" to get id of note \"$TITLE\" of folder \"Coding\" of account \"iCloud\"" 2>/dev/null || true)
-  [[ -n "$NOTE_ID" ]] || { echo "$MODE-only: note not found in Coding: $TITLE" >&2; exit 3; }
+  [[ -n "$NOTE_ID" ]] || { echo "$MODE-only: no note with that title in Coding" >&2; exit 3; }
   SKIP_BODY=1
 else
   SKIP_BODY=0
 fi
 
 # Run a headless pin/unpin Shortcut with the note title as a text-file input.
-# Returns 0 on success. First-ever run of each shortcut shows a one-time
+# Returns 0 on success, 2 when the Shortcut is not installed, 1 when the run
+# itself failed, 3 when the Shortcut list could not be read.  A failed list
+# lookup is its own case:  it is not proof that the Shortcut is missing, and
+# sending an operator to recreate a Shortcut that exists is worse than saying
+# the list did not read.  First-ever run of each shortcut shows a one-time
 # "Allow ... to share with Notes?" dialog — choose Always Allow.
+#
+# Whether a failed pin or unpin Shortcut is retried is the APPLE_NOTES_PIN_RETRY fleet knob (Infisical,
+# through scripts/fleet_knobs), resolved once per process through the package next to this script
+# (a source checkout) or the managed stable copy at ~/apps/needs-owner (the live helper).  APPLE_NOTES_PIN_RETRY
+# in the environment is only a narrowing override:  it can turn the retry off, never on.  With no fleet_knobs
+# on this host, or an unreachable Infisical with no last-known-good copy, the registered default (on) applies,
+# narrowed by that override.
+_PIN_RETRY=""
+_pin_retry_on() {
+  #  A local value may only narrow, so it is read first:  an operator who sets it to off gets a
+  #  decision without a knob lookup that can reach the network, and the lookup cannot widen it later.
+  case "${APPLE_NOTES_PIN_RETRY:-}" in
+    false|0|no|off) return 1 ;;
+  esac
+  if [[ -z "${_PIN_RETRY:-}" ]]; then
+    local knob="" here candidate
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+    for candidate in "$here" "$HOME/apps/needs-owner" "${AGENT_SYNC_RUNTIME:-$HOME/apps/lanes/_managed/fleet/agent-sync-runtime}/scripts"; do
+      if [[ -n "$candidate" && -d "$candidate/fleet_knobs" ]] && command -v python3 >/dev/null 2>&1; then
+        knob="$(cd "$candidate" && python3 -m fleet_knobs get APPLE_NOTES_PIN_RETRY 2>/dev/null)" || knob=""
+        [[ -n "$knob" ]] && break
+      fi
+    done
+    case "$knob" in
+      false|0|no|off) _PIN_RETRY=0 ;;
+      *) _PIN_RETRY=1 ;;
+    esac
+  fi
+  [[ "$_PIN_RETRY" == "1" ]]
+}
+
 _run_note_shortcut() {  # $1 = shortcut name
-  shortcuts list 2>/dev/null | grep -qxF "$1" || return 2
-  local tmp
+  local listing
+  if ! listing="$(shortcuts list 2>/dev/null)"; then
+    return 3
+  fi
+  printf '%s\n' "$listing" | grep -qxF "$1" || return 2
+  local tmp attempt attempts
   tmp="$(mktemp).txt"
   printf '%s' "$TITLE" > "$tmp"
-  if shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
-    rm -f "$tmp"
-    return 0
-  fi
+  # A just-written note may not be visible to the Shortcut's Find step yet, and
+  # that miss fails the run (observed 2026-10-20).  Retry once before giving up,
+  # so a timing race does not leave a coding note unpinned.  A miss can also pop
+  # a note picker on the owner's screen, so the retry is gated by the
+  # APPLE_NOTES_PIN_RETRY knob:  set it to false, or APPLE_NOTES_PIN_RETRY=0 in the
+  # environment, for a single attempt, which is what a caller wants when it would
+  # rather not risk a second Shortcut invocation.  The retry runs 3 s later than
+  # the first attempt, so the note index has had more time to catch up and the
+  # retry is the less likely of the two to miss it.
+  attempt=1
+  while :; do
+    if shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
+      rm -f "$tmp"
+      return 0
+    fi
+    if [[ "$attempt" -ge 2 ]] || ! _pin_retry_on; then break; fi
+    attempt=2
+    sleep 3
+  done
   rm -f "$tmp"
   return 1
 }
 
 if [[ "$MODE" == "unpin" ]]; then
-  if _run_note_shortcut "Unpin Coding Note"; then
+  # Capture the code once:  $? read after a failed [[ ]] is the [[ ]]'s own 1,
+  # so an elif chain on $? can never reach the 3 (list unreadable) arm (AFC-431).
+  _unpin_rc=0
+  _run_note_shortcut "Unpin Coding Note" || _unpin_rc=$?
+  if [[ "$_unpin_rc" == "0" ]]; then
     echo "unpinned: yes (headless via 'Unpin Coding Note' shortcut)"
     exit 0
-  elif [[ $? -eq 2 ]]; then
+  elif [[ "$_unpin_rc" == "2" ]]; then
     echo "unpinned: no — 'Unpin Coding Note' shortcut not found. Create it: duplicate 'Pin Coding Note', rename, switch the last action's Add to Remove." >&2
+    exit 4
+  elif [[ "$_unpin_rc" == "3" ]]; then
+    echo "unpinned: no — the Shortcut list could not be read, so it is unknown whether 'Unpin Coding Note' exists" >&2
     exit 4
   else
     echo "unpinned: no — 'Unpin Coding Note' shortcut run failed" >&2
@@ -281,7 +356,7 @@ fi
 # - Formats code blocks with SF Mono font and light styling.
 # - Formats tables with clean border-collapse.
 _convert_body_to_html() {
-  local _md_py _md_dir
+  local _md_py _md_dir _rc
   # A private temp DIRECTORY with the converter inside it.  macOS mktemp does not substitute an X
   # template that does not end the name, so `mktemp /tmp/apple-notes-md.XXXXXX.py` returns a FIXED
   # path:  two seats writing at once collide, and a stale file (a crash, or a cleanup the runtime's
@@ -293,6 +368,7 @@ _convert_body_to_html() {
     return 1
   fi
   _md_py="${_md_dir}/convert.py"
+  _rc=0
   cat >"${_md_py}" <<'PY'
 import html, os, re, sys
 
@@ -539,13 +615,15 @@ while i < len(lines):
 close_lists()
 sys.stdout.write("<div>" + "".join(out) + "</div>")
 PY
-  /usr/bin/python3 "${_md_py}"
-  local _rc=$?
+  # `|| _rc=$?` keeps `set -e` (line 46) from aborting here, before the cleanup below:  a converter
+  # failure would otherwise skip the cleanup, leak the scratch directory, and surface as a bare
+  # command failure instead of the note's own error.
+  /usr/bin/python3 "${_md_py}" || _rc=$?
   # The scratch file and its directory go when they can:  a cleanup the runtime refuses must not
   # fail the note, and the next call gets a fresh directory either way.  Its output goes nowhere:
   # this runs inside the body capture, so a word on stdout would land in the note.
-  rm -f "${_md_py}" >/dev/null 2>&1
-  rmdir "${_md_dir}" >/dev/null 2>&1
+  rm -f "${_md_py}" >/dev/null 2>&1 || true
+  rmdir "${_md_dir}" >/dev/null 2>&1 || true
   return ${_rc}
 }
 
@@ -586,10 +664,10 @@ if [[ "$SKIP_BODY" == "0" ]]; then
 fi
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
-# Title: "[APP, Agent] topic" — multi-app OK. Body first line: "Sun, Aug 9, 3:52pm".
+# Title: "[TEAM_KEY, SEAT_TAG] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52pm".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
-  echo "warning: title should start with [APP, Agent] e.g. \"[UM, Grok] topic\" (got: $TITLE)" >&2
+  echo "warning: title should start with [TEAM_KEY, SEAT_TAG] e.g. \"[UM, MM] Topic\"" >&2
 fi
 if printf '%s' "$TITLE" | grep -Eiq 'session'; then
   echo "warning: do not put 'session' in Apple Note titles" >&2
@@ -887,7 +965,7 @@ tell application "Notes"
 end tell
 EOF
 )
-  echo "updated note id=$NOTE_ID in folder Coding title=$TITLE"
+  echo "updated note id=$NOTE_ID in folder Coding"
 else
   NOTE_ID=$(WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<EOF
 set htmlPath to POSIX file "$TMP"
@@ -927,16 +1005,27 @@ fi
 #   Receive Text from Share Sheet → Find Note (Name contains Shortcut Input,
 #   Folder is Coding, limit 1) → Add Note to pinned notes.
 # Set APPLE_NOTES_PIN=0 to skip pinning entirely.
+# _pin_rc: 0 pinned, 1 the run failed, 2 the Shortcut is not installed,
+# 3 the Shortcut list could not be read, 4 pinning was disabled
+# (APPLE_NOTES_PIN=0).  These are different problems and must not be reported
+# as one (AFC-431).
+_pin_rc=4
 if [[ "${APPLE_NOTES_PIN:-}" != "0" ]]; then
   # Settle delay: a just-created/updated note may not be visible to the
   # Shortcut's Find yet (index race) — a miss pops a note picker on the
   # owner's screen. Two seconds reliably clears it (observed 2026-08-10).
   [[ "$MODE" == "create" || "$MODE" == "update" ]] && sleep 2
-  if _run_note_shortcut "Pin Coding Note"; then
+  _pin_rc=0
+  _run_note_shortcut "Pin Coding Note" || _pin_rc=$?
+  if [[ "$_pin_rc" == "0" ]]; then
     echo "pinned: yes (headless via 'Pin Coding Note' shortcut)"
     exit 0
-  elif [[ $? -eq 1 ]]; then
-    echo "pinned: shortcut run failed; falling back to GUI path if requested" >&2
+  elif [[ "$_pin_rc" == "1" ]]; then
+    echo "pinned: the 'Pin Coding Note' shortcut ran but did not complete; falling back to GUI path if requested" >&2
+  elif [[ "$_pin_rc" == "2" ]]; then
+    echo "pinned: the 'Pin Coding Note' shortcut is not installed; falling back to GUI path if requested" >&2
+  else
+    echo "pinned: the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; falling back to GUI path if requested" >&2
   fi
 fi
 
@@ -944,7 +1033,12 @@ fi
 # Requires show+activate + menu click — steals focus. Skipped unless
 # --pin / --pin-only / APPLE_NOTES_PIN=1.
 if [[ "$WANT_PIN" != "1" ]]; then
-  echo "pinned: skipped ('Pin Coding Note' shortcut unavailable; pass --pin for GUI pin, which steals focus)"
+  case "$_pin_rc" in
+    2) echo "pinned: skipped ('Pin Coding Note' shortcut is not installed; pass --pin for GUI pin, which steals focus)" ;;
+    3) echo "pinned: skipped (the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; pass --pin for GUI pin, which steals focus)" ;;
+    4) echo "pinned: skipped (pinning is disabled; APPLE_NOTES_PIN=0)" ;;
+    *) echo "pinned: skipped ('Pin Coding Note' shortcut run failed; pass --pin for GUI pin, which steals focus)" ;;
+  esac
   exit 0
 fi
 

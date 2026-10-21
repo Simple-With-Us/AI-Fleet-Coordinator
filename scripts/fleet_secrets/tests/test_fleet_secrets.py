@@ -16,6 +16,9 @@ from fleet_secrets import cli, core
 
 FAKE_CLI = "/fake/bin/infisical"
 PROJECT = "00000000-0000-4000-8000-000000000001"  # a placeholder, not the real project id
+OTHER_PROJECT = (
+    "00000000-0000-4000-8000-000000000002"  # placeholder for the AI Fleet Coordinator project
+)
 VAL_A = "SENTINEL_VALUE_A_9f3c"
 VAL_B = "SENTINEL_VALUE_B_77d1"
 CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"
@@ -57,12 +60,12 @@ class World:
             elif argv[-1] == FAKE_LOGIN_KEYCHAIN:
                 store = self.keychain
             else:
-                raise AssertionError("keychain lookup without an explicit keychain path: %r" % argv)
+                raise AssertionError(f"keychain lookup without an explicit keychain path: {argv!r}")
             if acct in store:
                 return subprocess.CompletedProcess(argv, 0, (store[acct] + "\n").encode(), b"")
             return subprocess.CompletedProcess(argv, 44, b"", b"not found")
         if argv[0] != FAKE_CLI:
-            raise AssertionError("unexpected program %r" % argv[0])
+            raise AssertionError(f"unexpected program {argv[0]!r}")
         if argv[1] == "--version":
             return subprocess.CompletedProcess(argv, 0, b"infisical version 0.43.141\n", b"")
         if argv[1] == "login" and len(argv) > 2 and argv[2] == "status":
@@ -85,7 +88,7 @@ class World:
                 else json.dumps(self.secrets).encode()
             )
             return subprocess.CompletedProcess(argv, 0, body, b"")
-        raise AssertionError("unexpected argv %r" % (argv[:2],))
+        raise AssertionError(f"unexpected argv {argv[:2]!r}")
 
     def exports(self):
         return [(a, e) for a, e in self.calls if len(a) > 1 and a[1] == "export"]
@@ -103,7 +106,12 @@ class Base(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)
-        self.env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", core.ENV_PROJECT: PROJECT}
+        self.env = {
+            "HOME": str(self.home),
+            "PATH": "/usr/bin:/bin",
+            core.ENV_PROJECT: PROJECT,
+            core.PROJECT_SOURCES["ai-fleet-coordinator"][0]: OTHER_PROJECT,
+        }
         self.exec_calls = []
         patches = [
             mock.patch.object(core, "find_cli", lambda env: FAKE_CLI),
@@ -161,6 +169,28 @@ class GetTests(Base):
         self.call("names", "--path=/x")
         self.assertIn("--path=/x", w.exports()[0][0])
 
+    def test_project_option_reads_the_other_project_for_get_and_names(self):
+        other = "00000000-0000-4000-8000-000000000002"
+        self.env["INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"] = other
+        w = self.use(World())
+        self.assertEqual(
+            self.call("get", "ALPHA", "--project", "ai-fleet-coordinator")[:2], (0, VAL_A)
+        )
+        self.assertEqual(
+            self.call("names", "--project=ai-fleet-coordinator", "--path", "/fleetlink")[0], 0
+        )
+        self.call("get", "ALPHA")
+        ids = [next(a for a in argv if a.startswith("--projectId=")) for argv, _ in w.exports()]
+        self.assertEqual(
+            ids, ["--projectId=" + other, "--projectId=" + other, "--projectId=" + PROJECT]
+        )
+
+    def test_unknown_project_is_a_usage_error_before_any_fetch(self):
+        w = self.use(World())
+        self.assertEqual(self.call("get", "ALPHA", "--project", "other")[0], 2)
+        self.assertEqual(self.call("get", "ALPHA", "--project")[0], 2)
+        self.assertEqual(w.calls, [])
+
     def test_bad_name_and_bad_path_are_usage_errors_before_any_fetch(self):
         w = self.use(World())
         self.assertEqual(self.call("get", "A-B")[0], 2)
@@ -171,7 +201,7 @@ class GetTests(Base):
 class UnresolvedReferenceTests(Base):
     def test_unresolved_reference_fails_closed_naming_the_key(self):
         self.use(World(secrets={"ALPHA": VAL_A, "BROKEN": "${folder.OTHER}"}))
-        code, out, err = self.call("run", "--", "true")
+        code, _out, err = self.call("run", "--", "true")
         self.assertEqual(code, 5)
         self.assertIn("BROKEN", err)
         self.assertNotIn("folder.OTHER", err)
@@ -186,7 +216,7 @@ class UnresolvedReferenceTests(Base):
 
     def test_names_fails_closed_too(self):
         self.use(World(secrets={"ALPHA": VAL_A, "BROKEN": "${x}"}))
-        code, out, err = self.call("names")
+        code, out, _err = self.call("names")
         self.assertEqual((code, out), (5, ""))
 
     def test_a_value_that_merely_contains_a_reference_is_fine(self):
@@ -198,7 +228,7 @@ class RunTests(Base):
     def test_run_injects_env_and_execs(self):
         self.use(World())
         self.env["KEEP"] = "kept"
-        code, _, err = self.call("run", "--", "mycmd", "--flag", "x")
+        _code, _, err = self.call("run", "--", "mycmd", "--flag", "x")
         self.assertEqual(err, "")
         ((prog, argv, env),) = self.exec_calls
         self.assertEqual((prog, argv), ("mycmd", ["mycmd", "--flag", "x"]))
@@ -276,15 +306,16 @@ class RunTests(Base):
             "INFISICAL_CLIENT_SECRET": "STORED_SECRET_SENTINEL",
             core.ENV_CLIENT_SECRET: "STORED_UA_SENTINEL",
         }
-        w = self.use(World(secrets=secrets))
+        self.use(World(secrets=secrets))
         self.call("run", "--", "mycmd")
         env = self.exec_calls[0][2]
         self.assertEqual(env["ALPHA"], VAL_A)
         self.assertEqual(
-            {k for k in env if k.startswith("INFISICAL_")}, {core.ENV_PROJECT}
-        )  # only the parent's own
+            {k for k in env if k.startswith("INFISICAL_")},
+            {k for k in self.env if k.startswith("INFISICAL_")},
+        )  # only the parent's own (the project ids), none from Infisical
         for var in ("INFISICAL_TOKEN", "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET"):
-            code, _, err = self.call("run", "--only", "ALPHA," + var, "--", "mycmd")
+            code, _, _err = self.call("run", "--only", "ALPHA," + var, "--", "mycmd")
             self.assertEqual(code, 2, var)
         self.assertEqual(len(self.exec_calls), 1)
         self.assertEqual(
@@ -348,7 +379,7 @@ class AuthSelectionTests(Base):
         ((largv, lenv),) = w.logins()
         self.assertIn("--method=universal-auth", largv)
         self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
-        eargv, eenv = w.exports()[0]
+        _eargv, eenv = w.exports()[0]
         self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
         self.assertNotIn(core.ENV_CLIENT_SECRET, eenv)
 
@@ -360,7 +391,7 @@ class AuthSelectionTests(Base):
         self.assertIn("--method=universal-auth", largv)
         self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
         self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
-        eargv, eenv = w.exports()[0]
+        _eargv, eenv = w.exports()[0]
         self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
         self.assertNotIn(core.ENV_CLIENT_SECRET, eenv)
         lookups = [a for a, _ in w.calls if a[0] == core.SECURITY_BIN]
@@ -404,6 +435,78 @@ class AuthSelectionTests(Base):
         self.assertEqual((code, out), (4, ""))
         self.assertIn("keychain-incomplete", err)
         self.assertEqual(w.logins(), [])
+
+    def _automation_env(self, linux=True):
+        self.env[core.ENV_AUTOMATION_ID] = CLIENT_ID
+        self.env[core.ENV_AUTOMATION_SECRET] = CLIENT_SECRET
+        p = mock.patch.object(core, "is_linux", lambda: linux)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_linux_automation_env_identity_logs_in_and_exports_with_the_token_in_env(self):
+        w = self.use(World())
+        self._automation_env()
+        self.assertEqual(core.auth_mode(self.env), "automation-env")
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (0, VAL_A))
+        ((largv, lenv),) = w.logins()
+        self.assertIn("--method=universal-auth", largv)
+        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
+        self.assertEqual(lenv[core.ENV_CLIENT_SECRET], CLIENT_SECRET)
+        self.assertNotIn(core.ENV_AUTOMATION_SECRET, lenv)
+        _eargv, eenv = w.exports()[0]
+        self.assertEqual(eenv[core.ENV_TOKEN], ACCESS_TOKEN)
+        self.assertNotIn(core.ENV_AUTOMATION_SECRET, eenv)
+        self.assertNoSentinel(out.replace(VAL_A, ""), err)
+
+    def test_token_mode_and_readonly_probes_never_forward_automation_pair(self):
+        w = self.use(World())
+        self._automation_env()
+        self.env[core.ENV_TOKEN] = ACCESS_TOKEN
+        self.assertEqual(self.call("get", "ALPHA")[0], 0)
+        self.assertEqual(core.cli_version(FAKE_CLI, self.env), "0.43.141")
+        self.assertTrue(core.session_valid(FAKE_CLI, self.env))
+        for argv, child in w.calls:
+            if argv[0] == FAKE_CLI:
+                self.assertNotIn(core.ENV_AUTOMATION_ID, child)
+                self.assertNotIn(core.ENV_AUTOMATION_SECRET, child)
+        self.assertEqual(self.env[core.ENV_AUTOMATION_SECRET], CLIENT_SECRET)
+
+    def test_automation_env_is_ignored_off_linux(self):
+        self.use(World())
+        self._automation_env(linux=False)
+        self.assertEqual(core.auth_mode(self.env), "session")
+
+    def test_the_automation_env_beats_a_keychain_identity_on_linux(self):
+        w = self.use(World(keychain=KEYCHAIN_FULL))
+        self._automation_env()
+        self.assertEqual(core.auth_mode(self.env), "automation-env")
+        self.assertEqual(self.call("get", "ALPHA")[:2], (0, VAL_A))
+        ((_, lenv),) = w.logins()
+        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
+
+    def test_a_keychain_identity_is_used_when_no_automation_env_is_set(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        p = mock.patch.object(core, "is_linux", lambda: True)
+        p.start()
+        self.addCleanup(p.stop)
+        self.assertEqual(core.auth_mode(self.env), "keychain")
+
+    def test_half_set_automation_env_refuses_rather_than_downgrade(self):
+        self.use(World())
+        self._automation_env()
+        del self.env[core.ENV_AUTOMATION_SECRET]
+        code, out, err = self.call("get", "ALPHA")
+        self.assertEqual((code, out), (4, ""))
+        self.assertIn("automation-env-incomplete", err)
+
+    def test_run_never_hands_the_automation_pair_to_the_command(self):
+        self.use(World())
+        self._automation_env()
+        self.call("run", "--only", "ALPHA", "--", "true")
+        ((_, _, child_env),) = self.exec_calls
+        self.assertNotIn(core.ENV_AUTOMATION_ID, child_env)
+        self.assertNotIn(core.ENV_AUTOMATION_SECRET, child_env)
 
     def test_login_keychain_beats_the_system_keychain(self):
         w = self.use(
@@ -591,6 +694,23 @@ class ConfigTests(Base):
 
 
 class DoctorTests(Base):
+    def test_doctor_checks_the_second_project_and_fails_on_linux_without_it(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        with mock.patch.object(core, "is_linux", lambda: True):
+            code, out, _ = self.call("doctor", "--json")
+            rep = json.loads(out)
+            self.assertEqual(code, 0)
+            self.assertTrue(rep["ai_fleet_coordinator_project_id_resolvable"])
+            self.assertTrue(rep["ai_fleet_coordinator_fetch_ok"])
+            self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
+            code, out, _ = self.call("doctor", "--json")
+            rep = json.loads(out)
+            self.assertEqual(code, 1)
+            self.assertFalse(rep["ai_fleet_coordinator_project_id_resolvable"])
+            self.assertFalse(rep["ok"])
+        with mock.patch.object(core, "is_linux", lambda: False):
+            self.assertEqual(self.call("doctor", "--json")[0], 0)  # a Mac does not need it
+
     def test_doctor_reports_booleans_and_counts_only(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         code, out, err = self.call("doctor", "--json")
@@ -756,7 +876,7 @@ class SetTests(Base):
 
     def test_the_cli_login_session_is_refused_because_it_cannot_hand_over_a_token(self):
         self.use(World())  # no keychain items:  session mode
-        code, out, err = self.run_set("CACHE_K", "--path", "/linear")
+        code, _out, err = self.run_set("CACHE_K", "--path", "/linear")
         self.assertEqual(code, 4)
         self.assertIn("machine identity", err)
         self.assertEqual(self.api, [])

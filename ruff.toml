@@ -17,9 +17,10 @@ extend-exclude = [
 
 # The 3.9 contract for scripts/fleet_lanes (the Mac runs it under /usr/bin/python3).  autofix-ci installs the
 # latest ruff and passes no --select, so the default rule set applies:  E4, E7, E9 and F.  The UP (pyupgrade)
-# rules and RUF100 are NOT in ruff's default selection,  so they only reach these files because a rule that
-# fires on the default set pulls them in,  and the rewrites that broke the 3.9 import came from exactly that
-# path.  The lists below are therefore the whole protection,  not a supplement to a select.
+# rules and RUF100 are NOT in ruff's default selection,  so the default run never applies a UP rewrite here at
+# all.  The lists below are the protection for anyone who DOES select UP (a local `ruff check --select UP`,  or
+# a `select` added to this file later);  what actually holds the import contract in CI is the isolated-import
+# check in fleet_config's tests,  which imports a copy of the package with `python3 -I`.
 #
 # per-file-target-version stops every rule that needs a newer Python (UP007, UP045, UP017, UP040, UP041,
 # UP046, B905 and future ones).  It does NOT stop UP006 or UP035, which still fire at py39 and rewrite to

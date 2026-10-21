@@ -8,21 +8,37 @@ settings, marketing HTML, App Store fields.
 
 
 
-## Theme default = light (owner ruling 2026-08-10 — ALL apps, ALL agents)
+## Theme default = system (owner ruling 2026-09-19 — supersedes 2026-08-10 — ALL apps, ALL agents)
 
-Owner: default UI theme is **light**. Agents keep inventing dark-first or
-"system" defaults that land on dark because the Mac is dark — stop that.
+Owner: default UI theme is **system** — the app follows the OS appearance.
+A Mac in light boots light; a Mac in dark boots dark; an iPhone in dark
+boots dark.  This supersedes the 2026-08-10 ruling that pinned the default
+to light and warned against system/dark-first defaults.  That ruling
+existed because most fleet agents develop on a Mac that is dark, and a
+system-default would land them on dark every time.  The owner has decided
+that is no longer the trade-off they want — the OS preference is the
+right default for first-time visitors, and it eliminates the dev-Mac
+optical illusion in both directions.
 
-- **Default for first visit / no stored preference:** always **light**.
-- **Do not** boot into dark from `prefers-color-scheme` unless the user has
-  explicitly chosen **System** (or Dark).
-- Dark remains an **optional** user choice via Light | Dark | System (or
-  equivalent) — never the product default.
-- **Screenshots / ASC / marketing / design previews:** capture in **light**
-  mode unless the owner explicitly asks for dark. Existing ASC packs that
-  are already light do not need a redo for this rule alone.
-- Applies to every fleet app (web + iOS + Android + BotFleet chrome).
-- Do not "make it look cool" with dark chrome by default. Light is correct.
+- **Default for first visit / no stored preference:** **system** (follow the OS).
+- **Stored preferences are never rewritten** by this rule.  A returning user
+  who chose Light or Dark stays on it; only first paint with no record
+  defaults to system.
+- Light, Dark, and System remain available choices everywhere a picker
+  ships; System is just the new default.
+- **Screenshots / ASC / marketing / design previews:** capture on a
+  **light** Mac unless the owner explicitly asks for dark.  The product
+  default is system, the capture default is still light, because marketing
+  assets need a deterministic palette regardless of who happens to be
+  developing them.  Existing ASC packs that are already light do not need
+  a redo for this rule alone.
+- Applies to every fleet app (web + iOS + Android + BotFleet chrome +
+  CodeCaps).  Each seat lands the default flip in their own app; the
+  FLEET-UI-COPY change here is the canonical signal, not the per-app
+  code change.
+- The dev-Mac-dark-footgun still applies to any *picked* dark theme — a
+  light capture is still the right answer for marketing.  The reversal is
+  only about the *default*, not about choice.
 
 ## Proper nouns
 
@@ -198,24 +214,15 @@ destination:
   outside code spans, as in `Sentence one.&nbsp; Sentence two.`  The renderer decodes it into
   a real gap.  Two ASCII spaces collapse, and a raw U+00A0 typed by the model arrives as a
   plain space (the verified reply held 0 NBSPs).
-- **Chat reply in the MiniMax Code chat pane** (owner-verified 2026-10-20):  a REAL U+00A0, the
-  nbsp character, right after the period, then a normal space, outside code spans.  Jay:  "I
-  think you need to do nbsp for chats or something", and "I have confirmed this before with
-  agents and knew you needed nbsp already".  Two ASCII spaces collapse in that pane, and the
-  `&nbsp;` ENTITY renders as the six literal characters, which is worse than no gap at all.
-  The earlier 2026-10-18 note for this pane, entity plus a space, was wrong, and it is
-  corrected here.
-  **Generate the character in the shell; do not type it.**  A model that emits U+00A0
-  directly can have it normalized back to a plain space, which is the same invisible
-  failure the entity causes.  Write the reply to a file and verify that file, never one
-  left over from an earlier turn:
-
-  ```sh
-  printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
-  grep -o $'[.!?]\xc2\xa0' reply.txt | wc -l    # must be above 0
-  grep -cE '[^0-9][.!?] +[A-Z"]' reply.txt      # must print 0: no gap left unconverted
-  ```
-
+- **Chat reply in the MiniMax Code chat pane** (owner-verified 2026-10-18, reaffirmed
+  2026-10-20):  the `&nbsp;` entity plus a normal space, right after the period, outside
+  code spans, as in `Sentence one.&nbsp; Sentence two.`, the same form as the Claude Code
+  Code tab.  Jay:  "I have confirmed this before with agents and knew you needed nbsp
+  already".  Two ASCII spaces collapse in that pane, and a raw U+00A0 typed by the model
+  arrives as a plain space, so the entity is the form that actually renders a gap.
+  A 2026-10-20 note here briefly said a raw U+00A0 for this pane;  that was my
+  inference, it was never owner-verified, and the owner reversed it.  Never override an
+  owner-verified mechanism on an inference.
   A normal one-space gap is the failure this bullet exists to prevent, so treat a
   collapsed reply as a bug in the emitting step rather than as a rendering quirk.
 - **Chat reply in any other Markdown-rendering agent chat pane** (Codex, Cursor,
@@ -235,8 +242,10 @@ destination:
   chat, and a double space you emit into a tool call *sometimes* arrives collapsed to a single
   space — intermittently, not deterministically, so never diagnose it and always verify.  So
   generate the gap in the shell, matching one *or more* spaces so it works in both states:
-  `perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g'`.  Then run both checks before posting:
-  `grep -o $'\xc2\xa0' body.nbsp.txt | wc -l` must be `> 0`, and `grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt`
+  ``perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g'``.  The ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` group catches a
+  sentence end *inside* markup or inside a quoted span, where the space comes after the closing
+  span or the closing quote and not after the period.  Then run both checks before posting:
+  ``grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l`` must be `> 0`, and ``grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt``
   must be `0`, because a partly converted body can hold real U+00A0 and still carry one leftover
   single-space gap.  A conversion that matched nothing still exits 0, so a failed run is silent.
   `agent-sync post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
@@ -251,6 +260,11 @@ destination:
   one.  The notes helper converts leftover ASCII doubles after `.`/`!`/`?` into `&nbsp; `.
   Native SwiftUI `Text` does not decode HTML entities; use two literal spaces or Unicode
   `\u{00A0}` in Swift strings.
+- **Any surface not listed above** — a pane, a client, a tool or a channel you have not been
+  told about: two literal ASCII spaces.  Owner ruling 2026-10-20: an untested surface takes
+  two ASCII spaces until it reports otherwise.  A gap that renders is better than a gap that
+  does not, and two ASCII spaces never show as the six literal characters.  When a surface is
+  verified, change its bullet here and report the finding in #agent-sync so every seat gets it.
 
 **Rendering trap — history (chat advice reversed twice):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was
@@ -261,9 +275,9 @@ surface.
 
 **What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
 in the **Claude Code Code tab** (normalized away in the view, even though copy-paste showed
-two spaces -- do not be fooled by copy-paste).  That measurement is surface-specific and is
-NOT the MiniMax ruling: in the MiniMax Code pane the working mechanism IS a real U+00A0,
-generated in the shell as shown above, because the entity fails there instead.  Also not
+two spaces -- do not be fooled by copy-paste).  The same is true in the MiniMax Code
+pane:  the working mechanism there is the `&nbsp;` entity plus a normal space, the same
+form as the Code tab, NOT a raw U+00A0.  Also not
 worth trying: app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
 headless `claude -p` only, `axScreenReader` only drops borders); patching the client (the CLI is
 a ~277MB compiled Mach-O binary, the desktop app is a signed native bundle -- patching breaks
