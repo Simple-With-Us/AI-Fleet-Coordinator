@@ -449,7 +449,9 @@ class PinDecisionTests(unittest.TestCase):
         character, so the input the Shortcut sees is identical on both attempts and a reviewer
         can read the diff against a title that has no prefix and see no behaviour change.
         """
-        p, runs = self.run_block(HARNESS_TITLE="AFC test note", STUB_FAIL_FIRST="1", STUB_RECORD_INPUT="1")
+        p, runs = self.run_block(
+            HARNESS_TITLE="AFC test note", STUB_FAIL_FIRST="1", STUB_RECORD_INPUT="1"
+        )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(runs, 2, "the failed first attempt was not retried")
         self.assertEqual(
