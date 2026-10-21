@@ -7,6 +7,7 @@ verify that the supplied identity is denied outside the approved secret paths.
 import json
 import os
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -52,6 +53,19 @@ class NamedSecrets:
             if not isinstance(value, str) or not value or "${" in value:
                 raise ValueError()
             return value
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                # Diagnosable without disclosure:  first-eight/last-four only.
+                preview = (
+                    token[:8] + "..." + token[-4:] if len(token) > 12 else "<too short to preview>"
+                )
+                raise RoutingError(
+                    "Infisical rejected the credential (HTTP "
+                    + str(e.code)
+                    + "); token preview "
+                    + preview
+                ) from None
+            raise RoutingError("Named secret unavailable") from None
         except Exception:
             raise RoutingError("Named secret unavailable") from None
 

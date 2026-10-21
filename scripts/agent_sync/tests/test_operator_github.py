@@ -39,9 +39,13 @@ class BrokerTests(unittest.TestCase):
     def test_replay(self):
         first=self.request()
         again=self.request()
-        # Idempotency: a lost first response is served the recorded success
-        # instead of minting twice; the HMAC and skew window bound real replay.
-        self.assertEqual(again['token'],first['token']);self.assertEqual(len(self.router.calls),1)
+        # Idempotency: a lost first response re-mints against the recorded
+        # request; the ledger stores metadata only, never the token.
+        self.assertEqual(again['token'],first['token']);self.assertEqual(len(self.router.calls),2)
+        import sqlite3
+        con=sqlite3.connect(self.ledger.path)
+        stored=con.execute("select response from nonces").fetchone()[0];con.close()
+        self.assertNotIn('MOCK-TOKEN',stored);self.assertIn('swu-codex',stored)
     def test_stale(self):
         with self.assertRaises(Refused):self.request(stamp='939')
     def test_future(self):
@@ -95,7 +99,7 @@ class BrokerTests(unittest.TestCase):
         first=self.request()
         self.broker.nonce_ledger=NonceLedger(Path(self.temp.name)/'replay')
         again=self.request()
-        self.assertEqual(again['token'],first['token']);self.assertEqual(len(self.router.calls),1)
+        self.assertEqual(again['token'],first['token']);self.assertEqual(len(self.router.calls),2)
     def test_definite_provider_rejection_releases_nonce(self):
         from agent_sync.github_token_router import RoutingError
         calls=self.router.calls

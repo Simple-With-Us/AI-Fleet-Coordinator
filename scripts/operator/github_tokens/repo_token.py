@@ -20,8 +20,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
-FOLDER = "/github-apps"
 API = "https://api.github.com"
 
 
@@ -56,7 +54,8 @@ def target_parts(target):
     # Refuse credential-shaped input before the value is relayed to GitHub or
     # persisted in a cache key, and never echo it back.
     if not isinstance(target, str) or any(m in target for m in _CREDENTIAL_MARKERS):
-        raise RoutingError("Invalid repository target")
+        # Field-specific refusal code;  callers log the code, never the value.
+        raise RoutingError("Repository target refused: credential-shaped value in repo field")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", target):
         raise RoutingError("Explicit owner/repo required; no inferred default")
     owner, repo = target.split("/")
@@ -135,12 +134,33 @@ def github_call(method, path, bearer, body=None):
     )
     try:
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=30) as r:
-            return json.load(r)
+            raw = r.read(1048577)
+            if len(raw) > 1048576:
+                raise RoutingError("GitHub response too large")
+            data = json.loads(raw)
+            _bounded_json(data)
+            return data
     except urllib.error.HTTPError as e:
         # Never include response bodies or headers in exceptions/logs.
         raise RoutingError("GitHub request failed, HTTP " + str(e.code), status=e.code) from None
     except (OSError, ValueError):
         raise RoutingError("GitHub transport or response failed") from None
+
+
+def _bounded_json(value, _depth=0, _budget=None):
+    """Reject hostile provider JSON before any field is trusted."""
+    if _budget is None:
+        _budget = [512]
+    _budget[0] -= 1
+    if _depth > 32 or _budget[0] < 0:
+        raise RoutingError("GitHub response too complex")
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _bounded_json(k, _depth + 1, _budget)
+            _bounded_json(v, _depth + 1, _budget)
+    elif isinstance(value, list):
+        for item in value:
+            _bounded_json(item, _depth + 1, _budget)
 
 
 class TokenRouter:
@@ -229,10 +249,18 @@ class TokenRouter:
             bearer,
             {"repositories": [repo], "permissions": requested},
         )
-        repos = data.get("repositories", [])
+        if not isinstance(data, dict):
+            raise RoutingError("Minted-token response is not an object")
+        repos = data.get("repositories")
+        if not isinstance(repos, list) or any(not isinstance(x, dict) for x in repos):
+            raise RoutingError("Minted-token response has malformed repositories")
         if len(repos) != 1 or str(repos[0].get("full_name", "")).casefold() != target.casefold():
             raise RoutingError("Minted repository scope differs from request")
-        actual = data.get("permissions", {})
+        actual = data.get("permissions")
+        if not isinstance(actual, dict) or any(
+            not isinstance(k, str) or v not in ("read", "write") for k, v in actual.items()
+        ):
+            raise RoutingError("Minted-token response has malformed permissions")
         if actual != requested:
             raise RoutingError("Minted permission scope differs from request")
         token, expiry = data.get("token"), data.get("expires_at")
@@ -251,6 +279,12 @@ class TokenRouter:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp, cache_file)
+            # A crash must not lose the rename:  fsync the directory too.
+            dfd = os.open(self.cache, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
         finally:
             if os.path.exists(temp):
                 os.unlink(temp)

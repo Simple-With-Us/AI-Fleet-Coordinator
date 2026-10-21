@@ -41,7 +41,7 @@ class Tests(unittest.TestCase):
                 "suspended_at": "yes" if self.suspended else None,
             }
         self.mints.append((path, copy.deepcopy(body)))
-        owner = "Simple-With-Us" if "/111/" in path else "jaywedgeworth22"
+        owner = "Simple-With-Us" if "/111/" in path else "example-user"
         return {
             "token": "MOCK-NOT-A-REAL-TOKEN",
             "expires_at": "2027-01-15T09:00:00Z",
@@ -63,7 +63,7 @@ class Tests(unittest.TestCase):
 
     def test_bad_target(self):
         with self.assertRaises(RoutingError):
-            self.router.token_for("swu-echo", "Fleet-OPS", {"contents": "read"})
+            self.router.token_for("swu-echo", "example-repo", {"contents": "read"})
 
     def test_bad_slug(self):
         with self.assertRaises(RoutingError):
@@ -72,23 +72,23 @@ class Tests(unittest.TestCase):
     def test_wrong_app_fails_closed(self):
         self.wrong_app = True
         with self.assertRaises(RoutingError):
-            self.router.token_for("swu-echo", "jaywedgeworth22/Fleet-OPS", {"contents": "read"})
+            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
         self.assertFalse(self.mints)
 
     def test_suspended_fails_closed(self):
         self.suspended = True
         with self.assertRaises(RoutingError):
-            self.router.token_for("swu-echo", "jaywedgeworth22/Fleet-OPS", {"contents": "read"})
+            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
 
     def test_wrong_scope_not_cached(self):
         self.wrong_scope = True
         with self.assertRaises(RoutingError):
-            self.router.token_for("swu-echo", "jaywedgeworth22/Fleet-OPS", {"contents": "read"})
+            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
         self.assertEqual(list(self.router.cache.glob("*.json")), [])
 
     def test_org_personal_split(self):
         self.router.token_for("swu-echo", "Simple-With-Us/Test", {"contents": "read"})
-        self.router.token_for("swu-echo", "jaywedgeworth22/Fleet-OPS", {"contents": "read"})
+        self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
         self.assertEqual(
             [x[0] for x in self.mints],
             ["/app/installations/111/access_tokens", "/app/installations/222/access_tokens"],
@@ -96,29 +96,29 @@ class Tests(unittest.TestCase):
 
     def test_cache_reuse(self):
         for _ in range(2):
-            self.router.token_for("swu-echo", "jaywedgeworth22/Fleet-OPS", {"contents": "read"})
+            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
         self.assertEqual(len(self.mints), 1)
         f = next(self.router.cache.glob("*.json"))
         self.assertEqual(f.stat().st_mode & 0o777, 0o600)
 
     def test_permission_cache_split(self):
         for p in ["read", "write"]:
-            self.router.token_for("swu-echo", "jaywedgeworth22/Fleet-OPS", {"contents": p})
+            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": p})
         self.assertEqual(len(self.mints), 2)
 
     def test_app_cache_split(self):
-        self.router.token_for("swu-echo", "jaywedgeworth22/Fleet-OPS", {"contents": "read"})
+        self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
         self.app_id = 200
-        self.router.token_for("swu-wise", "jaywedgeworth22/Fleet-OPS", {"contents": "read"})
+        self.router.token_for("swu-wise", "example-user/example-repo", {"contents": "read"})
         self.assertEqual(len(list(self.router.cache.glob("*.json"))), 2)
 
     def test_expired_refresh(self):
-        self.router.token_for("swu-echo", "jaywedgeworth22/Fleet-OPS", {"contents": "read"})
+        self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
         f = next(self.router.cache.glob("*.json"))
         d = json.loads(f.read_text())
         d["expires_at"] = "2020-01-01T00:00:00Z"
         f.write_text(json.dumps(d))
-        self.router.token_for("swu-echo", "jaywedgeworth22/Fleet-OPS", {"contents": "read"})
+        self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
         self.assertEqual(len(self.mints), 2)
 
     def test_no_permissions(self):

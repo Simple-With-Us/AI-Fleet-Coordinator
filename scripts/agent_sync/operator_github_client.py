@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import stat
 import subprocess
 import sys
@@ -34,7 +35,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def private_key(path):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise ClientError(
+            "OPERATOR_GITHUB_CALLER_KEY unavailable: caller key file cannot be opened"
+        ) from None
     with os.fdopen(fd) as f:
         s = os.fstat(f.fileno())
         if (
@@ -172,9 +178,44 @@ def execute(url, seat, key_path, repo, permissions, command, *, run=subprocess.r
     env = child_environment(os.environ, result)
     del result
     try:
-        return run(cmd, env=env, check=False).returncode
+        return run_bounded(cmd, env=env)
     finally:
         env.pop("GH_TOKEN", None)
+
+
+def run_bounded(command, env, timeout=300):
+    """Run the reviewed gh command with a hard ceiling.
+
+    The child is terminated and reaped on timeout, interruption and SIGTERM,
+    so an interrupted runner never leaves a gh process holding GH_TOKEN.
+    """
+    proc = subprocess.Popen(command, env=env)
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def _forward(signum, frame):
+        if proc.poll() is None:
+            proc.terminate()
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _forward)
+    try:
+        try:
+            return proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise ClientError("gh command timed out") from None
+        except (KeyboardInterrupt, SystemExit):
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+            raise
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def main(argv=None):

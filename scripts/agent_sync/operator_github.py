@@ -78,6 +78,27 @@ class Broker:
         self.nonce_ledger = nonce_ledger
         self.rates = {}
 
+    def _mint(self, policy, repo, requested):
+        identity = self.bot_identity(policy.app_slug)
+        if (
+            identity["login"] != policy.app_slug + "[bot]"
+            or not isinstance(identity["id"], int)
+            or identity["id"] <= 0
+        ):
+            raise ValueError()
+        token = self.router.token_for(policy.app_slug, repo, requested)
+        return {
+            "token": token,
+            "repo": repo,
+            "permissions": requested,
+            "app_slug": policy.app_slug,
+            "git_author_name": identity["login"],
+            "git_author_email": str(identity["id"])
+            + "+"
+            + identity["login"]
+            + "@users.noreply.github.com",
+        }
+
     def issue(self, path: str, stamp: str, nonce: str, sig: str, body: bytes):
         # Exactly one audit row per call, emitted from the finally below so no
         # return path or exception - validation, authentication, refusal, or
@@ -129,15 +150,52 @@ class Broker:
                 raise Refused(503, "request capacity exceeded")
             if state != "fresh":
                 _, prior_outcome, prior_response = state
-                if prior_outcome == "ok" and prior_response:
-                    # Idempotent retry: the first response was lost, so serve
-                    # the recorded success instead of minting again.  Replay
-                    # stays bounded by the HMAC and the timestamp-skew window.
-                    outcome = "served-retry"
-                    return json.loads(prior_response)
-                # pending or outcome_unknown: the first attempt's result is
-                # not known, so refuse rather than risk a duplicate mint.
-                raise Refused(409, "prior outcome unknown; retry with a fresh nonce")
+                if prior_outcome != "ok" or not prior_response:
+                    # pending or outcome_unknown: the first attempt's result is
+                    # not known, so refuse rather than risk a duplicate mint.
+                    raise Refused(409, "prior outcome unknown; retry with a fresh nonce")
+                # Idempotent retry: the first response was lost.  The ledger
+                # stores only non-secret metadata, never the token, so the
+                # recorded request is re-validated against the CURRENT policy
+                # and a fresh token is minted.  Replay stays bounded by the
+                # HMAC and the timestamp-skew window.
+                try:
+                    data = json.loads(prior_response)
+                    if not isinstance(data, dict):
+                        raise ValueError()
+                    target_parts(data["repo"])
+                    requested = permission_set(data["permissions"])
+                except (ValueError, TypeError, KeyError, RoutingError, RecursionError):
+                    raise Refused(
+                        409, "recorded request is not replayable; retry with a fresh nonce"
+                    ) from None
+                policy = self.policy_for(seat)
+                allowed = (
+                    policy.repositories.get(data["repo"].casefold())
+                    if isinstance(policy, CallerPolicy)
+                    else None
+                )
+                ranks = {"read": 1, "write": 2}
+                if not isinstance(allowed, Mapping) or any(
+                    ranks.get(allowed.get(k), 0) < ranks[v] for k, v in requested.items()
+                ):
+                    raise Refused(403, "caller not authorized")
+                try:
+                    response = self._mint(policy, data["repo"], requested)
+                except Exception as exc:
+                    if not _classifiable(exc):
+                        raise
+                    status = getattr(exc, "status", None)
+                    if status == 408 or (isinstance(status, int) and status >= 500):
+                        raise Refused(503, "token issuance uncertain; retry later") from None
+                    raise Refused(502, "token issuance failed") from None
+                outcome = "served-retry"
+                extra = {
+                    "repo": data["repo"],
+                    "permissions": requested,
+                    "app": policy.app_slug,
+                }
+                return response
             # The nonce is now consumed (pending).  Definite refusals release
             # it; uncertain failures settle it as outcome_unknown.
             try:
@@ -163,14 +221,7 @@ class Broker:
                 self.nonce_ledger.release(seat, nonce)
                 raise Refused(403, "permission not authorized")
             try:
-                identity = self.bot_identity(policy.app_slug)
-                if (
-                    identity["login"] != policy.app_slug + "[bot]"
-                    or not isinstance(identity["id"], int)
-                    or identity["id"] <= 0
-                ):
-                    raise ValueError()
-                token = self.router.token_for(policy.app_slug, data["repo"], requested)
+                response = self._mint(policy, data["repo"], requested)
             except Exception as exc:
                 if not _classifiable(exc):
                     self.nonce_ledger.settle(seat, nonce, "outcome_unknown")
@@ -187,18 +238,9 @@ class Broker:
                         503, "token issuance uncertain; retry with a fresh nonce"
                     ) from None
                 raise Refused(502, "token issuance failed") from None
-            response = {
-                "token": token,
-                "repo": data["repo"],
-                "permissions": requested,
-                "app_slug": policy.app_slug,
-                "git_author_name": identity["login"],
-                "git_author_email": str(identity["id"])
-                + "+"
-                + identity["login"]
-                + "@users.noreply.github.com",
-            }
-            self.nonce_ledger.settle(seat, nonce, "ok", json.dumps(response))
+            # Only non-secret metadata is persisted:  never the token.
+            stored = {k: v for k, v in response.items() if k != "token"}
+            self.nonce_ledger.settle(seat, nonce, "ok", json.dumps(stored))
             outcome = "issued"
             extra = {
                 "repo": data["repo"],
@@ -231,7 +273,7 @@ def _bounded(value, _depth=0, _budget=None):
         _budget = [512]
     _budget[0] -= 1
     if _depth > 32 or _budget[0] < 0:
-        raise Refused(400, "invalid request")
+        raise ValueError("invalid request")
     if isinstance(value, dict):
         for k, v in value.items():
             _bounded(k, _depth + 1, _budget)
