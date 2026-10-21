@@ -15,6 +15,7 @@ Usage:
   python3 scripts/backup-fleet-to-gdrive.py
   python3 scripts/backup-fleet-to-gdrive.py --list
   python3 scripts/backup-fleet-to-gdrive.py --only Personal-Site ContactLogo
+  python3 scripts/backup-fleet-to-gdrive.py --dry-run   # report the plan, change nothing
 """
 
 from __future__ import annotations
@@ -289,7 +290,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Report what retention would remove and change nothing",
+        help="Report what would be backed up and removed, and change nothing",
     )
     parser.add_argument(
         "--prune-only",
@@ -332,7 +333,10 @@ def main() -> int:
         return 0
 
     dest_dir = gdrive / f"Website & App Source Backups - {DATE_STR}"
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    # A dry run writes nothing:  no dated folder, no zips, no notes, no
+    # findings.db copy, and no removal.  It only reports the plan.
+    if not args.dry_run:
+        dest_dir.mkdir(parents=True, exist_ok=True)
     print(f"Target Google Drive folder: {dest_dir}")
 
     backed_up: list[str] = []
@@ -343,8 +347,12 @@ def main() -> int:
             print(f"skip {repo} (not found at {repo_path})")
             skipped.append(repo)
             continue
-        print(f"Backing up {repo}...")
         zip_out = dest_dir / f"{repo}-backup-{DATE_STR}.zip"
+        if args.dry_run:
+            print(f"would back up {repo} -> {zip_out.name}")
+            backed_up.append(repo)
+            continue
+        print(f"Backing up {repo}...")
         count = zip_repo(repo_path, zip_out)
         size_mb = zip_out.stat().st_size / (1024 * 1024)
         print(f"  saved {zip_out.name} ({count} files, {size_mb:.2f} MB)")
@@ -352,24 +360,38 @@ def main() -> int:
 
     findings_db = Path.home() / "apps" / "mac-collab" / "findings.db"
     if findings_db.is_file():
-        try:
-            import sqlite3
+        if args.dry_run:
+            print(f"would save findings-{DATE_STR}.db (findings.db SQLite snapshot)")
+        else:
+            try:
+                import sqlite3
 
-            db_dest = dest_dir / f"findings-{DATE_STR}.db"
-            src_conn = sqlite3.connect(findings_db)
-            dst_conn = sqlite3.connect(db_dest)
-            src_conn.backup(dst_conn)
-            dst_conn.close()
-            src_conn.close()
-            print(f"  saved {db_dest.name} (findings.db SQLite snapshot)")
-        except Exception as e:
-            print(f"WARN: findings.db gdrive backup failed: {e}", file=sys.stderr)
+                db_dest = dest_dir / f"findings-{DATE_STR}.db"
+                src_conn = sqlite3.connect(findings_db)
+                dst_conn = sqlite3.connect(db_dest)
+                src_conn.backup(dst_conn)
+                dst_conn.close()
+                src_conn.close()
+                print(f"  saved {db_dest.name} (findings.db SQLite snapshot)")
+            except Exception as e:
+                print(f"WARN: findings.db gdrive backup failed: {e}", file=sys.stderr)
 
-    write_notes(dest_dir, backed_up, skipped)
+    if args.dry_run:
+        print(f"would write {dest_dir.name}/BACKUP-NOTES.md")
+    else:
+        write_notes(dest_dir, backed_up, skipped)
     if not backed_up:
-        print("No repositories were backed up.", file=sys.stderr)
+        print(
+            "No repositories would be backed up."
+            if args.dry_run
+            else "No repositories were backed up.",
+            file=sys.stderr,
+        )
         return 1
-    print(f"Backed up {len(backed_up)} repositories to {dest_dir}")
+    if args.dry_run:
+        print(f"Would back up {len(backed_up)} repositories to {dest_dir}")
+    else:
+        print(f"Backed up {len(backed_up)} repositories to {dest_dir}")
 
     removed = prune_old_backups(gdrive, args.keep, dry_run=args.dry_run)
     verb = "would remove" if args.dry_run else "removed"

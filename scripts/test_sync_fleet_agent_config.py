@@ -8,10 +8,14 @@ Also the two contracts the daily backup job depends on:
     depends on, and they were already safely in Drive before the mirror ran.
   - Retention drops the dated backup folders beyond the newest N, and a dry
     run changes nothing.
+
+The dry run covers the whole job, not just the retention:  a dry run writes
+no dated folder, no zips and no notes either.
 """
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import tempfile
 import unittest
@@ -177,6 +181,55 @@ class RetentionTests(unittest.TestCase):
     def test_keeping_more_than_there_is_removes_nothing(self) -> None:
         self.make_backup("2026-10-01")
         self.assertEqual(self.mod.prune_old_backups(self.gdrive, keep=30), [])
+
+
+class DryRunTests(unittest.TestCase):
+    """--dry-run changes nothing:  no folder, no zips, no notes, no removal."""
+
+    def setUp(self) -> None:
+        self.mod = load_mod(BACKUP_SCRIPT, "backup_fleet_to_gdrive")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.gdrive = self.root / "gdrive"
+        self.gdrive.mkdir()
+        self.code = self.root / "Code"
+        self.repo = self.code / "Some-App"
+        self.repo.mkdir(parents=True)
+        (self.repo / "README.md").write_text("hello")
+        self.mod.CODE_ROOT = self.code
+        self.mod.find_gdrive = lambda: self.gdrive
+        self.mod.planned_repos = lambda: ["Some-App"]
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def run_main(self, **overrides) -> int:
+        args = dict(
+            list=False,
+            only=None,
+            keep=14,
+            dry_run=False,
+            prune_only=False,
+        )
+        args.update(overrides)
+        self.mod.parse_args = lambda: argparse.Namespace(**args)
+        return self.mod.main()
+
+    def test_a_dry_run_writes_nothing(self) -> None:
+        self.assertEqual(self.run_main(dry_run=True), 0)
+        self.assertEqual(list(self.gdrive.iterdir()), [])
+
+    def test_a_dry_run_removes_nothing(self) -> None:
+        old = self.gdrive / "Website & App Source Backups - 2026-01-01"
+        old.mkdir()
+        self.assertEqual(self.run_main(dry_run=True, keep=0), 0)
+        self.assertTrue(old.is_dir())
+
+    def test_a_real_run_writes_the_zip_and_the_notes(self) -> None:
+        self.assertEqual(self.run_main(), 0)
+        dest = self.gdrive / f"Website & App Source Backups - {self.mod.DATE_STR}"
+        self.assertTrue((dest / f"Some-App-backup-{self.mod.DATE_STR}.zip").is_file())
+        self.assertTrue((dest / "BACKUP-NOTES.md").is_file())
 
 
 if __name__ == "__main__":
