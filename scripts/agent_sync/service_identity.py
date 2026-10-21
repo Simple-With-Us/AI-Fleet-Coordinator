@@ -92,7 +92,9 @@ def operator_credentials(env, home=None, fetch=None):
             selected, email_env=names[0], key_env=names[1], site_env="ZULIP_SITE", label=OPERATOR
         )
         # The values came from fleet-secrets, not the ambient environment:  report that provenance.
-        creds = replace(creds, source=f"infisical Fleet-OPS prod {OPERATOR_INFISICAL_PATH} {names[1]}")
+        creds = replace(
+            creds, source=f"infisical Fleet-OPS prod {OPERATOR_INFISICAL_PATH} {names[1]}"
+        )
         if creds.email.casefold() != expected_email:
             raise Z.CredentialError(f"{where}: not the pinned service bot")
         return creds

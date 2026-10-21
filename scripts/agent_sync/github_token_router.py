@@ -5,12 +5,12 @@ Fleet-OPS prod /github-apps. No shared tuple and no stored installation IDs.
 Only a caller-selected repository and explicit permissions may be used.
 This module never prints tokens or keys and has no credential fallback.
 """
+
 import base64
 import datetime as dt
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import subprocess
@@ -18,92 +18,117 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
-PROJECT = '8dae6d03-8f12-48b2-adf3-e5c1b881c8c5'
-FOLDER = '/github-apps'
-API = 'https://api.github.com'
+PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
+FOLDER = "/github-apps"
+API = "https://api.github.com"
+
 
 class RoutingError(Exception):
     pass
 
+
 def secret_names(slug):
-    if not re.fullmatch(r'swu-[a-z0-9]+(?:-[a-z0-9]+)*', slug):
-        raise RoutingError('Explicit swu App slug required')
-    prefix = 'GH_APP_' + slug.upper().replace('-', '_')
-    return prefix + '_ID', prefix + '_PRIVATE_KEY'
+    if not re.fullmatch(r"swu-[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+        raise RoutingError("Explicit swu App slug required")
+    prefix = "GH_APP_" + slug.upper().replace("-", "_")
+    return prefix + "_ID", prefix + "_PRIVATE_KEY"
+
 
 def target_parts(target):
-    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+', target):
-        raise RoutingError('Explicit owner/repo required; no inferred default')
-    owner, repo = target.split('/')
-    if repo in ('.', '..'):
-        raise RoutingError('Invalid repository')
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", target):
+        raise RoutingError("Explicit owner/repo required; no inferred default")
+    owner, repo = target.split("/")
+    if repo in (".", ".."):
+        raise RoutingError("Invalid repository")
     return owner, repo
+
 
 def permission_set(permissions):
     p = dict(permissions)
-    if not p or any(not re.fullmatch(r'[a-z_]+', k) or v not in ('read', 'write') for k, v in p.items()):
-        raise RoutingError('Explicit read/write permissions required')
-    if p.get('metadata', 'read') != 'read':
-        raise RoutingError('Metadata permission must be read')
-    p['metadata'] = 'read'
+    if not p or any(
+        not re.fullmatch(r"[a-z_]+", k) or v not in ("read", "write") for k, v in p.items()
+    ):
+        raise RoutingError("Explicit read/write permissions required")
+    if p.get("metadata", "read") != "read":
+        raise RoutingError("Metadata permission must be read")
+    p["metadata"] = "read"
     return p
 
+
 def compact(data):
-    return json.dumps(data, sort_keys=True, separators=(',', ':')).encode()
+    return json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+
 
 def jwt(app_id, pem, clock=time.time):
-    b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b'=')
+    b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=")
     now = int(clock())
-    unsigned = b'.'.join([b64(compact({'alg': 'RS256', 'typ': 'JWT'})),
-                          b64(compact({'iat': now-60, 'exp': now+540, 'iss': str(app_id)}))])
+    unsigned = b".".join(
+        [
+            b64(compact({"alg": "RS256", "typ": "JWT"})),
+            b64(compact({"iat": now - 60, "exp": now + 540, "iss": str(app_id)})),
+        ]
+    )
     # mkstemp is mode 0600. PEM exists only for signing and is then unlinked.
-    fd, name = tempfile.mkstemp(prefix='gh-app-sign-', suffix='.pem')
+    fd, name = tempfile.mkstemp(prefix="gh-app-sign-", suffix=".pem")
     try:
-        with os.fdopen(fd, 'w') as f:
+        with os.fdopen(fd, "w") as f:
             f.write(pem)
-        result = subprocess.run(['openssl', 'dgst', '-sha256', '-sign', name],
-                                input=unsigned, capture_output=True)
+        result = subprocess.run(
+            ["openssl", "dgst", "-sha256", "-sign", name], input=unsigned, capture_output=True
+        )
         if result.returncode:
-            raise RoutingError('App signing failed')
-        return (unsigned+b'.'+b64(result.stdout)).decode()
+            raise RoutingError("App signing failed")
+        return (unsigned + b"." + b64(result.stdout)).decode()
     finally:
         os.unlink(name)
+
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
+
 def github_call(method, path, bearer, body=None):
-    if not path.startswith('/') or path.startswith('//'):
-        raise RoutingError('Invalid API path')
-    req = urllib.request.Request(API+path,
-        data=None if body is None else compact(body), method=method,
-        headers={'Authorization':'Bearer '+bearer,
-                 'Accept':'application/vnd.github+json',
-                 'X-GitHub-Api-Version':'2026-03-10',
-                 'Content-Type':'application/json'})
+    if not path.startswith("/") or path.startswith("//"):
+        raise RoutingError("Invalid API path")
+    req = urllib.request.Request(
+        API + path,
+        data=None if body is None else compact(body),
+        method=method,
+        headers={
+            "Authorization": "Bearer " + bearer,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2026-03-10",
+            "Content-Type": "application/json",
+        },
+    )
     try:
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=30) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         # Never include response bodies or headers in exceptions/logs.
-        raise RoutingError('GitHub request failed, HTTP '+str(e.code)) from None
+        raise RoutingError("GitHub request failed, HTTP " + str(e.code)) from None
     except (OSError, ValueError):
-        raise RoutingError('GitHub transport or response failed') from None
+        raise RoutingError("GitHub transport or response failed") from None
+
 
 class TokenRouter:
-    def __init__(self, credential_loader, cache_dir, api=github_call,
-                 signer=jwt, clock=time.time):
+    def __init__(self, credential_loader, cache_dir, api=github_call, signer=jwt, clock=time.time):
         self.loader, self.cache = credential_loader, Path(cache_dir)
         self.api, self.signer, self.clock = api, signer, clock
 
     def _cache_file(self, scope):
         self.cache.mkdir(mode=0o700, parents=True, exist_ok=True)
         s = self.cache.lstat()
-        if not stat.S_ISDIR(s.st_mode) or s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode) & 0o077:
-            raise RoutingError('Cache directory must be owned, private, non-symlink')
-        return self.cache / (hashlib.sha256(compact(scope)).hexdigest()+'.json')
+        if (
+            not stat.S_ISDIR(s.st_mode)
+            or s.st_uid != os.getuid()
+            or stat.S_IMODE(s.st_mode) & 0o077
+        ):
+            raise RoutingError("Cache directory must be owned, private, non-symlink")
+        return self.cache / (hashlib.sha256(compact(scope)).hexdigest() + ".json")
 
     def _read(self, path, scope):
         try:
@@ -111,16 +136,22 @@ class TokenRouter:
         except FileNotFoundError:
             return None
         except OSError:
-            raise RoutingError('Unsafe cache file') from None
+            raise RoutingError("Unsafe cache file") from None
         with os.fdopen(fd) as f:
             s = os.fstat(f.fileno())
-            if not stat.S_ISREG(s.st_mode) or s.st_uid != os.getuid() or stat.S_IMODE(s.st_mode) & 0o077:
-                raise RoutingError('Unsafe cache file permissions')
+            if (
+                not stat.S_ISREG(s.st_mode)
+                or s.st_uid != os.getuid()
+                or stat.S_IMODE(s.st_mode) & 0o077
+            ):
+                raise RoutingError("Unsafe cache file permissions")
             try:
                 d = json.load(f)
-                expires = dt.datetime.fromisoformat(d['expires_at'].replace('Z', '+00:00')).timestamp()
-                if d['scope'] == scope and expires-self.clock() > 300 and d.get('token'):
-                    return d['token']
+                expires = dt.datetime.fromisoformat(
+                    d["expires_at"].replace("Z", "+00:00")
+                ).timestamp()
+                if d["scope"] == scope and expires - self.clock() > 300 and d.get("token"):
+                    return d["token"]
             except (KeyError, ValueError, TypeError):
                 return None
         return None
@@ -135,43 +166,57 @@ class TokenRouter:
             if app_id <= 0:
                 raise ValueError()
         except (TypeError, ValueError):
-            raise RoutingError('Invalid App ID') from None
+            raise RoutingError("Invalid App ID") from None
         bearer = self.signer(app_id, pem)
         del pem
-        app = self.api('GET', '/app', bearer)
-        if app.get('id') != app_id or app.get('slug') != slug:
-            raise RoutingError('Key belongs to a different App')
-        install = self.api('GET', '/repos/'+owner+'/'+repo+'/installation', bearer)
-        if install.get('app_id') != app_id or install.get('suspended_at') or str(install.get('account',{}).get('login','')).casefold() != owner.casefold():
-            raise RoutingError('Installation identity mismatch or suspension')
-        iid = install.get('id')
+        app = self.api("GET", "/app", bearer)
+        if app.get("id") != app_id or app.get("slug") != slug:
+            raise RoutingError("Key belongs to a different App")
+        install = self.api("GET", "/repos/" + owner + "/" + repo + "/installation", bearer)
+        if (
+            install.get("app_id") != app_id
+            or install.get("suspended_at")
+            or str(install.get("account", {}).get("login", "")).casefold() != owner.casefold()
+        ):
+            raise RoutingError("Installation identity mismatch or suspension")
+        iid = install.get("id")
         if not isinstance(iid, int) or iid <= 0:
-            raise RoutingError('Missing installation ID')
-        scope = {'app_id':app_id, 'installation_id':iid,
-                 'repository':target.casefold(), 'permissions':requested}
+            raise RoutingError("Missing installation ID")
+        scope = {
+            "app_id": app_id,
+            "installation_id": iid,
+            "repository": target.casefold(),
+            "permissions": requested,
+        }
         cache_file = self._cache_file(scope)
         token = self._read(cache_file, scope)
         if token:
             return token
-        data = self.api('POST', '/app/installations/'+str(iid)+'/access_tokens', bearer,
-                        {'repositories':[repo], 'permissions':requested})
-        repos = data.get('repositories', [])
-        if len(repos) != 1 or str(repos[0].get('full_name','')).casefold() != target.casefold():
-            raise RoutingError('Minted repository scope differs from request')
-        actual = data.get('permissions', {})
+        data = self.api(
+            "POST",
+            "/app/installations/" + str(iid) + "/access_tokens",
+            bearer,
+            {"repositories": [repo], "permissions": requested},
+        )
+        repos = data.get("repositories", [])
+        if len(repos) != 1 or str(repos[0].get("full_name", "")).casefold() != target.casefold():
+            raise RoutingError("Minted repository scope differs from request")
+        actual = data.get("permissions", {})
         if actual != requested:
-            raise RoutingError('Minted permission scope differs from request')
-        token, expiry = data.get('token'), data.get('expires_at')
+            raise RoutingError("Minted permission scope differs from request")
+        token, expiry = data.get("token"), data.get("expires_at")
         try:
-            seconds = dt.datetime.fromisoformat(expiry.replace('Z','+00:00')).timestamp()-self.clock()
+            seconds = (
+                dt.datetime.fromisoformat(expiry.replace("Z", "+00:00")).timestamp() - self.clock()
+            )
         except (AttributeError, TypeError, ValueError):
-            raise RoutingError('Missing or invalid expiry') from None
+            raise RoutingError("Missing or invalid expiry") from None
         if not isinstance(token, str) or not token or not 300 < seconds <= 3900:
-            raise RoutingError('Invalid token or expiry')
+            raise RoutingError("Invalid token or expiry")
         fd, temp = tempfile.mkstemp(dir=self.cache)
         try:
-            with os.fdopen(fd, 'w') as f:
-                json.dump({'scope':scope, 'token':token, 'expires_at':expiry}, f)
+            with os.fdopen(fd, "w") as f:
+                json.dump({"scope": scope, "token": token, "expires_at": expiry}, f)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(temp, cache_file)
@@ -179,6 +224,7 @@ class TokenRouter:
             if os.path.exists(temp):
                 os.unlink(temp)
         return token
+
 
 # Deliberately no CLI that emits a token, no gh wrapper installation, and no
 # live activation. Integrator must supply an Infisical-only loader and consume
