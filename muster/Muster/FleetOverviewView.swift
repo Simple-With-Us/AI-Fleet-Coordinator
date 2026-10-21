@@ -17,6 +17,12 @@ struct FleetOverviewView: View {
                     title: "The manifest could not be read,  so the roster is not the manifest's."
                 )
             }
+            if let problem = store.registryProblem {
+                FailureBanner(
+                    reason: problem,
+                    title: "The registry could not be read,  so the grid has no rows of its own."
+                )
+            }
             TabView {
                 MiniMaxDetailView()
                     .tabItem { Label("MiniMax", systemImage: "bolt.shield") }

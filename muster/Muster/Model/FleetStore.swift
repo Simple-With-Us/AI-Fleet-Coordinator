@@ -29,6 +29,8 @@ final class FleetStore: ObservableObject {
     /// It is kept for the whole session,  because the manifest is read once and a
     /// refusal does not go away when the next run succeeds.
     @Published private(set) var manifestProblem: String?
+    /// Why the registry could not be read,  when it is there and cannot be read.
+    @Published private(set) var registryProblem: String?
     /// The check time the run shares,  which is one timestamp for nearly every rule.
     ///
     /// The engine checks every rule in one pass,  so every cell would otherwise carry
@@ -66,18 +68,30 @@ final class FleetStore: ObservableObject {
         }
         manifest = loadedManifest
         self.manifestProblem = manifestProblem
-        registry = located.flatMap { try? FleetDataReader.loadRegistry(at: $0.registryURL) }
+        // The registry is read the same way the manifest is:  a file that is there
+        // and cannot be read is a problem to name,  not a file that is not there.
+        var loadedRegistry: FleetRegistry?
+        var registryProblem: String?
+        if let located, FileManager.default.fileExists(atPath: located.registryURL.path) {
+            do {
+                loadedRegistry = try FleetDataReader.loadRegistry(at: located.registryURL)
+            } catch {
+                registryProblem = Self.describe(error, what: "the registry")
+            }
+        }
+        registry = loadedRegistry
+        self.registryProblem = registryProblem
         roster = Self.roster(from: registry, manifest: manifest)
         rebuild()
         refresh()
     }
 
-    /// Why the manifest could not be read,  in the app's own words.
-    private static func describe(_ error: Error) -> String {
+    /// Why a file could not be read,  in the app's own words.
+    private static func describe(_ error: Error, what: String = "the manifest") -> String {
         if let version = error as? SeatManifest.ManifestVersionError {
-            return version.errorDescription ?? "the manifest is a version this app does not read"
+            return version.errorDescription ?? "\(what) is a version this app does not read"
         }
-        return "the manifest could not be read:  \(error.localizedDescription)"
+        return "\(what) could not be read:  \(error.localizedDescription)"
     }
 
     /// The rows of the grid:  the live roster, in registry order.
