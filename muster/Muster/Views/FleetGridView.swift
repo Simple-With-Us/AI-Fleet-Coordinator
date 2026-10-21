@@ -28,6 +28,13 @@ extension CellState {
 /// One cell's badge:  the state, the proof level and the age of the observation.
 struct CellBadge: View {
     let cell: GridCell
+    /// The age the cell carries,  when it is the exception and not the run's own time.
+    ///
+    /// Every rule in a run is checked at the same moment,  so ninety cells showing the
+    /// same age is noise and hides the one that matters.  A cell shows its age only
+    /// when it was checked apart from the rest,  which is a rule served from the cache
+    /// and not looked at again.
+    var age: String?
     var width: CGFloat = 108
 
     var body: some View {
@@ -41,18 +48,28 @@ struct CellBadge: View {
             Text(cell.proofLevel ?? "—")
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
-            Text(cell.ageText)
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.secondary)
+            if let age {
+                Text(age)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(Color.orange)
+                    .help("This rule was checked apart from the rest of the run.")
+            }
         }
         .padding(.horizontal, 7)
         .frame(width: width, height: 30)
         .background(cell.state.background, in: RoundedRectangle(cornerRadius: 7))
         .overlay {
             RoundedRectangle(cornerRadius: 7)
-                .strokeBorder(cell.state.border, lineWidth: 1)
+                .strokeBorder(cell.borderColor(age != nil), lineWidth: 1)
         }
         .contentShape(Rectangle())
+    }
+}
+
+extension GridCell {
+    /// The border the badge uses,  which is stronger on an exception.
+    func borderColor(_ isException: Bool) -> Color {
+        isException ? Color.orange.opacity(0.7) : state.border
     }
 }
 
@@ -111,19 +128,44 @@ struct FleetGridView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Text("Seat")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: seatWidth, alignment: .leading)
-            ForEach(ConfigKind.columnOrder, id: \.self) { kind in
-                Text(kind.title)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Seat")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: columnWidth, alignment: .leading)
+                    .frame(width: seatWidth, alignment: .leading)
+                ForEach(ConfigKind.columnOrder, id: \.self) { kind in
+                    Text(kind.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: columnWidth, alignment: .leading)
+                }
+                Spacer()
+            }
+            if let common = store.commonCheckedAt {
+                // The run checks every rule at one moment,  so the time goes here once
+                // instead of in ninety cells.
+                HStack(spacing: 8) {
+                    Spacer().frame(width: seatWidth)
+                    Text("Checked \(FleetTime.clock(common)),  \(FleetTime.ageText(since: common)) ago")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    .help("When the engine checked the rules this run.  A cell shows its own age only when it was checked apart from the rest.")
+                    Spacer()
+                }
             }
         }
         .padding(.bottom, 8)
+    }
+
+    /// The age a cell carries,  when it was checked apart from the rest of the run.
+    private func exceptionAge(for cell: GridCell) -> String? {
+        guard
+            let common = store.commonCheckedAt,
+            let checkedAt = cell.checkedAt,
+            abs(checkedAt.timeIntervalSince(common)) > 60
+        else { return nil }
+        return cell.ageText
     }
 
     /// The legend,  so a badge is never a puzzle.
@@ -179,7 +221,7 @@ struct FleetGridView: View {
                     Button {
                         selectedCell = cell
                     } label: {
-                        CellBadge(cell: cell, width: columnWidth)
+                        CellBadge(cell: cell, age: exceptionAge(for: cell), width: columnWidth)
                     }
                     .buttonStyle(.plain)
                     .help(cell.tooltip)
