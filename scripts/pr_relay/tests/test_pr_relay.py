@@ -290,3 +290,112 @@ class TestHttpSurface(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestActionTiers(unittest.TestCase):
+    def test_tier2_actions_are_refused_until_enabled_relay_wide(self):
+        seats = json.dumps(
+            {
+                "swu-echo": {
+                    "token": SEAT_TOKEN,
+                    "actions": ["open_pr", "push"],
+                    "repos": ["Simple-With-Us/*"],
+                }
+            }
+        )
+        policy = SeatPolicy(seats)
+        denial = policy.authorize("swu-echo", "push", "Simple-With-Us/x")
+        self.assertIn("not enabled relay-wide", denial)
+        policy_on = SeatPolicy(seats, enabled_actions=["open_pr", "push"])
+        self.assertIsNone(policy_on.authorize("swu-echo", "push", "Simple-With-Us/x"))
+
+    def test_unregistered_action_is_rejected_at_config(self):
+        with self.assertRaises(PolicyError):
+            SeatPolicy(
+                json.dumps(
+                    {
+                        "seat": {
+                            "token": "x" * 16,
+                            "actions": ["delete_repo"],
+                            "repos": ["a/b"],
+                        }
+                    }
+                )
+            )
+
+
+class TestMcpWrapper(unittest.TestCase):
+    def _server(self, payload=None, opener=None):
+        from pr_relay.mcp_server import RelayMcp
+
+        if opener is None:
+            opener = FakeOpener(payload or {"number": 9})
+        return RelayMcp("http://relay.test", SEAT_TOKEN, opener=opener)
+
+    def test_initialize_and_tools_list(self):
+        server = self._server()
+        reply = server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+        self.assertEqual(reply["result"]["serverInfo"]["name"], "swu-pr-relay")
+        reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        names = [t["name"] for t in reply["result"]["tools"]]
+        self.assertEqual(names, ["open_pr", "edit_pr", "reply_thread", "comment_pr"])
+
+    def test_tools_call_forwards_to_relay_with_seat_token(self):
+        opener = FakeOpener({"number": 9, "url": "u"})
+        server = self._server(opener=opener)
+        reply = server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "open_pr",
+                    "arguments": {
+                        "repo": "a/b",
+                        "base": "main",
+                        "head": "f",
+                        "title": "t",
+                        "body": "b",
+                    },
+                },
+            }
+        )
+        req = opener.requests[0]
+        self.assertEqual(req.full_url, "http://relay.test/v1/open_pr")
+        self.assertEqual(req.get_header("Authorization"), "Bearer " + SEAT_TOKEN)
+        self.assertIn('"number": 9', reply["result"]["content"][0]["text"])
+
+    def test_unknown_tool_and_notification(self):
+        server = self._server()
+        reply = server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "push", "arguments": {}},
+            }
+        )
+        self.assertEqual(reply["error"]["code"], -32602)
+        self.assertIsNone(server.handle({"method": "notifications/initialized"}))
+
+    def test_relay_refusal_is_tool_error_not_protocol_error(self):
+        class Refusing:
+            def __call__(self, _req, timeout):
+                raise urllib.error.HTTPError(
+                    "u", 403, "Forbidden", {}, io.BytesIO(b'{"error":"no"}')
+                )
+
+        server = self._server(opener=Refusing())
+        reply = server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "comment_pr",
+                    "arguments": {"repo": "a/b", "number": 1, "body": "x"},
+                },
+            }
+        )
+        self.assertTrue(reply["result"]["isError"])
+        self.assertIn("403", reply["result"]["content"][0]["text"])

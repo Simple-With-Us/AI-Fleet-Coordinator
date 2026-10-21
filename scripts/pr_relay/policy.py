@@ -32,8 +32,17 @@ class SeatPolicy:
     """
 
     VALID_ACTIONS = ("open_pr", "edit_pr", "reply_thread", "comment_pr")
+    # Registered but off until the owner picks the backing credential per tier:
+    # tier 2 needs a relay-held App key (push/merge), tier 3 admin operations.
+    TIER2_ACTIONS = ("push", "merge_pr", "workflow_dispatch")
+    TIER3_ACTIONS = ("repo_admin",)
+    ALL_ACTIONS = VALID_ACTIONS + TIER2_ACTIONS + TIER3_ACTIONS
 
-    def __init__(self, seats_json: str, rate_per_hour: int = 120):
+    def __init__(self, seats_json: str, rate_per_hour: int = 120, enabled_actions=None):
+        # Relay-wide enable switch, from PR_RELAY_ENABLED_ACTIONS (comma list).
+        # Default: the PR actions only.  Tier 2/3 actions stay refused until
+        # the owner chooses their backing credential and enables them here.
+        self._enabled = set(enabled_actions) if enabled_actions else set(self.VALID_ACTIONS)
         if not seats_json:
             raise PolicyError("PR_RELAY_SEATS_JSON is empty")
         try:
@@ -51,7 +60,7 @@ class SeatPolicy:
                 raise PolicyError(f"seat {seat!r}: token missing or shorter than 16 characters")
             actions = cfg.get("actions") or []
             repos = cfg.get("repos") or []
-            unknown = [a for a in actions if a not in self.VALID_ACTIONS]
+            unknown = [a for a in actions if a not in self.ALL_ACTIONS]
             if unknown:
                 raise PolicyError(f"seat {seat!r}: unknown actions {unknown}")
             if not actions or not repos:
@@ -102,6 +111,8 @@ class SeatPolicy:
             return "unknown seat"
         if action not in self._seats[seat]["actions"]:
             return f"action {action!r} not allowed for this seat"
+        if action not in self._enabled:
+            return f"action {action!r} is not enabled relay-wide"
         if not self._repo_allowed(seat, repo):
             return f"repo {repo!r} not allowed for this seat"
         if not self._rate_ok(seat, now if now is not None else time.time()):

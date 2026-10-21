@@ -23,6 +23,30 @@ PRs and comments are authored as whoever the GitHub token belongs to (a scoped f
 on the owner's account, PR write only). Seats cannot push, merge, or resolve threads through this
 service; those stay with the swu-echo app.
 
+## Expansion: all of GitHub, tiered (owner direction 2026-10-21)
+
+The relay grows from PR actions to every GitHub action seats need, so seats stop holding App
+ids/secrets and stop handling 1-hour installation-token expiry: the relay mints and refreshes
+tokens itself. Non-PR actions are registered in policy but REFUSED until the owner picks the
+backing credential per tier; nothing holds GITHUB_UNIVERSAL_PAT or any wider token yet.
+
+| Tier | Actions | Backing credential | Status |
+| --- | --- | --- | --- |
+| 1 | open_pr, edit_pr, reply_thread, comment_pr | Owner's scoped PR-only token (env GITHUB_TOKEN) | live |
+| 2 | push, merge_pr, workflow_dispatch | Relay-held App key per seat app (Infisical); relay mints + caches installation tokens (1 h, refresh 5 min early) | registered, disabled |
+| 3 | repo_admin | Owner-chosen admin credential, TBD | registered, disabled |
+
+Relay-wide enable switch: PR_RELAY_ENABLED_ACTIONS (comma list) intersects with each seat's own
+allowlist; both must name an action, and a tier without an implementation fails closed even when
+enabled. Per-seat policy, rate caps and the audit log apply unchanged to every tier.
+
+## MCP wrapper
+
+`scripts/pr_relay/mcp_server.py` is a stdio MCP server (initialize, tools/list, tools/call) that
+exposes the relay actions as MCP tools. A seat runs it with only its own bearer token
+(PR_RELAY_SEAT_TOKEN, PR_RELAY_URL); the wrapper forwards over HTTP, so policy, caps and audit
+stay server-side. Refusals come back as tool errors, never protocol errors.
+
 ## Policy
 
 Seats come from `PR_RELAY_SEATS_JSON` at process start:
