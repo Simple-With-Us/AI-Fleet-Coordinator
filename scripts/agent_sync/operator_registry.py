@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import secrets
 import sqlite3
 import time
@@ -497,6 +498,17 @@ class SessionRegistry:
 # ---- the register path (AFC-412) ---------------------------------------------------
 
 
+def normalize_platform(platform: str) -> str:
+    """The platform namespace, folded to lower case.
+
+    A platform's display form ("MiniMax") and its namespace ("minimax") name the same
+    registry namespace, so the namespace is folded on the way in and on the way out.  A
+    letter is only ever issued under the folded name, and the index still serves the
+    lookup because the comparison stays on the column.
+    """
+    return str(platform or "").strip().lower()
+
+
 def register_session(
     db_path: str,
     *,
@@ -523,6 +535,7 @@ def register_session(
     the display form the platform expects:  "H: Title".
     """
     native = SI.check(native_session_id, "the native session id")
+    platform = normalize_platform(platform)
     for name, value in (
         ("platform", platform),
         ("verified_host", verified_host),
@@ -558,6 +571,22 @@ def register_session(
 # ---- the other direction: a letter names a session (AFC-412) ------------------------
 
 
+class RegistryUnavailable(RuntimeError):
+    """The registry could not be read at all:  a hot journal, a locked file, a missing table.
+
+    This is not a miss.  A miss is an identity with no registration;  this is a registry
+    that could not be opened, and the caller has to say so rather than report every
+    session as having no letter.
+    """
+
+
+def _check_generation(generation: int | None) -> None:
+    if generation is None:
+        return
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+        raise ValueError("generation must be a positive integer")
+
+
 def resolve_label(
     db_path: str,
     platform: str,
@@ -574,42 +603,53 @@ def resolve_label(
     session, and the platform is always part of the address.  A recycled letter takes a
     generation, and "MM A (gen 2)" names the second session to hold that letter.
 
+    None means one thing only:  the registry was read and that letter has no live
+    holder.  A registry that is missing, unreadable or broken raises
+    RegistryUnavailable, and malformed input raises ValueError, so a caller can tell a
+    miss from a failure to know.
+
     The lookup is on the indexed (platform, letter) pair, so it answers for a session
     the catalog no longer lists, which is the point:  the catalog shows a bounded window
     of recent sessions and this does not.
     """
-    if not db_path or not os.path.isfile(str(db_path)):
-        return None
-    want = str(letter or "").strip().upper()
-    if not want:
-        return None
+    if not isinstance(platform, str) or not platform.strip():
+        raise ValueError("platform is required")
+    if not isinstance(letter, str) or not letter.strip():
+        raise ValueError("letter is required")
+    want = letter.strip().upper()
+    if want not in LETTERS:
+        raise ValueError("letter must be one of A-Z")
+    _check_generation(generation)
+    if not db_path:
+        raise RegistryUnavailable("no registry path was given")
+    if not os.path.isfile(str(db_path)):
+        raise RegistryUnavailable("the registry %s is not there" % db_path)
+    namespace = normalize_platform(platform)
+    columns = (
+        "a.letter AS label, a.generation AS generation, a.record_id AS record_id,"
+        " s.seat AS seat, s.native_session_id AS native_session_id, s.title AS title,"
+        " s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
+        " s.state AS state"
+    )
     try:
         registry = SessionRegistry(str(db_path), read_only=True)
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RegistryUnavailable(type(exc).__name__) from exc
     try:
         if generation is None:
             row = registry._conn.execute(
-                "SELECT a.letter AS letter, a.generation AS generation, a.record_id AS record_id,"
-                " s.seat AS seat, s.native_session_id AS native_session_id, s.title AS title,"
-                " s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
-                " s.state AS state"
-                " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
-                " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL",
-                (platform, want),
+                "SELECT %s FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+                " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL" % columns,
+                (namespace, want),
             ).fetchone()
         else:
             row = registry._conn.execute(
-                "SELECT a.letter AS letter, a.generation AS generation, a.record_id AS record_id,"
-                " s.seat AS seat, s.native_session_id AS native_session_id, s.title AS title,"
-                " s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
-                " s.state AS state"
-                " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
-                " WHERE a.platform = ? AND a.letter = ? AND a.generation = ?",
-                (platform, want, int(generation)),
+                "SELECT %s FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+                " WHERE a.platform = ? AND a.letter = ? AND a.generation = ?" % columns,
+                (namespace, want, int(generation)),
             ).fetchone()
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RegistryUnavailable(type(exc).__name__) from exc
     finally:
         try:
             registry.close_db()
@@ -618,27 +658,44 @@ def resolve_label(
     if row is None:
         return None
     found = dict(row)
+    label = str(found.get("label") or "")
     found["ref"] = cross_seat_ref(
         str(found.get("seat") or ""),
-        str(found.get("letter") or ""),
+        label,
         int(found.get("generation") or 0),
     )
-    found["title_display"] = display_title(
-        str(found.get("letter") or ""), str(found.get("title") or "")
-    )
+    found["title_display"] = display_title(label, str(found.get("title") or ""))
+    found["found"] = True
     return found
 
 
-# ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
+def resolve_ref(db_path: str, platform: str, ref: str) -> dict[str, Any] | None:
+    """The session a reference form names, or None when it names none.
 
+    The reference form is what a reply carries:  "MM A", or "MM A (gen 2)" for a letter
+    that has been recycled.  A bare "MM A" names the live holder of the letter, and a
+    suffix names that exact generation, so the address is never read as the wrong
+    session after a recycle.
 
-class RegistryUnavailable(RuntimeError):
-    """The registry could not be read at all:  a hot journal, a locked file, a missing table.
-
-    This is not a miss.  A miss is an identity with no registration;  this is a registry
-    that could not be opened, and the caller has to say so rather than report every
-    session as having no letter.
+    This is the inverse of the form the registry hands out, so a ref can be carried
+    through a message and resolved back to one session.
     """
+    if not isinstance(ref, str) or not ref.strip():
+        raise ValueError("the reference form is required")
+    text = ref.strip()
+    generation = None
+    match = re.search(r"\s*\(gen\s+(\d+)\)\s*$", text)
+    if match:
+        generation = int(match.group(1))
+        text = text[: match.start()].strip()
+    parts = text.split()
+    if len(parts) < 2:
+        raise ValueError("the reference form is SEAT LETTER or SEAT LETTER (gen N)")
+    letter = parts[-1]
+    return resolve_label(db_path, platform, letter, generation)
+
+
+# ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
 
 
 def lookup_many(
@@ -823,13 +880,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(pending_outbox(args.db, args.limit)))
         return 0
     if args.command == "resolve":
-        found = resolve_label(
-            args.db or _default_db(),
-            args.platform,
-            args.letter,
-            args.generation,
-        )
-        print(json.dumps(found if found else {"letter": args.letter, "found": False}))
+        try:
+            found = resolve_label(
+                args.db or _default_db(),
+                args.platform,
+                args.letter,
+                args.generation,
+            )
+        except (ValueError, RegistryUnavailable) as exc:
+            print(json.dumps({"error": str(exc), "found": False}))
+            return 2
+        print(json.dumps(found if found else {"label": args.letter, "found": False}))
         return 0
     if args.command == "register":
         try:

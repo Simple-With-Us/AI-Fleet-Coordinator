@@ -220,8 +220,103 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
             )
+            # A letter that was never issued is a miss, and a miss is None.
             self.assertIsNone(OR.resolve_label(db, "minimax", "Z"))
-            self.assertIsNone(OR.resolve_label(db, "minimax", ""))
+
+    def test_malformed_lookup_input_is_refused_rather_than_read_as_a_miss(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            for bad in ("", "  ", "AA", "1", "A1"):
+                with self.assertRaises(ValueError):
+                    OR.resolve_label(db, "minimax", bad)
+            with self.assertRaises(ValueError):
+                OR.resolve_label(db, "", "A")
+            with self.assertRaises(ValueError):
+                OR.resolve_label(db, "minimax", "A", 0)
+            with self.assertRaises(ValueError):
+                OR.resolve_label(db, "minimax", "A", True)
+
+    def test_a_missing_registry_is_not_reported_as_a_missing_letter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            # The registry is not there, which is not the same as the letter being free.
+            with self.assertRaises(OR.RegistryUnavailable):
+                OR.resolve_label(db, "minimax", "A")
+
+    def test_the_platform_namespace_is_folded_on_both_sides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="MiniMax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+            )
+            # The display form and the namespace name the same registry namespace.
+            self.assertEqual(
+                OR.resolve_label(db, "minimax", "A")["native_session_id"], "mvs_abc"
+            )
+            self.assertEqual(
+                OR.resolve_label(db, "MINIMAX", "A")["native_session_id"], "mvs_abc"
+            )
+
+    def test_a_reference_form_names_its_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            found = OR.resolve_ref(db, "minimax", "MM A")
+            self.assertEqual(found["native_session_id"], "mvs_abc")
+            # A malformed reference is refused rather than read as a miss.
+            with self.assertRaises(ValueError):
+                OR.resolve_ref(db, "minimax", "A")
+            with self.assertRaises(ValueError):
+                OR.resolve_ref(db, "minimax", "")
+
+    def test_a_recycled_reference_names_the_older_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            first = OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            registry = OR.SessionRegistry(db)
+            self.addCleanup(registry.close_db)
+            registry.close(first["record_id"])
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_def",
+                seat="MM",
+                source="test",
+                title="Next",
+            )
+            # A bare letter names the live holder, and the suffix names the older one.
+            self.assertEqual(
+                OR.resolve_ref(db, "minimax", "MM A")["native_session_id"], "mvs_def"
+            )
+            self.assertEqual(
+                OR.resolve_ref(db, "minimax", "MM A (gen 1)")["native_session_id"], "mvs_abc"
+            )
 
     def test_a_recycled_letter_names_the_right_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
