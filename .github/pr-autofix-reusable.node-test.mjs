@@ -191,8 +191,12 @@ test('org variable retargets model and endpoint fleet-wide, pins stay the fallba
     // Unset variables keep exactly the MiniMax configuration that ran before the switch.
     assert.match(text, /https:\/\/api\.minimax\.io\/anthropic/, name);
     assert.match(text, /MiniMax-M3\.1-Flash/, name);
-    // The key follows the host, never a mixed pair.
-    assert.match(text, /contains\(vars\.SWU_AUTOFIX_MODEL_BASE_URL, 'meta\.ai'\)/, name);
+    // Closed presets only:  an exact match on the Meta base URL selects host and key
+    // together,  anything else keeps the MiniMax pair,  and a missing Meta secret fails
+    // closed on a sentinel instead of forwarding the MiniMax credential.
+    assert.match(text, /vars\.SWU_AUTOFIX_MODEL_BASE_URL == 'https:\/\/api\.meta\.ai' && 'https:\/\/api\.meta\.ai'/, name);
+    assert.match(text, /\(secrets\.META_MODEL_API_TOKEN \|\| 'MISSING-META-MODEL-API-TOKEN'\)/, name);
+    assert.doesNotMatch(text, /contains\(vars\.SWU_AUTOFIX_MODEL_BASE_URL/, name);
   }
   // In the trusted-policy loader the variable is applied after the default-branch file,
   // so the owner-controlled switch outranks the in-repo pin.
