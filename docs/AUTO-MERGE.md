@@ -40,6 +40,12 @@ jobs:
 - The gate script and CODEOWNERS are read from the base branch, never the
   PR head.
 - Hold labels and ineligible PRs actively disable any already-armed merge.
+- Owner rule 2026-10-21: a PR is never merged while a Kodus review is running
+  on its head commit or an autofix run (PR Autofix, Claude Code Autofix, or
+  Kody fleet autofix) is queued or in progress on its head branch.  Both are
+  classify gates, so tripping one also disables an already-armed merge, and
+  both API lookups fail closed.  Re-arming happens on the next pull_request
+  event after the review or run settles.
 
 ## Merge queues
 
