@@ -78,25 +78,6 @@ struct FleetViewEnvelope: Decodable {
     }
 }
 
-/// Formats seconds as a short age, and instants on Jay's clock (12-hour,
-/// lowercase am or pm, no zone label).
-enum FleetTime {
-    static func age(_ seconds: Int) -> String {
-        if seconds < 60 { return "\(seconds)s" }
-        if seconds < 3600 { return "\(seconds / 60)m" }
-        if seconds < 86400 { return "\(seconds / 3600)h" }
-        return "\(seconds / 86400)d"
-    }
+// `FleetTime` lives in `Model/FleetConfigContract.swift`:  the grid, the fleet view and
+// the apply flow all read the clock, and one type keeps the two views agreeing on it.
 
-    static func clock(_ date: Date) -> String {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
-        let parts = calendar.dateComponents([.hour, .minute], from: date)
-        let hour24 = parts.hour ?? 0
-        let minute = parts.minute ?? 0
-        let suffix = hour24 < 12 ? "am" : "pm"
-        var hour12 = hour24 % 12
-        if hour12 == 0 { hour12 = 12 }
-        return String(format: "%d:%02d%@", hour12, minute, suffix)
-    }
-}
