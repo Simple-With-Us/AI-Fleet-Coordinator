@@ -979,6 +979,7 @@ class ChatCatalog:
                 "host",
                 "seat",
                 "session_id",
+                "profile_scope",
                 "cwd",
                 "repo",
                 "title",

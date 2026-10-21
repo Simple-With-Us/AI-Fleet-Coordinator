@@ -24,6 +24,7 @@ import os
 import secrets
 import sqlite3
 import time
+import urllib.parse
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -142,11 +143,23 @@ def _session_cells(row: sqlite3.Row, label: str) -> list[str]:
 class SessionRegistry:
     """The one writer of the registry database."""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, read_only: bool = False):
         self.db_path = str(db_path)
+        self.read_only = bool(read_only)
         parent = os.path.dirname(self.db_path)
-        if parent:
+        if parent and not self.read_only:
             os.makedirs(parent, exist_ok=True)
+        if self.read_only:
+            # A read-only URI:  the file is never created and no write lock is ever
+            # taken, so a reader on the wake path never contends with the Operator's
+            # registration writes, and a missing file is a miss rather than an
+            # empty database.
+            self._conn = sqlite3.connect(
+                "file:%s?mode=ro" % urllib.parse.quote(os.path.abspath(self.db_path)),
+                uri=True,
+            )
+            self._conn.row_factory = sqlite3.Row
+            return
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
@@ -481,7 +494,7 @@ def lookup_entry(
     if not db_path or not os.path.isfile(str(db_path)):
         return empty
     try:
-        registry = SessionRegistry(str(db_path))
+        registry = SessionRegistry(str(db_path), read_only=True)
     except Exception:
         return empty
     try:

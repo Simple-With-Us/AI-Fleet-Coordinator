@@ -15,11 +15,13 @@ Two properties matter here and are asserted rather than assumed:
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from agent_sync import chat_catalog as CC
 from agent_sync import operator_registry as OR
 from agent_sync import wakes as W
 from agent_sync.tests.test_daemon import DaemonHarness
@@ -101,6 +103,44 @@ class RegistryLookupTests(unittest.TestCase):
             OR.lookup_entry(db, "minimax", "mac", "default", "mvs_abc")
             after = os.stat(db)
             self.assertEqual(before.st_size, after.st_size)
+
+    def test_the_lookup_answers_while_a_writer_holds_the_write_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            registry = OR.SessionRegistry(db)
+            self.addCleanup(registry.close_db)
+            registry.resolve_or_register(dict(IDENTITY))
+            # A writer holds the write lock.  A read-only lookup still answers, because
+            # it never asks for a write lock of its own:  the wake path must not stall
+            # behind the Operator registering a session.
+            writer = sqlite3.connect(db, timeout=0.5)
+            self.addCleanup(writer.close)
+            writer.execute("BEGIN IMMEDIATE")
+            try:
+                found = OR.lookup_entry(db, "minimax", "mac", "default", "mvs_abc")
+                self.assertEqual(found["label"], "A")
+            finally:
+                writer.rollback()
+
+    def test_the_catalog_public_projection_keeps_the_profile_scope(self) -> None:
+        row = CC.ChatCatalog._public(
+            {
+                "id": "x" * 64,
+                "platform": "minimax",
+                "host": "mac",
+                "seat": "MM",
+                "session_id": "mvs_abc",
+                "profile_scope": "work",
+                "cwd": "/repo",
+                "repo": None,
+                "title": "Work",
+                "updated_at": 1.0,
+                "status": "available",
+                "stale": False,
+                "capabilities": {"read": True, "wake": True},
+            }
+        )
+        self.assertEqual(row["profile_scope"], "work")
 
 
 class WakeLetterTests(DaemonHarness):
@@ -194,6 +234,15 @@ class WakeLetterTests(DaemonHarness):
         d, r, p = self.setup_rows([self.row()])
         labels = d.session_labels([self.row()])
         self.assertEqual(labels, {})
+
+    def test_the_join_uses_the_scope_the_row_carries(self) -> None:
+        d, r, p = self.setup_rows([self.row(profile_scope="work")])
+        self.register(d, profile_scope="work")
+        context = d.chat_context(r, p)
+        self.assertEqual(context[0]["label"], "A")
+        # The same session id under a different scope is a different session.
+        d2, r2, p2 = self.setup_rows([self.row(profile_scope="default")])
+        self.assertEqual(d2.chat_context(r2, p2)[0]["label"], "")
 
 
 if __name__ == "__main__":
