@@ -227,14 +227,18 @@ final class ApplyCoordinator: ObservableObject {
             let outcome = ApplyOutcome.classify(
                 applyResult: applyResult, targetRuleID: session.ruleID, reproved: reproved
             )
-            update(sessionID) { $0.phase = .finished(outcome) }
+            // The notification goes out before the phase flips,  so a session that
+            // reads as finished is a session the owner has already been told about.
+            // The other order leaves a window where the apply is over and the owner
+            // has not been told yet.
             await announce(session: session, outcome: outcome)
+            update(sessionID) { $0.phase = .finished(outcome) }
         } catch {
             let outcome = ApplyOutcome.failed(error.localizedDescription)
-            update(sessionID) { $0.phase = .finished(outcome) }
             if let session = self.session(id: sessionID) {
                 await announce(session: session, outcome: outcome)
             }
+            update(sessionID) { $0.phase = .finished(outcome) }
         }
     }
 
