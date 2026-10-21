@@ -27,10 +27,16 @@ const FINDING = { body: '**Bug** something', user: { login: 'kody-ai[bot]' } };
 // so a test cannot pass by accident through a call it did not mean to allow.
 const FAKE_GH = `#!${process.execPath}
 const fs = require('node:fs');
-const scenario = JSON.parse(fs.readFileSync(process.env.FAKE_GH_SCENARIO, 'utf8'));
 const argv = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(argv) + '\\n');
 const fail = (message) => { process.stderr.write(message + '\\n'); process.exit(1); };
+// The scenario is a fixture this file writes, not outside input;  the shape check only
+// turns a malformed one into a named failure instead of a TypeError inside a route.
+const scenario = JSON.parse(fs.readFileSync(process.env.FAKE_GH_SCENARIO, 'utf8'));
+if (!scenario || typeof scenario.routes !== 'object' || scenario.routes === null || Array.isArray(scenario.routes)) {
+  fail('fake gh scenario: routes must be an object');
+}
+if (scenario.runLog != null && typeof scenario.runLog !== 'string') fail('fake gh scenario: runLog must be a string');
 if (argv[0] === 'run') {
   if (scenario.runLog == null) fail('HTTP 404: Not Found');
   process.stdout.write(scenario.runLog);
@@ -49,19 +55,23 @@ const value = scenario.routes[key];
 if (value && value.__error) fail(value.__error);
 if (method === 'PUT') fs.writeFileSync(process.env.FAKE_GH_PUT, fs.readFileSync(0, 'utf8'));
 if (argv.includes('--paginate')) {
+  if (!Array.isArray(value)) fail('fake gh scenario: route ' + key + ' must be a list for --paginate');
   for (const item of value) process.stdout.write(JSON.stringify(item) + '\\n');
 } else {
   process.stdout.write(JSON.stringify(value));
 }
 `;
 
-function pr(number, { created = '2026-10-20T00:00:00Z', fullName = `${OWNER}/${REPO}`, ref = 'fix' } = {}) {
+function pr(number, {
+  created = '2026-10-20T00:00:00Z', fullName = `${OWNER}/${REPO}`, baseName = `${OWNER}/${REPO}`, ref = 'fix',
+} = {}) {
   return {
     number,
     created_at: created,
     draft: false,
     html_url: `https://github.com/${OWNER}/${REPO}/pull/${number}`,
     head: { ref, repo: fullName ? { full_name: fullName } : null },
+    base: { repo: { full_name: baseName } },
   };
 }
 
@@ -105,7 +115,7 @@ function scenario(pulls, { issueComments = {}, tally = null, activeRuns = [], ex
   return { routes: { ...routes, ...extra } };
 }
 
-function run(scenarioValue, flags = []) {
+function run(scenarioValue, flags = [], { json = true } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fake-gh-'));
   const gh = join(dir, 'gh');
   writeFileSync(gh, FAKE_GH);
@@ -113,7 +123,7 @@ function run(scenarioValue, flags = []) {
   const files = { scenario: join(dir, 'scenario.json'), log: join(dir, 'log.jsonl'), put: join(dir, 'put.json') };
   writeFileSync(files.scenario, JSON.stringify(scenarioValue));
   writeFileSync(files.log, '');
-  const child = spawnSync(process.execPath, [DISPATCHER, '--json', '--repos', REPO, ...flags], {
+  const child = spawnSync(process.execPath, [DISPATCHER, ...(json ? ['--json'] : []), '--repos', REPO, ...flags], {
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -136,7 +146,7 @@ function run(scenarioValue, flags = []) {
   } catch {
     // An aborted tick may print nothing parseable;  the assertions look at stderr.
   }
-  return { status: child.status, stderr: child.stderr, result, posts, saved };
+  return { status: child.status, stdout: child.stdout, stderr: child.stderr, result, posts, saved };
 }
 
 test('a PR the dispatcher already tagged is recorded and skipped, so the next PR is dispatched', () => {
@@ -164,6 +174,15 @@ test('a fork PR is never a candidate', () => {
   assert.equal(out.result.candidate_count, 1);
 });
 
+test('a repo renamed on GitHub keeps its PRs:  same-repo is head against base, not the configured name', () => {
+  // The API answers for the configured (old) name with PRs that carry the new one.
+  const renamed = `${OWNER}/BotFleet-Renamed`;
+  const out = run(scenario([pr(2, { fullName: renamed, baseName: renamed })]));
+  assert.equal(out.status, 0, out.stderr);
+  assert.equal(out.result.candidate_count, 1);
+  assert.equal(out.result.pick.number, 2);
+});
+
 test('a reconcile lookup that fails is a warning and does not block the dispatch', () => {
   const stuck = { ts: '2026-10-01T00:00:00Z', repo: REPO, number: 9, run_id: '555', conclusion: null, cost_usd: null };
   const out = run(scenario([pr(2)], {
@@ -187,6 +206,30 @@ test('a tally that could not be read is never written back, and nothing is dispa
   assert.match(out.stderr, /HTTP 502/);
   assert.equal(out.saved, null, 'no PUT of a stand-in tally');
   assert.equal(out.posts.length, 0);
+  // The stand-in is empty, so a total from it would be a false zero.
+  assert.equal('tally_total_usd' in out.result, false);
+  assert.equal('tally_runs' in out.result, false);
+  assert.equal(out.result.tally_unavailable, true);
+});
+
+test('the text summary says the tally is unavailable instead of printing a false zero', () => {
+  const out = run(scenario([pr(2)], {
+    tally: [{ ts: '2026-10-01T00:00:00Z', repo: REPO, number: 9, run_id: '555', conclusion: 'success', cost_usd: 0.42 }],
+    extra: { [`GET ${STATE_FILE}?ref=autofix-dispatcher-state`]: { __error: 'HTTP 502: Bad Gateway' } },
+  }), [], { json: false });
+  assert.equal(out.status, 1);
+  assert.match(out.stdout, /tally total: unavailable/);
+  assert.doesNotMatch(out.stdout, /\$0\.0000/);
+});
+
+test('a readable tally reports its running total', () => {
+  const out = run(scenario([], {
+    tally: [{ ts: '2026-10-01T00:00:00Z', repo: REPO, number: 9, run_id: '555', conclusion: 'success', cost_usd: 0.42 }],
+  }));
+  assert.equal(out.status, 0, out.stderr);
+  assert.equal(out.result.tally_total_usd, 0.42);
+  assert.equal(out.result.tally_runs, 1);
+  assert.equal('tally_unavailable' in out.result, false);
 });
 
 test('an active autofix run ends the tick without a dispatch', () => {

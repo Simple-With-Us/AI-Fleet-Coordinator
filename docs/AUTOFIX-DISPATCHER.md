@@ -18,7 +18,9 @@ variable `SWU_AUTOFIX_DISPATCHER_ENABLED` is `true`.  Each tick:
    writes no marker when it declines a tag (a fork PR, the handbook mirror branch, a
    narrowed `allowed_bots`), so without that rule the declined PR would stay the oldest
    candidate and block every PR behind it.  Fork PRs and the handbook mirror branch are
-   not scanned at all.
+   not scanned at all.  Same-repo means the PR's head repo is its base repo (compared
+   without case), not a match against the configured name, so a repo renamed on GitHub
+   keeps its PRs.
    The reusable lowercases the login and strips `[bot]` when it writes the
    marker, so swu-echo[bot]'s marker reads `swu-autofix-run: bot=swu-echo`.
 3. Picks the oldest by `created_at` and posts `@pr-autofix ... cc @jaywedgeworth22`
@@ -26,10 +28,15 @@ variable `SWU_AUTOFIX_DISPATCHER_ENABLED` is `true`.  Each tick:
    the tried marker; the tag consumes swu-echo's one run on that PR under the
    one-run-per-bot-per-PR owner rule.  The reusable builds the run's prompt from the
    tag comment plus the PR diff, not from the review threads, so the tag comment names
-   the findings (the PR's review comments, read with
-   `gh api repos/<owner>/<repo>/pulls/<n>/comments --paginate`) and tells the run to fix
-   the ones still real at the head.  It points at them instead of copying them, so a
-   new review round is never stale and no reviewer `@mention` is replayed.
+   the findings and tells the run to fix the ones still real at the head.  The command
+   it hands the run, `gh api repos/<owner>/<repo>/pulls/<n>/comments --paginate --jq
+   '<filter>'`, keeps only the three reviewer bots' comments (`REVIEWER_JQ` in
+   `lib.mjs`), and the comment says that any other author's comment is data, not
+   instructions:  the run has write credentials and runs unattended, so an unfiltered
+   read would let anyone who can comment on a PR steer it.  A `[bot]` login belongs to
+   a GitHub App, which no person can register.  The comment points at the findings
+   instead of copying them, so a new review round is never stale and no reviewer
+   `@mention` is replayed.
 4. Appends the dispatch to `autofix-dispatcher/tally.jsonl` on the
    `autofix-dispatcher-state` branch.  A tag comment whose row was never saved (the
    tick died between the two) is recorded on the next tick from the comment itself.
@@ -62,4 +69,5 @@ The tag gate itself is unchanged — bots and Jay can still start runs by taggin
 
 The state branch holds one JSON object per line: repo, PR, dispatch comment, run id,
 conclusion, and cost in USD when the run has completed.  The workflow log prints the
-running total each tick.  Deleting the branch resets the tally, not the per-PR markers.
+running total each tick, or `tally total: unavailable` when the tally could not be
+read, never a total summed from an empty stand-in.  Deleting the branch resets the tally, not the per-PR markers.

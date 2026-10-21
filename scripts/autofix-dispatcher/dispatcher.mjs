@@ -147,7 +147,7 @@ function findCandidates(repos) {
       // A missing or unparseable created_at would sort to epoch 0 and look
       // like the oldest PR, so such candidates are skipped, never coerced.
       if (pr.draft || Number.isNaN(Date.parse(pr.created_at))) continue;
-      if (!isFixablePr(pr, OWNER, repo)) continue;
+      if (!isFixablePr(pr)) continue;
       const issueComments = ghApiList(
         `repos/${OWNER}/${repo}/issues/${pr.number}/comments?per_page=100`,
         '.[] | {body, html_url, user: {login: .user.login}} | @json',
@@ -249,6 +249,7 @@ function print(result, asJson) {
   process.stdout.write(`pick: ${result.pick ? `${result.pick.repo}#${result.pick.number} (${result.pick.created_at})` : 'none'}\n`);
   process.stdout.write(`dispatched: ${result.dispatched}\n`);
   if (result.tally_total_usd != null) process.stdout.write(`tally total: $${result.tally_total_usd.toFixed(4)} across ${result.tally_runs} dispatch(es)\n`);
+  else if (result.tally_unavailable) process.stdout.write('tally total: unavailable (the tally could not be read)\n');
 }
 
 function newTallyRow(repo, number, prUrl, commentUrl) {
@@ -350,9 +351,13 @@ function main() {
     if (!args['dry-run'] && tally.ok) saveTally(tally.entries, tally.sha);
   }
 
-  if (!args['dry-run']) {
+  // A tally that could not be read has no total:  its stand-in is empty, and summing it
+  // would report a false $0.0000 over a state branch that holds real spend.
+  if (!args['dry-run'] && tally.ok) {
     result.tally_total_usd = tallyTotalUsd(tally.entries);
     result.tally_runs = tally.entries.length;
+  } else if (!args['dry-run']) {
+    result.tally_unavailable = true;
   }
   print(result, args.json);
   for (const failure of reconcileErrors) {
