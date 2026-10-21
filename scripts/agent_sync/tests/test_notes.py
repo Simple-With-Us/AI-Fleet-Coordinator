@@ -20,7 +20,7 @@ from agent_sync import notes as N
 FIXTURES = json.loads((Path(__file__).resolve().parent / "notes-fixtures.json").read_text())[
     "cases"
 ]
-TITLE = "[AFC, Claude] relay check"
+TITLE = "[AFC, CLAUDE] relay check"
 
 
 class FakeRun:
@@ -74,12 +74,38 @@ class TitleAndFlagTests(unittest.TestCase):
     def test_a_title_must_start_with_a_bracket_and_hold_nothing_special_to_applescript(self):
         self.assertEqual(N.check_title("  " + TITLE + "  "), TITLE)
         self.assertIn("must not be empty", self.refuses("   "))
-        self.assertIn("must start with", self.refuses("--update [AFC, Claude] x"))
-        self.assertIn("double quote", self.refuses('[AFC, Claude] a "quoted" word'))
-        self.assertIn("backslash", self.refuses("[AFC, Claude] back\\slash"))
-        self.assertIn("control character", self.refuses("[AFC, Claude] two\nlines"))
-        self.assertIn("control character", self.refuses("[AFC, Claude] line separator"))
-        self.assertIn("at most", self.refuses("[AFC, Claude] " + "x" * 300))
+        self.assertIn("must start with", self.refuses("--update [AFC, CLAUDE] x"))
+        self.assertIn("double quote", self.refuses('[AFC, CLAUDE] a "quoted" word'))
+        self.assertIn("backslash", self.refuses("[AFC, CLAUDE] back\\slash"))
+        self.assertIn("control character", self.refuses("[AFC, CLAUDE] two\nlines"))
+        self.assertIn("control character", self.refuses("[AFC, CLAUDE] line separator"))
+        self.assertIn("at most", self.refuses("[AFC, CLAUDE] " + "x" * 300))
+
+    def test_the_whole_scope_is_validated_not_just_the_leading_bracket(self):
+        """AFC-422:  a leading `[` let `[AFC` and `[]` reach the relay envelope.  The title must
+        read `[TEAM_KEY, SEAT_TAG] Topic`:  capitalised team keys, a seat tag, and a topic."""
+        for good in (
+            "[AFC, CLAUDE] relay rollout",
+            "[AFC, CT, GROK-WEB] notes",
+            "[UM, MM] Topic",
+            "[ST, CT, UM, GROK] multi-team",
+            "[AFC, GB-FIXER] any case for a role tag",
+            "[AFC2, CLAUDE] digits in a team key",
+        ):
+            N.check_title(good)
+        for bad, why in (
+            ("[AFC", "unclosed"),
+            ("[AFC Topic", "no scope close"),
+            ("[] Topic", "empty scope"),
+            ("[AFC] Topic", "no seat tag"),
+            ("[AFC, ] Topic", "empty seat tag"),
+            ("[AFC, CLAUDE]", "no topic"),
+            ("[AFC, CLAUDE] ", "blank topic"),
+            ("[afc, CLAUDE] Topic", "team key not capitals"),
+            ("[AFC-2, CLAUDE] x", "hyphen is not a team key"),
+        ):
+            with self.subTest(why):
+                self.assertIn("must read", self.refuses(bad))
 
     def test_flags_are_a_closed_set_and_activate_is_not_in_it(self):
         self.assertEqual(
@@ -98,7 +124,7 @@ class TitleAndFlagTests(unittest.TestCase):
 
     def test_the_topic_is_the_title_cut_to_sixty_characters(self):
         self.assertEqual(N.topic_for(TITLE), TITLE)
-        topic = N.topic_for("[AFC, Claude] " + "long " * 30)
+        topic = N.topic_for("[AFC, CLAUDE] " + "long " * 30)
         self.assertLessEqual(len(topic), 60)
         self.assertGreater(len(topic), 50)
         self.assertTrue(topic.endswith("…"))
@@ -114,28 +140,28 @@ class TitleAndFlagTests(unittest.TestCase):
 class AgentNameTests(unittest.TestCase):
     def test_the_agent_in_the_title_must_be_the_senders_own_name(self):
         ok = [
-            ("[AFC, Claude] t", "CLAUDE"),
-            ("[AFC, CT, Claude] t", "CLAUDE"),
-            ("[UM, Grok Web] t", "GROK-WEB"),
+            ("[AFC, CLAUDE] t", "CLAUDE"),
+            ("[AFC, CT, CLAUDE] t", "CLAUDE"),
             ("[UM, GROK-WEB] t", "GROK-WEB"),
-            ("[UM, grok-web] t", "GROK-WEB"),
-            ("[BF, BF-Deployer] t", "BF-DEPLOYER"),
-            ("[BF, bf-deployer] t", "BF-DEPLOYER"),
-            ("[AFC, GB-Fixer] t", "GB-FIXER"),
-            ("[AFC, Muse Assist] t", "MA"),
+            ("[UM, GROK-WEB] t", "GROK-WEB"),
+            ("[UM, GROK-WEB] t", "GROK-WEB"),
+            ("[BF, BF-DEPLOYER] t", "BF-DEPLOYER"),
+            ("[BF, BF-DEPLOYER] t", "BF-DEPLOYER"),
+            ("[AFC, GB-FIXER] t", "GB-FIXER"),
+            ("[AFC, MA] t", "MA"),
         ]
         for title, identity in ok:
             self.assertIsNone(N.title_problem(title, identity), (title, identity))
 
     def test_a_wrong_agent_or_shape_is_refused(self):
         for title, identity in (
-            ("[AFC, Codex] t", "CLAUDE"),
-            ("[AFC, Claude] t", "CODEX"),
-            ("[AFC, GB-Fixer] t", "GB-DEPLOYER"),
+            ("[AFC, CODEX] t", "CLAUDE"),
+            ("[AFC, CLAUDE] t", "CODEX"),
+            ("[AFC, GB-FIXER] t", "GB-DEPLOYER"),
             ("[AFC] t", "CLAUDE"),
-            ("[afc, Claude] t", "CLAUDE"),
-            ("[AFC, Claude]t", "CLAUDE"),
-            ("[AFC, Claude, Codex] t", "CLAUDE"),
+            ("[afc, CLAUDE] t", "CLAUDE"),
+            ("[AFC, CLAUDE]t", "CLAUDE"),
+            ("[AFC, Claude, CODEX] t", "CLAUDE"),
             ("[Claude] t", "CLAUDE"),
         ):
             self.assertIsNotNone(N.title_problem(title, identity), (title, identity))
@@ -146,6 +172,29 @@ class AgentNameTests(unittest.TestCase):
                 "[AFC, CLAUDE] t", "CLAUDE", registry_path="/nonexistent/fleet-apps.json"
             )
         )
+
+    def test_canonical_display_name_and_tag_match_verified_identity(self):
+        for name in ("Claude", "CLAUDE"):
+            self.assertIsNone(N.title_problem("[AFC, " + name + "] Topic", "CLAUDE"))
+        for name in ("Codex", "CODEX", "claude", "Grok Web"):
+            self.assertIsNotNone(N.title_problem("[AFC, " + name + "] Topic", "CLAUDE"))
+        self.assertIsNone(N.title_problem("[AFC, Codex] Topic", "CODEX"))
+        with self.assertRaises(N.NotesError):
+            N.check_title("[AFC,  CLAUDE] Topic")
+
+    def test_mcp_descriptions_default_to_canonical_display_names(self):
+        import re
+        tools = json.loads((Path(__file__).resolve().parents[1] / "mcp" / "notes-tools.json").read_text())["tools"]
+        count = 0
+        for tool in tools:
+            title = tool.get("inputSchema", {}).get("properties", {}).get("title")
+            if title is None:
+                continue
+            count += 1
+            self.assertIn("[AFC, Claude]", title["description"])
+            for value in ("[AFC, CT, CLAUDE] Topic", "[AFC, Claude] Topic", "[AFC, Grok Web] Topic"):
+                self.assertIsNotNone(re.fullmatch(title["pattern"], value))
+        self.assertEqual(count, 4)
 
 
 class ConsumerKnobTests(unittest.TestCase):
@@ -246,7 +295,7 @@ class EnvelopeTests(unittest.TestCase):
             "not an object": "```json\n[1]\n```",
             "unknown field": good.replace('"v":1', '"v":1,"x":1'),
             "wrong version": good.replace('"v":1', '"v":2'),
-            "bad title": good.replace("[AFC, Claude] relay check", "no bracket"),
+            "bad title": good.replace("[AFC, CLAUDE] relay check", "no bracket"),
             "bad flag": good.replace('"flags":{}', '"flags":{"activate":true}'),
             "bad request id": good.replace("requestid-0001", "x"),
             "orphan upload fields": good.replace('"flags":{}', '"flags":{},"markdown_bytes":3'),

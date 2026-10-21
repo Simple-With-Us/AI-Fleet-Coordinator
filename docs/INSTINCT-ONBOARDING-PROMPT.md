@@ -218,7 +218,7 @@ FLEET RECALL AND CLOSEOUT
 - At the end of each unit contribute one reusable lesson (recall contribute "..." --category
   lesson --app <slug>, seat INSTINCT).  Search first so you corroborate rather than
   duplicate.  Plans, reviews, and handoffs the owner should read go to Apple Notes folder
-  Coding as "[APP, Instinct] short topic" when you can reach the owner login's Notes; when you
+  Coding as "[TEAM_KEY, Instinct] short topic" when you can reach the owner login's Notes; when you
   cannot, put the body on the Linear issue and say so.
 
 YOUR FIRST UNIT, NOW

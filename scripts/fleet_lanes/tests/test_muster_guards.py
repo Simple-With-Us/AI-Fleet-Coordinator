@@ -131,6 +131,54 @@ for (const [name, input] of cases) {
 console.log(JSON.stringify(results));
 '''
 
+EXECUTE_HARNESS = '''import { server } from "PLUGIN_URL";
+
+const plugin = await server({ directory: process.cwd() });
+const before = plugin["tool.execute.before"] as unknown as (
+  input: unknown,
+  output: { args: unknown },
+) => Promise<void>;
+
+const cyclic: Record<string, unknown> = {};
+cyclic.self = cyclic;
+let deep: unknown = "x";
+for (let i = 0; i < 20; i += 1) deep = { next: deep };
+
+const cases: Array<[string, unknown, unknown]> = [
+  // sentry #757:  a non-shell payload over the command byte ceiling must not be denied.
+  [
+    "a non-shell payload over the byte ceiling is not guarded",
+    { tool: "write", sessionID: "session-1", callID: "call-1" },
+    { filePath: "/repo/src/a.ts", content: "x".repeat(200000) },
+  ],
+  // The byte ceiling moved to the extracted command:  an oversized command still denies.
+  [
+    "an oversized command still fails closed",
+    { tool: "bash", sessionID: "session-1", callID: "call-1" },
+    { command: "x".repeat(200000) },
+  ],
+  [
+    "a missing tool name falls through and fails closed",
+    { sessionID: "session-1", callID: "call-1" },
+    { command: "x".repeat(200000) },
+  ],
+  // Structural bounds (depth, width, cycles) still cover every payload,  command-shaped or not.
+  ["a cyclic payload still fails closed", { tool: "edit", sessionID: "session-1", callID: "call-1" }, cyclic],
+  ["a too-deep payload still fails closed", { tool: "edit", sessionID: "session-1", callID: "call-1" }, deep],
+];
+
+const results: unknown[] = [];
+for (const [name, input, args] of cases) {
+  try {
+    await before(input, { args });
+    results.push({ name, threw: false });
+  } catch (error) {
+    results.push({ name, threw: true, message: String(error) });
+  }
+}
+console.log(JSON.stringify(results));
+'''
+
 # node's own type stripper,  used to turn the plugin into the JavaScript node --check parses.
 STRIP_SCRIPT = """const fs = require("node:fs");
 const { stripTypeScriptTypes } = require("node:module");
@@ -709,6 +757,32 @@ class OpenCodePluginShapeTests(World):
         # A prompt the plugin can rule on is left alone:  the deny is specific.
         self.assertFalse(results[WELL_FORMED_PROMPT]["threw"], results[WELL_FORMED_PROMPT])
         self.assertEqual(results[WELL_FORMED_PROMPT]["status"], "ask")
+
+    def test_the_byte_ceiling_bounds_the_command_not_the_payload(self) -> None:
+        # sentry #757:  the whole-payload byte ceiling ran for every tool,  so a file write
+        # over 64 KiB was denied.  The ceiling now bounds the extracted command;  structural
+        # bounds (depth, width, cycles) still cover every payload.
+        with tempfile.TemporaryDirectory(prefix="muster-plugin-") as tmp:
+            plugin = Path(tmp) / "fleet-lane-guard.ts"
+            plugin.write_text(self.plugin_text(), encoding="utf-8")
+            harness = Path(tmp) / "harness.ts"
+            harness.write_text(
+                EXECUTE_HARNESS.replace("PLUGIN_URL", plugin.as_uri()), encoding="utf-8"
+            )
+            run = self.run_node(["--experimental-strip-types", str(harness)], cwd=tmp)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            results = {r["name"]: r for r in json.loads(run.stdout.splitlines()[-1])}
+        self.assertFalse(
+            results["a non-shell payload over the byte ceiling is not guarded"]["threw"],
+            results["a non-shell payload over the byte ceiling is not guarded"],
+        )
+        for name in (
+            "an oversized command still fails closed",
+            "a missing tool name falls through and fails closed",
+            "a cyclic payload still fails closed",
+            "a too-deep payload still fails closed",
+        ):
+            self.assertTrue(results[name]["threw"], results[name])
 
     def test_an_oversized_or_cyclic_permission_prompt_is_denied(self) -> None:
         # The bounds the command boundary already carries apply to the permission

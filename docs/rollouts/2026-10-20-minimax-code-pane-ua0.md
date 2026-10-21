@@ -2,6 +2,14 @@
 
 Refs AFC-421, PR #733.
 
+> **SUPERSEDED, later the same day.**  The ruling this rollout records was reversed by the
+> owner on 2026-10-20:  the MiniMax Code chat pane decodes the `&nbsp;` entity, the same
+> form as the Claude Code Code tab ("I have confirmed this before with agents and knew you
+> needed nbsp already").  A real U+00A0 is **not** the mechanism on that pane.  The current
+> rule lives in `docs/fleet-skills/sentence-gap/SKILL.md`,
+> `docs/SENTENCE-GAP-PORTABLE-SKILL.md` and the handbook's owner-writing page.  This file is
+> kept as the record of what PR #733 did, not as a rule.
+
 ## Summary
 
 `#732` landed the MiniMax Code row in the `sentence-gap` pack and the portable doc while this
@@ -12,14 +20,18 @@ its drift from the live `~/apps` copy is deliberately left for the owner.
 
 ## Why
 
-Owner ruling 2026-10-20:  in the MiniMax Code chat pane the wider sentence gap is a real
-U+00A0 followed by a normal space.  Two ASCII spaces collapse there, and the `&nbsp;` entity
-renders as the six literal characters, which is worse than no gap at all.  The 2026-10-18
-entry for this pane, entity plus a space, was wrong.
+Owner ruling 2026-10-20, reversed later the same day:  this rollout took the MiniMax Code
+chat pane's wider sentence gap to be a real U+00A0 followed by a normal space, on the reading
+that the `&nbsp;` entity renders there as the six literal characters and two ASCII spaces
+collapse.  That reading was an inference, it was never owner-verified, and the owner reversed
+it:  the pane decodes the entity, which is what the 2026-10-18 entry for this pane already
+said.  The sources this rollout touched were later corrected to the entity form.
 
-Claude Code keeps the entity in its Code tab (owner-verified 2026-10-08 with a screenshot);
-the two panes differ, so the catalog, the coordination table, the land-lane prose line and the
-Cursor rules file each needed the MiniMax case pulled out of the generic Markdown-pane
+Claude Code keeps the entity in its Code tab (owner-verified 2026-10-08 with a screenshot).
+This rollout read the MiniMax Code chat pane as the one pane that differs, so the catalog,
+the coordination table, the land-lane prose line and the Cursor rules file each pulled the
+MiniMax case out of the generic Markdown-pane default.  The owner later confirmed the
+MiniMax pane decodes the entity as well, so those four surfaces are back on the generic
 default.
 
 ## Files

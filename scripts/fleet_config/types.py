@@ -228,7 +228,10 @@ class Rule:
     ``seat`` is the seat whose config is being checked, and the two are different
     fields on purpose.  ``autofix_allowed`` is the only route by which the apply side
     may change anything for this rule.  ``ttl_seconds`` bounds how long a result stays
-    fresh.
+    fresh.  ``source`` is the rule's provenance:  a standing directive plus date, or a
+    Zulip topic message id that cites the seat reply the rule came from (AFC-384
+    requires the review to cite MM's answers and every other seat's reply).  It is
+    free text and never affects the verdict.
     """
 
     id: str
@@ -243,6 +246,7 @@ class Rule:
     collector: Collector = Collector.MAC
     ttl_seconds: int = 900
     description: str = ""
+    source: str = ""
 
 
 @dataclass(frozen=True)

@@ -79,6 +79,7 @@ def make_rule(
     collector: Collector = Collector.MAC,
     ttl: int = 900,
     expected: ExpectedState | None = None,
+    source: str = "",
 ) -> Rule:
     """One rule for a fake manifest."""
     return Rule(
@@ -94,6 +95,7 @@ def make_rule(
         collector=collector,
         ttl_seconds=ttl,
         description="a fake rule",
+        source=source,
     )
 
 
@@ -102,7 +104,7 @@ def make_manifest(
 ) -> Manifest:
     """A manifest with one seat and the given rules."""
     return Manifest(
-        schema_version=1,
+        schema_version=2,
         seats=(SeatManifest(seat=seat, platforms=tuple(platforms), rules=tuple(rules)),),
         source_path="<fake manifest>",
     )
@@ -138,6 +140,7 @@ def manifest_json(manifest: Manifest) -> dict[str, object]:
                     "collector": rule.collector.value,
                     "ttlSeconds": rule.ttl_seconds,
                     "description": rule.description,
+                    "source": rule.source,
                 }
             )
         seats[entry.seat] = {
@@ -145,7 +148,7 @@ def manifest_json(manifest: Manifest) -> dict[str, object]:
             "rules": rules,
             "notApplicable": [],
         }
-    return {"schemaVersion": 1, "seats": seats}
+    return {"schemaVersion": 2, "seats": seats}
 
 
 def registry_json(tags: Sequence[str]) -> dict[str, object]:

@@ -125,3 +125,60 @@ test('all autofix families pin diagnostics to the published AFC migration commit
     assert.deepEqual(refs, [diagnosticsRef], `${family} must use the verified published diagnostics action`);
   }
 });
+
+test('a PR branch .autofix.yml may only narrow the trusted allowed_bots list', () => {
+  // A same-repo branch PR ships its own .autofix.yml on the checkout the gate reads, so letting
+  // that file replace the list let any branch point the contents:write run at an arbitrary bot.
+  // The trusted base comes from the default-branch policy (or the caller input as legacy
+  // fallback), the branch file may only remove entries, and narrowing to nothing fails closed.
+  assert.match(workflow, /TRUSTED_ALLOWED_BOTS/);
+  assert.match(workflow, /allowed_bots=\$file_bots/);
+  assert.match(workflow, /may only REMOVE bots/);
+  assert.match(workflow, /narrows the trusted bot list to nothing, skipping/);
+  assert(!workflow.includes('if [ -n "$file_allowed" ]; then allowed="$file_allowed"; fi'));
+});
+
+const claudeReusable = readFileSync(new URL('./workflows/claude-code-autofix-reusable.yml', import.meta.url), 'utf8');
+const codexReusable = readFileSync(new URL('./workflows/codex-autofix-reusable.yml', import.meta.url), 'utf8');
+
+test('one autofix run per bot per PR, owner and Sentry exempt (owner rule 2026-10-20)', () => {
+  for (const [name, text] of [['pr-autofix', workflow], ['claude-code', claudeReusable], ['codex', codexReusable]]) {
+    // The dedupe record is a marker comment on the PR;  deleting it is the documented reset.
+    assert.match(text, /swu-autofix-run: bot=\$requester/, name);
+    assert.match(text, /already used its one autofix run on this PR/, name);
+    assert.match(text, /jaywedgeworth22/, name);
+    assert.match(text, /sentry/, name);
+    assert.match(text, /NOTIFY_URL/, name);
+    // Every bot request, accepted or not, goes to the owner when the channel is configured;
+    // the step is dormant until SWU_AUTOFIX_NOTIFY_URL exists.
+    assert.match(text, /SWU_AUTOFIX_NOTIFY_URL is not set/, name);
+    // Marker comments need issues: write.
+    assert.match(text, /issues: write/, name);
+  }
+});
+
+test('request gate precedes the paid model run in the claude-code-action reusables', () => {
+  for (const [name, text] of [['claude-code', claudeReusable], ['codex', codexReusable]]) {
+    const gate = text.indexOf('id: request_gate');
+    const run = text.indexOf('anthropics/claude-code-action@');
+    assert(gate !== -1 && run !== -1 && gate < run, name);
+    assert.match(text, /steps\.request_gate\.outputs\.skip != 'true'/, name);
+  }
+});
+
+test('autofix requires an explicit tag per type; untagged bot comments fire nothing (owner rule 2026-10-20)', () => {
+  // Jay:  "that is dumb needs to be tag of it".  Sentry is exempt from the tag, the cap,
+  // and the notification;  the owner is exempt from the cap only.
+  assert.match(workflow, /@pr-autofix/);
+  assert.match(workflow, /No @pr-autofix tag in the comment, skipping/);
+  assert.match(claudeReusable, /@claude-code-autofix/);
+  assert.match(claudeReusable, /No @claude-code-autofix tag in the review, skipping/);
+  assert.match(codexReusable, /@codex-autofix/);
+  assert.match(codexReusable, /No @codex-autofix tag in the review, skipping/);
+  // The tag check runs before the marker is written, so an untagged comment never
+  // consumes the bot's one request on the PR.
+  for (const [name, text] of [['claude-code', claudeReusable], ['codex', codexReusable]]) {
+    assert(text.indexOf('No ' + (name === 'claude-code' ? '@claude-code-autofix' : '@codex-autofix') + ' tag') < text.indexOf('swu-autofix-run: bot='), name);
+  }
+  assert(workflow.indexOf('No @pr-autofix tag in the comment') < workflow.indexOf('swu-autofix-run: bot='), 'pr-autofix order');
+});
