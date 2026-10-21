@@ -36,7 +36,25 @@ def secret_names(slug):
     return prefix + "_ID", prefix + "_PRIVATE_KEY"
 
 
+_CREDENTIAL_MARKERS = (
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "xoxb-",
+    "xoxp-",
+    "AKIA",
+    "-----BEGIN",
+)
+
+
 def target_parts(target):
+    # Refuse credential-shaped input before the value is relayed to GitHub or
+    # persisted in a cache key, and never echo it back.
+    if not isinstance(target, str) or any(m in target for m in _CREDENTIAL_MARKERS):
+        raise RoutingError("Invalid repository target")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", target):
         raise RoutingError("Explicit owner/repo required; no inferred default")
     owner, repo = target.split("/")

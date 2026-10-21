@@ -63,6 +63,11 @@ class BrokerTests(unittest.TestCase):
         b=json.dumps({'repo':'acme-owner/road-runner','permissions':{'contents':'read'}}).encode()
         with self.assertRaises(Refused) as c:self.request(body=b)
         self.assertEqual(c.exception.status,403)
+    def test_credential_shaped_target_refused(self):
+        b=json.dumps({'repo':'Simple-With-Us/ghp_dGhpc2lzYWZha2V0b2tlbg','permissions':{'contents':'read'}}).encode()
+        with self.assertRaises(Refused) as c:self.request(body=b)
+        self.assertEqual(c.exception.status,400)
+        self.assertEqual(self.router.calls,[])
     def test_pull_requests_read_issues(self):
         b=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'pull_requests':'read'}}).encode()
         self.request(body=b)
