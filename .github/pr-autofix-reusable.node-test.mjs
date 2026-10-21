@@ -125,3 +125,15 @@ test('all autofix families pin diagnostics to the published AFC migration commit
     assert.deepEqual(refs, [diagnosticsRef], `${family} must use the verified published diagnostics action`);
   }
 });
+
+test('a PR branch .autofix.yml may only narrow the trusted allowed_bots list', () => {
+  // A same-repo branch PR ships its own .autofix.yml on the checkout the gate reads, so letting
+  // that file replace the list let any branch point the contents:write run at an arbitrary bot.
+  // The trusted base comes from the default-branch policy (or the caller input as legacy
+  // fallback), the branch file may only remove entries, and narrowing to nothing fails closed.
+  assert.match(workflow, /TRUSTED_ALLOWED_BOTS/);
+  assert.match(workflow, /allowed_bots=\$file_bots/);
+  assert.match(workflow, /may only REMOVE bots/);
+  assert.match(workflow, /narrows the trusted bot list to nothing, skipping/);
+  assert(!workflow.includes('if [ -n "$file_allowed" ]; then allowed="$file_allowed"; fi'));
+});
