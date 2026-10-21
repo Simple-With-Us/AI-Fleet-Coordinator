@@ -855,6 +855,7 @@ class GeneratedMirrorTests(unittest.TestCase):
                     "%s holds a blind leftover check:  %s\n%s" % (rel, pattern, self.POINTER),
                 )
 
+
 @unittest.skipUnless(HAVE_BASH and HAVE_PERL, "bash and perl are required")
 class DocumentationExecutionTests(unittest.TestCase):
     def test_actual_documented_grep_blocks_execute_as_copied(self):
@@ -940,6 +941,8 @@ class DocumentationExecutionTests(unittest.TestCase):
                 self.assertGreater(run_grep("grep -oE $'%s' '%s' | wc -l" % (count, path)), 0)
                 self.assertEqual(run_grep("grep -cE $'%s' '%s'" % (leftover, path)), 0)
                 self.assertIn("https://example.com/path?q=one#two)", fixed)
+
+
 class ProtocolContentTests(unittest.TestCase):
     """The protocol files must keep the content a reader needs, not only the converter.
 
