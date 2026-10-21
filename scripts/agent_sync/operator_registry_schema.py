@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS alias_assignments (
 -- Active-assignment uniqueness:  at most one live holder of (platform, letter).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_active
     ON alias_assignments (platform, letter) WHERE retired_at IS NULL;
+-- The wake path looks a session's live alias up by record, once per catalog row it
+-- shows.  Without this index every one of those lookups scans the whole table.
+CREATE INDEX IF NOT EXISTS idx_alias_record
+    ON alias_assignments (record_id);
 
 CREATE TABLE IF NOT EXISTS events (
     event_id TEXT PRIMARY KEY,

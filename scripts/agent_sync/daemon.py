@@ -3562,8 +3562,11 @@ class Daemon:
             if identity not in owners:
                 identities.append(identity)
             owners.setdefault(identity, []).append(row_id)
+        failed: list[tuple[str, str, str, str]] = []
         try:
-            found = OR.lookup_many(OR.registry_db_path(self.root, self.env), identities)
+            found = OR.lookup_many(
+                OR.registry_db_path(self.root, self.env), identities, failures=failed
+            )
         except OR.RegistryUnavailable as exc:
             # The registry could not be read at all:  a hot journal, a locked file.  Every
             # row reads as unlettered, and the reason goes to the listener log, so a
@@ -3575,6 +3578,10 @@ class Daemon:
             # the rows are still worth showing, and only the letters are missing.
             self.log.write("session-registry-unavailable", error=type(exc).__name__)
             return {}
+        if failed:
+            # Some sessions lost their letter to a read that failed.  That is not a miss,
+            # so it is reported rather than shown as a session that never had one.
+            self.log.write("session-registry-partial", failed=len(failed))
         labels: dict[str, tuple[str, str]] = {}
         for identity, row_ids in owners.items():
             entry = found.get(identity)
