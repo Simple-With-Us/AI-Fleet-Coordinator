@@ -607,10 +607,14 @@ class PinDecisionTests(unittest.TestCase):
         text = SCRIPT.read_text()
         start = text.index('case "$_pin_rc" in\n  1)')
         block = text[start : text.index("\nesac\n", start)]
-        lock_path = "/Users/" + "u" * 20 + "/Library/Caches/apple-notes-coding/" + "p" * 31 + "/pin.lock"
+        lock_path = (
+            "/Users/" + "u" * 20 + "/Library/Caches/apple-notes-coding/" + "p" * 31 + "/pin.lock"
+        )
         self.assertGreaterEqual(len(lock_path), 100)
         reasons = re.findall(r'echo "pin skipped: ([^"]*)" >&2', block)
-        self.assertGreaterEqual(len(reasons), 8, "a pin skipped reason is missing from the case block")
+        self.assertGreaterEqual(
+            len(reasons), 8, "a pin skipped reason is missing from the case block"
+        )
         for template in reasons:
             reason = (
                 template.replace("$_pin_outcome", "note saved unpinned")
