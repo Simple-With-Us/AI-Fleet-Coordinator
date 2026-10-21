@@ -51,6 +51,7 @@ n=0
 if [ -f "$STUB_COUNTER" ]; then n=$(cat "$STUB_COUNTER"); fi
 n=$((n+1))
 printf '%s' "$n" > "$STUB_COUNTER"
+if [ "${STUB_HANG:-0}" = "1" ]; then sleep 30; exit 0; fi
 if [ "${STUB_FAIL_FIRST:-0}" -gt 0 ] && [ "$n" -le "${STUB_FAIL_FIRST:-0}" ]; then exit 1; fi
 exit 0
 """
@@ -85,6 +86,8 @@ APPLE_NOTES_PIN="${HARNESS_APPLE_NOTES_PIN:-1}"
 #  the knob's resolved value, as the caller forwards it:  set here so the tests never shell out to
 #  fleet_knobs, and so APPLE_NOTES_PIN_RETRY in the environment keeps meaning a narrowing override
 APPLE_NOTES_PIN_RETRY="${HARNESS_APPLE_NOTES_PIN_RETRY-1}"
+#  the bound one Shortcuts invocation runs under,  as the helper sets it
+NOTES_SHORTCUT_TIMEOUT_S="${HARNESS_SHORTCUT_TIMEOUT_S:-30}"
 #  the real block waits 2 s for the note index and 3 s between attempts;  the test only needs the shape
 sleep() { :; }
 {function}
@@ -105,6 +108,10 @@ def _extract(source: str) -> tuple[str, str]:
     ensure = re.search(
         r"^_ensure_shortcuts_running\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE
     )
+    #  the bounded Shortcut runner is optional for the same reason:  it came with AFC-436
+    bounded = re.search(
+        r"^_run_shortcuts_bounded\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE
+    )
     assert fn, "the _run_note_shortcut function is gone from apple-notes-coding.sh"
     assert knob, "the _pin_retry_on knob resolver is gone from apple-notes-coding.sh"
     start = source.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.")
@@ -113,6 +120,8 @@ def _extract(source: str) -> tuple[str, str]:
     parts = knob.group(0)
     if ensure:
         parts += ensure.group(0)
+    if bounded:
+        parts += bounded.group(0)
     return parts + fn.group(0), source[start:end]
 
 
@@ -231,6 +240,21 @@ class PinDecisionTests(unittest.TestCase):
         self.assertNotIn("is not installed", p.stdout)
         self.assertIn("ran but did not complete", p.stderr)
         self.assertEqual(runs, 2)
+
+    def test_a_hanging_shortcut_is_bounded_and_reported_as_a_run_failure(self):
+        """The Shortcut can wait on a note picker on the owner's screen.
+
+        An unbounded run can outlast the caller's cap:  the note is written and the caller is
+        then told the outcome is unknown and refuses the retry of a request that did succeed.
+        The run is bounded instead,  and the bound is reported as a failed run,  not as a
+        missing Shortcut (AFC-436).
+        """
+        p, runs = self.run_block(STUB_HANG="1", HARNESS_SHORTCUT_TIMEOUT_S="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("ran but did not complete", p.stderr)
+        self.assertIn("shortcut run failed", p.stdout)
+        self.assertNotIn("is not installed", p.stdout)
+        self.assertEqual(runs, 2, "the hanging run was not retried once")
 
     def test_a_missing_shortcut_is_named_as_a_missing_shortcut(self):
         p, runs = self.run_block(STUB_INSTALLED="0")

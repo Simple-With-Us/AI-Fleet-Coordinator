@@ -61,7 +61,19 @@ SESSION_ARG=""
 # \"Notes\"" below is wrapped in "with timeout of NOTES_APPLE_EVENT_TIMEOUT_S seconds".  A
 # caller that runs this script must allow more than this, or it kills the write while
 # osascript is still working and the later completion creates a duplicate note (AFC-436).
+# The number is this long because that body failed with
+# "AppleEvent timed out. (-1712)" before this timeout existed.
 NOTES_APPLE_EVENT_TIMEOUT_S="${NOTES_APPLE_EVENT_TIMEOUT_S:-900}"
+#  The value goes straight into the AppleScript source,  so it has to be a plain number of
+#  seconds:  a typo ("900s") or a value carrying a quote makes osascript reject the program and
+#  aborts the write with an opaque syntax error instead of a message about the override.
+#  Anything that is not digits falls back to the default (AFC-436).
+[[ "$NOTES_APPLE_EVENT_TIMEOUT_S" =~ ^[0-9]+$ ]] || NOTES_APPLE_EVENT_TIMEOUT_S=900
+# How long one Shortcuts invocation may run.  The "Pin Coding Note" Shortcut can wait on a note
+# picker on the owner's screen,  so an unbounded run can outlast the caller's cap:  the note is
+# written and the caller is then told the outcome is unknown and refuses the retry (AFC-436).
+NOTES_SHORTCUT_TIMEOUT_S="${NOTES_SHORTCUT_TIMEOUT_S:-30}"
+[[ "$NOTES_SHORTCUT_TIMEOUT_S" =~ ^[0-9]+$ ]] || NOTES_SHORTCUT_TIMEOUT_S=30
 
 # Env overrides (agents may set these explicitly).
 [[ "${APPLE_NOTES_PIN:-0}" == "1" || "${APPLE_NOTES_PIN:-}" == "true" ]] && WANT_PIN=1
@@ -306,9 +318,20 @@ _ensure_shortcuts_running() {
   return 1
 }
 
+# Run a Shortcuts command under a bound.  macOS has no GNU "timeout",  so the bound is perl's
+# alarm,  the same idiom the runtime sync script uses for its git call.  Without perl the run is
+# unbounded,  which is the behaviour this script had before (AFC-436).
+_run_shortcuts_bounded() {  # $@ = the shortcuts command
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$NOTES_SHORTCUT_TIMEOUT_S" "$@"
+  else
+    "$@"
+  fi
+}
+
 _run_note_shortcut() {  # $1 = shortcut name
   local listing
-  if ! listing="$(shortcuts list 2>/dev/null)"; then
+  if ! listing="$(_run_shortcuts_bounded shortcuts list 2>/dev/null)"; then
     return 3
   fi
   printf '%s\n' "$listing" | grep -qxF "$1" || return 2
@@ -331,7 +354,7 @@ _run_note_shortcut() {  # $1 = shortcut name
   # retry is the less likely of the two to miss it.
   attempt=1
   while :; do
-    if shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
+    if _run_shortcuts_bounded shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
       rm -f "$tmp"
       return 0
     fi

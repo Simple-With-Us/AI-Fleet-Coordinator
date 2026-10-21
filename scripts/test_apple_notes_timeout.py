@@ -11,8 +11,10 @@ script, so a later edit that drops it fails here instead of failing on a 183 KB 
 
 The timeout lives in one place, the NOTES_APPLE_EVENT_TIMEOUT_S constant, and a caller that
 runs the helper must allow more than it:  a cap below the timeout kills the write while
-osascript is still working, and the later completion creates a duplicate note.  The last test
-holds that relationship.
+osascript is still working, and the later completion creates a duplicate note.  The caller must
+also allow for the pin phase that follows the write,  whose Shortcut runs are bounded by
+NOTES_SHORTCUT_TIMEOUT_S:  a cap that cuts that phase short reports outcome_unknown for a note
+that was written.  The last test holds that relationship.
 
 Run:  python3 -m unittest scripts/test_apple_notes_timeout.py  (or cd scripts && python3 -m unittest test_apple_notes_timeout)
 """
@@ -33,6 +35,13 @@ SCRIPT = SCRIPTS / "apple-notes-coding.sh"
 TIMEOUT_DEFAULT_S = 900
 #  the name the AppleScript blocks use,  so the two of them cannot drift apart
 TIMEOUT_NAME = "NOTES_APPLE_EVENT_TIMEOUT_S"
+#  the bound one Shortcuts invocation runs under (NOTES_SHORTCUT_TIMEOUT_S in the helper)
+SHORTCUT_TIMEOUT_NAME = "NOTES_SHORTCUT_TIMEOUT_S"
+SHORTCUT_TIMEOUT_DEFAULT_S = 30
+#  the pin phase that follows the write:  a 2 s settle for the note index,  up to 5 s for the
+#  Shortcuts app to start,  one bounded list lookup,  and up to two bounded runs with a 3 s pause
+#  between them
+PIN_BUDGET_S = 2 + 5 + 3 * SHORTCUT_TIMEOUT_DEFAULT_S + 3
 
 
 class AppleEventTimeoutTests(unittest.TestCase):
@@ -72,29 +81,94 @@ class AppleEventTimeoutTests(unittest.TestCase):
 
     def test_the_reason_is_recorded_next_to_the_constant(self) -> None:
         #  The comment is the evidence for the 900 s value;  a bare number would be a guess.
-        self.assertIn("AppleEvent timed out. (-1712)", self.text)
+        #  It has to sit with the constant it explains:  a reason recorded somewhere else in the
+        #  file says nothing about this number.
         self.assertIn(f"with timeout of {TIMEOUT_NAME} seconds", self.text)
+        constant = self.text.index(f'{TIMEOUT_NAME}="${{{TIMEOUT_NAME}:-')
+        #  the comment block directly above the constant,  and the constant itself
+        lines = self.text[:constant].split("\n")
+        index = len(lines) - 1
+        while index >= 0 and not lines[index].strip():
+            index -= 1
+        while index >= 0 and lines[index].startswith("#"):
+            index -= 1
+        window = "\n".join(lines[index + 1 :]) + self.text[constant : constant + 200]
+        self.assertIn("AppleEvent timed out. (-1712)", window)
+
+    def test_a_malformed_timeout_override_falls_back_to_the_default(self) -> None:
+        """The value goes into the AppleScript source,  so a malformed one must not reach it.
+
+        osascript rejects a program that is not valid AppleScript,  and the helper runs under
+        "set -euo pipefail",  so a typo ("900s") aborts the write with an opaque syntax error
+        instead of a message about the override.
+        """
+        lines = self.text.split("\n")
+        start = next(
+            i
+            for i, line in enumerate(lines)
+            if line.startswith(f'{TIMEOUT_NAME}="${{{TIMEOUT_NAME}:-')
+        )
+        check = next(
+            (i for i in range(start + 1, start + 12) if "=~" in lines[i] and TIMEOUT_NAME in lines[i]),
+            None,
+        )
+        self.assertIsNotNone(check, "the override is not checked for being a number of seconds")
+        snippet = (
+            "\n".join(lines[start : check + 1]) + f'\nprintf "%s\\n" "${TIMEOUT_NAME}"\n'
+        )
+        for value, expected in (("900s", 900), ("", 900), ("450", 450), ('900"; end', 900)):
+            with self.subTest(value=value):
+                proc = subprocess.run(
+                    ["bash", "-c", snippet],
+                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), TIMEOUT_NAME: value},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(proc.stdout.strip(), str(expected))
+
+    def test_the_shortcut_run_is_bounded(self) -> None:
+        """The Shortcut can wait on a note picker on the owner's screen,  so its run has a bound.
+
+        An unbounded run can outlast the caller's cap:  the note is written and the caller is then
+        told the outcome is unknown and refuses the retry of a request that did succeed.
+        """
+        pattern = re.compile(
+            rf'^{SHORTCUT_TIMEOUT_NAME}="\$\{{{SHORTCUT_TIMEOUT_NAME}:-(\d+)\}}"$', re.MULTILINE
+        )
+        found = pattern.findall(self.text)
+        self.assertEqual(
+            len(found), 1, f"the shortcut timeout constant is not defined exactly once: {found}"
+        )
+        self.assertEqual(int(found[0]), SHORTCUT_TIMEOUT_DEFAULT_S)
+        #  both the list lookup and the run go through the bound,  so the budget above holds
+        self.assertEqual(self.text.count("_run_shortcuts_bounded shortcuts"), 2)
+        self.assertIn("alarm shift; exec @ARGV", self.text)
 
     def test_the_create_and_update_blocks_both_carry_it(self) -> None:
         #  The update block writes the system attribute path,  the create block the $TMP path.
         self.assertIn('set htmlPath to POSIX file (system attribute "TMP")', self.text)
         self.assertIn('set htmlPath to POSIX file "$TMP"', self.text)
 
-    def test_the_caller_allows_more_than_the_script_timeout(self) -> None:
-        """A cap below the timeout kills the write while osascript is still working.
+    def test_the_caller_allows_more_than_the_write_and_the_pin(self) -> None:
+        """The cap has to cover the whole script run,  not only the write.
 
-        The script may then finish the note anyway,  so a retry writes a second one.  The
-        caller's cap has to sit above the script's own timeout,  and this test is what keeps
-        the two from drifting apart.
+        A cap above the write timeout alone still cuts a run short while the pin phase is
+        running:  the note is written by then,  so the caller reports outcome_unknown and
+        refuses the retry of a request that did succeed.  A cap below the write timeout kills the
+        write while osascript is still working,  and the later completion creates a second note.
+        This test is what keeps the two from drifting apart.
         """
         sys.path.insert(0, str(SCRIPTS))
         from agent_sync import notes
 
         self.assertGreater(
             notes.SCRIPT_TIMEOUT_S,
-            TIMEOUT_DEFAULT_S,
-            "the caller's cap is at or below the script's AppleEvent timeout,  so a large write "
-            "is killed while osascript is still running",
+            TIMEOUT_DEFAULT_S + PIN_BUDGET_S,
+            "the caller's cap is not above the write timeout plus the pin phase,  so a run that "
+            "pins after the write can be cut short,  and the caller then refuses the retry of a "
+            "note that was written",
         )
 
     def test_the_notes_blocks_use_an_unquoted_heredoc(self) -> None:
