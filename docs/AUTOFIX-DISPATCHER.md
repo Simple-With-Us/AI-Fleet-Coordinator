@@ -14,13 +14,17 @@ variable `SWU_AUTOFIX_DISPATCHER_ENABLED` is `true`.  Each tick:
 2. Scans open, non-draft PRs in the caller repos for review findings (a nonempty
    review comment from `kody-ai[bot]`, `chatgpt-codex-connector[bot]`, or
    `sentry[bot]`) with no `swu-autofix-run: bot=...` marker comment from any bot.
+   The reusable lowercases the login and strips `[bot]` when it writes the
+   marker, so swu-echo[bot]'s marker reads `swu-autofix-run: bot=swu-echo`.
 3. Picks the oldest by `created_at` and posts `@pr-autofix ... cc @jaywedgeworth22`
    as `swu-echo[bot]`.  The repo's normal pr-autofix caller starts the run and leaves
    the tried marker; the tag consumes swu-echo's one run on that PR under the
    one-run-per-bot-per-PR owner rule.
 4. Appends the dispatch to `autofix-dispatcher/tally.jsonl` on the
-   `autofix-dispatcher-state` branch and reconciles older entries: run id from the
-   marker comment, conclusion, and `total_cost_usd` from the run log.
+   `autofix-dispatcher-state` branch.  Every tick also reconciles up to 20 of
+   the oldest unreconciled entries: run id from the marker comment, conclusion,
+   and `total_cost_usd` from the run log.  A tick that learns anything saves
+   even when a later step fails.
 
 The tag gate itself is unchanged — bots and Jay can still start runs by tagging
 `@pr-autofix` directly.  The dispatcher only adds untried-PR pickups on top.

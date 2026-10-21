@@ -1,8 +1,13 @@
 // Pure helpers for the autofix dispatcher.  No I/O here; dispatcher.mjs owns GitHub.
 // The tried marker format is owned by pr-autofix-reusable.yml: its runs leave a
-// marker comment of the form `swu-autofix-run: bot=<login>` on the PR.
+// marker comment of the form `swu-autofix-run: bot=<login>` on the PR, where the
+// reusable lowercases the login and strips the `[bot]` suffix first (the
+// `requester=...` line in pr-autofix-reusable.yml), so swu-echo[bot]'s marker
+// reads `swu-autofix-run: bot=swu-echo`.
 
 export const DISPATCHER_BOT = 'swu-echo[bot]';
+// The bot login as the reusable actually writes it into a marker comment.
+export const DISPATCHER_MARKER_BOT = DISPATCHER_BOT.replace(/\[bot\]$/, '').toLowerCase();
 export const DISPATCH_TAG = '@pr-autofix';
 export const MARKER_PATTERN = /swu-autofix-run:\s*bot=([\w.-]+(?:\[bot\])?)/;
 export const REVIEWER_BOTS = ['kody-ai[bot]', 'chatgpt-codex-connector[bot]', 'sentry[bot]'];

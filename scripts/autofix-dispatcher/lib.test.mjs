@@ -10,10 +10,14 @@ import {
   parseTally,
   pickOldest,
   tallyTotalUsd,
+  DISPATCHER_MARKER_BOT,
 } from './lib.mjs';
 
 test('markerBot reads the reusable marker format', () => {
-  assert.equal(markerBot('<!-- swu-autofix-run: bot=swu-echo[bot] --> Autofix run ...'), 'swu-echo[bot]');
+  // The reusable strips the [bot] suffix and lowercases before writing.
+  assert.equal(markerBot('<!-- swu-autofix-run: bot=swu-echo --> Autofix run ...'), 'swu-echo');
+  assert.equal(DISPATCHER_MARKER_BOT, 'swu-echo');
+  // The parser also tolerates the unstripped spelling.
   assert.equal(markerBot('swu-autofix-run: bot=kody-ai[bot]'), 'kody-ai[bot]');
   assert.equal(markerBot('no marker here'), null);
 });
@@ -55,7 +59,7 @@ test('extractCostUsd reads the last total_cost_usd in a log', () => {
 });
 
 test('extractRunId reads the run id from the marker comment', () => {
-  const body = '<!-- swu-autofix-run: bot=swu-echo[bot] --> Autofix run https://github.com/Simple-With-Us/BotFleet/actions/runs/39568680329 started';
+  const body = '<!-- swu-autofix-run: bot=swu-echo --> Autofix run https://example.com/org/repo/actions/runs/39568680329 started';
   assert.equal(extractRunId(body), '39568680329');
   assert.equal(extractRunId('no link'), null);
 });

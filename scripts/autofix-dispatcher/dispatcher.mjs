@@ -14,6 +14,9 @@
 import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import {
+  DISPATCHER_BOT,
+  DISPATCHER_MARKER_BOT,
+  DISPATCH_TAG,
   dispatchCommentBody,
   extractCostUsd,
   extractRunId,
@@ -32,7 +35,11 @@ const STATE_PATH = 'autofix-dispatcher/tally.jsonl';
 const AUTOFIX_WORKFLOW_FILES = new Set([
   '.github/workflows/autofix.yml',
   '.github/workflows/claude-code-autofix.yml',
+  '.github/workflows/kody-fleet-autofix.yml',
 ]);
+// At most this many tally entries are reconciled per tick, so a long backlog
+// cannot stretch the scheduled job past its window.
+const RECONCILE_CAP = 20;
 // Every repo with a pr-autofix caller whose effective allowed_bots includes
 // swu-echo[bot].  homebrew-tap's caller names an explicit list without it, so the
 // tag would never fire there;  FleetLink has no pr-autofix caller.
@@ -68,11 +75,18 @@ function gh(argv, input = null) {
   });
 }
 
+// Every failed API call lands here.  main() aborts the tick when the list is
+// non-empty before any dispatch decision: a silently empty scan would look
+// like "no candidates" or, worse, "no marker yet" and double-spend a PR's one
+// autofix run.
+const apiErrors = [];
+
 function ghApiList(path, jq = '.[] | @json') {
   let out;
   try {
     out = gh(['api', path, '--paginate', '--jq', jq]);
-  } catch {
+  } catch (error) {
+    apiErrors.push({ path, error: String(error.stderr || error.message || error).slice(0, 200) });
     return [];
   }
   return out
@@ -82,10 +96,13 @@ function ghApiList(path, jq = '.[] | @json') {
     .map((line) => JSON.parse(line));
 }
 
-function ghApiObject(path) {
+function ghApiObject(path, { notFoundOk = false } = {}) {
   try {
     return JSON.parse(gh(['api', path]));
-  } catch {
+  } catch (error) {
+    const text = String(error.stderr || error.message || error);
+    if (notFoundOk && /HTTP 404|Not Found/.test(text)) return null;
+    apiErrors.push({ path, error: text.slice(0, 200) });
     return null;
   }
 }
@@ -110,7 +127,7 @@ function findCandidates(repos) {
   for (const repo of repos) {
     const pulls = ghApiList(`repos/${OWNER}/${repo}/pulls?state=open&per_page=100`);
     for (const pr of pulls) {
-      if (pr.draft) continue;
+      if (pr.draft || !pr.created_at) continue;
       const issueComments = ghApiList(
         `repos/${OWNER}/${repo}/issues/${pr.number}/comments?per_page=100`,
         '.[] | {body} | @json',
@@ -128,9 +145,9 @@ function findCandidates(repos) {
 }
 
 function loadTally() {
-  const branch = ghApiObject(`repos/${OWNER}/${STATE_REPO}/git/refs/heads/${STATE_BRANCH}`);
+  const branch = ghApiObject(`repos/${OWNER}/${STATE_REPO}/git/refs/heads/${STATE_BRANCH}`, { notFoundOk: true });
   if (!branch) return { entries: [], sha: null };
-  const file = ghApiObject(`repos/${OWNER}/${STATE_REPO}/contents/${STATE_PATH}?ref=${STATE_BRANCH}`);
+  const file = ghApiObject(`repos/${OWNER}/${STATE_REPO}/contents/${STATE_PATH}?ref=${STATE_BRANCH}`, { notFoundOk: true });
   if (!file?.content) return { entries: [], sha: null };
   return { entries: parseTally(Buffer.from(file.content, 'base64').toString('utf8')), sha: file.sha };
 }
@@ -142,7 +159,7 @@ function reconcileEntry(entry) {
       '.[] | {body} | @json',
     );
     const marker = comments.find(
-      (comment) => markerBot(comment.body) === 'swu-echo[bot]' && extractRunId(comment.body),
+      (comment) => markerBot(comment.body) === DISPATCHER_MARKER_BOT && extractRunId(comment.body),
     );
     if (marker) entry.run_id = extractRunId(marker.body);
   }
@@ -165,10 +182,14 @@ function reconcileEntry(entry) {
 function saveTally(entries, existingSha) {
   const content = Buffer.from(entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n').toString('base64');
   const main = ghApiObject(`repos/${OWNER}/${STATE_REPO}/git/refs/heads/main`);
+  if (!main?.object?.sha) throw new Error('cannot read the main ref of the state repo');
   try {
     gh(['api', '-X', 'POST', `repos/${OWNER}/${STATE_REPO}/git/refs`, '-f', `ref=refs/heads/${STATE_BRANCH}`, '-f', `sha=${main.object.sha}`]);
   } catch {
-    // The state branch already exists.
+    // The create usually fails because the branch exists, but the same catch
+    // also swallows auth and network failures - verify the ref landed.
+    ghApiObject(`repos/${OWNER}/${STATE_REPO}/git/refs/heads/${STATE_BRANCH}`)
+      ?? (() => { throw new Error(`state branch ${STATE_BRANCH} does not exist and could not be created`); })();
   }
   const body = { message: 'autofix dispatcher tally', content, branch: STATE_BRANCH };
   if (existingSha) body.sha = existingSha;
@@ -192,57 +213,94 @@ function main() {
   const repos = args.repos
     ? args.repos.split(',').map((name) => name.trim()).filter(Boolean)
     : DEFAULT_REPOS;
-  const active = autofixRunsActive(repos);
-  const result = { busy: active, candidate_count: 0, pick: null, dispatched: false };
+  const result = { busy: [], candidate_count: 0, pick: null, dispatched: false };
+  const tally = args['dry-run'] ? { entries: [], sha: null } : loadTally();
 
-  if (active.length > 0) {
-    print(result, args.json);
-    return;
+  try {
+    // Reconcile the oldest unreconciled dispatches on every tick, capped so a
+    // backlog cannot stretch the scheduled job.  Before this ran only on
+    // dispatch ticks, so a run started on the last dispatch stayed
+    // unreconciled until the next dispatch - possibly never.
+    let reconciled = 0;
+    tally.entries = tally.entries.map((entry) => {
+      if (reconciled >= RECONCILE_CAP) return entry;
+      if (entry.run_id != null && entry.conclusion != null) return entry;
+      reconciled += 1;
+      return reconcileEntry(entry);
+    });
+
+    const active = autofixRunsActive(repos);
+    result.busy = active;
+
+    // Fail closed: any API failure during reconcile or the scans above makes
+    // "no active runs" and "no marker yet" untrustworthy, so skip dispatch.
+    if (active.length === 0 && apiErrors.length === 0) {
+      const candidates = findCandidates(repos);
+      result.candidate_count = candidates.length;
+      const pick = pickOldest(candidates);
+      result.pick = pick;
+
+      if (pick && !args['dry-run'] && apiErrors.length === 0) {
+        // Recheck immediately before spending: a run started between the scan
+        // and now wins.
+        if (autofixRunsActive(repos).length > 0 || apiErrors.length > 0) {
+          result.busy = autofixRunsActive(repos);
+        } else {
+          // Idempotency: a crash between posting the tag and saving the tally
+          // would otherwise post a second tag comment on the next tick.
+          const prior = ghApiList(
+            `repos/${OWNER}/${pick.repo}/issues/${pick.number}/comments?per_page=100`,
+            '.[] | {body, html_url, user: {login: .user.login}} | @json',
+          ).find(
+            (comment) => comment?.user?.login === DISPATCHER_BOT
+              && String(comment?.body || '').includes(`${DISPATCH_TAG} dispatcher trial`),
+          );
+          let commentUrl = prior?.html_url || null;
+          if (!prior && apiErrors.length === 0) {
+            const posted = JSON.parse(
+              gh([
+                'api', '-X', 'POST', `repos/${OWNER}/${pick.repo}/issues/${pick.number}/comments`,
+                '-f', `body=${dispatchCommentBody()}`,
+              ]),
+            );
+            commentUrl = posted.html_url;
+            result.dispatched = true;
+            result.comment_url = posted.html_url;
+          }
+          const known = tally.entries.some(
+            (entry) => entry.repo === pick.repo && entry.number === pick.number,
+          );
+          if (!known) {
+            tally.entries.push({
+              ts: new Date().toISOString(),
+              repo: pick.repo,
+              number: pick.number,
+              pr_url: pick.url,
+              comment_url: commentUrl,
+              run_id: prior ? extractRunId(prior.body) : null,
+              run_url: null,
+              conclusion: null,
+              cost_usd: null,
+            });
+          }
+        }
+      }
+    }
+  } finally {
+    // Save whatever reconcile learned even when a later step failed: losing it
+    // would re-spend lookups every tick and, without the idempotency check
+    // above, risk a second tag on the same PR.
+    if (!args['dry-run']) saveTally(tally.entries, tally.sha);
   }
 
-  const candidates = findCandidates(repos);
-  const pick = pickOldest(candidates);
-  result.candidate_count = candidates.length;
-  result.pick = pick;
-
-  if (!pick || args['dry-run']) {
-    print(result, args.json);
-    return;
-  }
-
-  // Recheck immediately before spending: a run started between the scan and now wins.
-  if (autofixRunsActive(repos).length > 0) {
-    print(result, args.json);
-    return;
-  }
-
-  const posted = JSON.parse(
-    gh([
-      'api', '-X', 'POST', `repos/${OWNER}/${pick.repo}/issues/${pick.number}/comments`,
-      '-f', `body=${dispatchCommentBody()}`,
-    ]),
-  );
-  result.dispatched = true;
-  result.comment_url = posted.html_url;
-
-  const tally = loadTally();
-  tally.entries = tally.entries.map(reconcileEntry);
-  tally.entries.push({
-    ts: new Date().toISOString(),
-    repo: pick.repo,
-    number: pick.number,
-    pr_url: pick.url,
-    comment_url: posted.html_url,
-    run_id: null,
-    run_url: null,
-    conclusion: null,
-    cost_usd: null,
-  });
-  saveTally(tally.entries, tally.sha);
   result.tally_total_usd = tallyTotalUsd(tally.entries);
   result.tally_runs = tally.entries.length;
-
   print(result, args.json);
+  if (apiErrors.length > 0) {
+    process.stderr.write(`aborted: ${apiErrors.length} GitHub API call(s) failed; refused to act on partial data\n`);
+    for (const failure of apiErrors) process.stderr.write(`  ${failure.path}: ${failure.error}\n`);
+    process.exit(1);
+  }
 }
 
 main();
