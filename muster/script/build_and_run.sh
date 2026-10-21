@@ -86,42 +86,15 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # Selection uses public certificate metadata; no private key material is exported.
-SIGNING_SELECTION="$(python3 - <<'PY'
-import os
-import re
-import subprocess
-import sys
-
-try:
-    result = subprocess.run(
-        ["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"],
-        check=True, capture_output=True, text=True, timeout=30,
-    )
-except subprocess.TimeoutExpired:
-    sys.exit(124)
-except FileNotFoundError:
-    sys.exit(127)
-identities = re.findall(
-    r'\b([A-Fa-f0-9]{40}) "(Developer ID Application: [^"\n]+ \(([A-Z0-9]{10})\))"',
-    result.stdout,
-)
-requested = os.environ.get("MUSTER_SIGNING_IDENTITY")
-if requested:
-    normalized = requested.replace(":", "").upper()
-    identities = [
-        item for item in identities
-        if normalized == item[0].upper() or requested == item[1]
-    ]
-if len(identities) != 1:
-    sys.exit("Expected exactly one matching valid Developer ID Application identity; "
-             "set MUSTER_SIGNING_IDENTITY to the certificate SHA-1 (colons optional) "
-             "or the full 'Developer ID Application: <name> (<TEAM>)' label.")
-fingerprint, _, team = identities[0]
-print(fingerprint, team)
-PY
-)"
+SIGNING_SELECTION="$(python3 "$ROOT_DIR/script/build_support.py" signing-identity)"
 read -r SIGNING_IDENTITY TEAM_ID <<< "$SIGNING_SELECTION"
 
+# The certificate is public and can be read by path,  but codesign needs the private
+# key,  and the key is reachable only through the keychain search list.  When the
+# login keychain is locked or is not on that list,  the build fails deep inside
+# xcodebuild with a message about certificates that does not name the cause.  So the
+# cause is checked here,  where it can be named.
+python3 "$ROOT_DIR/script/build_support.py" keychain-preflight
 cd "$ROOT_DIR"
 xcodegen generate --spec project.yml
 mkdir -p "$DIST_DIR"

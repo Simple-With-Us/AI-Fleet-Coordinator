@@ -110,6 +110,7 @@ struct FleetGridView: View {
                 ConfigFilePanel(
                     cell: cell,
                     artifacts: store.artifacts(for: cell),
+                    sources: store.ruleSources(seat: cell.seat, kind: cell.kind),
                     onClose: { selectedCell = nil }
                 )
                 .frame(height: CGFloat(panelHeight))
