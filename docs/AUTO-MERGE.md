@@ -25,6 +25,7 @@ jobs:
       # self_guard_paths: .github/CODEOWNERS,.github/workflows/auto-merge-prs.yml,scripts/pr-touches-codeowners-paths.sh
       # restrict_to_pattern: "dependabot|congress-trading-shared"   # dep-bump lanes only
       # hold_labels: "do-not-automerge,needs-human-merge"
+      # kody_check_name: "Kody Code Review"   # fleet reviewer check-run name
     secrets:
       merge_token: ${{ secrets.GH_PAT || secrets.SHEPHERD_TOKEN }}
 ```
@@ -42,10 +43,19 @@ jobs:
 - Hold labels and ineligible PRs actively disable any already-armed merge.
 - Owner rule 2026-10-21: a PR is never merged while a Kodus review is running
   on its head commit or an autofix run (PR Autofix, Claude Code Autofix, or
-  Kody fleet autofix) is queued or in progress on its head branch.  Both are
-  classify gates, so tripping one also disables an already-armed merge, and
-  both API lookups fail closed.  Re-arming happens on the next pull_request
+  Kody fleet autofix) is queued or in progress involving it.  Autofix lanes
+  fire on `issue_comment` and `check_run` events, so their runs attach to the
+  default branch, never the PR head branch - the gate finds them through the
+  per-PR marker comments the lanes post (each carries its run id) and through
+  repo-wide active runs whose `pull_requests` list the PR.  Both are classify
+  gates, so tripping one also disables an already-armed merge, and every API
+  lookup fails closed.  The check-run name is the `kody_check_name` input
+  (default `Kody Code Review`).  Re-arming happens on the next pull_request
   event after the review or run settles.
+- Gate lookups use `merge_token` when the caller passes it, falling back to
+  `GITHUB_TOKEN`.  The called workflow's `GITHUB_TOKEN` is capped by the
+  caller's permissions, so a caller that wants the fallback to work also
+  grants its workflow `checks: read`, `actions: read` and `issues: read`.
 
 ## Merge queues
 

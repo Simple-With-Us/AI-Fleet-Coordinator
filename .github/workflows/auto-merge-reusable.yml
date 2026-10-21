@@ -62,6 +62,13 @@ on:
           merge.
         type: string
         default: "do-not-automerge,needs-human-merge"
+      kody_check_name:
+        description: >-
+          Check-run name of the fleet reviewer whose running check blocks arming
+          (owner rule 2026-10-21).  An input so a reviewer rename is a caller
+          change, not a silent gap.
+        type: string
+        default: "Kody Code Review"
       delete_branch:
         description: Delete the head branch after merge.
         type: boolean
@@ -80,6 +87,7 @@ permissions:
   # and the head branch's workflow runs (autofix lanes).
   checks: read
   actions: read
+  issues: read
 
 jobs:
   classify:
@@ -107,6 +115,9 @@ jobs:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           TITLE: ${{ github.event.pull_request.title }}
           REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          KODY_CHECK_NAME: ${{ inputs.kody_check_name }}
+          MERGE_TOKEN: ${{ secrets.merge_token }}
           RESTRICT: ${{ inputs.restrict_to_pattern }}
           SELF_GUARD: ${{ inputs.self_guard_paths }}
           HOLD_LABELS: ${{ inputs.hold_labels }}
@@ -127,11 +138,14 @@ jobs:
           done
 
           # Owner rule 2026-10-21: never merge while a Kodus review is running on
-          # the head commit or an autofix run is queued or in progress on the head
-          # branch.  skip=trues here also disarm any already-armed auto-merge via the
-          # disarm job, and both lookups fail closed.
+          # the head commit or an autofix run involving this PR is queued or in
+          # progress.  skip=trues here also disarm any already-armed merge via the
+          # disarm job, and every lookup fails closed.
+          GATE_TOKEN="$MERGE_TOKEN"
+          [ -n "$GATE_TOKEN" ] || GATE_TOKEN="$GH_TOKEN"
+
           kody_status="$RUNNER_TEMP/kody-status.txt"
-          if ! gh api "repos/$REPO/commits/$HEAD/check-runs?per_page=100" --jq '[.check_runs[] | select(.name == "Kody Code Review") | .status] | .[]' > "$kody_status" 2>"$RUNNER_TEMP/kody.err"; then
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/commits/$HEAD/check-runs?per_page=100" --jq "[.check_runs[] | select(.name == \"$KODY_CHECK_NAME\") | .status] | .[]" > "$kody_status" 2>"$RUNNER_TEMP/kody.err"; then
             cat "$RUNNER_TEMP/kody.err" >&2
             skip "Kodus review check lookup failed - fail closed"
           fi
@@ -139,16 +153,37 @@ jobs:
             skip "Kodus review running on head $HEAD"
           fi
 
+          # Autofix lanes fire on issue_comment and check_run events, so their runs
+          # attach to the DEFAULT branch, never the PR head branch -- filtering runs
+          # by the head branch would never see them.  Two precise sources instead:
+          # the per-PR marker comments the lanes leave (they carry the run id), and
+          # repo-wide active runs whose pull_requests list this PR.
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate --jq '.[] | @json' > "$RUNNER_TEMP/pr-comments.txt" 2>"$RUNNER_TEMP/comments.err"; then
+            cat "$RUNNER_TEMP/comments.err" >&2
+            skip "PR comment lookup failed - fail closed"
+          fi
+          grep 'swu-autofix-run: bot=' "$RUNNER_TEMP/pr-comments.txt" | grep -oE 'actions/runs/[0-9]+' | cut -d/ -f3 | sort -u > "$RUNNER_TEMP/marker-runs.txt" || true
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            run_status="$(GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs/$run_id" --jq '.status' 2>/dev/null || echo lookup-failed)"
+            if [ "$run_status" = "lookup-failed" ]; then
+              skip "autofix run status lookup failed - fail closed"
+            fi
+            if [ "$run_status" = "queued" ] || [ "$run_status" = "in_progress" ]; then
+              skip "autofix run $run_id $run_status on this PR"
+            fi
+          done < "$RUNNER_TEMP/marker-runs.txt"
+
           runs_out="$RUNNER_TEMP/autofix-runs.txt"
           : > "$runs_out"
           for st in queued in_progress; do
-            if ! gh api "repos/$REPO/actions/runs?branch=$HEAD_REF&status=$st&per_page=20" --jq '.workflow_runs[].path' >> "$runs_out" 2>"$RUNNER_TEMP/runs.err"; then
+            if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs?status=$st&per_page=100" --jq '.workflow_runs[] | {path, prs: [.pull_requests[].number]} | @json' >> "$runs_out" 2>"$RUNNER_TEMP/runs.err"; then
               cat "$RUNNER_TEMP/runs.err" >&2
               skip "autofix run lookup failed - fail closed"
             fi
           done
-          if grep -qxE '\.github/workflows/(autofix|claude-code-autofix|kody-fleet-autofix)\.yml' "$runs_out"; then
-            skip "autofix run queued or in progress on $HEAD_REF"
+          if jq -e --argjson pr "$PR_NUMBER" 'select(.path == ".github/workflows/autofix.yml" or .path == ".github/workflows/claude-code-autofix.yml" or .path == ".github/workflows/kody-fleet-autofix.yml") | select(.prs | index($pr) != null)' "$runs_out" > /dev/null 2>&1; then
+            skip "autofix run queued or in progress for PR #$PR_NUMBER"
           fi
 
           # Lane restriction (dependency-bump callers)

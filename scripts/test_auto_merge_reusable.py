@@ -254,38 +254,53 @@ class ArmStep(unittest.TestCase):
         self.assertRegex(QUEUE_REFUSAL, r"delete-branch.*when merge queue enabled")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 CLASSIFY_STEP_NAME = "Classify PR for auto-merge eligibility"
 
 # The fake answers each API call with the --jq-filtered lines the step expects:
-# check-run statuses for the Kody lookup, workflow paths for the runs lookups.
+# check-run statuses for the Kody lookup, one @json line per PR comment, the run
+# status for marker-run lookups, and one @json line per active workflow run.
 # The compare call fails on purpose:  it bounds the script after the gates, so a
 # "compare API failed" skip proves the gates passed.
 FAKE_GH_CLASSIFY = """#!/bin/bash
-printf '%s\\n' "$*" >> "$GH_CALLS"
+printf '%s\n' "$*" >> "$GH_CALLS"
 case "$*" in
   *check-runs*)
     case "$GH_FAKE_MODE" in
       kody_api_fails) echo "gh: api down" >&2; exit 1 ;;
-      kody_running) printf 'in_progress\\n' ;;
-      *) printf 'completed\\n' ;;
+      kody_running) printf 'in_progress\n' ;;
+      *) printf 'completed\n' ;;
+    esac
+    exit 0
+    ;;
+  *issues/1/comments*)
+    case "$GH_FAKE_MODE" in
+      comments_api_fails) echo "gh: api down" >&2; exit 1 ;;
+      marker_run_active|marker_run_done)
+        printf '%s\n' '{"body":"<!-- swu-autofix-run: bot=swu-echo --> Autofix run https://example.com/o/r/actions/runs/555 started"}'
+        ;;
+    esac
+    exit 0
+    ;;
+  *actions/runs/555*)
+    case "$GH_FAKE_MODE" in
+      marker_status_fails) echo "gh: api down" >&2; exit 1 ;;
+      marker_run_active) printf 'in_progress\n' ;;
+      *) printf 'completed\n' ;;
     esac
     exit 0
     ;;
   *actions/runs*)
     case "$GH_FAKE_MODE" in
       runs_api_fails) echo "gh: api down" >&2; exit 1 ;;
-      autofix_queued)
-        if [[ "$*" == *status=queued* ]]; then printf '.github/workflows/kody-fleet-autofix.yml\\n'; fi
+      pr_linked_run)
+        if [[ "$*" == *status=queued* ]]; then
+          printf '%s\n' '{"path":".github/workflows/kody-fleet-autofix.yml","prs":[1]}'
+        fi
         ;;
-      autofix_in_progress)
-        if [[ "$*" == *status=in_progress* ]]; then printf '.github/workflows/autofix.yml\\n'; fi
-        ;;
-      clear)
-        if [[ "$*" == *status=queued* ]]; then printf '.github/workflows/ci.yml\\n'; fi
+      *)
+        if [[ "$*" == *status=queued* ]]; then
+          printf '%s\n' '{"path":".github/workflows/ci.yml","prs":[1]}'
+        fi
         ;;
     esac
     exit 0
@@ -295,7 +310,7 @@ case "$*" in
     exit 1
     ;;
 esac
-echo "gh: fake gh answers only check-runs, actions/runs and compare, got: $*" >&2
+echo "gh: fake gh answers only check-runs, comments, actions/runs and compare, got: $*" >&2
 exit 1
 """
 
@@ -318,6 +333,7 @@ def run_classify(mode: str) -> tuple[int, str, str]:
                 "GH_FAKE_MODE": mode,
                 "GH_CALLS": str(calls),
                 "GH_TOKEN": "fake-token",
+                "MERGE_TOKEN": "",
                 "GITHUB_OUTPUT": str(out),
                 "RUNNER_TEMP": str(root),
                 "BASE": "0" * 40,
@@ -325,6 +341,8 @@ def run_classify(mode: str) -> tuple[int, str, str]:
                 "HEAD_REF": "feature/x",
                 "TITLE": "x",
                 "REPO": "Simple-With-Us/Example",
+                "PR_NUMBER": "1",
+                "KODY_CHECK_NAME": "Kody Code Review",
                 "RESTRICT": "",
                 "SELF_GUARD": "",
                 "HOLD_LABELS": "do-not-automerge,needs-human-merge",
@@ -354,7 +372,7 @@ class ClassifyInFlightGates(unittest.TestCase):
 
     def test_the_classify_step_is_the_one_under_test(self):
         self.assertIn("Kodus review running", step_script(CLASSIFY_STEP_NAME))
-        self.assertIn("autofix run queued or in progress", step_script(CLASSIFY_STEP_NAME))
+        self.assertIn("autofix run", step_script(CLASSIFY_STEP_NAME))
 
     def test_a_running_kodus_review_blocks_and_disarms(self):
         code, output, reason = run_classify("kody_running")
@@ -371,17 +389,37 @@ class ClassifyInFlightGates(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("fail closed", reason)
 
-    def test_a_queued_autofix_run_blocks_and_disarms(self):
-        code, output, reason = run_classify("autofix_queued")
+    def test_an_active_marker_run_blocks_and_disarms(self):
+        code, output, reason = run_classify("marker_run_active")
         self.assertEqual(code, 0, output)
-        self.assertIn("autofix run queued or in progress", reason)
+        self.assertIn("autofix run 555 in_progress", reason)
 
-    def test_an_in_progress_autofix_run_blocks_and_disarms(self):
-        code, output, reason = run_classify("autofix_in_progress")
+    def test_a_completed_marker_run_passes(self):
+        code, output, reason = run_classify("marker_run_done")
         self.assertEqual(code, 0, output)
-        self.assertIn("autofix run queued or in progress", reason)
+        self.assertIn("compare API failed", reason)
+
+    def test_the_marker_status_lookup_fails_closed(self):
+        code, output, reason = run_classify("marker_status_fails")
+        self.assertEqual(code, 0, output)
+        self.assertIn("fail closed", reason)
+
+    def test_a_pr_linked_autofix_run_blocks_and_disarms(self):
+        code, output, reason = run_classify("pr_linked_run")
+        self.assertEqual(code, 0, output)
+        self.assertIn("autofix run queued or in progress for PR #1", reason)
+
+    def test_the_comment_lookup_fails_closed(self):
+        code, output, reason = run_classify("comments_api_fails")
+        self.assertEqual(code, 0, output)
+        self.assertIn("fail closed", reason)
 
     def test_the_runs_lookup_fails_closed(self):
         code, output, reason = run_classify("runs_api_fails")
         self.assertEqual(code, 0, output)
         self.assertIn("fail closed", reason)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
