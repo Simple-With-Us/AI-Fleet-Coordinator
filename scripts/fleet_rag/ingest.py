@@ -505,45 +505,95 @@ def prune_source(
     return gone
 
 
-def _pending_nightly_path(state_path: pathlib.Path) -> pathlib.Path:
-    """Where a pending nightly leaves its marker, beside the lock it is waiting for."""
+def _pending_nightly_dir(state_path: pathlib.Path) -> pathlib.Path:
+    """Where the pending-nightly claims live, beside the lock they guard."""
     return pathlib.Path(state_path).parent / PENDING_NIGHTLY_NAME
 
 
-def _write_pending_nightly(path: pathlib.Path, deadline_ms: int) -> None:
-    """Claim the queue for a nightly that is about to wait for the lock."""
+def _pending_owner() -> str:
+    """A name for one run's claim, unique per process and per run."""
+    return f"{os.getpid()}-{uuid.uuid4().hex[:12]}"
+
+
+def _write_pending_nightly(directory: pathlib.Path, deadline_ms: int, owner: str) -> bool:
+    """Claim the queue for a nightly that is about to wait for the lock.
+
+    Each claim is its own file, named for the run that made it, so two runs can never
+    overwrite each other's claim and neither can clear the other's.  One shared marker
+    file could only name one owner, so the run that finished first cleared the claim of
+    the run that was still waiting, and a partial could then take the lock from it
+    (Sentry review, PR #813).
+    """
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+        directory.mkdir(parents=True, exist_ok=True)
+        _prune_expired_claims(directory)
+        path = directory / owner
+        tmp = directory / f".{owner}.tmp"
         tmp.write_text(
             json.dumps({"pid": os.getpid(), "deadline_ms": deadline_ms}) + "\n", encoding="utf-8"
         )
         os.replace(tmp, path)
+        return True
     except OSError:
-        #  A marker that cannot be written must not stop the nightly:  the lock still
+        #  A claim that cannot be written must not stop the nightly:  the lock still
         #  serializes the runs, and a partial that slips in is no worse than before.
-        pass
+        return False
 
 
-def _clear_pending_nightly(path: pathlib.Path) -> None:
+def _clear_pending_nightly(directory: pathlib.Path, owner: str) -> bool:
+    """Release one run's claim.  Only that run's claim:  the path is named for it."""
     try:
-        path.unlink()
+        (directory / owner).unlink()
+        return True
     except OSError:
-        pass
+        return False
 
 
-def _nightly_pending(path: pathlib.Path) -> bool:
-    """Whether a nightly has claimed the queue and its claim has not expired.
+def _claim_deadline_ms(entry: pathlib.Path) -> int | None:
+    """The deadline of one claim file, or None when it cannot be read."""
+    try:
+        payload = json.loads(entry.read_text(encoding="utf-8"))
+        return int(payload.get("deadline_ms", 0))
+    except (OSError, ValueError, TypeError):
+        return None
 
-    An expired marker is treated as absent, so a nightly that was killed leaves nothing
+
+def _prune_expired_claims(directory: pathlib.Path) -> None:
+    """Drop the claims that have expired, so a killed nightly leaves nothing behind."""
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name.startswith("."):
+            #  A temp file on its way in, not a claim.
+            continue
+        deadline_ms = _claim_deadline_ms(entry)
+        if deadline_ms is None or deadline_ms <= now_ms():
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+
+
+def _nightly_pending(directory: pathlib.Path) -> bool:
+    """Whether any nightly has claimed the queue and its claim has not expired.
+
+    An expired claim is treated as absent, so a nightly that was killed leaves nothing
     behind that wedges the partial refreshes.
     """
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        deadline_ms = int(payload.get("deadline_ms", 0))
-    except (OSError, ValueError, TypeError):
+        entries = list(directory.iterdir())
+    except OSError:
         return False
-    return deadline_ms > now_ms()
+    for entry in entries:
+        if entry.name.startswith("."):
+            #  A temp file on its way in, not a claim.
+            continue
+        deadline_ms = _claim_deadline_ms(entry)
+        if deadline_ms is not None and deadline_ms > now_ms():
+            return True
+    return False
 
 
 def _resolve_names(source_names: Iterable[str] | str | None) -> list[str]:
@@ -560,7 +610,13 @@ def _resolve_names(source_names: Iterable[str] | str | None) -> list[str]:
     return [s.strip() for s in source_names if s.strip()]
 
 
-def _attests_health(names: list[str], prune: bool, since_ms: int | None, limit: int | None) -> bool:
+def _attests_health(
+    names: list[str],
+    prune: bool,
+    since_ms: int | None,
+    limit: int | None,
+    dry_run: bool = False,
+) -> bool:
     """Whether this run writes the sentinel and last-run.json, and so can attest health.
 
     One predicate, used by the run that writes the sentinel and by the command line that
@@ -568,9 +624,18 @@ def _attests_health(names: list[str], prune: bool, since_ms: int | None, limit: 
     resolved source set and the wait on the `--all` flag -- so an explicitly enumerated
     nightly run attested health and still failed at once with exit 3 when the lock was
     held, which is the exact hole the wait was added to close (AFC-423).
+
+    A dry run attests nothing:  the sentinel write sits behind `if not dry_run:`, so a dry
+    run writes no sentinel and no last-run.json.  It must therefore be given no wait and
+    must not claim the queue either, or a diagnostic would lock the partial refreshes
+    out for the length of the claim (Sentry review, PR #813).
     """
     return (
-        prune and set(names) == set(sources.NIGHTLY_SOURCES) and since_ms is None and limit is None
+        not dry_run
+        and prune
+        and set(names) == set(sources.NIGHTLY_SOURCES)
+        and since_ms is None
+        and limit is None
     )
 
 
@@ -607,22 +672,31 @@ def run(
         )
     since_ms = _parse_since(since)
     lock_path = lock_path or (state_path.parent / "ingest.lock")
-    pending_path = _pending_nightly_path(state_path)
-    attests = _attests_health(names, prune, since_ms, limit)
-    if attests:
-        #  Claim the queue BEFORE the lock:  a partial refresh that arrives while this run is
-        #  still waiting would otherwise take the lock in the gap between the waiter's polls
-        #  and then hold it for its whole budget, which is how a nightly gets locked out
-        #  even though it is willing to wait (AFC-423).  The marker expires, so a killed
-        #  nightly leaves nothing behind.
-        _write_pending_nightly(pending_path, now_ms() + int((2 * max(lock_timeout_s, 3600)) * 1000))
-    elif _nightly_pending(pending_path):
+    pending_dir = _pending_nightly_dir(state_path)
+    attests = _attests_health(names, prune, since_ms, limit, dry_run)
+    #  Claim the queue BEFORE the lock, but only when this run will actually wait for it.
+    #  A run that waits for no time, or one that attests nothing, must not lock the partial
+    #  refreshes out for the length of the claim.
+    owner = _pending_owner()
+    claimed = False
+    if attests and lock_timeout_s > 0:
+        #  A partial refresh that arrives while this run is still waiting would otherwise
+        #  take the lock in the gap between the waiter's polls and then hold it for its
+        #  whole budget, which is how a nightly gets locked out even though it is willing
+        #  to wait (AFC-423).  The claim expires, so a killed nightly leaves nothing behind.
+        claimed = _write_pending_nightly(
+            pending_dir,
+            now_ms() + int((2 * max(lock_timeout_s, 3600)) * 1000),
+            owner,
+        )
+    if not attests and _nightly_pending(pending_dir):
         #  A partial refresh never waits:  it fails fast, because the sheet sync's ingest is
         #  best-effort and a long wait there would hold its own budget open.  It must not take
-        #  the lock from a nightly that is waiting for it either.
+        #  the lock from a nightly that is waiting for it either.  A dry run is in the same
+        #  case:  it writes nothing, but it would still take the lock from the waiter.
         raise NightlyPending(
-            f"a nightly ingest is pending ({pending_path}); a partial refresh must not take the "
-            f"lock, exit {EXIT_LOCKED}"
+            f"a nightly ingest is pending ({pending_dir}); this run must not take the lock, "
+            f"exit {EXIT_LOCKED}"
         )
     try:
         with IngestLock(lock_path, timeout_s=lock_timeout_s):
@@ -641,8 +715,10 @@ def run(
                 prune,
             )
     finally:
-        if attests:
-            _clear_pending_nightly(pending_path)
+        if claimed:
+            #  Release this run's claim and only this run's claim:  another nightly may be
+            #  waiting for the same lock, and its claim is its own file.
+            _clear_pending_nightly(pending_dir, owner)
 
 
 def _run_locked(
@@ -766,7 +842,7 @@ def _run_locked(
     if not dry_run:
         # Only an untruncated full nightly-source pass can attest global health.
         # Partial/manual refreshes keep their log and state without hiding a stale night.
-        nightly = _attests_health(names, prune, since_ms, limit)
+        nightly = _attests_health(names, prune, since_ms, limit, dry_run)
         if nightly:
             _write_sentinel_safely(cfg, qd, report, log)
             _write_json(last_run_path, report)
@@ -970,7 +1046,9 @@ def main(argv: list[str] | None = None) -> int:
         # `--all` flag, so an explicitly enumerated nightly run waits too (Kody review,
         # PR #800):  keying them differently let a health-attesting run be locked out.
         names = _resolve_names("all" if args.all else args.source)
-        attests = _attests_health(names, args.prune, _parse_since(args.since), args.limit)
+        attests = _attests_health(
+            names, args.prune, _parse_since(args.since), args.limit, args.dry_run
+        )
         lock_timeout = (
             args.lock_timeout if args.lock_timeout is not None else (6000.0 if attests else 0.0)
         )
