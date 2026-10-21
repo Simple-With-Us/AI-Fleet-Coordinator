@@ -343,6 +343,12 @@ jobs:
     # open-loops routines depend on.  A stub curl and a stub node stand in for the real ones.
     - name: BotFleet start wrapper tests
       run: bash scripts/test-botfleet-server-start.sh
+    # The resource watcher that runs on this Mac every 5 minutes:  the live
+    # thresholds it must carry, and the shared housekeeper lock it must take so
+    # two schedulers never reclaim at once.  Static checks plus the module's own
+    # evaluate();  nothing here reads the host or sends a webhook.
+    - name: Mac resource watch tests
+      run: bash scripts/test-mac-resource-watch.sh
 
   muster-macos-build:
     name: Muster macOS build
