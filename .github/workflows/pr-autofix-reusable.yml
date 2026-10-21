@@ -99,6 +99,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+      # Marker comments record which bot already used its one run on a PR.
+      issues: write
     env:
       ANTHROPIC_BASE_URL: https://api.minimax.io/anthropic
       ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAX_API_KEY }}
@@ -234,6 +236,7 @@ jobs:
         env:
           TRUSTED_MAX_ITERATIONS: ${{ steps.trusted.outputs.max_iterations }}
           TRUSTED_ALLOWED_BOTS: ${{ steps.trusted.outputs.allowed_bots }}
+          NOTIFY_URL: ${{ vars.SWU_AUTOFIX_NOTIFY_URL }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/autofix"
@@ -257,6 +260,16 @@ jobs:
 
           # jq prints an empty string as a blank line, so test for any non-blank character.
           grep -q '[^[:space:]]' "$dir/comment.txt" || skip "Empty comment body, skipping"
+
+          # Owner rule 2026-10-20:  a comment or review is an autofix request only when it
+          # carries the @pr-autofix tag — an untagged bot comment is discussion, not a
+          # request.  Sentry is exempt from the tag, the once-per-PR cap, and the
+          # notification (owner:  "Sentry can request all you want").
+          requester=$(printf '%s' "$author" | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
+          if [ "$requester" != "sentry" ] && \
+             ! grep -qiE '(^|[^A-Za-z0-9_-])@pr-autofix([^A-Za-z0-9_-]|$)' "$dir/comment.txt"; then
+            skip "No @pr-autofix tag in the comment, skipping"
+          fi
 
           # Trust boundary: the list comes from the default branch, never from the PR checkout.
           # The default-branch trusted policy's allowed_bots, when it has one, wins over the
@@ -321,6 +334,35 @@ jobs:
             if [ "$match" -ne 1 ]; then
               skip "Author '$author' is not in the allowed bot list, skipping"
             fi
+          fi
+
+          # Owner rule 2026-10-20:  one autofix run per bot per PR;  the owner
+          # (jaywedgeworth22) is unlimited,  and Sentry is exempt from the limit and the
+          # notification.  The record is a marker comment the accepted run leaves on the PR —
+          # deleting that comment is the manual reset.  Every other bot request,  accepted or
+          # not,  is reported to the owner through SWU_AUTOFIX_NOTIFY_URL when configured.
+          if [ "$requester" != "jaywedgeworth22" ] && [ "$requester" != "sentry" ]; then
+            marker="swu-autofix-run: bot=$requester"
+            prior=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
+              --jq ".[].body | select(contains(\"$marker\"))" 2> /dev/null | head -1 || true)
+            accepted=true
+            if [ -n "$prior" ]; then accepted=false; fi
+            if [ -n "${NOTIFY_URL:-}" ]; then
+              jq -n --arg repo "$GH_REPO" --arg pr "$PR_NUMBER" --arg bot "$requester" \
+                --arg event "$GITHUB_EVENT_NAME" --arg accepted "$accepted" \
+                --arg run "$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID" \
+                '{repo:$repo, pr:$pr, bot:$bot, event:$event, accepted:$accepted, run:$run}' \
+              | curl -sfS -m 10 -X POST -H 'Content-Type: application/json' --data-binary @- "$NOTIFY_URL" \
+                || echo "::notice::owner notification for $requester's request failed (non-blocking)"
+            else
+              echo "::notice::SWU_AUTOFIX_NOTIFY_URL is not set, owner notification for $requester's request skipped"
+            fi
+            if [ "$accepted" = "false" ]; then
+              skip "$author already used its one autofix run on this PR, skipping"
+            fi
+            gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+              -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  One autofix run per bot per PR (owner rule 2026-10-20);  delete this comment to reset." \
+              > /dev/null
           fi
 
           # The cap is per PR:  count the autofix commits this branch has that the default branch
