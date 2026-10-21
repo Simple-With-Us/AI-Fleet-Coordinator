@@ -415,8 +415,10 @@ A full `socratic-trade` snapshot is ~6.4 GB and takes about a minute to create.
 rate-limited Pushover path on FAIL) now calls `fleet-qdrant-health.sh`, which fails when:
 
 - the latest local snapshot of either collection is older than 36 hours, or
-- the **ingest sentinel** (`doc_id = meta/ingest-status`, written by every ingest run with
-  `updated_at` and `ok`) is older than 30 hours or its last run failed.
+- the **ingest sentinel** (`doc_id = meta/ingest-status`, written by each full untruncated
+  `recall ingest --all --prune` run with `updated_at` and `ok`) is older than 30 hours or its
+  last run failed.  A partial or unpruned run deliberately leaves the sentinel and
+  `last-run.json` untouched, so only the nightly pass attests health.
 
 The sentinel is the dead-man switch for the Oracle routine: if BotFleet stops running it, the
 box pages.  No credential leaves the box for this check.
