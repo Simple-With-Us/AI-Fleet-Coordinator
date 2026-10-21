@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -179,6 +180,17 @@ class PinDecisionTests(unittest.TestCase):
             child = dict(os.environ)
             child["PATH"] = f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}"
             child["STUB_COUNTER"] = str(counter)
+            if env.get("NO_PERL"):
+                #  A host without perl:  the bound on a Shortcut run comes from an alarm,  and it
+                #  must not depend on perl alone.  Only the tools the pin block needs are linked
+                #  in,  and perl is deliberately left out of the PATH.
+                plain = Path(tmp) / "plain"
+                plain.mkdir(mode=0o700)
+                for name in ("bash", "cat", "grep", "mktemp", "python3", "rm", "sleep"):
+                    found = shutil.which(name)
+                    self.assertIsNotNone(found, f"{name} is missing on this host")
+                    (plain / name).symlink_to(found)
+                child["PATH"] = f"{bindir}:{plain}"
             child.update(env)
             if env.get("STUB_MANAGED_KNOBS"):
                 child["HOME"] = tmp
@@ -250,6 +262,20 @@ class PinDecisionTests(unittest.TestCase):
         missing Shortcut (AFC-436).
         """
         p, runs = self.run_block(STUB_HANG="1", HARNESS_SHORTCUT_TIMEOUT_S="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("ran but did not complete", p.stderr)
+        self.assertIn("shortcut run failed", p.stdout)
+        self.assertNotIn("is not installed", p.stdout)
+        self.assertEqual(runs, 2, "the hanging run was not retried once")
+
+    def test_a_host_without_perl_bounds_the_run_all_the_same(self):
+        """The bound on a Shortcut run is an alarm,  and it must not depend on perl alone.
+
+        macOS ships perl,  but the run was unbounded without it,  and an unbounded run can
+        outlast the caller's cap:  the note is written and the caller is then told the outcome
+        is unknown and refuses the retry of a request that did succeed (AFC-436).
+        """
+        p, runs = self.run_block(NO_PERL="1", STUB_HANG="1", HARNESS_SHORTCUT_TIMEOUT_S="1")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("ran but did not complete", p.stderr)
         self.assertIn("shortcut run failed", p.stdout)

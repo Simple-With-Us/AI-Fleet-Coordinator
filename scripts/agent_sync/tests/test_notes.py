@@ -387,6 +387,16 @@ class DirectRunnerTests(unittest.TestCase):
         self.run_direct(envelope(rid="requestid-0002"), FakeRun())
         self.assertFalse(N._RUN_LOCK.locked())
 
+    def test_the_script_gets_the_cap_minus_the_lock_wait(self):
+        """The wait for the lock is counted inside the cap,  so the request cannot outlive it.
+
+        A request that waits the lock out and then takes the full cap would run for longer than
+        the budget the timeout test holds together (AFC-436).
+        """
+        run = FakeRun()
+        self.run_direct(envelope(), run)
+        self.assertEqual(run.calls[0]["kwargs"]["timeout"], N.SCRIPT_TIMEOUT_S - N.LOCK_WAIT_S)
+
     def test_text_fields_cover_the_title_the_body_and_the_text_flags(self):
         env = envelope(markdown="body", flags={"summary": "sum", "pr": "46", "notify": True})
         self.assertEqual(

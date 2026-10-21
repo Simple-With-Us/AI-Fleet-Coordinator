@@ -14,7 +14,9 @@ runs the helper must allow more than it:  a cap below the timeout kills the writ
 osascript is still working, and the later completion creates a duplicate note.  The caller must
 also allow for the pin phase that follows the write,  whose Shortcut runs are bounded by
 NOTES_SHORTCUT_TIMEOUT_S:  a cap that cuts that phase short reports outcome_unknown for a note
-that was written.  The last test holds that relationship.
+that was written.  The wait for the run lock is counted inside the cap as well,  so a request
+that waits the lock out and then runs does not outlive it.  The last test holds that
+relationship.
 
 Run:  python3 -m unittest scripts/test_apple_notes_timeout.py  (or cd scripts && python3 -m unittest test_apple_notes_timeout)
 """
@@ -158,17 +160,26 @@ class AppleEventTimeoutTests(unittest.TestCase):
         running:  the note is written by then,  so the caller reports outcome_unknown and
         refuses the retry of a request that did succeed.  A cap below the write timeout kills the
         write while osascript is still working,  and the later completion creates a second note.
-        This test is what keeps the two from drifting apart.
+        The wait for the run lock is counted inside the cap as well:  the script gets the cap
+        minus that wait,  so a request that waits the lock out and then runs does not outlive the
+        cap.  This test is what keeps the two from drifting apart.
         """
         sys.path.insert(0, str(SCRIPTS))
         from agent_sync import notes
 
         self.assertGreater(
             notes.SCRIPT_TIMEOUT_S,
+            TIMEOUT_DEFAULT_S + PIN_BUDGET_S + notes.LOCK_WAIT_S,
+            "the caller's cap is not above the write timeout, the pin phase and the lock wait,  so "
+            "a request that waits for the lock and then pins after the write can be cut short,  "
+            "and the caller then refuses the retry of a note that was written",
+        )
+        #  and the script itself still gets more than the write and the pin phase need
+        self.assertGreater(
+            notes.SCRIPT_TIMEOUT_S - notes.LOCK_WAIT_S,
             TIMEOUT_DEFAULT_S + PIN_BUDGET_S,
-            "the caller's cap is not above the write timeout plus the pin phase,  so a run that "
-            "pins after the write can be cut short,  and the caller then refuses the retry of a "
-            "note that was written",
+            "the cap the script runs under is not above the write timeout plus the pin phase,  so "
+            "a run that pins after the write can be cut short",
         )
 
     def test_the_notes_blocks_use_an_unquoted_heredoc(self) -> None:

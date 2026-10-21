@@ -319,13 +319,19 @@ _ensure_shortcuts_running() {
 }
 
 # Run a Shortcuts command under a bound.  macOS has no GNU "timeout",  so the bound is perl's
-# alarm,  the same idiom the runtime sync script uses for its git call.  Without perl the run is
-# unbounded,  which is the behaviour this script had before (AFC-436).
+# alarm,  the same idiom the runtime sync script uses for its git call.  The bound cannot rest on
+# perl alone:  an unbounded run can outlast the caller's cap,  and the note is then written while
+# the caller is told the outcome is unknown and refuses the retry (AFC-436).  python3 sets the same
+# alarm and this script needs it for the HTML conversion anyway,  so it is the second way to bound
+# the run;  without either one the run is refused rather than left unbounded.
 _run_shortcuts_bounded() {  # $@ = the shortcuts command
   if command -v perl >/dev/null 2>&1; then
     perl -e 'alarm shift; exec @ARGV' "$NOTES_SHORTCUT_TIMEOUT_S" "$@"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os,signal,sys; signal.alarm(int(sys.argv[1])); os.execvp(sys.argv[2], sys.argv[2:])' "$NOTES_SHORTCUT_TIMEOUT_S" "$@"
   else
-    "$@"
+    echo "notes: the Shortcut run cannot be bounded (no perl and no python3 on this host), so it was not attempted" >&2
+    return 124
   fi
 }
 
