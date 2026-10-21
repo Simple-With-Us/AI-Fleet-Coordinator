@@ -71,6 +71,10 @@ function fnv1a(text) {
   return (h >>> 0).toString(16).padStart(8, '0')
 }
 
+function reescapeNonAscii(text) {
+  return text.replace(/[\u007f-\uffff]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))
+}
+
 // Run one pr-sweep command through a cheap agent and parse its JSON in code.
 async function cli(argsText, label, phaseName) {
   const r = await agent([
@@ -82,7 +86,11 @@ async function cli(argsText, label, phaseName) {
   // --compact prints one ASCII line of JSON and a check line (#fnv1a=<hex> len=<n>): a copy that was shortened or
   // altered on the way back fails here instead of steering the sweep.
   const lines = String(r.stdout || '').split('\n').map(s => s.trim()).filter(Boolean)
-  const body = lines.find(s => s.startsWith('{')) || ''
+  // --compact escapes every non-ASCII character as \uXXXX (Python's json.dumps ensure_ascii: lowercase hex, an astral
+  // character as a surrogate pair, DEL as \u007f), but a copying agent tends to decode the escape (a PR title with an
+  // em dash comes back as the dash itself), so re-escape before checking.  The regex has no u flag on purpose: it
+  // walks UTF-16 code units, which is how the surrogate pairs come out.
+  const body = reescapeNonAscii(lines.find(s => s.startsWith('{')) || '')
   const check = lines.find(s => s.startsWith('#fnv1a=')) || ''
   const m = check.match(/^#fnv1a=([0-9a-f]{8}) len=(\d+)$/)
   if (!m || Number(m[2]) !== body.length || fnv1a(body) !== m[1]) {
