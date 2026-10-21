@@ -259,7 +259,9 @@ def _incomplete_reason(env: Mapping[str, str]) -> str:
             if (env.get(ENV_AUTOMATION_ID) or "").strip()
             else ENV_AUTOMATION_ID
         )
-        return "automation-env-incomplete:missing-" + missing
+        # Lowercase here:  the negative-cache marker lowercases every reason, so the live report and
+        # a sibling's `recent-<token>` must spell it the same way.
+        return "automation-env-incomplete:missing-" + missing.lower()
     return "keychain-incomplete"
 
 

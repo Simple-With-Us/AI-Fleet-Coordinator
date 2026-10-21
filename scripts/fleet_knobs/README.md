@@ -26,7 +26,7 @@ key = knobs.get("FLEET_FACTS_SIGNING_KEY")         # raises SecretUnavailable:  
   else the machine identity in the login Keychain, then the System keychain,
   all through fleet-secrets' helper when it can be found, else the CLI session.  Needed under
   pm2 (a system LaunchDaemon, no login Keychain) and on the Hetzner server (no keychain at
-  all; a half-set pair is reason `automation-env-incomplete:missing-<VAR>`, not a keychain
+  all; a half-set pair is reason `automation-env-incomplete:missing-<var>` (the variable name in lowercase, as the failure marker keeps it) ``, not a keychain
   fault).  The
   token is only ever in the CLI child's environment, and the automation pair never reaches
   the export child.  The whole fetch (keychain

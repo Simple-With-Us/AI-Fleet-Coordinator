@@ -131,15 +131,15 @@ class AuthTests(KnobTestCase):
             self.assertIsNone(pair["id"], "the export subprocess never sees the client id")
             self.assertIsNone(pair["secret"], "the export subprocess never sees the client secret")
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "the automation pair is Linux only")
     def test_a_half_set_automation_pair_is_reported_as_such_not_as_a_keychain(self):
         self.use_helper(FakeHelper(mode_error=RuntimeError("automation-env-incomplete")))
         os.environ["INFISICAL_AUTOMATION_CLIENT_ID"] = "idSentinel0123456789"
         self.fake.set(secrets=GOOD)
-        knobs.get("FLEET_AUTOPUSH_MODE")
+        with mock.patch.object(source.sys, "platform", "linux"):  # runs on a Mac too
+            knobs.get("FLEET_AUTOPUSH_MODE")
         self.assertEqual(
             knobs.report()["fetch_reason"],
-            "automation-env-incomplete:missing-INFISICAL_AUTOMATION_CLIENT_SECRET",
+            "automation-env-incomplete:missing-infisical_automation_client_secret",
         )
         self.assertEqual(self.fake.calls(), [])
 
@@ -150,7 +150,7 @@ class AuthTests(KnobTestCase):
                 (source.ENV_AUTOMATION_SECRET, source.ENV_AUTOMATION_ID),
             ):
                 reason = source._incomplete_reason({present: "synthetic-value"})
-                self.assertEqual(reason, "automation-env-incomplete:missing-" + missing)
+                self.assertEqual(reason, "automation-env-incomplete:missing-" + missing.lower())
                 self.assertNotIn("synthetic-value", reason)
 
     def test_no_machine_identity_falls_back_to_the_cli_session(self):
@@ -368,9 +368,9 @@ class NegativeCacheTests(KnobTestCase):
 
     def test_the_automation_reason_survives_the_marker_whole(self):
         # The token is 68 characters:  a shorter cap cut the missing variable's name off.
-        token = "automation-env-incomplete:missing-INFISICAL_AUTOMATION_CLIENT_SECRET"
+        token = "automation-env-incomplete:missing-infisical_automation_client_secret"
         lkg.record_failure(token)
-        self.assertEqual(lkg.recent_failure(), token.lower())
+        self.assertEqual(lkg.recent_failure(), token)
 
     def test_a_reason_is_reduced_to_a_token(self):
         lkg.record_failure("exit-1 with " + "spaces/and\nnewlines" * 10)

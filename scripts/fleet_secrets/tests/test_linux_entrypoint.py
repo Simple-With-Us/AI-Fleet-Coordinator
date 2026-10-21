@@ -150,6 +150,36 @@ class BootstrapTests(unittest.TestCase):
         auth.assert_not_called()
         self.assertIn("FLEET_SECRETS_CLI", stderr.getvalue())
 
+    def test_usage_requests_skip_the_login_and_carry_no_credential(self):
+        # `--help` reads no secret:  no network login, and the delegate gets no machine credential.
+        for argv in ([], ["--help"], ["-h"], ["help"]):
+            with (
+                self.subTest(argv=argv),
+                mock.patch.dict(
+                    os.environ,
+                    dict(PAIR, INFISICAL_TOKEN="synthetic-token", FLEET_SECRETS_CLI=str(self.delegate())),
+                    clear=True,
+                ),
+                mock.patch.object(entry.sys, "argv", ["fleet-secrets", *argv]),
+                mock.patch.object(entry, "authenticated_env") as auth,
+                mock.patch.object(entry.os, "execve") as execve,
+            ):
+                entry.main()
+            auth.assert_not_called()
+            sent = execve.call_args.args[2]
+            self.assertFalse(set(sent) & set(entry.core.AUTH_ENV_VARS))
+
+    def test_a_command_that_reads_secrets_still_logs_in(self):
+        with (
+            mock.patch.dict(os.environ, dict(PAIR, FLEET_SECRETS_CLI=str(self.delegate())), clear=True),
+            mock.patch.object(entry.sys, "argv", ["fleet-secrets", "names"]),
+            mock.patch.object(entry, "authenticated_env", return_value={"INFISICAL_TOKEN": "t"}) as auth,
+            mock.patch.object(entry.os, "execve") as execve,
+        ):
+            entry.main()
+        auth.assert_called_once()
+        self.assertEqual(execve.call_args.args[2], {"INFISICAL_TOKEN": "t"})
+
     def test_missing_cli_has_a_distinct_exit_status(self):
         # The delegate is present, so this is the infisical CLI that is missing.
         with (

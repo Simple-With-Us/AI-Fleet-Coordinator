@@ -137,8 +137,14 @@ def main():
             raise EntryError("fleet-secrets CLI is this entry point (set FLEET_SECRETS_CLI)", 127)
         if not target.is_file() or not os.access(target, os.X_OK):
             raise EntryError("fleet-secrets CLI is unavailable (set FLEET_SECRETS_CLI)", 127)
-        env = authenticated_env()
-        os.execve(str(target), [str(target), *sys.argv[1:]], env)
+        args = sys.argv[1:]
+        if args and args[0] not in ("-h", "--help", "help"):
+            env = authenticated_env()
+        else:
+            # Usage text reads no secret:  no login (so no 25 second wait when Infisical is down), and
+            # the delegate gets no credential at all.
+            env = {k: v for k, v in os.environ.items() if k not in core.AUTH_ENV_VARS}
+        os.execve(str(target), [str(target), *args], env)
     except EntryError as exc:
         print("fleet-secrets: " + str(exc), file=sys.stderr)
         return exc.code
