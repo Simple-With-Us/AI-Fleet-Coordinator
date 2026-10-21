@@ -11,12 +11,21 @@ struct ControlsView: View {
     @EnvironmentObject private var store: FleetStore
     @State private var registry: KnobRegistry?
     @State private var reason: String?
+    /// True until the first read finishes.
+    ///
+    /// Without it the tab would say the registry could not be read for as long as
+    /// the read takes,  which is a false report about a read that is still running.
+    @State private var loading = true
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
-                if let registry, !registry.knobs.isEmpty {
+                if loading {
+                    Text("Reading the registry…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if let registry, !registry.knobs.isEmpty {
                     table(registry)
                     if let reason {
                         Text(reason)
@@ -25,7 +34,7 @@ struct ControlsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
-                    Text(reason ?? "The knob registry could not be read.")
+                    Text(reason ?? "The registry block has no readable rows.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -80,6 +89,7 @@ struct ControlsView: View {
     /// The registry file and the copy are both read from disk,  and the app's other
     /// engine work stays off the main thread,  so this does too.
     private func load() async {
+        defer { loading = false }
         guard let root = store.engineRoot else {
             reason = "No engine checkout was found,  so the registry was not read."
             return
@@ -98,7 +108,7 @@ struct ControlsView: View {
         registry = loaded.0
         reason = loaded.1.reason
             ?? loaded.0.problem
-            ?? (loaded.0.knobs.isEmpty ? "The registry block was not found in INFISICAL.md." : nil)
+            ?? (loaded.0.knobs.isEmpty ? "The registry block has no readable rows." : nil)
     }
 }
 

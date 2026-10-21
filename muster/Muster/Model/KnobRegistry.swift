@@ -256,13 +256,17 @@ enum KnobReader {
         var unreadable = 0
         var inside = false
         var found = false
+        var ended = false
         for line in text.components(separatedBy: "\n") {
             if line.hasPrefix(blockStart) {
                 inside = true
                 found = true
                 continue
             }
-            if line.hasPrefix(blockEnd) { break }
+            if line.hasPrefix(blockEnd) {
+                ended = true
+                break
+            }
             guard inside else { continue }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("|") else { continue }
@@ -280,6 +284,17 @@ enum KnobReader {
         }
         if !found {
             return Table(rows: [], unreadable: 0, problem: "the registry block is not in the file")
+        }
+        if !ended {
+            // The block has a start marker and no end marker,  so the file is
+            // truncated and the rows read so far are part of an inventory that
+            // was never finished.  A partial inventory is not an inventory:  the
+            // panel would show a few knobs and call the set complete.
+            return Table(
+                rows: [],
+                unreadable: 0,
+                problem: "the registry block is not finished:  the file ends before its end marker"
+            )
         }
         return Table(rows: rows, unreadable: unreadable, problem: nil)
     }
