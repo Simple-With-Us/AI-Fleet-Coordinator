@@ -10,6 +10,15 @@ import SwiftUI
 /// The panel never edits,  because a fleet surface is not the app's to change,  and it
 /// never reads a credential:  a credential rule shows the key names and the presence,
 /// which is the information the rule is about.
+///
+/// **This is an architectural exception,  not a rule.**  The grid proper reads the
+/// engine's envelope and nothing else,  and the app does not parse a seat's config.
+/// This panel does read a file,  because an operator who is told a file matches a
+/// hash still wants to read the file.  The project's point of contact has said the
+/// better shape is one engine-owned,  typed,  allowlisted and redacted artifact
+/// projection,  and that is the shape to build when the engine boundary is next
+/// worked on.  Until then this stands as an exception,  on the record,  and not as a
+/// precedent that raw config content belongs in a manifest or in a view.
 struct ConfigFilePanel: View {
     let cell: GridCell
     let artifacts: FleetStore.CellArtifacts
