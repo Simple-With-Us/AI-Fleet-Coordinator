@@ -111,7 +111,7 @@ class BuildScriptTests(unittest.TestCase):
         """An unreadable search list must not stop the by-path lookup."""
         identity = '  1) 1A2B3C4D5E6F708192A3B4C5D6E7F8091A2B3C4D "Developer ID Application: Alpha Company (ABCDE12345)"'
         security = self.stand_in_security(
-            "if [ -z \"$5\" ]; then\n"
+            'if [ -z "$5" ]; then\n'
             "  echo 'security: SecKeychainSearchCopyNext: refused' >&2\n"
             "  exit 1\n"
             "else\n"
