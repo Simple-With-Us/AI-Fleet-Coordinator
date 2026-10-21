@@ -33,21 +33,32 @@
 # Focus policy (owner 2026-08-10): create/update MUST NOT steal focus by default.
 # Notes receives AppleScript body edits without activate/show.
 #
-# Pinning (owner + Claude 2026-08-10): fully headless by DEFAULT via the
-# "Pin Coding Note" macOS Shortcut (Receive Text from Share Sheet → Find Note
-# where Name contains Shortcut Input + Folder is Coding, limit 1 → Add Note to
-# pinned notes). No window, no focus steal, no Accessibility. Unpin twin:
-# "Unpin Coding Note" (same, with Remove). First run of each shortcut shows a
-# one-time "Allow ... to share with Notes?" dialog — choose Always Allow.
-# If the shortcut is missing, pin falls back to the legacy GUI menu-click path,
-# which needs Accessibility and steals focus, and only runs with
-# --pin / --pin-only / APPLE_NOTES_PIN=1.
+# Pinning (owner + Claude 2026-08-10): fully headless, and ONLY headless.  The "Pin Coding Note" macOS
+# Shortcut (Receive Text from Share Sheet → Find Note where Name contains Shortcut Input + Folder is
+# Coding, limit 1 → Add Note to pinned notes) is the single way this helper pins.  No window, no focus
+# steal, no Accessibility.  Unpin twin: "Unpin Coding Note" (same, with Remove).  First run of each
+# shortcut shows a one-time "Allow ... to share with Notes?" dialog — choose Always Allow.
+#
+# There is NO GUI fallback (owner 2026-10-20:  something kept popping Notes open at 7:07pm;  the cause
+# was the old menu-click path that brought Notes forward and clicked its Pin menu item whenever the
+# Shortcut did not pin).  When the Shortcut does not pin, the helper writes
+# "pin skipped: ... note saved unpinned" on stderr and carries on:  create and update still succeed
+# (exit 0), and --pin-only exits 4.  Nothing in this script brings Notes forward except the explicit,
+# opt-in --activate / --front / APPLE_NOTES_ACTIVATE=1.  --pin and APPLE_NOTES_PIN=1 are kept so old
+# callers still parse;  they no longer change anything, because pinning through the Shortcut is
+# already the default.
+# One pin or unpin Shortcut runs at a time across processes (a mkdir lock, NOTES_PIN_LOCK_DIR), and a
+# run that hit its time bound is never repeated:  a hang is a picker waiting on the owner's screen, not a
+# race, and a second run only opens a second picker.
+#
+# Exit codes:  0 done (a create/update whose pin was skipped is still 0), 2 usage or session error,
+# 3 --pin-only / --unpin-only found no note with that title, 4 --pin-only / --unpin-only did not pin or
+# unpin the note.
 # Canonical policy: /Users/jay/apps/AGENT-SYNC.md § Apple Notes.
 
 set -euo pipefail
 
 MODE=create
-WANT_PIN=0
 WANT_ACTIVATE=0
 WANT_NOTIFY=0
 NEEDS_OWNER=0
@@ -74,9 +85,21 @@ NOTES_APPLE_EVENT_TIMEOUT_S="${NOTES_APPLE_EVENT_TIMEOUT_S:-900}"
 # written and the caller is then told the outcome is unknown and refuses the retry (AFC-436).
 NOTES_SHORTCUT_TIMEOUT_S="${NOTES_SHORTCUT_TIMEOUT_S:-30}"
 [[ "$NOTES_SHORTCUT_TIMEOUT_S" =~ ^[0-9]+$ ]] || NOTES_SHORTCUT_TIMEOUT_S=30
+# One pin or unpin Shortcut at a time across processes.  Every create and update ends in a pin, and
+# several seats call this helper at once from separate processes (the agent-sync relay serializes only
+# its own calls).  Two overlapping runs of the Shortcut fight over the same Find Notes picker on the
+# owner's screen and make each other fail, so a run takes this lock first.  macOS has no flock(1), so the
+# lock is a directory made with mkdir, which is atomic, holding the owner's pid.  A lock whose pid is gone,
+# or that is older than any live run could be (3 minutes;  the longest bounded run is about 100 s), is
+# stale and is taken over.  A caller that cannot get the lock in NOTES_PIN_LOCK_WAIT_S seconds skips the
+# pin and says so, rather than queueing a second Shortcut behind the first.
+NOTES_PIN_LOCK_DIR="${NOTES_PIN_LOCK_DIR:-${HOME:-/tmp}/Library/Caches/apple-notes-coding/pin.lock}"
+NOTES_PIN_LOCK_WAIT_S="${NOTES_PIN_LOCK_WAIT_S:-20}"
+[[ "$NOTES_PIN_LOCK_WAIT_S" =~ ^[0-9]+$ ]] || NOTES_PIN_LOCK_WAIT_S=20
+_PIN_LOCK_HELD=0
 
 # Env overrides (agents may set these explicitly).
-[[ "${APPLE_NOTES_PIN:-0}" == "1" || "${APPLE_NOTES_PIN:-}" == "true" ]] && WANT_PIN=1
+# APPLE_NOTES_PIN=1 needs no handling:  pinning through the Shortcut is already the default (APPLE_NOTES_PIN=0 turns it off).
 [[ "${APPLE_NOTES_ACTIVATE:-0}" == "1" || "${APPLE_NOTES_ACTIVATE:-}" == "true" ]] && WANT_ACTIVATE=1
 [[ "${APPLE_NOTES_NOTIFY:-0}" == "1" || "${APPLE_NOTES_NOTIFY:-}" == "true" ]] && WANT_NOTIFY=1
 [[ "${APPLE_NOTES_NEEDS_OWNER:-0}" == "1" || "${APPLE_NOTES_NEEDS_OWNER:-}" == "true" ]] && NEEDS_OWNER=1
@@ -86,7 +109,6 @@ while [[ $# -gt 0 ]]; do
   case "${1:-}" in
     --pin-only)
       MODE=pin
-      WANT_PIN=1
       shift || true
       ;;
     --unpin-only)
@@ -98,7 +120,7 @@ while [[ $# -gt 0 ]]; do
       shift || true
       ;;
     --pin)
-      WANT_PIN=1
+      # Accepted for old callers;  pinning is already the default and there is no GUI path to switch on.
       shift || true
       ;;
     --activate|--front)
@@ -277,7 +299,8 @@ fi
 
 # Run a headless pin/unpin Shortcut with the note title as a text-file input.
 # Returns 0 on success, 2 when the Shortcut is not installed, 1 when the run
-# itself failed, 3 when the Shortcut list could not be read.  A failed list
+# itself failed, 3 when the Shortcut list could not be read, 5 when the Shortcuts
+# app could not be started.  A failed list
 # lookup is its own case:  it is not proof that the Shortcut is missing, and
 # sending an operator to recreate a Shortcut that exists is worse than saying
 # the list did not read.  First-ever run of each shortcut shows a one-time
@@ -348,7 +371,51 @@ _run_shortcuts_bounded() {  # $@ = the shortcuts command
   fi
 }
 
-_run_note_shortcut() {  # $1 = shortcut name
+_pin_lock_stale() {
+  local holder
+  holder="$(cat "$NOTES_PIN_LOCK_DIR/pid" 2>/dev/null || true)"
+  if [[ "$holder" =~ ^[0-9]+$ ]] && ! kill -0 "$holder" 2>/dev/null; then
+    return 0
+  fi
+  [[ -n "$(find "$NOTES_PIN_LOCK_DIR" -maxdepth 0 -mmin +3 2>/dev/null)" ]]
+}
+
+# Take the pin lock.  Returns 0 when held, 1 when it could not be had in NOTES_PIN_LOCK_WAIT_S seconds
+# (or its parent directory could not be made).  A stale lock is moved aside with mv, which is atomic,
+# before it is removed;  two waiters that find the same stale lock at the same instant can still step on
+# each other, and the worst that costs is two overlapping runs, which is what happened every time before
+# this lock existed.
+_pin_lock_acquire() {
+  local waited=0
+  mkdir -p "$(dirname "$NOTES_PIN_LOCK_DIR")" 2>/dev/null || return 1
+  until mkdir "$NOTES_PIN_LOCK_DIR" 2>/dev/null; do
+    if _pin_lock_stale && mv "$NOTES_PIN_LOCK_DIR" "$NOTES_PIN_LOCK_DIR.stale.$$" 2>/dev/null; then
+      rm -rf "$NOTES_PIN_LOCK_DIR.stale.$$"
+      continue
+    fi
+    if (( waited >= NOTES_PIN_LOCK_WAIT_S )); then
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" > "$NOTES_PIN_LOCK_DIR/pid" 2>/dev/null || true
+  _PIN_LOCK_HELD=1
+  return 0
+}
+
+# Give the lock back, but only if this process still holds it:  a run that outlived the stale age may
+# have had the lock taken over, and removing the new holder's lock would reopen the overlap.
+_pin_lock_release() {
+  [[ "$_PIN_LOCK_HELD" == "1" ]] || return 0
+  if [[ "$(cat "$NOTES_PIN_LOCK_DIR/pid" 2>/dev/null || true)" == "$$" ]]; then
+    rm -rf "$NOTES_PIN_LOCK_DIR" 2>/dev/null || true
+  fi
+  _PIN_LOCK_HELD=0
+  return 0
+}
+
+_run_note_shortcut_locked() {  # $1 = shortcut name;  the caller holds the pin lock
   local listing
   if ! listing="$(_run_shortcuts_bounded shortcuts list 2>/dev/null)"; then
     return 3
@@ -359,7 +426,7 @@ _run_note_shortcut() {  # $1 = shortcut name
   #  Code 5:  it could not be started,  which is a different fault from a failed run and needs
   #  its own message (AFC-431)  —  reporting it as "the run failed" hides the action that fixes it.
   _ensure_shortcuts_running || return 5
-  local tmp attempt attempts stripped
+  local tmp attempt stripped run_rc
   tmp="$(mktemp).txt"
   printf '%s' "$TITLE" > "$tmp"
   #  A note whose user-given title starts with a non-alphanumeric run (an
@@ -393,10 +460,17 @@ _run_note_shortcut() {  # $1 = shortcut name
   # retry is the less likely of the two to miss it.
   attempt=1
   while :; do
-    if _run_shortcuts_bounded shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
+    run_rc=0
+    _run_shortcuts_bounded shortcuts run "$1" -i "$tmp" >/dev/null 2>&1 || run_rc=$?
+    if [[ "$run_rc" == "0" ]]; then
       rm -f "$tmp"
       return 0
     fi
+    #  A run that hit its time bound (killed by the alarm:  142, or 124 when it could not be bounded at
+    #  all) is a hang, not an index race:  the Shortcut is waiting on a note picker on the owner's screen.
+    #  A second run only opens a second picker, so it is never repeated.  Only a run that failed fast
+    #  (the race the retry exists for) is tried again.
+    if [[ "$run_rc" == "142" || "$run_rc" == "124" ]]; then break; fi
     if [[ "$attempt" -ge 2 ]] || ! _pin_retry_on; then break; fi
     attempt=2
     sleep 3
@@ -412,6 +486,16 @@ _run_note_shortcut() {  # $1 = shortcut name
   done
   rm -f "$tmp"
   return 1
+}
+
+# Run a note Shortcut under the pin lock.  Same return codes as above, plus 6 when another pin or unpin
+# run held the lock for the whole wait, so this one was skipped rather than stacked behind it.
+_run_note_shortcut() {  # $1 = shortcut name
+  local rc=0
+  _pin_lock_acquire || return 6
+  _run_note_shortcut_locked "$1" || rc=$?
+  _pin_lock_release
+  return "$rc"
 }
 
 if [[ "$MODE" == "unpin" ]]; then
@@ -430,6 +514,9 @@ if [[ "$MODE" == "unpin" ]]; then
     exit 4
   elif [[ "$_unpin_rc" == "5" ]]; then
     echo "unpinned: no — the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry" >&2
+    exit 4
+  elif [[ "$_unpin_rc" == "6" ]]; then
+    echo "unpinned: no — another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s (or the lock directory could not be made), so this one was skipped; retry in a moment" >&2
     exit 4
   else
     echo "unpinned: no — 'Unpin Coding Note' shortcut run failed" >&2
@@ -1099,17 +1186,22 @@ if [[ "$WANT_NOTIFY" == "1" || "$NEEDS_OWNER" == "1" ]]; then
   _send_pushover_notification
 fi
 
-# Preferred pin path (2026-08-10): the "Pin Coding Note" Shortcut runs fully
-# headless — no window, no focus steal, no Accessibility needed — so it is ON
-# BY DEFAULT (owner preference: pin coding notes when able). The shortcut is:
+# The pin (2026-08-10, no GUI fallback since 2026-10-20): the "Pin Coding Note" Shortcut runs fully
+# headless — no window, no focus steal, no Accessibility needed — so it is ON BY DEFAULT (owner
+# preference: pin coding notes when able). The shortcut is:
 #   Receive Text from Share Sheet → Find Note (Name contains Shortcut Input,
 #   Folder is Coding, limit 1) → Add Note to pinned notes.
 # Set APPLE_NOTES_PIN=0 to skip pinning entirely.
 # _pin_rc: 0 pinned, 1 the run failed, 2 the Shortcut is not installed,
 # 3 the Shortcut list could not be read, 4 pinning was disabled
-# (APPLE_NOTES_PIN=0), 5 the Shortcuts app could not be started (AFC-436).
+# (APPLE_NOTES_PIN=0), 5 the Shortcuts app could not be started (AFC-436),
+# 6 another pin run held the lock for the whole wait.
 # These are different problems and must not be reported
 # as one (AFC-431).
+#
+# When the pin does not happen there is nothing else to try:  the helper never reaches for the Notes
+# window.  A create or update still succeeded, so it warns and exits 0 with the note saved unpinned;
+# --pin-only was asked to pin and nothing else, so it exits 4.
 _pin_rc=4
 if [[ "${APPLE_NOTES_PIN:-}" != "0" ]]; then
   # Settle delay: a just-created/updated note may not be visible to the
@@ -1121,79 +1213,43 @@ if [[ "${APPLE_NOTES_PIN:-}" != "0" ]]; then
   if [[ "$_pin_rc" == "0" ]]; then
     echo "pinned: yes (headless via 'Pin Coding Note' shortcut)"
     exit 0
-  elif [[ "$_pin_rc" == "1" ]]; then
-    echo "pinned: the 'Pin Coding Note' shortcut ran but did not complete; falling back to GUI path if requested" >&2
-  elif [[ "$_pin_rc" == "2" ]]; then
-    echo "pinned: the 'Pin Coding Note' shortcut is not installed; falling back to GUI path if requested" >&2
-  elif [[ "$_pin_rc" == "5" ]]; then
-    echo "pinned: the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry, or pass --pin for the GUI pin, which steals focus" >&2
-  else
-    echo "pinned: the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; falling back to GUI path if requested" >&2
   fi
 fi
 
-# Legacy fallback: GUI pin (needs Accessibility for System Events).
-# Requires show+activate + menu click — steals focus. Skipped unless
-# --pin / --pin-only / APPLE_NOTES_PIN=1.
-if [[ "$WANT_PIN" != "1" ]]; then
-  case "$_pin_rc" in
-    2) echo "pinned: skipped ('Pin Coding Note' shortcut is not installed; pass --pin for GUI pin, which steals focus)" ;;
-    3) echo "pinned: skipped (the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; pass --pin for GUI pin, which steals focus)" ;;
-    4) echo "pinned: skipped (pinning is disabled; APPLE_NOTES_PIN=0)" ;;
-    5) echo "pinned: skipped (the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry, or pass --pin for the GUI pin, which steals focus)" ;;
-    *) echo "pinned: skipped ('Pin Coding Note' shortcut run failed; pass --pin for GUI pin, which steals focus)" ;;
-  esac
-  exit 0
-fi
-
-# Deterministic selection: re-`show` the exact note by id, then menu-click, with retries —
-# the old version pinned whatever happened to be selected, which failed (or could pin the
-# wrong note) whenever creation focus was lost (2026-08-08 fix).
-PIN_RESULT=$(NOTE_ID="$NOTE_ID" osascript <<'EOF' 2>&1 || true
-set noteId to system attribute "NOTE_ID"
-set pinned to false
-repeat with attempt from 1 to 3
-  tell application "Notes"
-    try
-      show note id noteId
-    end try
-    activate
-  end tell
-  delay (0.5 * attempt + 0.4)
-  tell application "System Events"
-    tell process "Notes"
-      repeat with menuName in {"File", "Note", "Edit"}
-        try
-          if exists menu item "Unpin Note" of menu menuName of menu bar 1 then
-            set pinned to true
-            exit repeat
-          end if
-        end try
-        try
-          set mi to menu item "Pin Note" of menu menuName of menu bar 1
-          if enabled of mi then
-            click mi
-            set pinned to true
-            exit repeat
-          end if
-        end try
-      end repeat
-    end tell
-  end tell
-  if pinned then exit repeat
-end repeat
-if pinned then
-  return "pinned"
+if [[ "$MODE" == "pin" ]]; then
+  _pin_outcome="nothing was pinned"
 else
-  return "pin-menu-not-found"
-end if
-EOF
-)
-
-if [[ "$PIN_RESULT" == "pinned" ]]; then
-  echo "pinned: yes"
-elif echo "$PIN_RESULT" | grep -qi 'assistive access\|not allowed'; then
-  echo "pinned: no (grant Accessibility to Terminal/iTerm/osascript, or right-click note → Pin Note)"
-else
-  echo "pinned: no ($PIN_RESULT) — right-click note in list → Pin Note"
+  _pin_outcome="note saved unpinned"
 fi
+case "$_pin_rc" in
+  1)
+    echo "pinned: skipped ('Pin Coding Note' shortcut run failed)"
+    echo "pin skipped: Pin Coding Note Shortcut failed; $_pin_outcome" >&2
+    ;;
+  2)
+    echo "pinned: skipped ('Pin Coding Note' shortcut is not installed)"
+    echo "pin skipped: the 'Pin Coding Note' Shortcut is not installed; $_pin_outcome" >&2
+    ;;
+  3)
+    echo "pinned: skipped (the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists)"
+    echo "pin skipped: the Shortcut list could not be read, so it is unknown whether 'Pin Coding Note' exists; $_pin_outcome" >&2
+    ;;
+  4)
+    echo "pinned: skipped (pinning is disabled; APPLE_NOTES_PIN=0)"
+    if [[ "$MODE" == "pin" ]]; then
+      echo "pin skipped: pinning is disabled (APPLE_NOTES_PIN=0); $_pin_outcome" >&2
+    fi
+    ;;
+  5)
+    echo "pinned: skipped (the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry)"
+    echo "pin skipped: the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry; $_pin_outcome" >&2
+    ;;
+  *)
+    echo "pinned: skipped (another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s, or the lock directory could not be made)"
+    echo "pin skipped: another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s (or the lock directory could not be made); $_pin_outcome" >&2
+    ;;
+esac
+if [[ "$MODE" == "pin" ]]; then
+  exit 4
+fi
+exit 0
