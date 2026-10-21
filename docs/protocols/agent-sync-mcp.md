@@ -277,7 +277,7 @@ Cursor, `~/.cursor/mcp.json`, merged into the existing `mcpServers` object:
 {"mcpServers": {"agent-sync": {"command": "<home>/.local/bin/agent-sync", "args": ["mcp", "--default-seat", "CURSOR"]}}}
 ```
 
-Later these go into an installer modeled on `scripts/install-fleet-rag.sh`, with marked blocks and no tokens.  `python3 -m fleet_lanes.install_mcp` (Sat, Oct 10) is that installer for OpenCode, MiniMax, fx, Muse Code and Clutch (`--with-agent-sync`, fixed-seat tools only, never a pinned seat) and for `fleet-recall` in Kimi Code (Copilot CLI was a target until Jay retired it on Oct 20); Claude, Codex, Cursor, Antigravity and Grok still use their own `mcp add` commands from the table above.  Listener wake sessions are unaffected, because they run `--strict-mcp-config` and disallow `mcp__*`.  `agent-sync mcp` is a helper other seats run, so its `MAC-LOCAL-PROCESSES.md` row (on-demand) and the Apple Note refresh land in the Phase 1 PR.
+Later these go into an installer modeled on `scripts/install-fleet-rag.sh`, with marked blocks and no tokens.  `python3 -m fleet_lanes.install_mcp` (Sat, Oct 10) is that installer for OpenCode, MiniMax, fx, Muse Code and Clutch (`--with-agent-sync`, fixed-seat tools only, never a pinned seat) and for `fleet-recall` in Kimi Code and GitHub Copilot CLI (Copilot is a supported platform again, owner Oct 20); Claude, Codex, Cursor, Antigravity and Grok still use their own `mcp add` commands from the table above.  Listener wake sessions are unaffected, because they run `--strict-mcp-config` and disallow `mcp__*`.  `agent-sync mcp` is a helper other seats run, so its `MAC-LOCAL-PROCESSES.md` row (on-demand) and the Apple Note refresh land in the Phase 1 PR.
 
 ### 2.1 Phase 1 as Built
 

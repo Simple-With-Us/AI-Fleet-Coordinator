@@ -2541,8 +2541,8 @@ PLATFORMS: dict[str, Platform] = {
                 "new Copilot session and ask for a process listing, which must be refused.  `verify copilot` proves the "
                 "command in the written file denies, and ends with a SKIP for that live proof once Copilot is installed "
                 "again;  it never claims it.  "
-                "Copilot CLI itself was retired on 2026-10-20 because it was not being used,  so the target has no "
-                "config to write until it is installed again, and nothing recreates the directory.  Named explicitly, "
+                "Copilot CLI is a supported platform again (owner 2026-10-20),  but if its configuration directory "
+                "does not exist yet the target has no config to write, and nothing recreates the directory.  Named explicitly, "
                 "the platform is a FAIL (an uninstalled platform reached through `all` is a SKIP):  asking to verify "
                 "a platform that is not there is a mistake worth reporting,  not a healthy state.",
             ),
@@ -4188,7 +4188,7 @@ def verify_platform(
         return verify_block(plat, paths, timeout=timeout, minimal_path=minimal_path)
     if plat.kind == "bundle":
         if plat.key == "copilot":
-            # Copilot CLI is retired on this Mac,  so the platform dir may be absent.  The
+            # Copilot CLI is a supported platform,  but its platform dir may be absent until it has run.  The
             # per-platform verifier SKIPs that case,  and the dispatch must reach it
             # rather than answer FAIL for a platform that is simply not installed.
             return verify_copilot(paths, timeout=timeout, minimal_path=minimal_path)
