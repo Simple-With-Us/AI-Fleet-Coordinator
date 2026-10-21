@@ -629,12 +629,22 @@ def _run_helper(
     except subprocess.TimeoutExpired as exc:
         _kill_group(proc)
         try:
-            rest_out, rest_err = proc.communicate(timeout=10)
+            #  POSIX:  a second communicate() returns everything the helper wrote,  not only what
+            #  came after the timeout,  so it replaces what the timeout captured rather than
+            #  adding to it (AFC-448)
+            out2, err2 = proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:
-            rest_out, rest_err = b"", b""
-        #  keep what the helper managed to say,  so a caller can report it
-        exc.stdout = (exc.stdout or b"") + (rest_out or b"")
-        exc.stderr = (exc.stderr or b"") + (rest_err or b"")
+            out2, err2 = None, None
+        if out2 is not None:
+            exc.stdout = out2
+        if err2 is not None:
+            exc.stderr = err2
+        raise
+    except BaseException:
+        #  Any other interruption,  a signal or a keyboard interrupt,  has to take the group with
+        #  it:  the helper leads its own session,  so a signal aimed at the caller never reaches
+        #  it,  and the helper and its children would be left running (AFC-448)
+        _kill_group(proc)
         raise
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 

@@ -79,6 +79,72 @@ class ProcessGroupTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0)
             self.assertEqual(out.read_text(), "hello")
 
+    def test_the_timeout_output_is_not_duplicated(self) -> None:
+        """A second communicate() returns everything,  so it replaces rather than adds.
+
+        Concatenating it onto what the timeout captured would print the helper's output twice,
+        and a caller that reports the helper's own words would report them doubled.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "helper.sh"
+            script.write_text(
+                "#!/bin/bash\n"
+                "printf 'the-helper-said-this\\n'\n"
+                "sleep 300\n",
+                encoding="utf-8",
+            )
+            script.chmod(0o700)
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                N._run_helper(
+                    [str(script)],
+                    input=b"",
+                    env={"PATH": PATH},
+                    timeout=1.0,
+                )
+            said = (caught.exception.stdout or b"").decode()
+            self.assertEqual(
+                said.count("the-helper-said-this"),
+                1,
+                "the helper's output was duplicated: %r" % said,
+            )
+
+    def test_the_group_is_killed_when_the_run_is_interrupted(self) -> None:
+        """The group kill is what an interruption relies on,  so it has to work on its own.
+
+        The helper leads its own session,  so a signal aimed at the caller never reaches it.
+        An interruption that did not take the group with it would leave the helper and its
+        children running.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "helper.sh"
+            script.write_text(
+                "#!/bin/bash\n"
+                "sleep 300 &\n"
+                'printf "%s\\n" "$!"\n'
+                "sleep 300\n",
+                encoding="utf-8",
+            )
+            script.chmod(0o700)
+            proc = subprocess.Popen(
+                [str(script)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env={"PATH": PATH},
+                start_new_session=True,
+            )
+            said = proc.stdout.readline().decode().strip()
+            self.assertTrue(said, "the helper did not report its child's pid")
+            child = int(said)
+            N._kill_group(proc)
+            proc.wait(timeout=10)
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe is not None:
+                    pipe.close()
+            self.assertTrue(
+                _gone(child), "the helper's child survived the group kill"
+            )
+
     def test_a_caller_supplied_runner_keeps_the_subprocess_run_shape(self) -> None:
         """The seam the tests stand in for has to keep working,  with the same keywords."""
         seen = {}
