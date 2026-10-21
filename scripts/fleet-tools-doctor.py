@@ -1404,7 +1404,7 @@ def check_mcp(report: Report) -> None:
 
 def git_blob(data: bytes) -> str:
     """The git blob id of these bytes (what `git hash-object --no-filters` prints)."""
-    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()  # noqa: S324 - git's id, not security
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
 def tree_blobs(repo: Path, rev: str, pathspecs, runner: Callable = subprocess.run) -> dict | None:
@@ -1650,11 +1650,11 @@ def check_lane_tools(report: Report, rt: dict, runner: Callable = subprocess.run
         text, code = out.stdout or "", out.returncode
     except (OSError, subprocess.SubprocessError) as exc:
         text, code = "", f"({type(exc).__name__})"
-    header = re.search(r"^== tools\s+stable dir (.+?)\s+\[([a-z]+)\]\s*$", text, re.M)
+    header = re.search(r"^== tools\s+stable dir (.+?)\s+\[([a-z]+)\]\s*$", text, re.MULTILINE)
     version = ""
     try:
         version = re.search(
-            r"^sha=([0-9a-f]{7,40})$", (stable / "VERSION").read_text(), re.M
+            r"^sha=([0-9a-f]{7,40})$", (stable / "VERSION").read_text(), re.MULTILINE
         ).group(1)
     except (OSError, AttributeError):
         version = ""
@@ -1668,10 +1668,10 @@ def check_lane_tools(report: Report, rt: dict, runner: Callable = subprocess.run
     plan_state = header.group(2)
     section = text[header.end() :].split("\n== ", 1)[0]
     listed = section.split("already identical", 1)[0]
-    changed = re.findall(r"^ {3}(\S+) +(\S.*?)\s*$", listed, re.M)
+    changed = re.findall(r"^ {3}(\S+) +(\S.*?)\s*$", listed, re.MULTILINE)
     changed = [(word, rel) for word, rel in changed if not word[0].isdigit()]
     deletes = "WILL DELETE" in section
-    shim_changed = re.search(r"^ {3}shim \S+/lane \[(?!same\])", section, re.M) is not None
+    shim_changed = re.search(r"^ {3}shim \S+/lane \[(?!same\])", section, re.MULTILINE) is not None
     only_version = (
         plan_state == "stale"
         and [rel for _, rel in changed] == ["VERSION"]
@@ -2003,7 +2003,7 @@ def http_get(url: str, timeout: float = GITHUB_TIMEOUT) -> bytes:
         url,
         headers={"Accept": "application/vnd.github+json", "User-Agent": "fleet-tools-doctor"},
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https host
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return response.read(256 * 1024)
 
 
