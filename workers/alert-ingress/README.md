@@ -104,7 +104,7 @@ An incident is held, not posted, until it is still open after `MIN_OPEN_MS` (def
 |---|---|
 | `state:<key>` | `AlertState` — phase (`ok`/`pending`/`alerting`), severity, since, text, link |
 | `svc:<key>` | service name, so a topic stays stable |
-| `svcname:<source>:<service>` | alert key, so a renamed vendor label re-joins its incident |
+| `svcname:<source>:<service>` | alert key for service-derived generic keys, so a renamed vendor label re-joins its incident |
 | `topic:<channel>:<topic>` | topic membership; tracked explicitly rather than parsed out of `idx:` |
 | `idx:<channel>:<topic>:<key>` | membership marker, so a status rebuild knows its rows |
 | `status:<channel>:<topic>` | message id of the standing status, for the PATCH |
