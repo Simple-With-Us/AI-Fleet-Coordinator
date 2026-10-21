@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -328,8 +329,8 @@ class RegisteredEnvTests(unittest.TestCase):
             (home / ".codex/config.toml").write_text(
                 '[mcp_servers.agent-sync]\ncommand = "x"\n\n[mcp_servers.agent-sync.env]\nZULIP_RC = "/x"\n'
             )
-            self.assertEqual(doctor.registered_env("CLAUDE", home), {"ZULIP_RC": "/c"})
-            self.assertEqual(doctor.registered_env("CODEX", home), {"ZULIP_RC": "/x"})
+            self.assertEqual(doctor.registered_env("CLAUDE", home), {})
+            self.assertEqual(doctor.registered_env("CODEX", home), {})
             self.assertEqual(doctor.registered_env("CURSOR", home), {})
             self.assertEqual(doctor.registered_env("CLAUDE", home / "missing"), {})
             for bad in (
@@ -339,7 +340,26 @@ class RegisteredEnvTests(unittest.TestCase):
                 {"mcpServers": {"agent-sync": {"env": "x"}}},
             ):
                 (home / ".claude.json").write_text(json.dumps(bad))
-                self.assertEqual(doctor.registered_env("CLAUDE", home), {})
+                with self.assertRaises(doctor.ClientConfigError):
+                    doctor.registered_env("CLAUDE", home)
+
+    def test_client_secrets_and_lookup_redirects_are_never_forwarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".claude.json").write_text(json.dumps({"mcpServers": {"agent-sync": {
+                "env": {"INFISICAL_TOKEN": "synthetic-file-token", "ZULIP_KEY": "synthetic-key",
+                        "ZULIP_RC": "/synthetic/alternate", "AGENT_SEAT": "OTHER", "LANG": "C"}
+            }}}))
+            self.assertEqual(doctor.registered_env("CLAUDE", home), {"LANG": "C"})
+
+    def test_malformed_source_fails_without_starting_probe_or_leaking_contents(self):
+        runner = mock.Mock()
+        with mock.patch.object(doctor, "registered_env", side_effect=doctor.ClientConfigError("Claude client JSON unavailable or malformed")), mock.patch.object(doctor.shutil, "which", return_value="agent-sync"):
+            report = doctor.Report()
+            doctor.check_mcp_startup(report, "CLAUDE", runner)
+        runner.assert_not_called()
+        self.assertEqual(report.rows[0]["status"], "FAIL")
+        self.assertIn("Claude client JSON", report.rows[0]["detail"])
 
     def test_the_probe_passes_the_registered_env(self):
         seen = {}
@@ -349,11 +369,13 @@ class RegisteredEnvTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 1, b"", b"x\n")
 
         with (
-            mock.patch.object(doctor, "registered_env", return_value={"ZULIP_RC": "/c"}),
+            mock.patch.object(doctor, "registered_env", return_value={"LANG": "file-locale"}),
             mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/agent-sync"),
+            mock.patch.dict(os.environ, {"LANG": "process-locale", "INFISICAL_TOKEN": "synthetic-process-token"}),
         ):
             doctor.check_mcp_startup(doctor.Report(), "CLAUDE", runner)
-        self.assertEqual(seen.get("ZULIP_RC"), "/c")
+        self.assertEqual(seen.get("LANG"), "process-locale")
+        self.assertEqual(seen.get("INFISICAL_TOKEN"), "synthetic-process-token")
 
 
 if __name__ == "__main__":

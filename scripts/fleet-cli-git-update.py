@@ -29,6 +29,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import stat
 import sys
 import tempfile
 import time
@@ -65,7 +66,7 @@ def log(message: str) -> None:
 
 
 def paths(home: Path) -> dict[str, Path]:
-    base = home / ".local/share/fleet-cli"
+    base = home.absolute() / ".local/share/fleet-cli"
     return {
         "base": base,
         "repo": base / "repo",
@@ -93,18 +94,56 @@ def git(repo: Path, *args: str, timeout: int = GIT_TIMEOUT) -> str:
     return result.stdout.strip()
 
 
+def private_directory(path: Path) -> None:
+    path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise Failed("unsafe_state_directory")
+    path.chmod(0o700)
+
+
 def load_state(path: Path) -> dict:
     try:
-        data = json.loads(path.read_text())
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
         return {}
+    except OSError:
+        raise Failed("unsafe_state_file") from None
+    try:
+        with os.fdopen(fd) as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                raise Failed("unsafe_state_file")
+            data = json.load(stream)
+    except (OSError, ValueError):
+        raise Failed("invalid_state_file") from None
+    if not isinstance(data, dict):
+        raise Failed("invalid_state_file")
+    for key in ("commit", "previous", "bad"):
+        value = data.get(key)
+        if value is not None and (not isinstance(value, str) or not value or
+                                  any(c not in "0123456789abcdef" for c in value) or
+                                  len(value) not in (40, 64)):
+            raise Failed("invalid_state_file")
+    return data
 
 
 def save_state(path: Path, state: dict) -> None:
-    temporary = path.with_name(".git-state-" + uuid.uuid4().hex)
-    temporary.write_text(json.dumps(state, sort_keys=True) + "\n")
-    os.replace(temporary, path)
+    private_directory(path.parent)
+    fd, temporary = tempfile.mkstemp(prefix=".git-state-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(json.dumps(state, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def smoke(repo: Path) -> None:
@@ -208,8 +247,16 @@ def wrappers(home: Path, repo: Path, result: dict) -> dict:
 
 
 def locked(base: Path):
-    base.mkdir(parents=True, exist_ok=True)
-    handle = (base / "update.lock").open("a")
+    private_directory(base)
+    try:
+        fd = os.open(base / "update.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        raise Failed("unsafe_lock_file") from None
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        os.close(fd)
+        raise Failed("unsafe_lock_file")
+    handle = os.fdopen(fd, "a")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -224,7 +271,7 @@ def setup(home: Path) -> dict:
         if not (p["repo"] / ".git").exists():
             try:
                 subprocess.run(
-                    [GIT, "clone", "-q", "--no-checkout", REMOTE, str(p["repo"])],
+                    [GIT, "clone", "-q", "--no-checkout", "--", REMOTE, str(p["repo"])],
                     check=True,
                     timeout=600,
                     capture_output=True,

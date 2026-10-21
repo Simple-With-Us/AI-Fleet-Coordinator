@@ -509,28 +509,49 @@ MCP_PROBE = b"".join(
 )
 
 
-def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
-    """The `env` the seat's client registers for its agent-sync MCP server:  Claude Code's ~/.claude.json
-    for CLAUDE, Codex's ~/.codex/config.toml for CODEX.  On the server that carries ZULIP_RC (AFC-359
-    retired the default zuliprc folder and fleet-secrets is Mac-only).  Values are passed, never printed."""
+class ClientConfigError(ValueError):
+    """A named client source is invalid; its contents are never included."""
+
+
+def client_servers(seat: str, home: Path = HOME) -> dict:
+    source = "Claude client JSON" if seat == "CLAUDE" else "Codex client TOML"
     try:
         if seat == "CLAUDE":
             data = json.loads((home / ".claude.json").read_text())
-            servers = data.get("mcpServers") if isinstance(data, dict) else None
+            field = "mcpServers"
         elif seat == "CODEX":
-            try:
-                import tomllib  # 3.11+;  a Mac's /usr/bin/python3 has none (codex_mcp_names falls back)
-            except ImportError:
-                return {}
-            servers = tomllib.loads((home / ".codex/config.toml").read_text()).get("mcp_servers")
+            text = (home / ".codex/config.toml").read_text()
+            import tomllib
+            data = tomllib.loads(text)
+            field = "mcp_servers"
         else:
             return {}
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
-    # Any malformed level (a list, a string) means no registered env, never an exception.
-    server = servers.get("agent-sync") if isinstance(servers, dict) else None
-    env = server.get("env") if isinstance(server, dict) else None
-    return {str(key): str(value) for key, value in env.items()} if isinstance(env, dict) else {}
+    except (OSError, ValueError, ImportError):
+        raise ClientConfigError(source + " unavailable or malformed") from None
+    if not isinstance(data, dict) or not isinstance(data.get(field, {}), dict):
+        raise ClientConfigError(source + " has invalid server registry")
+    servers = data.get(field, {})
+    for name, server in servers.items():
+        if not isinstance(name, str) or not isinstance(server, dict):
+            raise ClientConfigError(source + " has invalid server entry")
+        env = server.get("env", {})
+        if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str)
+                                            for k, v in env.items()):
+            raise ClientConfigError(source + " has invalid server environment")
+    return servers
+
+
+def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
+    """Client files supply only nonsecret locale settings, never credentials or identity.
+
+    Approved credentials come from the process environment or fleet-secrets.  Client-file
+    values cannot override either source or redirect credential lookup.
+    """
+    server = client_servers(seat, home).get("agent-sync", {})
+    env = server.get("env", {})
+    return {key: value for key, value in env.items() if key in {"LANG", "LC_ALL"}}
 
 
 def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.run) -> None:
@@ -543,11 +564,14 @@ def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.r
         result = runner(
             ["agent-sync", "mcp", "--default-seat", seat],
             input=MCP_PROBE,
-            env={**os.environ, **registered_env(seat)},
+            env={**registered_env(seat), **os.environ},
             capture_output=True,
             timeout=60,
             check=False,
         )
+    except ClientConfigError as exc:
+        report.add(f"mcp-start:{seat}", "FAIL", str(exc))
+        return
     except subprocess.TimeoutExpired:
         report.add(f"mcp-start:{seat}", "FAIL", "agent-sync mcp did not answer within 60 seconds")
         return
@@ -585,28 +609,17 @@ def codex_mcp_names(text: str) -> list[str]:
 
 
 def check_mcp(report: Report) -> None:
-    codex = HOME / ".codex/config.toml"
-    if codex.exists():
-        names = codex_mcp_names(codex.read_text())
-        lacking = [n for n in ("agent-sync", "fleetlink") if n not in names]
-        report.add(
-            "mcp:codex",
-            "OK" if not lacking else "WARN",
-            "registered: "
-            + ", ".join(names)
-            + (f";  missing {', '.join(lacking)}" if lacking else ""),
-        )
-    claude = HOME / ".claude.json"
-    if claude.exists():
-        servers = sorted((json.loads(claude.read_text()).get("mcpServers") or {}).keys())
-        lacking = [n for n in ("agent-sync", "fleetlink") if n not in servers]
-        report.add(
-            "mcp:claude",
-            "OK" if not lacking else "WARN",
-            "registered: "
-            + (", ".join(servers) or "none")
-            + (f";  missing {', '.join(lacking)}" if lacking else ""),
-        )
+    for seat in ("CODEX", "CLAUDE"):
+        label = "mcp:" + seat.lower()
+        try:
+            names = sorted(client_servers(seat, HOME))
+        except ClientConfigError as exc:
+            report.add(label, "FAIL", str(exc))
+            continue
+        lacking = [name for name in ("agent-sync", "fleetlink") if name not in names]
+        report.add(label, "WARN" if lacking else "OK",
+                   "registered: " + (", ".join(names) or "none") +
+                   (";  missing " + ", ".join(lacking) if lacking else ""))
 
 
 def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
