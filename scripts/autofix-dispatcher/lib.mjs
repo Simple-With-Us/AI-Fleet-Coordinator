@@ -54,6 +54,43 @@ export function dispatchCommentBody({ owner, repo, number } = {}) {
   return `${DISPATCH_TAG} dispatcher trial: this is the oldest open fleet PR with review findings autofix has not attempted.  The findings are the review comments from ${reviewers} on this PR:  read them with \`gh api repos/${owner}/${repo}/pulls/${number}/comments --paginate\`, fix each one that is still real at the current head, skip any the code already fixes or a later reply answers, and make the minimum change.  One autofix run per bot per PR (owner rule 2026-10-20);  this uses ${DISPATCHER_BOT}'s one run here.  cc @jaywedgeworth22`;
 }
 
+// The comment this script posts: swu-echo's tag comment that opens with the trial text.
+export function isDispatchComment(comment) {
+  return comment?.user?.login === DISPATCHER_BOT
+    && String(comment?.body || '').includes(`${DISPATCH_TAG} dispatcher trial`);
+}
+
+export function findDispatchComment(comments) {
+  return (comments || []).find(isDispatchComment) || null;
+}
+
+export function hasTallyRow(entries, repo, number) {
+  return (entries || []).some((entry) => entry.repo === repo && entry.number === number);
+}
+
+// The reusable proceeds only for an open same-repo PR and never on the handbook mirror
+// branch (pr-autofix-reusable.yml, "Resolve The Pull Request"), and it writes no marker
+// when it declines, so tagging such a PR would only leave it the oldest candidate for
+// every later tick.  Repo names compare without case: GitHub returns the canonical one.
+export const UNFIXABLE_HEAD_REFS = new Set(['handbook-sync/mirror']);
+
+export function isFixablePr(pr, owner, repo) {
+  const fullName = String(pr?.head?.repo?.full_name || '').toLowerCase();
+  return fullName === `${owner}/${repo}`.toLowerCase() && !UNFIXABLE_HEAD_REFS.has(pr?.head?.ref);
+}
+
+// Indexes of the unreconciled tally entries to look at this tick, at most `cap`.  An
+// entry that was never checked goes first, then the one checked longest ago, so an entry
+// whose run never resolves cannot hold a slot forever and starve the ones behind it.
+export function reconcileTargets(entries, cap) {
+  return (entries || [])
+    .map((entry, index) => ({ entry, index, checked: Date.parse(entry?.checked_at) || 0 }))
+    .filter(({ entry }) => !(entry?.run_id != null && entry?.conclusion != null))
+    .sort((a, b) => a.checked - b.checked || a.index - b.index)
+    .slice(0, cap)
+    .map(({ index }) => index);
+}
+
 export function extractCostUsd(logText) {
   const matches = [...String(logText || '').matchAll(/"total_cost_usd"\s*:\s*([0-9.]+)/g)];
   if (!matches.length) return null;

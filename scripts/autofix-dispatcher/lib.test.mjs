@@ -4,11 +4,16 @@ import {
   dispatchCommentBody,
   extractCostUsd,
   extractRunId,
+  findDispatchComment,
   hasAnyAutofixMarker,
   hasReviewFindings,
+  hasTallyRow,
+  isDispatchComment,
+  isFixablePr,
   markerBot,
   parseTally,
   pickOldest,
+  reconcileTargets,
   tallyTotalUsd,
   DISPATCHER_MARKER_BOT,
 } from './lib.mjs';
@@ -77,4 +82,45 @@ test('tally parses jsonl and sums cost', () => {
   const entries = parseTally('{"cost_usd": 0.4}\nnot json\n{"cost_usd": 0.02}\n');
   assert.equal(entries.length, 2);
   assert.ok(Math.abs(tallyTotalUsd(entries) - 0.42) < 1e-9);
+});
+
+test('a dispatch comment is the trial tag posted by the dispatcher bot, nothing else', () => {
+  const body = dispatchCommentBody({ owner: 'Simple-With-Us', repo: 'BotFleet', number: 3 });
+  const ours = { user: { login: 'swu-echo[bot]' }, body };
+  assert.equal(isDispatchComment(ours), true);
+  // A person quoting the tag, or another bot, is not a dispatch.
+  assert.equal(isDispatchComment({ user: { login: 'jaywedgeworth22' }, body }), false);
+  assert.equal(isDispatchComment({ user: { login: 'swu-echo[bot]' }, body: '@pr-autofix please fix' }), false);
+  assert.equal(findDispatchComment([{ user: { login: 'kody-ai[bot]' }, body: 'x' }, ours]), ours);
+  assert.equal(findDispatchComment([]), null);
+});
+
+test('hasTallyRow matches on repo and number', () => {
+  const entries = [{ repo: 'BotFleet', number: 3 }];
+  assert.equal(hasTallyRow(entries, 'BotFleet', 3), true);
+  assert.equal(hasTallyRow(entries, 'Clutch', 3), false);
+  assert.equal(hasTallyRow(entries, 'BotFleet', 4), false);
+});
+
+test('isFixablePr takes same-repo PRs only, without case, and not the handbook mirror', () => {
+  const pr = (fullName, ref = 'fix') => ({ head: { ref, repo: fullName ? { full_name: fullName } : null } });
+  assert.equal(isFixablePr(pr('Simple-With-Us/BotFleet'), 'Simple-With-Us', 'BotFleet'), true);
+  assert.equal(isFixablePr(pr('simple-with-us/botfleet'), 'Simple-With-Us', 'BotFleet'), true);
+  assert.equal(isFixablePr(pr('someone/BotFleet'), 'Simple-With-Us', 'BotFleet'), false);
+  assert.equal(isFixablePr(pr(null), 'Simple-With-Us', 'BotFleet'), false);
+  assert.equal(isFixablePr({}, 'Simple-With-Us', 'BotFleet'), false);
+  assert.equal(isFixablePr(pr('Simple-With-Us/BotFleet', 'handbook-sync/mirror'), 'Simple-With-Us', 'BotFleet'), false);
+});
+
+test('reconcileTargets rotates: unchecked first, then least recently checked, resolved never', () => {
+  const entries = [
+    { run_id: '1', conclusion: 'success' },
+    { run_id: null, conclusion: null, checked_at: '2026-10-21T02:00:00Z' },
+    { run_id: null, conclusion: null, checked_at: '2026-10-21T01:00:00Z' },
+    { run_id: '9', conclusion: null },
+  ];
+  assert.deepEqual(reconcileTargets(entries, 10), [3, 2, 1]);
+  // The cap bounds the tick, and the entry that was checked last is the one left out.
+  assert.deepEqual(reconcileTargets(entries, 2), [3, 2]);
+  assert.deepEqual(reconcileTargets([], 5), []);
 });
