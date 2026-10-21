@@ -77,12 +77,9 @@ LIST_CODE_BLOCK = "      code line inside a list item.  More"
 
 #  The bodies the two masking defects hid in.
 INLINE_SPANS_BODY = (
-    "First `span one with  two spaces` and second `span two with  two spaces` here."
-    "  Next.\n"
+    "First `span one with  two spaces` and second `span two with  two spaces` here.  Next.\n"
 )
-MULTI_BACKTICK_BODY = (
-    "Here is ``code with ` inside and  two spaces`` and more.  Next.\n"
-)
+MULTI_BACKTICK_BODY = "Here is ``code with ` inside and  two spaces`` and more.  Next.\n"
 NESTED_LIST_BODY = "- A list item.\n\n    Nested prose.  Another sentence.\n"
 LIST_CODE_BODY = "- A list item.\n\n      Code line.  Another line.\n"
 
