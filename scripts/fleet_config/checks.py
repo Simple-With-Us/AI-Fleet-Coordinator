@@ -461,6 +461,7 @@ def build_result(
         expires_at=iso_utc(expires_at),
         ttl_seconds=rule.ttl_seconds,
         stale=False,
+        source=rule.source,
     )
 
 

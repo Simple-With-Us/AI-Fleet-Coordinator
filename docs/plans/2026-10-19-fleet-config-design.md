@@ -39,6 +39,8 @@ Exactly three, spelled `L0`, `L1`, `L2` (`types.py` `ProofLevel`, ordered by `ra
 
 Two invariants keep `UNPROVEN` rare by construction.  Only `hooks` rules may require `L1` or `L2` in Phase 2, and the manifest loader's validation rejects a higher requirement on any other kind.  An `L2` rule must set `ttlSeconds` to at least 86400, so a daily canary can stay fresh between runs.
 
+The L1 payload carries the tool name the platform's runtime really delivers,  and the sentinel set covers the file tools as well as the shell tools.  The name is not a constant,  because a plugin whose matcher reads `Bash` never fires for a runtime that delivers `bash`:  a probe that sent only the Claude-flavoured name would report PASS while the seat is unguarded.  So the probe runs one sentinel per shell tool name the platform delivers,  and every one of them has to be denied,  and it runs the file tools too,  with the destination under the key that tool really uses (`path` for the native `write` tool, `file_path` for `edit`).  A file tool the fleet guard does not cover is reported as not covered,  and never as a pass for that tool;  the guard guards shell calls today,  and a proof that failed on every file write would report the fleet's own gap as every seat's drift.  The tool names live in `proof.py` `PLATFORM_ADAPTERS`,  not in the manifest,  because they are a fact about the harness and not about the desired state.
+
 ### 3.3 Config Kinds, Collectors And Platforms
 
 The six config kinds (`types.py` `ConfigKind`) are `instructions`, `hooks`, `mcp`, `skills`, `subagents` and `permissions`.  No check module invents a seventh kind.
@@ -215,7 +217,7 @@ Every path in the example is a placeholder, written as an angle-bracket token su
 
 ### 6.1 Rule Fields
 
-Every rule carries exactly these fields (camelCase in JSON, snake_case in `types.py` `Rule`):  `id`, `kind`, `platforms`, `check`, `expected`, `proofLevel`, `ownerSeat`, `autofixAllowed`, `collector` and `ttlSeconds`, plus an optional `description`.  This is the Muse Assist rule shape (`id`, `platforms`, `check`, expected state, owner seat, autofix allowed) with two Phase 2 additions:  `proofLevel` and `collector`.
+Every rule carries exactly these fields (camelCase in JSON, snake_case in `types.py` `Rule`):  `id`, `kind`, `platforms`, `check`, `expected`, `proofLevel`, `ownerSeat`, `autofixAllowed`, `collector` and `ttlSeconds`, plus an optional `description` and an optional `source`.  This is the Muse Assist rule shape (`id`, `platforms`, `check`, expected state, owner seat, autofix allowed) with three Phase 2 additions:  `proofLevel`, `collector` and `source`.
 
 | Field | Meaning |
 |---|---|
@@ -229,10 +231,13 @@ Every rule carries exactly these fields (camelCase in JSON, snake_case in `types
 | `autofixAllowed` | The only permission the apply side has;  false means report only, forever, until a human edits the manifest |
 | `collector` | `mac` in Phase 2;  `vm`, `hetzner` and `api` reserved |
 | `ttlSeconds` | How long a result stays fresh;  default 900;  at least 86400 for an `L2` rule |
+| `source` | The citation that says where the rule came from:  a Linear issue id, a Zulip message id, or a doc path;  carried into the envelope so the rule can be checked against the answer that produced it;  a citation in `description` would be duplicated per rule and would drift,  which is why it is its own field |
 
 ### 6.2 Where A Seat Entry Comes From
 
 A seat with no Mac config surface (a hosted or cloud seat) still gets an entry.  It lists `platforms` as an empty list and carries one seat-wide `notApplicable` entry per kind, each with a human reason, for example `"hosted seat;  no Mac harness config surface in Phase 2"`.  Not-applicable entries produce no check results.  The app renders them from the manifest, so the seat is visible without inventing a check nobody can run.
+
+A file that fits none of the six kinds is named in the seat's `uncovered` list,  as `{surface, reason}`.  It has no kind,  so it has no rule and no cover,  and without this list it would be a hole where a check would have been:  the app would show the seat as fully checked and the file would be unchecked.  The list carries no result and produces no verdict;  it is the honest statement that the surface is not covered,  and the reason says why.  The kinds are not grown for it,  because the six kinds are the fixed vocabulary and a seventh would be a new concept rather than a new file.
 
 ## 7. Registry Source Of Truth And Coverage
 
@@ -251,7 +256,7 @@ Coverage is a validation rule, enforced by `manifest.py` `validate_coverage()`:
 
 ## 8. The `status --json` Envelope
 
-`contract.py` `SCHEMA_VERSION` is the integer 1, pinned by a contract test.  A breaking envelope change raises it deliberately and updates this document in the same commit.  The envelope is one flat `results` list;  consumers group by seat, platform and kind.  It carries no second grouped copy that could disagree with the flat list.
+`contract.py` `SCHEMA_VERSION` is the integer 2, pinned by a contract test.  A breaking envelope change raises it deliberately and updates this document in the same commit;  it moved from 1 to 2 when the rule citation and the uncovered list were added,  and both carry no secret value.  The envelope is one flat `results` list;  consumers group by seat, platform and kind.  It carries no second grouped copy that could disagree with the flat list.  Each result carries its rule's `source` citation,  and the envelope carries a flat `uncovered` list of `{seat, surface, reason}`,  for the same reason the results list is flat:  two flat lists cannot disagree with each other.
 
 ```json
 {
@@ -381,9 +386,9 @@ That runner covers the apply side too, not only the checks:  the MAC level docto
 
 ## 13. Testing
 
-Each implementer lands tests with their module, under `scripts/fleet_config/tests/`, in the `fleet_knobs` style (temp dirs, fake executables on `PATH`, no network, no real home).  Four contract-level tests are pinned by this design and are not optional:
+Each implementer lands tests with their module, under `scripts/fleet_config/tests/`, in the `fleet_knobs` style (temp dirs, fake executables on `PATH`, no network, no real home).  Four contract-level tests are pinned by this design and are not optional,  and they live together in `scripts/fleet_config/tests/test_contract_pins.py` so that a reader who greps for a pinned name finds it:
 
-1. `test_schema_version_is_pinned` asserts `contract.SCHEMA_VERSION` is exactly 1 and that a built envelope carries it.
+1. `test_schema_version_is_pinned` asserts `contract.SCHEMA_VERSION` is exactly 2 and that a built envelope carries it.
 2. `test_envelope_never_carries_a_secret` builds a report over a credential rule and asserts the serialized envelope holds the mode, size and mtime, and no file contents (the fixture writes a known sentinel string as contents and asserts its absence).
 3. `test_fail_closed_mapping` asserts stale, error, timeout and unparseable results are failing and that an all-`UNKNOWN` run and an empty run both verdict `UNKNOWN`, never `PASS`.
 4. `test_marked_block_hash_parity` asserts `checks_instructions` and `fleet_lanes.marked_block` give the same digest for the same fixture file (this test may import `fleet_lanes`;  the package under test may not).
@@ -403,6 +408,7 @@ The names are the pin, not a suggestion:  a test that asserts the same thing und
 | D7 | This package mirrors `fleet_lanes` semantics (roster, marked-block hash) instead of importing it | The isolated stable copy under `python3 -I` carries just this package, as `fleet_knobs` established | Direct imports of `fleet_lanes.layout` and `fleet_lanes.marked_block`, rejected because they break that copy silently, at hook time, on the worst possible day |
 | D8 | Credential checks never read a secret's contents:  `credential_stat` reports `stat` data only, and `credential_key_present` asks the secret store for key NAMES only | A hash of contents is a fingerprint of a secret and needs the file opened;  mode plus presence, or the presence of a key name, is the compliance fact Muster needs | Hashing the credential file to detect rotation, rejected because presence and mode answer the admin question and rotation is the credential owner's business, not a config drift |
 
+| D9 | A file that fits none of the six kinds is named in the seat's `uncovered` list,  and the kinds are not grown | The app has to be able to say "not checked" about a surface it cannot check,  and an unnamed surface is a hole where a check would have been;  a seventh kind is a new concept,  and the six kinds are the fixed vocabulary the app groups by | Growing the kinds to fit every file,  rejected because the vocabulary is fixed and every new kind is a new thing for the app to render;  accepting the blindness silently,  rejected because the seat would read as fully checked |
 ## 15. Risks And Blockers For Other Workers
 
 Read this before starting a lane.  These are the places where the contract meets facts this kernel did not own.

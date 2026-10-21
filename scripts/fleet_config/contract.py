@@ -7,7 +7,9 @@ aggregator, the CLI and the contract tests all share one definition of failing.
 Pinned rules (design doc, sections 3 and 4):
 
   * ``SCHEMA_VERSION`` never changes in place.  A breaking envelope change is a new
-    version, and the contract test pins the exact integer.
+    version,  and the contract test pins the exact integer.  Version 2 added the rule
+    citation ``source`` and the flat ``uncovered`` list,  both of which carry no secret
+    value.
   * The envelope never carries a secret value.  ``ObservedState`` has no field that
     could hold contents, and credential checks report ``stat`` fields only.
   * A stale, errored, timed out or unparseable check counts as failing, never as
@@ -44,7 +46,7 @@ __all__ = [
 
 # The pinned envelope version.  A contract test asserts this exact value, so a breaking
 # change must raise it deliberately and update the design doc in the same commit.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Reason codes that make a result failing even when its state is UNKNOWN.  This set is
 # the fail-closed rule written as data.
@@ -129,6 +131,7 @@ def result_to_dict(result: CheckResult) -> dict[str, object]:
     """One result row of the envelope, in the pinned field order."""
     return {
         "ruleId": result.rule_id,
+        "source": result.source,
         "seat": result.seat,
         "platform": result.platform,
         "kind": result.kind.value,
@@ -155,9 +158,11 @@ def build_status_envelope(report: StatusReport) -> dict[str, object]:
     """The pinned ``fleet-config status --json`` envelope for one report.
 
     The top-level keys are ``schemaVersion``, ``tool``, ``command``, ``generatedAt``,
-    ``summary`` and ``results``, in that order.  Consumers group the flat ``results``
-    list by seat, platform and kind;  the envelope deliberately carries no second,
-    grouped copy that could disagree with it.
+    ``summary``, ``results`` and ``uncovered``, in that order.  Consumers group the flat
+    ``results`` list by seat, platform and kind;  the envelope deliberately carries no
+    second, grouped copy that could disagree with it.  ``uncovered`` is flat for the
+    same reason:  it names the surfaces that fit none of the six kinds,  so the app can
+    render the blindness rather than leave a hole where a check would have been.
     """
     summary = report.summary
     return {
@@ -172,4 +177,8 @@ def build_status_envelope(report: StatusReport) -> dict[str, object]:
             "failing": sum(1 for result in report.results if is_failing(result)),
         },
         "results": [result_to_dict(result) for result in report.results],
+        "uncovered": [
+            {"seat": item.seat, "surface": item.surface, "reason": item.reason}
+            for item in report.uncovered
+        ],
     }

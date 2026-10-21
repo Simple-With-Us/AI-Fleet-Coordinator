@@ -64,6 +64,7 @@ from .types import (
     ReasonCode,
     Rule,
     StatusReport,
+    UncoveredSurface,
 )
 
 __all__ = [
@@ -591,6 +592,7 @@ def run_status(
     if missing_modules is not None:
         missing = tuple(missing_modules)
     notes: list[str] = []
+    uncovered: list[UncoveredSurface] = []
     for name in missing:
         notes.append("the check module %s.py is not available in this build" % name)
     deadline = clock() + max(0, int(deadline_seconds))
@@ -598,6 +600,8 @@ def run_status(
     for seat_manifest in manifest.seats:
         if seat is not None and seat_manifest.seat != seat:
             continue
+        for item in seat_manifest.uncovered:
+            uncovered.append(UncoveredSurface(item.surface, item.reason, seat_manifest.seat))
         for rule in seat_manifest.rules:
             if kind is not None and rule.kind is not kind:
                 continue
@@ -622,6 +626,7 @@ def run_status(
         summary=contract.summarize(frozen),
         manifest_source=manifest.source_path,
         notes=tuple(notes),
+        uncovered=tuple(uncovered),
     )
 
 
@@ -697,4 +702,5 @@ def mark_stale_results(
         summary=contract.summarize(frozen),
         manifest_source=report.manifest_source,
         notes=report.notes,
+        uncovered=report.uncovered,
     )

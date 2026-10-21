@@ -33,6 +33,7 @@ from fleet_config.types import (
     Rule,
     SeatManifest,
 )
+from fleet_config.manifest import MANIFEST_SCHEMA_VERSION
 
 __all__ = [
     "FleetTestCase",
@@ -145,7 +146,7 @@ def manifest_json(manifest: Manifest) -> dict[str, object]:
             "rules": rules,
             "notApplicable": [],
         }
-    return {"schemaVersion": 1, "seats": seats}
+    return {"schemaVersion": MANIFEST_SCHEMA_VERSION, "seats": seats}
 
 
 def registry_json(tags: Sequence[str]) -> dict[str, object]:

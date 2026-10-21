@@ -52,8 +52,8 @@ mode = sys.argv[1]
 record = sys.argv[2] if len(sys.argv) > 2 else ""
 raw = sys.stdin.read()
 if record:
-    with open(record, "w", encoding="utf-8") as handle:
-        handle.write(raw)
+    with open(record, "a", encoding="utf-8") as handle:
+        handle.write(raw.replace(chr(10), " ") + chr(10))
 try:
     payload = json.loads(raw or "{}")
 except ValueError:
@@ -72,6 +72,15 @@ if mode == "deny":
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                              "permissionDecision": "deny",
                                              "permissionDecisionReason": reason}}))
+    sys.exit(0)
+if mode == "deny-bash-only":
+    # A plugin whose matcher reads "Bash"  and not "bash":  it fires for the one name
+    # and lets every other tool name through.
+    if payload.get("tool_name") == "Bash":
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                                 "permissionDecision": "deny",
+                                                 "permissionDecisionReason": reason}}))
+        sys.exit(0)
     sys.exit(0)
 if mode == "allow":
     sys.exit(0)
@@ -147,10 +156,80 @@ class FakeHookCase(unittest.TestCase):
             shlex.quote(self.record),
         )
 
-    def recorded_payload(self) -> dict:
-        """The payload the fake hook received."""
+    def recorded_payloads(self) -> list:
+        """Every payload the fake hook received,  in the order it received them.
+
+        The L1 probe runs one sentinel per tool the platform delivers,  so the probe
+        writes more than one payload and a test that wants the shell sentinel has to
+        say which one it means.
+        """
+        if not os.path.exists(self.record):
+            return []
         with open(self.record, "r", encoding="utf-8") as handle:
-            return json.load(handle)
+            return [json.loads(line) for line in handle if line.strip()]
+
+    def recorded_payload(self) -> dict:
+        """The last payload the fake hook received."""
+        payloads = self.recorded_payloads()
+        self.assertTrue(payloads, "the fake hook received no payload")
+        return payloads[-1]
+
+    def recorded_shell_payload(self) -> dict:
+        """The first payload the fake hook received,  which is the shell sentinel."""
+        payloads = self.recorded_payloads()
+        self.assertTrue(payloads, "the fake hook received no payload")
+        return payloads[0]
+
+
+class PlatformNativeSentinelTests(FakeHookCase):
+    """The L1 payload carries the tool name the platform really delivers.
+
+    A plugin whose matcher reads "Bash"  never fires for a runtime that delivers
+    "bash",  so a probe that carried only "Bash"  would report PASS while the seat
+    is unguarded.  The probe now runs one sentinel per name the platform delivers,
+    and every one of them has to be denied.
+    """
+
+    def test_the_minimax_probe_carries_the_bash_tool_name(self):
+        proof.run_l1_probe("minimax", self.ctx, hook_command=self.hook("deny"))
+        payload = self.recorded_shell_payload()
+        self.assertEqual(payload["tool_name"], "bash")
+
+    def test_the_minimax_probe_runs_one_sentinel_per_tool_name(self):
+        proof.run_l1_probe("minimax", self.ctx, hook_command=self.hook("deny"))
+        names = [payload.get("tool_name") for payload in self.recorded_payloads()]
+        self.assertIn("bash", names)
+        self.assertIn("Bash", names)
+
+    def test_a_guard_that_covers_only_bash_fails_the_bash_sentinel(self):
+        outcome = proof.run_l1_probe("minimax", self.ctx, hook_command=self.hook("deny-bash-only"))
+        self.assertFalse(outcome.passed)
+        self.assertIs(outcome.state, CheckState.DRIFT)
+        self.assertIn("bash", outcome.reason)
+
+    def test_a_guard_that_covers_both_names_passes(self):
+        outcome = proof.run_l1_probe("minimax", self.ctx, hook_command=self.hook("deny"))
+        self.assertTrue(outcome.passed)
+        self.assertIs(outcome.state, CheckState.PASS)
+
+    def test_the_file_tools_are_probed_and_reported(self):
+        outcome = proof.run_l1_probe("minimax", self.ctx, hook_command=self.hook("deny"))
+        payloads = self.recorded_payloads()
+        file_payloads = [p for p in payloads if p.get("tool_name") in ("write", "edit")]
+        self.assertEqual(len(file_payloads), 2)
+        write = [p for p in file_payloads if p["tool_name"] == "write"][0]
+        self.assertIn("path", write["tool_input"])
+        edit = [p for p in file_payloads if p["tool_name"] == "edit"][0]
+        self.assertIn("file_path", edit["tool_input"])
+        # The shell sentinel was denied,  and the file tools are named as not covered.
+        self.assertIn("write", outcome.reason)
+        self.assertIn("not covered by this guard", outcome.reason)
+
+    def test_a_platform_with_no_file_tool_sends_only_its_shell_sentinel(self):
+        proof.run_l1_probe("cursor", self.ctx, hook_command=self.hook("deny"))
+        payloads = self.recorded_payloads()
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["hook_event_name"], "beforeShellExecution")
 
 
 class L1DenyTests(FakeHookCase):
@@ -279,7 +358,7 @@ class L1SafetyTests(FakeHookCase):
 
     def test_the_payload_is_the_claude_shape(self):
         proof.run_l1_probe("claude", self.ctx, hook_command=self.hook("deny"))
-        payload = self.recorded_payload()
+        payload = self.recorded_shell_payload()
         self.assertEqual(payload["hook_event_name"], "PreToolUse")
         self.assertEqual(payload["tool_name"], "Bash")
         self.assertIn("command", payload["tool_input"])

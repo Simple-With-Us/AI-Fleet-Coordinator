@@ -47,6 +47,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from .manifest import MANIFEST_SCHEMA_VERSION
+
 __all__ = [
     "MARKER_BLOCK",
     "PACK_SKILLS_DIR",
@@ -244,6 +246,24 @@ def _secret_store_keys(seat: str) -> tuple[str, ...]:
 # --------------------------------------------------------------------------- rule shapes
 
 
+# The citation every seeded rule carries by default:  the contract that pinned the
+# rule,  and the installer that owns the desired state it checks.
+DESIGN_SOURCE = "docs/plans/2026-10-19-fleet-config-design.md section 6.1"
+
+# The citation per kind,  naming the file that owns the desired state.  A rule that
+# says where it came from can be checked against that answer,  and a rule that does
+# not can only be believed.
+SOURCE_BY_KIND = {
+    "instructions": "scripts/fleet_lanes/install_rules.py, the rules template",
+    "hooks": "scripts/fleet_lanes/lane_guard_hook.py, the guard hook",
+    "mcp": "scripts/fleet_lanes/install_mcp.py, the MCP registration",
+    "skills": "scripts/install-fleet-skills.py, the skill pack",
+    "subagents": "scripts/install-fleet-skills.py, the sub-agent pack",
+    "permissions": "scripts/fleet_lanes/install_tools.py, the permission file",
+    "credentials": "scripts/fleet_secrets, the secret store",
+}
+
+
 def _rule(
     rule_id: str,
     kind: str,
@@ -255,8 +275,15 @@ def _rule(
     proof_level: str = "L0",
     autofix_allowed: bool = False,
     ttl_seconds: int = 900,
+    source: str = DESIGN_SOURCE,
 ) -> dict[str, object]:
-    """One manifest rule, in the shape the design doc pins (section 6.1)."""
+    """One manifest rule, in the shape the design doc pins (section 6.1).
+
+    ``source`` is the citation that says where the rule came from,  so a reader can
+    check the rule against the answer that produced it.  It is a field of its own and
+    not part of the description,  because a citation in the description would be
+    duplicated per rule and would drift.
+    """
     return {
         "id": rule_id,
         "kind": kind,
@@ -269,6 +296,7 @@ def _rule(
         "collector": "mac",
         "ttlSeconds": ttl_seconds,
         "description": description,
+        "source": source,
     }
 
 
@@ -294,6 +322,7 @@ def _instructions_rule(seat: str, platform: str) -> dict[str, object]:
         seat,
         "The expected hash is the body the rules installer writes, read from the "
         "installer source, so a template change shows as drift instead of hiding.",
+        source=SOURCE_BY_KIND["instructions"],
     )
 
 
@@ -322,6 +351,7 @@ def _hooks_rule(
         seat,
         description,
         proof_level=proof_level,
+        source=SOURCE_BY_KIND["hooks"],
     )
 
 
@@ -340,6 +370,7 @@ def _mcp_rule(seat: str, platform: str, target: str, names: Sequence[str]) -> di
         seat,
         "The comparison is a subset:  the harness may hold servers of its own, and "
         "only a missing fleet server is drift.",
+        source=SOURCE_BY_KIND["mcp"],
     )
 
 
@@ -358,6 +389,7 @@ def _skills_rule(seat: str, platform: str, target: str, names: Sequence[str]) ->
         seat,
         "The comparison is a subset:  a seat may hold skills of its own, and only a "
         "missing fleet skill is drift.",
+        source=SOURCE_BY_KIND["skills"],
     )
 
 
@@ -377,6 +409,7 @@ def _subagents_rule(
         },
         seat,
         description or "The comparison is a subset, and an empty list makes this a presence check.",
+        source=SOURCE_BY_KIND["subagents"],
     )
 
 
@@ -405,6 +438,7 @@ def _credential_rule(seat: str, platform: str) -> dict[str, object]:
         "The check asks the fleet-secrets CLI for key NAMES and never for a value, so "
         "a secret cannot reach a result, a reason or a log.  A secret store that "
         "cannot be reached is a failing UNKNOWN, never a pass.",
+        source=SOURCE_BY_KIND["credentials"],
     )
 
 
@@ -429,6 +463,7 @@ def _retired_credential_rule(seat: str, platform: str) -> dict[str, object]:
         seat,
         "AFC-359 retires ~/.secrets, so the flat credential file must be absent.  The "
         "check reads stat data only and never opens the file.",
+        source=SOURCE_BY_KIND["credentials"],
     )
 
 
@@ -447,6 +482,7 @@ def _permissions_mode_rule(seat: str, platform: str, target: str) -> dict[str, o
         seat,
         "The permission identifiers of this file belong to the harness, not to the "
         "fleet, so the rule pins the mode alone and lists no identifier.",
+        source=SOURCE_BY_KIND["permissions"],
     )
 
 
@@ -569,6 +605,7 @@ def _no_hooks_rule(seat: str, platform: str, target: str, description: str) -> d
         seat,
         description,
         proof_level="L0",
+        source=SOURCE_BY_KIND["hooks"],
     )
 
 
@@ -638,7 +675,37 @@ def _harness_seat(
         )
     rules.append(_credential_rule(seat, platform))
     rules.append(_retired_credential_rule(seat, platform))
-    return {"platforms": [platform], "rules": rules, "notApplicable": covers}
+    entry: dict[str, object] = {"platforms": [platform], "rules": rules, "notApplicable": covers}
+    uncovered = _uncovered_surfaces(seat, platform)
+    if uncovered:
+        entry["uncovered"] = uncovered
+    return entry
+
+
+# The config surfaces that fit none of the six kinds,  named per platform.  A file
+# with no kind has no rule and no cover,  so without this list the seat would read as
+# fully checked while the file went unchecked.  The MiniMax runtime's channel
+# configuration and its identity files are the ones the MM seat named in AFC-416.
+UNCOVERED_SURFACES = {
+    "minimax": (
+        {
+            "surface": "~/.minimax/config.json",
+            "reason": "The channel configuration fits none of the six kinds.",
+        },
+        {
+            "surface": "~/.minimax/identity.yaml",
+            "reason": "The identity file fits none of the six kinds.",
+        },
+    ),
+}
+
+
+def _uncovered_surfaces(seat: str, platform: str) -> list:
+    """The surfaces this seat has that no kind covers,  or an empty list."""
+    surfaces = UNCOVERED_SURFACES.get(platform)
+    if not surfaces:
+        return []
+    return [dict(item) for item in surfaces]
 
 
 def _hosted_seat(seat: str, subject: str, credential_reason: str) -> dict[str, object]:
@@ -857,7 +924,7 @@ def build_manifest() -> dict[str, object]:
             "the seed has an entry for a seat the registry does not hold live: %s"
             % ", ".join(unknown)
         )
-    return {"schemaVersion": 1, "seats": {tag: seats[tag] for tag in sorted(seats)}}
+    return {"schemaVersion": MANIFEST_SCHEMA_VERSION, "seats": {tag: seats[tag] for tag in sorted(seats)}}
 
 
 def render_manifest(manifest: dict[str, object]) -> str:

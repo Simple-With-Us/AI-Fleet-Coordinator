@@ -19,6 +19,7 @@ from typing import Any
 
 from fleet_config import manifest as manifest_module
 from fleet_config.manifest import (
+    MANIFEST_SCHEMA_VERSION,
     ManifestError,
     load_manifest,
     registry_seat_tags,
@@ -61,7 +62,7 @@ def _rule(rule_id: str, kind: str, platforms: list[str], **overrides: Any) -> di
 
 def _manifest_dict(seats: dict[str, Any]) -> dict[str, Any]:
     """A whole manifest document in its JSON shape."""
-    return {"schemaVersion": 1, "seats": seats}
+    return {"schemaVersion": MANIFEST_SCHEMA_VERSION, "seats": seats}
 
 
 class ManifestFixture(unittest.TestCase):
@@ -155,6 +156,75 @@ class RosterTests(ManifestFixture):
     def test_loader_refuses_a_missing_file(self) -> None:
         with self.assertRaises(ManifestError):
             load_manifest(self.root / "absent.json", registry_path=self.registry_path)
+
+
+class CitationAndUncoveredTests(ManifestFixture):
+    """A rule carries its citation,  and a seat may name a surface it does not check.
+
+    The citation is its own field,  because a citation in the description would be
+    duplicated per rule and would drift.  The uncovered list is how a file that fits
+    none of the six kinds is made visible instead of silently absent.
+    """
+
+    def _rule(self) -> dict[str, Any]:
+        return {
+            "id": "claude-instructions-lane-map",
+            "kind": "instructions",
+            "platforms": ["claude"],
+            "check": {"type": "file_hash", "target": "~/.claude/CLAUDE.md"},
+            "expected": {"description": "the rules file matches"},
+            "proofLevel": "L0",
+            "ownerSeat": "CLAUDE",
+            "autofixAllowed": False,
+            "source": "AFC-384; docs/plans/2026-10-19-fleet-config-design.md section 6.1",
+        }
+
+    def _document(self, rule: dict[str, Any], uncovered: list | None = None) -> dict[str, Any]:
+        seat: dict[str, Any] = {"platforms": ["claude"], "rules": [rule]}
+        if uncovered is not None:
+            seat["uncovered"] = uncovered
+        codex = dict(rule)
+        codex["id"] = "codex-instructions-lane-map"
+        codex["ownerSeat"] = "CODEX"
+        return {
+            "schemaVersion": MANIFEST_SCHEMA_VERSION,
+            "seats": {"CLAUDE": seat, "CODEX": {"platforms": ["claude"], "rules": [codex]}},
+        }
+
+    def test_a_rule_carries_its_citation(self) -> None:
+        manifest = self.load(self._document(self._rule()))
+        rule = manifest.seat("CLAUDE").rules[0]
+        self.assertEqual(
+            rule.source,
+            "AFC-384; docs/plans/2026-10-19-fleet-config-design.md section 6.1",
+        )
+
+    def test_a_rule_with_no_citation_carries_an_empty_one(self) -> None:
+        raw = self._rule()
+        raw.pop("source")
+        manifest = self.load(self._document(raw))
+        self.assertEqual(manifest.seat("CLAUDE").rules[0].source, "")
+
+    def test_a_seat_may_name_a_surface_it_does_not_check(self) -> None:
+        manifest = self.load(
+            self._document(
+                self._rule(),
+                [
+                    {
+                        "surface": "~/.claude/channels.json",
+                        "reason": "the channel configuration fits none of the six kinds",
+                    }
+                ],
+            )
+        )
+        uncovered = manifest.seat("CLAUDE").uncovered
+        self.assertEqual(len(uncovered), 1)
+        self.assertEqual(uncovered[0].surface, "~/.claude/channels.json")
+        self.assertIn("none of the six kinds", uncovered[0].reason)
+
+    def test_an_uncovered_entry_without_a_surface_is_rejected(self) -> None:
+        with self.assertRaises(manifest_module.ManifestError):
+            self.load(self._document(self._rule(), [{"reason": "no surface named"}]))
 
 
 class CoverageTests(ManifestFixture):

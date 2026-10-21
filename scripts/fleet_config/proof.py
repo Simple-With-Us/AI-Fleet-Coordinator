@@ -112,6 +112,31 @@ SENTINEL_SESSION_ID = "fleet-config-l1"
 
 
 @dataclass(frozen=True)
+class SentinelTool:
+    """One tool a platform delivers, and how its payload names the target.
+
+    ``name`` is the tool name the runtime really delivers.  A plugin whose matcher
+    reads "Bash" never fires for a runtime that delivers "bash",  so a probe that
+    carries the wrong name proves nothing and reports PASS while the seat is
+    unguarded;  that is why the name is data and not a constant.
+
+    ``kind`` is "shell" or "file".  A shell tool carries the command under
+    ``command``;  a file tool carries the destination under ``input_key``,  which is
+    "path" for the native write tool and "file_path" for edit.
+
+    ``required`` is false for a tool the fleet guard does not cover today.  The probe
+    still runs it and reports the outcome,  so the gap is visible,  but it does not by
+    itself fail the proof:  the guard is a shell guard,  and a proof that failed on
+    every file write would report the fleet's own gap as every seat's drift.
+    """
+
+    name: str
+    kind: str = "shell"
+    input_key: str = "command"
+    required: bool = True
+
+
+@dataclass(frozen=True)
 class PlatformAdapter:
     """How one platform's hook is invoked and how that platform says "deny".
 
@@ -119,27 +144,66 @@ class PlatformAdapter:
     ``--format`` value the hook is installed with, which decides the deny shape;
     ``config_rel`` is the platform's hook config file, relative to the home, and is
     empty for a platform whose hook lives in a plugin or a patch.
+
+    ``shell_tools`` are the tool names the platform's runtime really delivers,  and the
+    probe runs one sentinel for each of them,  because a guard that covers one name
+    and not the other leaves the seat half guarded.  ``file_tools`` are the file tools
+    the platform delivers;  the probe runs them too,  and the guard answers for them
+    as it really does,  which today is to let them through.
     """
 
     platform: str
     payload_shape: str
     hook_format: str
     config_rel: str = ""
+    shell_tools: tuple[str, ...] = ("Bash",)
+    file_tools: tuple[SentinelTool, ...] = ()
+
+
+# The file tools the claude-shaped platforms deliver,  and the key each one's input
+# travels under.  The fleet's own live proof tool carries the same universe in
+# ``scripts/muster-guard-live-proof.py`` as FILE_NAMES,  and the guard's own file-tool
+# fixtures use ``file_path``.
+_CLAUDE_FILE_TOOLS = (
+    SentinelTool("Write", "file", "file_path", required=False),
+    SentinelTool("Edit", "file", "file_path", required=False),
+)
+
+# The MiniMax runtime delivers its shell tool as ``bash``  and its native file tools
+# under their own names:  ``write`` carries ``path``  and ``edit`` carries
+# ``file_path``.  A Claude-flavoured sentinel would let a plugin whose matcher reads
+# "Bash" pass while the runtime never fires it,  so both shell names are probed.
+_MINIMAX_FILE_TOOLS = (
+    SentinelTool("write", "file", "path", required=False),
+    SentinelTool("edit", "file", "file_path", required=False),
+)
 
 
 PLATFORM_ADAPTERS: dict[str, PlatformAdapter] = {
-    "claude": PlatformAdapter("claude", "claude", "claude", ".claude/settings.json"),
-    "codex": PlatformAdapter("codex", "claude", "codex", ".codex/hooks.json"),
-    "grok": PlatformAdapter("grok", "claude", "grok", ".grok/hooks/lane-guard.json"),
+    "claude": PlatformAdapter(
+        "claude", "claude", "claude", ".claude/settings.json", file_tools=_CLAUDE_FILE_TOOLS
+    ),
+    "codex": PlatformAdapter(
+        "codex", "claude", "codex", ".codex/hooks.json", file_tools=_CLAUDE_FILE_TOOLS
+    ),
+    "grok": PlatformAdapter(
+        "grok", "claude", "grok", ".grok/hooks/lane-guard.json", file_tools=_CLAUDE_FILE_TOOLS
+    ),
     "antigravity": PlatformAdapter(
         "antigravity", "antigravity", "antigravity", ".gemini/config/hooks.json"
     ),
     "cursor": PlatformAdapter("cursor", "cursor", "cursor", ".cursor/hooks.json"),
-    "muse": PlatformAdapter("muse", "muse", "muse"),
-    "muse-code": PlatformAdapter("muse-code", "muse", "muse"),
-    "clutch": PlatformAdapter("clutch", "muse", "claude"),
-    "kimi": PlatformAdapter("kimi", "claude", "kimi"),
-    "minimax": PlatformAdapter("minimax", "claude", "claude"),
+    "muse": PlatformAdapter("muse", "muse", "muse", shell_tools=("bash",)),
+    "muse-code": PlatformAdapter("muse-code", "muse", "muse", shell_tools=("bash",)),
+    "clutch": PlatformAdapter("clutch", "muse", "claude", shell_tools=("bash",)),
+    "kimi": PlatformAdapter("kimi", "claude", "kimi", file_tools=_CLAUDE_FILE_TOOLS),
+    "minimax": PlatformAdapter(
+        "minimax",
+        "claude",
+        "claude",
+        shell_tools=("bash", "Bash"),
+        file_tools=_MINIMAX_FILE_TOOLS,
+    ),
 }
 
 
@@ -249,12 +313,23 @@ def platform_adapter(platform: str) -> PlatformAdapter | None:
     return PLATFORM_ADAPTERS.get(platform)
 
 
-def build_payload(adapter: PlatformAdapter, command: str, cwd: str) -> dict[str, object]:
+def build_payload(
+    adapter: PlatformAdapter,
+    command: str,
+    cwd: str,
+    tool_name: str | None = None,
+) -> dict[str, object]:
     """The synthetic PreToolUse payload for one platform.
 
     The shape is the one the platform's hook runner sends, because the guard reads
     the command out of the payload by shape.  The command is a TEXT:  the payload
     describes a write, it does not perform one.
+
+    ``tool_name`` is the shell tool name the platform's runtime really delivers,  and
+    it is the name that matters:  a plugin whose matcher reads "Bash" never fires for
+    a runtime that delivers "bash",  so a payload that carries the wrong name proves
+    nothing.  The shape fixes the name for the platforms whose payload shape has one
+    (muse, antigravity),  and only the claude-shaped payload takes the name as data.
     """
     if adapter.payload_shape == "cursor":
         return {
@@ -284,10 +359,40 @@ def build_payload(adapter: PlatformAdapter, command: str, cwd: str) -> dict[str,
     return {
         "session_id": SENTINEL_SESSION_ID,
         "hook_event_name": "PreToolUse",
-        "tool_name": "Bash",
+        "tool_name": tool_name or "Bash",
         "tool_input": {
             "command": command,
             "description": "fleet-config L1 sentinel probe",
+        },
+        "cwd": cwd,
+    }
+
+
+def build_file_payload(
+    adapter: PlatformAdapter, destination: str, cwd: str, tool: SentinelTool
+) -> dict[str, object]:
+    """The synthetic PreToolUse payload for one file tool.
+
+    A file tool carries the destination under its own key,  which is not the same key
+    for every tool:  the native write tool carries ``path``  and edit carries
+    ``file_path``.  A payload that puts the destination under the wrong key does not
+    describe the write the runtime would make,  so it proves nothing about it.
+
+    The content is a fixed text with no secret in it.  The payload describes a write
+    into the throwaway sentinel directory;  it does not perform one.
+    """
+    if adapter.payload_shape in ("cursor", "antigravity", "muse"):
+        # These payload shapes carry no file-tool shape,  so the platform's adapter
+        # does not list a file tool for them.  The shell shape is the only thing these
+        # runtimes send that this guard reads.
+        raise ValueError("the %s payload shape carries no file tool" % adapter.payload_shape)
+    return {
+        "session_id": SENTINEL_SESSION_ID,
+        "hook_event_name": "PreToolUse",
+        "tool_name": tool.name,
+        "tool_input": {
+            tool.input_key: destination,
+            "content": "fleet-config L1 sentinel probe",
         },
         "cwd": cwd,
     }
@@ -936,13 +1041,25 @@ def _l1_outcome(
     )
 
 
-def _interpret_l1(run: _Run, fmt: str, marker: str, budget: int, guard_off: bool) -> L1Outcome:
+def _interpret_l1(
+    run: _Run,
+    fmt: str,
+    marker: str,
+    budget: int,
+    guard_off: bool,
+    tool_name: str = "",
+) -> L1Outcome:
     """Turn one hook run into an L1 outcome, fail closed.
 
     A deny that names the sentinel is a pass.  A hook that allowed the sentinel is
     drift:  the hook is present and it does not enforce.  A hook that could not be
     started, that timed out, that crashed, or whose output could not be read is
     unknown, and unknown is failing.
+
+    ``tool_name`` is the tool the payload named,  and it is in the reason when the
+    hook let that tool through,  because the operator has to know WHICH name the
+    guard missed:  a guard that covers "Bash"  and not "bash"  fails the fleet the
+    same way a guard that covers nothing does,  and the two need different repairs.
     """
     if run.error:
         return _l1_outcome(
@@ -977,10 +1094,11 @@ def _interpret_l1(run: _Run, fmt: str, marker: str, budget: int, guard_off: bool
         note = ""
         if guard_off:
             note = "  The FLEET_LANE_GUARD switch is off in this environment."
+        which = " the %s tool" % tool_name if tool_name else ""
         return _l1_outcome(
             CheckState.DRIFT,
             "the hook did not deny the sentinel write, so it does not enforce the lane "
-            "guard.%s" % note,
+            "guard for%s.%s" % (which, note),
             ReasonCode.PROOF_FAILED,
             "exit %s, no deny" % run.returncode,
         )
@@ -1057,19 +1175,67 @@ def run_l1_probe(
     budget = int(timeout) if timeout else int(ctx.timeout or 10)
     env = _probe_env(ctx)
     sentinel = _make_sentinel(ctx)
+    covered: list[str] = []
+    unguarded: list[str] = []
     try:
         _assert_sentinel_confined(sentinel)
-        payload = build_payload(adapter, sentinel.command, sentinel.root)
-        run = _run_shell(
-            command,
-            json.dumps(payload, sort_keys=True).encode("utf-8"),
-            env,
-            budget,
-            sentinel.root,
-        )
+        # One sentinel per shell tool name the runtime really delivers,  and every one
+        # of them has to be denied.  A guard that covers "Bash" and not "bash"  leaves
+        # the seat half guarded,  and a probe that only sent "Bash"  would not see it.
+        for name in adapter.shell_tools:
+            payload = build_payload(adapter, sentinel.command, sentinel.root, name)
+            run = _run_shell(
+                command,
+                json.dumps(payload, sort_keys=True).encode("utf-8"),
+                env,
+                budget,
+                sentinel.root,
+            )
+            outcome = _interpret_l1(
+                run, fmt, sentinel.marker, budget, _guard_disabled(env), name
+            )
+            if not outcome.passed:
+                return outcome
+            covered.append(name)
+        # The file tools are probed as well,  so the sentinel set covers the whole
+        # surface the runtime can write through.  The fleet guard guards shell calls,
+        # so a file write is not denied today;  that is reported and named,  rather
+        # than folded into a pass that claims more than it proved.
+        for tool in adapter.file_tools:
+            payload = build_file_payload(adapter, sentinel.destination, sentinel.root, tool)
+            run = _run_shell(
+                command,
+                json.dumps(payload, sort_keys=True).encode("utf-8"),
+                env,
+                budget,
+                sentinel.root,
+            )
+            file_outcome = _interpret_l1(
+                run, fmt, sentinel.marker, budget, _guard_disabled(env), tool.name
+            )
+            if file_outcome.passed:
+                covered.append(tool.name)
+            else:
+                unguarded.append(tool.name)
     finally:
         shutil.rmtree(sentinel.root, ignore_errors=True)
-    return _interpret_l1(run, fmt, sentinel.marker, budget, _guard_disabled(env))
+    reason = "the installed hook denied the sentinel write at L1"
+    detail = "the %s sentinel was denied" % ", ".join(covered)
+    if unguarded:
+        reason += (
+            ";  the %s write is not covered by this guard,  which guards shell calls"
+            % ", ".join(unguarded)
+        )
+        detail += ";  the %s write was not denied" % ", ".join(unguarded)
+    return L1Outcome(
+        level=ProofLevel.L1,
+        passed=True,
+        state=CheckState.PASS,
+        reason=reason,
+        reason_code=ReasonCode.OK,
+        detail=detail,
+        achieved=ProofLevel.L1,
+    )
 
 
 # --------------------------------------------------------------------------- L2

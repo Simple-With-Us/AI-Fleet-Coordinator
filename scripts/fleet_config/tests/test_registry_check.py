@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from fleet_config.manifest import MANIFEST_SCHEMA_VERSION
 
 REPO = Path(__file__).resolve().parents[3]
 CHECKER_PATH = REPO / "scripts" / "check-fleet-registry.py"
@@ -91,7 +92,7 @@ class RegistryCheckerManifestTests(unittest.TestCase):
             for kind in ("instructions", "hooks", "mcp", "skills", "subagents", "permissions")
         ]
         return {
-            "schemaVersion": 1,
+            "schemaVersion": MANIFEST_SCHEMA_VERSION,
             "seats": {
                 "CLAUDE": {
                     "platforms": ["claude"],

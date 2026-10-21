@@ -229,6 +229,11 @@ class Rule:
     fields on purpose.  ``autofix_allowed`` is the only route by which the apply side
     may change anything for this rule.  ``ttl_seconds`` bounds how long a result stays
     fresh.
+
+    ``source`` is the citation that says where the rule came from:  a Linear issue id,
+    a Zulip message id,  or a doc path.  It is carried into the envelope,  because a
+    rule with no citation cannot be checked against the answer that produced it,  and
+    a citation in ``description`` would be duplicated per rule and would drift.
     """
 
     id: str
@@ -243,6 +248,7 @@ class Rule:
     collector: Collector = Collector.MAC
     ttl_seconds: int = 900
     description: str = ""
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -260,6 +266,25 @@ class NotApplicable:
 
 
 @dataclass(frozen=True)
+class UncoveredSurface:
+    """A config surface that fits none of the six kinds,  so the app does not check it.
+
+    A seat's channel configuration,  its identity file,  or any other file that is not
+    instructions,  hooks,  MCP,  skills,  sub-agents or permissions has no kind,  so it
+    has no rule and no cover.  Naming it here makes that blindness visible:  the
+    envelope carries the surface and the reason,  so the app can say "not checked"
+    instead of leaving a hole where a check would have been.
+
+    ``seat`` is empty in a manifest entry,  because the manifest already knows the seat
+    the entry hangs off,  and it is filled in by the envelope,  which is one flat list.
+    """
+
+    surface: str
+    reason: str
+    seat: str = ""
+
+
+@dataclass(frozen=True)
 class SeatManifest:
     """One seat's desired state:  its platforms, its rules and its explicit covers."""
 
@@ -267,6 +292,7 @@ class SeatManifest:
     platforms: tuple[str, ...]
     rules: tuple[Rule, ...] = ()
     not_applicable: tuple[NotApplicable, ...] = ()
+    uncovered: tuple[UncoveredSurface, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -312,6 +338,7 @@ class CheckResult:
     expires_at: str
     ttl_seconds: int
     stale: bool = False
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -325,7 +352,11 @@ class StatusSummary:
 
 @dataclass(frozen=True)
 class StatusReport:
-    """One whole status run, before the envelope builder renders it as JSON."""
+    """One whole status run, before the envelope builder renders it as JSON.
+
+    ``uncovered`` carries the surfaces that fit none of the six kinds,  so the app can
+    render the blindness instead of leaving a hole where a check would have been.
+    """
 
     schema_version: int
     generated_at: str
@@ -333,3 +364,4 @@ class StatusReport:
     summary: StatusSummary
     manifest_source: str | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
+    uncovered: tuple[UncoveredSurface, ...] = field(default_factory=tuple)
