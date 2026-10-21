@@ -50,7 +50,7 @@ function harness({ consumer, seat = "GROK-WEB" } = {}) {
     clientId: "client",
     grantRef: "abcdef012345",
     paused: false,
-    config: withBot(consumer !== undefined ? loadConfig(testEnv({ NOTES_RELAY_CONSUMER: consumer })) : config, seat),
+    config: withBot(consumer !== undefined ? loadConfig(testEnv({ NOTES_RELAY_CONSUMER: consumer, OPERATOR_ZULIP_USER_ID: "43210", OPERATOR_ZULIP_EMAIL: "operator@example.test" })) : config, seat),
     zulip: new ZulipClient({ email: botEmail(seat), key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
     key: fake.key,
     gate: memoryGate(clock),
@@ -63,7 +63,7 @@ function harness({ consumer, seat = "GROK-WEB" } = {}) {
   return { fake, tools, clock };
 }
 
-const TITLE = "[AFC, Grok Web] relay check";
+const TITLE = "[AFC, GROK-WEB] relay check";
 
 function ok(result, tool) {
   assert.ok(!result.isError, `expected success, got ${result.content?.[0]?.text}`);
@@ -105,16 +105,23 @@ test("golden envelopes render to exactly the message the Python side writes and 
 test("titles, flags and envelopes are refused the way notes.py refuses them", () => {
   assert.throws(() => checkTitle(""), /must not be empty/);
   assert.throws(() => checkTitle("no bracket"), /must start with/);
-  assert.throws(() => checkTitle('[AFC, Claude] a "quote"'), /double quote/);
-  assert.throws(() => checkTitle("[AFC, Claude] back\\slash"), /backslash/);
-  assert.throws(() => checkTitle("[AFC, Claude] line\nbreak"), /control character/);
+  assert.throws(() => checkTitle('[AFC, CLAUDE] a "quote"'), /double quote/);
+  assert.throws(() => checkTitle("[AFC, CLAUDE] back\\slash"), /backslash/);
+  assert.throws(() => checkTitle("[AFC, CLAUDE] line\nbreak"), /control character/);
+  // AFC-422:  a leading bracket alone let `[AFC` and `[]` reach the relay envelope.
+  for (const good of ["[AFC, CLAUDE] relay rollout", "[AFC, CT, GROK-WEB] notes", "[UM, MM] Topic", "[AFC, GB-FIXER] any case", "[AFC2, CLAUDE] digits"]) {
+    assert.equal(checkTitle(good), good);
+  }
+  for (const bad of ["[AFC", "[AFC Topic", "[] Topic", "[AFC] Topic", "[AFC, ] Topic", "[AFC, CLAUDE]", "[AFC, CLAUDE] ", "[afc, CLAUDE] Topic", "[AFC-2, CLAUDE] x"]) {
+    assert.throws(() => checkTitle(bad), /must read/, `should refuse ${bad}`);
+  }
   assert.throws(() => checkFlags({ activate: true }), /unknown flag 'activate'/);
   assert.throws(() => checkFlags({ summary: 'say "hi"' }), /summary/);
   assert.throws(() => checkFlags({ pr: "46; rm" }), /pull request/);
-  assert.equal([...topicFor(`[AFC, Claude] ${"x".repeat(80)}`)].length, 60);
+  assert.equal([...topicFor(`[AFC, CLAUDE] ${"x".repeat(80)}`)].length, 60);
   assert.equal(parseMessage("no fence here"), null);
   assert.equal(parseMessage('```json\n{"v":2}\n```'), null);
-  assert.equal(parseMessage(`${"```json\n"}{"v":1,"action":"create","title":"[AFC, Claude] t","markdown":"","flags":{"activate":true},"request_id":"abcdefgh12","identity":"CLAUDE"}\n${"```"}`), null);
+  assert.equal(parseMessage(`${"```json\n"}{"v":1,"action":"create","title":"[AFC, CLAUDE] t","markdown":"","flags":{"activate":true},"request_id":"abcdefgh12","identity":"CLAUDE"}\n${"```"}`), null);
 });
 
 // ---------------------------------------------------------------- notes_create and friends
@@ -137,7 +144,7 @@ test("notes_create posts the envelope to #notes-relay as the identity, topic = t
 
 test("the same request_id twice posts once;  a long title is cut to the 60-character topic and stays whole in the envelope", async () => {
   const { fake, tools } = harness();
-  const title = `[AFC, Grok Web] ${"long ".repeat(30)}end`;
+  const title = `[AFC, GROK-WEB] ${"long ".repeat(30)}end`;
   const first = ok(await tools.call("notes_update", { session: SESSION, title, markdown: "x", request_id: "dedupe-request-1" }), "notes_update");
   const again = ok(await tools.call("notes_update", { session: SESSION, title, markdown: "x", request_id: "dedupe-request-1" }), "notes_update");
   assert.equal(again.message_id, first.message_id);
@@ -212,7 +219,7 @@ test("a non-exempt hosted seat is refused without a session, with the text that 
   assert.equal(relayPosts(fake).length, 0);
   // a CLAUDE grant names its own platform variable
   const claude = harness({ seat: "CLAUDE" });
-  const obj = toolError(await claude.tools.call("notes_create", { title: "[AFC, Claude] t", markdown: "b" }), "session_required");
+  const obj = toolError(await claude.tools.call("notes_create", { title: "[AFC, CLAUDE] t", markdown: "b" }), "session_required");
   assert.match(obj.message, /CLAUDE_CODE_SESSION_ID/);
 });
 
@@ -249,10 +256,10 @@ test("the exemption comes from the resolved seat, never from an argument:  no ar
   assert.equal(NOTES_TOOLS.find((t) => t.name === "notes_create").inputSchema.additionalProperties, false);
   const { fake, tools } = harness({ seat: "CODEX" });
   for (const extra of [{ exempt: true }, { identity: "GB-FIXER" }, { seat: "MA" }, { single_thread: true }]) {
-    const result = await tools.call("notes_create", { title: "[AFC, Codex] t", markdown: "b", ...extra });
+    const result = await tools.call("notes_create", { title: "[AFC, CODEX] t", markdown: "b", ...extra });
     assert.equal(result.isError, true, JSON.stringify(extra));
   }
-  toolError(await tools.call("notes_create", { title: "[AFC, Codex] t", markdown: "b" }), "session_required");
+  toolError(await tools.call("notes_create", { title: "[AFC, CODEX] t", markdown: "b" }), "session_required");
   assert.equal(relayPosts(fake).length, 0);
 });
 
@@ -378,7 +385,7 @@ test("notes_status finds a request buried under more than a page of this bot's l
   const claude = fake.addUser("claude-bot@simplewithus.zulipchat.com", "Claude", { isBot: true });
   const sent = ok(await tools.call("notes_create", { session: SESSION, title: TITLE, markdown: "b", request_id: "buried-request-1" }), "notes_create");
   react(fake.messages.find((m) => m.id === sent.message_id), claude, CHECK);
-  for (let i = 0; i < NOTES_FIND_PAGE * 2 + 30; i += 1) fake.addMessage("Grok Web", RELAY_CHANNEL, `[AFC, Grok Web] other ${i}`, `later post ${i}`);
+  for (let i = 0; i < NOTES_FIND_PAGE * 2 + 30; i += 1) fake.addMessage("Grok Web", RELAY_CHANNEL, `[AFC, GROK-WEB] other ${i}`, `later post ${i}`);
   const out = ok(await tools.call("notes_status", { request_id: "buried-request-1" }), "notes_status");
   assert.deepEqual([out.message_id, out.status], [sent.message_id, "done"]);
 });
@@ -428,7 +435,7 @@ test("tool arguments, relay envelopes and reaction objects are parsed by strict 
   await assert.rejects(tools.notesWrite("pin", { title: TITLE, markdown: "a pin takes no body" }, audit), (e) => /unknown argument 'markdown'/.test(e.message));
   await assert.rejects(tools.tool_notes_status({ request_id: "abcdefgh12", message_id: "7" }, audit), (e) => e.code === "invalid_argument");
   await assert.rejects(tools.tool_notes_status({ request_id: 5 }, audit), (e) => e.code === "invalid_argument");
-  const good = '{"v":1,"action":"create","title":"[AFC, Claude] t","markdown":"","flags":{},"request_id":"abcdefgh12","identity":"CLAUDE"';
+  const good = '{"v":1,"action":"create","title":"[AFC, CLAUDE] t","markdown":"","flags":{},"request_id":"abcdefgh12","identity":"CLAUDE"';
   assert.ok(parseMessage(`${"```json\n"}${good}}\n${"```"}`));
   for (const tampered of [`${good},"markdown_url":"/user_uploads/2/a/b.md","markdown_bytes":"3","markdown_sha256":"${"a".repeat(64)}"}`, `${good},"markdown_bytes":3}`, `${good.replace('"markdown":""', '"markdown":7')}}`, `${good.replace('"v":1', '"v":"1"')}}`]) {
     assert.equal(parseMessage(`${"```json\n"}${tampered}\n${"```"}`), null, tampered);
@@ -453,4 +460,34 @@ test("notes_status answers not_configured, and trusts nobody, when the consumer 
   react(fake.messages.find((m) => m.id === sent.message_id), claude, CHECK);
   const error = toolError(await tools.call("notes_status", { request_id: "unset-request-01" }), "not_configured");
   assert.match(error.message, /NOTES_RELAY_CONSUMER/);
+});
+
+
+test("note title grammar accepts canonical display names and compatible tags", () => {
+  for (const title of ["[AFC,  CLAUDE] Topic", "[AFC, CLAUDE] "])
+    assert.throws(() => checkTitle(title), /must read/);
+  assert.equal(checkTitle("[AFC, Codex] Topic"), "[AFC, Codex] Topic");
+  assert.equal(checkTitle("[AFC, Grok Web] Topic"), "[AFC, Grok Web] Topic");
+  assert.equal(checkTitle("[AFC, CT, GB-FIXER] Topic"), "[AFC, CT, GB-FIXER] Topic");
+});
+
+test("OPERATOR service consumer trusts only the pinned bot, not display names or Admin", async () => {
+  const { tools } = harness({ consumer: "OPERATOR" });
+  const correct = { bot_owner_id: tools.config.ownerUserId, is_bot: true, user_id: 43210, email: "operator@example.test", full_name: "[Operator]" };
+  assert.equal(await tools.notesFleetBot(43210, [correct]), true);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, email: "fixture-old-admin@example.test" }]), false);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, bot_owner_id: 999 }]), false);
+  assert.equal(await tools.notesFleetBot(1, [{ ...correct, user_id: 1 }]), false);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, is_bot: false }]), false);
+  assert.equal(await tools.notesFleetBot(43210, [{ ...correct, email: "other@example.test" }]), false);
+});
+
+
+test("Notes consumer discovery indexes members once instead of rescanning per candidate", async () => {
+  const { tools } = harness({ consumer: "OPERATOR" });
+  const members = Array.from({ length: 1000 }, (_, i) => ({ user_id: i + 100, is_bot: true, email: `peer${i}@example.test` }));
+  members.push({ user_id: 43210, is_bot: true, email: "operator@example.test", bot_owner_id: tools.config.ownerUserId });
+  members.find = () => { throw new Error("quadratic member rescan"); };
+  tools.zulip.get = async () => ({ messages: [], found_newest: true });
+  assert.equal(await tools.notesRefusalReason({ id: 1, subject: "note" }, "request-123", RELAY_ID, members), null);
 });

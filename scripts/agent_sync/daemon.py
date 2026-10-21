@@ -314,12 +314,22 @@ class SeatRunner:
         # under another name (bot = "GB-Compiler" in [seat.CLAUDE], or email_env and key_env
         # pointed at another seat's variables) would otherwise hold a bot that another seat or
         # the other instance holds too.  users/me says whose key this really is.
-        tag = seat_tag_for(me)
-        if tag != self.seat:
-            raise RoleRefused(
-                "the credential for seat %s belongs to the bot of seat %s (users/me); a seat holds "
-                "only its own bot, so it is refused" % (self.seat, tag)
-            )
+        if self.seat == "OPERATOR":
+            from .service_identity import operator_bot
+
+            # The service identity, not the roster tag, is what pins this seat:  the Operator keeps
+            # the administrator account's own address, so seat_tag_for would read ADMIN, not
+            # OPERATOR.  operator_bot is the stricter check (id, email, bot, pinned owner), so the
+            # roster-tag refusal below applies to agent seats only.
+            if not operator_bot(me, self.daemon.env, self.daemon.config.owner_user_id):
+                raise RoleRefused("OPERATOR credential does not match the pinned service bot")
+        else:
+            tag = seat_tag_for(me)
+            if tag != self.seat:
+                raise RoleRefused(
+                    "the credential for seat %s belongs to the bot of seat %s (users/me); a seat "
+                    "holds only its own bot, so it is refused" % (self.seat, tag)
+                )
         self.me = R.SeatIdentity(
             self.seat, int(me["user_id"]), str(me.get("full_name") or ""), self.creds.email
         )
@@ -368,6 +378,7 @@ class SeatRunner:
         before: int = 0,
         after: int = 0,
         include: bool = False,
+        deadline: float | None = None,
     ) -> list[dict[str, Any]]:
         assert self.client is not None
         result = self.client.get(
@@ -380,8 +391,12 @@ class SeatRunner:
                 "include_anchor": include,
                 "apply_markdown": False,
             },
+            **({"deadline": deadline} if deadline is not None else {}),
         )
-        return list(result.get("messages") or [])
+        messages = result.get("messages")
+        if not isinstance(messages, list):
+            raise NR.MalformedResponse("relay message page must be a list")
+        return messages
 
     def backfill(self) -> list[dict[str, Any]]:
         """DMs, mentions and the owner's posts are paged from the cursor until exhausted.  Each
@@ -407,6 +422,10 @@ class SeatRunner:
             # A relay request has no mention and its topic is never followed or leased, so without this a later
             # message that moves the cursor would carry it past a request that arrived while this seat was down.
             narrows.append([{"operator": "channel", "operand": relay.channel}])
+        elif self.daemon.notes_relay_refuser == self.seat:
+            # The relay is off, so this seat refuses what nobody will write.  A refusal that failed holds the cursor
+            # below the request, and only a fetch of this channel can bring it back to be refused.
+            narrows.append([{"operator": "channel", "operand": NOTES.RELAY_CHANNEL}])
         for narrow in narrows:
             anchor = floor
             for _ in range(MAX_PAGES):
@@ -660,6 +679,18 @@ class Daemon:
         self.outgoing_webhook_server: OW.OutgoingWebhookServer | None = None
         self.listener_api_server: LAPI.ListenerReadApi | None = None
         self.notes_relay: NR.Consumer | None = None
+        # The seat this host is the consumer for, from the fleet knob:  None when the knob names another seat, so
+        # this host does not act on the relay channel at all.  While it is set, every seat treats a request in the
+        # relay channel as consumed (no inbox row, no wake from an @-mention inside an envelope), exactly as when
+        # the consumer is running.
+        self.notes_relay_consumer_seat: str | None = None
+        # The seat that must answer a request nobody on this Mac will write:  this host's consumer seat when the
+        # relay is off (or the notes script is missing).  It refuses the request instead of letting it vanish into
+        # the routing as chatter, so `notes_status` says "refused" and not "queued" for ever (AFC-407).
+        self.notes_relay_refuser: str | None = None
+        # Why that seat refuses:  the relay is off, or this host cannot run the notes script.  The requester reads
+        # it in the refusal reply, so it says what to fix.
+        self.notes_relay_refusal_reason: str = NR.NO_CONSUMER_REASON
         self.notes_relay_lock = (
             threading.RLock()
         )  # a reload (main thread) and a handover (seat thread) never overlap
@@ -977,6 +1008,144 @@ class Daemon:
                 "lowest one has run",
             )
 
+    def _retry_failed_refusals(self) -> None:
+        """Publish again a refusal that failed on a retryable error, for the requests the hold is keeping the
+        cursor below.  With no consumer running there is nothing to spool, so the reply itself is the retry:  a
+        refusal that lands frees the hold it was holding, and one that keeps failing on a retryable error waits for
+        the next tick.  A permanent failure frees the hold too:  nothing a retry could change (the message is gone,
+        the channel closed), so the cursor must not be held below it for ever."""
+        with self.notes_relay_lock:
+            seat = self.notes_relay_refuser
+            reader = self.seats.get(seat) if seat else None
+            keys = sorted(
+                (key for key in self.notes_relay_retry if key[0] == seat), key=lambda item: item[1]
+            )[:4]
+            reason = self.notes_relay_refusal_reason
+        if reader is None or not reader.connected or reader.client is None:
+            return
+        refused: list[tuple[str, int]] = []
+        gave_up: list[int] = []
+        for key in keys:
+            if key[0] != reader.seat:
+                continue
+            try:
+                message = reader.client.get("messages/%d" % key[1], {"apply_markdown": False}).get(
+                    "message"
+                )
+            except Z.ApiError as exc:
+                if NR.retryable(exc):
+                    continue  # 429, 5xx, a permission error:  the next tick tries again
+                message = None  # the request is gone:  no reply could land
+            except Exception:  # noqa: BLE001 - the next tick tries again
+                continue
+            if message is None or not isinstance(message, dict):
+                self.log.write(
+                    "notes-relay-refusal-gave-up", seat=reader.seat, id=key[1], status="gone"
+                )
+                with self.notes_relay_lock:
+                    self.notes_relay_retry.pop(key, None)
+                gave_up.append(key[1])
+                continue
+            try:
+                landed = NR.refuse_unconsumed(reader, message, reason, self.log.write)
+            except Exception:  # noqa: BLE001 - a retryable error:  the next tick tries again
+                continue
+            with self.notes_relay_lock:
+                self.notes_relay_retry.pop(key, None)
+            if landed:
+                refused.append(key)
+            else:  # a permanent refusal failure:  nothing a retry could change, so the hold falls
+                self.log.write(
+                    "notes-relay-refusal-gave-up", seat=reader.seat, id=key[1], status="refused"
+                )
+                gave_up.append(key[1])
+        if refused:
+            self.log.write(
+                "notes-relay-refusal-retried",
+                seat=reader.seat,
+                ids=[mid for _, mid in refused],
+            )
+        recovered = self._refuse_relay_overflow(reader, reason)
+        if not refused and not gave_up and not recovered:
+            return
+        with self.notes_relay_lock:
+            self._release_relay_hold(reader)
+        if refused:
+            reader.advance(max(mid for _, mid in refused))
+        if recovered:
+            reader.advance(recovered)
+
+    def _refuse_relay_overflow(self, reader: SeatRunner, reason: str) -> int:
+        """Refuse the requests past this seat's retry limit, which only the overflow marker remembers.  With no
+        consumer there is no spool, so the refusal is the answer and this pass walks the relay channel from the
+        marker's id on, exactly as `_backfill_relay_overflow` walks it while a consumer runs.  Returns the highest id
+        reached, or 0 when nothing moved (the marker then stays and the next tick tries again)."""
+        with self.notes_relay_lock:
+            marker = self.notes_relay_overflow.get(reader.seat)
+        if marker is None:
+            return 0
+        holder, start = marker
+        anchor = last = start - 1  # after `start - 1`, so `start` is included
+        deadline = time.monotonic() + 5.0
+        pending: int | None = None
+        processed = 0
+        reached_newest = False
+        try:
+            page = reader.fetch(
+                [{"operator": "channel", "operand": NR.N.RELAY_CHANNEL}],
+                anchor=anchor,
+                after=PAGE,
+                deadline=deadline,
+            )
+            if not isinstance(page, list):
+                raise NR.MalformedResponse("relay message page must be a list")
+            for message in page:
+                if (
+                    not isinstance(message, dict)
+                    or isinstance(message.get("id"), bool)
+                    or not isinstance(message.get("id"), int)
+                    or message["id"] <= 0
+                ):
+                    raise NR.MalformedResponse("relay page entries need positive integer ids")
+            rows = sorted((m for m in page if m["id"] > last), key=lambda m: m["id"])
+        except Exception as exc:
+            self.log.write("notes-relay-overflow-incomplete", error=type(exc).__name__)
+            return 0
+        for message in rows:
+            if time.monotonic() >= deadline or processed >= 4:
+                pending = message["id"]
+                break
+            if NR.in_relay_channel(message) and NR.is_request(message):
+                processed += 1
+                try:
+                    if not NR.refuse_unconsumed(
+                        reader, message, reason, self.log.write, deadline=deadline
+                    ):
+                        self.log.write(
+                            "notes-relay-refusal-gave-up", id=message["id"], status="refused"
+                        )
+                except Exception as exc:
+                    self.log.write(
+                        "notes-relay-refusal-retry", id=message["id"], error=type(exc).__name__
+                    )
+                    self._keep_for_relay_retry(reader, message)
+                    with self.notes_relay_lock:
+                        if (reader.seat, message["id"]) not in self.notes_relay_retry:
+                            pending = min(pending or message["id"], message["id"])
+            last = message["id"]
+        else:
+            reached_newest = not rows or len(page) < PAGE
+        with self.notes_relay_lock:
+            # A concurrent route may have installed an earlier marker while HTTP was in flight.
+            if self.notes_relay_overflow.get(reader.seat) != marker:
+                return 0
+            if reached_newest and pending is None:
+                self.notes_relay_overflow.pop(reader.seat, None)
+            elif last >= start or pending is not None:
+                self.notes_relay_overflow[reader.seat] = (holder, pending or last + 1)
+            self._release_relay_hold(holder)
+        return last if reached_newest and pending is None else 0
+
     def _abandon_relay_holds(self, why: str) -> None:
         """This listener has stopped consuming on purpose, so nothing will spool the requests it was holding the
         cursors for.  Drop the retry map and the overflow markers and release every hold (set_hold), so the cursors
@@ -1018,6 +1187,12 @@ class Daemon:
         reload may have moved the consumer to another seat;  the spool is seat-independent).  Once one is on disk,
         the hold it put on its original runner's cursor falls to the lowest request that runner still has waiting,
         or ends, and that cursor advances.  Then any overflow is recovered by a backfill of the relay channel."""
+        with self.notes_relay_lock:
+            relay = self.notes_relay
+            refuse = relay is None or relay.stopped.is_set()
+        if refuse:
+            self._retry_failed_refusals()
+            return
         with self.notes_relay_lock:
             relay = self.notes_relay
             if relay is None or relay.stopped.is_set():
@@ -1128,14 +1303,26 @@ class Daemon:
         cfg = self.config
         home = Path(os.path.abspath(self.home))
         available = NOTES.direct_available(self.env, home) is not None
-        consumer, label, differs = (
-            NOTES.relay_consumer(cfg.notes_relay_seat, refresh=True)
-            if cfg.notes_relay_enabled and available
-            else (cfg.notes_relay_seat, "", False)
-        )
+        consumer, label, differs = NOTES.relay_consumer(cfg.notes_relay_seat, refresh=True)
         # The fleet knob (Infisical) names the one consumer seat;  a local config can only agree with it.  A listener
         # whose seat differs does not consume, so two Macs cannot both act as the consumer.
         agrees = not differs and consumer == cfg.notes_relay_seat
+        # What this host does with the relay channel.  It is the knob's consumer when the local seat agrees, and it
+        # can write only while the relay is enabled and the notes script is here.  While it is the consumer it owns
+        # the channel:  every seat treats a request there as consumed, and the consumer seat answers it.  When it
+        # cannot write, the consumer seat refuses it, so the requester hears back instead of waiting on "queued".
+        self.notes_relay_consumer_seat = cfg.notes_relay_seat if agrees else None
+        previous_refuser = self.notes_relay_refuser
+        self.notes_relay_refuser = (
+            cfg.notes_relay_seat
+            if (agrees and not (cfg.notes_relay_enabled and available))
+            else None
+        )
+        if previous_refuser is not None and previous_refuser != self.notes_relay_refuser:
+            self._abandon_relay_holds("the relay refuser changed")
+        self.notes_relay_refusal_reason = (
+            NR.NO_CONSUMER_REASON if available else NR.NO_SCRIPT_REASON
+        )
         if old is not None:
             if (
                 cfg.notes_relay_enabled
@@ -1158,14 +1345,20 @@ class Daemon:
                 return
             self.notes_relay = None
         if not cfg.notes_relay_enabled:
-            self._abandon_relay_holds("the relay is disabled")
+            # A disabled consumer still owes refusal acknowledgements.  Keep their retry/overflow
+            # holds across an unchanged reload; only a host no longer assigned to refusal abandons them.
+            if self.notes_relay_refuser is None:
+                self._abandon_relay_holds("the relay is disabled and this host is not its refuser")
             return
         if not available:
             self.log.write(
                 "notes-relay-unavailable",
                 reason="no osascript or no apple-notes-coding.sh on this host",
             )
-            self._abandon_relay_holds("the notes script is unavailable")
+            if self.notes_relay_refuser is None:
+                self._abandon_relay_holds(
+                    "the notes script is unavailable and this host is not its refuser"
+                )
             return
         if not agrees:
             self.log.write(
@@ -1203,18 +1396,21 @@ class Daemon:
             consumer.resume(runner)
 
     def ensure_notes_channel(self, runner: SeatRunner, why: str) -> None:
-        """The relay seat's bot must be in #notes-relay to see it.  Joins it only when the channel exists and is
-        public (the subscribe API would otherwise create one);  a missing channel is a logged warning."""
-        consumer = self.notes_relay
-        if consumer is None or runner.seat != consumer.seat or runner.client is None:
+        """The relay seat's bot must be in #notes-relay to see it and to answer a request nobody will write.  It
+        joins while this host is the knob's consumer, whether or not the relay is running:  with the relay off the
+        seat still has to refuse what nobody will write.  Joins only when the channel exists and is public (the
+        subscribe API would otherwise create one);  a missing channel is a logged warning."""
+        seat = self.notes_relay_consumer_seat
+        if seat is None or runner.seat != seat or runner.client is None:
             return
+        channel = NOTES.RELAY_CHANNEL
         try:
             public = SUB.public_channels(runner.client)
             found = next(
                 (
                     (sid, name)
                     for sid, name in public.items()
-                    if name.casefold() == consumer.channel
+                    if name.casefold() == channel.casefold()
                 ),
                 None,
             )
@@ -1224,7 +1420,7 @@ class Daemon:
                     seat=runner.seat,
                     why=why,
                     warning="#%s does not exist or is private;  create it, then the next connect joins it"
-                    % consumer.channel,
+                    % channel,
                 )
                 return
             if found[0] in SUB.subscribed_ids(runner.client):
@@ -1738,6 +1934,49 @@ class Daemon:
             return
         runner.ring.add(message_id)
         relay = self.notes_relay
+        if relay is None and NR.in_relay_channel(message) and NR.is_request(message):
+            # No consumer is running on this Mac:  a notes request is still not a message for any session, so it
+            # must not become an inbox row or a wake.  The consumer seat refuses it, so the requester learns at
+            # once that nothing was written instead of waiting on "queued" for ever (AFC-407).  A message in the
+            # channel that is not a request stays an ordinary message, as when the relay has never been set up.
+            if runner.seat == self.notes_relay_refuser:
+                try:
+                    NR.refuse_unconsumed(
+                        runner, message, self.notes_relay_refusal_reason, self.log.write
+                    )
+                except Exception as exc:  # noqa: BLE001 - a refusal must never stop the routing
+                    self.log.write(
+                        "notes-relay-refusal-failed", id=message_id, error=type(exc).__name__
+                    )
+                    # The reply is part of the result, so a refusal that failed is not a lost request:  take the id
+                    # back out of the ring, hold the cursor below it and keep it for the retry, or the next message
+                    # would carry the cursor past a request nobody was ever told about.
+                    runner.ring.discard(message_id)
+                    hold = runner.hold_at_or_below(message_id)
+                    self.log.write(
+                        "notes-relay-refusal-held",
+                        seat=runner.seat,
+                        id=message_id,
+                        hold_below=hold,
+                        warning="could not refuse the request;  the cursor is held below it until the retry lands",
+                    )
+                    self._keep_for_relay_retry(runner, message)
+                    return
+            else:
+                # This host is not the consumer and cannot say who is:  the knob names another seat, or it could
+                # not be read.  It says so in the log rather than letting the request pass in silence, because a
+                # request nobody claims is a request nobody writes.  It does not refuse:  a refusal outranks a
+                # completion in `notes_status`, so a wrong refusal would report a note that another host wrote
+                # as failed.
+                self.log.write(
+                    "notes-relay-unclaimed",
+                    id=message_id,
+                    seat=runner.seat,
+                    consumer=self.notes_relay_consumer_seat,
+                )
+            if advance_cursor:
+                runner.advance(message_id)
+            return
         if relay is not None and relay.in_channel(message):
             # A notes request is not a message for any session:  every seat's runner treats it as consumed (no
             # inbox row, no wake from an @-mention inside an envelope) and only the configured seat acts on it.
@@ -2517,7 +2756,7 @@ class Daemon:
         mcode = A.resolve_mcode(runner.cfg.mcode, self.wake_path)
         if not mcode:
             return None, "no_mcode"
-        state = A.mcode_pin_state(runner.paths, mcode)
+        state = A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model)
         if not state["pinned"]:
             return None, str(state["why"] or "not_pinned")
         return str(state["mcode"]), None
@@ -2583,7 +2822,7 @@ class Daemon:
         )
         if runner.cfg.fallback == "mcode":
             return self.mcode_runner.run(
-                A.mcode_argv(binary),
+                A.mcode_argv(binary, runner.cfg.mcode_model),
                 A.mcode_env(self.env, self.home, self.wake_path, seat=runner.seat),
                 runner.paths.wake_dir,
                 prompt,
@@ -4849,6 +5088,13 @@ class Daemon:
                 if runner.cfg.wake == "muse"
                 else None
             )
+            # The fallback is opt-in (`fallback = "mcode"`), so its pin is only read for a seat that
+            # actually configured one -- the same gate `_pinned_fallback` uses.
+            mcode = (
+                A.resolve_mcode(runner.cfg.mcode, self.wake_path)
+                if runner.cfg.fallback == "mcode"
+                else None
+            )
             routine = None
             if runner.cfg.wake == "http":
                 target, why, detail = self.routine(runner)
@@ -4896,12 +5142,24 @@ class Daemon:
             # exhausted quota must be visibly held BY THE QUOTA, or it looks exactly like a seat
             # nobody configured (the CLAUDE seat at its weekly cap is the case the gate exists for).
             muse_pin = A.muse_pin_state(runner.paths, muse) if muse else None
-            if muse_pin and muse_pin["why"] == "pin_stale":
-                red.append(
-                    "wake pin is stale: muse moved to %s (pinned %s); run "
-                    "`agent-sync daemon test-wake --seat %s --run`, then `--pin`"
-                    % (muse_pin["muse"], muse_pin["pinned_muse"], seat)
-                )
+            if muse_pin and muse_pin["why"] in ("pin_stale", "pin_unverified", "pin_unreadable"):
+                # The cause, the label ("stale" vs "unverifiable") and the remediation all live
+                # in adapters, so the wording is testable without standing up a daemon.  An
+                # unreadable contract is NOT fixed by re-pinning, so the entry must say
+                # "unverifiable" and not prefix "run" before a remediation that begins with
+                # "restore the wake contract".
+                red.append(A.muse_pin_red_entry(muse_pin, seat))
+            # The fallback pin reports on its own file too.  It gates the fallback on its own, so a
+            # stale one holds every fallback wake; without a red entry here a seat whose fallback
+            # silently stopped looks exactly as healthy as a seat that never configured one.
+            mcode_pin = (
+                A.mcode_pin_state(runner.paths, mcode, runner.cfg.mcode_model) if mcode else None
+            )
+            if mcode_pin and mcode_pin["why"] in ("pin_stale", "pin_unverified", "pin_unreadable"):
+                # The cause, the label and the remediation all live in adapters.  Mirror of the
+                # muse entry:  no "run " prefix when the remediation begins with its own verb, and
+                # the unreadable remediation carries `--runtime fallback` in BOTH halves.
+                red.append(A.mcode_pin_red_entry(mcode_pin, seat))
             for problem in runner.cfg.config_problems:
                 red.append(
                     "config problem, so wakes are inbox-only (mentions still queue): %s"

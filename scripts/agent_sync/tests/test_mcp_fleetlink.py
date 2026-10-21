@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -247,7 +248,7 @@ class CredentialTests(FleetLinkHarness):
         )
         file_cred = (
             "infisical",
-            "Infisical Fleet-OPS /fleetlink FLEETLINK_TOKEN_CLAUDE",
+            "Infisical AI Fleet Coordinator /fleetlink FLEETLINK_TOKEN_CLAUDE",
             TOKEN_CLAUDE,
         )
         # The generic token names no seat:  never used when the environment names another seat or a launcher.
@@ -328,10 +329,75 @@ class CredentialTests(FleetLinkHarness):
             second["env"]["FLEETLINK_TOKEN"], TOKEN_CLAUDE
         )  # CLAUDE's own, from Infisical
 
+    def test_fleet_secrets_is_asked_for_the_ai_fleet_coordinator_project(self):
+        # The seat tokens live in AI Fleet Coordinator /fleetlink;  Fleet-OPS has no such folder.
+        seen = []
+
+        def fake_run(argv, **kw):
+            seen.append(list(argv))
+            return mock.Mock(returncode=0, stdout=TOKEN_CLAUDE.encode())
+
+        from agent_sync import zulip as Z
+
+        FL._token_cache.clear()
+        with (
+            mock.patch.object(Z, "infisical_enabled", lambda env: True),
+            mock.patch.object(Z, "fleet_secrets_bin", lambda env, home: "/x/fleet-secrets"),
+            mock.patch.object(FL.subprocess, "run", fake_run),
+        ):
+            token = FL._fleet_secrets_token("FLEETLINK_TOKEN_CLAUDE", {}, Path("/nonexistent"))
+        FL._token_cache.clear()
+        self.assertEqual(token, TOKEN_CLAUDE)
+        self.assertEqual(
+            seen,
+            [
+                [
+                    "/x/fleet-secrets",
+                    "get",
+                    "FLEETLINK_TOKEN_CLAUDE",
+                    "--path",
+                    "/fleetlink",
+                    "--project",
+                    "ai-fleet-coordinator",
+                ]
+            ],
+        )
+
+    def test_only_a_definitive_answer_is_cached(self):
+        # A timeout or an unexpected exit must not hide a good token for ten minutes;  a token or a clean "no
+        # such key" (exit 3) may be cached.
+        from agent_sync import zulip as Z
+
+        outcomes = [
+            subprocess.TimeoutExpired("fleet-secrets", 60),
+            mock.Mock(returncode=4, stdout=b""),
+            mock.Mock(returncode=0, stdout=TOKEN_CLAUDE.encode()),
+            mock.Mock(returncode=0, stdout=b"never reached, the answer is cached"),
+        ]
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            out = outcomes.pop(0)
+            if isinstance(out, Exception):
+                raise out
+            return out
+
+        FL._token_cache.clear()
+        with (
+            mock.patch.object(Z, "infisical_enabled", lambda env: True),
+            mock.patch.object(Z, "fleet_secrets_bin", lambda env, home: "/x/fleet-secrets"),
+            mock.patch.object(FL.subprocess, "run", fake_run),
+        ):
+            got = [FL._fleet_secrets_token("FLEETLINK_TOKEN_CLAUDE", {}, Path("/x")) for _ in range(4)]
+        FL._token_cache.clear()
+        self.assertEqual(got, [None, None, TOKEN_CLAUDE, TOKEN_CLAUDE])
+        self.assertEqual(len(calls), 3)
+
     def test_a_missing_token_is_not_configured_and_nothing_runs(self):
         session = self.session(self.env())
         error = self.assert_tool_error(session.call("fleetlink_whoami"), "not_configured")
-        for name in ("FLEETLINK_TOKEN_CLAUDE", "Infisical Fleet-OPS /fleetlink"):
+        for name in ("FLEETLINK_TOKEN_CLAUDE", "Infisical AI Fleet Coordinator /fleetlink"):
             self.assertIn(name, error["message"])
         self.assertNotIn(".secrets", error["message"])
         self.assertEqual(self.calls(), [])
@@ -391,6 +457,16 @@ class ScanAndFenceTests(FleetLinkHarness):
 
     def test_the_seats_own_environment_token_is_refused_verbatim(self):
         session = self.session(self.env(FLEETLINK_TOKEN_CLAUDE=TOKEN_CLAUDE))
+        error = self.assert_tool_error(
+            session.call("fleetlink_create_share", {"text": "see " + TOKEN_CLAUDE}),
+            "refused_secret",
+        )
+        self.assertIn("a loaded credential", error["message"])
+        self.assertEqual(self.calls(), [])
+
+    def test_the_seats_infisical_token_is_refused_verbatim_too(self):
+        self.fleetlink_infisical["FLEETLINK_TOKEN_CLAUDE"] = TOKEN_CLAUDE
+        session = self.session(self.env())
         error = self.assert_tool_error(
             session.call("fleetlink_create_share", {"text": "see " + TOKEN_CLAUDE}),
             "refused_secret",

@@ -40,6 +40,12 @@ class FakeHelper:
 
     def machine_token(self, cli, env, mode):
         self.logins.append(mode)
+        # Record the credentials the login was handed:  the real helper raises
+        # "automation-env-incomplete" without the pair, and source.py turns that into
+        # "login-failed", so a child_env() that stripped the pair too early would
+        # otherwise degrade every knob on the server while these tests stayed green.
+        self.seen_id = env.get("INFISICAL_AUTOMATION_CLIENT_ID")
+        self.seen_secret = env.get("INFISICAL_AUTOMATION_CLIENT_SECRET")
         if self.login_error:
             raise self.login_error
         return self.token
@@ -91,6 +97,60 @@ class AuthTests(KnobTestCase):
         knobs.get("FLEET_AUTOPUSH_MODE")
         self.assertEqual(helper.logins, ["keychain"])
         self.assertEqual(self.fake.tokens(), [FAKE_TOKEN])
+
+    def test_the_automation_env_mode_is_used_like_any_other_machine_identity(self):
+        # The server has no keychain:  without this the fetch would fall through to mode
+        # "session" and run the export unauthenticated, degrading every knob silently.
+        helper = self.use_helper(FakeHelper(mode="automation-env"))
+        self.fake.set(secrets=GOOD)
+        self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "snapshot")
+        self.assertEqual(helper.logins, ["automation-env"])
+        self.assertEqual(self.fake.tokens(), [FAKE_TOKEN])
+
+    def test_the_automation_credentials_never_reach_the_export_child(self):
+        helper = self.use_helper(FakeHelper(mode="automation-env"))
+        os.environ["INFISICAL_AUTOMATION_CLIENT_ID"] = "idSentinel0123456789"
+        os.environ["INFISICAL_AUTOMATION_CLIENT_SECRET"] = "secretSentinel0123456789"
+        env = source.child_env()
+        self.assertEqual(env["INFISICAL_TOKEN"], FAKE_TOKEN, "the token it resolved to")
+        self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_ID", env)
+        self.assertNotIn("INFISICAL_AUTOMATION_CLIENT_SECRET", env)
+        # Stripped from the child, but the login itself must still have seen the pair.
+        self.assertEqual(helper.seen_id, "idSentinel0123456789")
+        self.assertEqual(helper.seen_secret, "secretSentinel0123456789")
+        # And the real subprocess must see it too:  asserting on child_env() alone would stay
+        # green if _run ever built the child's env from os.environ plus a token.
+        knobs.reset_for_tests()
+        self.fake.set(secrets=GOOD)
+        self.assertEqual(knobs.get("FLEET_AUTOPUSH_MODE"), "snapshot")
+        self.assertEqual(self.fake.tokens(), [FAKE_TOKEN])
+        seen = self.fake.automation_seen()
+        self.assertTrue(seen, "the fake CLI recorded the call")
+        for pair in seen:
+            self.assertIsNone(pair["id"], "the export subprocess never sees the client id")
+            self.assertIsNone(pair["secret"], "the export subprocess never sees the client secret")
+
+    def test_a_half_set_automation_pair_is_reported_as_such_not_as_a_keychain(self):
+        self.use_helper(FakeHelper(mode_error=RuntimeError("automation-env-incomplete")))
+        os.environ["INFISICAL_AUTOMATION_CLIENT_ID"] = "idSentinel0123456789"
+        self.fake.set(secrets=GOOD)
+        with mock.patch.object(source.sys, "platform", "linux"):  # runs on a Mac too
+            knobs.get("FLEET_AUTOPUSH_MODE")
+        self.assertEqual(
+            knobs.report()["fetch_reason"],
+            "automation-env-incomplete:missing-infisical_automation_client_secret",
+        )
+        self.assertEqual(self.fake.calls(), [])
+
+    def test_linux_incomplete_reason_names_only_the_missing_variable(self):
+        with mock.patch.object(source.sys, "platform", "linux"):
+            for present, missing in (
+                (source.ENV_AUTOMATION_ID, source.ENV_AUTOMATION_SECRET),
+                (source.ENV_AUTOMATION_SECRET, source.ENV_AUTOMATION_ID),
+            ):
+                reason = source._incomplete_reason({present: "synthetic-value"})
+                self.assertEqual(reason, "automation-env-incomplete:missing-" + missing.lower())
+                self.assertNotIn("synthetic-value", reason)
 
     def test_no_machine_identity_falls_back_to_the_cli_session(self):
         helper = self.use_helper(FakeHelper(mode="session"))
@@ -305,10 +365,16 @@ class NegativeCacheTests(KnobTestCase):
         self.new_process(keep_failure_marker=True)
         self.assertIsNone(lkg.recent_failure())
 
+    def test_the_automation_reason_survives_the_marker_whole(self):
+        # The token is 68 characters:  a shorter cap cut the missing variable's name off.
+        token = "automation-env-incomplete:missing-infisical_automation_client_secret"
+        lkg.record_failure(token)
+        self.assertEqual(lkg.recent_failure(), token)
+
     def test_a_reason_is_reduced_to_a_token(self):
         lkg.record_failure("exit-1 with " + "spaces/and\nnewlines" * 10)
         reason = lkg.recent_failure()
-        self.assertLessEqual(len(reason), 64)
+        self.assertLessEqual(len(reason), 128)
         self.assertTrue(set(reason) <= set("abcdefghijklmnopqrstuvwxyz0123456789-_:"))
 
     def test_a_timeout_is_paid_once_across_siblings(self):

@@ -325,6 +325,38 @@ class NoteTests(unittest.TestCase):
         self.assertEqual(sources.parse_note_title("[Codex] z"), ("fleet", "CODEX"))
         self.assertEqual(sources.parse_note_title("New Note"), ("fleet", "FLEET"))
 
+    def test_title_parse_resolves_the_seat_tag_the_new_convention_requires(self) -> None:
+        """AFC-422:  the title is `[TEAM_KEY, SEAT_TAG] Topic`, so the seat arrives as the seat TAG.
+        Before the fix only a few lowercase aliases resolved;  `GROK-WEB`, `MA`, `FX` and the rest
+        were read as team keys and the note lost its seat attribution entirely."""
+        for title, expected in (
+            ("[AFC, GROK-WEB] Topic", ("afc", "GROK-WEB")),
+            ("[AFC, MM] Notes", ("afc", "MM")),
+            ("[AFC, CLAUDE] x", ("afc", "CLAUDE")),
+            ("[AFC, MA] x", ("afc", "MA")),
+            ("[AFC, MC] x", ("afc", "MC")),
+            ("[AFC, FX] x", ("afc", "FX")),
+            ("[AFC, WISE] x", ("afc", "WISE")),
+            ("[AFC, ECHO] x", ("afc", "ECHO")),
+            ("[AFC, OPENCODE] x", ("afc", "OPENCODE")),
+            ("[AFC, CLUTCH] x", ("afc", "CLUTCH")),
+            ("[AFC, GROK-BOT] x", ("afc", "GROK-BOT")),
+            ("[AFC, Grok Web] x", ("afc", "GROK-WEB")),
+            ("[AFC, MiniMax] x", ("afc", "MM")),
+            ("[AFC, Muse Assist] x", ("afc", "MA")),
+            ("[AFC, GB-Fixer] x", ("afc", "GB-FIXER")),
+            ("[AFC, BF-Deployer] x", ("afc", "BF-DEPLOYER")),
+            ("[AFC, CT, MM] x", ("afc", "MM")),
+            ("[AFC] no seat", ("afc", "FLEET")),
+        ):
+            with self.subTest(title):
+                self.assertEqual(sources.parse_note_title(title), expected)
+
+    def test_grok_build_is_one_seat_with_grok(self) -> None:
+        """Owner 2026-10-10:  the Mac Grok TUI and Grok Build are one seat and everything signs GROK."""
+        self.assertEqual(sources.parse_note_title("[AFC, GROK-BUILD] x"), ("afc", "GROK"))
+        self.assertEqual(sources.parse_note_title("[AFC, Grok Build] x"), ("afc", "GROK"))
+
     def test_html_to_text(self) -> None:
         html = (
             '<div><b><span style="font-size: 24px">[UM, Grok] Title</span></b></div>'

@@ -4,12 +4,12 @@ Muster is a native SwiftUI macOS 14+ scaffold.  Its initial window explicitly re
 
 ## Scope
 
-- `Muster/` contains only the app entry point and the fleet overview view.
+- `Muster/` contains the app entry point, the fleet overview view and the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`).
 - `project.yml` is the XcodeGen source of truth.  The generated Xcode project is ignored.
 - `script/build_and_run.sh` owns local project generation, signing, installation, and launch.
 - The repository's `.codex/environments/environment.toml` exposes the same script through the Codex **Run** action.
 
-The app makes no network calls, invokes no CLI, and reads no credentials.  It has no sample fleet records or inferred health state.  Collector, schema, and CLI integration remain separate work.
+The app makes no network calls and reads no credentials.  It has no sample fleet records or inferred health state.  The only CLI it runs is `fleet-config` (see Apply Preview below), and only when asked;  collector and grid integration remain separate work.
 
 ## Prerequisites
 
@@ -80,6 +80,21 @@ test ! -d muster/dist
 ```
 
 Expect a Developer ID Application authority and the `runtime` signing flag.  Inspect the window for the light appearance and unavailable fleet status.  Native Mac UI verification follows repository policy through code review and CI; process verification alone does not prove rendered appearance.
+
+## Apply Preview
+
+`FleetConfigCLI.swift` is the one wrapper around the engine:  `/usr/bin/python3 -m fleet_config <verb>` run from the repository's `scripts/` directory, arguments as an argv array, output decoded tolerantly.  Any view can call a verb through `FleetConfigRunning`.  `ApplyCoordinator.shared.beginPlan(seat:ruleID:kind:)` is the entry point for a red cell:  it runs `apply SEAT KIND --plan`, shows the planned writes in `ApplyPlanView`, asks once, then runs `apply SEAT KIND --yes` in the background and re-proves with `status --json --seat SEAT --kind KIND --no-doctor`.  The apply is owned by the app-lifetime coordinator, not the view, so closing the sheet or window does not cancel it, and a notification reports the result.  A refusal (Touch ID declined or unavailable, a manifest rule that is not auto-fixable, an engine refusal) leaves the cell red and is never retried.
+
+The Touch ID gate for persistence-class writes lives inside the engine, behind a fixed-path signed helper.  Muster neither reimplements nor bypasses it, passes no helper path, and strips `FLEET_CONFIG_*` and `PYTHON*` variables from the child environment.  Muster has no URL scheme, AppleScript, App Intents or Shortcuts entry point, and `script/test_no_external_entry_points.py` keeps it that way.
+
+The repository root is a setting:  the `fleetConfigRepoRoot` user default (`defaults write services.jays.Muster fleetConfigRepoRoot /path/to/repo`), then the `MUSTER_REPO_ROOT` environment variable, then `~/Code/AI-Fleet-Coordinator`.
+
+Apply unit tests are an XcodeGen target that compiles the non-view sources directly, so they run unsigned:
+
+```sh
+cd muster && xcodegen generate --spec project.yml
+xcodebuild -project Muster.xcodeproj -scheme MusterTests -destination 'platform=macOS' test
+```
 
 ## Delivery And Onboarding Limits
 

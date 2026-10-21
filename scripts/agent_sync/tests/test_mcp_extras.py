@@ -196,13 +196,18 @@ class NotesToolTests(McpHarness):
             self.assert_tool_error(
                 session.call("notes_pin", {"title": "[AFC] no agent"}), "invalid_argument"
             )
-            for title in ("[AFC, Claude] t", "[AFC, CLAUDE] t", "[AFC, CT, claude] t"):
+            for title in ("[AFC, Claude] t", "[AFC, CLAUDE] t"):
                 self.assertNotIn(
                     "isError",
                     session.call("notes_create", {"title": title, "markdown": "x"}),
                     title,
                 )
-        self.assertEqual(len(run.calls), 3)
+            # A case variant is neither the canonical display name nor the seat tag, so it is refused.
+            self.assert_tool_error(
+                session.call("notes_create", {"title": "[AFC, CT, claude] t", "markdown": "x"}),
+                "invalid_argument",
+            )
+        self.assertEqual(len(run.calls), 2)
 
     def test_the_direct_path_scans_for_secrets_before_writing(self):
         run, a, b = self.direct()

@@ -78,6 +78,23 @@ WAKE_MAX_BUDGET_USD = 0.25
 # contributor tier explicitly.  It is a default, not a hardcode:  `seat.X.model` still wins, so a
 # seat can be moved to another tier deliberately and the change shows up in the config.
 MUSE_DEFAULT_MODEL = "muse-spark-1.3-contributor"
+# The MiniMax Code fallback runtime's model (AFC-291).  `mcode exec` inherits MiniMax Code's own
+# `defaultModel` when it is given no `--model`, and a backup runtime must not be left to whatever
+# that install happens to carry.  The fallback therefore names its model on the command line, so the
+# backup runtime runs on a model the catalog serves instead of inheriting a stale default.  A seat
+# can still move deliberately: `seat.X.mcode_model` wins over this.
+#
+# Two namespaces, one name, and the trap in it.  The MiniMax Code RUNTIME CATALOG and the public
+# MiniMax API id list are different catalogs, and "not in the catalog" does not mean "dead".
+# `MiniMax-M3.1-Flash-Preview` was dropped from the runtime catalog on 2026-10-18 (BF-2494) while
+# api.minimax.io kept serving it, so the same id fails on one route and answers on another.  An id
+# must never be rewritten from one route's evidence; see contrib/MM/2026-10-19/f11f7046.  The
+# fallback pins the id the runtime catalog actually carries, which is now also the id the CI
+# autofix workflows send to api.minimax.io.
+MCODE_DEFAULT_MODEL = "minimax/MiniMax-M3.1-Flash"
+# A MiniMax Code model id is `provider/model`, so the case and the slash are part of it (unlike a
+# muse model alias, which is lowercase).  This is the shape the fallback's `--model` value must have.
+MCODE_MODEL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]{0,59}$"
 # Wakes the budget holds back (heldback.py), per seat:  `held_back = { max = 200, overflow_max = 1000,
 # ttl_hours = 24, items_in_wake = 20, owner_digest_minutes = 60, catch_up = true }`.  max is the records
 # with names;  past it the oldest move to a compact overflow tier (still listed by id), and only past
@@ -221,6 +238,7 @@ class SeatConfig:
         muse: str | None = None,
         provider: str | None = None,
         mcode: str | None = None,
+        mcode_model: str = MCODE_DEFAULT_MODEL,
         fallback: str | None = None,
         fallback_uncontained_ok: bool = False,
         muse_bridge: bool = False,
@@ -237,6 +255,10 @@ class SeatConfig:
         )
         self.muse = muse  # an absolute path to the muse binary, else resolved on the wake PATH
         self.mcode = mcode  # an absolute path to the mcode binary, else resolved on the wake PATH
+        # The model the MiniMax Code fallback runtime runs on.  It is named on the command line
+        # (mcode takes `--model provider/model`), so the fallback never inherits a MiniMax Code
+        # default that the catalog does not serve.  A seat may name another one deliberately.
+        self.mcode_model = mcode_model
         # The fallback runtime, tried only when the primary could not produce a usable answer.  It is
         # never consulted for a quota refusal:  a capped provider stays capped whatever runs.
         self.fallback = fallback
@@ -865,6 +887,10 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                 if key in section:
                     problems.append('seat.%s.%s applies only to creds = "env"' % (seat_name, key))
         wake = section.get("wake", "inbox")
+        if seat_name == "OPERATOR" and (
+            creds != "infisical" or wake != "inbox" or bot != "Operator"
+        ):
+            problems.append("OPERATOR service requires bot=Operator, creds=infisical, wake=inbox")
         if wake not in KNOWN_WAKES:
             wake_problems.append(
                 "seat.%s.wake must be one of %s" % (seat_name, ", ".join(KNOWN_WAKES))
@@ -891,6 +917,13 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if "mcode" in section and wake not in ("claude", "muse"):
             wake_problems.append(
                 'seat.%s.mcode applies only to wake = "claude" or "muse"' % seat_name
+            )
+        # The model the mcode fallback runs on:  `provider/model`, named on the command line.
+        mcode_model = section.get("mcode_model", MCODE_DEFAULT_MODEL)
+        if not isinstance(mcode_model, str) or not re.fullmatch(MCODE_MODEL_PATTERN, mcode_model):
+            wake_problems.append(
+                "seat.%s.mcode_model must be provider/model, such as %s"
+                % (seat_name, MCODE_DEFAULT_MODEL)
             )
         # The fallback runtime, tried only when the primary could not produce a usable answer.  It
         # is never consulted for a quota refusal:  a capped provider stays capped whatever runs.
@@ -992,6 +1025,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             claude = muse = mcode = None
             uncontained = False
             provider = None
+            mcode_model = MCODE_DEFAULT_MODEL
             if not isinstance(model, str) or not re.fullmatch(r"[a-z0-9.\-\[\]]{1,60}", model):
                 model = "sonnet"
         seat_cfg = SeatConfig(
@@ -1014,6 +1048,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             muse=muse,
             provider=provider,
             mcode=mcode,
+            mcode_model=mcode_model,
             fallback=fallback,
             fallback_uncontained_ok=uncontained,
             muse_bridge=muse_bridge,
@@ -1083,6 +1118,14 @@ def seat_credentials(
     (named by `bot`), its zuliprc in `secrets_dir` (only the explicit AGENT_SYNC_SECRETS_DIR override,
     never a default), or (creds = "env") the environment variables its config names.  Never ZULIP_RC
     or the CLI's triple."""
+    if seat_cfg.seat == "OPERATOR":
+        from .service_identity import operator_credentials
+
+        if seat_cfg.creds != "infisical":
+            raise Z.CredentialError(
+                "OPERATOR service requires creds=infisical; no file/env fallback"
+            )
+        return operator_credentials(env)
     if seat_cfg.creds == "env":
         assert seat_cfg.email_env and seat_cfg.key_env
         return Z.env_credentials(
@@ -1162,8 +1205,14 @@ def load_partition(path: str) -> tuple[dict[str, str] | None, str | None]:
 
 def fleet_tags(partition: Mapping[str, str] | None) -> frozenset[str]:
     """Every seat tag whose bot is an eligible sender:  each seat the partition lists, whatever its
-    instance (`none` seats such as the BF role bots and GROK-BUILD count too), plus FLEET_SEATS."""
-    return frozenset(FLEET_SEATS) | frozenset(str(seat).upper() for seat in (partition or {}))
+    instance (`none` seats such as the BF role bots and GROK-BUILD count too), plus FLEET_SEATS.
+    The partition also lists the deterministic service identities (service_identity.SERVICE_SEATS,
+    such as OPERATOR); those hold no agent and never wake one, so they stay out of the eligible set
+    and out of every `route.seat`."""
+    from .service_identity import SERVICE_SEATS
+
+    listed = frozenset(FLEET_SEATS) | frozenset(str(seat).upper() for seat in (partition or {}))
+    return listed - SERVICE_SEATS
 
 
 _DEFAULT_ENV_RE = re.compile(r"^ZULIP_([A-Z0-9_]+)_(EMAIL|API_KEY)$")

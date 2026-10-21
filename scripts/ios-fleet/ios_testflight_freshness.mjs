@@ -233,8 +233,102 @@ function ghError(err) {
   return (line || `exit ${err.code ?? "?"}`).slice(0, 200);
 }
 
+// ---------------------------------------------------------------------------
+// App Store Connect calls
+//
+// Every asc-api.mjs call signs in to Infisical through fleet-secrets (three `get`s, each a
+// login plus an export), so one call is a handful of process launches.  On 2026-10-20 the Mac
+// was memory-thrashing (load average 100 to 200, kernel_task near 50% system time) and the
+// 2:20pm and 4:20pm runs lost every call to the 120 second kill timeout:  Node reports a killed
+// child as `code: null`, which the report printed as "asc-api.mjs exit ?" with nothing to say
+// the child never finished.  So:  at most ASC_MAX_INFLIGHT children at once (the pool of apps
+// plus the unmapped-app lookup used to start five), one retry of a call that was killed, a
+// fail-fast after repeated kills (a thrashing host will not recover inside this run), and a
+// message that names the signal, the time and the host load.
+// ---------------------------------------------------------------------------
+
+export const ASC_TIMEOUT_MS = 120_000;
+export const ASC_MAX_INFLIGHT = 2;
+export const ASC_TRIP_AFTER = 3;
+
+/** A counting gate:  run(fn) starts fn once fewer than `limit` calls are running. */
+export function makeGate(limit) {
+  let running = 0;
+  const waiting = [];
+  const release = () => {
+    running--;
+    const next = waiting.shift();
+    if (next) next();
+  };
+  return async function run(fn) {
+    if (running >= limit) await new Promise((resolve) => waiting.push(resolve));
+    running++;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  };
+}
+
+export function makeAscGuard({ limit = ASC_MAX_INFLIGHT, tripAfter = ASC_TRIP_AFTER, load = () => os.loadavg()[0] } = {}) {
+  return { gate: makeGate(limit), killed: 0, tripAfter, load };
+}
+
+/** True when the child never exited on its own:  killed by the timeout or by another signal. */
+export function wasKilled(err) {
+  return Boolean(err) && (err.killed === true || Boolean(err.signal));
+}
+
+/** One line for a failed asc-api call.  Never echoes asc-api stderr beyond an HTTP status. */
+export function ascFailureText(err, apiPath, { timeoutMs = ASC_TIMEOUT_MS, load = null } = {}) {
+  const endpoint = apiPath.split("?")[0];
+  const http = /HTTP (\d{3})/.exec(String(err.stderr || ""));
+  let code = "";
+  try {
+    const j = JSON.parse(String(err.stdout || "").slice(String(err.stdout || "").indexOf("{")));
+    code = j?.errors?.[0]?.code ? ` ${j.errors[0].code}` : "";
+  } catch { /* not JSON */ }
+  if (http) return `App Store Connect ${endpoint}: HTTP ${http[1]}${code}`;
+  if (wasKilled(err)) {
+    const how = err.signal ? `killed by ${err.signal}` : "killed";
+    const lo = load === null ? "" : `, host load ${Math.round(load)}`;
+    return `App Store Connect ${endpoint}: asc-api.mjs ${how} after the ${Math.round(timeoutMs / 1000)}s timeout${lo}`;
+  }
+  return `App Store Connect ${endpoint}: asc-api.mjs exit ${err.code ?? "?"}${code}`;
+}
+
+/**
+ * GET one App Store Connect path through `run` (which spawns asc-api.mjs and takes
+ * {timeout}).  Resolves the parsed JSON.  `guard` comes from makeAscGuard and is shared by
+ * every call in the run.
+ */
+export async function ascRequest(run, apiPath, guard = makeAscGuard(), { timeoutMs = ASC_TIMEOUT_MS } = {}) {
+  return guard.gate(async () => {
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      if (guard.killed >= guard.tripAfter) {
+        throw new Error(`App Store Connect ${apiPath.split("?")[0]}: skipped after ${guard.killed} asc-api.mjs calls were killed by the timeout (host load ${Math.round(guard.load())})`);
+      }
+      try {
+        const out = await run({ timeout: timeoutMs });
+        const i = out.indexOf("{");
+        if (i < 0) throw new Error("App Store Connect returned no JSON");
+        guard.killed = 0;
+        return JSON.parse(out.slice(i));
+      } catch (err) {
+        lastErr = err;
+        if (!wasKilled(err)) break;
+        guard.killed++;
+      }
+    }
+    throw new Error(ascFailureText(lastErr, apiPath, { timeoutMs, load: guard.load() }));
+  });
+}
+
 export function makeDeps(env = process.env) {
   const sdir = stateDir(env);
+  const ascGuard = makeAscGuard();
   const deps = {
     now: () => new Date(),
     async gh(apiPath) {
@@ -259,21 +353,7 @@ export function makeDeps(env = process.env) {
     async asc(apiPath) {
       const script = resolveFleetFile("asc-api.mjs", env);
       if (!script) throw new Error("asc-api.mjs not found (set IOS_FLEET_DIR or install ~/apps/ios-fleet)");
-      try {
-        const out = await runCmd(process.execPath, [script, "GET", apiPath], { env, timeout: 120_000 });
-        const i = out.indexOf("{");
-        if (i < 0) throw new Error("App Store Connect returned no JSON");
-        return JSON.parse(out.slice(i));
-      } catch (err) {
-        // Never echo asc-api stderr: a crash there can print the key path.
-        const http = /HTTP (\d{3})/.exec(String(err.stderr || ""));
-        let code = "";
-        try {
-          const j = JSON.parse(String(err.stdout || "").slice(String(err.stdout || "").indexOf("{")));
-          code = j?.errors?.[0]?.code ? ` ${j.errors[0].code}` : "";
-        } catch { /* not JSON */ }
-        throw new Error(`App Store Connect ${apiPath.split("?")[0]}: ${http ? `HTTP ${http[1]}` : `asc-api.mjs exit ${err.code ?? "?"}`}${code}`);
-      }
+      return ascRequest((opts) => runCmd(process.execPath, [script, "GET", apiPath], { env, ...opts }), apiPath, ascGuard);
     },
     async buildWindow(appKey) {
       const script = resolveFleetFile("build-window.sh", env);

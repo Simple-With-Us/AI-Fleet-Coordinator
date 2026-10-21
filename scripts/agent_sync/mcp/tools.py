@@ -771,13 +771,69 @@ class Tools:
             self._call_tag = _sha(self.thread_id)[:8]
             self.session_source = "codex_thread_meta_sha256"
 
-    def _use_tag(self, tag: str | None) -> None:
-        """Display tags may be short; native Codex ledgers use the full verified UUID."""
+    def _use_tag(self, tag: str | None, session_id: str | None = None) -> None:
+        """Display tags may be short; native Codex ledgers use the full verified UUID.
+
+        `session_id` is the FULL id the caller passed as `session`, when it passed one.  Without
+        it the tag is all that survives into the state file, and the session behind the tag is
+        unrecoverable.
+
+        The id is validated before use.  It becomes an opaque external identifier inside the
+        state file, and a resume-wake reads that value back to find the session, so a blank or
+        non-string one would be written through and later fail to match anything:  `""` is
+        falsy and silently degrades to no id, while a number would round-trip into the file as
+        a type the contract does not allow.  And an id no longer than the tag is the tag, so
+        writing it would persist the tag AS the session id and a resume-wake could not tell
+        them apart.  Both are refused here, loudly, as `ToolError("invalid_argument", ...)` so
+        `map_exception` preserves the message and names the argument the caller must fix.
+        """
+        if session_id is not None and (not isinstance(session_id, str) or not session_id.strip()):
+            raise ToolError(
+                "invalid_argument",
+                "session must be a non-empty string when given, not %r"
+                % (type(session_id).__name__,),
+            )
+        if isinstance(session_id, str) and session_id.strip():
+            # Validate shape AND length:  `ID_PATTERN` allows ids from 4 characters, and an id
+            # at `SESSION_TAG_LEN` would equal its own tag, which a resume-wake could not tell
+            # apart.  A real id is strictly longer than the tag.  `session_ids.check` raises
+            # `ValueError`; we re-raise as `ToolError("invalid_argument", ...)` so the message
+            # survives `map_exception` and the caller sees the same code for both shape- and
+            # length-shaped failures.
+            try:
+                validated = SESSION_IDS.check(session_id, "the session argument")
+            except ValueError as exc:
+                raise ToolError("invalid_argument", str(exc)) from None
+            if len(validated) <= Z.SESSION_TAG_LEN:
+                raise ToolError(
+                    "invalid_argument",
+                    "session must be strictly longer than the %d-character tag, not %r (length %d)"
+                    % (Z.SESSION_TAG_LEN, validated, len(validated)),
+                )
+            session_id = validated
         state_key = self._call_state_key if tag == self._call_tag else None
         key = state_key or tag
         if tag != self.agent.tag or self.agent.state.tag != key:
             self.agent.tag = tag
-            self.agent.state = State(self.root, self.seat, key, retain_posted=bool(state_key))
+            self.agent.state = State(
+                self.root,
+                self.seat,
+                key,
+                retain_posted=bool(state_key),
+                # The id must be the one BEHIND the tag this file is written under:  a native
+                # codex-thread state belongs to the thread id, the caller's own `session` belongs
+                # to the tag derived from it, and the server's own tag belongs to the server's
+                # own session id.  A tag the server cannot attribute to any of those carries no
+                # id:  writing the server's id under it would point a foreign tag at this
+                # process's session.  Without an id a post records only the 8-character tag.
+                session_id=(
+                    self.thread_id
+                    if state_key
+                    else (
+                        session_id or (self.agent.session_id if key == self.process_tag else None)
+                    )
+                ),
+            )
 
     def _prefix(self) -> str:
         return self.agent.tag_prefix + "]"
@@ -1202,7 +1258,7 @@ class Tools:
         self._scan(text=args["text"], topic=topic, channel=channel)
         text = self._text(args["text"])
         to = list(args.get("to") or [])
-        self._use_tag(self._call_tag or Z.session_tag(args.get("session")))
+        self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
         key = self._key(
             args.get("idempotency_key"),
             ["post", self.agent.tag, channel.casefold(), topic.casefold(), text, to],
@@ -1238,7 +1294,7 @@ class Tools:
         self._scan(text=args["text"])
         text = self._text(args["text"])
         to = list(args.get("to") or [])
-        self._use_tag(self._call_tag or Z.session_tag(args.get("session")))
+        self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
         key = self._key(
             args.get("idempotency_key"), ["reply", self.agent.tag, message_id, text, to]
         )
@@ -1316,7 +1372,7 @@ class Tools:
         return clean(value, limit)[0] if isinstance(value, str) else value
 
     def _tagged(self, text: str, session: str | None) -> str:
-        self._use_tag(self._call_tag or Z.session_tag(session))
+        self._use_tag(self._call_tag or Z.session_tag(session), session)
         return CLI._compose(self.agent, text, labels=[], mentions=[], no_tag=False)
 
     def _write(self, func: Callable[[], Any]) -> Any:
@@ -1503,7 +1559,7 @@ class Tools:
                 "invalid_argument", "that is only this bot:  name at least one other person"
             )
         ids = [int(p["user_id"]) for p in people]
-        self._use_tag(self._call_tag or Z.session_tag(args.get("session")))
+        self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
         explicit = args.get("idempotency_key")
         key = self._key(
             "dm:" + explicit if explicit else None, ["dm_send", self.agent.tag, ids, text]
@@ -2281,14 +2337,19 @@ class Tools:
     def notes_consumer_label(self, value: str) -> None:
         self._notes_consumer_label, self._notes_consumer_resolver = value, None
 
+    def _relay_consumer_user(self, user: Mapping[str, Any]) -> bool:
+        if self.notes_consumer == "OPERATOR":
+            from ..service_identity import operator_bot
+
+            return operator_bot(user, self.agent.rt.env, self.owner_user_id)
+        return bool(user.get("is_bot")) and IDENT.seat_tag_for(user) == self.notes_consumer
+
     def _relay_consumer(self, user_id: Any) -> bool:
-        """Is this Zulip user the configured relay consumer's bot?  #notes-relay is public and every fleet bot can
-        react or reply in it, so a check mark, cross mark or refusal reply counts only from the one bot the
-        listener's [notes_relay] seat names (default CLAUDE), resolved to its user id from the realm's users."""
-        for user in self.agent.users():
-            if user.get("user_id") == user_id:
-                return bool(user.get("is_bot")) and IDENT.seat_tag_for(user) == self.notes_consumer
-        return False
+        """Only the configured consumer's authenticated bot may settle a Notes request."""
+        return any(
+            user.get("user_id") == user_id and self._relay_consumer_user(user)
+            for user in self.agent.users()
+        )
 
     def _tool_notes_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
         try:
@@ -2407,11 +2468,7 @@ class Tools:
 
     def _relay_consumer_id(self) -> int | None:
         for user in self.agent.users():
-            if (
-                user.get("is_bot")
-                and IDENT.seat_tag_for(user) == self.notes_consumer
-                and _int(user.get("user_id")) is not None
-            ):
+            if self._relay_consumer_user(user) and _int(user.get("user_id")) is not None:
                 return int(user["user_id"])
         return None
 

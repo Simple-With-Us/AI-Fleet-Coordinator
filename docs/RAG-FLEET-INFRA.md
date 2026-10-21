@@ -67,7 +67,7 @@ and re-ingesting unchanged content is a no-op.  One extra point, `doc_id = meta/
 | Source | Where it comes from | Notes |
 |---|---|---|
 | `board` | `findings.db` (title, body, resolution, status, severity, comments), the archived database of THE BOARD (retired 2026-10-19;  the copy is `~/apps/_retired/mac-collab-20261019/findings.db`;  a `linear` source reading Linear through the read-only Fleet Reader app is planned) | category `lesson` when resolved, else `finding`; url is the board |
-| `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[APP, Agent]` title convention |
+| `apple-note` | every note in the iCloud folder **Coding**, exported by AppleScript without stealing focus, cached by modification date | app and seat parsed from the `[TEAM_KEY, SEAT_TAG] Topic` title convention |
 | `doc` | markdown in fleet app repos under `~/Code` (`README.md`, `AGENTS.md`, `STATUS.md`, `CLAUDE.md`, `docs/**/*.md`), plus the broader walk of AI-Fleet-Coordinator and fleet-ops, top-level `~/apps/*.md` except effort logs, `~/.claude/CLAUDE.md`, `~/.grok/docs/**/*.md`, and `~/.grok/skills/**/SKILL.md` | GitHub blob URL when the file is in a repo.  Skip `node_modules`, `.git`, backups, dist, build, vendor, and `reviews/raw`.  Deduped by resolved path. |
 | `effort-log` | `~/apps/*-EFFORT-LOG.md` and the protocol | one doc per file, app from the filename |
 | `skill` | `~/.claude/skills/*/SKILL.md`, `~/.cursor/skills/*/SKILL.md` | deduped by content |
@@ -160,7 +160,7 @@ a rare infra/policy scan of owner rulings only.
 
 The `fleet-recall` MCP server is registered in every CLI's global MCP config by
 `scripts/install-fleet-rag.sh` (stdio, `python3 ~/apps/fleet-rag/fleet-recall-mcp.py`, no
-tokens in any config file).  OpenCode, Kimi Code, Muse Code, MiniMax and fx have their own formats, so the same script
+tokens in any config file).  OpenCode, Kimi Code, Copilot CLI, Muse Code, MiniMax and fx have their own formats, so the same script
 calls `python3 -m fleet_lanes.install_mcp` for them (each tool's native shape, a tool that is not installed is skipped, a
 hand-registered entry is left alone).  Clutch is not in the list: it carries `fleet-recall` as a native agent preset
 (`~/.clutch/dsh/.agent-presets/fleet-recall`), and a second copy would double the tools.  Tools:
@@ -415,8 +415,10 @@ A full `socratic-trade` snapshot is ~6.4 GB and takes about a minute to create.
 rate-limited Pushover path on FAIL) now calls `fleet-qdrant-health.sh`, which fails when:
 
 - the latest local snapshot of either collection is older than 36 hours, or
-- the **ingest sentinel** (`doc_id = meta/ingest-status`, written by every ingest run with
-  `updated_at` and `ok`) is older than 30 hours or its last run failed.
+- the **ingest sentinel** (`doc_id = meta/ingest-status`, written by each full untruncated
+  `recall ingest --all --prune` run with `updated_at` and `ok`) is older than 30 hours or its
+  last run failed.  A partial or unpruned run deliberately leaves the sentinel and
+  `last-run.json` untouched, so only the nightly pass attests health.
 
 The sentinel is the dead-man switch for the Oracle routine: if BotFleet stops running it, the
 box pages.  No credential leaves the box for this check.

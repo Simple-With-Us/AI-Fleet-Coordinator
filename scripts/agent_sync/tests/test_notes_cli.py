@@ -12,7 +12,7 @@ from agent_sync.mcp import guide as G
 from agent_sync.tests.harness import SESSION, Harness
 from agent_sync.tests.test_notes import FakeRun
 
-TITLE = "[AFC, Claude] cli check"
+TITLE = "[AFC, CLAUDE] cli check"
 
 
 class NotesCliTests(Harness):
@@ -307,9 +307,9 @@ class NotesCliTests(Harness):
         with a, b:
             self.assertEqual(self.run_cli("notes", "create", "no bracket", stdin="x").code, 2)
             self.assertEqual(
-                self.run_cli("notes", "create", '[AFC, Claude] "q"', stdin="x").code, 2
+                self.run_cli("notes", "create", '[AFC, CLAUDE] "q"', stdin="x").code, 2
             )
-            wrong = self.run_cli("notes", "create", "[AFC, Codex] not mine", stdin="x")
+            wrong = self.run_cli("notes", "create", "[AFC, CODEX] not mine", stdin="x")
             self.assertEqual(wrong.code, 2)
             self.assertIn("Agent in the title", wrong.err)
             leak = self.run_cli("notes", "create", TITLE, stdin="token " + "ghp_" + "EXAMPLE0" * 5)
@@ -382,6 +382,26 @@ class NotesCliTests(Harness):
             result = self.run_cli("notes", "pin", TITLE, "--identity", "SENTRY")
         self.assertEqual(result.code, 3)
         self.assertEqual(self.fake.messages, [])
+
+    def test_the_relay_cli_hands_the_pinned_owner_to_the_tools(self):
+        # The OPERATOR consumer is trusted only against the pinned owner (operator_bot refuses an
+        # owner of 0), so the CLI must pass the configured one through or `notes status` never settles.
+        from agent_sync.mcp import tools as T
+
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "listener.toml").write_text(
+            '[daemon]\nowner_user_id = 4242\n', encoding="utf-8"
+        )
+        seen = {}
+        real = T.Tools.__init__
+
+        def spy(self_, agent, **kw):
+            seen.update(kw)
+            return real(self_, agent, **kw)
+
+        with mock.patch.object(T.Tools, "__init__", spy):
+            self.run_cli("notes", "status", "cli-owner-0001", "--json")
+        self.assertEqual(seen.get("owner_user_id"), 4242)
 
     def test_the_guide_command_prints_the_guide_or_a_section(self):
         whole = self.run_cli("guide")

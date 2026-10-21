@@ -53,7 +53,7 @@ from typing import Any
 
 from . import live as L
 from . import zulip as Z
-from .config import WAKE_MAX_BUDGET_USD, RoutineConfig
+from .config import MCODE_DEFAULT_MODEL, WAKE_MAX_BUDGET_USD, RoutineConfig
 from .identity import WAKE_LAUNCHER
 from .wakes import CONTRACT_PATH, parse_result, schema_text
 
@@ -894,9 +894,14 @@ def muse_pin_state(paths: L.SeatPaths, muse: str | None) -> dict[str, Any]:
     (AFC-256), on the muse seat's own file so a claude pin can never stand in for a muse one.
 
     `why` is None when pinned, else `no_muse` (no binary to pin), `not_pinned` (nothing recorded
-    yet) or `pin_stale` (the binary, command or contract changed).  A seat whose muse pin has never
-    been verified HOLDS and says why:  it never self-heals, because the pin records that a person
-    checked this build's wake contract."""
+    yet), `pin_unverified` (a pin from before the fingerprint existed, so it vouches for nothing
+    about this command), `pin_stale` (the binary moved, or the command, contract or schema changed
+    under it), or `pin_unreadable` (the contract or schema could not be read, so nothing can be
+    verified).  A seat whose muse pin has never been verified HOLDS and says why:  it never
+    self-heals, because the pin records that a person checked this build's wake contract.  The
+    last three are named apart because the remediation differs:  a moved binary and a changed
+    contract both end in re-pinning, an unreadable contract does not, and only one of them is a
+    moved binary."""
     if not muse:
         return {"pinned": False, "why": "no_muse", "pinned_muse": None, "muse": None}
     current = binary_pin(muse)
@@ -904,21 +909,82 @@ def muse_pin_state(paths: L.SeatPaths, muse: str | None) -> dict[str, Any]:
     recorded = pin.get("muse")
     if not isinstance(recorded, str) or not recorded:
         return {"pinned": False, "why": "not_pinned", "pinned_muse": None, "muse": current}
+    if recorded != current:
+        return {"pinned": False, "why": "pin_stale", "pinned_muse": recorded, "muse": current}
     recorded_fingerprint = pin.get("fingerprint")
+    if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint:
+        # The binary is the same, so this pin did verify SOMETHING;  it just predates the
+        # fingerprint and says nothing about the current command, contract or schema.
+        return {
+            "pinned": False,
+            "why": "pin_unverified",
+            "pinned_muse": recorded,
+            "muse": current,
+        }
     current_fingerprint = muse_wake_fingerprint()
-    if (
-        recorded != current
-        or not isinstance(recorded_fingerprint, str)
-        or not recorded_fingerprint
-        or current_fingerprint is None
-        or recorded_fingerprint != current_fingerprint
-    ):
+    if current_fingerprint is None:
+        # The contract or the schema could not be read at all.  That is NOT a changed pin, and
+        # the two need opposite advice:  a changed pin is fixed by re-pinning, whereas re-pinning
+        # here re-reads the same unreadable file and produces the same refusal forever.
+        return {
+            "pinned": False,
+            "why": "pin_unreadable",
+            "pinned_muse": recorded,
+            "muse": current,
+        }
+    if recorded_fingerprint != current_fingerprint:
+        # A pin made before the command or the contract changed verified a wake this seat no
+        # longer runs.
         return {"pinned": False, "why": "pin_stale", "pinned_muse": recorded, "muse": current}
     return {"pinned": True, "why": None, "pinned_muse": recorded, "muse": current}
 
 
 def muse_pinned(paths: L.SeatPaths, muse: str | None) -> bool:
     return muse_pin_state(paths, muse)["pinned"]
+
+
+#:  The remediation the operator needs for a muse pin that no longer matches.  No `--runtime` is
+#:  named because a muse pin is only ever read for a seat whose `wake` is `muse`, which is exactly
+#:  what `test-wake`'s default "auto" resolves to;  the fallback pin carries `--runtime fallback`
+#:  because it is read for a seat whose wake is something else.
+MUSE_PIN_REMEDIATION = (
+    "`agent-sync daemon test-wake --seat %s --run`, then "
+    "`agent-sync daemon test-wake --seat %s --pin`"
+)
+
+#:  A pin cannot be verified at all while the contract or the schema is unreadable, so the
+#:  remediation is not a re-pin:  the same re-pin would re-read the same missing file and refuse
+#:  again.
+MUSE_PIN_UNREADABLE_REMEDIATION = (
+    "restore the wake contract and result schema, then run "
+    "`agent-sync daemon test-wake --seat %s --run` and `--pin`"
+)
+
+
+def muse_pin_cause(pin: Mapping[str, Any]) -> str:
+    """Why a muse pin no longer matches, in the operator's words.
+
+    `muse_pin_state` returns `pin_stale` for two different causes, `pin_unverified` for a quieter
+    third and `pin_unreadable` when the contract or schema cannot be read at all.  They read the
+    same at a glance but are not the same fault:  a moved binary is a path that changed, while a
+    changed command, contract or schema leaves the path alone, and an unreadable contract means
+    the wake was probably never wrong at all.  Reporting the wrong one points the operator at a
+    path that never moved, shows the same path twice, or sends them to re-pin something that
+    cannot be re-pinned.
+    """
+    if pin.get("why") == "pin_unverified":
+        return (
+            "the pin predates the command fingerprint, so it verified nothing about the current "
+            "muse wake"
+        )
+    if pin.get("why") == "pin_unreadable":
+        return (
+            "the wake contract or result schema could not be read, so the current muse wake "
+            "cannot be verified at all (pinned %s)" % pin.get("pinned_muse")
+        )
+    if pin.get("muse") != pin.get("pinned_muse"):
+        return "muse moved to %s (pinned %s)" % (pin.get("muse"), pin.get("pinned_muse"))
+    return "the muse command, contract or schema changed (pinned %s)" % pin.get("pinned_muse")
 
 
 def record_muse_pin(
@@ -964,7 +1030,12 @@ def muse_pin_candidate(paths: L.SeatPaths, muse: str, now: float) -> str | None:
         return "no passing test-wake --run to pin; run that first"
     current_fingerprint = muse_wake_fingerprint()
     if current_fingerprint is None:
-        return "the wake contract or schema is unavailable; run test-wake --run again"
+        # Re-running does not restore a missing contract:  it reproduces this same refusal, so the
+        # advice names the read that failed rather than a re-test that cannot succeed.
+        return (
+            "the wake contract or result schema is unavailable, so the muse wake cannot be "
+            "pinned; restore them, then run test-wake --run again"
+        )
     recorded_fingerprint = cand.get("fingerprint")
     if (
         not isinstance(recorded_fingerprint, str)
@@ -1147,6 +1218,7 @@ def quota_block(provider: str, now: float | None = None, path: str | None = None
 # --------------------------------------------------------------------------------------------
 #
 #   mcode exec --prompt-mode work --permission off --output-format json
+#             --model minimax/MiniMax-M3.1-Flash
 #             --output-schema <schema> --max-steps N --timeout 4m --cwd <inert dir>
 #             -o <last-message file> --prompt
 #
@@ -1171,6 +1243,9 @@ MCODE_MAX_STEPS = 8
 MCODE_TIMEOUT = "4m"
 MCODE_PROMPT_MODE = "work"
 MCODE_PERMISSION = "off"
+# Bump when the fallback command's behaviour changes in a way argv does not show, so an existing
+# pin is re-verified by a person rather than trusted under the old policy.
+MCODE_WAKE_POLICY_VERSION = "mcode-fallback-model-v1"
 MCODE_PROMPT_SLOT = "<prompt-file>"
 MCODE_SCHEMA_SLOT = "<output-schema>"
 MCODE_CWD_SLOT = "<cwd>"
@@ -1185,9 +1260,14 @@ def resolve_mcode(explicit: str | None, wake_path: str) -> str | None:
     return os.path.abspath(found) if found else None
 
 
-def mcode_argv(mcode: str, prompt_path: str | None = None) -> list[str]:
+def mcode_argv(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> list[str]:
     """The fixed fallback argv.  The schema, the inert cwd and the last-message file are path slots
     filled in by McodeRunner.run, so the argv prints and diffs as-is.
+
+    The model is named on the command line (`--model provider/model`).  Without it mcode inherits
+    MiniMax Code's own `defaultModel`, which is whatever that install happens to carry and can be
+    an id the current catalog does not serve, in which case the run times out with no usage and no
+    answer.  Naming the model here makes the backup runtime run on a model the catalog serves.
 
     The prompt arrives on STDIN, not as a positional argument:  mcode has no `--prompt-file`, and
     `--input -` is its documented stdin form.  Keeping the prompt off the command line also keeps it
@@ -1201,6 +1281,8 @@ def mcode_argv(mcode: str, prompt_path: str | None = None) -> list[str]:
         MCODE_PERMISSION,
         "--output-format",
         "json",
+        "--model",
+        model,
         "--input",
         "-",
         "--output-schema",
@@ -1404,41 +1486,217 @@ class McodeRunner:
         return out
 
 
-def mcode_pin_state(paths: L.SeatPaths, mcode: str | None) -> dict[str, Any]:
-    """Why the fallback pin does or does not match the binary.  Same never-self-heal rule as the
-    other two, on its own file, so a fallback is only trusted once a person verified it."""
+def mcode_wake_fingerprint(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> str | None:
+    """Fingerprint the whole fallback command and the inputs it is validated against.
+
+    Same discipline as `muse_wake_fingerprint`:  the argv is built with placeholders for the
+    binary path and the model, so a flag or policy change invalidates a person-verified pin.  The
+    model is carried separately because it is a per-seat value that lands on the command line, and
+    a pin made under one model must not read as verified under another.
+
+    The wake contract and the result schema are hashed too, because the fallback is validated
+    against the same pair (`W.validate(result.parsed)` against `schema_text()`):  a pin that says
+    nothing about them still reads as verified after either changes.  Returns None when they
+    cannot be read, so the pin fails closed rather than vouching for a command whose contract
+    could not be loaded.
+    """
+    try:
+        with open(CONTRACT_PATH, "rb") as fh:
+            contract = fh.read()
+        # Ensure the bytes can be consumed as UTF-8 before considering them pinnable.
+        contract.decode("utf-8")
+        schema = schema_text()
+    except (OSError, UnicodeError, ValueError):
+        return None
+    command = json.dumps(
+        {
+            "policy_version": MCODE_WAKE_POLICY_VERSION,
+            "argv": mcode_argv("<mcode>", "<model>"),
+            "model": model,
+            "schema": schema,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(command)
+    digest.update(b"\0")
+    digest.update(contract)
+    return digest.hexdigest()
+
+
+def mcode_pin_state(
+    paths: L.SeatPaths, mcode: str | None, model: str = MCODE_DEFAULT_MODEL
+) -> dict[str, Any]:
+    """Why the fallback pin does or does not match the command.  Same never-self-heal rule as the
+    other two, on its own file, so a fallback is only trusted once a person verified it.
+
+    `why` is None when pinned, else `no_mcode` (no binary to pin), `not_pinned` (nothing recorded),
+    `pin_unverified` (a pin from before the fingerprint existed, so it vouches for nothing about
+    this command), `pin_stale` (the binary moved, or the command or model changed under it), or
+    `pin_unreadable` (the contract or schema could not be read, so nothing can be verified).
+    These are reported apart because the remediation differs:  a moved binary and a changed model
+    both end in re-pinning, an unreadable contract does not, and only one of them is a moved
+    binary."""
     if not mcode:
         return {"pinned": False, "why": "no_mcode", "pinned_mcode": None, "mcode": None}
     current = binary_pin(mcode)
-    recorded = L.read_json(paths.wake_pin_mcode).get("mcode")
+    pin = L.read_json(paths.wake_pin_mcode)
+    recorded = pin.get("mcode")
     if not isinstance(recorded, str) or not recorded:
         return {"pinned": False, "why": "not_pinned", "pinned_mcode": None, "mcode": current}
     if recorded != current:
         return {"pinned": False, "why": "pin_stale", "pinned_mcode": recorded, "mcode": current}
+    recorded_fingerprint = pin.get("fingerprint")
+    if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint:
+        # The binary is the same, so this pin did verify SOMETHING;  it just predates the
+        # fingerprint and says nothing about the model, the contract or the schema.
+        return {
+            "pinned": False,
+            "why": "pin_unverified",
+            "pinned_mcode": recorded,
+            "mcode": current,
+        }
+    current_fingerprint = mcode_wake_fingerprint(mcode, model)
+    if current_fingerprint is None:
+        # The contract or the schema could not be read at all.  That is NOT a changed pin, and
+        # the two need opposite advice:  a changed pin is fixed by re-pinning, whereas re-pinning
+        # here re-reads the same unreadable file and produces the same refusal forever.  Folding
+        # it into `pin_stale` points the operator at a command that is probably identical and at
+        # a remediation that cannot succeed.
+        return {
+            "pinned": False,
+            "why": "pin_unreadable",
+            "pinned_mcode": recorded,
+            "mcode": current,
+        }
+    if recorded_fingerprint != current_fingerprint:
+        # A pin made before the model was named on the command, or under a different model, or
+        # before the contract or schema changed, verified a command this seat no longer runs.
+        return {"pinned": False, "why": "pin_stale", "pinned_mcode": recorded, "mcode": current}
     return {"pinned": True, "why": None, "pinned_mcode": recorded, "mcode": current}
 
 
-def mcode_pinned(paths: L.SeatPaths, mcode: str | None) -> bool:
+def mcode_pinned(paths: L.SeatPaths, mcode: str | None, model: str = MCODE_DEFAULT_MODEL) -> bool:
     if not mcode:
         return False
-    return L.read_json(paths.wake_pin_mcode).get("mcode") == binary_pin(mcode)
+    return bool(mcode_pin_state(paths, mcode, model)["pinned"])
+
+
+#:  The remediation the operator needs for a fallback pin that no longer matches.  `--runtime
+#:  fallback` is not decoration:  `test-wake` resolves the default "auto" to `seat_cfg.wake`, so
+#:  without it a seat with wake = claude/muse and fallback = "mcode" would re-test and re-pin the
+#:  PRIMARY runtime, leave this pin stale, and keep the fallback refused.
+MCODE_PIN_REMEDIATION = (
+    "`agent-sync daemon test-wake --seat %s --runtime fallback --run`, then "
+    "`agent-sync daemon test-wake --seat %s --runtime fallback --pin`"
+)
+
+#:  A pin cannot be verified at all while the contract or the schema is unreadable, so the
+#:  remediation is not a re-pin:  the same re-pin would re-read the same missing file and refuse
+#:  again.  Both halves carry `--runtime fallback` for the same reason `MCODE_PIN_REMEDIATION`
+#:  does (a bare `--pin` would re-pin the PRIMARY runtime and keep the fallback refused), so the
+#:  string is safe to follow even when only the red line was copied.
+MCODE_PIN_UNREADABLE_REMEDIATION = (
+    "restore the wake contract and result schema, then run "
+    "`agent-sync daemon test-wake --seat %s --runtime fallback --run` and "
+    "`agent-sync daemon test-wake --seat %s --runtime fallback --pin`"
+)
+
+
+def mcode_pin_cause(pin: Mapping[str, Any]) -> str:
+    """Why a fallback pin no longer matches, in the operator's words.
+
+    `mcode_pin_state` returns `pin_stale` for two different causes, `pin_unverified` for a
+    third, quieter one, and `pin_unreadable` when the contract or schema cannot be read at all.
+    They are named apart here because they read the same at a glance but are not the same fault:
+    a moved binary is a path that changed, while a changed model, contract or schema leaves the
+    path alone, and an unreadable contract means the command was probably never wrong at all.
+    Reporting the wrong one points the operator at a path that never moved, shows the same path
+    twice, or sends them to re-pin something that cannot be re-pinned.
+    """
+    if pin.get("why") == "pin_unverified":
+        return (
+            "the pin predates the command fingerprint, so it verified nothing about the current "
+            "fallback"
+        )
+    if pin.get("why") == "pin_unreadable":
+        return (
+            "the wake contract or result schema could not be read, so the current fallback "
+            "cannot be verified at all (pinned %s)" % pin.get("pinned_mcode")
+        )
+    if pin.get("mcode") != pin.get("pinned_mcode"):
+        return "mcode moved to %s (pinned %s)" % (pin.get("mcode"), pin.get("pinned_mcode"))
+    return "the fallback command, model, contract or schema changed (pinned %s)" % pin.get(
+        "pinned_mcode"
+    )
+
+
+def muse_pin_red_entry(pin: Mapping[str, Any], seat: str) -> str:
+    """The one-line red entry for a seat whose muse pin no longer matches, in the operator's words.
+
+    An unreadable contract is NOT fixed by re-pinning, so the line must not say "stale" (which
+    reads as "run --pin") and must not prefix "run" before the remediation (which begins with
+    "restore the wake contract").  Cause and remediation both live here so the wording is
+    testable without standing up a daemon.
+    """
+    cause = muse_pin_cause(pin)
+    remediation = (
+        MUSE_PIN_UNREADABLE_REMEDIATION % seat
+        if pin["why"] == "pin_unreadable"
+        else MUSE_PIN_REMEDIATION % (seat, seat)
+    )
+    label = "unverifiable" if pin["why"] == "pin_unreadable" else "stale"
+    verb = "" if pin["why"] == "pin_unreadable" else "run "
+    return "wake pin is %s: %s; %s%s" % (label, cause, verb, remediation)
+
+
+def mcode_pin_red_entry(pin: Mapping[str, Any], seat: str) -> str:
+    """The one-line red entry for a seat whose fallback pin no longer matches, in the operator's
+    words.  The shape mirrors `muse_pin_red_entry`:  unreadable contract is "unverifiable", the
+    remediation starts with its own verb and is not prefixed by "run"."""
+    cause = mcode_pin_cause(pin)
+    remediation = (
+        MCODE_PIN_UNREADABLE_REMEDIATION % (seat, seat)
+        if pin["why"] == "pin_unreadable"
+        else MCODE_PIN_REMEDIATION % (seat, seat)
+    )
+    label = "unverifiable" if pin["why"] == "pin_unreadable" else "stale"
+    verb = "" if pin["why"] == "pin_unreadable" else "run "
+    return "fallback pin is %s: %s; %s%s" % (label, cause, verb, remediation)
 
 
 def record_mcode_pin(
     paths: L.SeatPaths, mcode: str, now: float, *, model: str | None = None
 ) -> None:
-    L.write_json(paths.wake_pin_mcode, {"mcode": binary_pin(mcode), "at": now, "model": model})
+    L.write_json(
+        paths.wake_pin_mcode,
+        {
+            "mcode": binary_pin(mcode),
+            "at": now,
+            "model": model,
+            "fingerprint": mcode_wake_fingerprint(mcode, model or MCODE_DEFAULT_MODEL),
+        },
+    )
 
 
 def record_mcode_candidate(
     paths: L.SeatPaths, mcode: str, now: float, *, model: str | None = None
 ) -> None:
     L.write_json(
-        paths.wake_pin_candidate_mcode, {"mcode": binary_pin(mcode), "at": now, "model": model}
+        paths.wake_pin_candidate_mcode,
+        {
+            "mcode": binary_pin(mcode),
+            "at": now,
+            "model": model,
+            "fingerprint": mcode_wake_fingerprint(mcode, model or MCODE_DEFAULT_MODEL),
+        },
     )
 
 
-def mcode_pin_candidate(paths: L.SeatPaths, mcode: str, now: float) -> str | None:
+def mcode_pin_candidate(
+    paths: L.SeatPaths, mcode: str, now: float, *, model: str = MCODE_DEFAULT_MODEL
+) -> str | None:
     cand = L.read_json(paths.wake_pin_candidate_mcode)
     if not cand:
         return "no passing test-wake --run to pin; run that first"
@@ -1449,6 +1707,17 @@ def mcode_pin_candidate(paths: L.SeatPaths, mcode: str, now: float) -> str | Non
         return (
             "the mcode binary changed since the test (%s, tested %s); run test-wake --run again"
             % (binary_pin(mcode), cand.get("mcode"))
+        )
+    current_fingerprint = mcode_wake_fingerprint(mcode, model)
+    if current_fingerprint is None:
+        return (
+            "the wake contract or result schema could not be read, so the fallback cannot be "
+            "pinned; fix that first"
+        )
+    if cand.get("fingerprint") != current_fingerprint:
+        return (
+            "the mcode command changed since the test (model, flags, contract or schema); "
+            "run test-wake --run again"
         )
     record_mcode_pin(
         paths, mcode, now, model=cand.get("model") if isinstance(cand.get("model"), str) else None
