@@ -423,6 +423,32 @@ rate-limited Pushover path on FAIL) now calls `fleet-qdrant-health.sh`, which fa
 The sentinel is the dead-man switch for the Oracle routine: if BotFleet stops running it, the
 box pages.  No credential leaves the box for this check.
 
+### The ingest lock: the nightly has priority
+
+`recall ingest` takes one exclusive lock, `~/apps/fleet-rag/state/ingest.lock`, so two runs never
+mutate the collection or the state file at once.  A partial run (the sheet sync's doc refresh, or
+a manual `--source` pass) holds it for as long as it runs, and it can run for its whole
+90-minute budget.
+
+That used to make the nightly the run most likely to lose.  `recall ingest --all --prune` is the
+only pass that may attest the corpus health, and it took the same non-blocking lock, so a
+partial run that happened to overlap it made the nightly exit 3, write no sentinel, and page the
+fleet for a night that never ran.
+
+The rule is one sentence: **the run that may attest health is the run that cannot be locked
+out.**
+
+- A full nightly pass marks its intent in `~/apps/fleet-rag/state/nightly-pending` and then
+  waits for the lock (bounded, 30 minutes) instead of failing on it.
+- A partial run that sees that mark stops and reports itself as `deferred`.  It does not prune,
+  because it saw only part of the source, and the nightly walks the same source in full, so the
+  work is later rather than lost.
+- One predicate (`_is_full_nightly`) decides both what may attest the sentinel and what gets the
+  lock, so the two can never drift apart.
+
+A partial run still fails fast (exit 3) when the nightly holds the lock.  The nightly has the
+priority, and the sheet sync's ingest is best-effort.
+
 ## Observability (added 2026-09-10)
 
 Prompted by a Sentry review that found **zero** instrumentation in this package (the only "rag"

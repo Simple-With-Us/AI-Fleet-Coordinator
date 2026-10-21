@@ -8,6 +8,8 @@ import json
 import os
 import pathlib
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -432,8 +434,11 @@ class IngestTests(unittest.TestCase):
         fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with self.assertRaises(ingest.IngestLocked):
-                self._run()
+            # A nightly pass waits for the lock instead of failing on it (that is its own
+            # regression test below), so bound the wait to keep this one about exclusivity.
+            with mock.patch.object(ingest, "LOCK_WAIT_SECONDS", 0.0):
+                with self.assertRaises(ingest.IngestLocked):
+                    self._run()
             with mock.patch.object(ingest, "run", side_effect=ingest.IngestLocked("held")):
                 self.assertEqual(ingest.main(["--source", "doc"]), ingest.EXIT_LOCKED)
         finally:
@@ -441,6 +446,126 @@ class IngestTests(unittest.TestCase):
             os.close(fd)
         self.assertTrue(self._run()["ok"])       # released: runs again
         self.assertIsInstance(ingest.IngestLocked("x"), ingest.FleetRagError)
+
+    def test_the_nightly_pass_waits_for_the_lock_instead_of_failing(self) -> None:
+        # A partial run (the sheet sync's doc refresh) holds the same lock file for as long as it
+        # runs, and it can hold it for its whole 90-minute budget.  The nightly is the only run
+        # that can attest the corpus health, so it must not be the one that gives up: it marks
+        # its intent, waits for the lock, and runs.  Before this, the nightly exited 3 the moment
+        # the partial took the lock, left the sentinel stale, and paged the fleet for a night
+        # that never ran.
+        lock = self.state.parent / "ingest.lock"
+        pending = self.state.parent / "nightly-pending"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        marked: list[bool] = []
+
+        def release_later() -> None:
+            # Hold the lock the way a partial run would, then let the nightly in.
+            time.sleep(0.2)
+            marked.append(pending.exists())
+            fcntl.flock(fd, fcntl.LOCK_UN)
+
+        worker = threading.Thread(target=release_later, daemon=True)
+        worker.start()
+        try:
+            with mock.patch.object(ingest, "LOCK_WAIT_SECONDS", 30.0), mock.patch.object(
+                ingest, "LOCK_POLL_SECONDS", 0.05
+            ):
+                rep = self._run()
+        finally:
+            worker.join(5)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        self.assertTrue(rep["ok"])
+        self.assertFalse(rep["deferred"])
+        self.assertEqual(marked, [True], "the nightly marked its intent while it waited")
+        self.assertFalse(pending.exists(), "the marker is withdrawn once the lock is taken")
+        self.assertEqual(len(self.sentinels), 1, "the nightly attested health after waiting")
+
+    def test_the_nightly_pass_gives_up_only_after_its_wait_budget(self) -> None:
+        # The wait is bounded: a lock held by a hung run must not hang the nightly forever.
+        lock = self.state.parent / "ingest.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            with mock.patch.object(ingest, "LOCK_WAIT_SECONDS", 0.3), mock.patch.object(
+                ingest, "LOCK_POLL_SECONDS", 0.05
+            ):
+                started = time.monotonic()
+                with self.assertRaises(ingest.IngestLocked):
+                    self._run()
+                elapsed = time.monotonic() - started
+            self.assertGreaterEqual(elapsed, 0.25, "it waited for the lock before giving up")
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        # The marker is withdrawn even when the wait fails, so a later partial run is not
+        # blocked by a nightly that is no longer waiting.
+        self.assertFalse((self.state.parent / "nightly-pending").exists())
+
+    def test_the_lock_timeout_flag_bounds_the_wait(self) -> None:
+        # The wait budget is a constant, but an operator must be able to change it:  a lock held
+        # by a hung run would otherwise keep the nightly waiting out its whole budget.
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run:
+            rc = ingest.main(["--all", "--prune", "--lock-timeout", "12.5", "--no-heartbeat"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(run.call_args.kwargs["lock_timeout_s"], 12.5)
+        # Without the flag the run keeps the built-in budget, which the nightly waits out and a
+        # partial run does not.
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run:
+            rc = ingest.main(["--all", "--prune", "--no-heartbeat"])
+        self.assertEqual(rc, 0)
+        self.assertIsNone(run.call_args.kwargs["lock_timeout_s"])
+
+    def test_a_partial_run_yields_the_lock_to_a_pending_nightly_pass(self) -> None:
+        # The nightly is the only run that can attest the corpus health, so a partial run must
+        # not be the one that keeps it out.  The pending mark is how the nightly says "I am
+        # here"; a partial run that sees it stops and reports itself as deferred.
+        pending = self.state.parent / "nightly-pending"
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text("1 pending\n", encoding="utf-8")
+        with mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc", "zulip")):
+            report = self._run()
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["deferred"])
+        self.assertIn("nightly", report["deferred_reason"])
+        # It yielded before doing any work, so it wrote nothing and deleted nothing.
+        self.assertEqual(report["per_source"]["doc"]["docs_seen"], 0)
+        self.assertEqual(self.qd.points, {})
+        self.assertEqual(self.qd.deleted, [])
+
+    def test_a_deferred_run_never_prunes(self) -> None:
+        # A deferred run saw only part of the source, so pruning it would delete every document
+        # past the point it stopped at.  The nightly, which walks the same source in full, does
+        # the pruning instead.
+        self._run()                       # a full nightly pass, so the corpus has state
+        pending = self.state.parent / "nightly-pending"
+        pending.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text("1 pending\n", encoding="utf-8")
+        with mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc", "zulip")):
+            report = self._run(prune=True)
+        self.assertTrue(report["deferred"])
+        self.assertEqual(self.qd.deleted, [], "a deferred run deletes nothing")
+
+    def test_the_nightly_predicate_is_the_one_that_gates_the_sentinel(self) -> None:
+        # One predicate decides both what may attest the corpus health and what may not be
+        # locked out.  If the two drifted apart, the health-attesting run could again be the
+        # one that a partial run locks out.
+        self.assertTrue(ingest._is_full_nightly(["doc"], True, None, None))
+        self.assertFalse(ingest._is_full_nightly(["doc"], False, None, None))
+        self.assertFalse(ingest._is_full_nightly(["doc"], True, 1, None))
+        self.assertFalse(ingest._is_full_nightly(["doc"], True, None, 1))
+        self.assertFalse(ingest._is_full_nightly(["doc", "zulip"], True, None, None))
+        # And the attestation gate follows it, not a second copy of the rule.
+        with mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc",)):
+            self._run(prune=True)
+            self.assertEqual(len(self.sentinels), 1)
+        with mock.patch.object(sources, "NIGHTLY_SOURCES", ("doc", "zulip")):
+            self._run(prune=True)
+            self.assertEqual(len(self.sentinels), 1, "a partial pass attests nothing")
 
     def test_gitleaks_drop_plumbing(self) -> None:
         staged: list[list[dict]] = []

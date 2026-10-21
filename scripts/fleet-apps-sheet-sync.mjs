@@ -847,10 +847,12 @@ export function fleetKnob(name) {
 
 // fleetKnob() reads the real fleet_knobs CLI, so the two decisions below take an optional values
 // object:  that is the seam the tests drive, so inverting either one fails a test instead of
-// silently reverting to the behaviour this fix exists to correct.  ingestKnobValues is exported
-// with an injectable reader so the knob-name -> decision mapping itself is asserted too (Kody
-// review, PR #740):  a swapped or misspelled knob then fails a test instead of silently
-// enabling the ingest with the default timeout.
+// silently reverting to the behaviour this fix exists to correct.
+//
+// The mapper itself is exported and takes the reader as an argument, because it is the only link
+// between the Infisical knob names and the two decisions.  A swapped or misspelled knob name
+// there is silent: the ingest still runs, with the default timeout, and every other assertion
+// stays green.  With the reader injectable, the mapping is asserted rather than hoped for.
 export function ingestKnobValues(read = fleetKnob) {
   return {
     [INGEST_ENABLED_KNOB]: read(INGEST_ENABLED_KNOB),
@@ -880,6 +882,12 @@ export function summarizeIngest(stdout) {
   const text = String(stdout || "");
   try {
     const report = JSON.parse(text);
+    // A deferred run stopped early to let the nightly pass take the lock.  It is not a failure
+    // and it is not a completed pass either, so say which one it is rather than counting the
+    // documents it happened to reach.
+    if (report && report.deferred) {
+      return `deferred (${report.deferred_reason || "a nightly pass took the lock"})`;
+    }
     const stats = (report && report.per_source && report.per_source[REGISTRY_INGEST_SOURCE]) || null;
     if (stats && typeof stats === "object") {
       const parts = [];

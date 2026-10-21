@@ -5,7 +5,8 @@ import { spawnSync } from "node:child_process";
 import {
   registryIngestArgs, summarizeIngest, summarizeIngestFailure, ingestFailureDetail, buildMarkdownMirror,
   MIRROR_MD_PATH, FLEET_HOME, REGISTRY_INGEST_SOURCE,
-  readIngestKnobs, ingestFailureOutcome, fleetKnob, ingestEnabled, ingestTimeoutMs, ingestKnobValues, INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB
+  readIngestKnobs, ingestFailureOutcome, fleetKnob, ingestEnabled, ingestTimeoutMs,
+  ingestKnobValues, INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB
 } from "./fleet-apps-sheet-sync.mjs";
 
 const read = (rel) => readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
@@ -131,21 +132,56 @@ test("the ingest's skip flag and timeout are fleet knobs, not ambient env vars",
   assert.equal(ingestTimeoutMs({ [INGEST_TIMEOUT_KNOB]: "0" }), 5400000);
 });
 
-test("the two knob names map to the two ingest decisions", () => {
-  // A swapped or misspelled knob silently enables ingestion with the default timeout
-  // while the value-level tests above stay green (Kody review, PR #740).
-  const seen = [];
+test("each ingest knob name lands on its own decision", () => {
+  // ingestKnobValues is the only link between the Infisical knob names and the two decisions,
+  // and it is neither exported nor asserted by anything else.  A swapped or misspelled knob
+  // name there is a silent no-op: FLEET_SHEET_INGEST_ENABLED=false is ignored (the ingest
+  // runs anyway) and FLEET_SHEET_INGEST_TIMEOUT_MS is dropped (the sync blocks for the
+  // 90-minute default), while every other assertion in this file stays green.  The reader is
+  // injectable, so the mapping is asserted rather than hoped for.
+  const asked = [];
   const values = ingestKnobValues((name) => {
-    seen.push(name);
-    return `sentinel:${name}`;
+    asked.push(name);
+    return name === INGEST_ENABLED_KNOB ? "false" : "60000";
   });
-  assert.deepEqual([...seen].sort(), [INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB].sort());
-  assert.equal(values[INGEST_ENABLED_KNOB], `sentinel:${INGEST_ENABLED_KNOB}`);
-  assert.equal(values[INGEST_TIMEOUT_KNOB], `sentinel:${INGEST_TIMEOUT_KNOB}`);
+  assert.deepEqual(asked, [INGEST_ENABLED_KNOB, INGEST_TIMEOUT_KNOB],
+    "the mapper reads each knob by its own name");
+  assert.equal(values[INGEST_ENABLED_KNOB], "false",
+    "FLEET_SHEET_INGEST_ENABLED lands on the enabled knob");
+  assert.equal(values[INGEST_TIMEOUT_KNOB], "60000",
+    "FLEET_SHEET_INGEST_TIMEOUT_MS lands on the timeout knob");
+
+  // And the decisions follow those values, not the other way round.
+  assert.equal(ingestEnabled(values), false);
+  assert.equal(ingestTimeoutMs(values), 60000);
+
+  // The crossed wiring this asserts against: a mapper that swapped the two names would still
+  // answer every count above, so check that the crossing is visible rather than merely absent.
+  const crossed = ingestKnobValues((name) => (name === INGEST_ENABLED_KNOB ? "60000" : "false"));
+  assert.notDeepEqual(crossed, values, "a crossed reader gives a visibly different mapping");
+  assert.equal(ingestEnabled(crossed), true,
+    "the crossed mapping would have enabled the ingest anyway");
 });
 
-test("summarizeIngest reads the ingest report and never fakes a success", () => {
+test("a deferred ingest is reported as deferred, not as a completed pass", () => {
+  // A partial run stops early to let the nightly pass take the lock.  Counting the documents it
+  // happened to reach would read as a successful ingest of a partial corpus, which is the same
+  // kind of wrong summary this function exists to avoid.
   const report = JSON.stringify({
+    deferred: true,
+    deferred_reason: "a full nightly pass is waiting for the lock",
+    per_source: { doc: { docs_seen: 142, docs_changed: 1, chunks_new: 37 } },
+  });
+  assert.match(summarizeIngest(report), /^deferred/);
+  assert.match(summarizeIngest(report), /nightly pass/);
+  // A report that is not deferred still reads as before.
+  assert.equal(
+    summarizeIngest(JSON.stringify({ per_source: { doc: { docs_seen: 142, docs_changed: 1, chunks_new: 37 } } })),
+    "142 docs, 1 changed, 37 chunks written"
+  );
+});
+
+test("summarizeIngest reads the ingest report and never fakes a success", () => {  const report = JSON.stringify({
     per_source: { doc: { docs_seen: 142, docs_changed: 1, chunks_new: 37 } }
   });
   assert.equal(summarizeIngest(report), "142 docs, 1 changed, 37 chunks written");

@@ -86,6 +86,16 @@ EMBED_RATE = 24.0  # texts per second budget for the shared TEI box
 PROGRESS_EVERY = 200
 EXIT_LOCKED = 3
 
+# The full nightly pass is the only run that may attest the corpus health, so it is also the
+# only run that must not be locked out.  It marks its intent in a file next to the lock; a
+# partial run that sees the mark yields the lock instead of running out its own budget.
+NIGHTLY_PENDING_NAME = "nightly-pending"
+# How long the nightly waits for the lock.  It covers the longest partial run the fleet
+# schedules -- the sheet sync's ingest, which is allowed 90 minutes -- so a single long
+# document cannot lock the health-attesting run out.
+LOCK_WAIT_SECONDS = 6000.0
+LOCK_POLL_SECONDS = 5.0
+
 # Payload fields that describe the owning document (everything except the content fields).
 _CONTENT_FIELDS = ("text", "content_hash", "embed_model")
 
@@ -106,33 +116,55 @@ class IngestLocked(FleetRagError):
 
 
 class IngestLock:
-    """Exclusive flock; raises IngestLocked when another process still holds the lock
-    after timeout_s (0 = non-blocking, the partial-refresh behavior)."""
+    """Exclusive flock on the ingest lock.
 
-    def __init__(self, path: pathlib.Path, timeout_s: float = 0):
+    The acquire is non-blocking unless wait_seconds is given, which turns it into a bounded
+    wait/retry loop.  That is how the nightly pass gets the lock even when a partial run holds
+    it: the nightly marks its intent in a pending file first, and a partial run that sees the
+    mark yields the lock instead of running out its own budget.
+    """
+
+    def __init__(
+        self,
+        path: pathlib.Path,
+        wait_seconds: float = 0.0,
+        poll_seconds: float = LOCK_POLL_SECONDS,
+    ):
         self.path = pathlib.Path(path)
-        self.timeout_s = timeout_s
+        self.wait_seconds = max(0.0, float(wait_seconds))
+        self.poll_seconds = max(0.05, float(poll_seconds))
         self._fd: int | None = None
+
+    def _try_acquire(self) -> int | None:
+        """Take the exclusive flock, or return None when another process holds it."""
+        fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            os.close(fd)
+            if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                return None
+            raise
+        return fd
 
     def __enter__(self) -> IngestLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + self.timeout_s
+        deadline = time.monotonic() + self.wait_seconds
         while True:
-            fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fd = self._try_acquire()
+            if fd is not None:
                 break
-            except OSError as e:
-                os.close(fd)
-                if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
-                    if time.monotonic() >= deadline:
-                        raise IngestLocked(
-                            f"another ingest is running (lock held: {self.path}); "
-                            f"wait for it or remove a stale lock, exit {EXIT_LOCKED}"
-                        ) from None
-                    time.sleep(min(5.0, max(0.1, deadline - time.monotonic())))
-                    continue
-                raise
+            if time.monotonic() >= deadline:
+                waited = (
+                    f"waited {self.wait_seconds:.0f}s for it and it is still held; "
+                    if self.wait_seconds > 0
+                    else ""
+                )
+                raise IngestLocked(
+                    f"another ingest is running (lock held: {self.path}); "
+                    f"{waited}wait for it or remove a stale lock, exit {EXIT_LOCKED}"
+                ) from None
+            time.sleep(self.poll_seconds)
         try:
             os.ftruncate(fd, 0)
             os.write(
@@ -150,6 +182,55 @@ class IngestLock:
             finally:
                 os.close(self._fd)
             self._fd = None
+
+
+# --------------------------------------------------------------------------- lock priority
+
+
+def _is_full_nightly(names: list[str], prune: bool, since_ms: int | None, limit: int | None) -> bool:
+    """True for an untruncated full nightly-source pass.
+
+    One predicate, two decisions: only this pass may attest the corpus health, and only this
+    pass gets priority for the lock.  Keeping both on the same predicate is what stops the
+    health-attesting run from being the one that can be locked out.
+    """
+    return bool(
+        prune
+        and set(names) == set(sources.NIGHTLY_SOURCES)
+        and since_ms is None
+        and limit is None
+    )
+
+
+def _nightly_pending_path(state_path: pathlib.Path) -> pathlib.Path:
+    return state_path.parent / NIGHTLY_PENDING_NAME
+
+
+def _mark_nightly_pending(path: pathlib.Path) -> None:
+    """Announce that a full nightly pass is waiting for the lock."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.write_text(
+            f"{os.getpid()} {_dt.datetime.now().isoformat(timespec='seconds')}\n", encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _clear_nightly_pending(path: pathlib.Path) -> None:
+    """Withdraw the nightly's intent marker.  Safe to call when there is none."""
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _nightly_pending(path: pathlib.Path) -> bool:
+    """True when a full nightly pass is waiting for the lock."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 # --------------------------------------------------------------------------- state
@@ -510,11 +591,19 @@ def run(
     heartbeat: bool = True,
     prune: bool = False,
     lock_path: pathlib.Path | None = None,
-    lock_timeout_s: float = 0,
+    pending_path: pathlib.Path | None = None,
+    lock_timeout_s: float | None = None,
 ) -> dict:
     """Run the ingest over the named sources.  Returns the report dict (also written to disk).
 
     Raises IngestLocked (exit 3 from the CLI) when another ingest holds the lock.
+
+    A full nightly pass waits for the lock instead of failing on it, because it is the only run
+    that can attest the corpus health; a partial run yields the lock when a nightly pass is
+    waiting for it, and reports itself as deferred rather than as a completed pass.
+
+    lock_timeout_s overrides how long the nightly waits for the lock.  None keeps the
+    built-in budget; 0 makes the nightly fail at once, which is only useful in a test.
     """
     names = (
         list(sources.NIGHTLY_SOURCES)
@@ -536,8 +625,49 @@ def run(
             "every document past the limit"
         )
     since_ms = _parse_since(since)
+    # One predicate decides both what may attest the corpus health and what may not be locked
+    # out: the full nightly pass is the only run that writes the sentinel, so it is also the
+    # only run that gets priority for the lock.
+    is_nightly = _is_full_nightly(names, prune, since_ms, limit)
     lock_path = lock_path or (state_path.parent / "ingest.lock")
-    with IngestLock(lock_path, timeout_s=lock_timeout_s):
+    pending_path = pending_path or _nightly_pending_path(state_path)
+    if lock_timeout_s is None:
+        # The nightly waits out the lock; a partial run fails at once, because the sheet
+        # sync's ingest is best-effort and a long wait would hold its own budget open.
+        nightly_wait = LOCK_WAIT_SECONDS
+        partial_wait = 0.0
+    else:
+        nightly_wait = max(0.0, float(lock_timeout_s))
+        partial_wait = nightly_wait
+    wait_seconds = nightly_wait if is_nightly else partial_wait
+    if is_nightly and not dry_run:
+        # Mark the intent BEFORE waiting for the lock, so a partial run that is already going
+        # sees the mark and yields the lock instead of running out its own 90-minute budget.
+        _mark_nightly_pending(pending_path)
+        try:
+            with IngestLock(
+                lock_path, wait_seconds=wait_seconds, poll_seconds=LOCK_POLL_SECONDS
+            ):
+                _clear_nightly_pending(pending_path)
+                return _run_locked(
+                    names,
+                    dry_run,
+                    since_ms,
+                    limit,
+                    state_path,
+                    last_run_path,
+                    log_path,
+                    cfg,
+                    qd,
+                    log,
+                    heartbeat,
+                    prune,
+                    is_nightly,
+                    pending_path,
+                )
+        finally:
+            _clear_nightly_pending(pending_path)
+    with IngestLock(lock_path, wait_seconds=wait_seconds):
         return _run_locked(
             names,
             dry_run,
@@ -551,6 +681,8 @@ def run(
             log,
             heartbeat,
             prune,
+            is_nightly,
+            pending_path,
         )
 
 
@@ -567,6 +699,8 @@ def _run_locked(
     log,
     heartbeat: bool,
     prune: bool,
+    is_nightly: bool,
+    pending_path: pathlib.Path,
 ) -> dict:
     run_id = f"{_dt.datetime.now(_dt.UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
     started = now_ms()
@@ -581,6 +715,7 @@ def _run_locked(
         "per_source": {},
         "errors": [],
         "warnings": [],
+        "deferred": False,
     }
 
     if cfg is None or (qd is None and not dry_run):
@@ -606,6 +741,7 @@ def _run_locked(
     seen_run: dict[str, str] = {}  # doc_id -> source, for the duplicate guard
     live_owners: set[str] = set()  # doc_ids yielded so far (shared-chunk re-pointing)
     sources.take_warnings()  # drop anything left over from an earlier call
+    deferred = False
 
     for name in names:
         stats = _empty_stats()
@@ -618,6 +754,13 @@ def _run_locked(
         source_ok = True
         try:
             for doc in GENERATORS[name](limit=limit):
+                if not is_nightly and _nightly_pending(pending_path):
+                    # A full nightly pass is waiting for the lock, and it is the only run that
+                    # can attest the corpus health.  Yield now and let it through; the work
+                    # left over is picked up by the nightly, which walks this source too.
+                    deferred = True
+                    log(f"[{name}] yielding the lock: a full nightly pass is pending")
+                    break
                 stats["docs_seen"] += 1
                 if doc.doc_id in seen_run:
                     raise FleetRagError(
@@ -653,7 +796,9 @@ def _run_locked(
         for w in sources.take_warnings():
             report["warnings"].append(f"{name}: {w}")
             log(f"[{name}] WARNING {w}")
-        if prune and source_ok:
+        # A deferred run saw only part of this source, so it must not prune: pruning a
+        # truncated source deletes every document past the point it stopped at.
+        if prune and source_ok and not deferred:
             try:
                 gone = prune_source(name, yielded, state, writer, stats, state_path)
                 if gone:
@@ -669,19 +814,19 @@ def _run_locked(
                 log(f"[{name}] ERROR {msg}")
                 telemetry.capture_exception(e, operation="ingest-prune", source=name)
         log(f"[{name}] done in {time.monotonic() - t0:.1f}s: {json.dumps(stats)}")
+        if deferred:
+            break
+
+    if deferred:
+        report["deferred"] = True
+        report["deferred_reason"] = "a full nightly pass is waiting for the lock"
 
     report["finished_at"] = now_ms()
     report["wall_s"] = round(time.monotonic() - t_run, 1)
     if not dry_run:
         # Only an untruncated full nightly-source pass can attest global health.
         # Partial/manual refreshes keep their log and state without hiding a stale night.
-        nightly = (
-            prune
-            and set(names) == set(sources.NIGHTLY_SOURCES)
-            and since_ms is None
-            and limit is None
-        )
-        if nightly:
+        if is_nightly:
             _write_sentinel_safely(cfg, qd, report, log)
             _write_json(last_run_path, report)
             if report["ok"] and heartbeat:
@@ -867,8 +1012,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         metavar="SECONDS",
         help="wait up to SECONDS for the ingest lock instead of failing at once "
-        "(default: 0 for a partial refresh; 6000 for a full `--all --prune` nightly, "
-        "so a 90-minute sheet-sync ingest can never lock out the health-attesting run)",
+        "(default: the full nightly pass waits out the lock, because it is the only run "
+        "that can attest the corpus health, and a partial refresh fails at once)",
     )
     args = ap.parse_args(argv)
     try:
@@ -877,11 +1022,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not args.all and not args.source:
             ap.error("choose --all, --source, or --fix-seeds")
-        # The nightly is the only run that attests health (sentinel + last-run.json),
-        # so it waits out a partial refresh instead of exiting 3 into a stale sentinel.
-        # A partial refresh keeps the fast exit and itself backs off (Kody review, PR #740).
-        nightly = args.all and args.prune and not args.since and not args.limit
-        lock_timeout = args.lock_timeout if args.lock_timeout is not None else (6000.0 if nightly else 0.0)
         report = run(
             "all" if args.all else args.source,
             dry_run=args.dry_run,
@@ -889,7 +1029,7 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             heartbeat=not args.no_heartbeat,
             prune=args.prune,
-            lock_timeout_s=lock_timeout,
+            lock_timeout_s=args.lock_timeout,
         )
     except IngestLocked as e:
         eprint(f"error: {e}")
