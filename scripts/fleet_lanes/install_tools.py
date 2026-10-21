@@ -2541,7 +2541,7 @@ PLATFORMS: dict[str, Platform] = {
                 "new Copilot session and ask for a process listing, which must be refused.  `verify copilot` proves the "
                 "command in the written file denies, and ends with a SKIP for that live proof;  it never claims it.  "
                 "Copilot CLI is a supported platform again (owner 2026-10-20),  but if its configuration directory "
-                "does not exist yet the target has no config to write, and nothing recreates the directory.  Named explicitly, "
+                "does not exist yet the target has no config to write, and nothing recreates the directory.  Named explicitly with no directory, "
                 "the platform is a FAIL (an uninstalled platform reached through `all` is a SKIP):  asking to verify "
                 "a platform that is not there is a mistake worth reporting,  not a healthy state.",
             ),
