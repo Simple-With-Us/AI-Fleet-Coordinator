@@ -179,7 +179,7 @@ class RelayHarness(unittest.TestCase):
     def raw_request(self, identity, title, rid="request-0001", action="create", markdown="hello body"):
         """A post that skips `make_envelope`, so the listener's own checks are still under test.
 
-        The tool layer now refuses a title with no `[TEAM_KEY, SEAT_TAG]` scope, but a message can
+        The tool layer now refuses a title with no `[TEAM_KEY, Agent]` scope, but a message can
         reach `#notes-relay` from anywhere, so the listener must still reject it itself."""
         env = {
             "v": N.ENVELOPE_VERSION,

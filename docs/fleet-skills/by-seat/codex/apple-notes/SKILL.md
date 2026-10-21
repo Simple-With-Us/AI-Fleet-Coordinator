@@ -36,7 +36,7 @@ Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do
 [TEAM_KEY, Agent] Topic
 ```
 
-- Team key first, then your seat tag, both capitals, then the topic in Title Case (owner 2026-10-19:  never the app's long name, never the seat's long name).
+- Team key first, then the agent, then the topic in Title Case (owner 2026-10-19:  never the app's long name, never the seat's long name).
 - Agent is your verified seat’s canonical Title Case `notesName`, such as `Codex` or `Claude`; the exact uppercase seat tag is compatible.
 - Multi-app: `[ST, CT, Agent] …` (impact order).
 - No date in the title.  No word "session".  Do not repeat the title as an H1 in the body.

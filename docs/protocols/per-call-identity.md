@@ -69,7 +69,7 @@ Notes live in the Mac's iCloud `Coding` folder, written by `scripts/apple-notes-
 
 - **On the Mac** (CLI and stdio):  `notes_*` calls the script directly, passing title, body and flags through files, never the command line.
 - **Everywhere else** (server CLI, server stdio, hosted):  `notes_*` posts a relay request as the claimed identity to channel `#notes-relay`, topic = the note title, body = a fenced JSON envelope (`action`, `title`, `markdown`, flags, `request_id`).  Bodies over Zulip's limit go up as an attached `.md` upload.
-- **The Mac listener** watches `#notes-relay`, accepts requests only from fleet agent bots, checks the title reads `[TEAM_KEY, Agent] Topic` and that the `SEAT_TAG` is the sender's own seat or role, runs the script, then reacts ✅ (or ❌ with a reply giving the reason).  It is idempotent on `request_id`.
+- **The Mac listener** watches `#notes-relay`, accepts requests only from fleet agent bots, checks the title reads `[TEAM_KEY, Agent] Topic` and that the agent is the sender's own seat or role, runs the script, then reacts ✅ (or ❌ with a reply giving the reason).  It is idempotent on `request_id`.
 - The tool returns `queued` with the request id;  `notes_status` reads the reaction.
 
 Details (AFC-331, built):

@@ -222,7 +222,7 @@ SEAT_ALIASES = {
     "echo": "ECHO",
     "wise": "WISE",
 }
-# The note title carries the SEAT_TAG itself (owner 2026-10-20:  `[TEAM_KEY, SEAT_TAG] Topic`), so
+# The note title carries the agent itself (owner 2026-10-20:  `[TEAM_KEY, Agent] Topic`), so
 # every live tag has to resolve here.  A tag missing from this table is read as a team key and the
 # note loses its seat attribution entirely, which is worse than a wrong app.
 
@@ -1191,8 +1191,8 @@ def _as_seat(token: str) -> str | None:
 
 
 def parse_note_title(title: str) -> tuple[str, str]:
-    """'[AFC, MM] Topic' -> (app, seat).  The title convention puts the team keys first and the
-    seat tag last, so the tokens are scanned from the right for a seat before anything is read as
+    """'[AFC, Claude] Topic' -> (app, seat).  The title convention puts the team keys first and the
+    agent last, so the tokens are scanned from the right for a seat before anything is read as
     a team key.  Multi-team takes the first key.  Role tags (`GB-*`, `BF-*`) resolve by prefix."""
     m = _BRACKET.match(title or "")
     app, seat = "fleet", "FLEET"

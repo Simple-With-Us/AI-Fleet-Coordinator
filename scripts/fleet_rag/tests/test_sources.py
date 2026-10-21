@@ -326,7 +326,7 @@ class NoteTests(unittest.TestCase):
         self.assertEqual(sources.parse_note_title("New Note"), ("fleet", "FLEET"))
 
     def test_title_parse_resolves_the_seat_tag_the_new_convention_requires(self) -> None:
-        """AFC-422:  the title is `[TEAM_KEY, SEAT_TAG] Topic`, so the seat arrives as the seat TAG.
+        """AFC-422:  the title is `[TEAM_KEY, Agent] Topic`, so the seat arrives as the agent name.
         Before the fix only a few lowercase aliases resolved;  `GROK-WEB`, `MA`, `FX` and the rest
         were read as team keys and the note lost its seat attribution entirely."""
         for title, expected in (
