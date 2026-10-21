@@ -71,6 +71,7 @@ REPLY_TIMEOUT = 300
 # The owner watches Zulip, so every Lark exchange is mirrored there with the
 # MiniMax session id, which is the thread the answer came from.
 AGENT_SYNC = os.path.expanduser("~/.local/bin/agent-sync")
+AGENT_SYNC_ROOT = os.path.expanduser("~/.agent-sync")
 ZULIP_TOPIC_PREFIX = "Lark"
 MAX_REPLY_CHARS = 4000
 # How many delivered message ids the dedup state remembers.  Rows that have
@@ -879,6 +880,60 @@ class Bridge:
             # answer in Lark either way.
             log("could not mirror the Lark exchange to Zulip: %s" % exc)
 
+    def _record_in_seat_inbox(self, chat_id, message_id, session_id, question, answer, sender_id=None):
+        """Put the exchange in the seat inbox, the queue a Zulip DM lands in.
+
+        This is how the seat hears about Lark traffic at all.  The listener
+        writes the seat inbox for a Zulip event, and nothing wrote it for
+        Lark, so a Lark chat was invisible to the seat that answered it even
+        though the answer was correct.  The listener's own primitives are
+        used, under its own lock, so the two writers cannot interleave.
+        """
+        try:
+            from agent_sync import live as L
+        except ImportError as exc:
+            log("could not record the Lark exchange in the seat inbox: %s" % exc)
+            return
+        try:
+            paths = L.SeatPaths(self.args.agent_sync_root, self.args.seat)
+            now = time.time()
+            row = {
+                "channel": "lark",
+                "classes": ["direct"],
+                "content": "Jay: %s\n\nMM: %s\n\n(MiniMax session %s)"
+                % (question, answer, session_id or "unknown"),
+                "delivered_to": None,
+                "flags": ["mentioned"],
+                "id": "lark:%s" % message_id,
+                "is_bot": False,
+                "kind": "message",
+                "muse_bridge": False,
+                "owner": True,
+                "owner_api": False,
+                "recipients": [],
+                "sender": "Jay Wedgeworth" if sender_id is None else sender_id,
+                "sender_email": "",
+                "sender_id": sender_id,
+                "stream_id": 0,
+                "time": time.strftime("%a, %b %-d, %-I:%M%p", time.localtime(now)),
+                "topic": "%s %s" % (ZULIP_TOPIC_PREFIX, chat_id[-8:]),
+                "ts": int(now),
+                "type": "stream",
+                "wake_owner": True,
+                "wake_worthy": True,
+            }
+            with L.locked(paths.seat_inbox_meta):
+                meta = L.read_json(paths.seat_inbox_meta)
+                seq = int(meta.get("next_seq") or 1)
+                L.append_jsonl(paths.seat_inbox, [dict(row, seq=seq)])
+                meta["next_seq"] = seq + 1
+                L.write_json(paths.seat_inbox_meta, meta)
+            log("recorded the Lark exchange in the %s seat inbox" % self.args.seat)
+        except Exception as exc:
+            # The seat inbox is a convenience, not the reply path: a failure
+            # here must never cost the answer.
+            log("could not record the Lark exchange in the seat inbox: %s" % exc)
+
     def _handle(self, event):
         # Every field below is read off a frame the Lark socket delivered, and
         # the event loop has no try around this call: a content that is an
@@ -1033,6 +1088,7 @@ class Bridge:
         # MiniMax session answered even when he only has the Lark window.
         answer = "%s\n\n(MiniMax session %s)" % (answer, session_id or "unknown")
         self._mirror(chat_id, session_id, content, answer)
+        self._record_in_seat_inbox(chat_id, message_id, session_id, content, answer)
         return self._send(message_id, answer, attempt)
 
     def _send(self, message_id, text, attempt=0):
@@ -1170,6 +1226,18 @@ def build_parser():
         dest="zulip_mirror",
         action="store_false",
         help="do not mirror the Lark exchange into Zulip",
+    )
+    parser.add_argument(
+        "--seat",
+        dest="seat",
+        default="MM",
+        help="the fleet seat whose inbox records the Lark exchange",
+    )
+    parser.add_argument(
+        "--agent-sync-root",
+        dest="agent_sync_root",
+        default=AGENT_SYNC_ROOT,
+        help="the agent-sync state root that holds the seat inbox",
     )
     return parser
 
