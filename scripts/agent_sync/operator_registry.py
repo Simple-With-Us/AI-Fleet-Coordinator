@@ -550,6 +550,76 @@ def register_session(
     return out
 
 
+# ---- the other direction: a letter names a session (AFC-412) ------------------------
+
+
+def resolve_label(
+    db_path: str,
+    platform: str,
+    letter: str,
+    generation: int | None = None,
+) -> dict[str, Any] | None:
+    """The session a letter names, or None when the letter is not live.
+
+    This is the other direction of the join.  The catalog answers "what letter is this
+    session", and the wake carries that answer on the row.  This answers "which session
+    is this letter", which is what an address like "@**MiniMax** Z" needs.
+
+    A letter is unique on its platform while it is live, so the letter alone names one
+    session, and the platform is always part of the address.  A recycled letter takes a
+    generation, and "MM A (gen 2)" names the second session to hold that letter.
+
+    The lookup is on the indexed (platform, letter) pair, so it answers for a session
+    the catalog no longer lists, which is the point:  the catalog shows a bounded window
+    of recent sessions and this does not.
+    """
+    if not db_path or not os.path.isfile(str(db_path)):
+        return None
+    want = str(letter or "").strip().upper()
+    if not want:
+        return None
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception:
+        return None
+    try:
+        if generation is None:
+            row = registry._conn.execute(
+                "SELECT a.letter AS letter, a.generation AS generation, a.record_id AS record_id,"
+                " s.seat AS seat, s.native_session_id AS native_session_id, s.title AS title,"
+                " s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
+                " s.state AS state"
+                " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+                " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL",
+                (platform, want),
+            ).fetchone()
+        else:
+            row = registry._conn.execute(
+                "SELECT a.letter AS letter, a.generation AS generation, a.record_id AS record_id,"
+                " s.seat AS seat, s.native_session_id AS native_session_id, s.title AS title,"
+                " s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
+                " s.state AS state"
+                " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+                " WHERE a.platform = ? AND a.letter = ? AND a.generation = ?",
+                (platform, want, int(generation)),
+            ).fetchone()
+    except Exception:
+        return None
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    if row is None:
+        return None
+    found = dict(row)
+    found["ref"] = cross_seat_ref(
+        str(found.get("seat") or ""), str(found.get("letter") or ""), int(found.get("generation") or 0)
+    )
+    found["title_display"] = display_title(str(found.get("letter") or ""), str(found.get("title") or ""))
+    return found
+
+
 # ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
 
 
@@ -732,9 +802,23 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--thread-link", default="")
     r.add_argument("--apple-note-link", default="")
     r.add_argument("--wake-capability", default="unknown")
+    rs = sub.add_parser("resolve", help="name the session a letter points at")
+    rs.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rs.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    rs.add_argument("--letter", required=True, help="the letter, such as A")
+    rs.add_argument("--generation", type=int, default=None, help="the generation of a recycled letter")
     args = parser.parse_args(argv)
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
+        return 0
+    if args.command == "resolve":
+        found = resolve_label(
+            args.db or _default_db(),
+            args.platform,
+            args.letter,
+            args.generation,
+        )
+        print(json.dumps(found if found else {"letter": args.letter, "found": False}))
         return 0
     if args.command == "register":
         try:

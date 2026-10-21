@@ -171,6 +171,119 @@ class RegisterPathTests(unittest.TestCase):
             self.assertEqual(found["label"], "A")
 
 
+    def test_a_letter_names_its_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            # The other direction of the join:  a letter names one session.
+            found = OR.resolve_label(db, "minimax", "A")
+            self.assertEqual(found["native_session_id"], "mvs_abc")
+            self.assertEqual(found["seat"], "MM")
+            self.assertEqual(found["title"], "Work")
+            self.assertEqual(found["title_display"], "A: Work")
+            self.assertEqual(found["ref"], "MM A")
+
+    def test_a_letter_is_unique_on_its_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            # The same letter on another platform is a different session.
+            self.assertIsNone(OR.resolve_label(db, "codex", "A"))
+
+    def test_an_unknown_letter_resolves_to_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+            )
+            self.assertIsNone(OR.resolve_label(db, "minimax", "Z"))
+            self.assertIsNone(OR.resolve_label(db, "minimax", ""))
+
+    def test_a_recycled_letter_names_the_right_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            first = OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            registry = OR.SessionRegistry(db)
+            self.addCleanup(registry.close_db)
+            registry.close(first["record_id"])
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_def",
+                seat="MM",
+                source="test",
+                title="Next",
+            )
+            # The live letter names the session that holds it now.
+            live = OR.resolve_label(db, "minimax", "A")
+            self.assertEqual(live["native_session_id"], "mvs_def")
+            self.assertEqual(live["generation"], 2)
+            # And the generation names the older one.  The suffix is the differentiator:
+            # only a recycled letter carries it, so the first holder reads "MM A".
+            older = OR.resolve_label(db, "minimax", "A", 1)
+            self.assertEqual(older["native_session_id"], "mvs_abc")
+            self.assertEqual(older["ref"], "MM A")
+            self.assertEqual(live["ref"], "MM A (gen 2)")
+
+    def test_the_resolve_command_names_the_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = OR.main(
+                    ["resolve", "--db", db, "--platform", "minimax", "--letter", "A"]
+                )
+            self.assertEqual(code, 0)
+            out = json.loads(buffer.getvalue())
+            self.assertEqual(out["native_session_id"], "mvs_abc")
+            self.assertEqual(out["ref"], "MM A")
+
+
 class RegistryLookupTests(unittest.TestCase):
     def test_the_registry_path_is_one_shared_place_under_the_state_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
