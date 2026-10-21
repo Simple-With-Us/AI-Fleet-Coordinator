@@ -138,12 +138,25 @@ NATIVE_SHELL_TOOL_NAMES: dict[str, tuple[str, ...]] = {
 # lane guard evaluates shell commands only and fails open on file payloads, so a file
 # probe that is allowed is a genuine DRIFT, not a harness error:  the seat is
 # unguarded for file writes.
-NATIVE_FILE_TOOLS: tuple[tuple[str, str], ...] = (
-    ("Write", "file_path"),
-    ("Edit", "file_path"),
-    ("write", "path"),
-    ("edit", "path"),
-)
+# The file tools are per platform,  for the same reason the shell names are:  a probe
+# that names a tool the runtime never delivers proves nothing,  and fails the seat for
+# a tool it does not have.  The MiniMax runtime delivers its native ``write`` (which
+# carries ``path``) and its native ``edit`` (which carries ``file_path``);  the
+# claude-shaped runtimes deliver ``Write`` and ``Edit`` (which carry ``file_path``).
+# The platforms whose payload shape carries no file tool are empty,  because the probe
+# cannot express a file write for them.
+NATIVE_FILE_TOOLS: dict[str, tuple[tuple[str, str], ...]] = {
+    "claude": (("Write", "file_path"), ("Edit", "file_path")),
+    "codex": (("Write", "file_path"), ("Edit", "file_path")),
+    "grok": (("Write", "file_path"), ("Edit", "file_path")),
+    "kimi": (("Write", "file_path"), ("Edit", "file_path")),
+    "clutch": (("Write", "file_path"), ("Edit", "file_path")),
+    "minimax": (("write", "path"), ("edit", "file_path")),
+    "muse": (),
+    "muse-code": (),
+    "cursor": (),
+    "antigravity": (),
+}
 
 
 @dataclass(frozen=True)
@@ -1181,22 +1194,24 @@ def run_l1_probe(
             outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
             if not outcome.passed:
                 return outcome
-        if adapter.payload_shape in ("claude", "muse"):
-            for file_tool, path_field in NATIVE_FILE_TOOLS:
-                payload = build_file_payload(
-                    adapter, sentinel.destination, sentinel.root, file_tool, path_field
+        for file_tool, path_field in NATIVE_FILE_TOOLS.get(platform, ()):
+            payload = build_file_payload(
+                adapter, sentinel.destination, sentinel.root, file_tool, path_field
+            )
+            outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
+            if not outcome.passed:
+                return L1Outcome(
+                    level=outcome.level,
+                    passed=False,
+                    state=outcome.state,
+                    reason=(
+                        "the guard did not deny the %s tool's write,  so a file write "
+                        "into a forbidden tree is not policed" % file_tool
+                    ),
+                    reason_code=outcome.reason_code,
+                    detail=outcome.detail,
+                    achieved=None,
                 )
-                outcome = _run_one_payload(command, payload, fmt, sentinel, env, budget)
-                if not outcome.passed:
-                    return L1Outcome(
-                        level=outcome.level,
-                        passed=False,
-                        state=outcome.state,
-                        reason="%s (tool %r)" % (outcome.reason, file_tool),
-                        reason_code=outcome.reason_code,
-                        detail=outcome.detail,
-                        achieved=None,
-                    )
     finally:
         shutil.rmtree(sentinel.root, ignore_errors=True)
     return L1Outcome(
