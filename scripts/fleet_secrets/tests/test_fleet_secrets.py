@@ -4,6 +4,7 @@ test touches the network, the real CLI, the real Keychain, the real HOME or any 
 from __future__ import annotations
 
 import io
+import os
 import json
 import subprocess
 import sys
@@ -773,6 +774,7 @@ class SetTests(Base):
         super().setUp()
         self.api = []
         self.statuses = {}
+        self.bodies = {}
 
     def fake_api(self, method, path, token, body, env):
         self.api.append((method, path, token, dict(body or {})))
@@ -780,6 +782,10 @@ class SetTests(Base):
             (method, path.split("/v3/secrets/raw/")[0] if "/v3/" in path else path),
             self.statuses.get(method, 200),
         )
+
+    def fake_api_json(self, method, path, token, body, env):
+        status = self.fake_api(method, path, token, body, env)
+        return status, self.bodies.get((method, path), None)
 
     def run_set(self, *argv, stdin="VAL_TO_WRITE_1\n", env=None):
         with (
@@ -864,7 +870,55 @@ class SetTests(Base):
         self.assertEqual(self.api, [])
 
     def test_the_allowlist_is_exactly_the_reviewed_one(self):
-        self.assertEqual(core.WRITE_ALLOWLIST, (("/linear", r"^CACHE_[A-Z0-9_]+$"),))
+        self.assertEqual(
+            core.WRITE_ALLOWLIST,
+            (
+                ("/linear", r"^CACHE_[A-Z0-9_]+$"),
+                (
+                    r"/cli-logins/[A-Z][A-Z0-9-]{0,15}",
+                    r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)$",
+                ),
+                (
+                    r"/cli-logins",
+                    r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)_[A-Z][A-Z0-9-]{0,15}$",
+                ),
+            ),
+        )
+
+    def test_the_folder_is_created_and_an_existing_one_is_not_an_error(self):
+        """A folder that is already there is not an error,  and a rejected request is
+        not mistaken for one.
+
+        The API answers a folder that exists with a 400 whose message says so,  so the
+        message is read rather than assumed:  a malformed request is a failure and not
+        a folder that is there.
+        """
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses[("POST", "/v1/folders")] = 400
+        self.bodies[("POST", "/v1/folders")] = {
+            "message": "Folder with name 'cli-logins' already exists in path '/'"
+        }
+        with mock.patch.object(core, "_api_json", self.fake_api_json):
+            core.ensure_folder("/cli-logins/OPENCODE", self.env, "SENTINEL_TOKEN_x1")
+        self.assertTrue(self.api)
+
+    def test_a_rejected_folder_that_is_not_an_existing_folder_is_a_failure(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        self.statuses[("POST", "/v1/folders")] = 400
+        self.bodies[("POST", "/v1/folders")] = {"message": "name is required"}
+        with mock.patch.object(core, "_api_json", self.fake_api_json):
+            with self.assertRaises(core.SecretsError) as caught:
+                core.ensure_folder("/cli-logins/OPENCODE", self.env, "SENTINEL_TOKEN_x1")
+        self.assertIn("folder-failed", caught.exception.message)
+
+    def test_the_folder_is_never_created_outside_prod(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        env = dict(self.env)
+        env["INFISICAL_ENV"] = "staging"
+        with self.assertRaises(core.SecretsError) as caught:
+            core.ensure_folder("/cli-logins/OPENCODE", env, "SENTINEL_TOKEN_x1")
+        self.assertEqual(self.api, [])
+        self.assertIn("prod", caught.exception.message)
 
     def test_a_failed_write_exits_4_and_never_echoes_the_value_or_token(self):
         self.use(World(keychain=KEYCHAIN_FULL))

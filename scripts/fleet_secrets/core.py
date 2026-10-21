@@ -49,7 +49,20 @@ MAX_VALUE_BYTES = 256 * 1024
 # widening it takes a reviewed change, never a flag, an environment variable or a config file.  A general
 # write command would let any agent on this Mac overwrite any Fleet-OPS secret with the shared automation
 # identity.  CACHE_<APP> in /linear is the minted Linear token that `board` stores there (AFC-359).
-WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (("/linear", r"^CACHE_[A-Z0-9_]+$"),)
+WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (
+    ("/linear", r"^CACHE_[A-Z0-9_]+$"),
+    # The CLI logins a seat shares with the hosts it runs on:  one folder per seat under
+    # /cli-logins,  and only the names a CLI actually reads out of its environment.  The
+    # value is the seat's own CLI login,  so the write is the seat's own credential going
+    # where the seat already uses it,  and it is never a general-purpose write:  the path
+    # names the seat and the name is one of four.
+    (r"/cli-logins/[A-Z][A-Z0-9-]{0,15}", r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)$"),
+    # The same class the other way round:  one folder,  the seat in the name.  A consumer
+    # whose own table is static  (BotFleet's secret map names one secret per bot)  reads
+    # this shape,  and the reader renames the value to the environment variable the CLI
+    # expects.
+    (r"/cli-logins", r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)_[A-Z][A-Z0-9-]{0,15}$"),
+)
 LOGIN_TIMEOUT = 30.0
 KEYCHAIN_TIMEOUT = 10.0
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -409,7 +422,10 @@ def cli_version(cli: str, env: Mapping[str, str]) -> str | None:
 
 
 def fetch_all(
-    path: str, env: Mapping[str, str], project_name: str = DEFAULT_PROJECT
+    path: str,
+    env: Mapping[str, str],
+    project_name: str = DEFAULT_PROJECT,
+    token: str | None = None,
 ) -> dict[str, str]:
     """Every secret at `path` in Fleet-OPS prod, references expanded.  Raises SecretsError.
 
@@ -426,7 +442,9 @@ def fetch_all(
     mode = auth_mode(env)
     child = _base_env(env)
     if mode in MACHINE_MODES:
-        child[ENV_TOKEN] = machine_token(cli, env, mode)
+        #  The token the caller already resolved is used as it is,  so a read that
+        #  follows a write does not log in a second time.
+        child[ENV_TOKEN] = token if token is not None else machine_token(cli, env, mode)
     if mode != "token":
         for var in AUTH_ENV_VARS - {ENV_TOKEN}:
             child.pop(var, None)
@@ -521,9 +539,32 @@ def injectable(name: str) -> bool:
     )
 
 
-def _api(method: str, path: str, token: str, body: dict | None, env: Mapping[str, str]) -> int:
-    """One Infisical REST call.  Returns the HTTP status;  the response body is never read into a message.
-    The token travels in a header, never in an argument list."""
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow a redirect.
+
+    The bearer token travels in a header,  so a redirect to another origin would hand
+    the credential to whoever the response named.  The pinned API does not redirect,
+    so a 3xx is a failure and not a hop.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    """The opener every call uses:  the defaults,  and no redirect following."""
+    return urllib.request.build_opener(_NoRedirect())
+
+
+def _api_json(
+    method: str, path: str, token: str, body: dict | None, env: Mapping[str, str]
+) -> tuple[int, object]:
+    """One Infisical REST call.  The status and the parsed body,  never a message.
+
+    The body comes back for the calls that have to read it,  like the folder create,
+    whose 400 says whether the folder is already there or the request was wrong.  The
+    token travels in a header, never in an argument list.
+    """
     base = (env.get(ENV_API) or API_BASE).rstrip("/")
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(
@@ -537,20 +578,36 @@ def _api(method: str, path: str, token: str, body: dict | None, env: Mapping[str
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=API_TIMEOUT) as resp:
-            return resp.status
+        with _opener().open(req, timeout=API_TIMEOUT) as resp:
+            raw = resp.read()
+            status = resp.status
     except urllib.error.HTTPError as exc:
-        return exc.code
+        raw = exc.read()
+        status = exc.code
     except (urllib.error.URLError, OSError, TimeoutError):
-        return 0
+        return 0, None
     finally:
         data = None
+    try:
+        return status, json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return status, None
+
+
+def _api(method: str, path: str, token: str, body: dict | None, env: Mapping[str, str]) -> int:
+    """One Infisical REST call.  Returns the HTTP status;  the response body is never read into a message.
+    The token travels in a header, never in an argument list."""
+    return _api_json(method, path, token, body, env)[0]
 
 
 def check_writable(name: str, path: str) -> None:
-    """Raise SecretsError (exit 2) unless (path, name) is on the built-in write allowlist."""
+    """Raise SecretsError (exit 2) unless (path, name) is on the built-in write allowlist.
+
+    The folder is matched whole,  so a pattern like ``/cli-logins/[A-Z][A-Z0-9-]{0,15}``
+    names one seat's folder and not a prefix of it.
+    """
     for folder, pattern in WRITE_ALLOWLIST:
-        if path == folder and re.match(pattern, name):
+        if re.fullmatch(folder, path) and re.match(pattern, name):
             return
     raise SecretsError(
         "set refused:  {} at {} is not on the built-in write allowlist ({});  widening it needs a code change".format(
@@ -560,7 +617,74 @@ def check_writable(name: str, path: str) -> None:
     )
 
 
-def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
+def ensure_folder(path: str, env: Mapping[str, str], token: str) -> None:
+    """Make sure the folder path exists,  creating the levels that do not.
+
+    ``put_secret`` refuses to write into a folder that is not there,  which is the right
+    rule for a secret but not for a path the fleet owns the shape of:  a seat's own
+    folder is not a secret,  and every seat should not need a human to create one
+    before its first sync.  A folder that is already there is not an error,  and the
+    400 that says so is read rather than assumed,  so a rejected request is not
+    mistaken for a folder that is there.
+
+    The request carries the folder name and the parent path,  never a value,  and the
+    token is the one the caller already resolved.
+    """
+    refusal = environment_refusal(env)
+    if refusal:
+        raise SecretsError(refusal, 2)
+    project = infisical_project_id(env, home_dir(env))
+    parts = [part for part in path.split("/") if part]
+    parent = "/"
+    for part in parts:
+        body = {
+            "workspaceId": project,
+            "environment": ENVIRONMENT,
+            "name": part,
+            "path": parent,
+        }
+        status, answer = _api_json("POST", "/v1/folders", token, body, env)
+        if status in (200, 201):
+            parent = parent.rstrip("/") + "/" + part
+            continue
+        if status in (400, 409) and _is_existing_folder(answer):
+            parent = parent.rstrip("/") + "/" + part
+            continue
+        raise SecretsError("folder-failed:  http-{} for {}".format(status, part), 4)
+
+
+def _is_existing_folder(answer: object) -> bool:
+    """True when the API's refusal says the folder is already there."""
+    if not isinstance(answer, dict):
+        return False
+    message = str(answer.get("message") or answer.get("error") or "")
+    return "already exists" in message.lower()
+
+
+def resolve_token(env: Mapping[str, str], cli: str | None = None, mode: str | None = None) -> str:
+    """The token this host authenticates with,  resolved once.
+
+    A plain token in the environment is the token,  and the machine modes mint one
+    through the CLI's own login.  Asking for the token once and passing it on is what
+    keeps a sync from logging in three times.
+    """
+    if mode is None:
+        mode = auth_mode(env)
+    if mode == "token":
+        token = (env.get(ENV_TOKEN) or "").strip()
+        if not token:
+            raise SecretsError("token-missing:  INFISICAL_TOKEN is not set", 4)
+        return token
+    if cli is None:
+        cli = find_cli(env)
+    if not cli:
+        raise SecretsError("cli-missing:  the infisical CLI is not installed", 4)
+    return machine_token(cli, env, mode)
+
+
+def put_secret(
+    name: str, path: str, value: str, env: Mapping[str, str], token: str | None = None
+) -> str:
     """Create or update one Fleet-OPS prod secret at `path`, and return "created" or "updated".
 
     Only names on WRITE_ALLOWLIST are accepted.  Needs a machine identity (token, keychain, system-keychain or automation-env):  the CLI's own login session
@@ -574,16 +698,20 @@ def put_secret(name: str, path: str, value: str, env: Mapping[str, str]) -> str:
     if "\0" in value or len(value.encode("utf-8")) > MAX_VALUE_BYTES:
         raise SecretsError(f"value is empty-unsafe or larger than {MAX_VALUE_BYTES} bytes", 2)
     project = infisical_project_id(env, home_dir(env))
-    cli = find_cli(env)
-    if not cli:
-        raise SecretsError("cli-missing:  the infisical CLI is not installed")
-    mode = auth_mode(env)
-    if mode == "session":
-        raise SecretsError(
-            "write-needs-machine-identity:  set needs a machine identity (keychain or INFISICAL_AUTOMATION_*) or INFISICAL_TOKEN",
-            4,
-        )
-    token = env[ENV_TOKEN].strip() if mode == "token" else machine_token(cli, env, mode)
+    if token is None:
+        # The CLI is only needed to mint a token,  so a caller that already has one
+        # does not need it on this host.
+        cli = find_cli(env)
+        if not cli:
+            raise SecretsError("cli-missing:  the infisical CLI is not installed", 4)
+        mode = auth_mode(env)
+        if mode == "session":
+            raise SecretsError(
+                "write-needs-machine-identity:  set needs a machine identity (keychain or "
+                "INFISICAL_AUTOMATION_*) or INFISICAL_TOKEN",
+                4,
+            )
+        token = resolve_token(env, cli, mode)
     body = {
         "workspaceId": project,
         "environment": ENVIRONMENT,
