@@ -21,10 +21,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import secrets
 import sqlite3
 import time
-import urllib.parse
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -173,8 +173,13 @@ class SessionRegistry:
             # The cost of the hot-journal recovery is that the wake path needs write
             # permission on the registry file, which the store the Operator owns gives
             # it anyway.
+            #
+            # The URI comes from as_uri() and not from quoting the path by hand:  a path
+            # that begins with two slashes quotes to "file://host/path", which SQLite
+            # reads as an authority and opens a different file.  as_uri() keeps the
+            # leading slashes as part of the path.
             self._conn = sqlite3.connect(
-                "file:%s?mode=rw" % urllib.parse.quote(os.path.abspath(self.db_path)),
+                "%s?mode=rw" % pathlib.Path(os.path.abspath(self.db_path)).as_uri(),
                 uri=True,
             )
             self._conn.row_factory = sqlite3.Row

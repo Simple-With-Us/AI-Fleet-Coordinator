@@ -429,15 +429,39 @@ class RegistryLookupTests(unittest.TestCase):
             finally:
                 writer.rollback()
 
-    def test_the_lookup_handle_never_creates_the_registry(self) -> None:
+    def test_the_lookup_never_creates_the_registry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = OR.registry_db_path(tmp)
             self.assertFalse(os.path.exists(db))
-            # The handle is read-write so it can recover a hot journal, but it must never
-            # bring a registry into being.
+            # The lookup checks the file first, so a missing registry is a miss.
+            self.assertEqual(
+                OR.lookup_many(db, [("minimax", "mac", "default", "mvs_abc")]), {}
+            )
+            self.assertFalse(os.path.exists(db))
+            # And the handle itself refuses a missing file, so a registry that vanishes
+            # between the check and the open is not brought back into being.
             with self.assertRaises(sqlite3.OperationalError):
                 OR.SessionRegistry(db, read_only=True)
             self.assertFalse(os.path.exists(db))
+
+    def test_a_path_with_two_leading_slashes_still_opens_the_same_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+            )
+            # A path that begins with two slashes is the same file on this platform, and a
+            # URI built by quoting it would read the first segment as an authority and
+            # open a different file.
+            twin = "//" + os.path.abspath(db).lstrip("/")
+            found = OR.lookup_entry(twin, "minimax", "mac", "default", "mvs_abc")
+            self.assertEqual(found["label"], "A")
 
     def test_the_alias_lookup_is_indexed_by_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
