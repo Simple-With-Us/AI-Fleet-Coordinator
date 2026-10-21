@@ -233,7 +233,7 @@ Every rule carries exactly these fields (camelCase in JSON, snake_case in `types
 | `ttlSeconds` | How long a result stays fresh;  default 900;  at least 86400 for an `L2` rule |
 | `source` | Provenance only:  standing directive plus date, or Zulip message id;  empty when uncited |
 
-A file that fits none of the six kinds (AFC-416 Finding 3:  MiniMax channel and identity YAMLs, `mcp-runtime-names.json`, `review-links.json`, unbounded `background-tasks/` state) is not a seventh kind.  It is covered by an explicit per-seat `notApplicable` entry naming the surface and its retention rule, or by a later phase that grows the kinds, never by silence and never by forcing it into a kind it does not fit.  The app renders the cover, so the surface is visible as knowingly blind rather than accidentally unchecked.
+A file that fits none of the six kinds (AFC-416 Finding 3:  MiniMax channel and identity YAMLs, `mcp-runtime-names.json`, `review-links.json`, unbounded `background-tasks/` state) is not a seventh kind.  It is named in the seat's `uncovered` list, as `{surface, reason}`,  never by silence and never by forcing it into a kind it does not fit;  a later phase that grows the kinds can move a surface out of the list and into a rule.  The list is its own field because a `notApplicable` cover carries a kind,  and a cover for a surface that fits no kind would have to name one anyway.  The app renders the list,  so the surface is visible as knowingly blind rather than accidentally unchecked,  and the list produces no result and no verdict:  it is the honest statement that the surface is not checked,  and the reason says why.
 
 ### 6.2 Where A Seat Entry Comes From
 
@@ -256,7 +256,7 @@ Coverage is a validation rule, enforced by `manifest.py` `validate_coverage()`:
 
 ## 8. The `status --json` Envelope
 
-`contract.py` `SCHEMA_VERSION` is the integer 1, pinned by a contract test.  A breaking envelope change raises it deliberately and updates this document in the same commit.  The envelope is one flat `results` list;  consumers group by seat, platform and kind.  It carries no second grouped copy that could disagree with the flat list.
+`contract.py` `SCHEMA_VERSION` is the integer 1, pinned by a contract test.  A breaking envelope change raises it deliberately and updates this document in the same commit;  a version never changes in place.  The envelope carries a flat `uncovered` list of `{seat, surface, reason}` beside the flat `results` list,  for the same reason the results list is flat:  two flat lists cannot disagree with each other.  Adding that list did not raise the version,  because the consumer that exists  (the Muster app's decoder)  ignores unknown fields,  so a new top-level key is additive for it and not a breaking change;  the version moves when a field's meaning changes,  or when a consumer has to be told.  A breaking envelope change raises it deliberately and updates this document in the same commit.  The envelope is one flat `results` list;  consumers group by seat, platform and kind.  It carries no second grouped copy that could disagree with the flat list.
 
 ```json
 {
@@ -386,7 +386,7 @@ That runner covers the apply side too, not only the checks:  the MAC level docto
 
 ## 13. Testing
 
-Each implementer lands tests with their module, under `scripts/fleet_config/tests/`, in the `fleet_knobs` style (temp dirs, fake executables on `PATH`, no network, no real home).  Four contract-level tests are pinned by this design and are not optional:
+Each implementer lands tests with their module, under `scripts/fleet_config/tests/`, in the `fleet_knobs` style (temp dirs, fake executables on `PATH`, no network, no real home).  Four contract-level tests are pinned by this design and are not optional,  and they live together in `scripts/fleet_config/tests/test_contract_pins.py` so that a reader who greps for a pinned name finds it:
 
 1. `test_schema_version_is_pinned` asserts `contract.SCHEMA_VERSION` is exactly 1 and that a built envelope carries it.
 2. `test_envelope_never_carries_a_secret` builds a report over a credential rule and asserts the serialized envelope holds the mode, size and mtime, and no file contents (the fixture writes a known sentinel string as contents and asserts its absence).

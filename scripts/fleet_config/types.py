@@ -34,6 +34,7 @@ __all__ = [
     "SeatManifest",
     "StatusReport",
     "StatusSummary",
+    "UncoveredSurface",
 ]
 
 
@@ -264,6 +265,25 @@ class NotApplicable:
 
 
 @dataclass(frozen=True)
+class UncoveredSurface:
+    """A config surface that fits none of the six kinds,  so the app does not check it.
+
+    A seat's channel configuration,  its identity file,  or any other file that is not
+    instructions,  hooks,  MCP,  skills,  sub-agents or permissions has no kind,  so it
+    has no rule and no cover.  Naming it here makes that blindness visible:  the
+    envelope carries the surface and the reason,  so the app can say "not checked"
+    instead of leaving a hole where a check would have been.
+
+    ``seat`` is empty in a manifest entry,  because the manifest already knows the seat
+    the entry hangs off,  and it is filled in by the envelope,  which is one flat list.
+    """
+
+    surface: str
+    reason: str
+    seat: str = ""
+
+
+@dataclass(frozen=True)
 class SeatManifest:
     """One seat's desired state:  its platforms, its rules and its explicit covers."""
 
@@ -271,6 +291,7 @@ class SeatManifest:
     platforms: tuple[str, ...]
     rules: tuple[Rule, ...] = ()
     not_applicable: tuple[NotApplicable, ...] = ()
+    uncovered: tuple[UncoveredSurface, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -337,3 +358,4 @@ class StatusReport:
     summary: StatusSummary
     manifest_source: str | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
+    uncovered: tuple[UncoveredSurface, ...] = field(default_factory=tuple)
