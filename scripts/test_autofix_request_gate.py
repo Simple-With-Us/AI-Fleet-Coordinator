@@ -100,7 +100,9 @@ class RequestGate(unittest.TestCase):
             block = gate_block(path)
             for body, expected in FIXTURES:
                 with self.subTest(path=path, body=body[:40]):
-                    actual = run_gate(block, tag, body.replace("{tag}", tag).replace("{TAG}", tag.upper()))
+                    actual = run_gate(
+                        block, tag, body.replace("{tag}", tag).replace("{TAG}", tag.upper())
+                    )
                     self.assertEqual(actual, expected)
 
 
