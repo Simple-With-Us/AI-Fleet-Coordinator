@@ -316,6 +316,8 @@ jobs:
         node --test scripts/agent-sync-mcp/test/*.test.mjs
     - name: Kody defer and deferred sweep tests
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
+    - name: Autofix dispatcher tests
+      run: node --test scripts/autofix-dispatcher/*.test.mjs
     # The pr-sweep Claude adapter (a Workflow script) against stubbed workflow hooks:  a mismatched or missing status,
     # or a copy that fails its check line, stops it before any worker;  repairs and deploys go only where they belong.
     - name: pr-sweep Claude adapter test
