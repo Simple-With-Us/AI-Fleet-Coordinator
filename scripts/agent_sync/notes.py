@@ -730,6 +730,19 @@ def child_env(env: Mapping[str, str], extra: Mapping[str, str]) -> dict[str, str
     return out
 
 
+PIN_SKIPPED_RE = re.compile(r"^pin skipped:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _pin_skipped(raw_stderr: bytes | None) -> str | None:
+    """The reason line of the helper's `pin skipped: ...` warning, or None.
+
+    The helper has no GUI fallback (owner 2026-10-20):  when the Shortcut does not pin, a create or an
+    update still exits 0 with the note saved unpinned and says so on stderr.  A caller that only read the
+    exit code would report a pinned note, so the warning is carried out in the result (AFC-454)."""
+    found = PIN_SKIPPED_RE.search((raw_stderr or b"").decode("utf-8", "replace"))
+    return " ".join(found.group(1).split())[:200] if found else None
+
+
 def _note_id(stdout: str) -> str | None:
     match = re.search(r"\bid=(\S+)", stdout)
     return match.group(1)[:200] if match else None
@@ -790,7 +803,8 @@ def run_direct(
     runner: Runner | None = None,
     timeout: float = SCRIPT_TIMEOUT_S,
 ) -> dict[str, Any]:
-    """Run the script for `envelope` (markdown already inline).  Returns {"status": "done", "note_id": ...}
+    """Run the script for `envelope` (markdown already inline).  Returns {"status": "done", "note_id": ...},
+    plus "pin_skipped": "<reason>" when the note was written but its pin was skipped,
     or raises NotesError.  The body goes on stdin (markdown) or in a mode-600 temporary file (HTML);  never
     on the command line.  The timeout is the budget for the whole request:  the script gets it minus
     the wait for the run lock."""
@@ -864,6 +878,9 @@ def run_direct(
         note_id = _note_id(stdout)
         if note_id:
             result["note_id"] = note_id
+        skipped = _pin_skipped(proc.stderr)
+        if skipped:
+            result["pin_skipped"] = skipped
         return result
     if code == EXIT_USAGE:
         raise NotesError(

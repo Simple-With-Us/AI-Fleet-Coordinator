@@ -2233,6 +2233,7 @@ class Tools:
                 "status": "done",
                 "transport": "direct",
                 **({"note_id": done["note_id"]} if done.get("note_id") else {}),
+                **({"pin_skipped": done["pin_skipped"]} if done.get("pin_skipped") else {}),
             }
 
         try:

@@ -151,6 +151,7 @@ def _extract(source: str) -> tuple[str, str]:
     assert constants, "the pin lock constants are gone from apple-notes-coding.sh"
     functions = ""
     for name in (
+        "_pin_pid_alive",
         "_pin_lock_stale",
         "_pin_lock_acquire",
         "_pin_lock_release",
@@ -234,16 +235,23 @@ class PinDecisionTests(unittest.TestCase):
             pre_lock = env.pop("PRE_LOCK", "")
             if pre_lock:
                 #  a lock somebody else holds:  "live" names a process that is still running, "dead" one that
-                #  has exited, and "old" a live process whose lock is older than any run could be
-                holder = subprocess.Popen(["sleep", "60"])
-                if pre_lock == "dead":
-                    holder.kill()
-                    holder.wait()
+                #  has exited, "foreign" a live process this user may not signal (pid 1, owned by root),
+                #  "old" a live process whose lock is older than any run could be, and "aged4" one that is
+                #  four minutes old:  stale under the default Shortcut bound but not under a raised one
+                if pre_lock == "foreign":
+                    holder_pid = 1
+                else:
+                    holder = subprocess.Popen(["sleep", "60"])
+                    if pre_lock == "dead":
+                        holder.kill()
+                        holder.wait()
+                    holder_pid = holder.pid
                 lock_dir.mkdir(mode=0o700)
-                (lock_dir / "pid").write_text(f"{holder.pid}\n")
-                if pre_lock == "old":
-                    old = time.time() - 600
-                    os.utime(lock_dir, (old, old))
+                (lock_dir / "pid").write_text(f"{holder_pid}\n")
+                if pre_lock in ("old", "aged4"):
+                    age = 600 if pre_lock == "old" else 240
+                    stamp = time.time() - age
+                    os.utime(lock_dir, (stamp, stamp))
             if env.get("NO_PERL"):
                 #  A host without perl:  the bound on a Shortcut run comes from an alarm,  and it
                 #  must not depend on perl alone.  Only the tools the pin block needs are linked
@@ -559,6 +567,75 @@ class PinDecisionTests(unittest.TestCase):
         self.assertIn("pinned: yes", p.stdout)
         self.assertEqual(runs, 1)
 
+    def test_a_live_lock_owned_by_another_user_is_not_taken_over(self):
+        """kill -0 fails with EPERM for a live process this user may not signal, and that is not a dead holder."""
+        p, runs = self.run_block(PRE_LOCK="foreign", NOTES_PIN_LOCK_WAIT_S="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("pin skipped: another pin or unpin run held the lock", p.stderr)
+        self.assertEqual(runs, 0, "a live foreign-owned lock was taken over")
+        self.assertTrue(self.lock_left, "the live foreign-owned lock was removed")
+
+    def test_the_stale_age_follows_the_shortcut_bound(self):
+        """A raised NOTES_SHORTCUT_TIMEOUT_S makes a live run last longer, so the age that calls it stale grows too."""
+        taken, taken_runs = self.run_block(PRE_LOCK="aged4")
+        self.assertEqual(
+            taken_runs, 1, "a four-minute-old lock should be stale under the default bound"
+        )
+        self.assertIn("pinned: yes", taken.stdout)
+        kept, kept_runs = self.run_block(
+            PRE_LOCK="aged4", HARNESS_SHORTCUT_TIMEOUT_S="120", NOTES_PIN_LOCK_WAIT_S="1"
+        )
+        self.assertEqual(kept_runs, 0, "a lock younger than a 120 s bound allows was taken over")
+        self.assertIn("pin skipped: another pin or unpin run held the lock", kept.stderr)
+        self.assertTrue(self.lock_left)
+
+    def test_a_lock_that_keeps_coming_back_stale_is_given_up_on(self):
+        """Takeovers take no time, so the wait counter alone never stopped a lock recreated dead every time."""
+        source = SCRIPT.read_text()
+        function, block = _extract(source)
+        #  every lock reads as stale, and moving one aside puts a new one in its place
+        function += "\n_pin_lock_stale() { return 0; }\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir(mode=0o700)
+            real_mv = shutil.which("mv")
+            for name, body in (
+                ("shortcuts", STUB),
+                ("pgrep", PGREP_STUB),
+                ("open", OPEN_STUB),
+                ("mv", f'#!/bin/bash\n{real_mv} "$@" && mkdir "$1"\n'),
+            ):
+                side = bindir / name
+                side.write_text(body)
+                side.chmod(0o700)
+            (Path(tmp) / "pin.lock").mkdir()
+            script = Path(tmp) / "harness.sh"
+            script.write_text(
+                HARNESS.replace("{constants}", "")
+                .replace("{function}", function)
+                .replace("{block}", block)
+            )
+            child = dict(os.environ)
+            child.update(
+                PATH=f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+                STUB_COUNTER=str(Path(tmp) / "counter"),
+                NOTES_PIN_LOCK_DIR=str(Path(tmp) / "pin.lock"),
+                HARNESS_MODE="pin",
+            )
+            started = time.monotonic()
+            p = subprocess.run(
+                ["bash", str(script)],
+                capture_output=True,
+                text=True,
+                env=child,
+                timeout=30,
+                check=False,
+            )
+            self.assertLess(time.monotonic() - started, 20, "the lock loop did not give up")
+            self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
+            self.assertIn("pin skipped: another pin or unpin run held the lock", p.stderr)
+            self.assertFalse((Path(tmp) / "counter").exists(), "the Shortcut ran without the lock")
+
     def test_two_pins_at_once_never_overlap(self):
         """The reason for the lock:  overlapping runs fight over the Find Notes picker and fail each other."""
         source = SCRIPT.read_text()
@@ -596,7 +673,21 @@ class PinDecisionTests(unittest.TestCase):
                 )
                 for _ in range(2)
             ]
-            results = [proc.communicate(timeout=60) for proc in procs]
+            try:
+                results = [proc.communicate(timeout=60) for proc in procs]
+            except BaseException:
+                #  a timeout or an interrupt must not leave the shells running after the test:  stop and
+                #  reap every one, kill the ones that do not stop, then let the original exception go
+                for proc in procs:
+                    if proc.poll() is None:
+                        proc.terminate()
+                for proc in procs:
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
+                raise
             self.assertEqual([proc.returncode for proc in procs], [0, 0], results)
             self.assertTrue(all("pinned: yes" in out for out, _ in results), results)
             self.assertEqual(int(counter.read_text()), 2)

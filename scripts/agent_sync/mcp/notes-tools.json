@@ -113,6 +113,10 @@
           "note_id": {
             "type": "string"
           },
+          "pin_skipped": {
+            "type": "string",
+            "description": "Present when the note was written but its pin was skipped;  the note is saved unpinned.  Holds the reason."
+          },
           "duplicate": {
             "type": "boolean"
           }
@@ -237,6 +241,10 @@
           "note_id": {
             "type": "string"
           },
+          "pin_skipped": {
+            "type": "string",
+            "description": "Present when the note was written but its pin was skipped;  the note is saved unpinned.  Holds the reason."
+          },
           "duplicate": {
             "type": "boolean"
           }
@@ -319,6 +327,10 @@
           },
           "note_id": {
             "type": "string"
+          },
+          "pin_skipped": {
+            "type": "string",
+            "description": "Present when the note was written but its pin was skipped;  the note is saved unpinned.  Holds the reason."
           },
           "duplicate": {
             "type": "boolean"
@@ -403,6 +415,10 @@
           "note_id": {
             "type": "string"
           },
+          "pin_skipped": {
+            "type": "string",
+            "description": "Present when the note was written but its pin was skipped;  the note is saved unpinned.  Holds the reason."
+          },
           "duplicate": {
             "type": "boolean"
           }
@@ -464,6 +480,10 @@
           },
           "consumer": {
             "type": "string"
+          },
+          "pin_skipped": {
+            "type": "string",
+            "description": "Present when the note was written but its pin was skipped;  the note is saved unpinned.  Holds the reason."
           }
         }
       },
