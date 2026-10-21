@@ -14,6 +14,9 @@ Two properties matter here and are asserted rather than assumed:
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import os
 import sqlite3
 import tempfile
@@ -35,6 +38,137 @@ IDENTITY = {
     "source": "test",
     "title": "Work",
 }
+
+
+class RegisterPathTests(unittest.TestCase):
+    """The register path and the wake path have to agree on the identity."""
+
+    def test_a_registered_session_is_found_by_the_wake(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            out = OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            self.assertEqual(out["label"], "A")
+            self.assertEqual(out["generation"], 1)
+            # The title form the platforms expect:  H: Title.
+            self.assertEqual(out["title_display"], "A: Work")
+            # The wake finds the same session by the same identity.
+            found = OR.lookup_entry(db, "minimax", "mac", "default", "mvs_abc")
+            self.assertEqual(found["label"], "A")
+            self.assertEqual(found["ref"], "MM A")
+
+    def test_the_next_session_takes_the_next_letter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            first = OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            second = OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_def",
+                seat="MM",
+                source="test",
+                title="Next",
+            )
+            self.assertEqual(first["label"], "A")
+            self.assertEqual(second["label"], "B")
+
+    def test_a_resumed_session_keeps_its_letter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            kwargs = dict(
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            first = OR.register_session(db, **kwargs)
+            again = OR.register_session(db, **kwargs)
+            self.assertEqual(again["label"], first["label"])
+            self.assertFalse(again["created"])
+            self.assertEqual(again["outcome"], "resumed")
+
+    def test_a_malformed_session_id_is_refused_rather_than_stored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            with self.assertRaises(ValueError):
+                OR.register_session(
+                    db,
+                    platform="minimax",
+                    verified_host="mac",
+                    profile_scope="default",
+                    native_session_id="bad id",
+                    seat="MM",
+                    source="test",
+                )
+
+    def test_a_missing_identity_field_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            for field in ("platform", "verified_host", "profile_scope", "seat", "source"):
+                kwargs = dict(
+                    platform="minimax",
+                    verified_host="mac",
+                    profile_scope="default",
+                    native_session_id="mvs_abc",
+                    seat="MM",
+                    source="test",
+                )
+                kwargs[field] = ""
+                with self.assertRaises(ValueError):
+                    OR.register_session(db, **kwargs)
+
+    def test_the_register_cli_prints_the_letter_and_the_title_form(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = OR.main(
+                    [
+                        "register",
+                        "--db",
+                        db,
+                        "--platform",
+                        "minimax",
+                        "--location",
+                        "mac",
+                        "--scope",
+                        "default",
+                        "--session-id",
+                        "mvs_abc",
+                        "--seat",
+                        "MM",
+                        "--source",
+                        "test",
+                        "--title",
+                        "Work",
+                    ]
+                )
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(buffer.getvalue())["label"], "A")
+            found = OR.lookup_entry(db, "minimax", "mac", "default", "mvs_abc")
+            self.assertEqual(found["label"], "A")
 
 
 class RegistryLookupTests(unittest.TestCase):

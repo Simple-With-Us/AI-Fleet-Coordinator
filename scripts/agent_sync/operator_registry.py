@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+from . import session_ids as SI
 from .operator_registry_schema import DDL, SCHEMA_VERSION
 
 LETTERS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -488,6 +489,67 @@ class SessionRegistry:
             )
 
 
+# ---- the register path (AFC-412) ---------------------------------------------------
+
+
+def register_session(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+    seat: str,
+    source: str,
+    title: str = "",
+    project: str = "",
+    thread_link: str = "",
+    apple_note_link: str = "",
+    wake_capability: str = "unknown",
+) -> dict[str, Any]:
+    """Register one session and hand back its letter.
+
+    The identity is checked the same way the wake path checks it, so a session
+    registered here is one the wake can find:  a native session id that would not
+    survive the join's own check is refused here rather than stored and never matched.
+
+    A seat never chooses its own letter.  The lowest free letter on the platform goes to
+    the session, a recycled letter takes the next generation, and the title comes back in
+    the display form the platform expects:  "H: Title".
+    """
+    native = SI.check(native_session_id, "the native session id")
+    for name, value in (
+        ("platform", platform),
+        ("verified_host", verified_host),
+        ("profile_scope", profile_scope),
+        ("seat", seat),
+        ("source", source),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("%s is required" % name)
+    registry = SessionRegistry(db_path)
+    try:
+        out = registry.resolve_or_register(
+            {
+                "platform": platform,
+                "verified_host": verified_host,
+                "profile_scope": profile_scope,
+                "native_session_id": native,
+                "seat": seat,
+                "source": source,
+                "title": title,
+                "project": project,
+                "thread_link": thread_link,
+                "apple_note_link": apple_note_link,
+                "wake_capability": wake_capability,
+            }
+        )
+    finally:
+        registry.close_db()
+    out["title_display"] = display_title(str(out.get("label") or ""), title)
+    return out
+
+
 # ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
 
 
@@ -633,6 +695,14 @@ def mark_exported(db_path: str, outbox_ids: list[str], exported_at: str | None =
         conn.close()
 
 
+def _default_db() -> str:
+    """The shared registry location, from the same environment the listener reads."""
+    root = os.environ.get("AGENT_SYNC_STATE_DIR") or os.path.join(
+        os.path.expanduser("~"), ".agent-sync"
+    )
+    return registry_db_path(root, os.environ)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="operator-registry")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -642,9 +712,50 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("mark-exported")
     m.add_argument("--db", required=True)
     m.add_argument("outbox_ids", nargs="+")
+    r = sub.add_parser(
+        "register",
+        help="register one session and print its letter, generation and title form",
+    )
+    r.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    r.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    r.add_argument(
+        "--location",
+        required=True,
+        help="the fleet location (mac, server, cloud), never an OS hostname",
+    )
+    r.add_argument("--scope", required=True, help="the profile scope")
+    r.add_argument("--session-id", required=True, help="the native session id")
+    r.add_argument("--seat", required=True)
+    r.add_argument("--source", required=True, help="what asked for the registration")
+    r.add_argument("--title", default="")
+    r.add_argument("--project", default="")
+    r.add_argument("--thread-link", default="")
+    r.add_argument("--apple-note-link", default="")
+    r.add_argument("--wake-capability", default="unknown")
     args = parser.parse_args(argv)
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
+        return 0
+    if args.command == "register":
+        try:
+            out = register_session(
+                args.db or _default_db(),
+                platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
+                native_session_id=args.session_id,
+                seat=args.seat,
+                source=args.source,
+                title=args.title,
+                project=args.project,
+                thread_link=args.thread_link,
+                apple_note_link=args.apple_note_link,
+                wake_capability=args.wake_capability,
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(out))
         return 0
     print(json.dumps({"marked": mark_exported(args.db, args.outbox_ids)}))
     return 0
