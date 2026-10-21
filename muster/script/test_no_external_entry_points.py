@@ -55,13 +55,14 @@ class NoExternalEntryPointTests(unittest.TestCase):
     def test_swift_sources_use_no_entry_point_api(self):
         for path in (MUSTER / "Muster").rglob("*.swift"):
             code = "\n".join(
-                line for line in path.read_text().splitlines()
-                if not line.lstrip().startswith("//")
+                line for line in path.read_text().splitlines() if not line.lstrip().startswith("//")
             )
             for pattern in FORBIDDEN_SWIFT:
                 self.assertIsNone(re.search(pattern, code), "%s matches %s" % (path.name, pattern))
 
-    @unittest.skipUnless(os.environ.get("MUSTER_BUILT_APP"), "set MUSTER_BUILT_APP to a built Muster.app")
+    @unittest.skipUnless(
+        os.environ.get("MUSTER_BUILT_APP"), "set MUSTER_BUILT_APP to a built Muster.app"
+    )
     def test_built_bundle_info_plist(self):
         info = pathlib.Path(os.environ["MUSTER_BUILT_APP"]) / "Contents" / "Info.plist"
         data = plistlib.loads(info.read_bytes())
