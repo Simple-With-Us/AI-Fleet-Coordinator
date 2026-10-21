@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -431,6 +435,774 @@ class RegisteredEnvTests(unittest.TestCase):
             doctor.check_mcp_startup(doctor.Report(), "CLAUDE", runner)
         self.assertEqual(seen.get("LANG"), "process-locale")
         self.assertEqual(seen.get("INFISICAL_TOKEN"), "synthetic-process-token")
+
+
+# --- AFC-461:  per-host install and currency -----------------------------------------------------
+
+TIP = "c" * 40
+OLD = "a" * 40
+
+
+def fake_runner(rules, calls=None):
+    """A subprocess.run stand-in:  the first rule whose words all appear in argv answers.  An answer is
+    (returncode, stdout[, stderr]) or an exception to raise."""
+
+    def runner(argv, **kw):
+        if calls is not None:
+            calls.append(list(argv))
+        for words, answer in rules:
+            if all(w in argv for w in words):
+                if isinstance(answer, BaseException):
+                    raise answer
+                err = answer[2] if len(answer) > 2 else ""
+                return subprocess.CompletedProcess(argv, answer[0], answer[1], err)
+        return subprocess.CompletedProcess(argv, 1, "", "no rule")
+
+    return runner
+
+
+class HomeCase(unittest.TestCase):
+    """A temporary HOME with the doctor's paths pointed into it.  PATH is emptied so the registry
+    finds only the fake tools in HOME/bin;  a case that runs real git keeps it."""
+
+    BLANK_PATH = True
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.rt_dir = self.home / "apps/lanes/_managed/fleet/agent-sync-runtime"
+        self.patch = mock.patch.multiple(
+            doctor,
+            HOME=self.home,
+            RUNTIME=self.home / ".local/share/fleet-cli",
+            STATE=self.home / "state.json",
+            MAC_RUNTIME=self.rt_dir,
+            MAC_FLEET_MODE_DOC=self.home / "apps/FLEET-MODE.md",
+            COMMAND_FALLBACK_DIRS=(self.home / "apps",),
+            TOOL_PATH_DIRS=(str(self.home / "bin"),),
+        )
+        self.patch.start()
+        self.env = mock.patch.dict(os.environ, {"PATH": ""} if self.BLANK_PATH else {})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.patch.stop()
+        self.tmp.cleanup()
+
+    def touch(self, rel, text="x", mode=None):
+        path = self.home / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        if mode is not None:
+            path.chmod(mode)
+        return path
+
+
+class VersionTests(unittest.TestCase):
+    def test_first_version_token(self):
+        cases = {
+            "2.1.303 (Claude Code)": "2.1.303",
+            "codex-cli 0.163.0": "0.163.0",
+            "v26.11.1": "26.11.1",
+            "jq-1.7.1-apple": "1.7.1",
+            "0.1.5-rc.3": "0.1.5-rc.3",
+            "GitHub Copilot CLI 1.0.101.\nRun 'copilot update' to check for updates.": "1.0.101",
+            "cloudflared version 2026.10.0 (built 2026-10-05T15:39:13Z)": "2026.10.0",
+            "1.4.11-R6667.1": "1.4.11",
+            "gh version 2.102.0 (2026-09-30)\nhttps://github.com/cli/cli/releases/tag/v2.102.0": "2.102.0",
+            "Docker version 29.8.2, build 7fc2dff": "29.8.2",
+        }
+        for text, want in cases.items():
+            self.assertEqual(doctor.parse_version(text)["text"], want, text)
+        for text in ("no version here", "build 7", "", None):
+            self.assertIsNone(doctor.parse_version(text), text)
+
+    def test_compare(self):
+        v = doctor.parse_version
+        self.assertEqual(doctor.compare_versions(v("2.1.303"), v("2.1.306")), -1)
+        self.assertEqual(doctor.compare_versions(v("26.12.0"), v("26.11.1")), 1)
+        self.assertEqual(doctor.compare_versions(v("1.0"), v("1.0.0")), 0)
+        self.assertEqual(doctor.compare_versions(v("0.1.5-rc.3"), v("0.1.5")), -1)
+        self.assertEqual(doctor.compare_versions(v("1.4.11-R6667.1"), v("1.4.11")), 0)
+
+
+class RegistryRowTests(unittest.TestCase):
+    TOOL = {
+        "name": "claude",
+        "kind": "platform-cli",
+        "mac": "required",
+        "server": "optional",
+        "npm": "x",
+    }
+
+    def row(self, host="mac", path="/bin/claude", probe=None, latest=None):
+        return doctor.registry_row(self.TOOL, host, path, probe, latest)
+
+    def probe(self, text):
+        return {"version": doctor.parse_version(text), "raw": text, "error": None}
+
+    def test_absent_optional_is_informational_but_missing_required_fails(self):
+        row = self.row(host="server", path=None)
+        self.assertEqual((row["state"], row["status"]), ("absent", "OK"))
+        row = self.row(host="mac", path=None)
+        self.assertEqual((row["state"], row["status"]), ("missing", "FAIL"))
+        self.assertTrue(row["required"])
+
+    def test_probe_failures_are_unknown_never_a_failure(self):
+        row = self.row(
+            probe={
+                "version": None,
+                "raw": None,
+                "error": "--version did not answer within 5 seconds",
+            }
+        )
+        self.assertEqual((row["state"], row["status"]), ("unknown", "WARN"))
+        row = self.row(probe={"version": None, "raw": "garbage", "error": None})
+        self.assertEqual((row["state"], row["status"]), ("unknown", "WARN"))
+        self.assertIn("not recognised", row["detail"])
+
+    def test_latest_compare(self):
+        latest = {"source": "npm", "version": doctor.parse_version("2.1.306"), "error": None}
+        row = self.row(probe=self.probe("2.1.303"), latest=latest)
+        self.assertEqual((row["state"], row["status"], row["latest"]), ("stale", "WARN", "2.1.306"))
+        self.assertIn("behind npm's latest 2.1.306", row["detail"])
+        row = self.row(probe=self.probe("2.1.306"), latest=latest)
+        self.assertEqual((row["state"], row["basis"]), ("current", "latest"))
+        row = self.row(probe=self.probe("2.2.0"), latest=latest)
+        self.assertEqual(row["state"], "current")
+        self.assertIn("ahead of", row["detail"])
+
+    def test_policy_is_one_constant(self):
+        latest = {"source": "npm", "version": doctor.parse_version("2.1.306"), "error": None}
+        with mock.patch.object(doctor, "VENDOR_CURRENCY_POLICY", "skew"):
+            row = self.row(probe=self.probe("2.1.303"), latest=latest)
+        self.assertEqual((row["state"], row["basis"]), ("current", "skew"))
+        self.assertIn("behind npm's latest", row["reason"])
+
+    def test_no_source_is_presence_only_and_a_source_not_read_is_unknown(self):
+        row = self.row(probe=self.probe("1.0.0"), latest=None)
+        self.assertEqual((row["state"], row["basis"], row["latest"]), ("current", "presence", None))
+        row = self.row(
+            probe=self.probe("1.0.0"),
+            latest={"source": "npm", "version": None, "error": "not read (--no-network)"},
+        )
+        self.assertEqual((row["state"], row["latest"]), ("unknown", None))
+
+
+class RegistryCheckTests(HomeCase):
+    def setUp(self):
+        super().setUp()
+        for name in ("claude", "gitleaks", "muse", "fx", "npm"):
+            self.touch(f"bin/{name}", "#!/bin/sh\n", 0o755)
+        self.registry = (
+            {
+                "name": "claude",
+                "kind": "platform-cli",
+                "mac": "required",
+                "npm": "@anthropic-ai/claude-code",
+            },
+            {
+                "name": "gitleaks",
+                "kind": "dev-tool",
+                "mac": "required",
+                "github": "gitleaks/gitleaks",
+            },
+            {
+                "name": "muse",
+                "kind": "platform-cli",
+                "mac": "required",
+                "version_file": ".muse-version",
+            },
+            {"name": "fx", "kind": "platform-cli", "mac": "required"},
+            {"name": "droid", "kind": "platform-cli", "mac": "optional"},
+            {"name": "docker", "kind": "dev-tool", "server": "required"},
+            {"name": "npm", "kind": "dev-tool", "mac": "optional", "npm": "npm"},
+        )
+        self.touch(".muse-version", "1.4.11-R6667.1\n")
+
+    def run_registry(self, network, rules, fetch=None):
+        calls = []
+        runner = fake_runner(rules, calls)
+        report = doctor.Report()
+        with mock.patch.object(doctor, "TOOL_REGISTRY", self.registry):
+            doctor.check_registry(
+                report,
+                "mac",
+                network,
+                runner,
+                fetch or (lambda url, timeout=8: b'{"tag_name": "v8.30.1"}'),
+            )
+        return {r["check"]: r for r in report.rows}, calls
+
+    def test_no_network_reads_no_latest_and_never_calls_a_source_row_current(self):
+        rows, calls = self.run_registry(
+            False,
+            [(("--version",), (0, "2.1.306 (Claude Code)\n")), (("view",), (0, "9.9.9\n"))],
+            fetch=lambda url, timeout=8: self.fail("GitHub read with --no-network"),
+        )
+        self.assertFalse([c for c in calls if "view" in c])
+        for name in ("claude", "gitleaks"):
+            self.assertIsNone(rows[f"tool:{name}"]["latest"])
+            self.assertEqual(rows[f"tool:{name}"]["state"], "unknown", name)
+        self.assertEqual(rows["tool:fx"]["state"], "current")  # no latest source:  presence only
+        self.assertEqual(rows["tool:droid"]["state"], "absent")
+        self.assertNotIn("tool:docker", rows)  # a server-only tool is not checked on the Mac
+
+    def test_network_reads_npm_and_github_and_the_muse_file_without_running_muse(self):
+        rows, calls = self.run_registry(
+            True,
+            [
+                (("view", "@anthropic-ai/claude-code"), (0, "2.1.306\n")),
+                (("--version",), (0, "2.1.303 (Claude Code)\n")),
+            ],
+        )
+        self.assertEqual(rows["tool:claude"]["state"], "stale")
+        self.assertEqual(rows["tool:claude"]["latest"], "2.1.306")
+        self.assertEqual(rows["tool:muse"]["version"], "1.4.11")
+        self.assertFalse([c for c in calls if c and c[0].endswith("/muse")])
+        self.assertEqual(rows["tool:gitleaks"]["latestSource"], "github")
+
+    def test_a_probe_timeout_is_unknown(self):
+        rows, _ = self.run_registry(
+            False, [(("--version",), subprocess.TimeoutExpired(["x", "--version"], 5))]
+        )
+        self.assertEqual(rows["tool:fx"]["state"], "unknown")
+        self.assertEqual(rows["tool:fx"]["status"], "WARN")
+        self.assertIn("did not answer", rows["tool:fx"]["detail"])
+
+    def test_brew_is_the_source_for_a_cellar_install(self):
+        cellar = self.home / "opt/homebrew/Cellar/gitleaks/8.29.0/bin"
+        cellar.mkdir(parents=True)
+        (cellar / "gitleaks").write_text("#!/bin/sh\n")
+        (cellar / "gitleaks").chmod(0o755)
+        (self.home / "bin/gitleaks").unlink()
+        (self.home / "bin/gitleaks").symlink_to(cellar / "gitleaks")
+        self.touch("bin/brew", "#!/bin/sh\n", 0o755)
+        brew = json.dumps({"formulae": [{"name": "gitleaks", "versions": {"stable": "8.30.1"}}]})
+        rows, calls = self.run_registry(
+            True,
+            [
+                (("info", "--json=v2"), (0, brew)),
+                (("--version",), (0, "gitleaks version 8.29.0\n")),
+            ],
+            fetch=lambda url, timeout=8: self.fail("GitHub read for a brew install"),
+        )
+        self.assertEqual(rows["tool:gitleaks"]["latestSource"], "brew")
+        self.assertEqual(rows["tool:gitleaks"]["state"], "stale")
+
+
+class SkewTests(unittest.TestCase):
+    def doc(self, host, version, state="current", tool="claude"):
+        return {
+            "host": host,
+            "reachable": True,
+            "checks": [
+                {
+                    "check": f"tool:{tool}",
+                    "tool": tool,
+                    "category": "platform-cli",
+                    "version": version,
+                    "state": state,
+                    "status": "OK",
+                    "detail": "d",
+                }
+            ],
+        }
+
+    def test_the_older_host_is_stale(self):
+        mac, server = self.doc("mac", "2.1.300"), self.doc("server", "2.1.306")
+        doctor.apply_skew([mac, server])
+        self.assertEqual(mac["checks"][0]["state"], "stale")
+        self.assertIn("older than the server", mac["checks"][0]["reason"])
+        self.assertEqual(server["checks"][0]["state"], "current")
+
+    def test_no_skew_without_both_hosts_or_for_os_tools(self):
+        mac, server = self.doc("mac", "2.1.300"), self.doc("server", "2.1.306")
+        server["reachable"] = False
+        doctor.apply_skew([mac, server])
+        self.assertEqual(mac["checks"][0]["state"], "current")
+        mac, server = (
+            self.doc("mac", "3.15.0", tool="python3"),
+            self.doc("server", "3.12.3", tool="python3"),
+        )
+        doctor.apply_skew([mac, server])
+        self.assertEqual(server["checks"][0]["state"], "current")
+
+
+class TipTests(unittest.TestCase):
+    def test_tip_comes_from_github_or_not_at_all(self):
+        self.assertIsNone(doctor.read_tip(False)["rev"])
+        good = fake_runner([(("ls-remote",), (0, TIP + "\trefs/heads/main\n"))])
+        self.assertEqual(doctor.read_tip(True, good)["rev"], TIP)
+        bad = fake_runner([(("ls-remote",), (128, "", "fatal"))])
+        tip = doctor.read_tip(True, bad)
+        self.assertIsNone(tip["rev"])
+        self.assertIn("exit 128", tip["error"])
+
+
+class MacRuntimeTests(HomeCase):
+    HEALTHY = {"loaded": True, "runs": 10, "lastExit": "0", "paused": False, "advanced": True}
+
+    def runtime(
+        self, head=OLD, tip=TIP, present=True, tracked="", updater=None, previous=None, error=None
+    ):
+        runner = fake_runner(
+            [
+                (("rev-parse", "HEAD"), (0, head + "\n")),
+                (("cat-file",), (0 if present else 1, "")),
+                (("rev-list",), (0, "3\n")),
+                (("status",), (0, tracked)),
+            ]
+        )
+        report = doctor.Report()
+        rt = doctor.check_mac_runtime(
+            report, runner, {"rev": tip, "error": error}, dict(updater or self.HEALTHY), previous
+        )
+        return rt, report.row("runtime")
+
+    def test_current_only_at_the_tip(self):
+        rt, row = self.runtime(head=TIP)
+        self.assertEqual((row["state"], row["status"]), ("current", "OK"))
+
+    def test_behind_counts_when_the_tip_is_here_and_is_null_when_not(self):
+        _, row = self.runtime()
+        self.assertEqual((row["state"], row["behindCommits"], row["status"]), ("stale", 3, "WARN"))
+        self.assertTrue(row["grace"])
+        _, row = self.runtime(present=False)
+        self.assertEqual((row["state"], row["behindCommits"]), ("stale", None))
+        self.assertIn("count unknown", row["detail"])
+
+    def test_never_current_without_a_remote_read(self):
+        # The runtime HEAD equals the local origin/main ref, but GitHub was not read:  unknown, not OK.
+        _, row = self.runtime(head=TIP, tip=None, error="not read (--no-network)")
+        self.assertEqual((row["state"], row["status"]), ("unknown", "WARN"))
+
+    def test_reasons(self):
+        self.touch(".agent-sync/runtime-sync.pause", "")
+        _, row = self.runtime(updater=dict(self.HEALTHY, paused=True))
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("paused", row["reason"])
+        (self.home / ".agent-sync/runtime-sync.pause").unlink()
+        self.touch(".agent-sync/runtime-sync.bad-sha", TIP + "\n")
+        _, row = self.runtime(updater=dict(self.HEALTHY, advanced=None))
+        self.assertEqual(row["status"], "WARN")  # amber:  the updater waits for main to move
+        self.assertIn("smoke test", row["reason"])
+        (self.home / ".agent-sync/runtime-sync.bad-sha").unlink()
+        _, row = self.runtime(tracked=" M scripts/agent-sync\n")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("tracked changes", row["reason"])
+        _, row = self.runtime(updater=dict(self.HEALTHY, advanced=False))
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("run counter", row["reason"])
+        _, row = self.runtime(updater=dict(self.HEALTHY, loaded=False))
+        self.assertEqual(row["status"], "FAIL")
+
+    def test_behind_the_same_tip_twice_is_red(self):
+        previous = {
+            "hosts": [
+                {
+                    "host": "mac",
+                    "checks": [
+                        {"check": "runtime", "state": "stale", "installed": OLD, "expectedRev": TIP}
+                    ],
+                }
+            ]
+        }
+        _, row = self.runtime(previous=previous)
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("same tip", row["reason"])
+
+
+class MacUpdaterTests(HomeCase):
+    PRINT = "gui/501/com.jay.agent-sync-runtime-sync = {\n\tactive count = 0\n\tstate = not running\n\truns = 413\n\tlast exit code = 0\n\tevent triggers = {\n\t\tstate = active\n\t}\n}\n"
+
+    def previous(self, runs, minutes_ago):
+        return {
+            "generatedAt": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - minutes_ago * 60)
+            ),
+            "hosts": [{"host": "mac", "updater": {"runs": runs}}],
+        }
+
+    def updater(self, previous=None, answer=None):
+        report = doctor.Report()
+        runner = fake_runner([(("launchctl", "print"), answer or (0, self.PRINT))])
+        info = doctor.check_mac_updater(report, runner, previous)
+        return info, report.row("updater:com.jay.agent-sync-runtime-sync")
+
+    def test_counter(self):
+        info, row = self.updater(self.previous(400, 15))
+        self.assertEqual((info["runs"], info["advanced"], row["state"]), (413, True, "current"))
+        info, row = self.updater(self.previous(413, 15))
+        self.assertEqual((info["advanced"], row["state"], row["status"]), (False, "stale", "FAIL"))
+        info, row = self.updater(self.previous(413, 1))  # too soon to judge
+        self.assertEqual((info["advanced"], row["state"]), (None, "unknown"))
+        info, row = self.updater(None)
+        self.assertEqual(row["state"], "unknown")
+
+    def test_not_loaded_is_missing(self):
+        _, row = self.updater(answer=(113, "", "Could not find service"))
+        self.assertEqual((row["state"], row["status"]), ("missing", "FAIL"))
+
+
+def git_repo(root: Path, commits):
+    """A real repository:  `commits` is a list of {path: text} applied in order;  returns their shas."""
+
+    def g(*args):
+        return subprocess.run(
+            ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    root.mkdir(parents=True, exist_ok=True)
+    g("init", "-q", "-b", "main")
+    shas = []
+    for files in commits:
+        for rel, text in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        g("add", "-A")
+        g("commit", "-q", "-m", "c")
+        shas.append(g("rev-parse", "HEAD"))
+    return shas
+
+
+class CopyTests(HomeCase):
+    BLANK_PATH = False
+
+    @classmethod
+    def setUpClass(cls):
+        cls.repo_tmp = tempfile.TemporaryDirectory()
+        cls.repo = Path(cls.repo_tmp.name) / "repo"
+        cls.shas = git_repo(
+            cls.repo,
+            [
+                {
+                    "scripts/recall": "r1",
+                    "scripts/fleet_rag/core.py": "v1",
+                    "scripts/fleet_rag/tests/test_x.py": "t",
+                },
+                {"scripts/fleet_rag/core.py": "v2"},
+                {"scripts/fleet_rag/core.py": "v3", "scripts/other.py": "o"},
+            ],
+        )
+        cls.tip = cls.shas[-1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.repo_tmp.cleanup()
+
+    def install(self, core="v3", recall="r1"):
+        if recall is not None:
+            self.touch("apps/fleet-rag/recall", recall)
+        self.touch("apps/fleet-rag/fleet_rag/core.py", core)
+
+    def compare(self, tip="tip", head=None):
+        rt = {"tip": self.tip if tip == "tip" else tip, "head": head or self.tip}
+        return doctor.compare_copy("recall", doctor.COPY_SETS["recall"], self.repo, rt)
+
+    def test_same_blob_is_current_and_tests_are_not_expected(self):
+        self.install()
+        row = self.compare()
+        self.assertEqual((row["state"], row["status"]), ("current", "OK"), row)
+
+    def test_an_older_blob_is_stale_with_the_later_commits(self):
+        self.install(core="v1")
+        row = self.compare()
+        self.assertEqual((row["state"], row["status"], row["behindCommits"]), ("stale", "FAIL", 2))
+        self.assertEqual(row["installed"], self.shas[0][:7])
+
+    def test_a_blob_main_never_had_is_a_local_edit(self):
+        self.install(core="mine")
+        row = self.compare()
+        self.assertEqual(
+            (row["state"], row["installed"], row["behindCommits"]), ("stale", "local edit", None)
+        )
+
+    def test_a_missing_entry_is_missing_and_an_extra_file_is_stale(self):
+        self.install(recall=None)
+        self.assertEqual(self.compare()["state"], "missing")
+        self.install()
+        self.touch("apps/fleet-rag/fleet_rag/old.py", "gone")
+        row = self.compare()
+        self.assertEqual(row["state"], "stale")
+        self.assertIn("extra", row["detail"])
+
+    def test_equal_to_the_runtime_without_the_tip_is_unknown(self):
+        self.install()
+        row = self.compare(tip=None)
+        self.assertEqual((row["state"], row["status"]), ("unknown", "WARN"))
+
+
+class LaneTests(HomeCase):
+    PLAN = (
+        "plan (read-only)  home=/h  stable=/h/apps/lane-tools  source=/s  sha={sha}\n\n"
+        "== tools  stable dir /h/apps/lane-tools  [{state}]\n{lines}"
+        "   25 file(s) already identical; the whole dir is replaced atomically (stage, probe, swap)\n"
+        "   shim /h/apps/lane [same]:\n"
+    )
+
+    def setUp(self):
+        super().setUp()
+        self.touch(
+            "apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet_lanes/install_tools.py"
+        )
+        self.touch("apps/lane-tools/VERSION", f"sha={OLD}\npackage=0.1.0\n")
+
+    def lane(self, state, lines="", rc=0, rt_state="current", text=None):
+        out = text if text is not None else self.PLAN.format(sha=TIP, state=state, lines=lines)
+        runner = fake_runner(
+            [(("plan", "tools"), (rc, out)), (("cat-file",), (0, "")), (("rev-list",), (0, "27\n"))]
+        )
+        report = doctor.Report()
+        rt = {
+            "state": rt_state,
+            "status": doctor.STATUS_FOR_STATE[rt_state],
+            "tip": TIP,
+            "head": TIP,
+        }
+        doctor.check_lane_tools(report, rt, runner)
+        return report.row("tool:lane")
+
+    def test_plan_states(self):
+        row = self.lane("stale", "   changed  VERSION\n   changed  fleet_lanes/lane.py\n")
+        self.assertEqual((row["state"], row["status"], row["behindCommits"]), ("stale", "FAIL", 27))
+        self.assertEqual(row["installed"], OLD[:7])
+        self.assertEqual(self.lane("current")["state"], "current")
+        self.assertEqual(self.lane("current", rt_state="unknown")["state"], "unknown")
+        self.assertEqual(self.lane("missing")["state"], "missing")
+
+    def test_only_version_changed_is_as_current_as_the_runtime(self):
+        self.assertEqual(self.lane("stale", "   changed  VERSION\n")["state"], "current")
+
+    def test_unrecognised_text_or_an_exit_is_unknown(self):
+        self.assertEqual(self.lane("", text="something else entirely\n")["state"], "unknown")
+        self.assertEqual(self.lane("current", rc=2)["state"], "unknown")
+        self.assertEqual(self.lane("foreign")["state"], "unknown")
+
+
+class ServerTests(HomeCase):
+    def setUp(self):
+        super().setUp()
+        self.fleet_cli = self.home / ".local/share/fleet-cli"
+        (self.fleet_cli / "repo/.git").mkdir(parents=True)
+        (self.fleet_cli / "current").symlink_to(self.fleet_cli / "repo")
+
+    def timer(self, active="active", minutes=10, load="loaded"):
+        last = f"@{int(time.time()) - minutes * 60}" if minutes is not None else "n/a"
+        return (
+            0,
+            f"LoadState={load}\nActiveState={active}\nLastTriggerUSec={last}\nNextElapseUSecRealtime=\n",
+        )
+
+    def runtime(self, timer):
+        runner = fake_runner(
+            [
+                (("rev-parse", "HEAD"), (0, OLD + "\n")),
+                (("cat-file",), (0, "")),
+                (("rev-list",), (0, "2\n")),
+                (("systemctl",), timer),
+            ]
+        )
+        report = doctor.Report()
+        doctor.check_runtime(report, True, runner, {"rev": TIP})
+        return report.row("runtime")
+
+    def test_grace_window(self):
+        row = self.runtime(self.timer(minutes=10))
+        self.assertEqual((row["state"], row["status"], row["behindCommits"]), ("stale", "WARN", 2))
+        row = self.runtime(self.timer(minutes=200))
+        self.assertEqual(row["status"], "FAIL")
+        row = self.runtime(self.timer(active="inactive"))
+        self.assertEqual(row["status"], "FAIL")
+        (self.fleet_cli / "git-state.json").write_text(
+            json.dumps({"bad": TIP, "bad_reason": "smoke"})
+        )
+        row = self.runtime(self.timer(minutes=10))
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("smoke test", row["reason"])
+
+    def test_current_must_point_at_repo(self):
+        (self.fleet_cli / "current").unlink()
+        (self.fleet_cli / "old").mkdir()
+        (self.fleet_cli / "current").symlink_to(self.fleet_cli / "old")
+        row = self.runtime(self.timer())
+        self.assertEqual((row["state"], row["status"]), ("stale", "FAIL"))
+
+    def test_timer_rows(self):
+        for answer, want in (
+            (self.timer(active="inactive"), ("stale", "FAIL")),
+            (self.timer(load="not-found", active="inactive"), ("missing", "FAIL")),
+            (self.timer(minutes=5), ("current", "OK")),
+            (self.timer(minutes=500), ("stale", "FAIL")),
+        ):
+            report = doctor.Report()
+            doctor.check_server_timers(report, fake_runner([(("systemctl",), answer)]))
+            row = report.row("updater:fleet-cli-git-update.timer")
+            self.assertEqual((row["state"], row["status"]), want, answer)
+
+    def test_wrappers_and_the_fleet_secrets_link(self):
+        current = str(self.fleet_cli / "current")
+        self.touch(
+            ".local/bin/agent-sync",
+            f"release = Path({current!r})\nargv = [str(release / 'scripts/agent-sync')]\n",
+        )
+        self.touch(".local/bin/board", "exec /usr/bin/python3 /somewhere/else/board\n")
+        self.touch("elsewhere/fleet-secrets", "#!/bin/sh\n")
+        (self.home / ".local/bin/fleet-secrets").symlink_to(self.home / "elsewhere/fleet-secrets")
+        report = doctor.Report()
+        rt = {"state": "current", "status": "OK", "head": TIP, "tip": TIP}
+        doctor.check_server_tools(report, rt, {"FleetLink": "current"}, fake_runner([]))
+        self.assertEqual(report.row("tool:agent-sync")["state"], "current")
+        self.assertEqual(report.row("tool:board")["state"], "missing")  # points elsewhere
+        self.assertEqual(report.row("tool:recall")["state"], "missing")  # absent
+        self.assertEqual(report.row("tool:fleet-secrets")["state"], "stale")  # wrong link
+        self.assertEqual(report.row("tool:fleet-share")["state"], "missing")
+
+
+class RemoteTests(unittest.TestCase):
+    CONFIGURED = (("ssh", "-G"), (0, "user root\nhostname 100.64.0.9\n"))
+
+    def doc(self, **overrides):
+        doc = {"ok": True, "checks": [], "schemaVersion": 1, "host": "server"}
+        doc.update(overrides)
+        return json.dumps(doc).encode()
+
+    def fetch(self, *rules):
+        return doctor.fetch_remote("fleet-tools-ro", fake_runner(list(rules)))
+
+    def test_no_alias_means_no_route(self):
+        doc = self.fetch((("ssh", "-G"), (0, "user jay\nhostname fleet-tools-ro\n")))
+        self.assertFalse(doc["reachable"])
+        self.assertIn(doctor.NO_ROUTE, doc["error"])
+        rows = {r["check"]: r for r in doc["checks"]}
+        self.assertTrue({"runtime", "tool:agent-sync", "tool:gitleaks", "tool:claude"} <= set(rows))
+        self.assertTrue(all(r["state"] == "unknown" for r in rows.values()))
+        self.assertTrue(rows["tool:gitleaks"]["required"])
+
+    def test_the_ssh_call_is_read_only_and_batch(self):
+        calls = []
+        doctor.fetch_remote(
+            "fleet-tools-ro",
+            fake_runner([self.CONFIGURED, (("BatchMode=yes",), (0, self.doc()))], calls),
+        )
+        ssh = calls[-1]
+        for option in ("BatchMode=yes", "ConnectTimeout=8", "StrictHostKeyChecking=yes"):
+            self.assertIn(option, ssh)
+        self.assertEqual(
+            ssh[-1], "fleet-tools-ro"
+        )  # no remote command:  the forced command decides
+
+    def test_answers(self):
+        self.assertTrue(
+            self.fetch(self.CONFIGURED, (("BatchMode=yes",), (1, self.doc(ok=False))))["reachable"]
+        )
+        for answer, why in (
+            (subprocess.TimeoutExpired(["ssh"], 150), "did not answer"),
+            ((255, b"", b"Permission denied (publickey).\n"), "exited 255"),
+            ((0, b"not json"), "not JSON"),
+            ((0, json.dumps({"ok": True, "checks": []}).encode()), "predates schemaVersion"),
+            ((0, self.doc(schemaVersion=2)), "schemaVersion 2"),
+            ((0, self.doc(host="mac")), "not the server"),
+        ):
+            doc = self.fetch(self.CONFIGURED, (("BatchMode=yes",), answer))
+            self.assertFalse(doc["reachable"], why)
+            self.assertIn(why, doc["error"])
+            self.assertTrue(all(r["state"] == "unknown" for r in doc["checks"]))
+
+
+class ReportAndRunTests(HomeCase):
+    def run_doctor(self, argv, rules=(), host="server"):
+        out = io.StringIO()
+        registry = (
+            {"name": "gitleaks", "kind": "dev-tool", "mac": "required", "server": "required"},
+        )
+        with (
+            mock.patch.object(doctor, "host_kind", return_value=host),
+            mock.patch.object(doctor, "find_repo", return_value=None),
+            mock.patch.object(doctor, "TOOL_REGISTRY", registry),
+            mock.patch.object(doctor, "doctor_commit", return_value=TIP),
+            contextlib.redirect_stdout(out),
+        ):
+            _, code = doctor.run(
+                argv, env={}, runner=fake_runner(list(rules)), fetch=lambda u, timeout=8: b"{}"
+            )
+        return out.getvalue(), code
+
+    def test_json_keeps_the_original_contract_and_adds_fields(self):
+        text, code = self.run_doctor(["--json", "--no-network"])
+        doc = json.loads(text)
+        self.assertIn("ok", doc)
+        self.assertEqual(code, 0 if doc["ok"] else 1)
+        self.assertTrue(doc["checks"])
+        for row in doc["checks"]:
+            for key in ("check", "status", "detail"):
+                self.assertIsInstance(row[key], str, row)
+            for key in doctor.ROW_FIELDS:
+                self.assertIn(key, row)
+        self.assertEqual((doc["schemaVersion"], doc["host"]), (1, "server"))
+        self.assertIsNone(doc["expected"]["rev"])
+        self.assertEqual(doc["doctorCommit"], TIP)
+        rows = {r["check"]: r for r in doc["checks"]}
+        self.assertEqual(rows["tool:gitleaks"]["state"], "missing")  # required on both hosts
+        self.assertEqual(rows["tool:gitleaks"]["status"], "FAIL")
+
+    def test_no_network_never_calls_a_fleet_tool_current(self):
+        (self.rt_dir).mkdir(parents=True)
+        (self.rt_dir / ".git").write_text("gitdir: x\n")
+        self.touch("apps/lanes/_managed/fleet/agent-sync-runtime/scripts/agent-sync", "x")
+        (self.home / ".local/bin").mkdir(parents=True)
+        (self.home / ".local/bin/agent-sync").symlink_to(self.rt_dir / "scripts/agent-sync")
+        rules = [
+            (("rev-parse", "HEAD"), (0, TIP + "\n")),
+            (
+                ("rev-parse", "origin/main"),
+                (0, TIP + "\n"),
+            ),  # the local ref agrees, and still is not enough
+            (("launchctl",), (113, "")),
+        ]
+        text, _ = self.run_doctor(["--json", "--no-network"], rules, host="mac")
+        rows = {r["check"]: r for r in json.loads(text)["checks"]}
+        self.assertEqual(rows["runtime"]["state"], "unknown")
+        self.assertEqual(rows["tool:agent-sync"]["state"], "unknown")
+        current = [
+            r["check"]
+            for r in rows.values()
+            if r["state"] == "current"
+            and (
+                r["check"] == "runtime"
+                or r["check"].startswith(("tool:agent", "tool:board", "tool:lane", "tool:recall"))
+            )
+        ]
+        self.assertEqual(current, [])
+
+    def test_write_is_atomic_private_and_versioned(self):
+        path = self.home / ".local/state/fleet-tools/report.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("old")
+        path.chmod(0o644)
+        rules = [(("ssh", "-G"), (0, "hostname fleet-tools-ro\n"))]
+        text, _ = self.run_doctor(
+            ["--no-network", "--remote", "fleet-tools-ro", "--write", str(path)], rules, host="mac"
+        )
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        self.assertIn("server unreachable:", text)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["report.json"])
+        report = json.loads(path.read_text())
+        self.assertEqual((report["schemaVersion"], report["tool"]), (1, "fleet-tools-doctor"))
+        self.assertEqual([h["host"] for h in report["hosts"]], ["mac", "server"])
+        self.assertTrue(report["hosts"][0]["reachable"])
+        self.assertFalse(report["hosts"][1]["reachable"])
+        self.assertIn(doctor.NO_ROUTE, report["hosts"][1]["error"])
+
+    def test_write_dash_prints_the_report(self):
+        text, _ = self.run_doctor(["--no-network", "--write", "-"], host="server")
+        self.assertEqual(json.loads(text)["hosts"][0]["host"], "server")
 
 
 if __name__ == "__main__":
