@@ -38,12 +38,16 @@ on:
         description: Version of @anthropic-ai/claude-code to install.
         type: string
         default: "2.1.295"
+      # The id the owner chose for all fleet MiniMax use on 2026-10-20.  A model id that is
+      # absent from the MiniMax Code runtime catalog can still be a valid public API id, and an
+      # id must never be rewritten from one route's evidence (contrib/MM/2026-10-19/f11f7046),
+      # so the retired spelling is named here in a comment and never as a value.
       model:
         description: >-
           MiniMax model id for ANTHROPIC_MODEL.  Overridden by .github/pr-autofix-trusted.yml on the
           default branch when that file sets model.
         type: string
-        default: "MiniMax-M3.1-Flash-Preview"
+        default: "MiniMax-M3.1-Flash"
       max_turns:
         description: >-
           Claude Code turn budget.  Overridden by .github/pr-autofix-trusted.yml on the default

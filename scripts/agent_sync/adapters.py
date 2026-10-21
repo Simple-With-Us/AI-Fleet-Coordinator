@@ -1265,9 +1265,9 @@ def mcode_argv(mcode: str, model: str = MCODE_DEFAULT_MODEL) -> list[str]:
     filled in by McodeRunner.run, so the argv prints and diffs as-is.
 
     The model is named on the command line (`--model provider/model`).  Without it mcode inherits
-    MiniMax Code's own `defaultModel`, which on this Mac names `minimax/MiniMax-M3.1-Flash-Preview`
-    — an id the current catalog does not carry, so the run times out with no usage and no answer.
-    Naming the model here makes the backup runtime run on a model the catalog serves.
+    MiniMax Code's own `defaultModel`, which is whatever that install happens to carry and can be
+    an id the current catalog does not serve, in which case the run times out with no usage and no
+    answer.  Naming the model here makes the backup runtime run on a model the catalog serves.
 
     The prompt arrives on STDIN, not as a positional argument:  mcode has no `--prompt-file`, and
     `--input -` is its documented stdin form.  Keeping the prompt off the command line also keeps it

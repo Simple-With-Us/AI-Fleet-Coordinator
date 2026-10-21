@@ -96,10 +96,14 @@ on:
         type: string
         default: "chatgpt-codex-connector,chatgpt-codex-connector[bot],kody-ai,kody-ai[bot],cursor,cursor[bot],sentry,sentry[bot]"
         description: "Allowed bot actors (normalised by the action: lowercased, [bot] stripped)"
+      # The id the owner chose for all fleet MiniMax use on 2026-10-20.  A model id that is
+      # absent from the MiniMax Code runtime catalog can still be a valid public API id, and an
+      # id must never be rewritten from one route's evidence (contrib/MM/2026-10-19/f11f7046),
+      # so the retired spelling is named here in a comment and never as a value.
       model:
         required: false
         type: string
-        default: "MiniMax-M3.1-Flash-Preview"
+        default: "MiniMax-M3.1-Flash"
         description: "MiniMax model id sent as ANTHROPIC_MODEL / ANTHROPIC_SMALL_FAST_MODEL"
     secrets:
       MINIMAX_API_KEY:
@@ -162,7 +166,7 @@ jobs:
         # drives the Claude Code CLI, which honors ANTHROPIC_BASE_URL / _AUTH_TOKEN /
         # _MODEL, so this bills the org MINIMAX_API_KEY instead of Anthropic.  Same
         # endpoint and key wiring as the fleet's other autofix workflows.  The model
-        # id comes from the `model` input (MiniMax-M3.1-Flash-Preview, the id the
+        # id comes from the `model` input (MiniMax-M3.1-Flash, the id the
         # fleet's Harness route already uses over api anthropic-messages).
         env:
           ANTHROPIC_BASE_URL: https://api.minimax.io/anthropic
