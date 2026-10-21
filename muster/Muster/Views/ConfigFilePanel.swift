@@ -1,16 +1,20 @@
 import SwiftUI
 
-/// The artifact a cell is about,  shown read only below the grid.
+/// The detail for one cell,  shown read only below the grid.
 ///
-/// The popup says what the engine measured,  and this says what is actually on the
-/// disk.  An operator who is told a file matches a hash still wants to read the file:
-/// the hash says the copy is the expected one,  and the text says whether the
-/// expected one is right.  The panel never edits,  because a fleet surface is not the
-/// app's to change,  and it never reads a credential:  a credential rule shows the
-/// key names and the presence,  which is the information the rule is about.
+/// This is the only place a cell is explained.  It carries what the engine measured
+/// and what is actually on the disk,  because an operator who is told a file matches
+/// a hash still wants to read the file:  the hash says the copy is the expected one,
+/// and the text says whether the expected one is right.
+///
+/// The panel never edits,  because a fleet surface is not the app's to change,  and it
+/// never reads a credential:  a credential rule shows the key names and the presence,
+/// which is the information the rule is about.
 struct ConfigFilePanel: View {
     let cell: GridCell
     let artifacts: FleetStore.CellArtifacts
+    /// Called when the operator closes the panel.
+    let onClose: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -44,6 +48,14 @@ struct ConfigFilePanel: View {
                 .foregroundStyle(.secondary)
             Text(cell.kind.title)
                 .font(.headline)
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(cell.state.tint)
+                    .frame(width: 8, height: 8)
+                Text(cell.state.rawValue)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            }
+            .foregroundStyle(cell.state.tint)
             Text("Read only")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -54,6 +66,16 @@ struct ConfigFilePanel: View {
             Text("What this cell refers to,  as it is on this Mac.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Button {
+                onClose()
+            } label: {
+                Label("Close", systemImage: "xmark.circle.fill")
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 14))
+            }
+            .buttonStyle(.plain)
+            .help("Close the detail panel")
+            .accessibilityLabel("Close the detail panel")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
@@ -65,6 +87,9 @@ struct ConfigFilePanel: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(rule.ruleId)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                Text(rule.platform)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
                 Text(rule.checkType)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -81,6 +106,22 @@ struct ConfigFilePanel: View {
             HStack(alignment: .top, spacing: 18) {
                 ValueTable(title: "Expected", values: rule.expected)
                 ValueTable(title: "Observed", values: rule.observed)
+            }
+
+            GroupBox("Last proof") {
+                VStack(alignment: .leading, spacing: 4) {
+                    ProofLine(label: "Proof", value: rule.proofText)
+                    ProofLine(label: "Check type", value: rule.checkType)
+                    ProofLine(label: "Collector", value: rule.collector)
+                    ProofLine(label: "Reason code", value: rule.reasonCode)
+                    ProofLine(label: "Checked at", value: rule.checkedAt)
+                    ProofLine(label: "Expires at", value: rule.expiresAt ?? "—")
+                    ProofLine(label: "Time to live", value: "\(rule.ttlSeconds)s")
+                    ProofLine(label: "Stale", value: rule.stale ? "yes" : "no")
+                    ProofLine(label: "Counts as failing", value: rule.failing ? "yes" : "no")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(4)
             }
 
             if let view {
