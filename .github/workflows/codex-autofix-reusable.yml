@@ -108,6 +108,9 @@ on:
     secrets:
       MINIMAX_API_KEY:
         required: true
+      # Org secret;  used only when SWU_AUTOFIX_MODEL_BASE_URL points at api.meta.ai.
+      META_MODEL_API_TOKEN:
+        required: false
       USAGE_INGEST_TOKEN:
         required: false
         description: "Usage Monitor ingest token scoped to the ci-autofix producer.  Optional:  when it is absent the usage report is skipped."
@@ -217,10 +220,12 @@ jobs:
         # id comes from the `model` input (MiniMax-M3.1-Flash, the id the
         # fleet's Harness route already uses over api anthropic-messages).
         env:
-          ANTHROPIC_BASE_URL: https://api.minimax.io/anthropic
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAX_API_KEY }}
-          ANTHROPIC_MODEL: ${{ inputs.model }}
-          ANTHROPIC_SMALL_FAST_MODEL: ${{ inputs.model }}
+          # Owner switch 2026-10-21:  org/repo Actions variables retarget every caller at
+          # once;  unset,  the MiniMax pins below are exactly what ran before.
+          ANTHROPIC_BASE_URL: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL || 'https://api.minimax.io/anthropic' }}
+          ANTHROPIC_AUTH_TOKEN: ${{ contains(vars.SWU_AUTOFIX_MODEL_BASE_URL, 'meta.ai') && secrets.META_MODEL_API_TOKEN || secrets.MINIMAX_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.SWU_AUTOFIX_MODEL || inputs.model }}
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ vars.SWU_AUTOFIX_MODEL || inputs.model }}
         with:
           anthropic_api_key: ${{ secrets.MINIMAX_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
