@@ -1,6 +1,4 @@
 import XCTest
-@testable import Muster
-
 /// The engine's own answer about which Infisical project its copy belongs to.
 ///
 /// The answer comes from a real child process,  so the test runs a real one:  a
