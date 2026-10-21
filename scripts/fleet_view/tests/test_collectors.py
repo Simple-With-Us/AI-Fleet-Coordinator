@@ -221,9 +221,16 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(by_id["AFC-390"].seat, "UNCLAIMED")
 
     def test_unreadable_stamp_flags_the_claim_never_fresh(self):
-        payload = json.dumps([
-            {"identifier": "AFC-1", "title": "x", "labels": ["claimed:MC"], "updated_at": "not-a-date"},
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "identifier": "AFC-1",
+                    "title": "x",
+                    "labels": ["claimed:MC"],
+                    "updated_at": "not-a-date",
+                },
+            ]
+        )
 
         def runner(argv):
             return 0, payload

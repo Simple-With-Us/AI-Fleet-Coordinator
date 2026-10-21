@@ -164,7 +164,9 @@ def _lane_record(repo, lane_dir, index, runner, now) -> LaneRecord:
         branch = out.strip() if code == 0 else ""
         # --no-optional-locks:  a read-only scan of hundreds of live lanes
         # must never contend for an index lock with the agent working there.
-        code2, out2 = runner(["git", "--no-optional-locks", "-C", str(lane_dir), "status", "--porcelain"])
+        code2, out2 = runner(
+            ["git", "--no-optional-locks", "-C", str(lane_dir), "status", "--porcelain"]
+        )
         dirty = len([ln for ln in out2.splitlines() if ln.strip()]) if code2 == 0 else -1
     except (TimeoutError, RuntimeError, ValueError):
         return LaneRecord(repo, lane_dir.name, seat, "", -1, age, "UNKNOWN")
@@ -184,7 +186,12 @@ def blocker_for(pr: dict) -> str:
     for check in checks:
         # CheckRun entries carry a conclusion;  StatusContext entries carry
         # a state instead.  Both can fail, and neither may read as ready.
-        if (check.get("conclusion") or "") in ("FAILURE", "STARTUP_FAILURE", "TIMED_OUT", "CANCELLED"):
+        if (check.get("conclusion") or "") in (
+            "FAILURE",
+            "STARTUP_FAILURE",
+            "TIMED_OUT",
+            "CANCELLED",
+        ):
             return "failing checks"
         if (check.get("state") or "") in ("FAILURE", "ERROR"):
             return "failing checks"
