@@ -578,7 +578,9 @@ class PinDecisionTests(unittest.TestCase):
     def test_the_stale_age_follows_the_shortcut_bound(self):
         """A raised NOTES_SHORTCUT_TIMEOUT_S makes a live run last longer, so the age that calls it stale grows too."""
         taken, taken_runs = self.run_block(PRE_LOCK="aged4")
-        self.assertEqual(taken_runs, 1, "a four-minute-old lock should be stale under the default bound")
+        self.assertEqual(
+            taken_runs, 1, "a four-minute-old lock should be stale under the default bound"
+        )
         self.assertIn("pinned: yes", taken.stdout)
         kept, kept_runs = self.run_block(
             PRE_LOCK="aged4", HARNESS_SHORTCUT_TIMEOUT_S="120", NOTES_PIN_LOCK_WAIT_S="1"
