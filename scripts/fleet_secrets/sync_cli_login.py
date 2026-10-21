@@ -28,6 +28,7 @@ lookup can reach an item in another account or in the System keychain.
 
     python3 scripts/fleet_secrets/sync_cli_login.py --name GH_TOKEN --path /cli-logins/OPENCODE
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,7 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fleet_secrets import core  # noqa: E402
+from fleet_secrets import core
 
 # The names a CLI reads out of its environment.  The write allowlist is the gate,  and
 # this is the same list,  so the two cannot drift.
@@ -78,7 +79,7 @@ def _read_from_fleet_secrets(name: str, path: str, env: dict) -> str:
     except subprocess.TimeoutExpired:
         raise core.SecretsError("the read timed out", EXIT_TIMEOUT)
     except OSError as exc:
-        raise core.SecretsError("the read failed: {}".format(exc), EXIT_FAILED)
+        raise core.SecretsError(f"the read failed: {exc}", EXIT_FAILED)
     if run.returncode:
         raise core.SecretsError(
             "the read failed: {}".format((run.stderr or "").strip()[:200]), EXIT_FAILED
@@ -92,13 +93,13 @@ def _read_from_file(path: str) -> str:
     try:
         info = target.stat()
     except OSError as exc:
-        raise core.SecretsError("the file cannot be read: {}".format(exc), EXIT_FAILED)
+        raise core.SecretsError(f"the file cannot be read: {exc}", EXIT_FAILED)
     if not os.path.isfile(target) or info.st_mode & 0o077:
         raise core.SecretsError("the file must be a regular file with mode 0600", EXIT_FAILED)
     try:
         return target.read_text(encoding="utf-8").strip()
     except OSError as exc:
-        raise core.SecretsError("the file cannot be read: {}".format(exc), EXIT_FAILED)
+        raise core.SecretsError(f"the file cannot be read: {exc}", EXIT_FAILED)
 
 
 def read_value(name: str, source: str, from_path: str, file_path: str, env: dict) -> str:
@@ -112,7 +113,7 @@ def read_value(name: str, source: str, from_path: str, file_path: str, env: dict
     else:
         raise core.SecretsError("the source must be env, fleet-secrets or file", EXIT_USAGE)
     if not value:
-        raise core.SecretsError("the {} source gave no value".format(source), EXIT_FAILED)
+        raise core.SecretsError(f"the {source} source gave no value", EXIT_FAILED)
     return value
 
 
@@ -131,18 +132,20 @@ def sync(name: str, path: str, value: str, env: dict) -> str:
     result = core.put_secret(name, path, value, env, token=token)
     stored = core.fetch_all(path, env, token=token).get(name, "")
     if not stored:
-        raise core.SecretsError("the write reported {} but the read back found nothing".format(name), EXIT_FAILED)
+        raise core.SecretsError(
+            f"the write reported {name} but the read back found nothing", EXIT_FAILED
+        )
     if _digest(stored) != _digest(value):
         raise core.SecretsError("the read back does not match what was written", EXIT_FAILED)
     return result
 
 
-def main(
-    argv: list[str] | None = None, env: dict | None = None, out=None, err=None
-) -> int:
+def main(argv: list[str] | None = None, env: dict | None = None, out=None, err=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--name", required=True, help="the environment variable the CLI reads")
-    parser.add_argument("--path", required=True, help="where the login goes, such as /cli-logins/OPENCODE")
+    parser.add_argument(
+        "--path", required=True, help="where the login goes, such as /cli-logins/OPENCODE"
+    )
     parser.add_argument(
         "--from",
         dest="source",
@@ -150,7 +153,9 @@ def main(
         choices=("env", "fleet-secrets", "file"),
         help="where the value comes from",
     )
-    parser.add_argument("--from-path", default="/", help="the folder the fleet-secrets read looks in")
+    parser.add_argument(
+        "--from-path", default="/", help="the folder the fleet-secrets read looks in"
+    )
     parser.add_argument("--file", default="", help="the file the owner handed over")
     args = parser.parse_args(argv)
     env = dict(os.environ) if env is None else dict(env)
@@ -170,11 +175,11 @@ def main(
         value = read_value(args.name, args.source, args.from_path, args.file, env)
         result = sync(args.name, args.path, value, env)
     except core.SecretsError as exc:
-        err.write("sync-cli-login: {}\n".format(exc.message))
+        err.write(f"sync-cli-login: {exc.message}\n")
         return exc.code
     finally:
         value = ""
-    out.write("synced {} at {}\n".format(args.name, args.path))
+    out.write(f"synced {args.name} at {args.path}\n")
     out.flush()
     return 0
 

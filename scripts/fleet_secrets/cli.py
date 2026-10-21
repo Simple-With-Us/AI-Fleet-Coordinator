@@ -51,8 +51,11 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
                 raise UsageError(f"{a} needs a value")
             opts[a[2:]] = args[i + 1]
             i += 2
-        elif a.startswith("--name=") or a.startswith("--from=") or a.startswith("--var=") or (
-            a.startswith("--service=") or a.startswith("--account=")
+        elif (
+            a.startswith("--name=")
+            or a.startswith("--from=")
+            or a.startswith("--var=")
+            or (a.startswith("--service=") or a.startswith("--account="))
         ):
             key, _, val = a[2:].partition("=")
             opts[key] = val

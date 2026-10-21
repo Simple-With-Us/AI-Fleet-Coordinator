@@ -6,12 +6,11 @@ Everything here is a fake:  the Infisical API,  the fleet-secrets child,  and th
 file the owner hands over.  No value is ever printed,  and that is what the tests
 assert.
 """
+
 from __future__ import annotations
 
 import io
 import os
-import stat
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,8 +19,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from fleet_secrets import core  # noqa: E402
-from fleet_secrets import sync_cli_login as sync  # noqa: E402
+from fleet_secrets import core
+from fleet_secrets import sync_cli_login as sync
 
 VAL = "SENTINEL_LOGIN_VALUE_4c7d"
 TOKEN = "SENTINEL_TOKEN_9a2b"
@@ -62,9 +61,7 @@ class SyncTests(unittest.TestCase):
             mock.patch.object(core, "_api", self.fake_api),
             mock.patch.object(core, "_api_json", self.fake_api_json),
             mock.patch.object(core, "fetch_all", self.fake_fetch),
-            mock.patch.object(
-                core, "resolve_token", self._resolve_token
-            ),
+            mock.patch.object(core, "resolve_token", self._resolve_token),
         ):
             code = sync.main(
                 argv if argv is not None else ["--name", "GH_TOKEN", "--path", PATH],

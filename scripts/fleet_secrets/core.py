@@ -56,12 +56,18 @@ WRITE_ALLOWLIST: tuple[tuple[str, str], ...] = (
     # value is the seat's own CLI login,  so the write is the seat's own credential going
     # where the seat already uses it,  and it is never a general-purpose write:  the path
     # names the seat and the name is one of four.
-    (r"/cli-logins/[A-Z][A-Z0-9-]{0,15}", r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)$"),
+    (
+        r"/cli-logins/[A-Z][A-Z0-9-]{0,15}",
+        r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)$",
+    ),
     # The same class the other way round:  one folder,  the seat in the name.  A consumer
     # whose own table is static  (BotFleet's secret map names one secret per bot)  reads
     # this shape,  and the reader renames the value to the environment variable the CLI
     # expects.
-    (r"/cli-logins", r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)_[A-Z][A-Z0-9-]{0,15}$"),
+    (
+        r"/cli-logins",
+        r"^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|COPILOT_GITHUB_TOKEN)_[A-Z][A-Z0-9-]{0,15}$",
+    ),
 )
 LOGIN_TIMEOUT = 30.0
 KEYCHAIN_TIMEOUT = 10.0
@@ -547,7 +553,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     so a 3xx is a failure and not a hop.
     """
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
@@ -650,7 +656,7 @@ def ensure_folder(path: str, env: Mapping[str, str], token: str) -> None:
         if status in (400, 409) and _is_existing_folder(answer):
             parent = parent.rstrip("/") + "/" + part
             continue
-        raise SecretsError("folder-failed:  http-{} for {}".format(status, part), 4)
+        raise SecretsError(f"folder-failed:  http-{status} for {part}", 4)
 
 
 def _is_existing_folder(answer: object) -> bool:

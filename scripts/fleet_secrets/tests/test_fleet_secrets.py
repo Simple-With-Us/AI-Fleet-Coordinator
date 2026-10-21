@@ -4,7 +4,6 @@ test touches the network, the real CLI, the real Keychain, the real HOME or any 
 from __future__ import annotations
 
 import io
-import os
 import json
 import subprocess
 import sys
