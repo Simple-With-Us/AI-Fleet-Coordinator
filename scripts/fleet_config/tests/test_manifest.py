@@ -61,7 +61,7 @@ def _rule(rule_id: str, kind: str, platforms: list[str], **overrides: Any) -> di
 
 def _manifest_dict(seats: dict[str, Any]) -> dict[str, Any]:
     """A whole manifest document in its JSON shape."""
-    return {"schemaVersion": 1, "seats": seats}
+    return {"schemaVersion": 2, "seats": seats}
 
 
 class ManifestFixture(unittest.TestCase):

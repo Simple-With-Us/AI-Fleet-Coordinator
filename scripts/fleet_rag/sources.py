@@ -186,6 +186,8 @@ APP_ALIASES = {
 
 SEAT_ALIASES = {
     "grok": "GROK",
+    "grok build": "GROK",
+    "grok-build": "GROK",
     "monet": "MONET",
     "claude": "CLAUDE",
     "codex": "CODEX",
@@ -198,11 +200,31 @@ SEAT_ALIASES = {
     "gemini": "AG",
     "deepseek": "DSH",
     "dsh": "DSH",
+    "deepseek harness": "DSH",
     "renoir": "RENOIR",
+    "harness": "HARNESS",
     "fleet": "FLEET",
     "minimax": "MM",
     "mm": "MM",
+    "clutch": "CLUTCH",
+    "grok web": "GROK-WEB",
+    "grok-web": "GROK-WEB",
+    "grok bot": "GROK-BOT",
+    "grok-bot": "GROK-BOT",
+    "fx": "FX",
+    "ma": "MA",
+    "muse assist": "MA",
+    "muse-assist": "MA",
+    "mc": "MC",
+    "muse code": "MC",
+    "muse-code": "MC",
+    "opencode": "OPENCODE",
+    "echo": "ECHO",
+    "wise": "WISE",
 }
+# The note title carries the SEAT_TAG itself (owner 2026-10-20:  `[TEAM_KEY, SEAT_TAG] Topic`), so
+# every live tag has to resolve here.  A tag missing from this table is read as a team key and the
+# note loses its seat attribution entirely, which is worse than a wrong app.
 
 
 @dataclass
@@ -1160,22 +1182,30 @@ def iter_memory(
 _BRACKET = re.compile(r"^\s*\[([^\]]+)\]")
 
 
+def _as_seat(token: str) -> str | None:
+    """The canonical seat tag a bracket token names, or None when it names a team key."""
+    low = token.lower()
+    if re.match(r"^(gb|bf)-", low):
+        return token.upper()
+    return SEAT_ALIASES.get(low)
+
+
 def parse_note_title(title: str) -> tuple[str, str]:
-    """'[UM, ST, Grok] topic' -> (app, seat).  Multi-app takes the first app."""
+    """'[AFC, MM] Topic' -> (app, seat).  The title convention puts the team keys first and the
+    seat tag last, so the tokens are scanned from the right for a seat before anything is read as
+    a team key.  Multi-team takes the first key.  Role tags (`GB-*`, `BF-*`) resolve by prefix."""
     m = _BRACKET.match(title or "")
     app, seat = "fleet", "FLEET"
     if not m:
         return app, seat
     toks = [t.strip() for t in re.split(r"[,/]", m.group(1)) if t.strip()]
-    apps: list[str] = []
-    for t in toks:
-        low = t.lower()
-        if low in SEAT_ALIASES and low != "fleet":
-            seat = SEAT_ALIASES[low]
-        elif re.match(r"^gb-", low):
-            seat = t.upper()
-        else:
-            apps.append(t)
+    seat_idx = None
+    for i in range(len(toks) - 1, -1, -1):
+        found = _as_seat(toks[i])
+        if found and found != "FLEET":
+            seat, seat_idx = found, i
+            break
+    apps = [t for i, t in enumerate(toks) if i != seat_idx]
     if apps:
         app = app_slug(apps[0])
     return app, seat

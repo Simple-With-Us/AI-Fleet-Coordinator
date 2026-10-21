@@ -54,7 +54,10 @@ __all__ = [
 ]
 
 # The pinned manifest version, checked exactly.  A breaking manifest change raises it.
-MANIFEST_SCHEMA_VERSION = 1
+#  Version 2 adds the optional ``source`` provenance field on every rule (AFC-416):
+#  a standing directive plus date, or a Zulip topic message id.  Version 1 documents
+#  without ``source`` are refused, so a stale manifest cannot silently lose provenance.
+MANIFEST_SCHEMA_VERSION = 2
 MANIFEST_FILENAME = "fleet-seats.json"
 REGISTRY_FILENAME = "fleet-apps.json"
 
@@ -177,6 +180,7 @@ def _parse_rule(raw: object, seat: str) -> Rule:
         collector=_enum(Collector, raw.get("collector") or "mac", "rule %s collector" % rule_id),
         ttl_seconds=_int_field(raw.get("ttlSeconds"), 900, "rule %s ttlSeconds" % rule_id),
         description=str(raw.get("description") or ""),
+        source=str(raw.get("source") or ""),
     )
 
 

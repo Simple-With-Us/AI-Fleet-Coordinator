@@ -123,7 +123,7 @@ WRITING FOR THE OWNER
   GitHub and Zulip text use a real U+00A0 plus a space instead (see the sentence-gap skill).  Title Case headings
   and buttons;  sentence case values.  Tell the owner times in 12-hour form with am or pm, no zone abbreviation.
 - Plans, reviews, handoffs and completion notes also go to Apple Notes folder Coding:
-  ~/apps/apple-notes-coding.sh "[APP, OpenCode] short topic" "body" (--update to revise in place).
+  ~/apps/apple-notes-coding.sh "[TEAM_KEY, OpenCode] short topic" "body" (--update to revise in place).
 - Any LaunchAgent, cron row, pm2 job or helper script you add gets a row on ~/apps/MAC-LOCAL-PROCESSES.md and the
   pinned Note refreshed in the same change.
 

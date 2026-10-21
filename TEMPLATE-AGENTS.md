@@ -19,6 +19,14 @@ Binding for every agent on every platform (Claude, Codex, Cursor, Antigravity/Ge
 Monet, Copilot, …). Canonical: `/Users/jay/apps/AGENT-SYNC.md` “Prior messages stay in scope”.
 Owner preference, 2026-08-06.
 
+## Working rules (owner — ALL agents, ALL platforms, 2026-10-21)
+
+1. **Read every review finding yourself.**  Before you call a PR ready, green or done, and again after every push, read all of its review findings without being asked:  inline review comments, review bodies and issue comments, from every reviewer (Kody, Codex, Sentry, humans), with pagination.  Fix each real one or reply with the reason you decline, then re-check for new ones.  Never report a PR as ready from the check status alone, and tell the owner which findings you fixed, declined or left open.
+2. **Do not assume.**  Before you tell the owner what is blocking something, what caused it, what state a system is in, or that the owner must do something, check it (read the code, the PR, the logs, the settings).  If you did not check, say so instead of guessing, and never hand the owner a task you have not verified is theirs.
+3. **Finish the task.**  Carry every task to done yourself (merged, deployed, verified), including the fix for each review finding and the follow-up after a merge.  When one route is blocked, try the other legitimate route before stopping.  Stop only for a decision that is truly the owner's, say exactly what you need in one sentence, and post it where the owner will see it (the Zulip topic or DM), so work never sits parked until the owner finds the thread again.
+
+Binding for every agent on every platform (Claude, Codex, Cursor, Antigravity/Gemini, Grok, Monet, Copilot, …).  Owner ruling, 2026-10-21.
+
 ## App Icon & Logo Design Policy: Full-Bleed Square Only, Never Pre-Baked Squircle (Owner ruling 2026-08-22 — ALL seats)
 
 **Never generate or deliver app icons / logos solely in a pre-baked squircle format.**
@@ -362,9 +370,9 @@ other document the owner needs to read/review**, also put it in **Apple Notes**
 
 1. **Folder:** always iCloud **`Coding`** (create if missing) — never only the default Notes inbox.
 2. **Pin:** pin so it sits at the top under Pinned.
-3. **Title:** `[APP, Agent] short topic` — apps + agent **first**. Multi-app:
-   `[APP1, APP2, Grok] …`. Acronyms: `CT` `ST` `UM` `CTS` `FLEET`. Agent Title Case
-   (`Grok` / `Monet` / `Claude` / `Codex` / `AG` / `Cursor` / …). **No "session"** in title; **no date** in title.
+3. **Title:** `[TEAM_KEY, SEAT_TAG] short topic` — team key + seat **first**. Multi-team:
+   `[CT1, CT2, Grok] …`. Acronyms: `CT` `ST` `UM` `CTS` `FLEET`. Seat Title Case
+   (`Grok` / `Claude` / `Codex` / `AG` / `Cursor` / `MM` / `Wise` / …). **No "session"** in title; **no date** in title.
 4. **Second body line:** local create/update stamp + optional PR #, e.g. `Sun, Aug 9, 3:52pm · PR #18`
    (refresh on every material update; pass `--pr "18"` to helper). Helper auto-injects/preserves this.
 5. **Helper:** `/Users/jay/apps/apple-notes-coding.sh "Title" "body"`  
