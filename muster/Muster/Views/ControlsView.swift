@@ -18,6 +18,12 @@ struct ControlsView: View {
                 header
                 if let registry, !registry.knobs.isEmpty {
                     table(registry)
+                    if let reason {
+                        Text(reason)
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 } else {
                     Text(reason ?? "The knob registry could not be read.")
                         .font(.callout)
@@ -85,13 +91,14 @@ struct ControlsView: View {
             // does not know and does not guess:  a private identifier does not belong
             // in the app's source,  and a copy whose project cannot be confirmed is
             // not this fleet's copy.
-            let identity = location.flatMap { EngineIdentity.read(location: $0, home: home) }
-            return KnobReader.read(repoRoot: root, home: home, identity: identity)
+            let answer = location.map { EngineIdentity.read(location: $0, home: home) }
+                ?? EngineIdentity.Answer(identity: nil, reason: "the engine was not found")
+            return (KnobReader.read(repoRoot: root, home: home, identity: answer.identity), answer)
         }.value
-        registry = loaded
-        reason = loaded.problem ?? (loaded.knobs.isEmpty
-            ? "The registry block was not found in INFISICAL.md."
-            : nil)
+        registry = loaded.0
+        reason = loaded.1.reason
+            ?? loaded.0.problem
+            ?? (loaded.0.knobs.isEmpty ? "The registry block was not found in INFISICAL.md." : nil)
     }
 }
 
