@@ -1,0 +1,6 @@
+Applied 1 change;  0 skipped,  0 failed.
+  applied          claude-hooks-lane-guard  hooks  claude
+      command:  python3 -m fleet_lanes.install_tools apply claude --home /Users/x
+      file:  .claude/settings.json
+      installed and denied
+  status after the apply:  PASS

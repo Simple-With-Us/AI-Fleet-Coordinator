@@ -1,0 +1,241 @@
+{
+ "schemaVersion": 1,
+ "tool": "fleet-config",
+ "command": "status",
+ "generatedAt": "2026-10-21T02:07:32Z",
+ "summary": {
+  "total": 7,
+  "byState": {
+   "PASS": 2,
+   "DRIFT": 0,
+   "MISSING": 5,
+   "UNPROVEN": 0,
+   "UNSUPPORTED": 0,
+   "UNKNOWN": 0
+  },
+  "overallVerdict": "FAIL",
+  "failing": 5
+ },
+ "results": [
+  {
+   "ruleId": "claude-instructions-lane-map",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "instructions",
+   "state": "MISSING",
+   "reason": "The file ~/.claude/CLAUDE.md is missing.",
+   "reasonCode": "missing",
+   "expected": {
+    "description": "The fleet-lane-map block in ~/.claude/CLAUDE.md matches the installer template",
+    "present": true,
+    "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+   },
+   "observed": {
+    "present": false
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": null,
+   "collector": "mac",
+   "checkType": "marked_block_hash",
+   "checkedAt": "2026-10-21T02:07:32Z",
+   "expiresAt": "2026-10-21T02:22:32Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": true
+  },
+  {
+   "ruleId": "claude-hooks-lane-guard",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "hooks",
+   "state": "MISSING",
+   "reason": "The hook config file ~/.claude/settings.json is missing.",
+   "reasonCode": "missing",
+   "expected": {
+    "description": "The fleet guard hook is registered for PreToolUse in ~/.claude/settings.json",
+    "present": true,
+    "names": [
+     "lane-guard-hook"
+    ],
+    "timeoutSeconds": 5
+   },
+   "observed": {
+    "present": false
+   },
+   "proofLevelRequired": "L1",
+   "proofLevelAchieved": null,
+   "collector": "mac",
+   "checkType": "hook_registered",
+   "checkedAt": "2026-10-21T02:07:32Z",
+   "expiresAt": "2026-10-21T02:22:32Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": true
+  },
+  {
+   "ruleId": "claude-mcp-fleet-servers",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "mcp",
+   "state": "MISSING",
+   "reason": "The MCP config file ~/.claude.json is missing.",
+   "reasonCode": "missing",
+   "expected": {
+    "description": "The fleet MCP servers are registered in ~/.claude.json",
+    "present": true,
+    "names": [
+     "fleet-recall"
+    ]
+   },
+   "observed": {
+    "present": false
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": null,
+   "collector": "mac",
+   "checkType": "mcp_servers_registered",
+   "checkedAt": "2026-10-21T02:07:32Z",
+   "expiresAt": "2026-10-21T02:22:32Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": true
+  },
+  {
+   "ruleId": "claude-skills-fleet",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "skills",
+   "state": "MISSING",
+   "reason": "The skills directory ~/.claude/skills is missing.",
+   "reasonCode": "missing",
+   "expected": {
+    "description": "The fleet skill pack is installed in ~/.claude/skills",
+    "present": true,
+    "names": [
+     "agent-sync-tools-guide",
+     "apple-notes",
+     "board-ops",
+     "closeout",
+     "codex-triage",
+     "deploy-verify",
+     "dns-and-registrars",
+     "drive-grok-tui",
+     "fleet-coordination",
+     "fleet-infra",
+     "fleet-recall",
+     "housekeeper",
+     "land-lane",
+     "mac-cleanup",
+     "owner-copy",
+     "pickup-seat",
+     "pr-sweep",
+     "secret-handoff",
+     "sentence-gap",
+     "session-start",
+     "unstick-pr"
+    ]
+   },
+   "observed": {
+    "present": false
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": null,
+   "collector": "mac",
+   "checkType": "skills_installed",
+   "checkedAt": "2026-10-21T02:07:32Z",
+   "expiresAt": "2026-10-21T02:22:32Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": true
+  },
+  {
+   "ruleId": "claude-subagents-fleet",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "subagents",
+   "state": "MISSING",
+   "reason": "The sub-agent directory ~/.claude/agents is missing.",
+   "reasonCode": "missing",
+   "expected": {
+    "description": "The fleet sub-agent definitions are installed in ~/.claude/agents",
+    "present": true,
+    "names": [
+     "code-scout",
+     "docs-scribe"
+    ]
+   },
+   "observed": {
+    "present": false
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": null,
+   "collector": "mac",
+   "checkType": "subagents_installed",
+   "checkedAt": "2026-10-21T02:07:32Z",
+   "expiresAt": "2026-10-21T02:22:32Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": true
+  },
+  {
+   "ruleId": "claude-permissions-zulip-key",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "permissions",
+   "state": "PASS",
+   "reason": "The credential key CLAUDE_ZULIP_EMAIL, CLAUDE_ZULIP_KEY, CLAUDE_ZULIP_SITE is in the secret store at /zulip.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "The Zulip credential is reachable in the secret store at /zulip",
+    "present": true,
+    "names": [
+     "CLAUDE_ZULIP_EMAIL",
+     "CLAUDE_ZULIP_KEY",
+     "CLAUDE_ZULIP_SITE"
+    ]
+   },
+   "observed": {
+    "present": true,
+    "names": [
+     "CLAUDE_ZULIP_EMAIL",
+     "CLAUDE_ZULIP_KEY",
+     "CLAUDE_ZULIP_SITE"
+    ]
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": "L0",
+   "collector": "mac",
+   "checkType": "credential_key_present",
+   "checkedAt": "2026-10-21T02:07:32Z",
+   "expiresAt": "2026-10-21T02:22:32Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  },
+  {
+   "ruleId": "claude-permissions-zulip-retired-file",
+   "seat": "CLAUDE",
+   "platform": "claude",
+   "kind": "permissions",
+   "state": "PASS",
+   "reason": "The credential ZULIP_CLAUDE is absent, as the rule expects.",
+   "reasonCode": "ok",
+   "expected": {
+    "description": "The retired flat Zulip credential file is gone, stat only",
+    "present": false
+   },
+   "observed": {
+    "present": false
+   },
+   "proofLevelRequired": "L0",
+   "proofLevelAchieved": "L0",
+   "collector": "mac",
+   "checkType": "credential_stat",
+   "checkedAt": "2026-10-21T02:07:32Z",
+   "expiresAt": "2026-10-21T02:22:32Z",
+   "ttlSeconds": 900,
+   "stale": false,
+   "failing": false
+  }
+ ]
+}

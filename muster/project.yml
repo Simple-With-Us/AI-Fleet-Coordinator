@@ -38,3 +38,23 @@ targets:
     scheme:
       gatherCoverageData: false
       buildImplicitDependencies: true
+  MusterTests:
+    type: bundle.unit-test
+    platform: macOS
+    # Logic tests compile the non-view sources directly rather than hosting the signed app, so
+    # they run unsigned anywhere (CI included) with no entitlements or hardened runtime.
+    sources:
+      - path: MusterTests
+      - path: Muster/FleetConfigCLI.swift
+      - path: Muster/FleetConfigStatus.swift
+      - path: Muster/ApplyPlanModel.swift
+      - path: Muster/ApplyCoordinator.swift
+    settings:
+      base:
+        PRODUCT_NAME: MusterTests
+        PRODUCT_BUNDLE_IDENTIFIER: services.jays.Muster.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: NO
+        OTHER_CODE_SIGN_FLAGS: ""

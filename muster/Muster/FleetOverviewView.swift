@@ -62,8 +62,11 @@ struct FleetOverviewView: View {
                     .strokeBorder(.quaternary, lineWidth: 1)
             }
 
+            ApplyActivityView()
+
             Spacer(minLength: 0)
         }
+        .applyPlanSheet()
         .padding(36)
         .frame(minWidth: 660, minHeight: 520)
         .background(Color(nsColor: .windowBackgroundColor))
