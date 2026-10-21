@@ -522,20 +522,121 @@ class IngestTests(unittest.TestCase):
             )
         self.assertEqual(run.call_args.kwargs["lock_timeout_s"], 0.0)
 
-    def test_an_enumerated_nightly_run_gets_no_wait_even_though_it_writes_the_sentinel(self) -> None:
-        # The wait is keyed on the --all flag, but the sentinel is keyed on the resolved source
-        # set equalling NIGHTLY_SOURCES.  The two predicates disagree, so this run attests health
-        # (it writes the sentinel and last-run.json, per _run_locked) and yet is given no wait:
-        # a health-attesting run can still be locked out.  Asserted rather than fixed here,
-        # because the wait predicate belongs to the merged ingest.py and this PR is the tests
-        # and docs follow-up;  the mismatch is documented in RAG-FLEET-INFRA.md and tracked.
+    def test_an_enumerated_nightly_run_gets_the_wait_because_it_writes_the_sentinel(self) -> None:
+        # The wait used to be keyed on the --all flag while the sentinel was keyed on the
+        # resolved source set equalling NIGHTLY_SOURCES, so the two predicates disagreed and
+        # this run attested health (it writes the sentinel and last-run.json) and yet was given
+        # no wait:  a health-attesting run could still be locked out, which is the exact hole
+        # the wait was added to close.  Both now key on the same predicate (Kody review, PR #800).
         enumerated = ",".join(sources.NIGHTLY_SOURCES)
         with mock.patch.object(ingest, "run", return_value={"ok": True}) as run:
             self.assertEqual(ingest.main(["--source", enumerated, "--prune", "--no-heartbeat"]), 0)
         self.assertEqual(
             run.call_args.kwargs["lock_timeout_s"],
+            6000.0,
+            "this run is a sentinel-writing nightly, so it must be given the wait",
+        )
+        # A truncated run over the same sources attests nothing, so it still fails at once.
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run:
+            self.assertEqual(
+                ingest.main(["--source", enumerated, "--prune", "--limit", "5", "--no-heartbeat"]), 0
+            )
+        self.assertEqual(run.call_args.kwargs["lock_timeout_s"], 0.0)
+
+    def _claims(self) -> list[str]:
+        """The names of the pending-nightly claims that sit beside the lock."""
+        directory = self.state.parent / ingest.PENDING_NIGHTLY_NAME
+        if not directory.is_dir():
+            return []
+        return sorted(p.name for p in directory.iterdir() if not p.name.startswith("."))
+
+    def test_a_partial_refresh_refuses_the_lock_while_a_nightly_is_pending(self) -> None:
+        # The late-start race:  a partial that arrives while the nightly is still waiting
+        # used to take the lock in the gap between the waiter's polls and then hold it for its
+        # whole budget, which is how a nightly got locked out even though it was willing to
+        # wait.  A pending nightly now claims the queue, and a partial refuses to take the
+        # lock from it (Kody review, PR #800).
+        directory = self.state.parent / ingest.PENDING_NIGHTLY_NAME
+        owner = "owner-a"
+        ingest._write_pending_nightly(directory, ingest.now_ms() + 60_000, owner)
+        try:
+            #  prune=False makes this a partial refresh:  it attests nothing, so it must not
+            #  take the lock from a nightly that is waiting for it.
+            with self.assertRaises(ingest.NightlyPending):
+                self._run(prune=False)
+        finally:
+            ingest._clear_pending_nightly(directory, owner)
+        self.assertEqual(self._claims(), [], "the refusal left a claim behind")
+
+    def test_a_pending_marker_that_has_expired_does_not_refuse_a_partial_refresh(self) -> None:
+        # A nightly that was killed must not wedge the partial refreshes forever, so an
+        # expired claim is treated as absent.
+        directory = self.state.parent / ingest.PENDING_NIGHTLY_NAME
+        owner = "owner-a"
+        ingest._write_pending_nightly(directory, ingest.now_ms() - 1_000, owner)
+        try:
+            report = self._run(prune=False)
+        finally:
+            ingest._clear_pending_nightly(directory, owner)
+        self.assertTrue(report["ok"])
+
+    def test_a_nightly_clears_its_marker_when_it_is_done(self) -> None:
+        # The marker is a queue claim, not a lock:  it must not outlive the run.
+        #  This harness patches NIGHTLY_SOURCES to ("doc",),  so a pruning run over "doc" is
+        #  a nightly here:  it claims the queue,  and the claim must not outlive the run.
+        self._run(lock_timeout_s=60)
+        self.assertEqual(self._claims(), [], "the pending claim outlived the run")
+
+    def test_a_nightly_only_clears_its_own_claim(self) -> None:
+        # Two nightlies can run at once.  The one that finishes first must not clear the claim
+        # of the one that is still waiting, or a partial could take the lock from it and the
+        # nightly would be locked out (Sentry review, PR #813).
+        directory = self.state.parent / ingest.PENDING_NIGHTLY_NAME
+        other = "owner-other"
+        ingest._write_pending_nightly(directory, ingest.now_ms() + 60_000, other)
+        try:
+            self._run(lock_timeout_s=60)
+            self.assertEqual(self._claims(), [other], "a run cleared another run's claim")
+        finally:
+            ingest._clear_pending_nightly(directory, other)
+
+    def test_a_dry_run_does_not_claim_the_queue(self) -> None:
+        # A dry run writes no sentinel, so it attests nothing:  it must not claim the queue,
+        # or a diagnostic would refuse the partial refreshes for the length of the claim
+        # (Sentry review, PR #813).
+        report = self._run(dry_run=True, lock_timeout_s=60)
+        self.assertTrue(report["ok"])
+        self.assertEqual(self._claims(), [], "a dry run claimed the queue")
+
+    def test_a_dry_run_refuses_the_lock_while_a_nightly_is_pending(self) -> None:
+        # A dry run writes nothing, but it would still take the lock from a nightly that is
+        # waiting for it, so it is refused the same way a partial refresh is.
+        directory = self.state.parent / ingest.PENDING_NIGHTLY_NAME
+        owner = "owner-a"
+        ingest._write_pending_nightly(directory, ingest.now_ms() + 60_000, owner)
+        try:
+            with self.assertRaises(ingest.NightlyPending):
+                self._run(dry_run=True)
+        finally:
+            ingest._clear_pending_nightly(directory, owner)
+
+    def test_a_run_with_no_wait_budget_does_not_claim_the_queue(self) -> None:
+        # A nightly with `--lock-timeout 0` never waits, so there is nothing for a claim to
+        # protect, and holding one would refuse the partial refreshes for nothing.
+        self._run(lock_timeout_s=0)
+        self.assertEqual(self._claims(), [], "a run with no wait budget claimed the queue")
+
+    def test_a_dry_run_gets_no_wait_because_it_attests_nothing(self) -> None:
+        # The wait and the claim must both key on the same predicate, and a dry run attests
+        # nothing:  the sentinel write sits behind `if not dry_run:`.
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run:
+            self.assertEqual(
+                ingest.main(["--all", "--prune", "--dry-run", "--no-heartbeat"]), 0
+            )
+        self.assertEqual(
+            run.call_args.kwargs["lock_timeout_s"],
             0.0,
-            "this run is a sentinel-writing nightly, so it should have been given the wait",
+            "a dry run attests nothing, so it must not be given the nightly wait",
         )
 
     def test_gitleaks_drop_plumbing(self) -> None:

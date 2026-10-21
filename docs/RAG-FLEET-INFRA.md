@@ -440,32 +440,52 @@ The command line decides which run it is, and gives the wait accordingly:
 - a full `recall ingest --all --prune` with no `--since` and no `--limit` is the nightly, and
   waits up to 100 minutes (6000 s) for the lock;
 - every other invocation is a partial refresh and fails at once with exit 3, because the sheet
-  sync's ingest is best-effort and a long wait there would hold its own budget open.
+  sync's ingest is best-effort and a long wait there would hold its own budget open;
+- a `--dry-run` is a partial refresh in this sense:  it writes no sentinel, so it attests
+  nothing, and it must not hold the queue either.
 
 `--lock-timeout SECONDS` overrides both, and `--lock-timeout 0` makes even the nightly fail at
-once, which is what the tests use.  The flag lives on `python3 -m fleet_rag.ingest` only; see
-the residual gaps below before relying on it through `recall ingest`.  The wait is polled, never
-blocking forever, so a lock held by a hung run cannot hang the nightly.
+once, which is what the tests use.  The flag is on `recall ingest` and on
+`python3 -m fleet_rag.ingest`.  The wait is polled, never blocking forever, so a lock held by a
+hung run cannot hang the nightly.
 
-**The bound is a budget, not a guarantee, and it does not cover a late-starting partial.**  The
+**The late-starting partial is closed by a pending-nightly claim, not by a longer wait.**  The
 sheet sync's ingest budget is `FLEET_SHEET_INGEST_TIMEOUT_MS` (default 5400000 ms, so 90 minutes),
-but a partial may take the lock at any point during the nightly's own 100-minute wait, not only
-before it started.  A partial that begins more than 10 minutes into that wait outlives the nightly's
-deadline, and the nightly then exits 3 into a stale sentinel — the failure this design set out to
-remove.  The wait is therefore sized for the common case (the sheet sync's ingest already running
-when the nightly starts) and not for the late-start case.
+so a partial that already held the lock when the nightly started is covered by the 100-minute
+wait.  The hole was a partial that arrived *during* that wait: it took the lock in the gap between
+the waiter's polls and then held it for its own budget, outliving the nightly's deadline, so the
+nightly exited 3 into a stale sentinel — the failure this design set out to remove.
 
-Two gaps follow from that, both tracked for a follow-up:
+The claim closes it.  A health-attesting run that will actually wait claims the queue *before* it
+waits, by writing `state/ingest.nightly.pending/` — a directory beside the lock, one file per
+claiming run.  A partial refresh that finds a live claim does not wait and does not take the
+lock: it exits 3 at once, which is what it already did when the nightly held the lock.  A dry run
+is in the same case: it writes no sentinel, so it attests nothing, and it must not take the lock
+from a waiter either.
 
-1. `scripts/recall`'s `ingest` subparser never defined `--lock-timeout` and `cmd_ingest` never
-   forwarded it, so the documented escape hatch was rejected by `recall ingest` with an argparse
-   error and exit 2 — on the CLI the nightly and the sheet sync actually invoke.  The override
-   existed only on `python3 -m fleet_rag.ingest`.
-2. The wait is keyed on the `--all` flag while the sentinel is keyed on the resolved source set
-   equalling `NIGHTLY_SOURCES`.  An explicitly enumerated nightly run —
-   `recall ingest --source board,effort-log,doc,skill,memory,apple-note --prune` — writes the
-   sentinel and `last-run.json` yet received no wait, so a health-attesting run could still be
-   locked out.
+Each claim is its own file, named for the run that made it, so a run can only ever clear its own
+claim.  One shared marker file could name only one owner, so the run that finished first cleared
+the claim of the run that was still waiting, and a partial could then take the lock from it.  Two
+nightlies at once now hold two claims, and each releases only its own.  A claim is written
+atomically (a temp file and then `os.replace`), so a reader never sees half of one, and it carries
+an expiry, so a nightly that was killed leaves nothing behind that wedges the partial refreshes
+for good.  An expired claim counts as absent.
+
+So the 100-minute wait now only has to cover a partial that was already running when the nightly
+started, which the sheet sync's own 90-minute budget bounds.  The late-start race is gone.
+
+A claim's lifetime is twice the wait budget, so a nightly that is killed rather than finished
+leaves the partial refreshes failing fast until it expires — up to 200 minutes for a nightly with
+the default wait.  The sheet sync's ingest half is best-effort (it warns and still writes the
+sheet), so that costs a few skipped refreshes rather than a stale sentinel, which is the trade the
+claim makes on purpose.  A nightly that finishes leaves nothing behind at all, and a run with no
+wait budget (`--lock-timeout 0`) never claims at all, because there is nothing for a claim to
+protect.
+
+The wait is keyed on the same predicate that gates the sentinel, not on the `--all` flag, so an
+explicitly enumerated nightly run — `recall ingest --source board,effort-log,doc,skill,memory,
+apple-note --prune` — waits too.  Keying them differently let a health-attesting run be locked
+out, and the two predicates are now one (`_attests_health`).
 
 ## Observability (added 2026-09-10)
 

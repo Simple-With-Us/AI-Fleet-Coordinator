@@ -1027,6 +1027,30 @@ class CliTests(RecallBase):
         self.assertEqual(rc2, 0)
         self.assertEqual(seen, [["--source", "doc", "--dry-run", "--limit", "2"], ["--all"]])
 
+    def test_ingest_forwards_the_lock_timeout_override(self):
+        """The operator escape hatch the docs promise has to exist on the CLI operators type.
+
+        `recall ingest --all --prune --lock-timeout 0` used to die in argparse with exit 2,
+        because the `ingest` subparser never defined the flag and `cmd_ingest` never forwarded
+        it, while the underlying module had it all along (Kody review, PR #800).
+        """
+        seen: list[list[str]] = []
+
+        def fake_main(argv=None):
+            seen.append(list(argv or []))
+            return 0
+
+        import fleet_rag.ingest as ing
+        with mock.patch.object(ing, "main", fake_main):
+            rc = self.cli.main(["ingest", "--all", "--prune", "--lock-timeout", "0"])
+            rc2 = self.cli.main(["ingest", "--all", "--prune", "--lock-timeout", "30.5"])
+            rc3 = self.cli.main(["ingest", "--all", "--prune"])
+        self.assertEqual((rc, rc2, rc3), (0, 0, 0))
+        self.assertEqual(seen[0], ["--all", "--prune", "--lock-timeout", "0.0"])
+        self.assertEqual(seen[1], ["--all", "--prune", "--lock-timeout", "30.5"])
+        # Absent the flag, nothing is forwarded, so the module keeps its own default.
+        self.assertEqual(seen[2], ["--all", "--prune"])
+
     def test_fake_backend_short_circuits_the_direct_path_preflight(self):
         # The fake backend installed by RecallBase.setUp() makes using_fake_backend() True, so
         # eval/ingest must never even ask whether Tailscale is down -- exactly like

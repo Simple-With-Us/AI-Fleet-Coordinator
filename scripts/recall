@@ -275,6 +275,11 @@ def cmd_ingest(a: argparse.Namespace) -> int:
         argv.append("--no-heartbeat")
     if a.prune:
         argv.append("--prune")
+    if a.lock_timeout is not None:
+        #  The operator override the docs promise.  It was documented on the ingest CLI but
+        #  never exposed here, so `recall ingest --lock-timeout 0` died in argparse with
+        #  exit 2 on the very CLI the nightly and the sheet sync invoke (Kody review, PR #800).
+        argv += ["--lock-timeout", str(a.lock_timeout)]
     return ing.main(argv)
 
 
@@ -415,6 +420,12 @@ def build_parser() -> argparse.ArgumentParser:
     ingp.add_argument("--since")
     ingp.add_argument("--prune", action="store_true")
     ingp.add_argument("--no-heartbeat", dest="no_heartbeat", action="store_true")
+    ingp.add_argument(
+        "--lock-timeout",
+        dest="lock_timeout",
+        type=float,
+        help="wait up to SECONDS for the shared ingest lock (0 fails at once)",
+    )
     return ap
 
 
