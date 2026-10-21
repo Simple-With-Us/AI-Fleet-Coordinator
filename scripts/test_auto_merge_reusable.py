@@ -257,8 +257,9 @@ class ArmStep(unittest.TestCase):
 CLASSIFY_STEP_NAME = "Classify PR for auto-merge eligibility"
 
 # The fake answers each API call with the --jq-filtered lines the step expects:
-# check-run statuses for the Kody lookup, one @json line per PR comment, the run
-# status for marker-run lookups, and one @json line per active workflow run.
+# check-run statuses for the Kody lookup, one bare run id per marker comment
+# (comment bodies must never reach the runner disk), the run status for
+# marker-run lookups, and one @json line per active workflow run.
 # The compare call fails on purpose:  it bounds the script after the gates, so a
 # "compare API failed" skip proves the gates passed.
 FAKE_GH_CLASSIFY = """#!/bin/bash
@@ -267,8 +268,8 @@ case "$*" in
   *check-runs*)
     case "$GH_FAKE_MODE" in
       kody_api_fails) echo "gh: api down" >&2; exit 1 ;;
-      kody_running) printf '%s\n' '{"check_runs":[{"name":"Kody Code Review","status":"in_progress"}]}' ;;
-      *) printf '%s\n' '{"check_runs":[{"name":"Kody Code Review","status":"completed"}]}' ;;
+      kody_running) printf '%s\n' 'in_progress' ;;
+      *) printf '%s\n' 'completed' ;;
     esac
     exit 0
     ;;
@@ -276,10 +277,13 @@ case "$*" in
     case "$GH_FAKE_MODE" in
       comments_api_fails) echo "gh: api down" >&2; exit 1 ;;
       marker_run_active|marker_run_done|marker_status_fails|marker_run_404)
-        printf '%s\n' '{"body":"<!-- swu-autofix-run: bot=swu-echo --> Autofix run https://example.com/o/r/actions/runs/555 started","user_type":"Bot"}'
+        # Post-jq output: only the marker's run id, never the comment body.
+        printf '%s\n' '555'
         ;;
       forged_marker)
-        printf '%s\n' '{"body":"<!-- swu-autofix-run: bot=swu-echo --> Autofix run https://example.com/o/r/actions/runs/999 started","user_type":"User"}'
+        # A User-authored marker is filtered out by the step's jq, so the fake
+        # answers with no run ids at all.
+        :
         ;;
     esac
     exit 0
@@ -432,6 +436,46 @@ class ClassifyInFlightGates(unittest.TestCase):
         code, output, reason = run_classify("runs_api_fails")
         self.assertEqual(code, 0, output)
         self.assertIn("fail closed", reason)
+
+
+class GateSource(unittest.TestCase):
+    """Source pins for the Kody round-3 findings (2026-10-21)."""
+
+    def test_comment_bodies_never_touch_disk(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        # No persisted comment dump: jq reduces each Bot marker comment to its
+        # run id inside gh, so user-controlled text never lands on the runner.
+        self.assertNotIn("pr-comments.txt", text)
+        self.assertIn('select(.user.type == "Bot")', text)
+        self.assertIn('contains("swu-autofix-run: bot=")', text)
+
+    def test_the_kody_lookup_filters_by_name_and_paginates(self):
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('-f check_name="$KODY_CHECK_NAME"', text)
+        self.assertIn("--paginate", text)
+
+    def test_every_accepted_run_leaves_a_marker(self):
+        # Owner/sentry runs post the run-id marker too; only the per-bot cap
+        # lookup stays inside the exemption (Kody: the gate could merge while an
+        # owner-triggered run was still pushing).
+        for name in (
+            "pr-autofix-reusable.yml",
+            "claude-code-autofix-reusable.yml",
+            "codex-autofix-reusable.yml",
+        ):
+            text = (REPO / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            self.assertIn("Owner/sentry request:  exempt from the per-bot cap", text, name)
+        for name in ("claude-code-autofix-reusable.yml", "codex-autofix-reusable.yml"):
+            text = (REPO / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            # The exempt path posts the marker before its early exit.
+            exempt = text.index("exempt from the one-run-per-bot rule")
+            marker_post = text.index("Owner/sentry request:  exempt from the per-bot cap")
+            self.assertLess(exempt, marker_post, name)
+        # pr-autofix: the marker write sits after the cap branch, not inside it.
+        text = (REPO / ".github" / "workflows" / "pr-autofix-reusable.yml").read_text(encoding="utf-8")
+        cap = text.index("already used its one autofix run")
+        marker_write = text.index("Every accepted run leaves its run-id marker")
+        self.assertLess(cap, marker_write)
 
 
 if __name__ == "__main__":

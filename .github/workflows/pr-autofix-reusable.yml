@@ -387,8 +387,8 @@ jobs:
           # notification.  The record is a marker comment the accepted run leaves on the PR —
           # deleting that comment is the manual reset.  Every other bot request,  accepted or
           # not,  is reported to the owner through SWU_AUTOFIX_NOTIFY_URL when configured.
+          marker="swu-autofix-run: bot=$requester"
           if [ "$requester" != "jaywedgeworth22" ] && [ "$requester" != "sentry" ]; then
-            marker="swu-autofix-run: bot=$requester"
             prior=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
               --jq ".[].body | select(contains(\"$marker\"))" 2> /dev/null | head -1 || true)
             accepted=true
@@ -406,10 +406,16 @@ jobs:
             if [ "$accepted" = "false" ]; then
               skip "$author already used its one autofix run on this PR, skipping"
             fi
-            gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
-              -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  One autofix run per bot per PR (owner rule 2026-10-20);  delete this comment to reset." \
-              > /dev/null
+            cap_note="  One autofix run per bot per PR (owner rule 2026-10-20);  delete this comment to reset."
+          else
+            cap_note="  Owner/sentry request:  exempt from the per-bot cap (owner rule 2026-10-20)."
           fi
+          # Every accepted run leaves its run-id marker, owner and sentry
+          # included:  the auto-merge gate reads these to hold a merge while any
+          # autofix run is queued or in flight on the PR (owner rule 2026-10-21).
+          gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+            -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.$cap_note" \
+            > /dev/null
 
           # The cap is per PR:  count the autofix commits this branch has that the default branch
           # does not.  grep -c prints the count and exits 1 when it is 0, so `|| true` and nothing
