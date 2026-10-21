@@ -1,0 +1,5 @@
+Applied 0 changes;  0 skipped,  1 failed.
+  refused          claude-hooks-lane-guard  hooks  claude
+      file:  .claude/settings.json
+      Touch ID is not available on this machine,  so the write cannot be confirmed:  biometry not enrolled
+  REFUSED:  Touch ID is not available on this machine,  so the write cannot be confirmed:  biometry not enrolled
