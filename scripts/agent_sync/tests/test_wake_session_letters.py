@@ -116,6 +116,53 @@ class RegistryLookupTests(unittest.TestCase):
             OR.lookup_entry(db, "minimax", "mac", "default", "mvs_abc")
             after = os.stat(db)
             self.assertEqual(before.st_size, after.st_size)
+            self.assertEqual(before.st_mtime_ns, after.st_mtime_ns)
+            # No DDL and no migration insert:  the lookup handle writes nothing.
+            rows = registry._conn.execute(
+                "SELECT COUNT(*) FROM schema_migrations"
+            ).fetchone()[0]
+            self.assertEqual(rows, 1)
+            self.assertEqual(
+                registry._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 1
+            )
+            self.assertEqual(
+                registry._conn.execute("SELECT COUNT(*) FROM export_outbox").fetchone()[0], 2
+            )
+
+    def test_the_lookup_handle_can_recover_a_hot_journal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            registry = OR.SessionRegistry(db)
+            self.addCleanup(registry.close_db)
+            registry.resolve_or_register(dict(IDENTITY))
+            # The lookup handle is read-write on purpose:  a mode=ro handle cannot roll a
+            # hot journal back, and SQLite then refuses every read with
+            # SQLITE_READONLY_ROLLBACK, which would drop every letter for good.
+            handle = OR.SessionRegistry(db, read_only=True)
+            self.addCleanup(handle.close_db)
+            handle._conn.execute("PRAGMA user_version = 1")
+            self.assertEqual(handle._conn.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertEqual(
+                handle.lookup("minimax", "mac", "default", "mvs_abc")["label"], "A"
+            )
+
+    def test_an_unreadable_registry_is_reported_rather_than_read_as_no_letter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            registry = OR.SessionRegistry(db)
+            self.addCleanup(registry.close_db)
+            registry.resolve_or_register(dict(IDENTITY))
+            # Every read fails, so the registry is unreadable rather than empty.
+            with mock.patch.object(
+                OR.SessionRegistry, "lookup", side_effect=sqlite3.OperationalError("locked")
+            ):
+                with self.assertRaises(OR.RegistryUnavailable):
+                    OR.lookup_many(db, [("minimax", "mac", "default", "mvs_abc")])
+                # The single-identity helper stays quiet, so a caller that wants the
+                # reason asks for the batch one.
+                self.assertEqual(
+                    OR.lookup_entry(db, "minimax", "mac", "default", "mvs_abc"), {}
+                )
 
     def test_the_lookup_answers_while_a_writer_holds_the_write_lock(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -123,9 +170,9 @@ class RegistryLookupTests(unittest.TestCase):
             registry = OR.SessionRegistry(db)
             self.addCleanup(registry.close_db)
             registry.resolve_or_register(dict(IDENTITY))
-            # A writer holds the write lock.  A read-only lookup still answers, because
-            # it never asks for a write lock of its own:  the wake path must not stall
-            # behind the Operator registering a session.
+            # A writer holds the write lock.  A plain SELECT does not ask for a write
+            # lock of its own, so the wake path must not stall behind the Operator
+            # registering a session.
             writer = sqlite3.connect(db, timeout=0.5)
             self.addCleanup(writer.close)
             writer.execute("BEGIN IMMEDIATE")
@@ -228,7 +275,7 @@ class WakeLetterTests(DaemonHarness):
     def test_a_broken_registry_never_breaks_the_wake(self) -> None:
         d, r, p = self.setup_rows([self.row()])
         with mock.patch.object(
-            OR, "lookup_entry", side_effect=RuntimeError("registry is broken")
+            OR, "lookup_many", side_effect=RuntimeError("registry is broken")
         ):
             context = d.chat_context(r, p)
         self.assertEqual(len(context), 1)

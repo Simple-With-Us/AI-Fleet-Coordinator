@@ -24,7 +24,6 @@ import os
 import secrets
 import sqlite3
 import time
-import urllib.parse
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -159,14 +158,14 @@ class SessionRegistry:
         if parent and not self.read_only:
             os.makedirs(parent, exist_ok=True)
         if self.read_only:
-            # A read-only URI:  the file is never created and no write lock is ever
-            # taken, so a reader on the wake path never contends with the Operator's
-            # registration writes, and a missing file is a miss rather than an
-            # empty database.
-            self._conn = sqlite3.connect(
-                "file:%s?mode=ro" % urllib.parse.quote(os.path.abspath(self.db_path)),
-                uri=True,
-            )
+            # Read-only by behaviour, not by mode.  A mode=ro handle cannot roll back a
+            # hot journal left by a crashed writer, and SQLite then refuses every read
+            # with SQLITE_READONLY_ROLLBACK, which would drop every letter for good.
+            # A read-write handle can recover that journal, and it takes no write lock
+            # for a plain SELECT, so the wake path never contends with the Operator's
+            # registration writes.  This handle runs no DDL and inserts no migration row:
+            # it never writes.
+            self._conn = sqlite3.connect(self.db_path)
             self._conn.row_factory = sqlite3.Row
             return
         self._conn = sqlite3.connect(self.db_path)
@@ -482,6 +481,15 @@ class SessionRegistry:
 # ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
 
 
+class RegistryUnavailable(RuntimeError):
+    """The registry could not be read at all:  a hot journal, a locked file, a missing table.
+
+    This is not a miss.  A miss is an identity with no registration;  this is a registry
+    that could not be opened, and the caller has to say so rather than report every
+    session as having no letter.
+    """
+
+
 def lookup_many(
     db_path: str,
     identities: list[tuple[str, str, str, str]],
@@ -489,11 +497,12 @@ def lookup_many(
     """Read-only lookups for many identities, over one connection.
 
     The wake path asks about every catalog row it shows, so one connection per row would
-    be one connection per row per wake.  One read-only connection, one pass, many answers.
+    be one connection per row per wake.  One connection, one pass, many answers.
 
     Side-effect free on purpose:  a missing database is not created and no letter is
     allocated, because a catalog scan must never mint registrations as a side effect of
-    reading.  Any failure reads as "no letter" rather than breaking the wake.
+    reading.  A registry that cannot be read at all raises RegistryUnavailable, so the
+    caller can report that instead of silently showing every session as unlettered.
 
     The reference form carries the generation when a letter has been recycled, so
     "MM A" and "MM A (gen 2)" never read as the same session.
@@ -503,13 +512,15 @@ def lookup_many(
         return result
     try:
         registry = SessionRegistry(str(db_path), read_only=True)
-    except Exception:
-        return result
+    except Exception as exc:
+        raise RegistryUnavailable(type(exc).__name__) from exc
+    failures = 0
     try:
         for identity in identities:
             try:
                 found = registry.lookup(*identity)
             except Exception:
+                failures += 1
                 continue
             if not found or not found.get("label"):
                 continue
@@ -528,6 +539,9 @@ def lookup_many(
             registry.close_db()
         except Exception:
             pass
+    if failures and failures == len(identities):
+        # Every read failed, so the registry is unreadable rather than empty.
+        raise RegistryUnavailable("every lookup failed")
     return result
 
 
@@ -540,7 +554,10 @@ def lookup_entry(
 ) -> dict[str, Any]:
     """One read-only registry lookup: the letter, its generation and its reference form."""
     identity = (platform, verified_host, profile_scope, native_session_id)
-    return lookup_many(db_path, [identity]).get(identity, {})
+    try:
+        return lookup_many(db_path, [identity]).get(identity, {})
+    except RegistryUnavailable:
+        return {}
 
 
 def lookup_label(

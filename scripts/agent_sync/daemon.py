@@ -3562,7 +3562,19 @@ class Daemon:
             if identity not in owners:
                 identities.append(identity)
             owners.setdefault(identity, []).append(row_id)
-        found = OR.lookup_many(OR.registry_db_path(self.root, self.env), identities)
+        try:
+            found = OR.lookup_many(OR.registry_db_path(self.root, self.env), identities)
+        except OR.RegistryUnavailable as exc:
+            # The registry could not be read at all:  a hot journal, a locked file.  Every
+            # row reads as unlettered, and the reason goes to the listener log, so a
+            # fleet-wide loss of letters is visible instead of silent.
+            self.log.write("session-registry-unavailable", error=str(exc))
+            return {}
+        except Exception as exc:
+            # Anything else in the registry is the same shape of problem for the wake:
+            # the rows are still worth showing, and only the letters are missing.
+            self.log.write("session-registry-unavailable", error=type(exc).__name__)
+            return {}
         labels: dict[str, tuple[str, str]] = {}
         for identity, row_ids in owners.items():
             entry = found.get(identity)
