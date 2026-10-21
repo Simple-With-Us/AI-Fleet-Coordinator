@@ -35,6 +35,33 @@ final class KnobReaderTests: XCTestCase {
         return (root, home)
     }
 
+    /// Write a copy the way the engine writes one.
+    ///
+    /// The engine puts its own identity on every copy,  so a copy without it is one
+    /// the engine would refuse.  The age is in seconds before now,  so a negative
+    /// age dates the copy in the future.
+    private func writeCopy(
+        in home: URL,
+        knobs: [String: String] = [:],
+        age: TimeInterval = 60,
+        schema: Int = 1,
+        project: String = KnobReader.copyProject,
+        environment: String = KnobReader.copyEnvironment,
+        omitTime: Bool = false
+    ) throws {
+        var body: [String: Any] = [
+            "schema": schema,
+            "project": project,
+            "environment": environment,
+            "knobs": knobs,
+        ]
+        if !omitTime {
+            body["saved_epoch"] = Date().timeIntervalSince1970 - age
+        }
+        let data = try JSONSerialization.data(withJSONObject: body)
+        try data.write(to: home.appendingPathComponent(".local/state/fleet-knobs/lkg.json"))
+    }
+
     /// The registry is read from the generated block,  and only the knobs in it.
     func test_the_registry_is_read_from_the_generated_block() throws {
         let (root, home) = try makeRepo()
@@ -49,45 +76,156 @@ final class KnobReaderTests: XCTestCase {
         XCTAssertEqual(registry.knobs.first?.localMay, "only move toward off")
     }
 
-    /// A knob with no value in the copy holds its default.
-    func test_a_knob_with_no_value_holds_its_default() throws {
+    /// A knob the copy does not carry holds its default.
+    ///
+    /// This needs a copy that is there,  because a copy that is missing says the
+    /// value is unknown rather than that it is the default.
+    func test_a_knob_with_no_value_in_the_copy_holds_its_default() throws {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_IDLE_HOURS": "3"])
         let registry = KnobReader.read(repoRoot: root, home: home)
-        XCTAssertEqual(registry.knobs.first?.current, .defaultValue)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(knob?.current, .defaultValue)
     }
 
     /// A knob with a value in the copy shows it.
     func test_a_knob_with_a_value_shows_it() throws {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        try """
-        {"knobs": {"FLEET_AUTOPUSH_MODE": "report"}, "saved_epoch": 4102444800}
-        """.write(
-            to: home.appendingPathComponent(".local/state/fleet-knobs/lkg.json"),
-            atomically: true,
-            encoding: .utf8
-        )
+        try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"])
         let registry = KnobReader.read(repoRoot: root, home: home)
         XCTAssertEqual(registry.knobs.first?.current, .current("report"))
     }
 
-    /// A secret knob shows presence and never a value.
-    func test_a_secret_knob_shows_presence_and_never_a_value() throws {
+    /// A secret knob shows that its presence is unconfirmed,  and never a value.
+    ///
+    /// The copy holds the non-secret knobs only,  so a secret is never in it and its
+    /// absence says nothing about whether the secret is set.  Reporting a secret as
+    /// "not set" would be a false statement about a credential that is very likely
+    /// set,  so the panel says the presence is unconfirmed instead.
+    func test_a_secret_knob_says_its_presence_is_unconfirmed() throws {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
-        try """
-        {"knobs": {"FLEET_FACTS_SIGNING_KEY": "a-secret-value"}, "saved_epoch": 4102444800}
-        """.write(
-            to: home.appendingPathComponent(".local/state/fleet-knobs/lkg.json"),
-            atomically: true,
-            encoding: .utf8
-        )
+        try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"])
         let registry = KnobReader.read(repoRoot: root, home: home)
         let secret = registry.knobs.first { $0.name == "FLEET_FACTS_SIGNING_KEY" }
         XCTAssertEqual(secret?.isSecret, true)
-        XCTAssertEqual(secret?.current, KnobRegistry.Knob.CurrentValue.secretPresent(true))
+        XCTAssertEqual(secret?.current, KnobRegistry.Knob.CurrentValue.secretUnconfirmed)
         XCTAssertFalse(secret?.current.displayText.contains("a-secret-value") ?? true)
+    }
+
+    /// With no copy at all,  the value is not known.
+    ///
+    /// Saying "default" would claim the knob equals its default,  which is a
+    /// statement the app cannot make without a copy.
+    func test_with_no_copy_the_value_is_unknown() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(knob?.current, KnobRegistry.Knob.CurrentValue.unknown("no local copy"))
+    }
+
+    /// The staleness window is the engine's,  not a guess.
+    func test_the_staleness_window_is_the_engines() {
+        XCTAssertEqual(KnobReader.refreshSeconds, 3600)
+        XCTAssertEqual(KnobReader.maxAgeSeconds, 48 * 3600)
+    }
+
+    /// A copy the engine would refuse is not read here either.
+    ///
+    /// The engine only trusts a copy that carries its own schema,  project and
+    /// environment.  A copy from another project parses and holds a plausible
+    /// value,  and reading it anyway would put a value on the screen that the
+    /// fleet's own tools do not believe.
+    func test_a_copy_from_another_project_is_not_read() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(
+            in: home,
+            knobs: ["FLEET_AUTOPUSH_MODE": "report"],
+            project: "11111111-2222-3333-4444-555555555555"
+        )
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(
+            knob?.current,
+            .unknown("the copy is not one the engine wrote")
+        )
+    }
+
+    /// A copy with an environment the engine never writes is not read.
+    func test_a_copy_for_another_environment_is_not_read() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"], environment: "dev")
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(
+            knob?.current,
+            .unknown("the copy is not one the engine wrote")
+        )
+    }
+
+    /// A copy with a schema the app does not know is refused,  not guessed at.
+    func test_a_copy_with_an_unknown_schema_is_not_read() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"], schema: 99)
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(
+            knob?.current,
+            .unknown("the copy is not one the engine wrote")
+        )
+    }
+
+    /// A copy with no time on it is not a reading.
+    func test_a_copy_with_no_time_is_not_read() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_AUTOPUSH_MODE": "report"], omitTime: true)
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(
+            knob?.current,
+            .unknown("the copy is not one the engine wrote")
+        )
+    }
+
+    /// A copy past the engine's expiry is not a reading.
+    func test_a_copy_past_its_expiry_is_not_read() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(
+            in: home,
+            knobs: ["FLEET_AUTOPUSH_MODE": "report"],
+            age: 3 * 24 * 3600
+        )
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(
+            knob?.current,
+            .unknown("the copy is past its expiry")
+        )
+    }
+
+    /// A copy dated well in the future is expired,  as the engine says it is.
+    func test_a_copy_dated_in_the_future_is_not_read() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(
+            in: home,
+            knobs: ["FLEET_AUTOPUSH_MODE": "report"],
+            age: -3600
+        )
+        let registry = KnobReader.read(repoRoot: root, home: home)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(
+            knob?.current,
+            .unknown("the copy is past its expiry")
+        )
     }
 
     /// A file with no registry block yields no knobs and no guess.

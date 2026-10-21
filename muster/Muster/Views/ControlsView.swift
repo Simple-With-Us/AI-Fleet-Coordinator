@@ -65,7 +65,7 @@ struct ControlsView: View {
                     GridCellText(value: knob.kind),
                     GridCellText(
                         value: knob.current.displayText,
-                        emphasised: knob.current.displayText == "not set" || knob.isSecret
+                        emphasised: knob.isSecret
                     ),
                     GridCellText(value: knob.localMay),
                     GridCellText(value: knob.note),

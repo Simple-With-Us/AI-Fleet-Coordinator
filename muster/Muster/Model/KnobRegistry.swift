@@ -9,7 +9,10 @@ import Foundation
 /// guesses a knob that is not there.
 ///
 /// A knob's current value comes from the last-known-good copy,  which holds the
-/// non-secret knobs only.  A secret knob shows its presence and never its value.
+/// non-secret knobs only.  The copy is read under the engine's own rules,  so a
+/// copy the engine would refuse is not a reading here either.  A secret knob's
+/// presence is not something this reader can say,  because the copy never
+/// carries one.
 struct KnobRegistry {
     /// One knob, as the registry declares it.
     struct Knob: Identifiable {
@@ -37,9 +40,10 @@ struct KnobRegistry {
             case current(String)
             /// It has never been set,  so it holds its default.
             case defaultValue
-            /// It is a secret,  and the panel never shows one.
-            case secretPresent(Bool)
-            /// The copy is too old to say,  or could not be read.
+            /// It is a secret,  and the copy never carries one,  so whether it is set
+            /// is not something this reader can say.
+            case secretUnconfirmed
+            /// The copy could not be read,  so the value is not known.
             case unknown(String)
 
             /// The text the panel shows.
@@ -47,7 +51,7 @@ struct KnobRegistry {
                 switch self {
                 case .current(let value): return value
                 case .defaultValue: return "default"
-                case .secretPresent(let present): return present ? "set" : "not set"
+                case .secretUnconfirmed: return "not known (secret)"
                 case .unknown(let reason): return reason
                 }
             }
@@ -83,12 +87,24 @@ enum KnobReader {
             let secret = row.value(at: 4).lowercased() == "secret"
             let current: KnobRegistry.Knob.CurrentValue
             if secret {
-                let present = copy.knobs[name] != nil
-                current = .secretPresent(present)
-            } else if let value = copy.knobs[name] {
+                // The copy holds the non-secret knobs only,  so a secret is never in
+                // it and its absence says nothing about whether the secret is set.
+                // The panel says the presence is unconfirmed rather than reporting a
+                // secret as not set,  which would be a false statement about a
+                // credential that is very likely set.
+                current = .secretUnconfirmed
+            } else if copy.isReadable, let value = copy.knobs[name] {
                 current = .current(value)
-            } else {
+            } else if copy.isReadable {
+                // The copy is there and it does not carry this knob,  so the knob
+                // holds whatever the registry says it holds.
                 current = .defaultValue
+            } else {
+                // There is no copy to read,  so the value is not known.  Saying
+                // "default" here would claim the knob equals its default,  which
+                // is a statement the app cannot make.  A copy the engine would
+                // refuse carries no reading at all,  expired or not.
+                current = .unknown(copy.reason ?? "the copy could not be read")
             }
             return KnobRegistry.Knob(
                 name: name,
@@ -150,8 +166,32 @@ enum KnobReader {
     private struct Copy {
         let knobs: [String: String]
         let ageText: String
+        /// True when the copy is older than the engine rewrites it.
         let isStale: Bool
+        /// False when there is no copy to read,  or the engine would refuse it.
+        let isReadable: Bool
+        /// Why the copy is not readable,  when it is not.
+        let reason: String?
     }
+
+    /// How often the engine rewrites an unchanged copy,  in seconds.
+    ///
+    /// These are the engine's own numbers,  from `scripts/fleet_knobs/lkg.py`:
+    /// `REFRESH_SECONDS` and `MAX_AGE_SECONDS`.  A copy between one refresh and the
+    /// expiry is stale,  and a copy past the expiry is not a reading of anything.
+    static let refreshSeconds = 3600
+    static let maxAgeSeconds = 48 * 3600
+
+    /// The engine's own identity for a copy,  from `lkg.py` and `source.py`.
+    ///
+    /// The engine only trusts a copy that carries these,  so the panel reads it the
+    /// same way:  a copy without them is not a reading of anything,  even when it
+    /// parses and holds a plausible value.
+    static let copySchema = 1
+    static let copyProject = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
+    static let copyEnvironment = "prod"
+    /// The engine treats a copy more than this far in the future as expired.
+    static let futureToleranceSeconds = 300
 
     /// The copy the fleet's own tool wrote.
     ///
@@ -164,31 +204,56 @@ enum KnobReader {
         )
         guard
             let data = try? Data(contentsOf: path),
-            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let knobs = object["knobs"] as? [String: Any]
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
-            return Copy(knobs: [:], ageText: "no local copy", isStale: true)
+            return Copy(
+                knobs: [:],
+                ageText: "no local copy",
+                isStale: true,
+                isReadable: false,
+                reason: "no local copy"
+            )
+        }
+        // The engine accepts a copy only when it carries its own identity,  a map of
+        // knobs,  and a time.  This reader takes the same conditions,  because a copy
+        // the engine would refuse is not a reading of a knob,  and reading one anyway
+        // would put a value on the screen that the fleet's own tools do not believe.
+        let schema = (object["schema"] as? NSNumber)?.doubleValue
+        let project = object["project"] as? String
+        let environment = object["environment"] as? String
+        let knobs = object["knobs"] as? [String: Any]
+        let saved = (object["saved_epoch"] as? NSNumber)?.doubleValue
+        guard
+            schema == Double(copySchema),
+            project == copyProject,
+            environment == copyEnvironment,
+            let knobs,
+            let saved
+        else {
+            return Copy(
+                knobs: [:],
+                ageText: "not a copy this app knows",
+                isStale: true,
+                isReadable: false,
+                reason: "the copy is not one the engine wrote"
+            )
         }
         var values: [String: String] = [:]
         for (key, value) in knobs {
             if let text = value as? String { values[key] = text }
         }
-        let saved = object["saved_epoch"] as? Double
-            ?? (object["saved_at"] as? String).flatMap { parseISO($0) }
-        let age = saved.map { Int(Date().timeIntervalSince1970 - $0) } ?? 0
-        // The engine's own freshness window is a quarter of an hour,  and a copy
-        // older than that is not a current reading of the knob.
-        let stale = age > 900
+        let age = Date().timeIntervalSince1970 - saved
+        // The engine rewrites an unchanged copy every hour,  ignores one older than
+        // two days,  and treats one more than five minutes in the future as expired.
+        // The panel says the same thing the engine does.
+        let stale = age > Double(refreshSeconds)
+        let expired = age > Double(maxAgeSeconds) || age < -Double(futureToleranceSeconds)
         return Copy(
             knobs: values,
-            ageText: age <= 0 ? "just now" : FleetTime.age(age),
-            isStale: stale
+            ageText: age <= 0 ? "just now" : FleetTime.age(Int(age)),
+            isStale: stale,
+            isReadable: !expired,
+            reason: expired ? "the copy is past its expiry" : nil
         )
-    }
-
-    private static func parseISO(_ text: String) -> Double? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: text)?.timeIntervalSince1970
     }
 }
