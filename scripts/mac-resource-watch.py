@@ -15,12 +15,14 @@ import argparse
 import json
 import os
 import re
+import socket
 import ssl
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 HOME = Path.home()
@@ -64,6 +66,11 @@ LOCK_STALE_SEC = int(os.environ.get("RESOURCE_LOCK_STALE_SEC", "1800"))
 # stale after 120 minutes -- the same lock and the same age mac-auto-cleanup.sh uses.
 HOUSEKEEPER_LOCK = STATE_DIR / ".housekeeper.lock"
 HOUSEKEEPER_LOCK_STALE_SEC = int(os.environ.get("RESOURCE_HOUSEKEEPER_LOCK_STALE_SEC", "7200"))
+
+# The inode of the lock directory this process created.  The release only removes
+# that directory, so a lock that was taken over as stale while this process was
+# running is never dropped from under its new holder.
+_HOUSEKEEPER_LOCK_INODE: int | None = None
 
 
 def log(msg: str) -> None:
@@ -248,6 +255,77 @@ def load_webhooks() -> list[tuple[str, str, str]]:
     return hooks
 
 
+def _housekeeper_owner_path() -> Path:
+    """The identity file that sits BESIDE the lock directory.
+
+    It cannot live inside the lock directory: the lock is released with a
+    plain rmdir, and rmdir refuses a directory that has anything in it.  A file
+    inside the lock would make the release silently fail and leak the lock
+    forever.  This is the same path the HogHunter lock uses
+    (scripts/vacuum/lock.py), so the two read each other's owner file.
+    """
+    return HOUSEKEEPER_LOCK.with_name(HOUSEKEEPER_LOCK.name + ".owner")
+
+
+def _write_housekeeper_owner() -> None:
+    """Record who holds the lock, in the shape the HogHunter lock reads.
+
+    The pid is what makes a killed holder recoverable: the next process to ask
+    for the lock can see that the pid is gone and take over at once instead of
+    waiting out the whole stale window.  The owner file is only a hint, so
+    failing to write it must not fail the acquire; the lock itself is the
+    mutex.  It is written AFTER the lock directory, so its mtime is newer and
+    a reader can tell that it describes the current holder.
+    """
+    payload = {
+        "pid": os.getpid(),
+        "host": socket.gethostname(),
+        "acquired_at": time.time(),
+        "lock": str(HOUSEKEEPER_LOCK),
+    }
+    try:
+        _housekeeper_owner_path().write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_housekeeper_owner(only_pid: int | None = None) -> None:
+    """Remove the owner file, optionally only when it names a given pid.
+
+    The pid check keeps one holder from deleting the identity of another: if
+    our lock was taken over as stale while we were still running, the file now
+    names somebody else and we leave it alone.
+    """
+    owner_path = _housekeeper_owner_path()
+    if only_pid is not None:
+        try:
+            owner = json.loads(owner_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            owner = None
+        if isinstance(owner, dict) and int(owner.get("pid", -1)) != only_pid:
+            return
+    try:
+        owner_path.unlink()
+    except OSError:
+        pass
+
+
+def _restore_housekeeper_lock(aside: Path) -> bool:
+    """Put a moved-aside lock back without replacing anybody else's lock.
+
+    os.rename onto an existing directory fails, so the restore can never
+    clobber a lock a third reclaimer took in the meantime.  It can still fail
+    for other reasons, and then the peer's lock stays at the aside path where
+    nobody will look for it -- so the caller reports the failure rather than
+    sweeping on a lock it does not hold.
+    """
+    try:
+        os.rename(aside, HOUSEKEEPER_LOCK)
+    except OSError:
+        return False
+    return True
+
+
 def _acquire_housekeeper_lock() -> bool:
     """Take the lock every reclaiming scheduler shares, so two never reclaim at once.
 
@@ -255,37 +333,120 @@ def _acquire_housekeeper_lock() -> bool:
     mkdir exactly as mac-auto-cleanup.sh takes it, and stale after 120 minutes.  A
     caller that already holds it exports HOUSEKEEPER_LOCK_OWNER=1; then the lock is
     neither taken nor released here -- the caller keeps it for the whole run.
+
+    A stale lock is taken over by MOVING it aside.  The rename is atomic, so
+    only one caller can win the takeover, while a stat-rmdir-mkdir takeover is
+    not: two reclaimers can both judge the lock stale, one removes it and
+    creates a fresh one, and the other then removes that fresh lock and creates
+    its own, so both believe they hold it.
+
+    The staleness is decided AT THE CANONICAL PATH, before the move.  Moving a
+    live peer's lock out of the way leaves the canonical path briefly absent,
+    and a third reclaimer can mkdir it and sweep at the same time -- the double
+    sweep this lock exists to prevent.
     """
+    global _HOUSEKEEPER_LOCK_INODE
     if os.environ.get("HOUSEKEEPER_LOCK_OWNER") == "1":
         return True
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     for _ in range(2):
         try:
             HOUSEKEEPER_LOCK.mkdir()
-            return True
         except FileExistsError:
-            try:
-                age = time.time() - HOUSEKEEPER_LOCK.stat().st_mtime
-            except OSError:
-                age = 0.0
-            if age < HOUSEKEEPER_LOCK_STALE_SEC:
-                log(f"housekeeper lock held by a peer ({int(age)}s old); skipping cleanup")
+            pass
+        else:
+            _write_housekeeper_owner()
+            _HOUSEKEEPER_LOCK_INODE = _lock_inode()
+            return True
+        try:
+            age = time.time() - HOUSEKEEPER_LOCK.stat().st_mtime
+        except OSError:
+            age = 0.0
+        if age < HOUSEKEEPER_LOCK_STALE_SEC:
+            log(f"housekeeper lock held by a peer ({int(age)}s old); skipping cleanup")
+            return False
+        # The lock must be EMPTY: it is a marker, not a workspace.  A lock
+        # directory with something in it is not ours to take, and moving it
+        # aside would displace a lock we do not own.
+        try:
+            if any(HOUSEKEEPER_LOCK.iterdir()):
+                log("housekeeper lock has contents; skipping cleanup")
                 return False
-            log(f"stealing stale housekeeper lock ({int(age)}s old)")
-            try:
-                HOUSEKEEPER_LOCK.rmdir()
-            except OSError:
-                return False
+        except OSError:
+            pass
+        log(f"stealing stale housekeeper lock ({int(age)}s old)")
+        aside = HOUSEKEEPER_LOCK.with_name(
+            f"{HOUSEKEEPER_LOCK.name}.stale-{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        try:
+            os.rename(HOUSEKEEPER_LOCK, aside)
+        except OSError:
+            # Another caller won the race, or the holder released the lock
+            # between the mkdir and the rename.
+            return False
+        # The moved object may have been replaced between the staleness check
+        # and the rename; rename preserves mtime, so re-read its age.
+        try:
+            moved_age = time.time() - aside.stat().st_mtime
+        except OSError:
+            moved_age = 0.0
+        if moved_age < HOUSEKEEPER_LOCK_STALE_SEC:
+            # Fresh after all: it belongs to a live peer.  Put it back.
+            if not _restore_housekeeper_lock(aside):
+                log("failed to restore the housekeeper lock; skipping cleanup")
+            log("housekeeper lock is live after all; skipping cleanup")
+            return False
+        try:
+            aside.rmdir()
+        except OSError:
+            # Not the empty marker we made: a lock directory with something in
+            # it is not ours to take.  Put it back.
+            if not _restore_housekeeper_lock(aside):
+                log("failed to restore the housekeeper lock; skipping cleanup")
+            log("housekeeper lock has contents; skipping cleanup")
+            return False
+        try:
+            HOUSEKEEPER_LOCK.mkdir()
+        except FileExistsError:
+            # A peer took the canonical path in the window between the rename
+            # and here.  We do not hold the lock.
+            log("housekeeper lock taken by a peer during takeover; skipping cleanup")
+            return False
+        except OSError:
+            log("failed to create the housekeeper lock")
+            return False
+        _write_housekeeper_owner()
+        _HOUSEKEEPER_LOCK_INODE = _lock_inode()
+        return True
     return False
 
 
+def _lock_inode() -> int | None:
+    """The inode of the lock directory, or None when it cannot be read."""
+    try:
+        return HOUSEKEEPER_LOCK.stat().st_ino
+    except OSError:
+        return None
+
+
 def _release_housekeeper_lock() -> None:
+    """Release the lock, but only the one this process created.
+
+    A lock that was taken over as stale while this process was running is not
+    ours to remove: removing it would drop the new holder's lock while it is
+    still working.  The inode recorded at acquire time tells the two apart.
+    """
+    global _HOUSEKEEPER_LOCK_INODE
     if os.environ.get("HOUSEKEEPER_LOCK_OWNER") == "1":
         return
+    if _HOUSEKEEPER_LOCK_INODE is not None and _lock_inode() != _HOUSEKEEPER_LOCK_INODE:
+        return
+    _clear_housekeeper_owner(only_pid=os.getpid())
     try:
         HOUSEKEEPER_LOCK.rmdir()
     except OSError:
         pass
+    _HOUSEKEEPER_LOCK_INODE = None
 
 
 def run_cleanup(pressure: bool) -> int:

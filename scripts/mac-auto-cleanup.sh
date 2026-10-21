@@ -24,20 +24,124 @@ fi
 # janitor.sh as children while the parent already holds the lock.  A shared plain lock
 # would make both children exit 0 with "peer holds lock" -- cleanup would silently never
 # run while reporting success.  Callers that already hold it export HOUSEKEEPER_LOCK_OWNER=1.
+#
+# The lock is the directory ~/.claude-disk-janitor/.housekeeper.lock and it stays EMPTY:
+# it is a marker, not a workspace.  A holder that records who it is does it in the
+# SIBLING file <lock>.owner, because the release is a plain rmdir and rmdir refuses
+# a directory that has anything in it.
+#
+# Three rules make the takeover safe.  Every implementation of this lock has to agree
+# on them, because they all share one lock directory:
+#
+#   * The staleness is decided AT THE CANONICAL PATH, before anything is moved.
+#     Moving a live peer's lock out of the way leaves the canonical path briefly
+#     absent, and a third reclaimer can mkdir it and sweep at the same time --
+#     the double sweep this lock exists to prevent.
+#   * A stale lock is taken over by MOVING it aside.  Checking that a lock is
+#     stale and then removing it is two steps, and two reclaimers can interleave
+#     them: both see the stale lock, one removes it and creates a fresh one, and
+#     the other then removes that fresh, empty lock and creates its own, so both
+#     believe they hold it.  A rename is atomic, so only one caller can win it.
+#   * The release is OWNERSHIP CHECKED.  The lock remembers which directory it
+#     created, by inode, and only removes that one, so a holder whose lock was
+#     taken over as stale does not delete the new holder's lock on its way out.
+#
+# The peer in this repo is scripts/mac-resource-watch.py, which takes the same lock.
+# The other implementations of the same protocol live in HogHunter: the Python lock
+# (scripts/vacuum/lock.py) and the Swift lock (Sources/Storage/HousekeeperLock.swift).
+# The shell holder writes no owner file -- it recovers by the age rule -- so a peer
+# that reads an owner file must fall back to the age rule when the file is older
+# than the lock directory it sits beside.
 HOUSEKEEPER_LOCK="$HOME/.claude-disk-janitor/.housekeeper.lock"
+HOUSEKEEPER_STALE=""
+HOUSEKEEPER_LOCK_INODE=""
+
+# Put a moved-aside lock back, atomically and without replacing anybody else's
+# lock.  mv -n never clobbers, so it exits 0 even when it declines to move; the
+# leftover path is what tells us the restore did not happen.
+housekeeper_restore_lock() {
+    mv -n "$HOUSEKEEPER_STALE" "$HOUSEKEEPER_LOCK" 2>/dev/null || {
+        echo "failed to restore housekeeper lock" >&2
+        exit 1
+    }
+    if [ -e "$HOUSEKEEPER_STALE" ]; then
+        echo "failed to restore housekeeper lock" >&2
+        exit 1
+    fi
+}
+
 mkdir -p "$(dirname "$HOUSEKEEPER_LOCK")" 2>/dev/null || true
+
+# The trap is installed BEFORE the lock is taken, so an interrupted takeover
+# cannot leave a moved-aside copy behind, and it only ever removes the lock
+# this process created.
+trap 'if [ -n "$HOUSEKEEPER_STALE" ] && [ -e "$HOUSEKEEPER_STALE" ]; then rmdir "$HOUSEKEEPER_STALE" 2>/dev/null || true; fi; if [ -n "$HOUSEKEEPER_LOCK_INODE" ] && [ "$(stat -f %i "$HOUSEKEEPER_LOCK" 2>/dev/null || echo "")" = "$HOUSEKEEPER_LOCK_INODE" ]; then rmdir "$HOUSEKEEPER_LOCK" 2>/dev/null || true; fi' EXIT
+
 if [ "${HOUSEKEEPER_LOCK_OWNER:-0}" != "1" ]; then
     if ! mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null; then
-        # Steal a lock older than 2h -- same idiom as janitor.sh.
-        if [ -n "$(find "$HOUSEKEEPER_LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
-            rmdir "$HOUSEKEEPER_LOCK" 2>/dev/null || true
-            mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null || { echo "skipped, peer holds housekeeper lock"; exit 0; }
+        # Only an EXISTING lock is peer contention.  A mkdir that fails for any
+        # other reason -- permissions, no space -- is a real error, and
+        # reporting it as "peer holds lock" skips the cleanup silently.
+        if [ ! -e "$HOUSEKEEPER_LOCK" ] && [ ! -L "$HOUSEKEEPER_LOCK" ]; then
+            echo "failed to create housekeeper lock" >&2
+            exit 1
+        fi
+        # A peer's lock is there.  Decide staleness AT THE CANONICAL PATH
+        # first: moving a live peer's lock aside would leave the canonical
+        # path briefly absent, and a third reclaimer could mkdir it and
+        # sweep at the same time.
+        if [ -z "$(find "$HOUSEKEEPER_LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+            echo "skipped, peer holds housekeeper lock"; exit 0
+        fi
+        # The lock must be EMPTY: it is a marker, not a workspace.  A lock
+        # directory with something in it is not ours to take, and moving it
+        # aside would displace a lock we do not own.
+        if [ -n "$(find "$HOUSEKEEPER_LOCK" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
+            echo "skipped, peer holds housekeeper lock"; exit 0
+        fi
+        # It is stale.  Take it by MOVING it aside: rename is atomic, so only
+        # one caller can win the takeover.
+        HOUSEKEEPER_STALE="$HOUSEKEEPER_LOCK.stale-$$.$RANDOM"
+        while [ -e "$HOUSEKEEPER_STALE" ]; do
+            HOUSEKEEPER_STALE="$HOUSEKEEPER_LOCK.stale-$$.$RANDOM"
+        done
+        if mv "$HOUSEKEEPER_LOCK" "$HOUSEKEEPER_STALE" 2>/dev/null; then
+            # The moved object may have been replaced between the check and the
+            # rename; rename preserves mtime, so re-read its age.
+            if [ -z "$(find "$HOUSEKEEPER_STALE" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+                # Fresh after all: it belongs to a live peer.  Put it back.
+                housekeeper_restore_lock
+                echo "skipped, peer holds housekeeper lock"; exit 0
+            fi
+            if [ -n "$(find "$HOUSEKEEPER_STALE" -mindepth 1 -maxdepth 1 2>/dev/null | head -1)" ]; then
+                # Not the empty marker we made.  Put it back.
+                housekeeper_restore_lock
+                echo "skipped, peer holds housekeeper lock"; exit 0
+            fi
+            if ! rmdir "$HOUSEKEEPER_STALE" 2>/dev/null; then
+                # The copy is ours to drop and it is empty, but the removal
+                # failed anyway.  Put it back rather than sweep on a lock we
+                # do not hold.
+                housekeeper_restore_lock
+                echo "skipped, peer holds housekeeper lock"; exit 0
+            fi
+            if ! mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null; then
+                if [ -e "$HOUSEKEEPER_LOCK" ]; then
+                    echo "skipped, peer holds housekeeper lock"; exit 0
+                fi
+                echo "failed to create housekeeper lock" >&2
+                exit 1
+            fi
         else
+            # Nothing to move: another caller won the race, or the holder
+            # released the lock between the mkdir and the move.
             echo "skipped, peer holds housekeeper lock"; exit 0
         fi
     fi
+    # Remember WHICH directory this process created, so the release only ever
+    # removes that one and never a lock a peer took over from us.
+    HOUSEKEEPER_LOCK_INODE="$(stat -f %i "$HOUSEKEEPER_LOCK" 2>/dev/null || echo '')"
     export HOUSEKEEPER_LOCK_OWNER=1
-    trap 'rmdir "$HOUSEKEEPER_LOCK" 2>/dev/null || true' EXIT
 fi
 
 echo "[$(date)] Starting Mac automated cleanup${PRESSURE:+ (pressure)}..."

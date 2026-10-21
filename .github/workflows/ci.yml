@@ -357,6 +357,23 @@ jobs:
     - name: Mac resource watch tests
       run: bash scripts/test-mac-resource-watch.sh
 
+  mac-scripts:
+    name: Mac scripts
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v7
+    # The maintenance scripts that run on Jay's Mac, and their contracts.
+    # They have to run on macOS: the scripts use BSD stat and BSD find, and
+    # the tests assert on the inode of the lock directory, which is what tells
+    # a live peer's lock apart from one this process created.  The Ubuntu test
+    # job cannot run them, so this job is where they actually run -- before
+    # this one existed the cleanup lock contract was never exercised in CI at
+    # all, and its assertions were decoration.
+    - name: Mac cleanup script tests
+      run: bash scripts/test-mac-auto-cleanup.sh
+    - name: Mac resource watch tests
+      run: bash scripts/test-mac-resource-watch.sh
+
   muster-macos-build:
     name: Muster macOS build
     runs-on: macos-latest
