@@ -474,7 +474,7 @@ jobs:
         id: fix
         if: steps.guard.outputs.should_fix == 'true'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
           ANTHROPIC_MODEL: ${{ steps.trusted.outputs.model }}
           ANTHROPIC_SMALL_FAST_MODEL: ${{ steps.trusted.outputs.model }}
           MAX_TURNS: ${{ steps.trusted.outputs.max_turns }}

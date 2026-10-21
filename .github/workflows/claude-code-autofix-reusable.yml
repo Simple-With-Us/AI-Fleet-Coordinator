@@ -100,8 +100,9 @@ on:
       # absent from the MiniMax Code runtime catalog can still be a valid public API id, and an
       # id must never be rewritten from one route's evidence; the fleet recall contribution
       # contrib/MM/2026-10-19/f11f7046 records that lesson, and it is a recall id rather than
-      # a path in this repository.  The retired spelling is named here in a comment and never
-      # as a value.
+      # a path in this repository.  The retired spelling itself is named only in
+      # .github/pr-autofix-trusted.yml;  in these workflows it never appears, even in a
+      # comment,  and it must never appear as a value.
       model:
         required: false
         type: string
