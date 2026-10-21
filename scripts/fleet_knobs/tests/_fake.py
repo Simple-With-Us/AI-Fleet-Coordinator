@@ -28,6 +28,12 @@ with open(cfg["calls"], "a") as fh:
 if cfg.get("tokens"):
     with open(cfg["tokens"], "a") as fh:
         fh.write(json.dumps(os.environ.get("INFISICAL_TOKEN")) + "\\n")
+if cfg.get("automation"):
+    with open(cfg["automation"], "a") as fh:
+        fh.write(json.dumps({{
+            "id": os.environ.get("INFISICAL_AUTOMATION_CLIENT_ID"),
+            "secret": os.environ.get("INFISICAL_AUTOMATION_CLIENT_SECRET"),
+        }}) + "\\n")
 mode = cfg["mode"]
 if mode == "fail":
     sys.stderr.write("fake infisical: boom " + cfg.get("leak", "") + "\\n")
@@ -57,6 +63,7 @@ class FakeInfisical:
         self.config = root / "fake-config.json"
         self.calls_file = root / "calls.jsonl"
         self.tokens_file = root / "tokens.jsonl"
+        self.automation_file = root / "automation.jsonl"
         exe = self.bin_dir / "infisical"
         exe.write_text(SCRIPT.format(python=sys.executable))
         exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
@@ -69,6 +76,7 @@ class FakeInfisical:
             "shape": shape,
             "calls": str(self.calls_file),
             "tokens": str(self.tokens_file),
+            "automation": str(self.automation_file),
         }
         cfg.update(extra)
         self.config.write_text(json.dumps(cfg))
@@ -83,6 +91,12 @@ class FakeInfisical:
         if not self.calls_file.exists():
             return []
         return [json.loads(line) for line in self.calls_file.read_text().splitlines() if line]
+
+    def automation_seen(self) -> list:
+        """The automation pair each CLI call actually received (None when absent)."""
+        if not self.automation_file.exists():
+            return []
+        return [json.loads(line) for line in self.automation_file.read_text().splitlines() if line]
 
 
 class KnobTestCase(unittest.TestCase):
@@ -105,6 +119,11 @@ class KnobTestCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         for var in source.ENV_NAMES:
+            os.environ.pop(var, None)
+        # The automation pair too:  these tests set whichever half they mean to set, and an
+        # ambient pair on the host (the Hetzner server exports it) would make a half-set case
+        # look complete and flip the reason token.
+        for var in (source.ENV_AUTOMATION_ID, source.ENV_AUTOMATION_SECRET):
             os.environ.pop(var, None)
         fallback = mock.patch.object(source, "FALLBACK_DIRS", ())
         fallback.start()

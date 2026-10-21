@@ -37,6 +37,8 @@ Exactly three, spelled `L0`, `L1`, `L2` (`types.py` `ProofLevel`, ordered by `ra
 | L1 | A synthetic PreToolUse payload that attempts a write into a sentinel lane is piped into the installed hook, and the hook must deny it | Every `status` run, for `hooks` rules that require it |
 | L2 | A headless platform canary (such as `claude -p` or `codex exec`) runs in a throwaway lane with a read-only prompt, showing the platform actually loads the hook | Only `status --prove l2`, or a daily job;  it costs a model turn, so it never runs by default |
 
+The L1 payload carries the tool name the platform runtime really delivers, and the sentinel set covers the file tools as well as the shell tools (AFC-416).  A Claude-flavoured sentinel that names only `Bash` lets a broken matcher pass while the seat is unguarded (MiniMax delivers `bash` on `mcode exec` and `Bash` in the Desktop app), so the probe sends every native shell spelling for its platform and every native file tool (`Write`/`Edit` with `file_path`, `write`/`edit` with `path`), and all of them must deny.  A guard that ignores file payloads fails open (ALLOW), which the probe correctly folds into DRIFT.
+
 Two invariants keep `UNPROVEN` rare by construction.  Only `hooks` rules may require `L1` or `L2` in Phase 2, and the manifest loader's validation rejects a higher requirement on any other kind.  An `L2` rule must set `ttlSeconds` to at least 86400, so a daily canary can stay fresh between runs.
 
 ### 3.3 Config Kinds, Collectors And Platforms
@@ -215,7 +217,7 @@ Every path in the example is a placeholder, written as an angle-bracket token su
 
 ### 6.1 Rule Fields
 
-Every rule carries exactly these fields (camelCase in JSON, snake_case in `types.py` `Rule`):  `id`, `kind`, `platforms`, `check`, `expected`, `proofLevel`, `ownerSeat`, `autofixAllowed`, `collector` and `ttlSeconds`, plus an optional `description`.  This is the Muse Assist rule shape (`id`, `platforms`, `check`, expected state, owner seat, autofix allowed) with two Phase 2 additions:  `proofLevel` and `collector`.
+Every rule carries exactly these fields (camelCase in JSON, snake_case in `types.py` `Rule`):  `id`, `kind`, `platforms`, `check`, `expected`, `proofLevel`, `ownerSeat`, `autofixAllowed`, `collector` and `ttlSeconds`, plus an optional `description` and an optional `source` (AFC-416).  This is the Muse Assist rule shape (`id`, `platforms`, `check`, expected state, owner seat, autofix allowed) with three Phase 2 additions:  `proofLevel`, `collector` and `source`.  `source` is provenance only and never affects the verdict:  a standing directive plus date, or a Zulip topic message id citing the seat reply the rule came from (AFC-384 requires the review to cite MM's answers at 633125365 and 633197144, the delta at 633215586, and the sharpened answers at 633216022).
 
 | Field | Meaning |
 |---|---|
@@ -229,6 +231,9 @@ Every rule carries exactly these fields (camelCase in JSON, snake_case in `types
 | `autofixAllowed` | The only permission the apply side has;  false means report only, forever, until a human edits the manifest |
 | `collector` | `mac` in Phase 2;  `vm`, `hetzner` and `api` reserved |
 | `ttlSeconds` | How long a result stays fresh;  default 900;  at least 86400 for an `L2` rule |
+| `source` | Provenance only:  standing directive plus date, or Zulip message id;  empty when uncited |
+
+A file that fits none of the six kinds (AFC-416 Finding 3:  MiniMax channel and identity YAMLs, `mcp-runtime-names.json`, `review-links.json`, unbounded `background-tasks/` state) is not a seventh kind.  It is named in the seat's `uncovered` list, as `{surface, reason}`,  never by silence and never by forcing it into a kind it does not fit;  a later phase that grows the kinds can move a surface out of the list and into a rule.  The list is its own field because a `notApplicable` cover carries a kind,  and a cover for a surface that fits no kind would have to name one anyway.  The app renders the list,  so the surface is visible as knowingly blind rather than accidentally unchecked,  and the list produces no result and no verdict:  it is the honest statement that the surface is not checked,  and the reason says why.
 
 ### 6.2 Where A Seat Entry Comes From
 
@@ -251,7 +256,7 @@ Coverage is a validation rule, enforced by `manifest.py` `validate_coverage()`:
 
 ## 8. The `status --json` Envelope
 
-`contract.py` `SCHEMA_VERSION` is the integer 1, pinned by a contract test.  A breaking envelope change raises it deliberately and updates this document in the same commit.  The envelope is one flat `results` list;  consumers group by seat, platform and kind.  It carries no second grouped copy that could disagree with the flat list.
+`contract.py` `SCHEMA_VERSION` is the integer 1, pinned by a contract test.  A breaking envelope change raises it deliberately and updates this document in the same commit;  a version never changes in place.  The envelope carries a flat `uncovered` list of `{seat, surface, reason}` beside the flat `results` list,  for the same reason the results list is flat:  two flat lists cannot disagree with each other.  Adding that list did not raise the version,  because the consumer that exists  (the Muster app's decoder)  ignores unknown fields,  so a new top-level key is additive for it and not a breaking change;  the version moves when a field's meaning changes,  or when a consumer has to be told.  A breaking envelope change raises it deliberately and updates this document in the same commit.  The envelope is one flat `results` list;  consumers group by seat, platform and kind.  It carries no second grouped copy that could disagree with the flat list.
 
 ```json
 {
@@ -381,7 +386,7 @@ That runner covers the apply side too, not only the checks:  the MAC level docto
 
 ## 13. Testing
 
-Each implementer lands tests with their module, under `scripts/fleet_config/tests/`, in the `fleet_knobs` style (temp dirs, fake executables on `PATH`, no network, no real home).  Four contract-level tests are pinned by this design and are not optional:
+Each implementer lands tests with their module, under `scripts/fleet_config/tests/`, in the `fleet_knobs` style (temp dirs, fake executables on `PATH`, no network, no real home).  Four contract-level tests are pinned by this design and are not optional,  and they live together in `scripts/fleet_config/tests/test_contract_pins.py` so that a reader who greps for a pinned name finds it:
 
 1. `test_schema_version_is_pinned` asserts `contract.SCHEMA_VERSION` is exactly 1 and that a built envelope carries it.
 2. `test_envelope_never_carries_a_secret` builds a report over a credential rule and asserts the serialized envelope holds the mode, size and mtime, and no file contents (the fixture writes a known sentinel string as contents and asserts its absence).

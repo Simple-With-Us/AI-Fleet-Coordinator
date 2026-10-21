@@ -179,6 +179,11 @@ def main(argv: list[str] | None = None) -> None:
 
     print("\nUpload packs: docs/fleet-skills/by-seat/<seat>/")
     for seat in catalog_seats():
+        if seat.retired:
+            #  A retired seat's catalog copy is history, not a live tree:  re-rendering it
+            #  would write new text into a seat nobody runs.  Leave it as it was.
+            print(f"  {seat.tag:12}  {seat.seat_key}  (retired; catalog copy left as-is)")
+            continue
         key = seat.seat_key or seat.tag.lower()
         seat_root = os.path.join(BY_SEAT, key)
         written = _install_skill_set(seat_root, sources, seat, zip_each=True)

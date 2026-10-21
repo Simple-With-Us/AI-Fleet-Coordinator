@@ -330,10 +330,16 @@ class BridgeWorkerTest(unittest.TestCase):
         self.assertEqual(state["decisions"], {})
 
     def test_deliver_reuses_cached_catalog_without_forced_rescan(self) -> None:
+        self._exercise_cached_delivery("GROK", "grok-leader")
+
+    def test_deliver_supports_exact_native_codex_destination(self) -> None:
+        self._exercise_cached_delivery("CODEX", "codex")
+
+    def _exercise_cached_delivery(self, destination, platform) -> None:
         fresh_row = {
             "id": "t1",
-            "seat": "GROK",
-            "platform": "cursor",
+            "seat": destination,
+            "platform": platform,
             "host": "mac",
             "session_id": "s1",
             "cwd": "/tmp",
@@ -369,11 +375,13 @@ class BridgeWorkerTest(unittest.TestCase):
             def request(self, command: str, body: object) -> dict:
                 return {"receipt": "r1"}
 
-        cfg = _mac_config("ECHO", "GROK")
+        cfg = _mac_config("ECHO", destination)
         self.daemon.config = cfg
         self.daemon.clock = types.SimpleNamespace(time=time.time)
         self.daemon.chat_queue = lambda seat: FakeQueue()
-        self.daemon.seats = {"GROK": types.SimpleNamespace(cfg=types.SimpleNamespace(enabled=True))}
+        self.daemon.seats = {
+            destination: types.SimpleNamespace(cfg=types.SimpleNamespace(enabled=True))
+        }
         self.bridge.catalog = catalog
         self.bridge.exchange = FakeExchange()
         item = {
@@ -391,13 +399,18 @@ class BridgeWorkerTest(unittest.TestCase):
         decision = {
             "kind": "chat",
             "target_id": "t1",
-            "target": {"platform": "cursor", "host": "mac", "session_id": "s1", "cwd": "/tmp"},
-            "destination_seat": "GROK",
+            "target": {"platform": platform, "host": "mac", "session_id": "s1", "cwd": "/tmp"},
+            "destination_seat": destination,
         }
         self.bridge._deliver(item, decision, remote=True)
         self.assertEqual(catalog.forced, 0)
         self.assertEqual(len(enqueued), 1)
         self.assertEqual(enqueued[0][2].get("source_seat"), "ECHO")
+        if destination == "CODEX":
+            fresh_row["platform"] = "cursor-cloud"
+            with self.assertRaises(MBM.DeliveryRefused):
+                self.bridge._deliver(item, decision, remote=True)
+            fresh_row["platform"] = platform
         # A cache miss still forces exactly one rescan before refusing the delivery.
         missing = dict(decision, target_id="gone")
         with self.assertRaises(ValueError):

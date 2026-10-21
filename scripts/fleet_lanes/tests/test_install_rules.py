@@ -1143,10 +1143,10 @@ def _load_seat_block_checker():
 
 
 class FleetBasicsTests(HomeCase):
-    """Clutch, Kimi, Vibe and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
+    """Clutch, Kimi and Copilot CLI get the Fleet Basics ahead of the Lane Map in one marker block."""
 
     NEW = {"clutch": (".clutch/dsh/AGENTS.md", "clutch"), "kimi": (".kimi-code/AGENTS.md", "nodefault"),
-           "vibe": (".vibe/AGENTS.md", "nodefault"), "copilot": (".copilot/copilot-instructions.md", "nodefault")}
+           "copilot": (".copilot/copilot-instructions.md", "nodefault")}
 
     def test_the_new_platforms_name_their_file_and_variant(self) -> None:
         for name, (rel, variant) in self.NEW.items():
@@ -1229,15 +1229,15 @@ class FleetBasicsTests(HomeCase):
         self.assertFalse(os.path.exists(self.path(".config/opencode")))
 
     def test_the_owners_own_text_survives_and_a_backup_is_made(self) -> None:
-        owner = "# My Vibe notes\n\nKeep answers short.\n"
-        self.write(".vibe/AGENTS.md", owner)
-        code, out, err = self.run_cli("apply", "vibe")
+        owner = "# My Kimi notes\n\nKeep answers short.\n"
+        self.write(".kimi-code/AGENTS.md", owner)
+        code, out, err = self.run_cli("apply", "kimi")
         self.assertEqual(code, IR.EXIT_OK, out + err)
-        text = self.read(".vibe/AGENTS.md")
+        text = self.read(".kimi-code/AGENTS.md")
         self.assertTrue(text.startswith(owner + "\n" + IR.BEGIN_PREFIX))
-        backups = [n for n in self.files_in(".vibe") if ".bak-lane-map-" in n]
+        backups = [n for n in self.files_in(".kimi-code") if ".bak-lane-map-" in n]
         self.assertEqual(len(backups), 1)
-        self.assertEqual(self.read(".vibe/" + backups[0]), owner)
+        self.assertEqual(self.read(".kimi-code/" + backups[0]), owner)
 
     def test_clutch_is_capped_at_64_kib_and_a_big_file_is_refused(self) -> None:
         self.write(".clutch/dsh/AGENTS.md", "x" * (64 * 1024 + 10))
@@ -1323,8 +1323,8 @@ class FleetBasicsTests(HomeCase):
                 self.assertEqual(os.listdir(self.home), [])
 
     def test_short_names_resolve(self) -> None:
-        names = [p.name for p in IR.resolve_platform_names(["mc", "muse", "kimi-code", "mistral-vibe", "copilot-cli", "dsh"])]
-        self.assertEqual(names, ["muse-code", "kimi", "vibe", "copilot", "clutch"])
+        names = [p.name for p in IR.resolve_platform_names(["mc", "muse", "kimi-code", "copilot-cli", "dsh"])]
+        self.assertEqual(names, ["muse-code", "kimi", "copilot", "clutch"])
 
 
 # --------------------------------------------------------------------------- command line

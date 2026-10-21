@@ -13,7 +13,7 @@ scripts/apple-notes-coding.sh.  This module is the shared half of the two ways a
 An envelope is one fenced JSON block in a message:
 
     ```json
-    {"v":1,"action":"create","title":"[AFC, Claude] topic","markdown":"...","flags":{"pin":true},
+    {"v":1,"action":"create","title":"[AFC, CLAUDE] Topic","markdown":"...","flags":{"pin":true},
      "request_id":"nr0123456789abcdef0123","identity":"CLAUDE"}
     ```
 
@@ -68,14 +68,26 @@ UPLOAD_MAX = 1024 * 1024
 INLINE_JSON_MAX = 8500  # an envelope longer than this (as JSON) travels as an uploaded .md file
 ENVELOPE_PARSE_MAX = 20_000  # the longest message body the parser looks at
 SCRIPT_NAME = "apple-notes-coding.sh"
-SCRIPT_TIMEOUT_S = 120.0
+#  The helper wraps its Notes calls in a 900 s AppleEvent timeout (NOTES_APPLE_EVENT_TIMEOUT_S in
+#  scripts/apple-notes-coding.sh),  because a body the size of the master list takes longer than
+#  AppleScript's two-minute default.  This cap has to sit above that timeout:  a cap below it
+#  kills the write while osascript is still working,  and the later completion creates a second
+#  note.  It has to sit above the pin phase that follows the write as well (about 100 s:  the
+#  Shortcut runs are bounded by NOTES_SHORTCUT_TIMEOUT_S):  a cap that cuts the pin phase short
+#  reports outcome_unknown for a note that was written,  and the request id is then refused.
+#  The wait for the run lock is counted inside this cap:  a request waits LOCK_WAIT_S for the
+#  lock and the script then gets what is left of it,  so the whole request stays inside the cap
+#  instead of outliving it by the wait.
+#  scripts/test_apple_notes_timeout.py holds the two together (AFC-436).
+SCRIPT_TIMEOUT_S = 1080.0
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 UPLOAD_PATH_RE = re.compile(r"^/user_uploads/[A-Za-z0-9_./-]{1,200}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
 _TITLE_BAD_RE = re.compile(r'["\\\x00-\x1f\x7f\x85\u2028\u2029]')
 _PR_RE = re.compile(r"^[0-9#, ]{1,40}$")
-_BRACKET_RE = re.compile(r"^\[([^\]]+)\] \S")
-_APPS_RE = re.compile(r"^[A-Z0-9]+(?:, [A-Z0-9]+)*$")
+_BRACKET_RE = re.compile(
+    r"\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*)\] \S.*"
+)
 _FENCE_OPEN = "```json\n"
 _FENCE_CLOSE = "\n```"
 
@@ -96,7 +108,7 @@ CHILD_ENV_KEYS = (
     #  knob (whether the script may run the pin Shortcut twice;  a miss can pop a note
     #  picker).  It can only turn the retry off, never on.  Listed here because the
     #  allow-list is otherwise the only thing that decides reachability, and this
-    #  caller drives the script under a lock and a 120 s timeout (AFC-431).
+    #  caller drives the script under a lock and the SCRIPT_TIMEOUT_S cap (AFC-431).
     "APPLE_NOTES_PIN_RETRY",
 )
 
@@ -147,12 +159,17 @@ def check_title(raw: Any) -> str:
     if not title.startswith("["):
         raise NotesError(
             "invalid_argument",
-            "argument 'title' must start with [APP, Agent], such as \"[AFC, Claude] topic\"",
+            "argument 'title' must start with [TEAM_KEY, Agent], such as \"[AFC, Claude] Topic\"",
         )
     if _TITLE_BAD_RE.search(title):
         raise NotesError(
             "invalid_argument",
             "argument 'title' must not hold a double quote, a backslash or a control character",
+        )
+    if title_agent(title) is None:
+        raise NotesError(
+            "invalid_argument",
+            'argument \'title\' must read "[TEAM_KEY, Agent] Topic", such as "[AFC, Claude] Topic"',
         )
     return title
 
@@ -320,17 +337,17 @@ def relay_consumer(
 
 
 # --------------------------------------------------------------------------------------------
-# The Agent in a title
+# The Seat Tag in a title
 # --------------------------------------------------------------------------------------------
 
 
 def _notes_names(
     identity: str, registry_path: str | None, env: Mapping[str, str] | None
 ) -> set[str]:
-    """Every spelling of `identity`'s Agent name a title may carry, case folded:  its fleet-apps.json
-    `notesName` (Claude, Grok Web, Muse Assist), the tag itself (CLAUDE, GROK-WEB, BF-DEPLOYER, GB-FIXER)
-    and the tag with spaces for hyphens."""
-    names = {identity.casefold(), identity.replace("-", " ").casefold()}
+    """Exact canonical display names from the registry, plus the compatible uppercase tag."""
+    names = {identity}
+    if identity in {"CODEX", "CLAUDE"}:
+        names.add(identity.title())
     path = registry_path or I.seat_registry_path(env)
     try:
         with open(path, encoding="utf-8") as fh:
@@ -343,23 +360,16 @@ def _notes_names(
             and str(row.get("tag") or "").upper() == identity
             and isinstance(row.get("notesName"), str)
         ):
-            names.add(row["notesName"].strip().casefold())
+            names.add(row["notesName"].strip())
     return names
 
 
 def title_agent(title: str) -> tuple[str, str] | None:
-    """(apps, agent) from `[APP, APP2, Agent] topic`, or None when the title has no such shape.  The
-    apps are the capitalised acronyms before the last comma, the agent is what follows it."""
-    match = _BRACKET_RE.match(title)
-    if not match:
+    """Return uppercase scope keys and the agent name from the closed title grammar."""
+    if _TITLE_BAD_RE.search(title):
         return None
-    inner = match.group(1)
-    if ", " not in inner:
-        return None
-    apps, agent = inner.rsplit(", ", 1)
-    if not _APPS_RE.match(apps) or not agent.strip():
-        return None
-    return apps, agent.strip()
+    match = _BRACKET_RE.fullmatch(title)
+    return (match.group(1), match.group(2)) if match else None
 
 
 def title_problem(
@@ -369,11 +379,11 @@ def title_problem(
     registry_path: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> str | None:
-    """None when the title's Agent is `identity`'s own name, else why not."""
+    """None only when the title carries the sender's canonical display name or compatible uppercase seat tag."""
     parts = title_agent(title)
     if parts is None:
-        return 'the title must read "[APP, Agent] topic" with the app acronyms in capitals'
-    if parts[1].casefold() not in _notes_names(identity, registry_path, env):
+        return 'the title must read "[TEAM_KEY, Agent] Topic" with uppercase team keys and the canonical agent display name'
+    if parts[1] not in _notes_names(identity, registry_path, env):
         return 'the title names agent "%s", which is not %s' % (parts[1][:40], identity)
     return None
 
@@ -559,6 +569,12 @@ Runner = Callable[..., "subprocess.CompletedProcess[bytes]"]
 _RUN_LOCK = (
     threading.Lock()
 )  # one osascript at a time:  Notes.app is a single shared document store
+#  How long a request waits for that lock.  The lock is held for the whole write,  and the write
+#  budget is SCRIPT_TIMEOUT_S,  so a wedged write would hold it for that long;  the wait has its
+#  own bound,  and a request that cannot get the lock is told the notes are busy instead of
+#  waiting the whole budget out (AFC-436).  The wait is counted inside SCRIPT_TIMEOUT_S:  the
+#  script gets the cap minus this wait,  so a request never outlives the cap by the wait.
+LOCK_WAIT_S = 60.0
 
 
 def script_candidates(env: Mapping[str, str], home: Path) -> list[Path]:
@@ -654,7 +670,7 @@ def with_provenance(
 ) -> dict:
     """The envelope with a footer saying who asked for the note and where (AFC-331, owner 2026-10-18).
 
-    Apple Notes has no authorship, so a title like `[APP, Agent]` is only text.  The relay stamps every note it
+    Apple Notes has no authorship, so a title like `[TEAM_KEY, Agent]` is only text.  The relay stamps every note it
     creates or updates with the requesting bot and a permalink to its #notes-relay message, so any relayed note can
     be checked against Zulip, and a note without the footer is visibly unverified.  Pin and unpin carry no body."""
     if envelope.get("action") not in ("create", "update"):
@@ -703,7 +719,8 @@ def run_direct(
 ) -> dict[str, Any]:
     """Run the script for `envelope` (markdown already inline).  Returns {"status": "done", "note_id": ...}
     or raises NotesError.  The body goes on stdin (markdown) or in a mode-600 temporary file (HTML);  never
-    on the command line."""
+    on the command line.  The timeout is the budget for the whole request:  the script gets it minus
+    the wait for the run lock."""
     action = envelope["action"]
     flags = envelope.get("flags") or {}
     markdown = str(envelope.get("markdown") or "")
@@ -722,16 +739,29 @@ def run_direct(
             else:
                 stdin_data = markdown.encode("utf-8")
         argv, extra = build_argv(script, envelope, html_file)
+        #  The lock wait is counted inside the cap:  the script gets the cap minus the wait,  so
+        #  the whole request (the wait and the run) stays inside it.  A request that could wait
+        #  the lock out and then take the full cap would outlive the budget the timeout test
+        #  holds together (AFC-436).
+        child_timeout = max(1.0, timeout - LOCK_WAIT_S)
         try:
-            with _RUN_LOCK:
+            if not _RUN_LOCK.acquire(timeout=LOCK_WAIT_S):
+                raise NotesError(
+                    "unavailable",
+                    "another notes write is still running, so this one was refused as busy; "
+                    "try again in a moment",
+                )
+            try:
                 proc = (runner or subprocess.run)(
                     argv,
                     input=stdin_data if stdin_data is not None else b"",
                     capture_output=True,
-                    timeout=timeout,
+                    timeout=child_timeout,
                     env=child_env(env, extra),
                     check=False,
                 )
+            finally:
+                _RUN_LOCK.release()
         except subprocess.TimeoutExpired:
             # A timeout does not prove nothing was written (the script may have created the note and then hung),
             # so it is an unknown outcome, never a safe failure that a retry may repeat.
@@ -739,7 +769,7 @@ def run_direct(
                 "outcome_unknown",
                 "the notes script did not finish within %d seconds, so the note may or may not "
                 "have been written.  Check the Coding folder before sending it again."
-                % int(timeout),
+                % int(child_timeout),
             ) from None
         except OSError as exc:
             raise NotesError(

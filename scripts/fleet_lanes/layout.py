@@ -54,7 +54,8 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass, replace as _dc_replace
+from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
@@ -75,23 +76,75 @@ except ImportError:  # Python 3.9 and 3.10, including macOS /usr/bin/python3
         __format__ = str.__format__
 
 __all__ = [
-    "DEFAULT_LAYOUT", "LAYOUT_FLAT", "LAYOUT_NESTED", "LayoutError",
-    "LocationClass", "NameVerdict", "BranchVerdict",
-    "App", "Seat", "Registry", "EXTRA_APPS", "APP_PREFIX_ALIASES",
-    "default_registry_path", "load_registry", "parse_registry",
-    "CANONICAL_SEATS", "SEAT_ALIASES", "ROLE_TOKENS",
-    "seat_alias_map", "canonical_seat_set", "normalize_seat", "is_alias_only", "is_known_seat",
-    "HarnessLocation", "Roots", "make_roots", "make_guard_roots", "make_tmp_roots", "is_forbidden_tmp",
-    "resolve_path", "real_key", "dedupe_paths", "classify_location", "lane_root",
-    "ENV_LANES_EXTERNAL_ROOT", "DEFAULT_EXTERNAL_LANES_ROOT", "to_logical", "display_path", "logical_fold",
-    "is_external_path", "external_links", "ExternalLink",
-    "validate_slug", "is_valid_slug", "is_valid_repo_dir", "validate_repo_dir",
-    "lane_dir_name", "nested_dir_name", "branch_name",
-    "review_dir_name", "is_review_dir_name", "is_desktop_dir_name", "review_lane_path",
-    "expected_lane_path", "LaneNameResult", "explain_lane_name", "check_lane_name",
-    "LayoutStatus", "LayoutResult", "STATUS_LABELS", "explain_layout",
-    "check_branch_name", "seat_from_branch", "upgrade_with_branch",
-    "CODEX_DIR", "CONDUCTOR_DIR", "LEGACY_MANAGED_DIR", "LEGACY_REVIEW_DIR", "REVIEW_PREFIX",
+    "APP_PREFIX_ALIASES",
+    "CANONICAL_SEATS",
+    "CODEX_DIR",
+    "CONDUCTOR_DIR",
+    "DEFAULT_EXTERNAL_LANES_ROOT",
+    "DEFAULT_LAYOUT",
+    "ENV_LANES_EXTERNAL_ROOT",
+    "EXTRA_APPS",
+    "LAYOUT_FLAT",
+    "LAYOUT_NESTED",
+    "LEGACY_MANAGED_DIR",
+    "LEGACY_REVIEW_DIR",
+    "REVIEW_PREFIX",
+    "ROLE_TOKENS",
+    "SEAT_ALIASES",
+    "STATUS_LABELS",
+    "App",
+    "BranchVerdict",
+    "ExternalLink",
+    "HarnessLocation",
+    "LaneNameResult",
+    "LayoutError",
+    "LayoutResult",
+    "LayoutStatus",
+    "LocationClass",
+    "NameVerdict",
+    "Registry",
+    "Roots",
+    "Seat",
+    "branch_name",
+    "canonical_seat_set",
+    "check_branch_name",
+    "check_lane_name",
+    "classify_location",
+    "dedupe_paths",
+    "default_registry_path",
+    "display_path",
+    "expected_lane_path",
+    "explain_lane_name",
+    "explain_layout",
+    "external_links",
+    "is_alias_only",
+    "is_desktop_dir_name",
+    "is_external_path",
+    "is_forbidden_tmp",
+    "is_known_seat",
+    "is_review_dir_name",
+    "is_valid_repo_dir",
+    "is_valid_slug",
+    "lane_dir_name",
+    "lane_root",
+    "load_registry",
+    "logical_fold",
+    "make_guard_roots",
+    "make_roots",
+    "make_tmp_roots",
+    "nested_dir_name",
+    "normalize_seat",
+    "parse_registry",
+    "real_key",
+    "resolve_path",
+    "review_dir_name",
+    "review_lane_path",
+    "seat_alias_map",
+    "seat_from_branch",
+    "to_logical",
+    "upgrade_with_branch",
+    "validate_repo_dir",
+    "validate_slug",
 ]
 
 DEFAULT_OWNER = "Simple-With-Us"
@@ -398,7 +451,7 @@ def _as_str(value: object, default: str = "") -> str:
 
 
 @lru_cache(maxsize=64)
-def _compiled_alias(pattern: str) -> "re.Pattern[str] | None":
+def _compiled_alias(pattern: str) -> re.Pattern[str] | None:
     """The registry's aliasPattern, compiled case-insensitive and ASCII-only.  A pattern that does not
     compile is skipped, so one bad row never stops the lane tool from loading."""
     if not pattern:
@@ -424,7 +477,7 @@ def parse_registry(data: Mapping[str, object], *, include_extras: bool = True, s
     for item in raw_apps if isinstance(raw_apps, list) else []:
         if not isinstance(item, dict):
             continue
-        repo = _as_str(item.get("repo")) or _as_str(item.get("name"))
+        repo = _as_str(item.get("repo")) or _as_str(item.get("name")) or _as_str(item.get("codeDir"))
         if not repo:
             continue
         apps.append(App(
@@ -1522,8 +1575,7 @@ def check_branch_name(branch: str | None, registry: Registry) -> BranchVerdict:
     if branch is None or not branch.strip():
         return BranchVerdict.DETACHED
     b = branch.strip()
-    if b.startswith("refs/heads/"):
-        b = b[len("refs/heads/"):]
+    b = b.removeprefix("refs/heads/")
     if b == "HEAD":
         return BranchVerdict.DETACHED
     if b in ("main", "master"):
@@ -1549,8 +1601,7 @@ def seat_from_branch(branch: str | None, registry: Registry) -> str | None:
     if not branch:
         return None
     b = branch.strip()
-    if b.startswith("refs/heads/"):
-        b = b[len("refs/heads/"):]
+    b = b.removeprefix("refs/heads/")
     for seat in registry.seats:
         for bp in seat.branch_prefixes:
             if b.startswith(bp) and len(b) > len(bp):

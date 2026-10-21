@@ -67,7 +67,6 @@ RULES_FILES: dict[str, str] = {
     "cursor": ".cursor/rules/fleet-lane-map.mdc",
     "clutch": ".clutch/dsh/AGENTS.md",
     "kimi": ".kimi-code/AGENTS.md",
-    "vibe": ".vibe/AGENTS.md",
     "opencode": ".config/opencode/AGENTS.md",
 }
 

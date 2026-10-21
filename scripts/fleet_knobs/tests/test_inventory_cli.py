@@ -51,6 +51,8 @@ PLAN_KEYS = {
     "FLEET_FACTS_PUBLISH_CAP_MINUTES",
     "FLEET_FACTS_PUBLISH_MAX_LOAD1",
     "NOTES_RELAY_CONSUMER",  # AFC-331:  the Apple Notes relay consumer's seat
+    "FLEET_SHEET_INGEST_ENABLED",
+    "FLEET_SHEET_INGEST_TIMEOUT_MS",  # AFC-423:  the sheet sync's Fleet RAG ingest
     "APPLE_NOTES_PIN_RETRY",  # AFC-431:  whether the pin Shortcut run is retried
 }
 

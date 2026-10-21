@@ -116,18 +116,20 @@ class SpecializeTests(unittest.TestCase):
         self.assertNotIn("trading-monet", out)
 
     def test_ag_notes_name_is_antigravity(self) -> None:
-        # The canonical apple-notes text is seat-neutral (`[APP, Agent]`), so the
+        # The canonical apple-notes text is seat-neutral (`[TEAM_KEY, Agent]`), so the
         # seat's Notes name comes from the install banner, never from Monet.
         out = specialize_from_monet(_notes(), SEATS["ag"], skill_name="apple-notes")
         self.assertIn("Notes `Antigravity`", out)
         self.assertNotIn("Notes `AG`", out)
-        self.assertNotIn("[APP, Monet]", out)
+        self.assertNotRegex(out, r"\[(?:APP|ST, CT|TEAM_KEY), (?!Agent\])[A-Z][a-z][A-Za-z ]*\]")
 
     def test_cursor_and_grok_notes_names(self) -> None:
         for key, notes in (("cursor", "Cursor"), ("grok", "Grok"), ("codex", "Codex")):
             out = specialize_from_monet(_notes(), SEATS[key], skill_name="apple-notes")
             self.assertIn(f"Notes `{notes}`", out, key)
-            self.assertNotIn("[APP, Monet]", out, key)
+            self.assertNotRegex(
+                out, r"\[(?:APP|ST, CT|TEAM_KEY), (?!Agent\])[A-Z][a-z][A-Za-z ]*\]", key
+            )
 
     def test_fleet_coordination_seats_table_preserved(self) -> None:
         out = specialize_from_monet(_coord(), SEATS["ag"], skill_name="fleet-coordination")
@@ -147,8 +149,10 @@ class SpecializeTests(unittest.TestCase):
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
 
         out_not = specialize_universal(_notes(), skill_name="apple-notes")
-        self.assertIn("[APP, Agent]", out_not)
-        self.assertNotIn("[APP, Monet]", out_not)
+        self.assertIn("[TEAM_KEY, Agent]", out_not)
+        self.assertNotRegex(
+            out_not, r"\[(?:APP|ST, CT|TEAM_KEY), (?!Agent\])[A-Z][a-z][A-Za-z ]*\]"
+        )
 
     def test_codex_grok_renoir_deepseek_tags(self) -> None:
         mapping = {
@@ -1111,6 +1115,11 @@ class CatalogMatchesFreshRenderTests(unittest.TestCase):
         for seat in catalog_seats():
             key = seat.seat_key or seat.tag.lower()
             expected_dirs.add(key)
+            if seat.retired:
+                #  A retired seat's catalog copy is history, and the installer no longer
+                #  re-renders it, so it is held at its retirement text rather than
+                #  compared against a fresh render.
+                continue
             for name in catalog_skill_names(DOCS):
                 if name in FROZEN_RENDERS:
                     continue
@@ -1569,6 +1578,17 @@ class AgentSyncRosterTests(unittest.TestCase):
             self.assertIsNotNone(row, f"{tag} missing from the Retired list")
             self.assertIn("2026-10-07", row, tag)
             self.assertNotRegex(text, rf"(?m)^\| {tag} \|", tag)
+
+
+class NotesTitleArchiveTests(unittest.TestCase):
+    def test_committed_notes_archive_matches_canonical_title_source(self):
+        source = Path(NOTES).read_bytes()
+        with zipfile.ZipFile(Path(ROOT, "docs", "fleet-skills", "apple-notes.zip")) as archive:
+            packed = archive.read("apple-notes/SKILL.md")
+        self.assertEqual(packed, source)
+        self.assertIn(b"[TEAM_KEY, Agent]", packed)
+        self.assertIn(b"[ST, CT, Agent]", packed)
+        self.assertNotIn(b"[APP, Agent]", packed)
 
 
 class VMSeatLaneTests(unittest.TestCase):

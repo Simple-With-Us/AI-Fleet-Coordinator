@@ -1,7 +1,7 @@
 # 2026-10-08 — Sentence gap: the chat entity returns, GitHub and Zulip use U+00A0
 
 Type: Fleet change  (board `86aa2176`)
-> **Correction, 2026-10-20:**  the MiniMax Code pane does NOT decode the `&nbsp;` entity — it shows the six literal characters.  In that pane the gap is a real U+00A0 followed by a normal space, and two ASCII spaces collapse as well.  See the `sentence-gap` skill for the per-surface table.
+> **Correction, 2026-10-20, and its own reversal the same day.**  A note here briefly said the MiniMax Code pane does NOT decode the `&nbsp;` entity and that the gap there is a real U+00A0 plus a normal space.  That was an inference, it was never owner-verified, and the owner reversed it:  the MiniMax Code chat pane decodes the entity, the same form as the Claude Code Code tab (owner-verified 2026-10-18, reaffirmed 2026-10-20).  See the `sentence-gap` skill for the per-surface table.
 
 
 ## Why
@@ -47,7 +47,7 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 > collapse is **intermittent, not deterministic**:  in one session a ~3 KB PR body kept all eight
 > of its double spaces while a ~3 KB Zulip body lost every one, same machine, same tool.  So the
 > pattern must match one *or more* spaces to be correct either way:
-> `perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt`.
+> `perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt`.
 > Note the single-space form is *not* a fix — it matches nothing on text that kept its two
 > spaces.  Before posting run both checks: `grep -o $'\xc2\xa0' body.nbsp.txt | wc -l` must be
 > `> 0` and `grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt` must be `0`, since a partly converted body can
@@ -64,7 +64,7 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 > sentence end.  The live pattern adds the markup group ``([*_`)\]"]*)``, which captures the markup
 > after the sentence end and re-emits it before the gap, so the span survives and the gap lands
 > after the closing markup:
-> ``perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt``.
+> ``perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt``.
 > The two checks carry the same markup group, because the gap they have to see is emitted as
 > <punctuation><markup><U+00A0><space>:  a check that looks for the U+00A0 straight after the
 > punctuation cannot see that gap, and a check that looks for a space straight after the
@@ -85,7 +85,7 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 > A body with it passed both checks and reached GitHub with no gap.  The live pattern carries the
 > three closing quotes in the group and the three opening ones in the lookahead, which is the same
 > set the fleet's own outbound converter already used:
-> ``perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt``.
+> ``perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt``.
 > The two checks carry the same class, and the leftover check moved to bash's `$'...'` so the class
 > can hold a straight quote at all —  in single quotes it cannot.  The follower class carries the
 > opening quotes too, because a gap missed before a quoted sentence reads `Second. 'Quoted`:
