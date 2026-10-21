@@ -76,6 +76,10 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  # The in-flight gates below read the head commit's check runs (Kodus review)
+  # and the head branch's workflow runs (autofix lanes).
+  checks: read
+  actions: read
 
 jobs:
   classify:
@@ -121,6 +125,31 @@ jobs:
               skip "hold label '$h' present"
             fi
           done
+
+          # Owner rule 2026-10-21: never merge while a Kodus review is running on
+          # the head commit or an autofix run is queued or in progress on the head
+          # branch.  skip=trues here also disarm any already-armed auto-merge via the
+          # disarm job, and both lookups fail closed.
+          kody_status="$RUNNER_TEMP/kody-status.txt"
+          if ! gh api "repos/$REPO/commits/$HEAD/check-runs?per_page=100" --jq '[.check_runs[] | select(.name == "Kody Code Review") | .status] | .[]' > "$kody_status" 2>"$RUNNER_TEMP/kody.err"; then
+            cat "$RUNNER_TEMP/kody.err" >&2
+            skip "Kodus review check lookup failed - fail closed"
+          fi
+          if grep -qxE 'queued|in_progress' "$kody_status"; then
+            skip "Kodus review running on head $HEAD"
+          fi
+
+          runs_out="$RUNNER_TEMP/autofix-runs.txt"
+          : > "$runs_out"
+          for st in queued in_progress; do
+            if ! gh api "repos/$REPO/actions/runs?branch=$HEAD_REF&status=$st&per_page=20" --jq '.workflow_runs[].path' >> "$runs_out" 2>"$RUNNER_TEMP/runs.err"; then
+              cat "$RUNNER_TEMP/runs.err" >&2
+              skip "autofix run lookup failed - fail closed"
+            fi
+          done
+          if grep -qxE '\.github/workflows/(autofix|claude-code-autofix|kody-fleet-autofix)\.yml' "$runs_out"; then
+            skip "autofix run queued or in progress on $HEAD_REF"
+          fi
 
           # Lane restriction (dependency-bump callers)
           if [ -n "$RESTRICT" ]; then
