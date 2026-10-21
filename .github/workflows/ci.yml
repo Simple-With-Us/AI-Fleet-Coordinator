@@ -280,6 +280,10 @@ jobs:
         python3 scripts/mac-collab/test_app_normalization.py
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    # Shared alert ingress: state transitions, vendor normalization, and the
+    # Zulip status rendering.  Pure functions, so no Workers runtime needed.
+    - name: Alert ingress unit tests
+      run: node --test workers/alert-ingress/src/
     # Hosted agent-sync MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
     - name: agent-sync MCP Worker unit tests
