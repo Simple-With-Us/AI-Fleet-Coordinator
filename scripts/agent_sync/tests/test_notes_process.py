@@ -123,10 +123,9 @@ class ProcessGroupTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired) as caught:
                 N._run_helper(
                     [str(script)],
-                    stdin_data=b"",
+                    input=b"",
                     env={**ENV, "PATH": "/usr/bin:/bin"},
                     timeout=1.0,
-                    runner=None,
                 )
             said = (caught.exception.stdout or b"").decode()
             child = int(said.strip().splitlines()[0])
@@ -146,10 +145,9 @@ class ProcessGroupTests(unittest.TestCase):
             script.chmod(0o700)
             proc = N._run_helper(
                 [str(script)],
-                stdin_data=b"hello",
+                input=b"hello",
                 env={**ENV, "PATH": "/usr/bin:/bin"},
                 timeout=30.0,
-                runner=None,
             )
             self.assertEqual(proc.returncode, 0)
             self.assertEqual(out.read_text(), "hello")

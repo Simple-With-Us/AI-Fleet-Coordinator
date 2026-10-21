@@ -266,7 +266,7 @@ class ToolTests(TI.IdentityHarness):
             mock.patch.object(
                 N, "direct_available", return_value=Path("/fake/apple-notes-coding.sh")
             ),
-            mock.patch.object(N.subprocess, "run", run),
+            mock.patch.object(N, "_run_helper", run),
         ):
             self.assert_tool_error(self.write(env=env, transport="auto"), "session_required")
         self.assertEqual((self.posted(), run.calls), ([], []))
@@ -350,7 +350,7 @@ class ToolTests(TI.IdentityHarness):
             mock.patch.object(
                 N, "direct_available", return_value=Path("/fake/apple-notes-coding.sh")
             ),
-            mock.patch.object(N.subprocess, "run", run),
+            mock.patch.object(N, "_run_helper", run),
         ):
             self.assert_structured(
                 "notes_create", self.write(transport="auto", request_id="direct-request-0001")
@@ -370,7 +370,7 @@ class CliTests(Harness):
         environ = self.env(CLAUDE_CODE_SESSION_ID=None) if without_session else None
         with (
             mock.patch.object(N, "direct_available", return_value=self.script),
-            mock.patch.object(N.subprocess, "run", run),
+            mock.patch.object(N, "_run_helper", run),
         ):
             return run, self.run_cli(
                 "notes", "create", "[AFC, Claude] cli t", *argv, stdin="body\n", env=environ

@@ -599,34 +599,30 @@ def _kill_group(proc: "subprocess.Popen[bytes]") -> None:
 
 
 def _run_helper(
-    argv: list[str],
-    *,
-    stdin_data: bytes,
-    env: Mapping[str, str],
-    timeout: float,
-    runner: Runner | None,
+    argv: list[str], *, runner: Runner | None = None, **kwargs: Any
 ) -> "subprocess.CompletedProcess[bytes]":
-    """Run the helper, and kill its whole process group when the cap is reached.
+    """Start the helper, and kill its whole process group when the cap is reached.
 
-    The real path gives the helper its own session,  so a timeout takes the children with it.
-    A caller-supplied runner is used as it is:  that is the test seam,  and it owns its own
-    process handling.
+    The helper leads its own session,  so a timeout takes the children with it:  a killed
+    osascript that leaves a stuck "shortcuts" child behind would keep the Shortcuts app busy
+    long after the caller gave up (AFC-436).
+
+    The keyword arguments are the ones `subprocess.run` takes,  and a caller-supplied runner
+    gets exactly those,  so a test that stands in for the helper keeps the same shape.
     """
     if runner is not None:
-        return runner(
-            argv,
-            input=stdin_data,
-            capture_output=True,
-            timeout=timeout,
-            env=env,
-            check=False,
-        )
+        return runner(argv, **kwargs)
+    kwargs.pop("capture_output", None)
+    kwargs.pop("check", None)
+    stdin_data = kwargs.pop("input", b"") or b""
+    timeout = kwargs.pop("timeout", None)
+    env = kwargs.pop("env", None)
     proc = subprocess.Popen(
         argv,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=dict(env),
+        env=dict(env or {}),
         start_new_session=True,
     )
     try:
@@ -818,10 +814,12 @@ def run_direct(
         try:
             proc = _run_helper(
                 argv,
-                stdin_data=stdin_data if stdin_data is not None else b"",
-                env=child_env(env, extra),
-                timeout=timeout,
                 runner=runner,
+                input=stdin_data if stdin_data is not None else b"",
+                capture_output=True,
+                timeout=timeout,
+                env=child_env(env, extra),
+                check=False,
             )
         except subprocess.TimeoutExpired:
             # A timeout does not prove nothing was written (the script may have created the note and then hung),

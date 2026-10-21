@@ -543,7 +543,7 @@ class DaemonRelayTests(DaemonHarness):
         self.calls.clear()
         self.ran.clear()
         second = self.envelope_message(rid="deferred-request-2")
-        with mock.patch("agent_sync.notes.subprocess.run", side_effect=self.fake_run):
+        with mock.patch("agent_sync.notes._run_helper", side_effect=self.fake_run):
             self.pump_until(daemon, self.ran.is_set)
             self.assertTrue(
                 self.wait(lambda: (second, 10, "check") in self.fake.reactions),
@@ -1023,7 +1023,7 @@ class DaemonRelayTests(DaemonHarness):
         self.assertTrue(self.wait(lambda: (busy, 10, "check") in self.fake.reactions))
         self.assertTrue(self.wait(old.has_exited))
         self.ran.clear()
-        with mock.patch("agent_sync.notes.subprocess.run", side_effect=self.fake_run):
+        with mock.patch("agent_sync.notes._run_helper", side_effect=self.fake_run):
             daemon.tick()  # completes the swap
             self.assertEqual(daemon.notes_relay.seat, "CODEX")
             daemon.last_tick["relay_retry"] = -1e9
@@ -1142,7 +1142,7 @@ class DaemonRelayTests(DaemonHarness):
         spool = self.state_dir / "notes-relay" / "spool"
         spool.mkdir(parents=True)
         (spool / ("%d.json" % mid)).write_text(json.dumps(message))
-        with mock.patch.object(N.subprocess, "run", self.fake_run):
+        with mock.patch.object(N, "_run_helper", self.fake_run):
             daemon = self.started()
             self.assertTrue(self.ran.wait(10), "the spooled request should run on connect")
             self.assertTrue(self.wait(lambda: (mid, 10, "check") in self.fake.reactions))
