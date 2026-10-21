@@ -293,7 +293,7 @@ class WakeLetterTests(DaemonHarness):
         self.assertEqual(context[0]["label"], "")
 
     def test_the_join_uses_the_location_and_not_the_os_hostname(self) -> None:
-        d, r, p = self.setup_rows([self.row(host="Jay-Mac-Studio.local")])
+        d, r, p = self.setup_rows([self.row(host="example.test")])
         self.register(d, verified_host="mac")
         context = d.chat_context(r, p)
         self.assertEqual(context[0]["label"], "A")
