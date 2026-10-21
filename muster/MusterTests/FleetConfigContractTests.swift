@@ -109,7 +109,7 @@ enum Fixtures {
     /// A manifest with one seat that has a rule and one that is covered.
     static let manifest = """
     {
-     "schemaVersion": 1,
+     "schemaVersion": 2,
      "seats": {
       "CLAUDE": {
        "platforms": ["claude"],
@@ -214,5 +214,30 @@ final class ManifestTargetTests: XCTestCase {
         )
         XCTAssertTrue(manifest.targets(seat: "CLAUDE", kind: .instructions).isEmpty)
         XCTAssertTrue(manifest.targets(seat: "ECHO", kind: .hooks).isEmpty)
+    }
+
+    /// A manifest of a version this app does not read is refused,  and the refusal
+    /// names the version it found and the version it reads.
+    ///
+    /// A refusal nobody can act on is a refusal nobody acts on,  and a refused manifest
+    /// that says nothing leaves the operator with a grid of unknown rows and no idea
+    /// why.
+    func test_a_manifest_of_an_unknown_version_is_refused_and_says_which() throws {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muster-manifest-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try """
+        {"schemaVersion": 7, "seats": {}}
+        """.write(to: url, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try SeatManifest.read(at: url)) { error in
+            let version = error as? SeatManifest.ManifestVersionError
+            XCTAssertNotNil(version)
+            let reason = (error as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertTrue(reason.contains("7"), "the reason names the version it found: \(reason)")
+            XCTAssertTrue(
+                reason.contains("\(SeatManifest.supportedSchemaVersion)"),
+                "the reason names the version it reads: \(reason)"
+            )
+        }
     }
 }

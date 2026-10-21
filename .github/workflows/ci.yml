@@ -392,3 +392,9 @@ jobs:
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CI \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+      - name: Run the Muster unit tests
+        working-directory: muster
+        run: |
+          xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
+            -destination 'platform=macOS' -derivedDataPath .build/CITest \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= test

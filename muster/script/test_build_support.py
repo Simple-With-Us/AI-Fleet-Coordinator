@@ -1,6 +1,8 @@
 """Synthetic transaction tests; no keychain, application or process is touched."""
 
+import contextlib
 import errno
+import io
 import os
 import shutil
 import subprocess
@@ -223,6 +225,256 @@ class ProcessInspectionTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 support.installed_pids(self.binary)
             self.assertEqual(run.call_count, 1)
+
+
+FINGERPRINT_A = "1A2B3C4D5E6F708192A3B4C5D6E7F8091A2B3C4D"
+FINGERPRINT_B = "9F8E7D6C5B4A39281706F5E4D3C2B1A099887766"
+LABEL_A = "Developer ID Application: Alpha Company (ABCDE12345)"
+LABEL_B = "Developer ID Application: Beta Company (FGHIJ67890)"
+
+# The message the owner reads, kept exactly as the script has always printed it.
+EXPECTED_SEARCH_LIST_MESSAGE = (
+    "The login keychain is not on the keychain search list,  so the private key that "
+    "signs this app cannot be reached.  The certificate is there and the identity is "
+    "correct;  the key is locked away.  The owner restores it with:\n"
+    '  security list-keychains -s "$HOME/Library/Keychains/login.keychain-db" '
+    "/Library/Keychains/System.keychain\n"
+    "and by unlocking the login keychain,  which needs the owner's password."
+)
+
+
+def security_output(*identities):
+    """The public metadata that security prints for each identity."""
+    lines = [
+        '  %d) %s "%s"' % (index, fingerprint, label)
+        for index, (fingerprint, label) in enumerate(identities, start=1)
+    ]
+    lines.append("     %d valid identities found" % len(identities))
+    return "\n".join(lines) + "\n"
+
+
+def colon_form(fingerprint):
+    return ":".join(fingerprint[index : index + 2] for index in range(0, len(fingerprint), 2))
+
+
+class SecurityFailureTests(unittest.TestCase):
+    """A crashed security command is a failed command, named and not a traceback."""
+
+    def call_main(self, command, environment=None):
+        stderr = io.StringIO()
+        previous = dict(os.environ)
+        try:
+            os.environ.pop("MUSTER_SIGNING_IDENTITY", None)
+            if environment:
+                os.environ.update(environment)
+            with contextlib.redirect_stderr(stderr):
+                status = support.main(["build_support", command])
+        finally:
+            os.environ.clear()
+            os.environ.update(previous)
+        return status, stderr.getvalue()
+
+    def test_timeout_fails_closed_with_a_named_diagnostic(self):
+        with (
+            mock.patch.object(
+                support.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired("security", 30),
+            ),
+            self.assertRaises(support.BuildFailure) as caught,
+        ):
+            support.run_security(["list-keychains"])
+        self.assertEqual(caught.exception.status, 124)
+        self.assertIn("list-keychains", str(caught.exception))
+
+        with mock.patch.object(
+            support.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired("security", 30),
+        ):
+            status, stderr = self.call_main("keychain-preflight")
+        self.assertEqual(status, 124)
+        self.assertIn("did not answer", stderr)
+        self.assertNotIn("Traceback", stderr)
+
+    def test_missing_security_binary_fails_closed_with_a_named_diagnostic(self):
+        with (
+            mock.patch.object(support.subprocess, "run", side_effect=FileNotFoundError("security")),
+            self.assertRaises(support.BuildFailure) as caught,
+        ):
+            support.run_security(["list-keychains"])
+        self.assertEqual(caught.exception.status, 127)
+        self.assertIn(support.SECURITY, str(caught.exception))
+
+        with mock.patch.object(
+            support.subprocess, "run", side_effect=FileNotFoundError("security")
+        ):
+            status, stderr = self.call_main("keychain-preflight")
+        self.assertEqual(status, 127)
+        self.assertIn("is missing", stderr)
+        self.assertNotIn("Traceback", stderr)
+
+    def test_failed_security_command_names_the_cause_without_a_traceback(self):
+        failure = subprocess.CalledProcessError(
+            1, ["security", "find-identity"], output="", stderr="security: keychain refused\n"
+        )
+        with mock.patch.object(support.subprocess, "run", side_effect=failure):
+            with self.assertRaises(support.BuildFailure) as caught:
+                support.run_security(["find-identity", "-v"])
+        self.assertEqual(caught.exception.status, 1)
+        self.assertIn("find-identity", str(caught.exception))
+        self.assertIn("keychain refused", str(caught.exception))
+
+        with mock.patch.object(support.subprocess, "run", side_effect=failure):
+            status, stderr = self.call_main("signing-identity")
+        self.assertNotEqual(status, 0)
+        self.assertIn("find-identity", stderr)
+        self.assertNotIn("Traceback", stderr)
+
+    def test_unknown_command_is_a_usage_error(self):
+        status, stderr = self.call_main("nonsense")
+        self.assertEqual(status, 2)
+        self.assertIn("Usage", stderr)
+
+
+class IdentitySelectionTests(unittest.TestCase):
+    """Both keychain lookups are searched, and one identity is chosen."""
+
+    def fake_run(self, search, by_path):
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            output = search if len(command) == 5 else by_path
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        return run, calls
+
+    def test_both_lookups_are_searched_and_the_login_keychain_is_named_by_path(self):
+        run, calls = self.fake_run(
+            security_output((FINGERPRINT_A, LABEL_A)),
+            security_output((FINGERPRINT_B, LABEL_B)),
+        )
+        with mock.patch.object(support.subprocess, "run", side_effect=run):
+            identities = support.find_coding_identities()
+
+        self.assertEqual([item[0] for item in identities], [FINGERPRINT_A, FINGERPRINT_B])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], [support.SECURITY, "find-identity", "-v", "-p", "codesigning"])
+        self.assertEqual(
+            calls[1],
+            [
+                support.SECURITY,
+                "find-identity",
+                "-v",
+                "-p",
+                "codesigning",
+                os.path.expanduser(support.LOGIN_KEYCHAIN),
+            ],
+        )
+
+    def test_the_same_identity_in_both_keychains_is_counted_once(self):
+        both = security_output((FINGERPRINT_A, LABEL_A), (FINGERPRINT_B, LABEL_B))
+        run, _ = self.fake_run(both, both)
+        with mock.patch.object(support.subprocess, "run", side_effect=run):
+            identities = support.find_coding_identities()
+        self.assertEqual(len(identities), 2)
+        self.assertEqual([item[0] for item in identities], [FINGERPRINT_A, FINGERPRINT_B])
+
+    def test_identity_in_another_keychain_is_found_and_chosen(self):
+        run, _ = self.fake_run(
+            security_output((FINGERPRINT_B, LABEL_B)),
+            security_output((FINGERPRINT_A, LABEL_A)),
+        )
+        with mock.patch.object(support.subprocess, "run", side_effect=run):
+            fingerprint, team = support.select_signing_identity(FINGERPRINT_B)
+        self.assertEqual(fingerprint, FINGERPRINT_B)
+        self.assertEqual(team, "FGHIJ67890")
+
+    def test_requested_identity_matches_the_fingerprint_with_or_without_colons(self):
+        run, _ = self.fake_run(
+            security_output((FINGERPRINT_A, LABEL_A)),
+            security_output((FINGERPRINT_B, LABEL_B)),
+        )
+        for requested in (FINGERPRINT_A, FINGERPRINT_A.lower(), colon_form(FINGERPRINT_A)):
+            with mock.patch.object(support.subprocess, "run", side_effect=run):
+                fingerprint, team = support.select_signing_identity(requested)
+            self.assertEqual(fingerprint, FINGERPRINT_A)
+            self.assertEqual(team, "ABCDE12345")
+
+    def test_requested_identity_matches_the_exact_label_only(self):
+        run, _ = self.fake_run(
+            security_output((FINGERPRINT_A, LABEL_A)),
+            security_output((FINGERPRINT_B, LABEL_B)),
+        )
+        with mock.patch.object(support.subprocess, "run", side_effect=run):
+            fingerprint, _ = support.select_signing_identity(LABEL_A)
+        self.assertEqual(fingerprint, FINGERPRINT_A)
+
+        with mock.patch.object(support.subprocess, "run", side_effect=run):
+            with self.assertRaises(support.BuildFailure) as caught:
+                support.select_signing_identity("Alpha Company")
+        self.assertIn("Expected exactly one matching valid", str(caught.exception))
+
+    def test_ambiguous_and_missing_identities_are_refused_with_the_named_message(self):
+        both = security_output((FINGERPRINT_A, LABEL_A), (FINGERPRINT_B, LABEL_B))
+        run, _ = self.fake_run(both, both)
+        with mock.patch.object(support.subprocess, "run", side_effect=run):
+            with self.assertRaises(support.BuildFailure) as caught:
+                support.select_signing_identity()
+        self.assertEqual(caught.exception.status, 1)
+        self.assertEqual(
+            str(caught.exception),
+            "Expected exactly one matching valid Developer ID Application identity; "
+            "set MUSTER_SIGNING_IDENTITY to the certificate SHA-1 (colons optional) "
+            "or the full 'Developer ID Application: <name> (<TEAM>)' label.",
+        )
+
+        empty, _ = self.fake_run("", "")
+        with mock.patch.object(support.subprocess, "run", side_effect=empty):
+            with self.assertRaises(support.BuildFailure) as caught:
+                support.select_signing_identity()
+        self.assertIn("Expected exactly one matching valid", str(caught.exception))
+
+    def test_the_selected_identity_carries_no_key_material(self):
+        run, _ = self.fake_run("", security_output((FINGERPRINT_A, LABEL_A)))
+        with mock.patch.object(support.subprocess, "run", side_effect=run):
+            fingerprint, team = support.select_signing_identity()
+        self.assertEqual(fingerprint, FINGERPRINT_A)
+        self.assertEqual(team, "ABCDE12345")
+        self.assertNotIn("PRIVATE KEY", fingerprint + team)
+
+
+class KeychainPreflightTests(unittest.TestCase):
+    """The preflight names the search-list problem and fails closed."""
+
+    def listing(self, *paths):
+        return "".join('    "%s"\n' % path for path in paths)
+
+    def test_login_keychain_on_the_search_list_passes(self):
+        listing = self.listing(
+            "/Library/Keychains/System.keychain",
+            os.path.expanduser(support.LOGIN_KEYCHAIN),
+        )
+        with mock.patch.object(
+            support.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, listing, "")
+        ):
+            self.assertIsNone(support.check_keychain_search_list())
+
+    def test_login_keychain_off_the_search_list_is_refused_with_the_owners_message(self):
+        listing = self.listing("/Library/Keychains/System.keychain")
+        with (
+            mock.patch.object(
+                support.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, listing, ""),
+            ),
+            self.assertRaises(support.BuildFailure) as caught,
+        ):
+            support.check_keychain_search_list()
+        self.assertEqual(caught.exception.status, 3)
+        self.assertEqual(str(caught.exception), EXPECTED_SEARCH_LIST_MESSAGE)
+        self.assertEqual(support.KEYCHAIN_SEARCH_LIST_MESSAGE, EXPECTED_SEARCH_LIST_MESSAGE)
 
 
 if __name__ == "__main__":
