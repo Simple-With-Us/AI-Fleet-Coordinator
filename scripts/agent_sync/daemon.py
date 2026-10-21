@@ -56,6 +56,7 @@ from . import muse_bridge as MB
 from . import muse_bridge_mac as MBM
 from . import notes as NOTES
 from . import notes_relay as NR
+from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
 from . import subscribe_all as SUB
@@ -3517,6 +3518,35 @@ class Daemon:
                 self._chat_queues[seat] = CN.ChatNudges(self.root, seat, recover=False)
             return self._chat_queues[seat]
 
+    def session_labels(self, rows: list[dict[str, Any]]) -> dict[str, tuple[str, str]]:
+        """The registered letter for each catalog row, keyed by the row's stable id.
+
+        The registry is the allocator (AFC-412) and the catalog is discovery, so this is
+        the join between them.  It is read-only:  a row with no registration simply has no
+        letter, and a missing or broken registry leaves every row unlettered rather than
+        failing the wake.  The platform is part of the address, so the letter alone never
+        resolves a session across surfaces.
+        """
+        db_path = OR.registry_db_path(self.root)
+        labels: dict[str, tuple[str, str]] = {}
+        for row in rows:
+            platform = str(row.get("platform") or "")
+            host = str(row.get("host") or "")
+            scope = str(row.get("profile_scope") or "default")
+            session_id = str(row.get("session_id") or "")
+            row_id = str(row.get("id") or "")
+            if not (platform and host and session_id and row_id):
+                continue
+            try:
+                found = OR.lookup_entry(db_path, platform, host, scope, session_id)
+            except Exception:
+                continue
+            letter = str(found.get("label") or "")
+            if not letter:
+                continue
+            labels[row_id] = (letter, str(found.get("ref") or ""))
+        return labels
+
     def chat_context(
         self, runner: SeatRunner, pending: W.Pending, history: list[dict[str, Any]] | None = None
     ) -> list[dict[str, Any]]:
@@ -3575,6 +3605,7 @@ class Daemon:
                     )
                 ]
             rows = sorted(rows, key=relevance, reverse=True)[:24]
+            labels = self.session_labels(rows)
             context = []
             remaining = 24000
             for row in rows:
@@ -3593,6 +3624,12 @@ class Daemon:
                         "stale",
                     )
                 }
+                # The letter is the sayable handle for this session.  It travels with the
+                # platform and the seat, because a letter alone never resolves a session
+                # across surfaces and a recycled letter carries its generation.
+                letter, letter_ref = labels.get(str(row.get("id") or ""), ("", ""))
+                public["label"] = letter
+                public["label_ref"] = letter_ref
                 encoded = self.scrub(json.dumps(public, ensure_ascii=True))
                 if len(encoded) > remaining:
                     break

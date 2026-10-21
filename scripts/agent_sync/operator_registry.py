@@ -108,6 +108,16 @@ def cross_seat_ref(seat: str, letter: str, generation: int) -> str:
     return f"{base} (gen {generation})" if generation > 1 else base
 
 
+def registry_db_path(root: str) -> str:
+    """The one shared registry location under the agent-sync state root.
+
+    AFC-412 requires one allocator per platform across every host, so the database
+    cannot be a caller-supplied path:  the Mac and the server must agree on where it
+    lives.  One path, under the state root, is that agreement.
+    """
+    return os.path.join(str(root), "operator", "registry.sqlite3")
+
+
 def _session_cells(row: sqlite3.Row, label: str) -> list[str]:
     return [
         row["record_id"],
@@ -192,6 +202,32 @@ class SessionRegistry:
             (record_id,),
         ).fetchone()
         return (row["letter"], row["generation"]) if row else ("", 0)
+
+    def lookup(
+        self,
+        platform: str,
+        verified_host: str,
+        profile_scope: str,
+        native_session_id: str,
+    ) -> dict[str, Any] | None:
+        """Read-only: the live label for one identity, or None when it is not registered.
+
+        This never writes, never mints a letter and never opens a transaction, so it is
+        safe to call on the wake path for every catalog row.  A missing registration is
+        simply "no letter yet";  it is not an error and it is not a reason to allocate one.
+        """
+        row = self._get_by_identity(platform, verified_host, profile_scope, native_session_id)
+        if row is None:
+            return None
+        letter, generation = self._active_alias(self._conn, row["record_id"])
+        return {
+            "record_id": row["record_id"],
+            "label": letter,
+            "generation": generation,
+            "seat": row["seat"],
+            "title": row["title"],
+            "state": row["state"],
+        }
 
     # ---- writes (each one transaction:  state + events + outbox) ----------------
 
@@ -419,6 +455,67 @@ class SessionRegistry:
             return self._insert_event(
                 conn, record_id, letter, event, actor, outcome, source, details, now
             )
+
+
+# ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
+
+
+def lookup_entry(
+    db_path: str,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+) -> dict[str, Any]:
+    """One read-only registry lookup: the letter, its generation and its reference form.
+
+    Side-effect free on purpose:  a missing database is not created and no letter is
+    allocated, because the wake path calls this for every catalog row it shows and a
+    catalog scan must never mint registrations as a side effect of reading.  Any failure
+    reads as "no letter" rather than breaking the wake.
+
+    The reference form carries the generation when a letter has been recycled, so
+    "MM A" and "MM A (gen 2)" never read as the same session.
+    """
+    empty: dict[str, Any] = {}
+    if not db_path or not os.path.isfile(str(db_path)):
+        return empty
+    try:
+        registry = SessionRegistry(str(db_path))
+    except Exception:
+        return empty
+    try:
+        found = registry.lookup(platform, verified_host, profile_scope, native_session_id)
+    except Exception:
+        return empty
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    if not found or not found.get("label"):
+        return empty
+    letter = str(found["label"])
+    generation = int(found.get("generation") or 0)
+    seat = str(found.get("seat") or "")
+    return {
+        "record_id": found.get("record_id"),
+        "label": letter,
+        "generation": generation,
+        "seat": seat,
+        "ref": cross_seat_ref(seat, letter, generation),
+    }
+
+
+def lookup_label(
+    db_path: str,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+) -> str:
+    """The live letter for one identity, or "" when it is not registered."""
+    return str(lookup_entry(db_path, platform, verified_host, profile_scope, native_session_id).get("label") or "")
 
 
 # ---- outbox bridge for the async exporter (AFC-412 PR2) -------------------------

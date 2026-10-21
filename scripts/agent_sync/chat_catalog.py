@@ -203,6 +203,7 @@ class ChatCatalog:
         excerpts: list[dict[str, str]] | None = None,
         host: str | None = None,
         repo: str | None = None,
+        profile_scope: str = "default",
     ) -> dict[str, Any]:
         safe_cwd = (
             cwd
@@ -221,6 +222,7 @@ class ChatCatalog:
             "host": stable_host,
             "seat": seat,
             "session_id": session_id,
+            "profile_scope": profile_scope,
             "cwd": safe_cwd,
             "title": safe_title,
             "repo": self.scrub(repo)[:300] if isinstance(repo, str) and "://" in repo else None,
