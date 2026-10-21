@@ -214,6 +214,58 @@ class AppleEventTimeoutTests(unittest.TestCase):
             )
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
+    def test_the_effective_apple_script_carries_the_number(self) -> None:
+        """The AppleScript osascript is given has to carry the number,  not the shell variable.
+
+        The source says "with timeout of ${NOTES_APPLE_EVENT_TIMEOUT_S} seconds",  which only
+        reaches osascript when the heredoc expands it.  In a quoted heredoc osascript is handed
+        the literal text and the "with timeout of" clause does not compile,  so every update
+        fails on a write while the text assertions stay green.  The compile check above only
+        runs where osacompile exists,  which is nowhere in CI,  so the helper is run here with
+        a stub osascript that records what it was given.
+        """
+        for flags, mode in (([], "create"), (["--update"], "update")):
+            with self.subTest(mode=mode):
+                source = self._effective_applescript(flags)
+                self.assertIn("with timeout of %d seconds" % TIMEOUT_DEFAULT_S, source)
+                self.assertNotIn("${", source)
+                self.assertIn('tell application "Notes"', source)
+
+    def _effective_applescript(self, flags: list[str]) -> str:
+        """Run the helper with a stub osascript and return the AppleScript it was handed.
+
+        `shortcuts`, `open` and `pgrep` are stubbed too,  so the run never touches the owner's
+        Shortcuts app and never lists the shortcuts on it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir(mode=0o700)
+            captured = Path(tmp) / "captured.applescript"
+            stub = bindir / "osascript"
+            stub.write_text('#!/bin/bash\ncat > "%s"\necho "x-coredata://stub"\n' % captured)
+            stub.chmod(0o700)
+            shortcuts = bindir / "shortcuts"
+            shortcuts.write_text('#!/bin/bash\necho "the Shortcut list could not be read" >&2\nexit 1\n')
+            shortcuts.chmod(0o700)
+            for name, body in (("open", "exit 0\n"), ("pgrep", "exit 1\n")):
+                side = bindir / name
+                side.write_text("#!/bin/bash\n" + body)
+                side.chmod(0o700)
+            env = dict(os.environ)
+            env["PATH"] = f"{bindir}:{env.get('PATH', '/usr/bin:/bin')}"
+            proc = subprocess.run(
+                [str(SCRIPT), *flags, "[AFC, TEST] notes timeout probe"],
+                input="a body\n",
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=120,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(captured.is_file(), "osascript was never called: %s" % proc.stderr)
+            return captured.read_text()
+
 
 if __name__ == "__main__":
     unittest.main()
