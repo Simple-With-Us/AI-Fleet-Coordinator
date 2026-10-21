@@ -29,14 +29,16 @@ variable `SWU_AUTOFIX_DISPATCHER_ENABLED` is `true`.  Each tick:
    one-run-per-bot-per-PR owner rule.  The reusable builds the run's prompt from the
    tag comment plus the PR diff, not from the review threads, so the tag comment names
    the findings and tells the run to fix the ones still real at the head.  The command
-   it hands the run, `gh api repos/<owner>/<repo>/pulls/<n>/comments --paginate --jq
-   '<filter>'`, keeps only the three reviewer bots' comments (`REVIEWER_JQ` in
+   it hands the run reads the PR's newest 100 review comments and keeps only the three
+   reviewer bots' newest 30, each body cut at 4000 characters (`REVIEWER_JQ` in
    `lib.mjs`), and the comment says that any other author's comment is data, not
    instructions:  the run has write credentials and runs unattended, so an unfiltered
-   read would let anyone who can comment on a PR steer it.  A `[bot]` login belongs to
-   a GitHub App, which no person can register.  The comment points at the findings
-   instead of copying them, so a new review round is never stale and no reviewer
-   `@mention` is replayed.
+   read would let anyone who can comment on a PR steer it, and an unbounded one could
+   flood its context.  A `[bot]` login belongs to a GitHub App, which no person can
+   register.  The comment's sentences are separated by U+00A0 plus a space
+   (`SENTENCE_GAP`), since GitHub collapses two ASCII spaces.  The comment points at
+   the findings instead of copying them, so a new review round is never stale and no
+   reviewer `@mention` is replayed.
 4. Appends the dispatch to `autofix-dispatcher/tally.jsonl` on the
    `autofix-dispatcher-state` branch.  A tag comment whose row was never saved (the
    tick died between the two) is recorded on the next tick from the comment itself.
