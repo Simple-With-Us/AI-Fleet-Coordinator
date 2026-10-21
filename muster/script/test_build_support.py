@@ -275,11 +275,14 @@ class SecurityFailureTests(unittest.TestCase):
         return status, stderr.getvalue()
 
     def test_timeout_fails_closed_with_a_named_diagnostic(self):
-        with mock.patch.object(
-            support.subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired("security", 30),
-        ), self.assertRaises(support.BuildFailure) as caught:
+        with (
+            mock.patch.object(
+                support.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired("security", 30),
+            ),
+            self.assertRaises(support.BuildFailure) as caught,
+        ):
             support.run_security(["list-keychains"])
         self.assertEqual(caught.exception.status, 124)
         self.assertIn("list-keychains", str(caught.exception))
@@ -295,9 +298,10 @@ class SecurityFailureTests(unittest.TestCase):
         self.assertNotIn("Traceback", stderr)
 
     def test_missing_security_binary_fails_closed_with_a_named_diagnostic(self):
-        with mock.patch.object(
-            support.subprocess, "run", side_effect=FileNotFoundError("security")
-        ), self.assertRaises(support.BuildFailure) as caught:
+        with (
+            mock.patch.object(support.subprocess, "run", side_effect=FileNotFoundError("security")),
+            self.assertRaises(support.BuildFailure) as caught,
+        ):
             support.run_security(["list-keychains"])
         self.assertEqual(caught.exception.status, 127)
         self.assertIn(support.SECURITY, str(caught.exception))
@@ -459,9 +463,14 @@ class KeychainPreflightTests(unittest.TestCase):
 
     def test_login_keychain_off_the_search_list_is_refused_with_the_owners_message(self):
         listing = self.listing("/Library/Keychains/System.keychain")
-        with mock.patch.object(
-            support.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, listing, "")
-        ), self.assertRaises(support.BuildFailure) as caught:
+        with (
+            mock.patch.object(
+                support.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess([], 0, listing, ""),
+            ),
+            self.assertRaises(support.BuildFailure) as caught,
+        ):
             support.check_keychain_search_list()
         self.assertEqual(caught.exception.status, 3)
         self.assertEqual(str(caught.exception), EXPECTED_SEARCH_LIST_MESSAGE)
