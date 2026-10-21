@@ -24,7 +24,7 @@
 //   state:<key>        AlertState per alertable thing
 //   status:<chan>:<topic>  message id of that topic's standing status
 //   svc:<key>          service name, so a topic stays stable across events
-//   svcname:<service>  alert key, so a renamed vendor label re-joins its incident
+//   svcname:<source>:<service>  alert key, so a renamed vendor label re-joins its incident
 
 import { normalize } from "./normalize.js";
 import {
@@ -43,8 +43,20 @@ const statusKey = (c, t) => `status:${c}:${t}`;
 const svcKey = (k) => `svc:${k}`;
 // Reverse map for the generic path, whose key derives from the service label:
 // a vendor rename mints a new key, and this finds the incident it belongs to.
-const svcNameKey = (service) =>
-  `svcname:${String(service || "").toLowerCase().slice(0, 120)}`;
+// Namespaced by source so a Datadog tag and a Better Stack check that share a
+// label cannot re-key each other into one incident.
+const svcNameKey = (source, service) =>
+  `svcname:${source}:${String(service || "").toLowerCase().slice(0, 120)}`;
+// True when the key tail is the service label itself, i.e. normalize() had no
+// vendor id or fingerprint to key on.  Only these events may consult the
+// svcname: reverse map: an id-keyed incident already holds its svc:<key> pin
+// and is rename-stable through it, and two id-keyed incidents that merely share
+// a label must stay separate rather than overwrite each other.
+function keyedByService(event) {
+  return (
+    event.key.slice(event.key.indexOf(":") + 1) === event.service.toLowerCase()
+  );
+}
 // Zulip refuses topics over 60 characters (scripts/agent-sync-mcp contract).
 const MAX_TOPIC_LENGTH = 60;
 function boundedTopic(service) {
@@ -316,7 +328,9 @@ async function handleEvent(source, payload, env) {
     // A generic key derives from the service label itself, so a vendor rename
     // mints a NEW key before the pin can engage.  The reverse service -> key
     // map catches that rename and re-joins the existing incident.
-    const priorKey = await env.ALERT_STATE.get(svcNameKey(event.service), "json");
+    const priorKey = keyedByService(event)
+      ? await env.ALERT_STATE.get(svcNameKey(event.source, event.service), "json")
+      : null;
     if (typeof priorKey === "string" && priorKey && priorKey !== event.key) {
       event.key = priorKey;
       [priorService, prev] = await Promise.all([
@@ -376,7 +390,7 @@ async function handleEvent(source, payload, env) {
 
   await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
   await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
-  await env.ALERT_STATE.put(svcNameKey(event.service), JSON.stringify(event.key));
+  await env.ALERT_STATE.put(svcNameKey(event.source, event.service), JSON.stringify(event.key));
   await env.ALERT_STATE.put(`idx:${channel}:${topic}:${event.key}`, "1");
   await env.ALERT_STATE.put(topicKey(channel, topic), "1");
 
@@ -403,6 +417,10 @@ async function runSweep(env) {
     s.state = advanceRevision(prev, s.state);
     try {
       const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
+      // The webhook path already bounds the topic; the sweep must use the same
+      // bound or a long service label makes Zulip refuse the promotion (400),
+      // which strands the incident as pending and retries it every cron.
+      const topic = boundedTopic(service);
       await sendEventOnce(
         env,
         transitionIdentity(key, "announce", prev, s.state),
@@ -410,7 +428,7 @@ async function runSweep(env) {
           email: env.ZULIP_BOT_EMAIL,
           apiKey: env.ZULIP_BOT_API_KEY,
           channel: DEFAULT_CHANNEL,
-          topic: service,
+          topic,
           severity: s.state.severity,
           service,
           what: s.state.text,
@@ -419,7 +437,7 @@ async function runSweep(env) {
       );
       await env.ALERT_STATE.put(name, JSON.stringify(s.state));
       promoted++;
-      dirtyTopics.add(service);
+      dirtyTopics.add(topic);
     } catch {
       console.error(JSON.stringify({ event: "alert.promotion_failed" }));
     }
