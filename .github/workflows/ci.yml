@@ -99,6 +99,10 @@ jobs:
         python3 scripts/test_fleet_cli_sync.py
         python3 scripts/test_fleet_cli_runtime.py
         bash -n scripts/agent-sync-runtime-sync.sh
+    # Keeps the docs/PR-AUTOFIX.md caller template's permissions and secrets
+    # block in step with what the pr-autofix reusable declares and consumes.
+    - name: Autofix caller template guard
+      run: python3 scripts/test_pr_autofix_doc_template.py
     - name: agent-sync CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
@@ -186,6 +190,11 @@ jobs:
     - name: Autofix model default tests
       run: |
         cd scripts && python3 -m unittest test_autofix_model_defaults -v
+    # Owner rule 2026-10-21:  the request gate fires only on a tag that opens
+    # the comment.  The test runs the reusables' own marked gate block.
+    - name: Autofix request gate tests
+      run: |
+        cd scripts && python3 -m unittest test_autofix_request_gate -v
     # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
@@ -388,3 +397,9 @@ jobs:
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CI \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+      - name: Run the Muster unit tests
+        working-directory: muster
+        run: |
+          xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
+            -destination 'platform=macOS' -derivedDataPath .build/CITest \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= test

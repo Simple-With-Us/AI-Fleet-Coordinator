@@ -93,7 +93,7 @@ Apply unit tests are an XcodeGen target that compiles the non-view sources direc
 
 ```sh
 cd muster && xcodegen generate --spec project.yml
-xcodebuild -project Muster.xcodeproj -scheme MusterTests -destination 'platform=macOS' test
+xcodebuild -project Muster.xcodeproj -scheme Muster -destination 'platform=macOS' test
 ```
 
 ## Delivery And Onboarding Limits

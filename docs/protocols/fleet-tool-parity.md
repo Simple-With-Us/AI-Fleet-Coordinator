@@ -32,16 +32,89 @@ Every fleet capability exists on three surfaces:  the hosted Agent-Sync MCP serv
 
 ```bash
 python3 scripts/fleet-tools-doctor.py --seats CLAUDE,CODEX
+python3 scripts/fleet-tools-doctor.py --json                      # the document Muster and fleet_config read
+python3 scripts/fleet-tools-doctor.py --remote fleet-tools-ro --write -   # Mac and server together
 ```
 
-One line per check, OK, WARN or FAIL, and exit 1 on a FAIL.  It covers:
-- whether the server's git checkout is behind `origin/main` (or, on a host still on release copies, whether the release is behind in any shipped file);
-- whether the CLI checkouts are on `origin/main`;
+One line per check, OK, WARN or FAIL, and exit 1 on a FAIL on this host.  It covers:
+- whether the runtime is at the tip of AFC main on GitHub (the server's git checkout, which `current` must resolve to;  the Mac's managed runtime;  or, on a host still on release copies, whether the release is behind in any shipped file);
+- the job that keeps it there:  the Mac's `com.jay.agent-sync-runtime-sync` LaunchAgent (loaded, not paused, exiting cleanly, its run counter moving), and the server's `fleet-cli-git-update.timer` and `fleet-tools-doctor.timer` (active and fired within 70 minutes);
+- each fleet tool's currency (`tool:<name>`):  on the Mac, `agent-sync` and `board` run the runtime;  the `recall`, `fleet-mode` and `fleet-secrets` copies equal main blob for blob (a copy that differs names the newest commit it matches and how many later commits touch it, or says "local edit" when main never held it);  and `lane` is what `install_tools plan tools` says.  On the server, each wrapper execs `current/<script>`, `fleet-secrets` points at `linux-entrypoint.py`, and `fleet-share` runs a FleetLink checkout on main.  `fleet-share` on the Mac is presence only, so it reads `unknown`;
+- whether the CLI checkouts are on `origin/main` (on the Mac these read `~/Code`, the human tree, so they are tagged `human-tree` and left out of Muster's verdict);
 - that the five fleet tools and `fleet-share` are on PATH (or in `~/apps` on the Mac);
 - that the files `recall`, `lane` and `fleet-mode` run from ship with the runtime;
 - that the Mac's `~/apps/FLEET-MODE.md` equals `docs/FLEET-MODE.md` in the repo (a WARN when it differs);
 - that the shared catalogs ship with the runtime;
+- every tool in the registry (below), on each host;
 - each named seat's credentials (key names in Infisical, through `fleet-secrets`);
 - each client's MCP registrations.
 
-On the server, `fleet-tools-doctor.timer` runs it every hour as CLAUDE with `--post`.  It posts to #agent-sync, topic `fleet tools doctor`, only when the set of failing checks changes, including the all-clear.
+On the server, `fleet-tools-doctor.timer` runs it every hour as CLAUDE with `--post`.  It posts to #agent-sync, topic `fleet tools doctor`, only when the set of failing checks changes, including the all-clear.  Since AFC-461 that set also holds a required registry tool the server lacks (`gitleaks` today) and a fleet tool that is behind past its grace window.
+
+### States
+
+`--no-registry` skips the registry (no `--version` probes) for a caller with a short time budget.
+
+Every row keeps `check`, `status` and `detail` and adds `state`, `category`, `tool`, `installed`, `expectedRev`, `behindCommits` and `reason`;  registry rows add `version`, `latest`, `latestSource`, `required`, `path` and `basis`.
+
+| `state` | `status` | Means |
+| --- | --- | --- |
+| `current` | OK | Observed equal to the tip of main read from GitHub in this run, or to the latest version |
+| `stale` | WARN within grace, else FAIL (a registry tool is always WARN) | Installed but behind or different;  `grace` is true while the updater is expected to catch up |
+| `missing` | FAIL | A required command, file, wrapper or timer is absent |
+| `unknown` | WARN | The doctor could not tell:  no network, a failed probe, an unrecognised answer, or an unreachable host |
+| `absent` | OK | An optional tool that is not installed (informational) |
+
+A fleet tool is never `current` from a local ref:  the expected revision is always `refs/heads/main` read with `git ls-remote` in the same run, and `--no-network` turns those rows `unknown`.  The Mac's runtime shares its object store with `~/Code` and every lane, so "the tip is already fetched" says nothing about the updater;  instead, behind is amber while the updater is healthy and its run counter moved since the previous report, and red once the runtime is still behind the same tip a report later.  A tip that failed the Mac's smoke test is amber (the updater waits for main to move);  on the server it is red.
+
+### The tool registry
+
+`TOOL_REGISTRY` at the top of `scripts/fleet-tools-doctor.py` is the list.  Each row names the command, its kind (`platform-cli` or `dev-tool`), and per host whether it is required (absent is `missing`, a FAIL) or optional (absent is `absent`).  A host that is not named does not check it.
+
+- **Platform CLIs:**  `claude`, `codex`, `opencode`, `muse`, `cursor-agent`, `grok`, `agy`, `mcode`, `fx` and `clutch` are required on the Mac, and only `claude` and `codex` on the server (the two seats that work there).  `mmx` and `copilot` are optional everywhere, `kimi` is a retired seat and `droid` and `gemini` have no seat, so those are informational.
+- **Dev tools:**  `gh`, `git`, `node`, `npm`, `python3`, `infisical`, `tailscale` and `gitleaks` are required on both hosts (`recall contribute` needs `gitleaks`;  `lane` needs `git` and `gh`), `jq` on the Mac and `docker` on the server.  `pnpm` and `uv` are optional on both, and `wrangler`, `cloudflared` and `xcodegen` on the Mac.
+
+The version is the first version-looking token from `<tool> --version` (5 second cap;  an unrecognised answer is `unknown`, never a FAIL).  `muse` is read from its launcher's version file instead, because the launcher updates itself when it runs.  The latest version is read only with the network on:  `brew info --json=v2` when the command resolves into a Homebrew Cellar, else `npm view <package> version`, else the GitHub latest release, unauthenticated.  A tool with none of these is current on presence alone, unless the other host has a newer one:  in the combined report a tool older than the same tool on the other host is `stale` (`git` and `python3` follow their OS and are left out of that comparison).
+
+What "current" means for a vendor CLI is one constant, `VENDOR_CURRENCY_POLICY`, pending the owner's decision.  The default, `latest`, holds a tool to its package manager's latest version and marks it `stale` with the gap.  `skew` would leave it current unless the hosts disagree, still showing the gap.
+
+### The report Muster reads
+
+`com.jay.fleet-tools-doctor` (template `scripts/launchd/com.jay.fleet-tools-doctor.plist`) runs every 900 seconds and at load:  `/usr/bin/python3 -I` on the managed runtime's copy of the doctor with `--remote fleet-tools-ro --write ~/.local/state/fleet-tools/report.json`.  The file is written atomically with mode 0600:
+
+```json
+{"schemaVersion": 1, "tool": "fleet-tools-doctor", "generatedAt": "<UTC>",
+ "hosts": [{"host": "mac", "reachable": true, "...": "the --json document"},
+           {"host": "server", "reachable": false, "error": "no read-only route to the server (...)", "checks": ["every server row, unknown"]}]}
+```
+
+Each host document carries `schemaVersion` 1, `host`, `generatedAt`, `doctorCommit`, `expected` (the tip and how it was read) and its rows.  A reader treats a report older than 45 minutes, a missing or malformed file, or any other `schemaVersion` as unknown, and leaves `harness`, `human-tree` and `presence` rows out of its verdict.  A `presence` row (`command:`, `tool-file:`, and `catalog:` on the server) only says a command or file exists, so its `current` means present;  every fleet tool's currency, a missing one included, is on its `tool:` row.
+
+### The server route (owner step)
+
+The server half is read over a key that can do one thing:  run this doctor with `--json`.  Nothing is written on the server and Infisical is not touched.  The doctor treats a missing alias as "no read-only route to the server", so the Mac half works without it.  Installing the key needs the owner's OK, because it is a new way into root (limited by `restrict`, `from=` and a fixed command;  the hourly updater already runs main as root).
+
+1. On the Mac, a dedicated key with no passphrase (launchd has no agent):
+   ```bash
+   ssh-keygen -t ed25519 -N "" -C "fleet-tools-ro (read-only doctor)" -f ~/.ssh/fleet-tools-ro
+   ```
+2. On the Mac, this block in `~/.ssh/config`, **above** the `Host *` block (ssh keeps the first value it finds).  `HostName` is the server's Tailscale name, the same one the existing `coolify` block uses, so its host key is already in `known_hosts`:
+   ```
+   Host fleet-tools-ro
+     HostName <the server's Tailscale name>
+     User root
+     IdentityFile ~/.ssh/fleet-tools-ro
+     IdentitiesOnly yes
+     BatchMode yes
+     StrictHostKeyChecking yes
+     ForwardAgent no
+     ControlMaster no
+     ControlPath none
+   ```
+3. On the server, one line in `/root/.ssh/authorized_keys`, with the Mac's Tailscale IP and the contents of `~/.ssh/fleet-tools-ro.pub`:
+   ```
+   restrict,from="<Mac Tailscale IP>",command="/usr/bin/python3 -I /root/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --json" ssh-ed25519 AAAA... fleet-tools-ro (read-only doctor)
+   ```
+4. Check it:  `ssh fleet-tools-ro | head -c 200` and `ssh fleet-tools-ro whoami` both print the doctor's JSON (the forced command ignores what is asked), `ssh -N -L 9999:localhost:22 fleet-tools-ro` is refused, and `python3 scripts/fleet-tools-doctor.py --remote fleet-tools-ro` lists the server's rows.  Renaming the key turns them `unknown` again.
+
+The doctor calls it with `-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes` and no command.  An exit of 1 with a document is still an answer (the server has a FAIL row);  a timeout, any other exit, something that is not JSON, an answer nested past 32 levels or 100,000 nodes, a malformed row, or a doctor too old to report `schemaVersion` 1 makes the server `reachable: false` and every server row `unknown`.  The report names a known ssh failure with a fixed phrase (the key was refused, the connection timed out, and so on) and never copies ssh's own text, which can carry host names and addresses.  Removing the `authorized_keys` line revokes it.

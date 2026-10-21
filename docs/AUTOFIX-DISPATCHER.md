@@ -51,8 +51,11 @@ variable `SWU_AUTOFIX_DISPATCHER_ENABLED` is `true`.  Each tick:
    not block a dispatch; a failure in the tally read or the scans does, and the tick
    exits 1 without acting on partial data.
 
-The tag gate itself is unchanged — bots and Jay can still start runs by tagging
-`@pr-autofix` directly.  The dispatcher only adds untried-PR pickups on top.
+The tag gate still decides what counts as a request:  `@pr-autofix` must be the
+first token of the first non-blank line after fenced code and quoted text are
+stripped.  A tag mentioned mid-sentence, inside a quote, or inside a fence is
+discussion and never starts a run.  The dispatcher only adds untried-PR pickups
+on top.
 
 ## Boundaries
 
