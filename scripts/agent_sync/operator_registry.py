@@ -515,7 +515,12 @@ def lookup_label(
     native_session_id: str,
 ) -> str:
     """The live letter for one identity, or "" when it is not registered."""
-    return str(lookup_entry(db_path, platform, verified_host, profile_scope, native_session_id).get("label") or "")
+    return str(
+        lookup_entry(db_path, platform, verified_host, profile_scope, native_session_id).get(
+            "label"
+        )
+        or ""
+    )
 
 
 # ---- outbox bridge for the async exporter (AFC-412 PR2) -------------------------
