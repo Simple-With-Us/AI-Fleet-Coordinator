@@ -798,12 +798,14 @@ _ISO = re.compile(
     #  ?d=2026-10-19) keeps it.  A dot after the date is the end of a sentence, so only a dot followed by a word
     #  character keeps the date whole.
     r'(?<![\w/.:=?&-])(\d{4})-(\d{2})-(\d{2})'
-    # A +HH:MM / -HH:MM offset is only an offset on the ISO T form.  On the space form (2026-10-19 10:30) a bare
+    # A minus suffix after seconds on only the start is an offset; seconds on both ends indicate a range.
+    # A +HH:MM is an offset on either form.  A bare minus suffix without seconds is a local range.
+    # Legacy distinction:  On the space form (2026-10-19 10:30) a bare
     # -11:00 after the minutes is the end of a time range, not a UTC offset, and taking it as one moves the hour
     # and drops the range end.  That range end is a second local time, so it is captured and rendered in the
     # fleet form too:  a note must not keep a 24-hour clock it rewrote everything else away from.
     r'(?:T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?'
-    r'| (\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z)?(?:-(\d{2}):(\d{2}))?)?'
+    r'| (\d{2}):(\d{2})(:\d{2}(?:\.\d+)?)?(Z)?(?:-(\d{2}):(\d{2})(:\d{2}(?:\.\d+)?)?)?(Z|[+-]\d{2}:?\d{2})?)?'
     r'(?![\w/-]|\.[A-Za-z0-9])'
 )
 
@@ -823,9 +825,13 @@ def _fleet_date(m):
     return new
 
 def _fleet_date_text(m):
-    y, mo, d, t_hh, t_mm, t_zone, hh, mm, zone, r_hh, r_mm = m.groups()
+    y, mo, d, t_hh, t_mm, t_zone, hh, mm, s_secs, s_zone, r_hh, r_mm, r_secs, zone = m.groups()
+    zone = zone or s_zone
     if t_hh is not None:
         hh, mm, zone = t_hh, t_mm, t_zone
+    elif r_hh is not None and s_secs is not None and r_secs is None:
+        zone = '-' + r_hh + ':' + r_mm
+        r_hh = r_mm = None
     try:
         if hh is None:
             return _fleet_day(datetime(int(y), int(mo), int(d)))
@@ -843,23 +849,94 @@ def _fleet_date_text(m):
     except ValueError:
         return m.group(0)
 
+# Repository-maintained Notes HTML policy over the standard HTML parser.  No runtime packages.
+# Formatting tags survive; caller CSS/events do not.  Links permit only http/https/mailto.
+from html.parser import HTMLParser
+from urllib.parse import urlsplit
+
+class NotesHTML(HTMLParser):
+    allowed = frozenset('a b blockquote br code div em h1 h2 h3 h4 h5 h6 hr i li ol p pre s span strong table tbody td th thead tr u ul'.split())
+    blocked = frozenset('script style iframe object embed svg math template frameset frame noscript'.split())
+    void = frozenset(('br', 'hr'))
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.output = []
+        self.stack = []
+        self.suppressed = []
+
+    def handle_starttag(self, tag, attrs):
+        if self.suppressed:
+            if tag in self.blocked:
+                self.suppressed.append(tag)
+            return
+        if tag in self.blocked:
+            self.suppressed.append(tag)
+            return
+        if tag not in self.allowed:
+            return
+        safe = ''
+        for key, value in attrs:
+            if tag == 'a' and key in ('href', 'title') and value is not None:
+                if key == 'href':
+                    if any(ord(c) <= 32 or ord(c) == 127 for c in value):
+                        continue
+                    try:
+                        scheme = urlsplit(value).scheme.lower()
+                    except ValueError:
+                        continue
+                    if scheme not in ('http', 'https', 'mailto'):
+                        continue
+                safe += ' ' + key + '=' + chr(34) + html.escape(value, quote=True) + chr(34)
+        self.output.append('<' + tag + safe + '>')
+        if tag not in self.void:
+            self.stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self.void:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        if self.suppressed:
+            if tag == self.suppressed[-1]:
+                self.suppressed.pop()
+            return
+        if tag in self.stack:
+            while self.stack:
+                current = self.stack.pop()
+                self.output.append('</' + current + '>')
+                if current == tag:
+                    break
+
+    def handle_data(self, data):
+        if self.suppressed:
+            return
+        if not any(tag in ('code', 'pre') for tag in self.stack):
+            data = _one_space_gaps(_ISO.sub(_fleet_date, data))
+        self.output.append(html.escape(data, quote=False))
+
+    def finish(self):
+        self.close()
+        if self.suppressed:
+            raise ValueError('unclosed blocked HTML element')
+        while self.stack:
+            self.output.append('</' + self.stack.pop() + '>')
+        return ''.join(self.output)
+
 def fleet_dates(markup):
-    parts = re.split(r'(<[^>]+>)', markup)
-    depth = 0
-    for i, part in enumerate(parts):
-        if part.startswith('<'):
-            tag = re.match(r'</?\s*(pre|code)\b', part, re.I)
-            if tag:
-                depth += -1 if part.startswith('</') else 1
-                depth = max(depth, 0)
-        elif depth == 0:
-            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part))
-    return ''.join(parts)
+    parser = NotesHTML()
+    try:
+        parser.feed(markup)
+        return parser.finish()
+    except Exception:
+        sys.stderr.write('notes: invalid HTML body; write refused' + chr(10))
+        raise SystemExit(2) from None
 
 # Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as agent-sync's textfmt.single_gaps), so
 # a note reads the same whoever wrote it.  Known abbreviations, dotted words, initials and list markers are skipped.
-_ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq'.split())
-_GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#])')
+_ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig nos vol ca mt ft sq'.split())
+_GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#@])')
 _WORD = re.compile(r'([A-Za-z][A-Za-z.]*)\Z')
 
 def _one_space_gaps(segment):

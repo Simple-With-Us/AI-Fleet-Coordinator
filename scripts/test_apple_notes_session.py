@@ -423,5 +423,58 @@ class SessionIdTests(unittest.TestCase):
         self.assertNotIn("TOPSECRETBODY", p.stderr + p.stdout)
 
 
+class NotesSafeHTMLTests(unittest.TestCase):
+    run_script = SessionIdTests.run_script
+
+    def render(self, body):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'body.html'
+            path.write_text(body)
+            return self.run_script('[AFC, Codex] synthetic', '--session', 'synthetic-session',
+                                   '--html', str(path), env={'AGENT_SEAT': 'CODEX'})
+
+    def test_gap_mentions_and_no_match_shared_formatter(self):
+        from scripts.agent_sync.textfmt import single_gaps
+        for body in ('Done. @**Codex** look.', 'I said no. Then we stop.'):
+            with self.subTest(body=body):
+                p = self.render('<p>' + body + '</p>')
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertIn(single_gaps(body)[0].replace('@**Codex**', '@<b>Codex</b>'), p.stdout)
+
+    def test_space_offsets_and_ranges_match_shared_dates(self):
+        from scripts.agent_sync.textfmt import fleet_dates
+        for body in ('2026-10-19 10:30:00-05:00', '2026-10-19 10:30:00+02:00',
+                     '2026-10-19 10:30-11:00', '2026-10-19 10:30:00-11:00:00'):
+            with self.subTest(body=body):
+                p = self.render('<p>' + body + '</p>')
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertIn(fleet_dates(body)[0], p.stdout)
+
+    def test_allowlist_removes_active_markup_and_unsafe_attributes(self):
+        body = ('<p onclick="bad()" style="color:red">Safe.</p>'
+                '<script>bad()</script><svg><script>bad()</script></svg>'
+                '<a href="jav&#x61;script:bad()" onmouseover="bad()">Link</a>'
+                '<img src=x onerror="bad()"><a href="https://example.com" title="ok">Good</a>')
+        p = self.render(body)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        for unsafe in ('bad()', 'onclick', 'onmouseover', '<script', '<svg', '<img', 'javascript:'):
+            self.assertNotIn(unsafe, p.stdout)
+        self.assertIn('<a href="https://example.com" title="ok">Good</a>', p.stdout)
+
+    def test_nested_code_pre_text_stays_unformatted_and_safe(self):
+        body = '<pre><code>2026-10-19 10:30:00-05:00. Next &lt;script&gt;</code></pre><p>Done. Next.</p>'
+        p = self.render(body)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('<pre><code>2026-10-19 10:30:00-05:00. Next &lt;script&gt;</code></pre>', p.stdout)
+        self.assertIn('Done.\xa0 Next.', p.stdout)
+
+    def test_unclosed_blocked_element_fails_without_body_output(self):
+        p = self.render('<script>synthetic-sensitive-content')
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(p.stdout, '')
+        self.assertNotIn('synthetic-sensitive-content', p.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
