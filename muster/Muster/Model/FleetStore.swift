@@ -43,6 +43,30 @@ final class FleetStore: ObservableObject {
 
     /// Where the engine lives,  for a surface that runs it.
     var engineLocation: EngineLocation? { location }
+
+    /// The engine's own answer about which Infisical project its copy belongs to.
+    ///
+    /// The answer is read once and kept,  because the engine's project does not
+    /// change while the app runs and every visit to a surface that needs it should
+    /// not start another interpreter.  The read runs off the main actor,  and the
+    /// task is the store's,  so a surface that goes away leaves the answer cached
+    /// rather than the work in flight.
+    func engineAnswer() async -> EngineIdentity.Answer {
+        if let answerTask { return await answerTask.value }
+        guard let location else {
+            return EngineIdentity.Answer(identity: nil, reason: "the engine was not found")
+        }
+        let task = Task<EngineIdentity.Answer, Never>.detached(priority: .userInitiated) {
+            EngineIdentity.read(
+                location: location,
+                home: FileManager.default.homeDirectoryForCurrentUser
+            )
+        }
+        answerTask = task
+        return await task.value
+    }
+
+    private var answerTask: Task<EngineIdentity.Answer, Never>?
     private let manifest: SeatManifest?
     private let registry: FleetRegistry?
     private var results: [CheckResult] = []

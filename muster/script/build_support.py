@@ -214,12 +214,25 @@ def find_coding_identities():
     de-duplicated by their SHA-1 fingerprint.
     """
     searches = (
-        ["find-identity", "-v", "-p", "codesigning"],
-        ["find-identity", "-v", "-p", "codesigning", os.path.expanduser(LOGIN_KEYCHAIN)],
+        (["find-identity", "-v", "-p", "codesigning"], False),
+        (
+            ["find-identity", "-v", "-p", "codesigning", os.path.expanduser(LOGIN_KEYCHAIN)],
+            True,
+        ),
     )
     found = {}
-    for arguments in searches:
-        stdout = run_security(arguments).stdout
+    for arguments, is_login_keychain in searches:
+        try:
+            stdout = run_security(arguments).stdout
+        except BuildFailure:
+            # A search that cannot answer is a search that found nothing.  The
+            # other search still runs,  so an unreadable search-list keychain
+            # does not stop the by-path lookup from reaching the identity that
+            # can sign.  The by-path lookup is the one that has to succeed:
+            # when it cannot,  the build cannot sign and says so.
+            if is_login_keychain:
+                raise
+            continue
         for fingerprint, label, team in IDENTITY_PATTERN.findall(stdout):
             found.setdefault(fingerprint.upper(), (fingerprint, label, team))
     return list(found.values())

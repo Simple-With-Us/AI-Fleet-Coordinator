@@ -94,21 +94,20 @@ struct ControlsView: View {
             reason = "No engine checkout was found,  so the registry was not read."
             return
         }
-        let location = store.engineLocation
         let home = FileManager.default.homeDirectoryForCurrentUser
+        // The engine is asked which project its copy belongs to,  because the app
+        // does not know and does not guess:  a private identifier does not belong
+        // in the app's source,  and a copy whose project cannot be confirmed is
+        // not this fleet's copy.  The store keeps the answer,  so a second visit
+        // to this tab does not start another interpreter.
+        let answer = await store.engineAnswer()
         let loaded = await Task.detached(priority: .userInitiated) {
-            // The engine is asked which project its copy belongs to,  because the app
-            // does not know and does not guess:  a private identifier does not belong
-            // in the app's source,  and a copy whose project cannot be confirmed is
-            // not this fleet's copy.
-            let answer = location.map { EngineIdentity.read(location: $0, home: home) }
-                ?? EngineIdentity.Answer(identity: nil, reason: "the engine was not found")
-            return (KnobReader.read(repoRoot: root, home: home, identity: answer.identity), answer)
+            KnobReader.read(repoRoot: root, home: home, identity: answer.identity)
         }.value
-        registry = loaded.0
-        reason = loaded.1.reason
-            ?? loaded.0.problem
-            ?? (loaded.0.knobs.isEmpty ? "The registry block has no readable rows." : nil)
+        registry = loaded
+        reason = answer.reason
+            ?? loaded.problem
+            ?? (loaded.knobs.isEmpty ? "The registry block has no readable rows." : nil)
     }
 }
 

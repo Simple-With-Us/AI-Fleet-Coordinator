@@ -52,9 +52,13 @@ class BuildScriptTests(unittest.TestCase):
             f"sys.path.insert(0, {str(SCRIPT)!r})\n"
             "import build_support as support\n"
             f"support.SECURITY = {security!r}\n"
-            f"support.SECURITY_TIMEOUT = {timeout!r}\n"
-            f"sys.exit(support.main(['build_support', {command!r}]))\n"
         )
+        # Only a timeout that was asked for replaces the default.  Setting it to
+        # None would take the deadline away,  and the fail-closed behaviour the
+        # tests are here for needs the deadline.
+        if timeout is not None:
+            code += f"support.SECURITY_TIMEOUT = {timeout!r}\n"
+        code += f"sys.exit(support.main(['build_support', {command!r}]))\n"
         return subprocess.run(
             [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
         )
@@ -103,12 +107,32 @@ class BuildScriptTests(unittest.TestCase):
             "1A2B3C4D5E6F708192A3B4C5D6E7F8091A2B3C4D ABCDE12345",
         )
 
-    def test_the_script_entry_point_reports_a_usage_error(self):
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT / "build_support.py")],
-            capture_output=True,
-            text=True,
+    def test_a_failing_path_less_search_still_lets_the_by_path_lookup_sign(self):
+        """An unreadable search list must not stop the by-path lookup."""
+        identity = '  1) 1A2B3C4D5E6F708192A3B4C5D6E7F8091A2B3C4D "Developer ID Application: Alpha Company (ABCDE12345)"'
+        security = self.stand_in_security(
+            "if [ -z \"$5\" ]; then\n"
+            "  echo 'security: SecKeychainSearchCopyNext: refused' >&2\n"
+            "  exit 1\n"
+            "else\n"
+            "  echo '%s'\n"
+            "fi\n" % identity
         )
+        result = self.run_cli("signing-identity", security)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("1A2B3C4D5E6F708192A3B4C5D6E7F8091A2B3C4D", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_the_script_entry_point_reports_a_usage_error(self):
+        try:
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT / "build_support.py")],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail("the usage check hung instead of reporting a usage error")
         self.assertEqual(result.returncode, 2)
         self.assertIn("Usage", result.stderr)
 
