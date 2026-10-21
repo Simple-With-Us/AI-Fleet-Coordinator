@@ -29,7 +29,6 @@ from fleet_config.types import (
     ProofLevel,
     ReasonCode,
     StatusReport,
-    StatusSummary,
     UncoveredSurface,
 )
 
