@@ -3592,7 +3592,12 @@ def apply_tools(
             bad.extend(
                 c
                 for c in probe_minimax_files(
-                    staged_mm, paths.home, os.path.join(stage, REGISTRY_NAME), timeout, minimal_path
+                    staged_mm,
+                    paths.home,
+                    os.path.join(stage, REGISTRY_NAME),
+                    timeout,
+                    minimal_path,
+                    source_registry=src.registry,
                 )
                 if c.status == "FAIL"
             )
@@ -5758,9 +5763,18 @@ def registry_tree(registry: str) -> str:
 
 
 def probe_minimax_files(
-    command: str, home: str, registry: str, timeout: float, minimal_path: bool
+    command: str,
+    home: str,
+    registry: str,
+    timeout: float,
+    minimal_path: bool,
+    source_registry: str | None = None,
 ) -> list[Check]:
-    """Run MM's compatible file payloads in its restricted subprocess environment."""
+    """Run MM's compatible file payloads in its restricted subprocess environment.
+
+    `source_registry` names the registry the operator has to repair when `registry` is a staged
+    copy that is deleted with the stage; it is reported with the refusal.
+    """
     env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
     env.update(HOME=home, PATH=MINIMAL_PATH if minimal_path else os.environ.get("PATH", ""))
     try:
@@ -5769,7 +5783,12 @@ def probe_minimax_files(
         # An unreadable/invalid registry is a failed check, not an abort: letting
         # Refused escape here unwinds through apply_minimax and skips the
         # remaining platforms in `apply all`.
-        return [Check("minimax", "registry-tree", "FAIL", str(exc))]
+        detail = str(exc)
+        if source_registry and source_registry != registry:
+            # The staged copy is removed with the stage, so its path is not actionable:
+            # name the registry the operator must repair.
+            detail = f"{detail}; source registry: {source_registry}"
+        return [Check("minimax", "registry-tree", "FAIL", detail)]
     integration = os.path.join("Code", tree, "probe-placeholder")
     out = []
     for tool, path, deny in (

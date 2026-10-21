@@ -5920,6 +5920,19 @@ class MinimaxBundleTests(World):
                 self.assertIn(str(registry), out)
                 self.assertEqual(err, "")
 
+    def test_the_registry_refusal_names_the_source_registry_not_the_staged_copy(self) -> None:
+        # The staged copy is deleted with the stage, so its path is not actionable: the refusal
+        # has to name the registry the operator must repair.
+        Path(self.source.registry).write_text(json.dumps({"apps": [], "seats": []}))
+        lines: list[str] = []
+        r = T.apply_tools(
+            self.source, self.paths, timeout=TIMEOUT, minimal_path=False, emit=lines.append
+        )
+        self.assertEqual(r.status, "refused", r)
+        failed = [line for line in lines if "registry-tree" in line]
+        self.assertTrue(failed, "\n".join(lines))
+        self.assertIn(self.source.registry, failed[0])
+
     # -- where it sits in the platform table
 
     def test_it_is_in_all_but_not_a_config_file_platform(self) -> None:
