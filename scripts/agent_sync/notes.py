@@ -578,7 +578,7 @@ _RUN_LOCK = (
 LOCK_WAIT_S = 60.0
 
 
-def _kill_group(proc: "subprocess.Popen[bytes]") -> None:
+def _kill_group(proc: subprocess.Popen[bytes]) -> None:
     """Kill the helper's whole process group.
 
     The helper leads its own session,  so the group is the helper and everything it started.  A
@@ -603,7 +603,7 @@ def _kill_group(proc: "subprocess.Popen[bytes]") -> None:
 
 def _run_helper(
     argv: list[str], *, runner: Runner | None = None, **kwargs: Any
-) -> "subprocess.CompletedProcess[bytes]":
+) -> subprocess.CompletedProcess[bytes]:
     """Start the helper, and take its whole process group down when the cap is reached.
 
     The keyword arguments are the ones `subprocess.run` takes,  and a caller-supplied runner
