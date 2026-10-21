@@ -157,7 +157,11 @@ class BootstrapTests(unittest.TestCase):
                 self.subTest(argv=argv),
                 mock.patch.dict(
                     os.environ,
-                    dict(PAIR, INFISICAL_TOKEN="synthetic-token", FLEET_SECRETS_CLI=str(self.delegate())),
+                    dict(
+                        PAIR,
+                        INFISICAL_TOKEN="synthetic-token",
+                        FLEET_SECRETS_CLI=str(self.delegate()),
+                    ),
                     clear=True,
                 ),
                 mock.patch.object(entry.sys, "argv", ["fleet-secrets", *argv]),
@@ -171,9 +175,13 @@ class BootstrapTests(unittest.TestCase):
 
     def test_a_command_that_reads_secrets_still_logs_in(self):
         with (
-            mock.patch.dict(os.environ, dict(PAIR, FLEET_SECRETS_CLI=str(self.delegate())), clear=True),
+            mock.patch.dict(
+                os.environ, dict(PAIR, FLEET_SECRETS_CLI=str(self.delegate())), clear=True
+            ),
             mock.patch.object(entry.sys, "argv", ["fleet-secrets", "names"]),
-            mock.patch.object(entry, "authenticated_env", return_value={"INFISICAL_TOKEN": "t"}) as auth,
+            mock.patch.object(
+                entry, "authenticated_env", return_value={"INFISICAL_TOKEN": "t"}
+            ) as auth,
             mock.patch.object(entry.os, "execve") as execve,
         ):
             entry.main()

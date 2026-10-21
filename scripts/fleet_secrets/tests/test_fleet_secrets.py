@@ -16,7 +16,9 @@ from fleet_secrets import cli, core
 
 FAKE_CLI = "/fake/bin/infisical"
 PROJECT = "00000000-0000-4000-8000-000000000001"  # a placeholder, not the real project id
-OTHER_PROJECT = "00000000-0000-4000-8000-000000000002"  # placeholder for the AI Fleet Coordinator project
+OTHER_PROJECT = (
+    "00000000-0000-4000-8000-000000000002"  # placeholder for the AI Fleet Coordinator project
+)
 VAL_A = "SENTINEL_VALUE_A_9f3c"
 VAL_B = "SENTINEL_VALUE_B_77d1"
 CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"

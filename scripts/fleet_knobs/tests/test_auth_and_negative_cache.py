@@ -13,7 +13,6 @@ import stat
 import sys
 import time
 import types
-import unittest
 from unittest import mock
 
 from fleet_knobs import knobs, lkg, source

@@ -58,8 +58,12 @@ INFISICAL_PATH = "/fleetlink"  # folder of the per-seat FLEETLINK_TOKEN_<SEAT> n
 INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (Fleet-OPS has none)
 INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
-FETCH_TIMEOUT_S = 60.0  # one `fleet-secrets get`:  the machine-identity login and the export, under load
-KEY_ABSENT_EXIT = 3  # fleet-secrets: the key is not there (a failure of any other kind says nothing about it)
+FETCH_TIMEOUT_S = (
+    60.0  # one `fleet-secrets get`:  the machine-identity login and the export, under load
+)
+KEY_ABSENT_EXIT = (
+    3  # fleet-secrets: the key is not there (a failure of any other kind says nothing about it)
+)
 TIMEOUT_S = 120.0
 OUTPUT_LIMIT = (
     8_000_000  # bytes of CLI output;  read_file returns up to 1 MB of text, pretty-printed
@@ -342,7 +346,9 @@ def run(
     timeout = TIMEOUT_S if timeout is None else timeout
     cli = find_cli(env)
     credential = resolve_credential(seat, env, home)
-    extra_known = [credential[2]]  # the token's own value, whatever its source, never leaves in text
+    extra_known = [
+        credential[2]
+    ]  # the token's own value, whatever its source, never leaves in text
     for field in SCANNED_FIELDS:
         value = args.get(field)
         if isinstance(value, str) and value:

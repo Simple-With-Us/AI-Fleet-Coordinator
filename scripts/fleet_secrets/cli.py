@@ -241,7 +241,9 @@ def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
         and rep["project_id_resolvable"]
         and rep["fetch_names_ok"]
         and rep["unresolved_reference_count"] == 0
-        and (other_ok or not core.is_linux())  # the server needs the FleetLink tokens;  a Mac reads its own
+        and (
+            other_ok or not core.is_linux()
+        )  # the server needs the FleetLink tokens;  a Mac reads its own
     )
     rep["ok"] = bool(ok)
     return rep
