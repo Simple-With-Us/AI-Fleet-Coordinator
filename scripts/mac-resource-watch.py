@@ -33,27 +33,37 @@ GB_SECRET_FOLDER = "/grok-bot-housekeeper-webhook"
 CLEANUP = HOME / "apps" / "mac-auto-cleanup.sh"
 JANITOR = HOME / ".claude-disk-janitor" / "janitor.sh"
 
-# Defaults: start reclaiming before the old 50G janitor cliff.  Overnight
-# 6-13G drops in 30 min were blowing through that floor.
-DISK_FREE_WARN_GB = float(os.environ.get("RESOURCE_DISK_WARN_GB", "80"))
-DISK_FREE_CRIT_GB = float(os.environ.get("RESOURCE_DISK_CRIT_GB", "50"))
-DISK_DROP_ALERT_GB = float(os.environ.get("RESOURCE_DISK_DROP_GB", "6"))
-SWAP_USED_PCT = float(os.environ.get("RESOURCE_SWAP_USED_PCT", "80"))
+# Live defaults, the same table the housekeeper skill carries: 25G free to warn,
+# 15G to be critical, a 15G drop, swap at 90% AND 32G absolute, load1 at 65.
+# They were retuned down deliberately: the old 80G warn line ran
+# `mac-auto-cleanup.sh --pressure` every 5 minutes back to back, and two of three
+# runs ended with LESS free disk than they started.
+DISK_FREE_WARN_GB = float(os.environ.get("RESOURCE_DISK_WARN_GB", "25"))
+DISK_FREE_CRIT_GB = float(os.environ.get("RESOURCE_DISK_CRIT_GB", "15"))
+DISK_DROP_ALERT_GB = float(os.environ.get("RESOURCE_DISK_DROP_GB", "15"))
+SWAP_USED_PCT = float(os.environ.get("RESOURCE_SWAP_USED_PCT", "90"))
 # Absolute used swap, not the size of the store.  macOS grows the store on demand, so
 # swap_used_pct sits near 90% whether 2G or 20G is actually paged out.
-SWAP_USED_GB = float(os.environ.get("RESOURCE_SWAP_USED_GB", "8"))
-LOAD1_THRESHOLD = float(os.environ.get("RESOURCE_LOAD1", "16"))
+SWAP_USED_GB = float(os.environ.get("RESOURCE_SWAP_USED_GB", "32"))
+LOAD1_THRESHOLD = float(os.environ.get("RESOURCE_LOAD1", "65"))
 CPU_ENABLED = os.environ.get("RESOURCE_CPU", "1") not in {"0", "false", "no"}
-COOLDOWN_SEC = int(os.environ.get("RESOURCE_COOLDOWN_SEC", "2700"))
+COOLDOWN_SEC = int(os.environ.get("RESOURCE_COOLDOWN_SEC", "14400"))
 # 2026-09-01 (Claude): cleanup had NO cooldown -- only the webhook did.  With disk
-# hovering under the 80G warn line this ran mac-auto-cleanup.sh --pressure every
+# hovering under the warn line this ran mac-auto-cleanup.sh --pressure every
 # 5 min, back to back.  Measured: each run grew swap 3.6-7.3G (CleanMyMac purge +
 # `optimize ram` force pages out) and 2 of 3 runs ended with LESS free disk than
-# they started.  Cure was worse than the disease.
-CLEAN_COOLDOWN_SEC = int(os.environ.get("RESOURCE_CLEAN_COOLDOWN_SEC", "3600"))
-CLEAN_COOLDOWN_CRIT_SEC = int(os.environ.get("RESOURCE_CLEAN_COOLDOWN_CRIT_SEC", "900"))
+# they started.  Cure was worse than the disease.  The cooldowns are 2h between
+# cleanup runs, 30m when the disk is critical, and 4h for the webhook.
+CLEAN_COOLDOWN_SEC = int(os.environ.get("RESOURCE_CLEAN_COOLDOWN_SEC", "7200"))
+CLEAN_COOLDOWN_CRIT_SEC = int(os.environ.get("RESOURCE_CLEAN_COOLDOWN_CRIT_SEC", "1800"))
 LOCK_FILE = STATE_DIR / "resource-watch.lock"
 LOCK_STALE_SEC = int(os.environ.get("RESOURCE_LOCK_STALE_SEC", "1800"))
+# The lock every reclaiming scheduler shares, so two of them never reclaim at once:
+# mac-cleanup (4h), Hog Hunter's robotic vacuum (300s), the BotFleet routines, the
+# resource webhook and a live bot thread.  It is a directory, taken with mkdir, and
+# stale after 120 minutes -- the same lock and the same age mac-auto-cleanup.sh uses.
+HOUSEKEEPER_LOCK = STATE_DIR / ".housekeeper.lock"
+HOUSEKEEPER_LOCK_STALE_SEC = int(os.environ.get("RESOURCE_HOUSEKEEPER_LOCK_STALE_SEC", "7200"))
 
 
 def log(msg: str) -> None:
@@ -238,39 +248,87 @@ def load_webhooks() -> list[tuple[str, str, str]]:
     return hooks
 
 
+def _acquire_housekeeper_lock() -> bool:
+    """Take the lock every reclaiming scheduler shares, so two never reclaim at once.
+
+    The lock is the directory `~/.claude-disk-janitor/.housekeeper.lock`, taken with
+    mkdir exactly as mac-auto-cleanup.sh takes it, and stale after 120 minutes.  A
+    caller that already holds it exports HOUSEKEEPER_LOCK_OWNER=1; then the lock is
+    neither taken nor released here -- the caller keeps it for the whole run.
+    """
+    if os.environ.get("HOUSEKEEPER_LOCK_OWNER") == "1":
+        return True
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            HOUSEKEEPER_LOCK.mkdir()
+            return True
+        except FileExistsError:
+            try:
+                age = time.time() - HOUSEKEEPER_LOCK.stat().st_mtime
+            except OSError:
+                age = 0.0
+            if age < HOUSEKEEPER_LOCK_STALE_SEC:
+                log(f"housekeeper lock held by a peer ({int(age)}s old); skipping cleanup")
+                return False
+            log(f"stealing stale housekeeper lock ({int(age)}s old)")
+            try:
+                HOUSEKEEPER_LOCK.rmdir()
+            except OSError:
+                return False
+    return False
+
+
+def _release_housekeeper_lock() -> None:
+    if os.environ.get("HOUSEKEEPER_LOCK_OWNER") == "1":
+        return
+    try:
+        HOUSEKEEPER_LOCK.rmdir()
+    except OSError:
+        pass
+
+
 def run_cleanup(pressure: bool) -> int:
-    env = os.environ.copy()
-    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get(
-        "PATH", ""
-    )
-    # We already hold the housekeeper lock (acquire_lock above); mark ourselves the owner
-    # so the child scripts do not deadlock against it and skip themselves.
-    env["HOUSEKEEPER_LOCK_OWNER"] = "1"
-    args = ["/bin/bash", str(CLEANUP)]
-    if pressure:
-        args.append("--pressure")
-        env["MAC_CLEANUP_PRESSURE"] = "1"
-    rc = 0
-    if CLEANUP.is_file():
-        try:
-            rc = subprocess.call(args, env=env, timeout=900)
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            log(f"cleanup timeout/error: {exc}")
-            rc = 1
-    if pressure and JANITOR.is_file():
-        try:
-            subprocess.call(["/bin/bash", str(JANITOR)], env=env, timeout=900)
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            log(f"janitor timeout/error: {exc}")
-    # mac-auto-cleanup.sh --pressure already runs `cleanmymac clean` when the CLI
-    # exists.  Do not run a second full CleanMyMac pass here (Codex #156 P2).
-    # Never `optimize ram` unless RESOURCE_ALLOW_RAM_OPTIMIZE=1.  It purges
-    # resident pages into swapfiles on the disk we are trying to free.
-    if pressure and os.environ.get("RESOURCE_ALLOW_RAM_OPTIMIZE") == "1":
-        cmm = _run(["/usr/bin/which", "cleanmymac"]).strip() or "/opt/homebrew/bin/cleanmymac"
-        if Path(cmm).is_file():
-            subprocess.call([cmm, "optimize", "ram"], timeout=120)
-    return rc
+    # Hold the shared housekeeper lock while the reclaim runs: mac-cleanup, Hog
+    # Hunter's vacuum, the BotFleet routines and a live bot thread all take it,
+    # so two of them never reclaim at once.
+    if not _acquire_housekeeper_lock():
+        return 1
+    try:
+        env = os.environ.copy()
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get(
+            "PATH", ""
+        )
+        # We hold the housekeeper lock (taken above); mark ourselves the owner so the
+        # child scripts do not deadlock against it and skip themselves.
+        env["HOUSEKEEPER_LOCK_OWNER"] = "1"
+        args = ["/bin/bash", str(CLEANUP)]
+        if pressure:
+            args.append("--pressure")
+            env["MAC_CLEANUP_PRESSURE"] = "1"
+        rc = 0
+        if CLEANUP.is_file():
+            try:
+                rc = subprocess.call(args, env=env, timeout=900)
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                log(f"cleanup timeout/error: {exc}")
+                rc = 1
+        if pressure and JANITOR.is_file():
+            try:
+                subprocess.call(["/bin/bash", str(JANITOR)], env=env, timeout=900)
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                log(f"janitor timeout/error: {exc}")
+        # mac-auto-cleanup.sh --pressure already runs `cleanmymac clean` when the CLI
+        # exists.  Do not run a second full CleanMyMac pass here (Codex #156 P2).
+        # Never `optimize ram` unless RESOURCE_ALLOW_RAM_OPTIMIZE=1.  It purges
+        # resident pages into swapfiles on the disk we are trying to free.
+        if pressure and os.environ.get("RESOURCE_ALLOW_RAM_OPTIMIZE") == "1":
+            cmm = _run(["/usr/bin/which", "cleanmymac"]).strip() or "/opt/homebrew/bin/cleanmymac"
+            if Path(cmm).is_file():
+                subprocess.call([cmm, "optimize", "ram"], timeout=120)
+        return rc
+    finally:
+        _release_housekeeper_lock()
 
 
 def _event_name(hits: list[dict]) -> str:
