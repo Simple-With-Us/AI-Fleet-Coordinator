@@ -111,13 +111,15 @@ class AppleEventTimeoutTests(unittest.TestCase):
             if line.startswith(f'{TIMEOUT_NAME}="${{{TIMEOUT_NAME}:-')
         )
         check = next(
-            (i for i in range(start + 1, start + 12) if "=~" in lines[i] and TIMEOUT_NAME in lines[i]),
+            (
+                i
+                for i in range(start + 1, start + 12)
+                if "=~" in lines[i] and TIMEOUT_NAME in lines[i]
+            ),
             None,
         )
         self.assertIsNotNone(check, "the override is not checked for being a number of seconds")
-        snippet = (
-            "\n".join(lines[start : check + 1]) + f'\nprintf "%s\\n" "${TIMEOUT_NAME}"\n'
-        )
+        snippet = "\n".join(lines[start : check + 1]) + f'\nprintf "%s\\n" "${TIMEOUT_NAME}"\n'
         for value, expected in (("900s", 900), ("", 900), ("450", 450), ('900"; end', 900)):
             with self.subTest(value=value):
                 proc = subprocess.run(
@@ -245,7 +247,9 @@ class AppleEventTimeoutTests(unittest.TestCase):
             stub.write_text('#!/bin/bash\ncat > "%s"\necho "x-coredata://stub"\n' % captured)
             stub.chmod(0o700)
             shortcuts = bindir / "shortcuts"
-            shortcuts.write_text('#!/bin/bash\necho "the Shortcut list could not be read" >&2\nexit 1\n')
+            shortcuts.write_text(
+                '#!/bin/bash\necho "the Shortcut list could not be read" >&2\nexit 1\n'
+            )
             shortcuts.chmod(0o700)
             for name, body in (("open", "exit 0\n"), ("pgrep", "exit 1\n")):
                 side = bindir / name
