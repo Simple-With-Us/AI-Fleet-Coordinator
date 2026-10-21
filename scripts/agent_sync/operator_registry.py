@@ -21,10 +21,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
+import re
 import secrets
 import sqlite3
 import time
-import urllib.parse
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -173,8 +174,13 @@ class SessionRegistry:
             # The cost of the hot-journal recovery is that the wake path needs write
             # permission on the registry file, which the store the Operator owns gives
             # it anyway.
+            #
+            # The URI comes from as_uri() and not from quoting the path by hand:  a path
+            # that begins with two slashes quotes to "file://host/path", which SQLite
+            # reads as an authority and opens a different file.  as_uri() keeps the
+            # leading slashes as part of the path.
             self._conn = sqlite3.connect(
-                "file:%s?mode=rw" % urllib.parse.quote(os.path.abspath(self.db_path)),
+                "%s?mode=rw" % pathlib.Path(os.path.abspath(self.db_path)).as_uri(),
                 uri=True,
             )
             self._conn.row_factory = sqlite3.Row
@@ -492,6 +498,17 @@ class SessionRegistry:
 # ---- the register path (AFC-412) ---------------------------------------------------
 
 
+def normalize_platform(platform: str) -> str:
+    """The platform namespace, folded to lower case.
+
+    A platform's display form ("MiniMax") and its namespace ("minimax") name the same
+    registry namespace, so the namespace is folded on the way in and on the way out.  A
+    letter is only ever issued under the folded name, and the index still serves the
+    lookup because the comparison stays on the column.
+    """
+    return str(platform or "").strip().lower()
+
+
 def register_session(
     db_path: str,
     *,
@@ -518,6 +535,7 @@ def register_session(
     the display form the platform expects:  "H: Title".
     """
     native = SI.check(native_session_id, "the native session id")
+    platform = normalize_platform(platform)
     for name, value in (
         ("platform", platform),
         ("verified_host", verified_host),
@@ -550,7 +568,7 @@ def register_session(
     return out
 
 
-# ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
+# ---- the other direction: a letter names a session (AFC-412) ------------------------
 
 
 class RegistryUnavailable(RuntimeError):
@@ -560,6 +578,124 @@ class RegistryUnavailable(RuntimeError):
     that could not be opened, and the caller has to say so rather than report every
     session as having no letter.
     """
+
+
+def _check_generation(generation: int | None) -> None:
+    if generation is None:
+        return
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+        raise ValueError("generation must be a positive integer")
+
+
+def resolve_label(
+    db_path: str,
+    platform: str,
+    letter: str,
+    generation: int | None = None,
+) -> dict[str, Any] | None:
+    """The session a letter names, or None when the letter is not live.
+
+    This is the other direction of the join.  The catalog answers "what letter is this
+    session", and the wake carries that answer on the row.  This answers "which session
+    is this letter", which is what an address like "@**MiniMax** Z" needs.
+
+    A letter is unique on its platform while it is live, so the letter alone names one
+    session, and the platform is always part of the address.  A recycled letter takes a
+    generation, and "MM A (gen 2)" names the second session to hold that letter.
+
+    None means one thing only:  the registry was read and that letter has no live
+    holder.  A registry that is missing, unreadable or broken raises
+    RegistryUnavailable, and malformed input raises ValueError, so a caller can tell a
+    miss from a failure to know.
+
+    The lookup is on the indexed (platform, letter) pair, so it answers for a session
+    the catalog no longer lists, which is the point:  the catalog shows a bounded window
+    of recent sessions and this does not.
+    """
+    if not isinstance(platform, str) or not platform.strip():
+        raise ValueError("platform is required")
+    if not isinstance(letter, str) or not letter.strip():
+        raise ValueError("letter is required")
+    want = letter.strip().upper()
+    if want not in LETTERS:
+        raise ValueError("letter must be one of A-Z")
+    _check_generation(generation)
+    if not db_path:
+        raise RegistryUnavailable("no registry path was given")
+    if not os.path.isfile(str(db_path)):
+        raise RegistryUnavailable("the registry %s is not there" % db_path)
+    namespace = normalize_platform(platform)
+    columns = (
+        "a.letter AS label, a.generation AS generation, a.record_id AS record_id,"
+        " s.seat AS seat, s.native_session_id AS native_session_id, s.title AS title,"
+        " s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
+        " s.state AS state"
+    )
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception as exc:
+        raise RegistryUnavailable(type(exc).__name__) from exc
+    try:
+        if generation is None:
+            row = registry._conn.execute(
+                "SELECT %s FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+                " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL" % columns,
+                (namespace, want),
+            ).fetchone()
+        else:
+            row = registry._conn.execute(
+                "SELECT %s FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+                " WHERE a.platform = ? AND a.letter = ? AND a.generation = ?" % columns,
+                (namespace, want, int(generation)),
+            ).fetchone()
+    except Exception as exc:
+        raise RegistryUnavailable(type(exc).__name__) from exc
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    if row is None:
+        return None
+    found = dict(row)
+    label = str(found.get("label") or "")
+    found["ref"] = cross_seat_ref(
+        str(found.get("seat") or ""),
+        label,
+        int(found.get("generation") or 0),
+    )
+    found["title_display"] = display_title(label, str(found.get("title") or ""))
+    found["found"] = True
+    return found
+
+
+def resolve_ref(db_path: str, platform: str, ref: str) -> dict[str, Any] | None:
+    """The session a reference form names, or None when it names none.
+
+    The reference form is what a reply carries:  "MM A", or "MM A (gen 2)" for a letter
+    that has been recycled.  A bare "MM A" names the live holder of the letter, and a
+    suffix names that exact generation, so the address is never read as the wrong
+    session after a recycle.
+
+    This is the inverse of the form the registry hands out, so a ref can be carried
+    through a message and resolved back to one session.
+    """
+    if not isinstance(ref, str) or not ref.strip():
+        raise ValueError("the reference form is required")
+    text = ref.strip()
+    generation = None
+    match = re.search(r"\s*\(gen\s+(\d+)\)\s*$", text)
+    if match:
+        generation = int(match.group(1))
+        text = text[: match.start()].strip()
+    parts = text.split()
+    if len(parts) < 2:
+        raise ValueError("the reference form is SEAT LETTER or SEAT LETTER (gen N)")
+    letter = parts[-1]
+    return resolve_label(db_path, platform, letter, generation)
+
+
+# ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
 
 
 def lookup_many(
@@ -732,9 +868,29 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--thread-link", default="")
     r.add_argument("--apple-note-link", default="")
     r.add_argument("--wake-capability", default="unknown")
+    rs = sub.add_parser("resolve", help="name the session a letter points at")
+    rs.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    rs.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    rs.add_argument("--letter", required=True, help="the letter, such as A")
+    rs.add_argument(
+        "--generation", type=int, default=None, help="the generation of a recycled letter"
+    )
     args = parser.parse_args(argv)
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
+        return 0
+    if args.command == "resolve":
+        try:
+            found = resolve_label(
+                args.db or _default_db(),
+                args.platform,
+                args.letter,
+                args.generation,
+            )
+        except (ValueError, RegistryUnavailable) as exc:
+            print(json.dumps({"error": str(exc), "found": False}))
+            return 2
+        print(json.dumps(found if found else {"label": args.letter, "found": False}))
         return 0
     if args.command == "register":
         try:

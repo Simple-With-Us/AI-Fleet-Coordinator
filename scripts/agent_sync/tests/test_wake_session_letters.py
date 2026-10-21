@@ -171,6 +171,214 @@ class RegisterPathTests(unittest.TestCase):
             self.assertEqual(found["label"], "A")
 
 
+    def test_a_letter_names_its_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            # The other direction of the join:  a letter names one session.
+            found = OR.resolve_label(db, "minimax", "A")
+            self.assertEqual(found["native_session_id"], "mvs_abc")
+            self.assertEqual(found["seat"], "MM")
+            self.assertEqual(found["title"], "Work")
+            self.assertEqual(found["title_display"], "A: Work")
+            self.assertEqual(found["ref"], "MM A")
+
+    def test_a_letter_is_unique_on_its_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            # The same letter on another platform is a different session.
+            self.assertIsNone(OR.resolve_label(db, "codex", "A"))
+
+    def test_an_unknown_letter_resolves_to_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+            )
+            # A letter that was never issued is a miss, and a miss is None.
+            self.assertIsNone(OR.resolve_label(db, "minimax", "Z"))
+
+    def test_malformed_lookup_input_is_refused_rather_than_read_as_a_miss(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            for bad in ("", "  ", "AA", "1", "A1"):
+                with self.assertRaises(ValueError):
+                    OR.resolve_label(db, "minimax", bad)
+            with self.assertRaises(ValueError):
+                OR.resolve_label(db, "", "A")
+            with self.assertRaises(ValueError):
+                OR.resolve_label(db, "minimax", "A", 0)
+            with self.assertRaises(ValueError):
+                OR.resolve_label(db, "minimax", "A", True)
+
+    def test_a_missing_registry_is_not_reported_as_a_missing_letter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            # The registry is not there, which is not the same as the letter being free.
+            with self.assertRaises(OR.RegistryUnavailable):
+                OR.resolve_label(db, "minimax", "A")
+
+    def test_the_platform_namespace_is_folded_on_both_sides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="MiniMax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+            )
+            # The display form and the namespace name the same registry namespace.
+            self.assertEqual(
+                OR.resolve_label(db, "minimax", "A")["native_session_id"], "mvs_abc"
+            )
+            self.assertEqual(
+                OR.resolve_label(db, "MINIMAX", "A")["native_session_id"], "mvs_abc"
+            )
+
+    def test_a_reference_form_names_its_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            found = OR.resolve_ref(db, "minimax", "MM A")
+            self.assertEqual(found["native_session_id"], "mvs_abc")
+            # A malformed reference is refused rather than read as a miss.
+            with self.assertRaises(ValueError):
+                OR.resolve_ref(db, "minimax", "A")
+            with self.assertRaises(ValueError):
+                OR.resolve_ref(db, "minimax", "")
+
+    def test_a_recycled_reference_names_the_older_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            first = OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            registry = OR.SessionRegistry(db)
+            self.addCleanup(registry.close_db)
+            registry.close(first["record_id"])
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_def",
+                seat="MM",
+                source="test",
+                title="Next",
+            )
+            # A bare letter names the live holder, and the suffix names the older one.
+            self.assertEqual(
+                OR.resolve_ref(db, "minimax", "MM A")["native_session_id"], "mvs_def"
+            )
+            self.assertEqual(
+                OR.resolve_ref(db, "minimax", "MM A (gen 1)")["native_session_id"], "mvs_abc"
+            )
+
+    def test_a_recycled_letter_names_the_right_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            first = OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            registry = OR.SessionRegistry(db)
+            self.addCleanup(registry.close_db)
+            registry.close(first["record_id"])
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_def",
+                seat="MM",
+                source="test",
+                title="Next",
+            )
+            # The live letter names the session that holds it now.
+            live = OR.resolve_label(db, "minimax", "A")
+            self.assertEqual(live["native_session_id"], "mvs_def")
+            self.assertEqual(live["generation"], 2)
+            # And the generation names the older one.  The suffix is the differentiator:
+            # only a recycled letter carries it, so the first holder reads "MM A".
+            older = OR.resolve_label(db, "minimax", "A", 1)
+            self.assertEqual(older["native_session_id"], "mvs_abc")
+            self.assertEqual(older["ref"], "MM A")
+            self.assertEqual(live["ref"], "MM A (gen 2)")
+
+    def test_the_resolve_command_names_the_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+            )
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = OR.main(
+                    ["resolve", "--db", db, "--platform", "minimax", "--letter", "A"]
+                )
+            self.assertEqual(code, 0)
+            out = json.loads(buffer.getvalue())
+            self.assertEqual(out["native_session_id"], "mvs_abc")
+            self.assertEqual(out["ref"], "MM A")
+
+
 class RegistryLookupTests(unittest.TestCase):
     def test_the_registry_path_is_one_shared_place_under_the_state_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -316,15 +524,39 @@ class RegistryLookupTests(unittest.TestCase):
             finally:
                 writer.rollback()
 
-    def test_the_lookup_handle_never_creates_the_registry(self) -> None:
+    def test_the_lookup_never_creates_the_registry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = OR.registry_db_path(tmp)
             self.assertFalse(os.path.exists(db))
-            # The handle is read-write so it can recover a hot journal, but it must never
-            # bring a registry into being.
+            # The lookup checks the file first, so a missing registry is a miss.
+            self.assertEqual(
+                OR.lookup_many(db, [("minimax", "mac", "default", "mvs_abc")]), {}
+            )
+            self.assertFalse(os.path.exists(db))
+            # And the handle itself refuses a missing file, so a registry that vanishes
+            # between the check and the open is not brought back into being.
             with self.assertRaises(sqlite3.OperationalError):
                 OR.SessionRegistry(db, read_only=True)
             self.assertFalse(os.path.exists(db))
+
+    def test_a_path_with_two_leading_slashes_still_opens_the_same_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+            )
+            # A path that begins with two slashes is the same file on this platform, and a
+            # URI built by quoting it would read the first segment as an authority and
+            # open a different file.
+            twin = "//" + os.path.abspath(db).lstrip("/")
+            found = OR.lookup_entry(twin, "minimax", "mac", "default", "mvs_abc")
+            self.assertEqual(found["label"], "A")
 
     def test_the_alias_lookup_is_indexed_by_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
