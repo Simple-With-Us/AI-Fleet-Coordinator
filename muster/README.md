@@ -4,7 +4,7 @@ Muster is a native SwiftUI macOS 14+ scaffold.  Its initial window explicitly re
 
 ## Scope
 
-- `Muster/` contains only the app entry point and the fleet overview view.
+- `Muster/` contains the app entry point, the fleet overview view and the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`).
 - `project.yml` is the XcodeGen source of truth.  The generated Xcode project is ignored.
 - `script/build_and_run.sh` owns local project generation, signing, installation, and launch.
 - The repository's `.codex/environments/environment.toml` exposes the same script through the Codex **Run** action.
