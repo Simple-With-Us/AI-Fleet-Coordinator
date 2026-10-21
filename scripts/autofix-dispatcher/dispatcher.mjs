@@ -14,17 +14,19 @@
 import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import {
-  DISPATCHER_BOT,
   DISPATCHER_MARKER_BOT,
-  DISPATCH_TAG,
   dispatchCommentBody,
   extractCostUsd,
   extractRunId,
+  findDispatchComment,
   hasAnyAutofixMarker,
   hasReviewFindings,
+  hasTallyRow,
+  isFixablePr,
   markerBot,
   parseTally,
   pickOldest,
+  reconcileTargets,
   tallyTotalUsd,
 } from './lib.mjs';
 
@@ -79,18 +81,24 @@ function gh(argv, input = null) {
   });
 }
 
-// Every failed API call lands here.  main() aborts the tick when the list is
-// non-empty before any dispatch decision: a silently empty scan would look
-// like "no candidates" or, worse, "no marker yet" and double-spend a PR's one
-// autofix run.
+// Every failed API call that decides whether to dispatch lands here.  main() aborts the
+// tick when the list is non-empty before any dispatch decision: a silently empty scan
+// would look like "no candidates" or, worse, "no marker yet" and double-spend a PR's one
+// autofix run.  Reconcile failures (a deleted run, a renamed repo) only affect the
+// bookkeeping, so they go to their own list and never block a dispatch.
 const apiErrors = [];
+const reconcileErrors = [];
 
-function ghApiList(path, jq = '.[] | @json') {
+function failureText(error) {
+  return String(error?.stderr || error?.message || error).slice(0, 200);
+}
+
+function ghApiList(path, jq = '.[] | @json', errors = apiErrors) {
   let out;
   try {
     out = gh(['api', path, '--paginate', '--jq', jq]);
   } catch (error) {
-    apiErrors.push({ path, error: String(error.stderr || error.message || error).slice(0, 200) });
+    errors.push({ path, error: failureText(error) });
     return [];
   }
   return out
@@ -100,13 +108,13 @@ function ghApiList(path, jq = '.[] | @json') {
     .map((line) => JSON.parse(line));
 }
 
-function ghApiObject(path, { notFoundOk = false } = {}) {
+function ghApiObject(path, { notFoundOk = false, errors = apiErrors } = {}) {
   try {
     return JSON.parse(gh(['api', path]));
   } catch (error) {
     const text = String(error.stderr || error.message || error);
     if (notFoundOk && /HTTP 404|Not Found/.test(text)) return null;
-    apiErrors.push({ path, error: text.slice(0, 200) });
+    errors.push({ path, error: text.slice(0, 200) });
     return null;
   }
 }
@@ -126,18 +134,29 @@ function autofixRunsActive(repos) {
   return active;
 }
 
+// Returns the PRs a dispatch could pick (`candidates`) and the PRs that already carry a
+// dispatch comment from this script (`tagged`).  A tagged PR is never a candidate: when
+// the reusable declines a tag it writes no marker, so a tagged PR would otherwise stay
+// the oldest candidate on every tick and block every PR behind it.
 function findCandidates(repos) {
   const candidates = [];
+  const tagged = [];
   for (const repo of repos) {
     const pulls = ghApiList(`repos/${OWNER}/${repo}/pulls?state=open&per_page=100`);
     for (const pr of pulls) {
       // A missing or unparseable created_at would sort to epoch 0 and look
       // like the oldest PR, so such candidates are skipped, never coerced.
       if (pr.draft || Number.isNaN(Date.parse(pr.created_at))) continue;
+      if (!isFixablePr(pr)) continue;
       const issueComments = ghApiList(
         `repos/${OWNER}/${repo}/issues/${pr.number}/comments?per_page=100`,
-        '.[] | {body} | @json',
+        '.[] | {body, html_url, user: {login: .user.login}} | @json',
       );
+      const dispatched = findDispatchComment(issueComments);
+      if (dispatched) {
+        tagged.push({ repo, number: pr.number, url: pr.html_url, comment_url: dispatched.html_url });
+        continue;
+      }
       if (hasAnyAutofixMarker(issueComments)) continue;
       const reviewComments = ghApiList(
         `repos/${OWNER}/${repo}/pulls/${pr.number}/comments?per_page=100`,
@@ -147,10 +166,18 @@ function findCandidates(repos) {
       candidates.push({ repo, number: pr.number, created_at: pr.created_at, url: pr.html_url });
     }
   }
-  return candidates;
+  return { candidates, tagged };
 }
 
+// `ok` is false when a read failed for any reason but a missing branch or file.  A tally
+// read that failed is not an empty tally, so main() must not write one back.
 function loadTally() {
+  const failuresBefore = apiErrors.length;
+  const tally = readTally();
+  return { ...tally, ok: apiErrors.length === failuresBefore };
+}
+
+function readTally() {
   const branch = ghApiObject(`repos/${OWNER}/${STATE_REPO}/git/refs/heads/${STATE_BRANCH}`, { notFoundOk: true });
   if (!branch) return { entries: [], sha: null };
   const file = ghApiObject(`repos/${OWNER}/${STATE_REPO}/contents/${STATE_PATH}?ref=${STATE_BRANCH}`, { notFoundOk: true });
@@ -163,6 +190,7 @@ function reconcileEntry(entry) {
     const comments = ghApiList(
       `repos/${OWNER}/${entry.repo}/issues/${entry.number}/comments?per_page=100`,
       '.[] | {body} | @json',
+      reconcileErrors,
     );
     const marker = comments.find(
       (comment) => markerBot(comment.body) === DISPATCHER_MARKER_BOT && extractRunId(comment.body),
@@ -170,7 +198,7 @@ function reconcileEntry(entry) {
     if (marker) entry.run_id = extractRunId(marker.body);
   }
   if (entry.run_id != null && entry.conclusion == null) {
-    const run = ghApiObject(`repos/${OWNER}/${entry.repo}/actions/runs/${entry.run_id}`);
+    const run = ghApiObject(`repos/${OWNER}/${entry.repo}/actions/runs/${entry.run_id}`, { errors: reconcileErrors });
     if (run?.status === 'completed') {
       entry.conclusion = run.conclusion;
       entry.run_url = run.html_url;
@@ -191,11 +219,19 @@ function saveTally(entries, existingSha) {
   if (!main?.object?.sha) throw new Error('cannot read the main ref of the state repo');
   try {
     gh(['api', '-X', 'POST', `repos/${OWNER}/${STATE_REPO}/git/refs`, '-f', `ref=refs/heads/${STATE_BRANCH}`, '-f', `sha=${main.object.sha}`]);
-  } catch {
+  } catch (createError) {
     // The create usually fails because the branch exists, but the same catch
-    // also swallows auth and network failures - verify the ref landed.
-    ghApiObject(`repos/${OWNER}/${STATE_REPO}/git/refs/heads/${STATE_BRANCH}`)
-      ?? (() => { throw new Error(`state branch ${STATE_BRANCH} does not exist and could not be created`); })();
+    // also swallows auth and network failures - verify the ref landed, and keep
+    // the create failure in the message so a failed verify does not read as
+    // "the branch does not exist".
+    const verifyErrors = [];
+    const ref = ghApiObject(`repos/${OWNER}/${STATE_REPO}/git/refs/heads/${STATE_BRANCH}`, { errors: verifyErrors });
+    if (!ref) {
+      throw new Error(
+        `state branch ${STATE_BRANCH} could not be created or verified: create failed with `
+        + `${failureText(createError)}; verify failed with ${verifyErrors[0]?.error ?? 'no response'}`,
+      );
+    }
   }
   const body = { message: 'autofix dispatcher tally', content, branch: STATE_BRANCH };
   if (existingSha) body.sha = existingSha;
@@ -213,6 +249,21 @@ function print(result, asJson) {
   process.stdout.write(`pick: ${result.pick ? `${result.pick.repo}#${result.pick.number} (${result.pick.created_at})` : 'none'}\n`);
   process.stdout.write(`dispatched: ${result.dispatched}\n`);
   if (result.tally_total_usd != null) process.stdout.write(`tally total: $${result.tally_total_usd.toFixed(4)} across ${result.tally_runs} dispatch(es)\n`);
+  else if (result.tally_unavailable) process.stdout.write('tally total: unavailable (the tally could not be read)\n');
+}
+
+function newTallyRow(repo, number, prUrl, commentUrl) {
+  return {
+    ts: new Date().toISOString(),
+    repo,
+    number,
+    pr_url: prUrl,
+    comment_url: commentUrl,
+    run_id: null,
+    run_url: null,
+    conclusion: null,
+    cost_usd: null,
+  };
 }
 
 function main() {
@@ -220,74 +271,74 @@ function main() {
     ? args.repos.split(',').map((name) => name.trim()).filter(Boolean)
     : DEFAULT_REPOS;
   const result = { busy: [], candidate_count: 0, pick: null, dispatched: false };
-  const tally = args['dry-run'] ? { entries: [], sha: null } : loadTally();
+  // A dry run neither reads nor writes the tally, so it reports no totals: an empty
+  // stand-in would print a false $0.0000 over a state branch that holds real spend.
+  const tally = args['dry-run'] ? { entries: [], sha: null, ok: false } : loadTally();
 
   try {
-    // Reconcile the oldest unreconciled dispatches on every tick, capped so a
-    // backlog cannot stretch the scheduled job.  Before this ran only on
-    // dispatch ticks, so a run started on the last dispatch stayed
+    // Reconcile a bounded, rotating slice of the unreconciled dispatches on every tick.
+    // Before this ran only on dispatch ticks, so a run started on the last dispatch stayed
     // unreconciled until the next dispatch - possibly never.
-    let reconciled = 0;
-    tally.entries = tally.entries.map((entry) => {
-      if (reconciled >= RECONCILE_CAP) return entry;
-      if (entry.run_id != null && entry.conclusion != null) return entry;
-      reconciled += 1;
-      return reconcileEntry(entry);
-    });
+    if (!args['dry-run']) {
+      for (const index of reconcileTargets(tally.entries, RECONCILE_CAP)) {
+        const entry = reconcileEntry(tally.entries[index]);
+        entry.checked_at = new Date().toISOString();
+        tally.entries[index] = entry;
+      }
+    }
 
     const active = autofixRunsActive(repos);
     result.busy = active;
 
-    // Fail closed: any API failure during reconcile or the scans above makes
+    // Fail closed: any API failure during the tally load or the scans makes
     // "no active runs" and "no marker yet" untrustworthy, so skip dispatch.
     if (active.length === 0 && apiErrors.length === 0) {
-      const candidates = findCandidates(repos);
+      const { candidates, tagged } = findCandidates(repos);
       result.candidate_count = candidates.length;
+
+      // A tag comment this script posted whose tally row was never saved (the tick died
+      // between the two) is recorded now; the PR is no longer a candidate, so the
+      // dispatch path below would never see it again.
+      if (!args['dry-run']) {
+        for (const entry of tagged) {
+          if (!hasTallyRow(tally.entries, entry.repo, entry.number)) {
+            tally.entries.push(newTallyRow(entry.repo, entry.number, entry.url, entry.comment_url));
+          }
+        }
+      }
+
       const pick = pickOldest(candidates);
       result.pick = pick;
 
       if (pick && !args['dry-run'] && apiErrors.length === 0) {
         // Recheck immediately before spending: a run started between the scan
-        // and now wins.
-        if (autofixRunsActive(repos).length > 0 || apiErrors.length > 0) {
-          result.busy = autofixRunsActive(repos);
+        // and now wins.  One scan, reused for the condition and the report.
+        const recheck = autofixRunsActive(repos);
+        if (recheck.length > 0 || apiErrors.length > 0) {
+          result.busy = recheck;
         } else {
-          // Idempotency: a crash between posting the tag and saving the tally
-          // would otherwise post a second tag comment on the next tick.
-          const prior = ghApiList(
+          // Idempotency: a tag posted between the scan and now, or by a tick that
+          // died before saving, is found here and not posted twice.
+          const prior = findDispatchComment(ghApiList(
             `repos/${OWNER}/${pick.repo}/issues/${pick.number}/comments?per_page=100`,
             '.[] | {body, html_url, user: {login: .user.login}} | @json',
-          ).find(
-            (comment) => comment?.user?.login === DISPATCHER_BOT
-              && String(comment?.body || '').includes(`${DISPATCH_TAG} dispatcher trial`),
-          );
+          ));
           let commentUrl = prior?.html_url || null;
           if (!prior && apiErrors.length === 0) {
             const posted = JSON.parse(
               gh([
                 'api', '-X', 'POST', `repos/${OWNER}/${pick.repo}/issues/${pick.number}/comments`,
-                '-f', `body=${dispatchCommentBody()}`,
+                '-f', `body=${dispatchCommentBody({ owner: OWNER, repo: pick.repo, number: pick.number })}`,
               ]),
             );
             commentUrl = posted.html_url;
             result.dispatched = true;
             result.comment_url = posted.html_url;
           }
-          const known = tally.entries.some(
-            (entry) => entry.repo === pick.repo && entry.number === pick.number,
-          );
-          if (!known) {
-            tally.entries.push({
-              ts: new Date().toISOString(),
-              repo: pick.repo,
-              number: pick.number,
-              pr_url: pick.url,
-              comment_url: commentUrl,
-              run_id: prior ? extractRunId(prior.body) : null,
-              run_url: null,
-              conclusion: null,
-              cost_usd: null,
-            });
+          // Only a PR that really carries the dispatch comment gets a row: a failed
+          // lookup must not leave a phantom row that the real dispatch then skips.
+          if (commentUrl && !hasTallyRow(tally.entries, pick.repo, pick.number)) {
+            tally.entries.push(newTallyRow(pick.repo, pick.number, pick.url, commentUrl));
           }
         }
       }
@@ -295,13 +346,23 @@ function main() {
   } finally {
     // Save whatever reconcile learned even when a later step failed: losing it
     // would re-spend lookups every tick and, without the idempotency check
-    // above, risk a second tag on the same PR.
-    if (!args['dry-run']) saveTally(tally.entries, tally.sha);
+    // above, risk a second tag on the same PR.  Never save a tally that was not
+    // read: it would be an empty one standing in for the real one.
+    if (!args['dry-run'] && tally.ok) saveTally(tally.entries, tally.sha);
   }
 
-  result.tally_total_usd = tallyTotalUsd(tally.entries);
-  result.tally_runs = tally.entries.length;
+  // A tally that could not be read has no total:  its stand-in is empty, and summing it
+  // would report a false $0.0000 over a state branch that holds real spend.
+  if (!args['dry-run'] && tally.ok) {
+    result.tally_total_usd = tallyTotalUsd(tally.entries);
+    result.tally_runs = tally.entries.length;
+  } else if (!args['dry-run']) {
+    result.tally_unavailable = true;
+  }
   print(result, args.json);
+  for (const failure of reconcileErrors) {
+    process.stderr.write(`warning: reconcile lookup failed (bookkeeping only, dispatch not blocked): ${failure.path}: ${failure.error}\n`);
+  }
   if (apiErrors.length > 0) {
     process.stderr.write(`aborted: ${apiErrors.length} GitHub API call(s) failed; refused to act on partial data\n`);
     for (const failure of apiErrors) process.stderr.write(`  ${failure.path}: ${failure.error}\n`);
