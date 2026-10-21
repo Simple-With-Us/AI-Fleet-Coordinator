@@ -203,9 +203,23 @@ jobs:
               needs_tag=false ;;
           esac
           requester=$(printf '%s' "$author" | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
-          if [ "$requester" != "sentry" ] && [ "$needs_tag" = "true" ] && \
-             ! grep -qiE '(^|[^A-Za-z0-9_-])@claude-code-autofix([^A-Za-z0-9_-]|$)' "$RUNNER_TEMP/request_body.txt"; then
-            echo "::notice::No @claude-code-autofix tag in the review, skipping"
+          if [ "$needs_tag" = "true" ]; then
+            GATE_BODY_FILE="$RUNNER_TEMP/request_body.txt"
+            GATE_TAG='@claude-code-autofix'
+            # REQUEST-GATE-BEGIN - scripts/test_autofix_request_gate.py runs this exact block.
+            sed -e '/^[[:space:]]*```/,/^[[:space:]]*```/d' -e '/^[[:space:]]*>/d' "$GATE_BODY_FILE" > "$RUNNER_TEMP/request_text.txt"
+            gate_line=$(grep -m1 -E '[^[:space:]]' "$RUNNER_TEMP/request_text.txt" || true)
+            if printf '%s' "$gate_line" | grep -qiE "^[[:space:]]*${GATE_TAG}([^A-Za-z0-9_-]|\$)"; then
+              gate_verdict=request
+            else
+              gate_verdict=discussion
+            fi
+            # REQUEST-GATE-END
+          else
+            gate_verdict=request
+          fi
+          if [ "$requester" != "sentry" ] && [ "$needs_tag" = "true" ] && [ "$gate_verdict" != "request" ]; then
+            echo "::notice::No @claude-code-autofix request at the start of the review, skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi

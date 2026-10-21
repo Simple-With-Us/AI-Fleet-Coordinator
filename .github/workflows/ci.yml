@@ -186,6 +186,11 @@ jobs:
     - name: Autofix model default tests
       run: |
         cd scripts && python3 -m unittest test_autofix_model_defaults -v
+    # Owner rule 2026-10-21:  the request gate fires only on a tag that opens
+    # the comment.  The test runs the reusables' own marked gate block.
+    - name: Autofix request gate tests
+      run: |
+        cd scripts && python3 -m unittest test_autofix_request_gate -v
     # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
