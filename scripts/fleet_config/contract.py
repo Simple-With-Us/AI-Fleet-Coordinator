@@ -155,9 +155,11 @@ def build_status_envelope(report: StatusReport) -> dict[str, object]:
     """The pinned ``fleet-config status --json`` envelope for one report.
 
     The top-level keys are ``schemaVersion``, ``tool``, ``command``, ``generatedAt``,
-    ``summary`` and ``results``, in that order.  Consumers group the flat ``results``
-    list by seat, platform and kind;  the envelope deliberately carries no second,
-    grouped copy that could disagree with it.
+    ``summary``, ``results`` and ``uncovered``, in that order.  Consumers group the flat
+    ``results`` list by seat, platform and kind;  the envelope deliberately carries no
+    second, grouped copy that could disagree with it.  ``uncovered`` is flat for the
+    same reason:  it names the surfaces that fit none of the six kinds,  so the app can
+    render the blindness rather than leave a hole where a check would have been.
     """
     summary = report.summary
     return {
@@ -172,4 +174,8 @@ def build_status_envelope(report: StatusReport) -> dict[str, object]:
             "failing": sum(1 for result in report.results if is_failing(result)),
         },
         "results": [result_to_dict(result) for result in report.results],
+        "uncovered": [
+            {"seat": item.seat, "surface": item.surface, "reason": item.reason}
+            for item in report.uncovered
+        ],
     }
