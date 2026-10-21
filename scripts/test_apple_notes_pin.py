@@ -610,6 +610,32 @@ class PinDecisionTests(unittest.TestCase):
                 self.assertNotIn("another pin or unpin run held the lock", p.stderr)
                 self.assertEqual(runs, 0)
 
+    @unittest.skipIf(os.geteuid() == 0, "root can write into an unwritable directory")
+    def test_an_unwritable_lock_parent_is_skipped_at_once_and_named_as_that(self):
+        """Not contention:  mkdir fails with no lock there, so waiting the full lock wait would only stall."""
+        for mode, expect in (("update", 0), ("pin", 4)):
+            with self.subTest(mode=mode):
+                with tempfile.TemporaryDirectory() as tmp:
+                    parent = Path(tmp) / "readonly"
+                    parent.mkdir(mode=0o500)
+                    try:
+                        started = time.monotonic()
+                        #  real sleeps, so a wait that is not skipped would take the whole 20 s
+                        p, runs = self.run_block(
+                            HARNESS_MODE=mode,
+                            HARNESS_REAL_SLEEP="1",
+                            NOTES_PIN_LOCK_DIR=str(parent / "pin.lock"),
+                        )
+                        elapsed = time.monotonic() - started
+                    finally:
+                        parent.chmod(0o700)
+                self.assertEqual(p.returncode, expect, p.stdout + p.stderr)
+                self.assertIn("pin skipped: the pin lock directory", p.stderr)
+                self.assertIn("could not be made", p.stderr)
+                self.assertNotIn("another pin or unpin run held the lock", p.stderr)
+                self.assertLess(elapsed, 10, "the lock wait was not skipped")
+                self.assertEqual(runs, 0)
+
     def test_unpin_names_a_lock_directory_that_cannot_be_made(self):
         with tempfile.TemporaryDirectory() as tmp:
             blocker = Path(tmp) / "blocker"

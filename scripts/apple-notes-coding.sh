@@ -408,6 +408,14 @@ _pin_lock_acquire() {
   local waited=0 takeovers=0
   mkdir -p -m 700 "$(dirname "$NOTES_PIN_LOCK_DIR")" 2>/dev/null || return 2
   until mkdir -m 700 "$NOTES_PIN_LOCK_DIR" 2>/dev/null; do
+    #  Only a lock directory that exists is contention.  When mkdir failed and nothing is there, the cause is
+    #  the filesystem (no permission, read-only, a vanished parent), and waiting would stall the full
+    #  NOTES_PIN_LOCK_WAIT_S and then blame another run.  The holder may also have released the lock between
+    #  the failed mkdir and this check, so one more try settles it before the directory is called unmakeable.
+    if [[ ! -d "$NOTES_PIN_LOCK_DIR" ]]; then
+      mkdir -m 700 "$NOTES_PIN_LOCK_DIR" 2>/dev/null && break
+      [[ -d "$NOTES_PIN_LOCK_DIR" ]] || return 2
+    fi
     if _pin_lock_stale && mv "$NOTES_PIN_LOCK_DIR" "$NOTES_PIN_LOCK_DIR.stale.$$" 2>/dev/null; then
       rm -rf "$NOTES_PIN_LOCK_DIR.stale.$$"
       #  A takeover takes no time, so it does not move the wait counter,  and the counter alone would
