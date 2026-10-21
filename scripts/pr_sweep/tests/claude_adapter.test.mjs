@@ -41,7 +41,10 @@ function world(rounds, opts = {}) {
     const props = (o.schema && o.schema.properties) || {}
     if (props.stdout) {
       const cmd = prompt.split('\n')[1]
-      if (/ --compact plan/.test(cmd)) return { exit_code: 0, stdout: opts.tamper ? opts.tamper(compact(PLAN)) : compact(PLAN) }
+      if (/ --compact plan/.test(cmd)) {
+        const out = compact(opts.plan || PLAN)
+        return { exit_code: 0, stdout: opts.tamper ? opts.tamper(out) : out }
+      }
       if (/ --compact needs-work /.test(cmd)) {
         const keys = cmd.split(' needs-work ')[1].trim().split(/\s+/)
         const r = rounds[Math.min(calls.needsWork, rounds.length - 1)]
@@ -115,4 +118,31 @@ test('a copy that was altered or shortened on the way back fails its check line'
     await assert.rejects(w.run({ cli: '/x/pr-sweep' }), /check line/)
     assert.deepEqual(w.calls.workers, [])
   }
+})
+
+// A copying agent tends to decode the \uXXXX escapes --compact prints (a PR title with an em dash comes back as the
+// dash itself), so the adapter re-escapes the copy before it checks it against the line the CLI hashed.
+const decodeEscapes = t => t.replace(/\\u([0-9a-f]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+const PLAN_NON_ASCII = {
+  ...PLAN,
+  skipped: [{ pr: REPO_B + '#9', why: 'draft \u2014 caf\u00e9 \u{1F680} \u007f done' }],
+}
+
+test('a copy whose unicode escapes were decoded still passes its check line', async () => {
+  const seen = []
+  const w = world([{}], { plan: PLAN_NON_ASCII, tamper: t => { const d = decodeEscapes(t); seen.push(d); return d } })
+  const res = await w.run({ cli: '/x/pr-sweep' })
+  // the stub really handed back the literal characters, not the escapes
+  assert.match(seen[0], /\u2014 caf\u00e9 \u{1F680} \u007f/u)
+  assert.doesNotMatch(seen[0].split('\n')[0], /\\u/)
+  assert.equal(res.counts.merged, 0)
+  assert.deepEqual(w.calls.workers.sort(), [])
+})
+
+test('a copy with its escapes left alone still passes, and a decoded copy that was also altered still fails', async () => {
+  const keep = world([{}], { plan: PLAN_NON_ASCII })
+  await keep.run({ cli: '/x/pr-sweep' })
+  const bad = world([{}], { plan: PLAN_NON_ASCII, tamper: t => decodeEscapes(t).replace('"n":7', '"n":8') })
+  await assert.rejects(bad.run({ cli: '/x/pr-sweep' }), /check line/)
+  assert.deepEqual(bad.calls.workers, [])
 })
