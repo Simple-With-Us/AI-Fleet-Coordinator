@@ -126,7 +126,7 @@ class DaemonRelayTests(DaemonHarness):
         return subprocess.CompletedProcess(argv, 0, b"created note id=n1\n", b"")
 
     def envelope_message(
-        self, body="relay body", title="[AFC, Codex] relay", rid="daemon-request-1", mention=False
+        self, body="relay body", title="[AFC, CODEX] relay", rid="daemon-request-1", mention=False
     ):
         env = make_envelope(
             "create",
@@ -180,7 +180,7 @@ class DaemonRelayTests(DaemonHarness):
                 b"relay body @**Claude** please look\n\n---\n\n*Relayed for CODEX "
             )
         )
-        self.assertEqual(self.calls[0]["argv"][-2:], ["--title", "[AFC, Codex] relay"])
+        self.assertEqual(self.calls[0]["argv"][-2:], ["--title", "[AFC, CODEX] relay"])
         daemon.pump("CLAUDE", timeout=0.3)
         self.assertEqual(self.inbox(), [], "a relay request must not become seat inbox work")
         self.assertEqual(self.ledger(), [], "a relay request must not wake anyone")
@@ -196,7 +196,7 @@ class DaemonRelayTests(DaemonHarness):
         self.fake.streams["notes-relay"] = 140
         daemon = self.started()
         daemon.notes_relay.runner = self.fake_run
-        mid = self.envelope_message(title="[AFC, Cursor] wrong agent")
+        mid = self.envelope_message(title="[AFC, CURSOR] wrong agent")
         self.pump_until(
             daemon,
             lambda: (
@@ -384,7 +384,7 @@ class DaemonRelayTests(DaemonHarness):
         mid = self.fake.add_message(
             "Cursor",
             "notes-relay",
-            "[AFC, Cursor] t",
+            "[AFC, CURSOR] t",
             "@**Claude** and @**Codex** look at this envelope",
         )
         message = dict(self.fake.messages[-1], flags=["mentioned"])
@@ -416,7 +416,7 @@ class DaemonRelayTests(DaemonHarness):
             spooled.append((runner.seat, message["id"])) or True
         )
         reader, other = daemon.seats["CLAUDE"], daemon.seats["CODEX"]
-        mid = self.fake.add_message("Cursor", "notes-relay", "[AFC, Cursor] t", "an envelope")
+        mid = self.fake.add_message("Cursor", "notes-relay", "[AFC, CURSOR] t", "an envelope")
         message = dict(self.fake.messages[-1])
         before = reader.cursor
         daemon.route_message(other, message)  # the non-consumer reads it FIRST
@@ -1000,10 +1000,10 @@ class DaemonRelayTests(DaemonHarness):
         )
         # CODEX's runner sees a relay request now:  the old consumer does not take it, but the cursor moves on.
         env = make_envelope(
-            "create", "[AFC, Cursor] gap", "gap body", {}, "handover-gap-001", "CURSOR"
+            "create", "[AFC, CURSOR] gap", "gap body", {}, "handover-gap-001", "CURSOR"
         )
         gap = self.fake.add_message(
-            "Cursor", "notes-relay", "[AFC, Cursor] gap", N.render_message(env)
+            "Cursor", "notes-relay", "[AFC, CURSOR] gap", N.render_message(env)
         )
         daemon.handle_events(
             new_runner, [{"type": "message", "message": dict(self.fake.messages[-1])}]

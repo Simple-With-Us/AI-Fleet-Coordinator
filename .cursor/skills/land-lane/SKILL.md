@@ -29,7 +29,7 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 1. Linear issue → In Progress with honest status (`board claim <id> ...`, branch `<seat>/<id>-<slug>`).  The effort logs are archived, so there is no `docs/EFFORT-LOG.md` row to mirror.  The PR body says `Fixes <ID>` if it finishes the issue, `Refs <ID>` if not.
 2. `STATUS.md` stanza: what landed, next action.
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
-4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[APP, Cursor] …`.
+4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[TEAM_KEY, SEAT_TAG] …`.
 
 Prose: commit body, rollout docs and Notes source take two ASCII spaces between sentences.  PR titles, bodies and comments take a real U+00A0 plus a space (convert with the `perl` recipe in `sentence-gap`; never the `&nbsp;` entity there).  Chat replies to the owner use the mechanism of the pane you are in:  a real U+00A0 plus a space in the MiniMax Code chat pane (owner-verified 2026-10-20), `&nbsp;` plus a space in the Claude Code Code tab, and two ASCII spaces in a terminal.  See `owner-copy`.
 
