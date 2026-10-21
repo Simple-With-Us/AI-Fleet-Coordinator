@@ -41,6 +41,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -70,10 +71,18 @@ ENVELOPE_PARSE_MAX = 20_000  # the longest message body the parser looks at
 SCRIPT_NAME = "apple-notes-coding.sh"
 #  The helper wraps its Notes calls in a 900 s AppleEvent timeout (NOTES_APPLE_EVENT_TIMEOUT_S in
 #  scripts/apple-notes-coding.sh),  because a body the size of the master list takes longer than
-#  AppleScript's two-minute default.  This cap has to sit above that timeout:  a cap below it
-#  kills the write while osascript is still working,  and the later completion creates a second
-#  note.  scripts/test_apple_notes_timeout.py holds the two together (AFC-436).
-SCRIPT_TIMEOUT_S = 960.0
+#  AppleScript's two-minute default,  and it bounds its pin Shortcut run at 120 s
+#  (NOTES_SHORTCUT_TIMEOUT_S).  This cap has to sit above both:  a cap below the AppleEvent
+#  timeout kills the write while osascript is still working,  and the later completion creates a
+#  second note;  a cap below the sum lets a slow write and a slow pin together outlive the caller,
+#  which then reports an unknown outcome for a note that was in fact written.
+#  scripts/test_apple_notes_timeout.py holds the three together (AFC-436).
+SCRIPT_TIMEOUT_S = 1080.0
+#  How long a caller waits for the one-at-a-time Notes lock before it is told the Mac is busy.
+#  The lock is held for the whole script run,  which can be minutes for a large note,  so a
+#  queued request waits for a bound and is then refused as busy,  instead of stalling for the
+#  whole run behind a note that is already being written (AFC-436).
+LOCK_WAIT_S = 30.0
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 UPLOAD_PATH_RE = re.compile(r"^/user_uploads/[A-Za-z0-9_./-]{1,200}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
@@ -566,6 +575,75 @@ _RUN_LOCK = (
 )  # one osascript at a time:  Notes.app is a single shared document store
 
 
+def _kill_group(proc: "subprocess.Popen[bytes]") -> None:
+    """Kill the helper's whole process group.
+
+    The helper leads its own session,  so the group is the helper and everything it started:  a
+    killed osascript that leaves a stuck "shortcuts" child behind would keep the Shortcuts app
+    busy long after the caller gave up (AFC-436).
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except OSError:
+        pgid = None
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            return
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _run_helper(
+    argv: list[str],
+    *,
+    stdin_data: bytes,
+    env: Mapping[str, str],
+    timeout: float,
+    runner: Runner | None,
+) -> "subprocess.CompletedProcess[bytes]":
+    """Run the helper, and kill its whole process group when the cap is reached.
+
+    The real path gives the helper its own session,  so a timeout takes the children with it.
+    A caller-supplied runner is used as it is:  that is the test seam,  and it owns its own
+    process handling.
+    """
+    if runner is not None:
+        return runner(
+            argv,
+            input=stdin_data,
+            capture_output=True,
+            timeout=timeout,
+            env=env,
+            check=False,
+        )
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(env),
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(input=stdin_data, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _kill_group(proc)
+        try:
+            rest_out, rest_err = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            rest_out, rest_err = b"", b""
+        #  keep what the helper managed to say,  so a caller can report it
+        exc.stdout = (exc.stdout or b"") + (rest_out or b"")
+        exc.stderr = (exc.stderr or b"") + (rest_err or b"")
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
 def script_candidates(env: Mapping[str, str], home: Path) -> list[Path]:
     """Where the script may be:  AGENT_SYNC_NOTES_SCRIPT, next to the package (scripts/), then the live copy."""
     found: list[Path] = []
@@ -727,16 +805,24 @@ def run_direct(
             else:
                 stdin_data = markdown.encode("utf-8")
         argv, extra = build_argv(script, envelope, html_file)
+        #  The lock is one-at-a-time because Notes.app is a single shared store,  but the run it
+        #  guards can take minutes,  so a queued request waits for a bound and is then refused as
+        #  busy.  Waiting for the whole run would stall every other note request behind one
+        #  large write (AFC-436).
+        if not _RUN_LOCK.acquire(timeout=LOCK_WAIT_S):
+            raise NotesError(
+                "unavailable",
+                "the notes script is busy with another request,  so this one was not started; "
+                "try again shortly",
+            )
         try:
-            with _RUN_LOCK:
-                proc = (runner or subprocess.run)(
-                    argv,
-                    input=stdin_data if stdin_data is not None else b"",
-                    capture_output=True,
-                    timeout=timeout,
-                    env=child_env(env, extra),
-                    check=False,
-                )
+            proc = _run_helper(
+                argv,
+                stdin_data=stdin_data if stdin_data is not None else b"",
+                env=child_env(env, extra),
+                timeout=timeout,
+                runner=runner,
+            )
         except subprocess.TimeoutExpired:
             # A timeout does not prove nothing was written (the script may have created the note and then hung),
             # so it is an unknown outcome, never a safe failure that a retry may repeat.
@@ -751,6 +837,8 @@ def run_direct(
                 "unavailable",
                 "could not start the notes script (%s)" % (exc.strerror or type(exc).__name__),
             ) from None
+        finally:
+            _RUN_LOCK.release()
     finally:
         if html_file:
             try:

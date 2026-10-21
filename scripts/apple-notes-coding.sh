@@ -58,10 +58,85 @@ TITLE=""
 SESSION_ARG=""
 # How long an AppleEvent to Notes may run.  AppleScript's own default is two minutes, and a
 # body the size of the Background Jobs Master List needs longer, so every "tell application
-# \"Notes\"" below is wrapped in "with timeout of NOTES_APPLE_EVENT_TIMEOUT_S seconds".  A
-# caller that runs this script must allow more than this, or it kills the write while
-# osascript is still working and the later completion creates a duplicate note (AFC-436).
-NOTES_APPLE_EVENT_TIMEOUT_S="${NOTES_APPLE_EVENT_TIMEOUT_S:-900}"
+# \"Notes\"" below is wrapped in a "with timeout of" clause.  A caller that runs this script
+# must allow more than this, or it kills the write while osascript is still working and the
+# later completion creates a duplicate note (AFC-436).
+#
+# The reason for the number:  without it the write fails with "AppleEvent timed out. (-1712)",
+# which is what the master list hit on Oct 20, 2026, before the timeout existed.
+#
+# The AppleScript reads the value back out of the environment with "system attribute", so an
+# override never becomes AppleScript source.  A value that is not a whole number of seconds is
+# refused here and the default is used, so a malformed override cannot abort the write with an
+# AppleScript syntax error.
+NOTES_APPLE_EVENT_TIMEOUT_S_DEFAULT=900
+
+# How long one "shortcuts run" may take.  The pin step runs after the write, so without a bound
+# of its own the pair can outlive the caller's cap, and the caller then reports an unknown
+# outcome for a note that was in fact written (AFC-436).
+NOTES_SHORTCUT_TIMEOUT_S_DEFAULT=120
+
+# The Shortcut list is read to decide whether the Shortcut exists.  It is instant when the
+# Shortcuts app is healthy and it hangs when the app is not, so it gets a short bound of its own.
+NOTES_SHORTCUT_LIST_TIMEOUT_S_DEFAULT=30
+
+# A seconds override:  $1 the name, $2 the default, $3 the ceiling.  A value that is not a whole
+# number inside the range is refused and the default is used, so nothing unvalidated ever
+# reaches the AppleScript.
+_seconds_override() {  # $1 = name, $2 = default, $3 = ceiling
+  local name="$1" fallback="$2" ceiling="$3" raw="${!1:-}"
+  if [[ "$raw" =~ ^[0-9]{1,5}$ ]] && (( raw >= 1 && raw <= ceiling )); then
+    printf '%s' "$raw"
+    return 0
+  fi
+  if [[ -n "$raw" ]]; then
+    echo "notes: ignoring $name:  it must be a whole number of seconds between 1 and $ceiling" >&2
+  fi
+  printf '%s' "$fallback"
+}
+
+NOTES_APPLE_EVENT_TIMEOUT_S="$(_seconds_override NOTES_APPLE_EVENT_TIMEOUT_S "$NOTES_APPLE_EVENT_TIMEOUT_S_DEFAULT" 3600)"
+NOTES_SHORTCUT_TIMEOUT_S="$(_seconds_override NOTES_SHORTCUT_TIMEOUT_S "$NOTES_SHORTCUT_TIMEOUT_S_DEFAULT" 600)"
+NOTES_SHORTCUT_LIST_TIMEOUT_S="$(_seconds_override NOTES_SHORTCUT_LIST_TIMEOUT_S "$NOTES_SHORTCUT_LIST_TIMEOUT_S_DEFAULT" 120)"
+export NOTES_APPLE_EVENT_TIMEOUT_S NOTES_SHORTCUT_TIMEOUT_S NOTES_SHORTCUT_LIST_TIMEOUT_S
+
+# A bounded run.  "timeout" is on this Mac and on Linux, "gtimeout" comes with coreutils
+# elsewhere, and the perl fallback kills the whole process group when the seconds are up, so a
+# stuck Shortcut does not leave its children behind.
+_RUN_TIMEOUT_BIN=""
+for _timeout_candidate in timeout gtimeout; do
+  if command -v "$_timeout_candidate" >/dev/null 2>&1; then
+    _RUN_TIMEOUT_BIN="$(command -v "$_timeout_candidate")"
+    break
+  fi
+done
+
+_run_bounded() {  # $1 = seconds, then the command to run
+  local secs="$1" rc=0
+  shift
+  if [[ -n "$_RUN_TIMEOUT_BIN" ]]; then
+    "$_RUN_TIMEOUT_BIN" "$secs" "$@" || rc=$?
+    return "$rc"
+  fi
+  perl -e '
+    my $secs = shift @ARGV;
+    my $pid = fork();
+    die "fork failed:  $!\n" unless defined $pid;
+    if ($pid == 0) { setpgrp(0, 0); exec @ARGV or exit 127; }
+    my $deadline = time() + $secs;
+    while (1) {
+      my $got = waitpid($pid, 1);
+      if ($got == $pid) { exit($? >> 8); }
+      if (time() >= $deadline) {
+        kill(-9, $pid);
+        waitpid($pid, 0);
+        exit 124;
+      }
+      select(undef, undef, undef, 0.2);
+    }
+  ' "$secs" "$@" || rc=$?
+  return "$rc"
+}
 
 # Env overrides (agents may set these explicitly).
 [[ "${APPLE_NOTES_PIN:-0}" == "1" || "${APPLE_NOTES_PIN:-}" == "true" ]] && WANT_PIN=1
@@ -308,7 +383,9 @@ _ensure_shortcuts_running() {
 
 _run_note_shortcut() {  # $1 = shortcut name
   local listing
-  if ! listing="$(shortcuts list 2>/dev/null)"; then
+  #  The list read is bounded:  it is instant when the Shortcuts app is healthy and it hangs
+  #  when the app is not, and a hang here would hold the caller's whole budget (AFC-436).
+  if ! listing="$(_run_bounded "$NOTES_SHORTCUT_LIST_TIMEOUT_S" shortcuts list 2>/dev/null)"; then
     return 3
   fi
   printf '%s\n' "$listing" | grep -qxF "$1" || return 2
@@ -331,7 +408,9 @@ _run_note_shortcut() {  # $1 = shortcut name
   # retry is the less likely of the two to miss it.
   attempt=1
   while :; do
-    if shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
+    #  The run is bounded:  it happens after the write,  so a run that hangs must not be able to
+    #  outlive the caller's cap and turn a written note into an unknown outcome (AFC-436).
+    if _run_bounded "$NOTES_SHORTCUT_TIMEOUT_S" shortcuts run "$1" -i "$tmp" >/dev/null 2>&1; then
       rm -f "$tmp"
       return 0
     fi
@@ -947,18 +1026,22 @@ printf '%s' "$TITLE" >"$TITLE_FILE"
 trap 'rm -f "$TMP" "$TITLE_FILE"' EXIT
 
 if [[ "$MODE" == "update" ]]; then
-  #  Unquoted so ${NOTES_APPLE_EVENT_TIMEOUT_S} expands:  in a quoted heredoc osascript would
-  #  receive the literal text and the "with timeout of" clause would not compile.  The block still
-  #  reads its paths through "system attribute",  so nothing else here expands.
-  NOTE_ID=$(TITLE_FILE="$TITLE_FILE" TMP="$TMP" WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<EOF
+  #  Quoted heredoc:  nothing from the environment becomes AppleScript source.  Every value the
+  #  block needs (the paths, the timeout, the activate flag) is read through "system attribute",
+  #  so an override can never be read as AppleScript code (AFC-436).
+  NOTE_ID=$(TITLE_FILE="$TITLE_FILE" TMP="$TMP" WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<'EOF'
 set titlePath to POSIX file (system attribute "TITLE_FILE")
 set noteTitle to read titlePath as «class utf8»
 set htmlPath to POSIX file (system attribute "TMP")
 set htmlBody to read htmlPath as «class utf8»
 --- A large body takes longer than the default two-minute AppleEvent timeout:
 --- the master list is a quarter of a megabyte of markdown, and the write timed
---- out with "AppleEvent timed out. (-1712)" before this.
-with timeout of ${NOTES_APPLE_EVENT_TIMEOUT_S} seconds
+--- out with an AppleEvent timeout error before this.
+set notesTimeoutSecs to 900
+try
+  set notesTimeoutSecs to (system attribute "NOTES_APPLE_EVENT_TIMEOUT_S") as integer
+end try
+with timeout of notesTimeoutSecs seconds
 tell application "Notes"
   set codingFolder to missing value
   try
@@ -991,11 +1074,15 @@ EOF
 )
   echo "updated note id=$NOTE_ID in folder Coding title=$TITLE"
 else
-  NOTE_ID=$(WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<EOF
-set htmlPath to POSIX file "$TMP"
+  NOTE_ID=$(TMP="$TMP" WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<'EOF'
+set htmlPath to POSIX file (system attribute "TMP")
 set htmlBody to read htmlPath as «class utf8»
 
-with timeout of ${NOTES_APPLE_EVENT_TIMEOUT_S} seconds
+set notesTimeoutSecs to 900
+try
+  set notesTimeoutSecs to (system attribute "NOTES_APPLE_EVENT_TIMEOUT_S") as integer
+end try
+with timeout of notesTimeoutSecs seconds
 tell application "Notes"
   set codingFolder to missing value
   try

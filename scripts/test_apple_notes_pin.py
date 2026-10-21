@@ -35,6 +35,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -47,6 +48,8 @@ if [ "${1:-}" = "list" ]; then
   if [ "${STUB_INSTALLED:-1}" = "1" ]; then printf '%s\\n' "${STUB_NAME:-Pin Coding Note}"; fi
   exit 0
 fi
+#  a run that never finishes,  so the test can check that the run is bounded
+if [ "${STUB_HANG:-0}" = "1" ]; then sleep 300; fi
 n=0
 if [ -f "$STUB_COUNTER" ]; then n=$(cat "$STUB_COUNTER"); fi
 n=$((n+1))
@@ -105,12 +108,24 @@ def _extract(source: str) -> tuple[str, str]:
     ensure = re.search(
         r"^_ensure_shortcuts_running\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE
     )
+    #  the timeout constants and the bounded-run helper:  the Shortcut run is bounded since
+    #  AFC-436, so the harness has to carry the same bounds the shipped script uses
+    consts = re.search(
+        r"^NOTES_APPLE_EVENT_TIMEOUT_S_DEFAULT=.*?^export NOTES_APPLE_EVENT_TIMEOUT_S [^\n]*\n",
+        source,
+        re.MULTILINE | re.DOTALL,
+    )
+    timeout_bin = re.search(r"^_RUN_TIMEOUT_BIN=\"\"\n(?:.*\n)*?^done\n", source, re.MULTILINE)
+    bounded = re.search(r"^_run_bounded\(\) \{[^\n]*\n(?:.*\n)*?^\}\n", source, re.MULTILINE)
     assert fn, "the _run_note_shortcut function is gone from apple-notes-coding.sh"
     assert knob, "the _pin_retry_on knob resolver is gone from apple-notes-coding.sh"
+    assert consts, "the timeout constants are gone from apple-notes-coding.sh"
+    assert timeout_bin, "the timeout binary detection is gone from apple-notes-coding.sh"
+    assert bounded, "the _run_bounded helper is gone from apple-notes-coding.sh"
     start = source.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.")
     want = source.index('if [[ "$WANT_PIN" != "1" ]]; then')
     end = source.index("\nfi\n", want) + len("\nfi\n")
-    parts = knob.group(0)
+    parts = consts.group(0) + timeout_bin.group(0) + bounded.group(0) + knob.group(0)
     if ensure:
         parts += ensure.group(0)
     return parts + fn.group(0), source[start:end]
@@ -320,6 +335,22 @@ class PinDecisionTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(runs, 2, "the retry did not run even though the knob turned it on")
+
+    def test_a_hung_shortcut_run_is_cut_off_at_the_bound(self):
+        """The run happens after the write,  so it needs a bound of its own.
+
+        Without one a hung Shortcut outlives the caller's cap,  and the caller reports an
+        unknown outcome for a note that was in fact written.  The bound is the script's
+        NOTES_SHORTCUT_TIMEOUT_S,  which the test lowers to a second so it does not wait.
+        """
+        started = time.monotonic()
+        p, runs = self.run_block(STUB_HANG="1", NOTES_SHORTCUT_TIMEOUT_S="1")
+        elapsed = time.monotonic() - started
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("ran but did not complete", p.stderr)
+        self.assertLess(
+            elapsed, 30.0, "the hung run was not cut off at the bound"
+        )
 
     def test_the_gui_fallback_is_still_reachable_after_a_failed_run(self):
         """--pin still has to reach the GUI path when the Shortcut fails, so the skip line must not fire."""
