@@ -68,7 +68,7 @@ def trusted_policy_model(text: str) -> str:
     for line in text.splitlines():
         match = re.match(r"^model:\s*(\S+)\s*$", line)
         if match:
-            return match.group(1).strip('"\'')
+            return match.group(1).strip("\"'")
     raise AssertionError("the trusted policy has no top-level model: key")
 
 
@@ -86,11 +86,14 @@ def workflow_input_default(text: str, input_name: str) -> str:
         if not match:
             continue
         key_indent = len(match.group(1))
-        for follow in lines[index + 1:index + 12]:
+        for follow in lines[index + 1 : index + 12]:
             deeper = re.match(r"^(\s+)default:\s*(\S+)\s*$", follow)
             if deeper and len(deeper.group(1)) > key_indent:
-                return deeper.group(2).strip('"\'')
-            if re.match(r"^(\s+)\S+:\s*$", follow) and len(follow) - len(follow.lstrip()) <= key_indent:
+                return deeper.group(2).strip("\"'")
+            if (
+                re.match(r"^(\s+)\S+:\s*$", follow)
+                and len(follow) - len(follow.lstrip()) <= key_indent
+            ):
                 break
     raise AssertionError("no %s input found" % input_name)
 
