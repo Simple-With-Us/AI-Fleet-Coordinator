@@ -143,12 +143,19 @@ def _extract(source: str) -> tuple[str, str]:
     )
     #  the cross-process pin lock is the 2026-10-20 guard:  its constants, its three helpers and the
     #  locked body of the runner that the public runner wraps
-    constants = re.search(r"^NOTES_PIN_LOCK_DIR=(?:.*\n)*?^_PIN_LOCK_HELD=0\n", source, re.MULTILINE)
+    constants = re.search(
+        r"^NOTES_PIN_LOCK_DIR=(?:.*\n)*?^_PIN_LOCK_HELD=0\n", source, re.MULTILINE
+    )
     assert fn, "the _run_note_shortcut function is gone from apple-notes-coding.sh"
     assert knob, "the _pin_retry_on knob resolver is gone from apple-notes-coding.sh"
     assert constants, "the pin lock constants are gone from apple-notes-coding.sh"
     functions = ""
-    for name in ("_pin_lock_stale", "_pin_lock_acquire", "_pin_lock_release", "_run_note_shortcut_locked"):
+    for name in (
+        "_pin_lock_stale",
+        "_pin_lock_acquire",
+        "_pin_lock_release",
+        "_run_note_shortcut_locked",
+    ):
         found = re.search(rf"^{name}\(\) \{{[^\n]*\n(?:.*\n)*?^\}}\n", source, re.MULTILINE)
         assert found, f"{name} is gone from apple-notes-coding.sh"
         functions += found.group(0)
@@ -213,7 +220,9 @@ class PinDecisionTests(unittest.TestCase):
             script = Path(tmp) / "harness.sh"
             #  a plain replace, because the harness carries shell ${...} braces that str.format would eat
             script.write_text(
-                HARNESS.replace("{constants}", "").replace("{function}", function).replace("{block}", block)
+                HARNESS.replace("{constants}", "")
+                .replace("{function}", function)
+                .replace("{block}", block)
             )
             child = dict(os.environ)
             child["PATH"] = f"{bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}"
@@ -242,7 +251,18 @@ class PinDecisionTests(unittest.TestCase):
                 plain = Path(tmp) / "plain"
                 plain.mkdir(mode=0o700)
                 for name in (
-                    "bash", "cat", "dirname", "find", "grep", "mkdir", "mktemp", "mv", "python3", "rm", "sed", "sleep"
+                    "bash",
+                    "cat",
+                    "dirname",
+                    "find",
+                    "grep",
+                    "mkdir",
+                    "mktemp",
+                    "mv",
+                    "python3",
+                    "rm",
+                    "sed",
+                    "sleep",
                 ):
                     found = shutil.which(name)
                     self.assertIsNotNone(found, f"{name} is missing on this host")
@@ -516,7 +536,10 @@ class PinDecisionTests(unittest.TestCase):
 
     def test_unpin_that_cannot_get_the_lock_exits_4(self):
         p, runs = self.run_unpin_block(
-            HARNESS_MODE="unpin", STUB_NAME="Unpin Coding Note", PRE_LOCK="live", NOTES_PIN_LOCK_WAIT_S="1"
+            HARNESS_MODE="unpin",
+            STUB_NAME="Unpin Coding Note",
+            PRE_LOCK="live",
+            NOTES_PIN_LOCK_WAIT_S="1",
         )
         self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
         self.assertIn("held the lock", p.stderr)
@@ -549,7 +572,9 @@ class PinDecisionTests(unittest.TestCase):
                 side.chmod(0o700)
             script = Path(tmp) / "harness.sh"
             script.write_text(
-                HARNESS.replace("{constants}", "").replace("{function}", function).replace("{block}", block)
+                HARNESS.replace("{constants}", "")
+                .replace("{function}", function)
+                .replace("{block}", block)
             )
             counter = Path(tmp) / "counter"
             child = dict(os.environ)
@@ -682,7 +707,9 @@ class NoGuiPinTests(unittest.TestCase):
     the note write and the id lookup was ever attempted.
     """
 
-    def run_script(self, *args: str, **env: str) -> tuple[subprocess.CompletedProcess, list[str], int]:
+    def run_script(
+        self, *args: str, **env: str
+    ) -> tuple[subprocess.CompletedProcess, list[str], int]:
         with tempfile.TemporaryDirectory() as tmp:
             bindir = Path(tmp) / "bin"
             bindir.mkdir(mode=0o700)
@@ -722,19 +749,25 @@ class NoGuiPinTests(unittest.TestCase):
             )
             calls = [
                 (osa / f"call.{n}").read_text()
-                for n in range(1, (int((osa / "count").read_text()) if (osa / "count").exists() else 0) + 1)
+                for n in range(
+                    1, (int((osa / "count").read_text()) if (osa / "count").exists() else 0) + 1
+                )
             ]
             runs = int(counter.read_text()) if counter.exists() else 0
             return p, calls, runs
 
     def assert_no_window_automation(self, calls: list[str]) -> None:
         for call in calls:
-            for needle in ("System Events", "show note", "click", "menu item", "process \"Notes\""):
+            for needle in ("System Events", "show note", "click", "menu item", 'process "Notes"'):
                 self.assertNotIn(needle, call)
 
     def test_create_with_a_failing_shortcut_succeeds_unpinned_and_never_touches_the_window(self):
         p, calls, runs = self.run_script(
-            "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.", STUB_FAIL_FIRST="99"
+            "--session",
+            "test-session-1234",
+            "[AFC, Claude] topic",
+            "Body text.",
+            STUB_FAIL_FIRST="99",
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("created note id=", p.stdout)
@@ -746,7 +779,12 @@ class NoGuiPinTests(unittest.TestCase):
 
     def test_update_with_a_failing_shortcut_succeeds_unpinned_and_never_touches_the_window(self):
         p, calls, _ = self.run_script(
-            "--update", "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.", STUB_FAIL_FIRST="99"
+            "--update",
+            "--session",
+            "test-session-1234",
+            "[AFC, Claude] topic",
+            "Body text.",
+            STUB_FAIL_FIRST="99",
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("updated note id=", p.stdout)
@@ -785,32 +823,51 @@ class NoGuiPinTests(unittest.TestCase):
         ):
             with self.subTest(args=args, env=env):
                 p, calls, _ = self.run_script(
-                    *args, "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.",
-                    STUB_FAIL_FIRST="99", **env,
+                    *args,
+                    "--session",
+                    "test-session-1234",
+                    "[AFC, Claude] topic",
+                    "Body text.",
+                    STUB_FAIL_FIRST="99",
+                    **env,
                 )
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertIn("pin skipped:", p.stderr)
-                self.assertEqual(len(calls), 1, "a second osascript call reached for the window: %r" % calls)
+                self.assertEqual(
+                    len(calls), 1, "a second osascript call reached for the window: %r" % calls
+                )
                 self.assert_no_window_automation(calls)
 
     def test_activate_is_still_the_one_explicit_way_to_bring_notes_forward(self):
         p, calls, _ = self.run_script(
-            "--activate", "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.",
+            "--activate",
+            "--session",
+            "test-session-1234",
+            "[AFC, Claude] topic",
+            "Body text.",
             STUB_FAIL_FIRST="99",
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(len(calls), 1, calls)
         self.assertIn("WANT_ACTIVATE=1", calls[0])
         env_p, env_calls, _ = self.run_script(
-            "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.",
-            STUB_FAIL_FIRST="99", APPLE_NOTES_ACTIVATE="1",
+            "--session",
+            "test-session-1234",
+            "[AFC, Claude] topic",
+            "Body text.",
+            STUB_FAIL_FIRST="99",
+            APPLE_NOTES_ACTIVATE="1",
         )
         self.assertEqual(env_p.returncode, 0, env_p.stderr)
         self.assertIn("WANT_ACTIVATE=1", env_calls[0])
 
     def test_pinning_disabled_leaves_create_quiet_and_still_exits_0(self):
         p, calls, runs = self.run_script(
-            "--session", "test-session-1234", "[AFC, Claude] topic", "Body text.", APPLE_NOTES_PIN="0"
+            "--session",
+            "test-session-1234",
+            "[AFC, Claude] topic",
+            "Body text.",
+            APPLE_NOTES_PIN="0",
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("pinning is disabled", p.stdout)
@@ -822,12 +879,21 @@ class NoGuiPinTests(unittest.TestCase):
         """Read the source, minus comments:  nothing here may reach the Notes window except the opt-in."""
         text = SCRIPT.read_text()
         code = "\n".join(line for line in text.split("\n") if not line.lstrip().startswith("#"))
-        for needle in ("System Events", "show note id", "PIN_RESULT", "menu item", "pin-menu-not-found"):
+        for needle in (
+            "System Events",
+            "show note id",
+            "PIN_RESULT",
+            "menu item",
+            "pin-menu-not-found",
+        ):
             self.assertNotIn(needle, code)
         #  the pin block is the end of the script and holds no osascript at all
         pin_block = text[text.index("# Set APPLE_NOTES_PIN=0 to skip pinning entirely.") :]
         self.assertNotIn("osascript", pin_block)
-        self.assertNotIn("activate", "\n".join(l for l in pin_block.split("\n") if not l.lstrip().startswith("#")))
+        self.assertNotIn(
+            "activate",
+            "\n".join(l for l in pin_block.split("\n") if not l.lstrip().startswith("#")),
+        )
         #  every show or activate left in the script sits right under the WANT_ACTIVATE opt-in
         lines = code.split("\n")
         found = 0
@@ -836,7 +902,9 @@ class NoGuiPinTests(unittest.TestCase):
                 found += 1
                 window = "\n".join(lines[max(0, index - 3) : index])
                 self.assertIn('(system attribute "WANT_ACTIVATE") is "1"', window, line)
-        self.assertEqual(found, 4, "expected the create and update opt-ins only (a show and an activate in each)")
+        self.assertEqual(
+            found, 4, "expected the create and update opt-ins only (a show and an activate in each)"
+        )
 
 
 if __name__ == "__main__":
