@@ -928,15 +928,15 @@ These bind every message, bot-to-bot included.
 
   ```
   perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
-  grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
-  grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt   # must be 0 — a leftover gap
+  grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
+  grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt   # must be 0 — a leftover gap
   chmod 600 body.nbsp.txt                       # agent-sync post --body-file refuses other modes
   agent-sync post --topic "<ID> <subject>" --body-file body.nbsp.txt
   ```
 
   Run both greps every time.  A no-op conversion still exits 0, and a count above zero is not by itself sufficient — a partly converted body can hold real U+00A0 and still ship one wrong gap, which only the second grep catches.  Expect rare benign hits from abbreviations such as `Dr. Smith`.  Never type a raw U+00A0 into a message body or tool call; it is normalized the same way a double space is, so let perl emit it.
 
-  The ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` group is what catches a sentence end **inside** markup or inside a quoted span.  `**Bold sentence.**  Next sentence.` has the space after the closing `**`, not after the period, so a pattern without the group silently misses it — and neither grep above catches that either, because the file still holds other U+00A0 characters.  The group captures the markup and re-emits it before the gap, so the gap lands after the closing markup.  It carries the three closing quotes as well as the opening ones, because a sentence that ends inside a quoted span is followed by the closing quote and only then by the space.
+  The group after the punctuation is what catches a sentence end **inside** markup or inside a quoted span, and it carries two branches: the link branch `\]\([^()\s]{1,255}\)` carries a sentence end inside a markdown link, and the span branch ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` carries the markup and the quotes.  `**Bold sentence.**  Next sentence.` has the space after the closing `**`, not after the period, so a pattern without the group silently misses it — and neither grep above catches that either, because the file still holds other U+00A0 characters.  The group captures the markup and re-emits it before the gap, so the gap lands after the closing markup.  It carries the three closing quotes as well as the opening ones, because a sentence that ends inside a quoted span is followed by the closing quote and only then by the space.  Both greps above carry that same group, or a gap that sits after a link or a span is invisible to them.
 
   **This is for renderer-bound text only.**  Swift, TypeScript, shell, and markdown read as source want two literal ASCII spaces and are *not* affected — those gaps came through the write tool intact in the same session.  Never put a U+00A0 into a committed source file; that is a real defect, not a fix.  Let perl emit it.
 
