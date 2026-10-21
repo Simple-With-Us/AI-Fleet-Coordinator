@@ -55,8 +55,9 @@ export function fromDatadog(payload) {
     ? !/^(recovered|recover|resolved|clear|ok)$/.test(transition)
     : ["triggered", "warning", "error"].includes(alertType);
 
+  const group = oneLine(first(payload.alert_scope, payload.scope, payload.host));
   const key = monitorId
-    ? `datadog:${monitorId}`
+    ? `datadog:${monitorId}${group ? `:group:${encodeURIComponent(group)}` : ""}`
     : `datadog:${title.toLowerCase()}`;
   const service = tag || title || `datadog-${monitorId || "monitor"}`;
 

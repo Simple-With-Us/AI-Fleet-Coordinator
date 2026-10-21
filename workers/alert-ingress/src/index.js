@@ -282,12 +282,21 @@ async function sendEventOnce(env, identity, args) {
   }
 }
 
+async function boundedService(value) {
+  const chars = Array.from(value);
+  if (chars.length <= 60) return value;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  const suffix = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("").slice(0, 10);
+  return chars.slice(0, 49).join("") + "-" + suffix;
+}
+
 async function handleEvent(source, payload, env) {
   const event = normalize(source, payload);
   const channel = DEFAULT_CHANNEL;
   // Keep the original topic for a stable key when vendor labels change.
   const priorService = await env.ALERT_STATE.get(svcKey(event.key), "json");
   if (typeof priorService === "string" && priorService) event.service = priorService;
+  event.service = await boundedService(event.service);
   const topic = event.service;
 
   const prev = await env.ALERT_STATE.get(stateKey(event.key), "json");
@@ -466,7 +475,7 @@ const handler = {
       return json({ error: "bad signature" }, 401);
     }
 
-    if (raw.length > 65536) return json({ error: "payload too large" }, 413);
+    if (new TextEncoder().encode(raw).byteLength > 65536) return json({ error: "payload too large" }, 413);
     let payload;
     try {
       payload = JSON.parse(raw);
@@ -690,4 +699,5 @@ Object.assign(__testing, {
   sendEventOnce,
   transitionIdentity,
   advanceRevision,
+  boundedService,
 });

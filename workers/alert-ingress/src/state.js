@@ -69,10 +69,10 @@ export function decide(prev, event, now, opts = {}) {
     if (state.phase === "alerting") {
       return {
         action: "resolve",
-        state: { ...state, phase: "ok", severity: "INFO", since: now, updated: now, text: "", link: "" },
+        state: { ...state, phase: "ok", prodDown: false, severity: "INFO", since: now, updated: now, text: "", link: "" },
       };
     }
-    return { action: "refresh", state };
+    return { action: "refresh", state: { ...state, prodDown: false } };
   }
 
   // --- opening -----------------------------------------------------------

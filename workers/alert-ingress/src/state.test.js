@@ -130,3 +130,8 @@ test("the event line matches the documented alerts format", () => {
     "INFO  \u2022  svc  \u2022  recovered",
   );
 });
+test("recovery clears production-down metadata", () => {
+ const result = decide({phase: "alerting", severity: "SEVERE", prodDown: true}, {firing: false}, T0);
+ assert.equal(result.state.phase, "ok");
+ assert.equal(result.state.prodDown, false);
+});

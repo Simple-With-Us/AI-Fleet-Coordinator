@@ -426,3 +426,18 @@ test("real severity cycles advance delivery revision but ordinary refreshes do n
     3,
   );
 });
+
+test("service topics are bounded and distinct beyond their shared prefix", async () => {
+ const a = await __testing.boundedService("x".repeat(100) + "a");
+ const b = await __testing.boundedService("x".repeat(100) + "b");
+ assert.equal(Array.from(a).length, 60);
+ assert.notEqual(a,b);
+ assert.equal(await __testing.boundedService("short"), "short");
+});
+test("payload boundary counts UTF-8 bytes", async () => {
+ const state = storage();
+ const writer = new AlertWriter({storage:state}, {...env, BETTERSTACK_WEBHOOK_SECRET:"fixture"});
+ const result = await writer.fetch(new Request("https://test/webhook/betterstack", {method:"POST",headers:{"x-betterstack-token":"fixture"},body: JSON.stringify({message:"é".repeat(33000)})}));
+ assert.equal(result.status, 413);
+ assert.equal(state.data.size, 0);
+});

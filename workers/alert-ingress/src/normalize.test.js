@@ -15,7 +15,7 @@ test("datadog triggered and recovered are distinguishable", () => {
   });
   assert.equal(triggered.source, "datadog");
   assert.equal(triggered.firing, true);
-  assert.equal(triggered.key, "datadog:22024797");
+  assert.equal(triggered.key, "datadog:22024797:group:Mac.Jays.Services");
   assert.equal(triggered.service, "Mac.Jays.Services");
 
   const recovered = fromDatadog({
@@ -248,4 +248,10 @@ test("Datadog triggered notifications preserve explicit monitor priority", () =>
   const event = fromDatadog({monitor_id: 1, alert_type: "Triggered", priority: "P1"});
   assert.equal(event.firing, true);
   assert.equal(normalizeSeverity(event.severity), "SEVERE");
+});
+
+test("Datadog groups cannot recover another host on the same monitor", () => {
+ const a = fromDatadog({monitor_id: 1, alert_type: "Triggered", alert_scope: "host:a"});
+ const b = fromDatadog({monitor_id: 1, alert_type: "Recovered", alert_scope: "host:b"});
+ assert.notEqual(a.key, b.key);
 });
