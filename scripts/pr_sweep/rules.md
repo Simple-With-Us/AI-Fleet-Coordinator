@@ -36,7 +36,7 @@ RULES (binding, read all of them):
 11. MERGING: normal path = arm auto-merge with gh pr merge <N> --squash --auto.  Labels do-not-automerge / needs-human-merge and the CODEOWNERS gate only stop AUTO-merge: if the PR passes rule 10, CI is green, threads are resolved and it is up to date, merge it directly with gh pr merge <N> --squash (no --auto, never --admin).  Do not remove labels and do not edit the gate.  If branch protection refuses, report blocked with the exact message.  A stacked PR whose base is not the default branch is never merged into its parent branch.  If you hold a PR under rule 10, disarm nothing that a human armed and merge nothing.
 12. WAIT: after your last push on a merge-mode PR you may do ONE bounded wait: timeout 1500 gh pr checks <N> --watch.  If it has not merged by then, report armed-waiting-ci or the real blocker.  Do not poll again.
 13. WRITING: two spaces between sentences in commit messages; in GitHub replies and comments convert them to a real U+00A0 plus a space with: ``umask 077
-perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g'``.  Quote that expression with SINGLE quotes: the character class holds a backtick, and inside double quotes bash opens a command substitution and then fails with "unexpected EOF while looking for matching backticks".  The one-or-more space class matters: a double space written into a tool call sometimes arrives collapsed to one, and that collapse is intermittent, so both a two-space and a single-space pattern can silently match nothing, exit 0, and post with no gap.  The (?<![0-9]) lookbehind keeps a numbered list marker as "1. Item" instead of "1.<NBSP>Item", which would stop CommonMark parsing it as a list; its cost is that a sentence ending in a digit ("The answer is 42. Next") is not gapped, so fix that one by hand.  Before posting run both greps — grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' <file> | wc -l must not print 0, and grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' <file> must print 0 — and do not post if either fails.  Both greps carry the converter's markup group, because a gap that sits after a markup span is emitted as <punctuation><markup><U+00A0><space>:  a check that looks for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a space straight after the punctuation cannot see the one that was missed.  Source files (Swift, TypeScript, shell, markdown read as source) are unaffected and keep two literal ASCII spaces; never put a U+00A0 into a committed source file.
+perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g'``.  Quote that expression with SINGLE quotes: the character class holds a backtick, and inside double quotes bash opens a command substitution and then fails with "unexpected EOF while looking for matching backticks".  The one-or-more space class matters: a double space written into a tool call sometimes arrives collapsed to one, and that collapse is intermittent, so both a two-space and a single-space pattern can silently match nothing, exit 0, and post with no gap.  The (?<![0-9]) lookbehind keeps a numbered list marker as "1. Item" instead of "1.<NBSP>Item", which would stop CommonMark parsing it as a list; its cost is that a sentence ending in a digit ("The answer is 42. Next") is not gapped, so fix that one by hand.  Before posting run both greps — grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' <file> | wc -l must not print 0, and grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' <file> must print 0 — and do not post if either fails.  Both greps carry the converter's markup group, because a gap that sits after a markup span or after a link is emitted as <punctuation><markup><U+00A0><space>: a check that looks for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a space straight after the punctuation cannot see the one that was missed.  Source files (Swift, TypeScript, shell, markdown read as source) are unaffected and keep two literal ASCII spaces; never put a U+00A0 into a committed source file.
   A body that carries code is converted by the code-aware program in `skills/sentence-gap/SKILL.md`, not by the bare one-liner:  it holds the code aside, makes the gap, and puts the code back byte for byte.  {{TRAILER_RULE}}
 14. DONE: before answering re-query the PR with gh and report what is true NOW (state, mergeStateStatus, unresolved thread count, CI rollup, autoMergeRequest), not what you intended.  If the PR is merged, retire your lane from outside it: cd ~ && AGENT_SEAT={{SEAT}} ~/apps/lane retire pr<N>-sweep --repo <Repo> (it refuses, and you leave the lane, if anything in it is not safe on GitHub).  The parent checks production after merges; you do not deploy.
 
@@ -114,8 +114,118 @@ s/^([ \t]*(?:>[ \t]*)*(?:[-+*]|\d{1,9}[.)])?[ \t]*)((?:`{3,})|(?:~{3,}))[^\n]*\n
 #  3.  The house closeout header.  It is a template, not prose.
 s/^([ \t]*repo:.*)$/$hold->($1)/gme;
 
-#  4.  Indented code blocks.
-s/((?:^(?:>[ \t]*)*(?: {4,}|\t).*\n?)+)/$hold->($1)/gme;
+#  4.  Indented code blocks.  A run of indented lines is code only when it can
+#      really start a code block, and how far it has to be indented depends on
+#      where it sits:
+#
+#        -  at the top level an indented code block cannot interrupt a paragraph,
+#           so a run that follows a paragraph line is a lazy continuation of it and
+#           stays prose;
+#        -  inside a list item the code indent is four spaces past the item's
+#           content indent, so under a "- " bullet a four-space line is prose and
+#           a six-space line is code.
+#
+#      A line at the wrong indent is prose, and prose is what the gap and the
+#      collapse belong to.
+{
+    my $cols = sub {
+        my ($text) = @_;
+        my $width = 0;
+        for my $ch (split //, $text) {
+            $width += ($ch eq "\t") ? 4 : 1;
+        }
+        return $width;
+    };
+
+    #  The blockquote depth of a line, the indent of its content, and the content
+    #  with the quote markers taken off.
+    my $measure = sub {
+        my ($line) = @_;
+        my $depth = 0;
+        my $rest = $line;
+        while ($rest =~ /^([ \t]*)(>)([ \t]?)/) {
+            $depth++;
+            $rest = substr($rest, length($1) + 1 + length($3));
+        }
+        my ($lead) = $rest =~ /^([ \t]*)/;
+        return ($depth, $cols->($lead), $rest);
+    };
+
+    my @lines = split /(?<=\n)/, $_;
+    my @out;
+    my @list;             #  the content indents of the open list items
+    my $paragraph = 0;    #  is a top-level paragraph open?
+    my $depth = -1;       #  the blockquote depth of the last line
+    my $i = 0;
+    while ($i < @lines) {
+        my $line = $lines[$i];
+        if ($line !~ /\S/) {
+            #  A blank line ends the paragraph and does not end a list item.
+            $paragraph = 0;
+            push @out, $line;
+            $i++;
+            next;
+        }
+        my ($qdepth, $width, $rest) = $measure->($line);
+        if ($qdepth != $depth) {
+            #  A different blockquote context:  the paragraph does not carry over.
+            $depth = $qdepth;
+            $paragraph = 0;
+        }
+        #  A line that is indented less than the innermost open item leaves it.
+        while (@list && $width < $list[-1]) {
+            pop @list;
+        }
+        my $base = @list ? $list[-1] : 0;
+        if ($width - $base >= 4) {
+            if ($paragraph && !$base) {
+                #  An indented code block cannot interrupt a top-level paragraph, so
+                #  this line continues it and stays prose.
+                push @out, $line;
+                $i++;
+                next;
+            }
+            #  Hold the whole run, byte for byte.
+            my $run = $line;
+            $i++;
+            while ($i < @lines) {
+                my $next = $lines[$i];
+                last if $next !~ /\S/;
+                my (undef, $nextwidth) = $measure->($next);
+                last if $nextwidth - $base < 4;
+                $run .= $next;
+                $i++;
+            }
+            push @out, $hold->($run);
+            $paragraph = 0;
+            next;
+        }
+        if ($line =~ /^GAP\d+END\r?\n?$/) {
+            #  A held fence or header is a block of its own, not a paragraph.
+            $paragraph = 0;
+            push @out, $line;
+            $i++;
+            next;
+        }
+        if ($rest =~ /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+|$)/) {
+            #  A list marker opens an item, and the item's content starts after
+            #  the marker.
+            my $marker = $2;
+            my $spaces = $3 eq "" ? 1 : $cols->($3);
+            $spaces = 1 if $spaces > 4;
+            push @list, $width + length($marker) + $spaces;
+            $paragraph = 1;
+            push @out, $line;
+            $i++;
+            next;
+        }
+        #  Ordinary prose.
+        $paragraph = 1;
+        push @out, $line;
+        $i++;
+    }
+    $_ = join "", @out;
+}
 
 #  5.  The gap.  This is the canonical pattern, unchanged:  the lookbehind keeps a
 #      numbered list a list, the markup group catches a sentence end inside a span
@@ -124,8 +234,10 @@ s/((?:^(?:>[ \t]*)*(?: {4,}|\t).*\n?)+)/$hold->($1)/gme;
 s/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g;
 
 #  6.  Inline code spans.  A span's interior is code, so the collapse must not
-#      reach inside one.
-s/(`+)([^\n]*?)\1/$hold->("`$2`")/ge;
+#      reach inside one.  Every span in the body is held, and the delimiters are
+#      the ones that came in:  a span that was written with two backticks comes
+#      back with two backticks.
+s/(`+)([^\n]*?)\1/$hold->($1 . $2 . $1)/ge;
 
 #  7.  Collapse the prose runs:  two or more spaces between two non-space
 #      characters become one.  The lookarounds keep a Markdown hard break (two
@@ -149,11 +261,17 @@ What it does, in order:
 
 1.  **Holds the code aside.**  A fenced code block (three backticks or three tildes, including
     one nested in a list or a quote), an indented code block, and the house `repo:` header are
-    replaced by a printable placeholder and written back byte for byte at the end.
+    replaced by a printable placeholder and written back byte for byte at the end.  An indented
+    run is code only when it can really start a code block: at the top level an indented code
+    block cannot interrupt a paragraph, and inside a list item the code indent sits four spaces
+    past the item's content indent, so a four-space line under a list bullet is prose and a
+    six-space line is code.
 2.  **Makes the gap**, with the canonical pattern above, unchanged.  On a body that carries no
     code the program and the one-liner produce the same bytes, and the CI test asserts it, so the
     program never quietly changes what a gap is.
-3.  **Holds the inline code spans aside**, so the collapse cannot reach inside one.
+3.  **Holds the inline code spans aside**, so the collapse cannot reach inside one.  Every span
+    in the body is held, and the delimiters are the ones that came in, so a span written with
+    two backticks comes back with two backticks.
 4.  **Collapses the prose runs**:  two or more spaces between two non-space characters become one.
     A Markdown hard break (two spaces at the end of a line) and the indentation of a list are left
     alone, because the lookarounds require a non-space on both sides of the run.

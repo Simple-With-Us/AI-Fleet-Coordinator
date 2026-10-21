@@ -8,8 +8,9 @@ surface that documents the recipe, so a seat without the checkout can still run 
 
 Two things are checked here.  First, that every surface carries the same program, so a
 copy that drifts is not a body that ships with a different converter.  Second, that the
-program does what it says:  the code comes out untouched, the gaps are made, the prose
-runs collapse, a hard break survives, a numbered marker stays a numbered marker, and the
+program does what it says:  the code comes out untouched (every inline span, every fenced
+block, and an indented block that really is one), the gaps are made, the prose runs
+collapse, a hard break survives, a numbered marker stays a numbered marker, and the
 whole thing is idempotent, which is the check that sees a prose double space that no
 grep over the body can see.
 """
@@ -61,18 +62,40 @@ CODE_REGIONS = (
     '  ```sh\n  echo "hello.  world"\n  ```',
     "> ```\n> quoted fence body.  More\n> ```",
     "    indented code line.  More\n    second indented line.  More",
-    "repo:  AI-Fleet-Coordinator  |  DONE",
+    "repo:  Fixture-Repo  |  DONE",
+    "`inline span with  two spaces`",
+    "``double backtick span with  two spaces``",
+    "      code line inside a list item.  More",
 )
+
+#  The prose that is not code, and that the program has to convert like any other
+#  prose.  A four-space line under a "- " bullet is a nested list item, not an
+#  indented code block:  CommonMark gives that bullet a content indent of two, so
+#  the code indent inside it is six spaces.
+NESTED_LIST_PROSE = "    Nested prose sentence.  Another sentence."
+LIST_CODE_BLOCK = "      code line inside a list item.  More"
+
+#  The bodies the two masking defects hid in.
+INLINE_SPANS_BODY = (
+    "First `span one with  two spaces` and second `span two with  two spaces` here.  Next.\n"
+)
+MULTI_BACKTICK_BODY = "Here is ``code with ` inside and  two spaces`` and more.  Next.\n"
+NESTED_LIST_BODY = "- A list item.\n\n    Nested prose.  Another sentence.\n"
+LIST_CODE_BODY = "- A list item.\n\n      Code line.  Another line.\n"
 
 HARD_BREAK = "A hard break at the end of this line follows.  \n"
 
-BODY = """repo:  AI-Fleet-Coordinator  |  DONE
+BODY = """repo:  Fixture-Repo  |  DONE
 
 A plain sentence.  A second plain sentence.
 
 **Bold sentence.**  Next sentence.
 
 `Code span here.`  Next sentence.
+
+`inline span with  two spaces`
+
+``double backtick span with  two spaces``
 
 ```js
 const x = 1.  // a comment.  Another.
@@ -89,6 +112,14 @@ def f():
   ```sh
   echo "hello.  world"
   ```
+
+- List item with a nested item:
+
+    Nested prose sentence.  Another sentence.
+
+- List item with a code block:
+
+      code line inside a list item.  More
 
 > Quoted prose.  Next sentence.
 
@@ -217,7 +248,77 @@ class ProgramBehaviourTests(unittest.TestCase):
                 self.assertIn(line, self.out)
 
     def test_the_repo_header_keeps_its_template_spacing(self) -> None:
-        self.assertIn("repo:  AI-Fleet-Coordinator  |  DONE", self.out)
+        self.assertIn("repo:  Fixture-Repo  |  DONE", self.out)
+
+    def test_every_inline_span_is_held(self) -> None:
+        """Every inline span in the body is held, not only the first one.
+
+        The masking substitution carried no `/g` flag, so the second span in a body
+        was not held:  the prose collapse reached inside it and rewrote its interior.
+        """
+        for region in (
+            "`Code span here.`",
+            "`inline span with  two spaces`",
+            "``double backtick span with  two spaces``",
+        ):
+            with self.subTest(region=region):
+                self.assertIn(region, self.out)
+
+    def test_a_multi_backtick_span_keeps_its_delimiters(self) -> None:
+        """A span is put back with the delimiters it came with.
+
+        The old masking rebuilt every span with one hard-coded backtick on each side,
+        so a span written with two backticks came back with one and the bytes of the
+        body changed.
+        """
+        self.assertIn("``double backtick span with  two spaces``\n", self.out)
+
+    def test_a_four_space_nested_list_item_is_prose(self) -> None:
+        """A four-space line under a `- ` bullet is a nested list item, not code.
+
+        The old masking held any run of four-space indented lines, so the nested item
+        was neither gapped nor collapsed, and the shipped body kept its double space.
+        """
+        self.assertIn(
+            "    Nested prose sentence." + NBSP + " Another sentence.",
+            self.out,
+        )
+        self.assertNotIn(NESTED_LIST_PROSE, self.out)
+
+    def test_a_six_space_block_inside_a_list_item_is_code(self) -> None:
+        """Six spaces inside a `- ` bullet is the code indent of that item.
+
+        A `- ` bullet has a content indent of two, so the code indent inside it is six
+        spaces, and that block is held and comes back byte for byte.
+        """
+        self.assertIn(LIST_CODE_BLOCK + "\n", self.out)
+
+    def test_a_list_item_separates_its_prose_from_its_code(self) -> None:
+        """The two list cases in one body:  the nested item is prose, the six-space
+        block is code."""
+        body = NESTED_LIST_BODY + "\n" + LIST_CODE_BODY
+        out = run_program(self.program, body)
+        self.assertIn("    Nested prose." + NBSP + " Another sentence.", out)
+        self.assertNotIn("    Nested prose.  Another sentence.", out)
+        self.assertIn("      Code line.  Another line.\n", out)
+
+    def test_the_program_is_idempotent_on_the_new_fixtures(self) -> None:
+        """The third check, on the fixtures that found the two masking defects."""
+        for body in (
+            INLINE_SPANS_BODY,
+            MULTI_BACKTICK_BODY,
+            NESTED_LIST_BODY,
+            LIST_CODE_BODY,
+        ):
+            with self.subTest(body=body.split("\n")[0]):
+                out = run_program(self.program, body)
+                again = run_program(self.program, out)
+                self.assertEqual(
+                    again,
+                    out,
+                    "the program is not idempotent on this fixture:  the second run"
+                    " changed the body",
+                )
 
     def test_a_markdown_hard_break_survives(self) -> None:
         self.assertIn("A hard break at the end of this line follows.  \n", self.out)
