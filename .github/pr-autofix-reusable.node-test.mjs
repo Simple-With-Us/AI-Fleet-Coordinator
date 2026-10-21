@@ -204,3 +204,15 @@ test('org variable retargets model and endpoint fleet-wide, pins stay the fallba
   const varIdx = workflow.indexOf('if [ -n "$VAR_MODEL" ]; then model="$VAR_MODEL"; fi');
   assert(fileIdx !== -1 && varIdx !== -1 && varIdx > fileIdx, 'VAR_MODEL must be applied after the trusted-file pin');
 });
+
+test('model switch is guarded:  endpoint and model move as one valid pair (Kody 2026-10-21)', () => {
+  for (const [name, text] of [['pr-autofix', workflow], ['claude-code', claudeReusable], ['codex', codexReusable]]) {
+    assert.match(text, /name: Validate Model Switch/, name);
+    assert.match(text, /\[ "\$VAR_BASE" = "https:\/\/api\.meta\.ai" \] && \[ -n "\$VAR_MODEL" \]/, name);
+    assert.match(text, /must be unset \(MiniMax\) or exactly https:\/\/api\.meta\.ai/, name);
+    // The guard runs before the request gate / policy loader, so a bad pair fails before any run starts.
+    const guardIdx = text.indexOf('name: Validate Model Switch');
+    const nextIdx = Math.max(text.indexOf('name: Autofix Request Gate'), text.indexOf('name: Load Trusted Autofix Policy'));
+    assert(guardIdx !== -1 && nextIdx > guardIdx, name);
+  }
+});
