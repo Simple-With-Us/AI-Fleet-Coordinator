@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location(
@@ -44,6 +45,73 @@ def run(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=cwd, env=env, check=True, capture_output=True, text=True
     ).stdout.strip()
+
+
+class PrivateStateTests(unittest.TestCase):
+    def test_state_is_private_and_both_file_and_directory_are_synced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "private/state.json"
+            with mock.patch.object(U.os, "fsync", wraps=os.fsync) as synced:
+                U.save_state(path, {"commit": "a" * 40})
+            self.assertEqual(synced.call_count, 2)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(U.load_state(path), {"commit": "a" * 40})
+
+    def test_presend_sync_failure_preserves_old_state_and_cleans_temporary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            U.save_state(path, {"commit": "a" * 40})
+            with mock.patch.object(U.os, "fsync", side_effect=OSError("synthetic failure")):
+                with self.assertRaises(OSError):
+                    U.save_state(path, {"commit": "b" * 40})
+            self.assertEqual(U.load_state(path), {"commit": "a" * 40})
+            self.assertEqual(list(Path(tmp).glob(".git-state-*")), [])
+
+    def test_malformed_and_symlink_state_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            self.assertEqual(U.load_state(path), {})
+            for text in ("broken", "[]", '{"commit":"--option"}'):
+                path.write_text(text)
+                with self.assertRaisesRegex(U.Failed, "invalid_state_file"):
+                    U.load_state(path)
+            target = Path(tmp) / "target"
+            path.rename(target)
+            path.symlink_to(target)
+            with self.assertRaisesRegex(U.Failed, "unsafe_state_file"):
+                U.load_state(path)
+
+    def test_directory_symlink_rejected_and_flock_still_excludes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "base"
+            with U.locked(base), self.assertRaisesRegex(U.Failed, "update_locked"):
+                U.locked(base)
+            link = Path(tmp) / "link"
+            link.symlink_to(base)
+            with self.assertRaisesRegex(U.Failed, "unsafe_state_directory"):
+                U.locked(link)
+            (base / "update.lock").unlink()
+            target = Path(tmp) / "untouched"
+            target.write_text("synthetic")
+            (base / "update.lock").symlink_to(target)
+            with self.assertRaisesRegex(U.Failed, "unsafe_lock_file"):
+                U.locked(base)
+            self.assertEqual(target.read_text(), "synthetic")
+
+    def test_dash_home_clone_uses_absolute_destination_and_option_terminator(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(U, "locked"),
+            mock.patch.object(
+                U.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "git")
+            ) as run_clone,
+        ):
+            with self.assertRaisesRegex(U.Failed, "clone_failed"):
+                U.setup(Path("-synthetic-home"))
+            argv = run_clone.call_args.args[0]
+            self.assertEqual(argv[4], "--")
+            self.assertTrue(Path(argv[-1]).is_absolute())
 
 
 class GitUpdateTests(unittest.TestCase):
