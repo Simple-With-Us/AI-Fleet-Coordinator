@@ -165,4 +165,32 @@ final class ConfigFileReaderTests: XCTestCase {
         XCTAssertTrue(out.contains("gpt-5"))
         XCTAssertTrue(out.contains("https://example.test"))
     }
+
+    /// A secret under a name nobody thought of is still hidden.
+    ///
+    /// The key name is the first defence and not the whole of it,  so a long opaque
+    /// value is hidden whatever it is called.
+    func test_an_opaque_value_is_hidden_whatever_its_key_is_called() {
+        let text = """
+        {"mcpServers": {"sentry": {"command": "npx",
+          "env": {"SOME_UNEXPECTED_NAME": "abcdef0123456789ABCDEF0123456789"}}}}
+        """
+        let out = ConfigFileReader.redact(text)
+        XCTAssertFalse(out.contains("abcdef0123456789ABCDEF0123456789"))
+        XCTAssertTrue(out.contains("npx"))
+    }
+
+    /// A URL that carries a password is a secret,  and a plain URL is not.
+    func test_a_url_with_a_password_is_hidden_and_a_plain_url_is_not() {
+        XCTAssertTrue(ConfigFileReader.looksLikeSecretValue("https://user:hunter2@example.test"))
+        XCTAssertFalse(ConfigFileReader.looksLikeSecretValue("https://example.test/path"))
+        XCTAssertFalse(ConfigFileReader.looksLikeSecretValue("short"))
+    }
+
+    /// A long path is not a secret,  even though it is long.
+    func test_a_long_path_is_not_a_secret() {
+        XCTAssertFalse(
+            ConfigFileReader.looksLikeSecretValue("/Users/jay/apps/lane-tools/fleet-guard-hook")
+        )
+    }
 }

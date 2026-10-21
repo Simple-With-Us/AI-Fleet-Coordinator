@@ -108,6 +108,25 @@ def cross_seat_ref(seat: str, letter: str, generation: int) -> str:
     return f"{base} (gen {generation})" if generation > 1 else base
 
 
+ENV_REGISTRY_PATH = "AGENT_SYNC_OPERATOR_REGISTRY"
+
+
+def registry_db_path(root: str, env: Mapping[str, str] | None = None) -> str:
+    """Where the one shared registry lives.
+
+    The default is under the state root, which is per host.  That is enough on one host
+    and it is not enough for the fleet:  AFC-412 asks for one namespace and one allocator
+    across the Mac and the server, and a per-host file would give each host its own
+    letters.  The environment override is the seam:  the deployment points it at the
+    shared store where the Operator runs, so every host reads and writes one file.
+    """
+    if env:
+        override = env.get(ENV_REGISTRY_PATH)
+        if override:
+            return os.path.expanduser(override)
+    return os.path.join(str(root), "operator", "registry.sqlite3")
+
+
 def _session_cells(row: sqlite3.Row, label: str) -> list[str]:
     return [
         row["record_id"],
@@ -132,11 +151,23 @@ def _session_cells(row: sqlite3.Row, label: str) -> list[str]:
 class SessionRegistry:
     """The one writer of the registry database."""
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, read_only: bool = False):
         self.db_path = str(db_path)
+        self.read_only = bool(read_only)
         parent = os.path.dirname(self.db_path)
-        if parent:
+        if parent and not self.read_only:
             os.makedirs(parent, exist_ok=True)
+        if self.read_only:
+            # Read-only by behaviour, not by mode.  A mode=ro handle cannot roll back a
+            # hot journal left by a crashed writer, and SQLite then refuses every read
+            # with SQLITE_READONLY_ROLLBACK, which would drop every letter for good.
+            # A read-write handle can recover that journal, and it takes no write lock
+            # for a plain SELECT, so the wake path never contends with the Operator's
+            # registration writes.  This handle runs no DDL and inserts no migration row:
+            # it never writes.
+            self._conn = sqlite3.connect(self.db_path)
+            self._conn.row_factory = sqlite3.Row
+            return
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
@@ -192,6 +223,32 @@ class SessionRegistry:
             (record_id,),
         ).fetchone()
         return (row["letter"], row["generation"]) if row else ("", 0)
+
+    def lookup(
+        self,
+        platform: str,
+        verified_host: str,
+        profile_scope: str,
+        native_session_id: str,
+    ) -> dict[str, Any] | None:
+        """Read-only: the live label for one identity, or None when it is not registered.
+
+        This never writes, never mints a letter and never opens a transaction, so it is
+        safe to call on the wake path for every catalog row.  A missing registration is
+        simply "no letter yet";  it is not an error and it is not a reason to allocate one.
+        """
+        row = self._get_by_identity(platform, verified_host, profile_scope, native_session_id)
+        if row is None:
+            return None
+        letter, generation = self._active_alias(self._conn, row["record_id"])
+        return {
+            "record_id": row["record_id"],
+            "label": letter,
+            "generation": generation,
+            "seat": row["seat"],
+            "title": row["title"],
+            "state": row["state"],
+        }
 
     # ---- writes (each one transaction:  state + events + outbox) ----------------
 
@@ -419,6 +476,104 @@ class SessionRegistry:
             return self._insert_event(
                 conn, record_id, letter, event, actor, outcome, source, details, now
             )
+
+
+# ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
+
+
+class RegistryUnavailable(RuntimeError):
+    """The registry could not be read at all:  a hot journal, a locked file, a missing table.
+
+    This is not a miss.  A miss is an identity with no registration;  this is a registry
+    that could not be opened, and the caller has to say so rather than report every
+    session as having no letter.
+    """
+
+
+def lookup_many(
+    db_path: str,
+    identities: list[tuple[str, str, str, str]],
+) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    """Read-only lookups for many identities, over one connection.
+
+    The wake path asks about every catalog row it shows, so one connection per row would
+    be one connection per row per wake.  One connection, one pass, many answers.
+
+    Side-effect free on purpose:  a missing database is not created and no letter is
+    allocated, because a catalog scan must never mint registrations as a side effect of
+    reading.  A registry that cannot be read at all raises RegistryUnavailable, so the
+    caller can report that instead of silently showing every session as unlettered.
+
+    The reference form carries the generation when a letter has been recycled, so
+    "MM A" and "MM A (gen 2)" never read as the same session.
+    """
+    result: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    if not db_path or not os.path.isfile(str(db_path)) or not identities:
+        return result
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception as exc:
+        raise RegistryUnavailable(type(exc).__name__) from exc
+    failures = 0
+    try:
+        for identity in identities:
+            try:
+                found = registry.lookup(*identity)
+            except Exception:
+                failures += 1
+                continue
+            if not found or not found.get("label"):
+                continue
+            letter = str(found["label"])
+            generation = int(found.get("generation") or 0)
+            seat = str(found.get("seat") or "")
+            result[identity] = {
+                "record_id": found.get("record_id"),
+                "label": letter,
+                "generation": generation,
+                "seat": seat,
+                "ref": cross_seat_ref(seat, letter, generation),
+            }
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    if failures and failures == len(identities):
+        # Every read failed, so the registry is unreadable rather than empty.
+        raise RegistryUnavailable("every lookup failed")
+    return result
+
+
+def lookup_entry(
+    db_path: str,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+) -> dict[str, Any]:
+    """One read-only registry lookup: the letter, its generation and its reference form."""
+    identity = (platform, verified_host, profile_scope, native_session_id)
+    try:
+        return lookup_many(db_path, [identity]).get(identity, {})
+    except RegistryUnavailable:
+        return {}
+
+
+def lookup_label(
+    db_path: str,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+) -> str:
+    """The live letter for one identity, or "" when it is not registered."""
+    return str(
+        lookup_entry(db_path, platform, verified_host, profile_scope, native_session_id).get(
+            "label"
+        )
+        or ""
+    )
 
 
 # ---- outbox bridge for the async exporter (AFC-412 PR2) -------------------------

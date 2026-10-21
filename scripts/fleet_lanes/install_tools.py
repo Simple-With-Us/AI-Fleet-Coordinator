@@ -2537,10 +2537,9 @@ PLATFORMS: dict[str, Platform] = {
                 "--format claude parses), and one type command hook running the fleet hook by absolute path with "
                 "timeoutSec 5.  A command preToolUse hook is fail-closed on exit 2, a crash or any non-zero exit, and "
                 "fails open only on a timeout.",
-                "OWNER-GATED: there is no live preToolUse record on this Mac, so the first install needs Jay to start a "
+                "OWNER-GATED: there is no live preToolUse record on this Mac, so the live proof needs Jay to start a "
                 "new Copilot session and ask for a process listing, which must be refused.  `verify copilot` proves the "
-                "command in the written file denies, and ends with a SKIP for that live proof once Copilot is installed "
-                "again;  it never claims it.  "
+                "command in the written file denies, and ends with a SKIP for that live proof;  it never claims it.  "
                 "Copilot CLI is a supported platform again (owner 2026-10-20),  but if its configuration directory "
                 "does not exist yet the target has no config to write, and nothing recreates the directory.  Named explicitly, "
                 "the platform is a FAIL (an uninstalled platform reached through `all` is a SKIP):  asking to verify "
