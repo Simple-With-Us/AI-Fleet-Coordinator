@@ -614,9 +614,13 @@ def resolve_label(
         return None
     found = dict(row)
     found["ref"] = cross_seat_ref(
-        str(found.get("seat") or ""), str(found.get("letter") or ""), int(found.get("generation") or 0)
+        str(found.get("seat") or ""),
+        str(found.get("letter") or ""),
+        int(found.get("generation") or 0),
     )
-    found["title_display"] = display_title(str(found.get("letter") or ""), str(found.get("title") or ""))
+    found["title_display"] = display_title(
+        str(found.get("letter") or ""), str(found.get("title") or "")
+    )
     return found
 
 
@@ -806,7 +810,9 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument("--db", default="", help="the registry file (default: the shared path)")
     rs.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     rs.add_argument("--letter", required=True, help="the letter, such as A")
-    rs.add_argument("--generation", type=int, default=None, help="the generation of a recycled letter")
+    rs.add_argument(
+        "--generation", type=int, default=None, help="the generation of a recycled letter"
+    )
     args = parser.parse_args(argv)
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
