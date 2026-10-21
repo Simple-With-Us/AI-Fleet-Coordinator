@@ -43,14 +43,21 @@ TRUSTED_POLICY = ".github/pr-autofix-trusted.yml"
 PR_AUTOFIX_WORKFLOW = ".github/workflows/pr-autofix-reusable.yml"
 CLAUDE_AUTOFIX_WORKFLOW = ".github/workflows/claude-code-autofix-reusable.yml"
 CODEX_AUTOFIX_WORKFLOW = ".github/workflows/codex-autofix-reusable.yml"
+CLAUDE_CALLER = ".github/workflows/claude-code-autofix.yml"
+KODY_CALLER = ".github/workflows/kody-fleet-autofix.yml"
+CALLER_WORKFLOWS = (CLAUDE_CALLER, KODY_CALLER)
 REFERENCE_DOC = "docs/PR-AUTOFIX.md"
 
-# Every file that carries a model id the autofix bots can dispatch.
+# Every file that carries a model id the autofix bots can dispatch.  The
+# caller workflows are policed too (Kody on AFC #805):  a retired id typed
+# into a caller's `with: model:` would dispatch it unchanged.
 VALUE_CARRYING_FILES = (
     TRUSTED_POLICY,
     PR_AUTOFIX_WORKFLOW,
     CLAUDE_AUTOFIX_WORKFLOW,
     CODEX_AUTOFIX_WORKFLOW,
+    CLAUDE_CALLER,
+    KODY_CALLER,
 )
 
 
@@ -103,6 +110,20 @@ class AutofixModelDefaults(unittest.TestCase):
 
     def test_the_trusted_policy_names_the_live_id(self) -> None:
         self.assertEqual(trusted_policy_model(read(TRUSTED_POLICY)), LIVE_MODEL)
+
+    def test_every_caller_model_input_names_the_live_id(self) -> None:
+        # A caller's `with: model:` value dispatches verbatim, so it must be
+        # the live id and never a retired one.
+        for rel in CALLER_WORKFLOWS:
+            with self.subTest(file=rel):
+                found = None
+                for line in read(rel).splitlines():
+                    match = re.match(r"^\s+model:\s*(\S+)\s*$", line)
+                    if match:
+                        found = match.group(1).strip(chr(34) + chr(39))
+                        break
+                self.assertIsNotNone(found, "%s passes no model: input" % rel)
+                self.assertEqual(found, LIVE_MODEL)
 
     def test_every_reusable_workflow_default_names_the_live_id(self) -> None:
         for rel in (PR_AUTOFIX_WORKFLOW, CLAUDE_AUTOFIX_WORKFLOW, CODEX_AUTOFIX_WORKFLOW):

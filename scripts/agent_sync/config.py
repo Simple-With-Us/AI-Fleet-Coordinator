@@ -88,9 +88,10 @@ MUSE_DEFAULT_MODEL = "muse-spark-1.3-contributor"
 # MiniMax API id list are different catalogs, and "not in the catalog" does not mean "dead".
 # `MiniMax-M3.1-Flash-Preview` was dropped from the runtime catalog on 2026-10-18 (BF-2494) while
 # api.minimax.io kept serving it, so the same id fails on one route and answers on another.  An id
-# must never be rewritten from one route's evidence; see contrib/MM/2026-10-19/f11f7046.  The
-# fallback pins the id the runtime catalog actually carries, which is now also the id the CI
-# autofix workflows send to api.minimax.io.
+# must never be rewritten from one route's evidence; the fleet recall contribution
+# contrib/MM/2026-10-19/f11f7046 records that lesson, and it is a recall id rather than a path
+# in this repository.  The fallback pins the id the runtime catalog actually carries, which is
+# now also the id the CI autofix workflows send to api.minimax.io.
 MCODE_DEFAULT_MODEL = "minimax/MiniMax-M3.1-Flash"
 # A MiniMax Code model id is `provider/model`, so the case and the slash are part of it (unlike a
 # muse model alias, which is lowercase).  This is the shape the fallback's `--model` value must have.
