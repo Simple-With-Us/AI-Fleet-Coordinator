@@ -7,7 +7,11 @@ No service is started or registered with the daemon by this change. No runtime s
 - `github_token_router.py`: previously live-sampled token routing core.
 - `operator_github.py`: same-process broker component and bounded HTTP transport.
 - `operator_github_client.py`: HTTPS client and tightly target-bound gh read execution.
+- `operator_github_policy.py`: the seat allowlist - the trusted server-side policy lookup (pilot: CODEX and ECHO, AI-Fleet-Coordinator only, read ceilings), plus the allowlist-bound caller-key and App-credential loaders.
+- `operator_github_state.py`: durable SQLite replay ledger.
+- `operator_github_secrets.py`: named-secret adapter (one exact name per call, approved sets only).
 - `tests/test_operator_github.py`: 23 focused tests.
+- `tests/test_operator_github_policy.py`: allowlist shape, loader binding and wired-broker end-to-end tests.
 
 ## Boundary
 
@@ -15,10 +19,16 @@ A trusted server lookup maps an authenticated seat to its App and exact reposito
 
 The client requests a token, refuses mismatched scope and bot identity, and injects it into one child. It does not print tokens or run arbitrary commands on the server. Initial commands are `gh pr list`, numeric `gh pr view/checks`, and `gh repo view`. Other commands, write operations, arbitrary gh API paths, aliases, extensions, and cross-repo selectors fail closed. Bot author/committer environment uses the real bot ID provided by the broker, not Jay.
 
+## Resolved 2026-10-21
+
+- **#791 credential-project caveat (Kodus):** `service_identity.operator_credentials` pinned the Operator read to the AFC project, but `ZULIP_OPERATOR_EMAIL` / `ZULIP_OPERATOR_API_KEY` / `ZULIP_OPERATOR_SITE` live in Fleet-OPS `/zulip_operator` (verified present there, names only). The read now uses the standard Fleet-OPS project setting (`INFISICAL_FLEET_OPS_PROJECT_ID`) with the Operator's own folder. Deployment note: the listener's Infisical identity already reads Fleet-OPS `/zulip`; it must also be granted `/zulip_operator`.
+- **Seat allowlist:** `operator_github_policy.py` is the code-reviewed policy table and loader binding. Pilot seats CODEX and ECHO, `Simple-With-Us/AI-Fleet-Coordinator` only, read-only ceilings (contents, pull-requests, metadata). Widening any seat, repo, or ceiling is a code change here.
+- **gh target binding:** `bound_command` in the client binds every execution to the explicit `--repo` routing target and refuses URLs, aliases, extensions, arbitrary API paths, cross-repo selectors and non-numeric PR selectors. `child_environment` strips all ambient GH_/GITHUB_/GIT_ variables and injects only the minted token plus the broker-provided bot identity. Git (non-gh) commands remain refused, not silently routed.
+
 ## Not completed / deployment blockers
 
 - No wiring into daemon lifecycle or config yet. This keeps the feature unconditionally off until boundary review.
-- Infisical-only App loader, independent caller-key loader and live policy loader need runtime integration. The listener entrypoint currently drops machine auth after loading Zulip variables; do not assume it can retrieve App keys later.
+- Runtime integration of the loaders: the listener entrypoint currently drops machine auth after loading Zulip variables; do not assume it can retrieve App keys later. The wiring contract is specified below.
 - Separate caller credentials need approved provisioning and per-seat distribution. No credentials created here.
 - Need live verification of Coolify app/host, current service version, TLS origin, proxy routing, deployed machine-identity permissions and rollback command. Repo docs identify app `l40rxd4rbj1pnogmbtetzmsf` and the existing listener Dockerfile, but these have not been live-verified by this lane.
 - Need Codex/Claude review before adding lifecycle hooks, config, write-command support or deployment.
@@ -50,3 +60,13 @@ NamedSecrets reads one exact name per call, with explicit approved seat/App sets
 - Runtime bootstrap: supply the independently scoped identity through the host's protected secret mechanism, load no broad bootstrap credential into the listener. Choose/verify concrete short-lived token renewal and deletion behavior before activation.
 
 Codex identified the broker target as Coolify l40rxd4rbj1pnogmbtetzmsf, entrypoint python3 /app/scripts/agent-sync daemon run --wait-lock, with runbook docs/protocols/agent-sync-listener.md. Mac is a separate listener, not the broker target. This is a coordination report, not this lane's live host verification. Need storage mount, TLS route, identity scope/renewal, current deployment and rollback verification before wiring/activation.
+
+## Codex-dependent pieces: interface contract (blocked on Codex's listener host)
+
+The code side of both pieces is specified here so any lane can implement against it; the host side needs Codex (listener host owner, at usage cap until ~2026-10-26).
+
+**Listener host wiring.** In the daemon entrypoint (`scripts/agent-sync daemon run`), after Zulip variables load and BEFORE machine auth is dropped: construct `NamedSecrets(bearer_for=<scoped runtime identity>, seats=operator_github_policy.SEATS, apps=operator_github_policy.APPS)`, build `Broker(key_for=caller_key_loader(adapter), policy_for=load_policy, router=GitHubTokenRouter(credentials_for=app_credentials_loader(adapter)), bot_identity=<GitHub /app lookup>, enabled=False, nonce_ledger=NonceLedger(<durable mount>))`, and mount `BrokerHttp` behind the listener's existing TLS route at exactly the `/operator/v1/github/` prefix. Flipping `enabled` requires the owner's go plus the rollout checks already listed above (TLS origin, proxy routing, durable mount verification, rollback command).
+
+**Caller-identity binding.** Each approved seat's host receives exactly one file: `OPERATOR_GITHUB_CALLER_<SEAT>_HMAC` (0600, owned), plus pinned local config naming the broker HTTPS origin and the seat. The client's `--origin`/`--caller`/`--caller-key-file` arguments must come from that pinned config, never from environment or chat input. The broker authenticates the seat by HMAC and maps seat-to-App through `operator_github_policy` only, so a stolen caller key mints only within that seat's own ceiling.
+
+**Who could take them:** the wiring change itself is lane-agnostic once Codex confirms the entrypoint shape above against the real daemon (it owns the listener host); Codex or Echo's lane can then land it. Host access, TLS route and durable mount stay Codex-owned deployment steps.
