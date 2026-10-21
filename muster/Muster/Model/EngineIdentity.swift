@@ -57,27 +57,41 @@ enum EngineIdentity {
                 reason: "the engine could not be asked:  \(error.localizedDescription)"
             )
         }
+        // Both pipes are drained while the child runs.  A child that writes more
+        // than a pipe buffer holds would otherwise block in the write and never
+        // exit,  and the reader would report a timeout for an engine that had
+        // already answered.
+        let collected = CollectedOutput()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async {
+            collected.output = output.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global().async {
+            collected.errors = errors.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning, Date() < deadline {
             Thread.sleep(forTimeInterval: 0.02)
         }
         if process.isRunning {
             process.terminate()
-            return Answer(
-                identity: nil,
-                reason: "the engine did not answer in \(Int(timeout)) seconds"
-            )
+            // Reap the child,  so it is not left as a zombie.
+            process.waitUntilExit()
         }
-        let text = String(
-            data: output.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-        let parts = text.split(separator: " ").map(String.init)
+        group.wait()
+        let text = String(data: collected.output, encoding: .utf8) ?? ""
+        // The engine prints one line,  and a line ends with a newline.  The
+        // newline is trimmed here,  because the copy's own environment field
+        // carries no newline,  and a comparison of the two would never match.
+        let parts = text.split(separator: " ")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
         guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else {
-            let complaint = String(
-                data: errors.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
+            let complaint = String(data: collected.errors, encoding: .utf8) ?? ""
             let first = complaint.split(separator: "\n").first.map(String.init) ?? ""
             let because = first.isEmpty ? "" : ":  \(first)"
             return Answer(
@@ -89,5 +103,11 @@ enum EngineIdentity {
             identity: Identity(project: parts[0], environment: parts[1]),
             reason: nil
         )
+    }
+
+    /// What the child's two pipes carried.
+    private final class CollectedOutput: @unchecked Sendable {
+        var output = Data()
+        var errors = Data()
     }
 }

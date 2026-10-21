@@ -62,12 +62,32 @@ protocol ApplyNotifying: Sendable {
 }
 
 struct SystemApplyNotifier: ApplyNotifying {
+    /// Ask the owner once for permission to post.
+    ///
+    /// The question is asked when the app starts,  and never on an apply's path:
+    /// a permission prompt is the owner's to answer,  and an apply that waits for
+    /// the answer holds its own result hostage  (Kody review 2026-10-21).  The
+    /// apply still waits for the notification itself,  so a session that reads
+    /// as finished is one the owner has been told about.
+    static func requestPermissionOnce() {
+        _ = Task {
+            // A process without an app bundle (a test host) cannot use the
+            // notification center.
+            guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+            _ = try? await UNUserNotificationCenter.current()
+                .requestAuthorization(options: [.alert, .sound])
+        }
+    }
+
     func post(title: String, body: String) async {
         // A process without an app bundle (a test host) cannot use the notification center.
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         let center = UNUserNotificationCenter.current()
-        let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
-        guard granted else { return }
+        // The permission was asked for when the app started,  so this reads an
+        // answer that is already settled.  It never prompts here,  so the apply
+        // never waits on the owner.
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

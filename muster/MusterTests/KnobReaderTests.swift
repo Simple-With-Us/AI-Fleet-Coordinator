@@ -490,6 +490,38 @@ final class KnobReaderTests: XCTestCase {
         )
     }
 
+    /// A block that was never finished is not an inventory.
+    ///
+    /// A file with a start marker and no end marker is truncated,  and the rows read
+    /// so far are part of an inventory that was never finished.  Presenting them
+    /// would show a few knobs and call the set complete.
+    func test_a_block_that_was_never_finished_is_refused() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try """
+        # Infisical
+
+        <!-- fleet-knobs:begin -->
+
+        | Key | Owner | Kind | Default | Secret | Local files may | What it does |
+        |---|---|---|---|---|---|---|
+        | `FLEET_AUTOPUSH_MODE` | C1 | enum: off < report | `off` | no | only move toward `off` | what the autopush hooks may do |
+
+        """.write(
+            to: root.appendingPathComponent("INFISICAL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
+        XCTAssertTrue(registry.knobs.isEmpty)
+        XCTAssertEqual(registry.unreadableRows, 0)
+        XCTAssertNotNil(registry.problem)
+        XCTAssertTrue(
+            registry.problem?.contains("not finished") ?? false,
+            "the reason names the unfinished block: \(registry.problem ?? "")"
+        )
+    }
+
     /// A file with no registry block yields no knobs and no guess.
     func test_a_file_with_no_block_yields_no_knobs() throws {
         let (root, home) = try makeRepo()
