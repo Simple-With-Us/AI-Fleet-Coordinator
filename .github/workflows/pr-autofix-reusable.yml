@@ -156,14 +156,16 @@ jobs:
         env:
           VAR_BASE: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
           VAR_MODEL: ${{ vars.SWU_AUTOFIX_MODEL }}
+          META_TOKEN: ${{ secrets.META_MODEL_API_TOKEN }}
         run: |
           set -euo pipefail
           # The switch is all-or-nothing on the endpoint:  an unset base keeps the MiniMax
           # host (VAR_MODEL may still rotate the MiniMax model id),  and the only allowed
-          # non-MiniMax base is exactly https://api.meta.ai,  which requires a Meta model id.
+          # non-MiniMax base is exactly https://api.meta.ai,  which requires a Meta model id
+          # and a provisioned META_MODEL_API_TOKEN.
           if [ -z "$VAR_BASE" ]; then exit 0; fi
-          if [ "$VAR_BASE" = "https://api.meta.ai" ] && [ -n "$VAR_MODEL" ]; then exit 0; fi
-          echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset (MiniMax) or exactly https://api.meta.ai with SWU_AUTOFIX_MODEL set;  got base='$VAR_BASE' model='$VAR_MODEL'"
+          if [ "$VAR_BASE" = "https://api.meta.ai" ] && [ -n "$VAR_MODEL" ] && [ -n "$META_TOKEN" ]; then exit 0; fi
+          echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset (MiniMax) or exactly https://api.meta.ai with SWU_AUTOFIX_MODEL set and META_MODEL_API_TOKEN provisioned;  got base='$VAR_BASE' model='$VAR_MODEL' token_set=$([ -n "$META_TOKEN" ] && echo yes || echo no)"
           exit 1
 
       - name: Load Trusted Autofix Policy

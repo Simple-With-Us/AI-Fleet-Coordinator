@@ -208,11 +208,23 @@ test('org variable retargets model and endpoint fleet-wide, pins stay the fallba
 test('model switch is guarded:  endpoint and model move as one valid pair (Kody 2026-10-21)', () => {
   for (const [name, text] of [['pr-autofix', workflow], ['claude-code', claudeReusable], ['codex', codexReusable]]) {
     assert.match(text, /name: Validate Model Switch/, name);
-    assert.match(text, /\[ "\$VAR_BASE" = "https:\/\/api\.meta\.ai" \] && \[ -n "\$VAR_MODEL" \]/, name);
+    assert.match(text, /\[ "\$VAR_BASE" = "https:\/\/api\.meta\.ai" \] && \[ -n "\$VAR_MODEL" \] && \[ -n "\$META_TOKEN" \]/, name);
+    assert.match(text, /META_MODEL_API_TOKEN provisioned/, name);
     assert.match(text, /must be unset \(MiniMax\) or exactly https:\/\/api\.meta\.ai/, name);
     // The guard runs before the request gate / policy loader, so a bad pair fails before any run starts.
     const guardIdx = text.indexOf('name: Validate Model Switch');
     const nextIdx = Math.max(text.indexOf('name: Autofix Request Gate'), text.indexOf('name: Load Trusted Autofix Policy'));
     assert(guardIdx !== -1 && nextIdx > guardIdx, name);
+  }
+  // anthropic_api_key feeds claude-code-action directly (its inline-comment classifier
+  // ignores ANTHROPIC_BASE_URL),  so in the action-based reusables it must follow the
+  // same closed host preset as ANTHROPIC_AUTH_TOKEN instead of always sending the
+  // MiniMax key (Kody review on congress-trading-shared#394).
+  for (const [name, text] of [['claude-code', claudeReusable], ['codex', codexReusable]]) {
+    assert.match(
+      text,
+      /anthropic_api_key: \$\{\{ vars\.SWU_AUTOFIX_MODEL_BASE_URL == 'https:\/\/api\.meta\.ai' && \(secrets\.META_MODEL_API_TOKEN \|\| 'MISSING-[A-Z-]+'\) \|\| secrets\.MINIMAX_API_KEY \}\}/,
+      name,
+    );
   }
 });
