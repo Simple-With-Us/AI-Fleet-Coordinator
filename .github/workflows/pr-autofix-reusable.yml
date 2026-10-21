@@ -153,19 +153,35 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Validate Model Switch
+        if: steps.pr.outputs.proceed == 'true'
         env:
           VAR_BASE: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
           VAR_MODEL: ${{ vars.SWU_AUTOFIX_MODEL }}
           META_TOKEN: ${{ secrets.META_MODEL_API_TOKEN }}
         run: |
           set -euo pipefail
-          # The switch is all-or-nothing on the endpoint:  an unset base keeps the MiniMax
-          # host (VAR_MODEL may still rotate the MiniMax model id),  and the only allowed
-          # non-MiniMax base is exactly https://api.meta.ai,  which requires a Meta model id
-          # and a provisioned META_MODEL_API_TOKEN.
-          if [ -z "$VAR_BASE" ]; then exit 0; fi
-          if [ "$VAR_BASE" = "https://api.meta.ai" ] && [ -n "$VAR_MODEL" ] && [ -n "$META_TOKEN" ]; then exit 0; fi
-          echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset (MiniMax) or exactly https://api.meta.ai with SWU_AUTOFIX_MODEL set and META_MODEL_API_TOKEN provisioned;  got base='$VAR_BASE' model='$VAR_MODEL' token_set=$([ -n "$META_TOKEN" ] && echo yes || echo no)"
+          # The switch is all-or-nothing on the endpoint:  an unset base or the canonical
+          # MiniMax host keeps the MiniMax route (VAR_MODEL may still rotate the MiniMax
+          # model id),  and the only allowed non-MiniMax base is exactly
+          # https://api.meta.ai,  which requires a non-MiniMax model id and a provisioned
+          # META_MODEL_API_TOKEN. Values are never echoed into the workflow command:
+          # caller-controlled text there can inject runner commands (Kody 2026-10-21).
+          route=
+          case "$VAR_BASE" in
+            "" | https://api.minimax.io/anthropic) route=minimax ;;
+            https://api.meta.ai) route=meta ;;
+          esac
+          model_minimax=no
+          case "$VAR_MODEL" in [Mm][Ii][Nn][Ii][Mm][Aa][Xx]*) model_minimax=yes ;; esac
+          if [ "$route" = "minimax" ]; then
+            if [ -n "$VAR_MODEL" ] && [ "$model_minimax" = "no" ]; then
+              echo "::error::SWU_AUTOFIX_MODEL names a non-MiniMax model id while SWU_AUTOFIX_MODEL_BASE_URL selects the MiniMax host;  use a MiniMax-* id or switch the base to https://api.meta.ai"
+              exit 1
+            fi
+            exit 0
+          fi
+          if [ "$route" = "meta" ] && [ -n "$VAR_MODEL" ] && [ -n "$META_TOKEN" ] && [ "$model_minimax" = "no" ]; then exit 0; fi
+          echo "::error::SWU_AUTOFIX_MODEL_BASE_URL must be unset or https://api.minimax.io/anthropic (MiniMax) or exactly https://api.meta.ai with a non-MiniMax SWU_AUTOFIX_MODEL and META_MODEL_API_TOKEN provisioned;  got base_set=$([ -n "$VAR_BASE" ] && echo yes || echo no) model_set=$([ -n "$VAR_MODEL" ] && echo yes || echo no) token_set=$([ -n "$META_TOKEN" ] && echo yes || echo no)"
           exit 1
 
       - name: Load Trusted Autofix Policy
