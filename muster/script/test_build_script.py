@@ -23,9 +23,7 @@ class BuildScriptTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_build_script_is_valid_shell(self):
-        result = subprocess.run(
-            ["bash", "-n", str(BUILD_AND_RUN)], capture_output=True, text=True
-        )
+        result = subprocess.run(["bash", "-n", str(BUILD_AND_RUN)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_build_script_delegates_the_keychain_work(self):
@@ -51,13 +49,11 @@ class BuildScriptTests(unittest.TestCase):
         """Run the entry point in a child process with a stand-in security."""
         code = (
             "import sys\n"
-            "sys.path.insert(0, {script!r})\n"
+            f"sys.path.insert(0, {str(SCRIPT)!r})\n"
             "import build_support as support\n"
-            "support.SECURITY = {security!r}\n"
-            "support.SECURITY_TIMEOUT = {timeout!r}\n"
-            "sys.exit(support.main(['build_support', {command!r}]))\n"
-        ).format(
-            script=str(SCRIPT), security=security, timeout=timeout, command=command
+            f"support.SECURITY = {security!r}\n"
+            f"support.SECURITY_TIMEOUT = {timeout!r}\n"
+            f"sys.exit(support.main(['build_support', {command!r}]))\n"
         )
         return subprocess.run(
             [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
@@ -88,9 +84,7 @@ class BuildScriptTests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
 
     def test_the_search_list_problem_still_names_the_fix(self):
-        security = self.stand_in_security(
-            "echo '    \"/Library/Keychains/System.keychain\"'\n"
-        )
+        security = self.stand_in_security("echo '    \"/Library/Keychains/System.keychain\"'\n")
         result = self.run_cli("keychain-preflight", security)
         self.assertEqual(result.returncode, 3)
         self.assertIn("not on the keychain search list", result.stderr)
@@ -100,11 +94,7 @@ class BuildScriptTests(unittest.TestCase):
     def test_an_identity_is_chosen_from_both_keychains_and_printed_as_public_metadata(self):
         identity = '  1) 1A2B3C4D5E6F708192A3B4C5D6E7F8091A2B3C4D "Developer ID Application: Alpha Company (ABCDE12345)"'
         security = self.stand_in_security(
-            'if [ -z "$5" ]; then\n'
-            "  echo '%s'\n"
-            "else\n"
-            "  echo '%s'\n"
-            "fi\n" % (identity, identity)
+            "if [ -z \"$5\" ]; then\n  echo '%s'\nelse\n  echo '%s'\nfi\n" % (identity, identity)
         )
         result = self.run_cli("signing-identity", security)
         self.assertEqual(result.returncode, 0, result.stderr)

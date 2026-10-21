@@ -145,7 +145,7 @@ KEYCHAIN_SEARCH_LIST_MESSAGE = (
     "The login keychain is not on the keychain search list,  so the private key that "
     "signs this app cannot be reached.  The certificate is there and the identity is "
     "correct;  the key is locked away.  The owner restores it with:\n"
-    "  security list-keychains -s \"$HOME/Library/Keychains/login.keychain-db\" "
+    '  security list-keychains -s "$HOME/Library/Keychains/login.keychain-db" '
     "/Library/Keychains/System.keychain\n"
     "and by unlocking the login keychain,  which needs the owner's password."
 )
@@ -169,7 +169,11 @@ def run_security(arguments, timeout=None):
     seconds = SECURITY_TIMEOUT if timeout is None else timeout
     try:
         return subprocess.run(
-            command, check=True, capture_output=True, text=True, timeout=seconds,
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=seconds,
         )
     except subprocess.TimeoutExpired:
         raise BuildFailure(
@@ -227,8 +231,7 @@ def select_signing_identity(requested=None):
     if requested:
         normalized = requested.replace(":", "").upper()
         identities = [
-            item for item in identities
-            if normalized == item[0].upper() or requested == item[1]
+            item for item in identities if normalized == item[0].upper() or requested == item[1]
         ]
     if len(identities) != 1:
         raise BuildFailure(
@@ -265,9 +268,7 @@ def main(argv):
         return 2
     try:
         if argv[1] == "signing-identity":
-            fingerprint, team = select_signing_identity(
-                os.environ.get("MUSTER_SIGNING_IDENTITY")
-            )
+            fingerprint, team = select_signing_identity(os.environ.get("MUSTER_SIGNING_IDENTITY"))
             print(fingerprint, team)
         else:
             check_keychain_search_list()

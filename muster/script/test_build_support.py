@@ -237,7 +237,7 @@ EXPECTED_SEARCH_LIST_MESSAGE = (
     "The login keychain is not on the keychain search list,  so the private key that "
     "signs this app cannot be reached.  The certificate is there and the identity is "
     "correct;  the key is locked away.  The owner restores it with:\n"
-    "  security list-keychains -s \"$HOME/Library/Keychains/login.keychain-db\" "
+    '  security list-keychains -s "$HOME/Library/Keychains/login.keychain-db" '
     "/Library/Keychains/System.keychain\n"
     "and by unlocking the login keychain,  which needs the owner's password."
 )
@@ -254,7 +254,7 @@ def security_output(*identities):
 
 
 def colon_form(fingerprint):
-    return ":".join(fingerprint[index:index + 2] for index in range(0, len(fingerprint), 2))
+    return ":".join(fingerprint[index : index + 2] for index in range(0, len(fingerprint), 2))
 
 
 class SecurityFailureTests(unittest.TestCase):
@@ -279,9 +279,8 @@ class SecurityFailureTests(unittest.TestCase):
             support.subprocess,
             "run",
             side_effect=subprocess.TimeoutExpired("security", 30),
-        ):
-            with self.assertRaises(support.BuildFailure) as caught:
-                support.run_security(["list-keychains"])
+        ), self.assertRaises(support.BuildFailure) as caught:
+            support.run_security(["list-keychains"])
         self.assertEqual(caught.exception.status, 124)
         self.assertIn("list-keychains", str(caught.exception))
 
@@ -298,9 +297,8 @@ class SecurityFailureTests(unittest.TestCase):
     def test_missing_security_binary_fails_closed_with_a_named_diagnostic(self):
         with mock.patch.object(
             support.subprocess, "run", side_effect=FileNotFoundError("security")
-        ):
-            with self.assertRaises(support.BuildFailure) as caught:
-                support.run_security(["list-keychains"])
+        ), self.assertRaises(support.BuildFailure) as caught:
+            support.run_security(["list-keychains"])
         self.assertEqual(caught.exception.status, 127)
         self.assertIn(support.SECURITY, str(caught.exception))
 
@@ -358,9 +356,7 @@ class IdentitySelectionTests(unittest.TestCase):
 
         self.assertEqual([item[0] for item in identities], [FINGERPRINT_A, FINGERPRINT_B])
         self.assertEqual(len(calls), 2)
-        self.assertEqual(
-            calls[0], [support.SECURITY, "find-identity", "-v", "-p", "codesigning"]
-        )
+        self.assertEqual(calls[0], [support.SECURITY, "find-identity", "-v", "-p", "codesigning"])
         self.assertEqual(
             calls[1],
             [
@@ -379,9 +375,7 @@ class IdentitySelectionTests(unittest.TestCase):
         with mock.patch.object(support.subprocess, "run", side_effect=run):
             identities = support.find_coding_identities()
         self.assertEqual(len(identities), 2)
-        self.assertEqual(
-            [item[0] for item in identities], [FINGERPRINT_A, FINGERPRINT_B]
-        )
+        self.assertEqual([item[0] for item in identities], [FINGERPRINT_A, FINGERPRINT_B])
 
     def test_identity_in_another_keychain_is_found_and_chosen(self):
         run, _ = self.fake_run(
@@ -467,9 +461,8 @@ class KeychainPreflightTests(unittest.TestCase):
         listing = self.listing("/Library/Keychains/System.keychain")
         with mock.patch.object(
             support.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, listing, "")
-        ):
-            with self.assertRaises(support.BuildFailure) as caught:
-                support.check_keychain_search_list()
+        ), self.assertRaises(support.BuildFailure) as caught:
+            support.check_keychain_search_list()
         self.assertEqual(caught.exception.status, 3)
         self.assertEqual(str(caught.exception), EXPECTED_SEARCH_LIST_MESSAGE)
         self.assertEqual(support.KEYCHAIN_SEARCH_LIST_MESSAGE, EXPECTED_SEARCH_LIST_MESSAGE)
