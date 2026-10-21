@@ -32,7 +32,7 @@ mac-auto-cleanup
 ### 2. What It Cleans (Safe & Idempotent)
 
 1. **Merged Git Worktrees**:
-   - Owned by `com.jay.disk-janitor` (clean + idle + no `--force`).  This script does not reap worktrees or wipe `~/.grok/worktrees`.
+   - Owned by **Hog Hunter's robotic vacuum** now that `com.jay.disk-janitor` was retired on 2026-10-11 (clean + idle + no `--force`).  This script does not reap worktrees or wipe `~/.grok/worktrees`.
 2. **Xcode Developer Caches**:
    - Cleans `~/Library/Developer/Xcode/iOS DeviceSupport` symbols.
    - Cleans `~/Library/Developer/Xcode/DerivedData` build caches.
@@ -59,6 +59,7 @@ Pass `--pressure` (or `MAC_CLEANUP_PRESSURE=1`) for the tighter path: CleanMyMac
 ## Scheduled Automation
 - **Mac LaunchAgent**: `~/Library/LaunchAgents/com.jay.mac-cleanup.plist` runs automatically every 4 hours (`StartInterval: 14400`).
 - **Resource watch**: `~/Library/LaunchAgents/com.jay.mac-resource-watch.plist` every 5 minutes.  Samples disk/RAM/CPU, runs this script on a hit, and POSTs BotFleet Housekeeper.  See the `housekeeper` skill.
+- **Hog Hunter robotic vacuum**: `~/Library/LaunchAgents/com.simplewithus.hoghunter.robotic-vacuum.plist` every 300 seconds.  This is the **primary** automatic path since `com.jay.disk-janitor` was retired on 2026-10-11.  It takes the same `~/.claude-disk-janitor/.housekeeper.lock` as the scripts above, so the two never reclaim at once.
 - **Hetzner Cron**: `/etc/cron.d/coolify-maintenance` runs automatically every 4 hours.
 
 ## Quick Status Check

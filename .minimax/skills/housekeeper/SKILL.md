@@ -18,15 +18,18 @@ Act on regenerable waste.  Do not only report.  Ask before deleting anything tha
 
 This is the most important step, and the one that was missing.  This is a **16 GiB** Mac; swap is the only mechanism converting RAM pressure into disk consumption, and swapfiles share the APFS container with user data.
 
-- **Free disk > 80G** → not a disk problem.  Report and stop.  Do not clean.
-- **load1 > 40 or swap ≥ 90%** → the machine is thrashing.  Heavy cleanup costs more than it returns (measured 2026-09-01: a run freed −1.21G and *added* +1.84G swap).  Cheap truncations only; do **not** run CleanMyMac.
-- **Free < 80G and load1 < 40** → run the full playbook.
+- **Free disk > 80G** → not a disk problem.  Report and stop.  Do not clean.  (80G is the reclaim engine's healthy band, `config/reclaim-policy.json` `bands.disk.healthyFreeGb`.)
+- **Free < 80G** → run the playbook.  Pressure changes the **shape** of the run, never its **scope** (owner ruling 2026-10-02).
 
-Deleting caches never reduces swap.  If the pressure is swap or load only, say so and stop.
+**Pressure shapes the work, it never shrinks it.**  The old rule — "swap ≥ 90% or load1 > 40 → cheap truncations only, do not run CleanMyMac" — was a guard whose threshold sat *inside* this host's normal operating band: load1 runs 15-30 here continuously from real fleet build work, so it was true almost always, and wedged to a near-permanent swap reading it meant cleaning almost never ran.  A guard whose threshold equals the normal state is an outage, not a guard.
+
+Under pressure, **chunk** instead of cutting: two to four bounded chunks, fewer targets per chunk and a longer pause between them (2 targets and a 2x pause under pressure, 1 target and a 4x pause while thrashing), re-reading `df` and `uptime` between chunks.  Never key a skip on load1 alone — it is a lagging indicator that counts uninterruptible page-in as running.  Real thrash is high load1 with **cpu idle below 12%**.  The "cheap truncations only" tier is retired: CleanMyMac's **RAM** mode is the thing that must never run (see below), and its cleanup mode is part of the safe tier.
+
+Deleting caches never reduces swap.  If the pressure is swap or load only, say so and stop — that is a statement about swap, not a licence to skip disk work when the disk is also low.
 
 ## Take the lock
 
-Six schedulers reach the same playbook (`mac-cleanup` 4h, `disk-janitor` 30m, `mac-resource-watch` 5m, three routines, one webhook, plus a live bot thread).  `mac-auto-cleanup.sh` now takes a **re-entrant owner-token lock**; callers that already hold it export `HOUSEKEEPER_LOCK_OWNER=1` before spawning children, so the parent does not deadlock its own subprocesses.
+Several schedulers reach the same playbook and they all take the **same** lock, so two of them never reclaim at once: `mac-cleanup` every 4h, `mac-resource-watch` every 5m, **Hog Hunter's robotic vacuum every 300s** (the primary automatic path since `com.jay.disk-janitor` was retired on 2026-10-11), the BotFleet routines at 09:00 / 15:00 / 21:00, the resource webhook, plus a live bot thread.  `mac-auto-cleanup.sh` takes a **re-entrant owner-token lock**; callers that already hold it export `HOUSEKEEPER_LOCK_OWNER=1` before spawning children, so the parent does not deadlock its own subprocesses.  The lock is the directory `~/.claude-disk-janitor/.housekeeper.lock`, and it is treated as stale after 120 minutes.
 
 ```bash
 export HOUSEKEEPER_LOCK_OWNER=1
@@ -57,7 +60,7 @@ cleanmymac clean --force
 
 **Do not pass `--clean`** in a routine.  It means "clean even without a hit", not "ignore the cooldown"; `--force` is the only bypass and is for manual use.
 
-`mac-auto-cleanup` already calls CleanMyMac when the CLI is on PATH.  Disk janitor owns idle/merged worktree retirement.  Never `rm -rf` `CoreSimulator/Devices`, never `simctl shutdown all`, never wipe `~/.grok/worktrees`.
+`mac-auto-cleanup` already calls CleanMyMac when the CLI is on PATH.  **Hog Hunter's robotic vacuum** owns idle/merged worktree retirement now that `com.jay.disk-janitor` is retired; `~/.claude-disk-janitor/janitor.sh` still exists and can be run by hand.  Never `rm -rf` `CoreSimulator/Devices`, never `simctl shutdown all`, never wipe `~/.grok/worktrees`.
 
 ## Thresholds that must wake this role
 
@@ -65,12 +68,14 @@ These are the live defaults for `com.jay.mac-resource-watch` (every 5 min):
 
 | Signal | Wake when | Immediate action |
 |---|---|---|
-| Disk free | ≤ 80G warn, ≤ 50G critical | cleanup + janitor + CleanMyMac |
-| Disk drop | ≥ 6G since last sample | same, even if still above 80G |
-| Swap | used ≥ 80% **and** ≥ 8G absolute | report hogs; do **not** clean disk for a RAM problem |
-| Load 1m | ≥ 16 (optional, on by default) | report hogs; do not SIGKILL `com.jay.claude-remote-control` |
+| Disk free | ≤ 25G warn, ≤ 15G critical | cleanup + janitor + CleanMyMac |
+| Disk drop | ≥ 15G since last sample | same, even if still above 25G |
+| Swap | used ≥ 90% **and** ≥ 32G absolute | report hogs; do **not** clean disk for a RAM problem |
+| Load 1m | ≥ 65 (optional, on by default) | report hogs; do not SIGKILL `com.jay.claude-remote-control` |
 
-The watch runs the safe scripts itself, then POSTs BotFleet Housekeeper webhook `resource.disk` / `resource.ram` / `resource.cpu` / `resource.pressure`.  Cooldown 45 min.  Webhook URL and secret live in Infisical Fleet-OPS `/botfleet-housekeeper-webhook` (read with `fleet-secrets get`, never print).
+These are the live defaults in `~/apps/mac-resource-watch.py`: `RESOURCE_DISK_WARN_GB`, `RESOURCE_DISK_CRIT_GB`, `RESOURCE_DISK_DROP_GB`, `RESOURCE_SWAP_USED_PCT`, `RESOURCE_SWAP_USED_GB`, `RESOURCE_LOAD1`.  They were retuned down deliberately: the old 80G warn line ran `mac-auto-cleanup.sh --pressure` every 5 minutes back to back, and two of three runs ended with **less** free disk than they started.  The reclaim engine's bands are separate and live in `~/Code/HogHunter/config/reclaim-policy.json`: healthy at 80G free, acute below 40G, critical below 25G.
+
+The watch runs the safe scripts itself, then POSTs BotFleet Housekeeper webhook `resource.disk` / `resource.ram` / `resource.cpu` / `resource.pressure`.  Cooldown 4h for the webhook, 2h between cleanup runs, 30m when the disk is critical.  Webhook URL and secret live in Infisical Fleet-OPS `/botfleet-housekeeper-webhook` (read with `fleet-secrets get`, never print).
 
 ## BotFleet Housekeeper
 
