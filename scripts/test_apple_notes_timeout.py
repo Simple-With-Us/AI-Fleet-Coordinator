@@ -253,6 +253,10 @@ class AppleEventTimeoutTests(unittest.TestCase):
                 side.chmod(0o700)
             env = dict(os.environ)
             env["PATH"] = f"{bindir}:{env.get('PATH', '/usr/bin:/bin')}"
+            # The helper refuses a write with no session id,  and the seat in the probe
+            # title is not one of the single-thread ones,  so the probe carries a
+            # session id  (the same one the real helper would be given).
+            env["AGENT_SESSION"] = "ses_probe0000000000000000"
             proc = subprocess.run(
                 [str(SCRIPT), *flags, "[AFC, TEST] notes timeout probe"],
                 input="a body\n",
