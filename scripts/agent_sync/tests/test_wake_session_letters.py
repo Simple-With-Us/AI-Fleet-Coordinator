@@ -44,6 +44,19 @@ class RegistryLookupTests(unittest.TestCase):
                 OR.registry_db_path(tmp), os.path.join(tmp, "operator", "registry.sqlite3")
             )
 
+    def test_the_registry_path_can_point_at_a_shared_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # The state root is per host, so a deployment that wants one allocator across
+            # the Mac and the server points this at the shared store.
+            self.assertEqual(
+                OR.registry_db_path(tmp, {OR.ENV_REGISTRY_PATH: "/shared/registry.sqlite3"}),
+                "/shared/registry.sqlite3",
+            )
+            self.assertEqual(
+                OR.registry_db_path(tmp, {}),
+                os.path.join(tmp, "operator", "registry.sqlite3"),
+            )
+
     def test_a_missing_database_is_not_created_and_reads_as_no_letter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = OR.registry_db_path(tmp)
@@ -221,14 +234,42 @@ class WakeLetterTests(DaemonHarness):
         self.assertEqual(len(context), 1)
         self.assertEqual(context[0]["label"], "")
 
-    def test_the_row_identity_joins_on_platform_host_scope_and_session(self) -> None:
+    def test_the_row_identity_joins_on_platform_location_scope_and_session(self) -> None:
         d, r, p = self.setup_rows([self.row()])
         self.register(d, platform="codex", native_session_id="mvs_abc")
         context = d.chat_context(r, p)
         self.assertEqual(context[0]["label"], "")
+        # The registry's host key is the fleet location, so a registration made under a
+        # different location is a different identity and must not match.
         self.register(d, verified_host="server")
         context = d.chat_context(r, p)
         self.assertEqual(context[0]["label"], "")
+
+    def test_the_join_uses_the_location_and_not_the_os_hostname(self) -> None:
+        d, r, p = self.setup_rows([self.row(host="Jay-Mac-Studio.local")])
+        self.register(d, verified_host="mac")
+        context = d.chat_context(r, p)
+        self.assertEqual(context[0]["label"], "A")
+        self.assertEqual(context[0]["location"], d.config.instance)
+
+    def test_a_malformed_session_id_is_dropped_rather_than_coerced(self) -> None:
+        d, r, p = self.setup_rows([self.row(session_id="bad id!")])
+        self.register(d)
+        context = d.chat_context(r, p)
+        self.assertEqual(context[0]["label"], "")
+
+    def test_one_wake_uses_one_registry_connection(self) -> None:
+        d, r, p = self.setup_rows(
+            [self.row(id="a" * 64), self.row(id="b" * 64, session_id="mvs_def")]
+        )
+        self.register(d)
+        self.register(d, native_session_id="mvs_def")
+        with mock.patch.object(OR, "SessionRegistry", wraps=OR.SessionRegistry) as opened:
+            context = d.chat_context(r, p)
+        self.assertEqual(len(context), 2)
+        self.assertEqual([row["label"] for row in context], ["A", "B"])
+        # One connection for the whole wake, not one per row.
+        self.assertEqual(opened.call_count, 1)
 
     def test_the_catalog_row_carries_the_profile_scope(self) -> None:
         d, r, p = self.setup_rows([self.row()])

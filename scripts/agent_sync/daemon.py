@@ -59,6 +59,7 @@ from . import notes_relay as NR
 from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
+from . import session_ids as SI
 from . import subscribe_all as SUB
 from . import wakes as W
 from . import zulip as Z
@@ -3522,29 +3523,53 @@ class Daemon:
         """The registered letter for each catalog row, keyed by the row's stable id.
 
         The registry is the allocator (AFC-412) and the catalog is discovery, so this is
-        the join between them.  It is read-only:  a row with no registration simply has no
-        letter, and a missing or broken registry leaves every row unlettered rather than
-        failing the wake.  The platform is part of the address, so the letter alone never
-        resolves a session across surfaces.
+        the join between them.  It is read-only and it never breaks the wake:  a row with
+        no registration simply has no letter, and a missing or broken registry leaves
+        every row unlettered.
+
+        The registry's host key is the fleet location (owner:  "location means server, mac,
+        cloud"),  not the OS hostname:  one namespace spans every host, so the Mac and the
+        server must agree on the same value for the same session.  The catalog's own
+        hostname stays on the row for diagnostics.
+
+        The identity is exact on all four fields, and each one is validated rather than
+        coerced:  a malformed session id is dropped, not rounded into someone else's
+        record.
         """
-        db_path = OR.registry_db_path(self.root)
-        labels: dict[str, tuple[str, str]] = {}
+        location = str(getattr(self.config, "instance", "") or "")
+        identities: list[tuple[str, str, str, str]] = []
+        owners: dict[tuple[str, str, str, str], list[str]] = {}
         for row in rows:
-            platform = str(row.get("platform") or "")
-            host = str(row.get("host") or "")
-            scope = str(row.get("profile_scope") or "default")
-            session_id = str(row.get("session_id") or "")
-            row_id = str(row.get("id") or "")
-            if not (platform and host and session_id and row_id):
+            row_id = row.get("id")
+            platform = row.get("platform")
+            scope = row.get("profile_scope")
+            session_id = row.get("session_id")
+            if not isinstance(row_id, str) or not row_id:
+                continue
+            if not isinstance(platform, str) or not platform:
+                continue
+            if not isinstance(scope, str) or not scope:
+                continue
+            if not isinstance(session_id, str):
                 continue
             try:
-                found = OR.lookup_entry(db_path, platform, host, scope, session_id)
-            except Exception:
+                native = SI.check(session_id, "the catalog session id")
+            except ValueError:
                 continue
-            letter = str(found.get("label") or "")
-            if not letter:
+            if not location:
                 continue
-            labels[row_id] = (letter, str(found.get("ref") or ""))
+            identity = (platform, location, scope, native)
+            if identity not in owners:
+                identities.append(identity)
+            owners.setdefault(identity, []).append(row_id)
+        found = OR.lookup_many(OR.registry_db_path(self.root, self.env), identities)
+        labels: dict[str, tuple[str, str]] = {}
+        for identity, row_ids in owners.items():
+            entry = found.get(identity)
+            if not entry:
+                continue
+            for row_id in row_ids:
+                labels[row_id] = (str(entry.get("label") or ""), str(entry.get("ref") or ""))
         return labels
 
     def chat_context(
@@ -3625,11 +3650,13 @@ class Daemon:
                     )
                 }
                 # The letter is the sayable handle for this session.  It travels with the
-                # platform and the seat, because a letter alone never resolves a session
-                # across surfaces and a recycled letter carries its generation.
+                # platform, the seat and the location, because a letter alone never
+                # resolves a session across surfaces, and a recycled letter carries its
+                # generation.
                 letter, letter_ref = labels.get(str(row.get("id") or ""), ("", ""))
                 public["label"] = letter
                 public["label_ref"] = letter_ref
+                public["location"] = str(getattr(self.config, "instance", "") or "")
                 encoded = self.scrub(json.dumps(public, ensure_ascii=True))
                 if len(encoded) > remaining:
                     break
