@@ -86,47 +86,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # Selection uses public certificate metadata; no private key material is exported.
-SIGNING_SELECTION="$(python3 - <<'PY'
-import os
-import re
-import subprocess
-import sys
-
-try:
-    # The signing identity lives in the login keychain,  and it is named here rather
-    # than searched for.  The default keychain search list is kept to the System
-    # keychain on purpose,  so that a path-less lookup cannot reach the login
-    # keychain or raise an unlock prompt on the owner's screen,  and a search of that
-    # list therefore finds no identity and refuses to sign.  Naming the keychain is
-    # the difference between signing and not.
-    login_keychain = os.path.expanduser("~/Library/Keychains/login.keychain-db")
-    result = subprocess.run(
-        ["/usr/bin/security", "find-identity", "-v", "-p", "codesigning", login_keychain],
-        check=True, capture_output=True, text=True, timeout=30,
-    )
-except subprocess.TimeoutExpired:
-    sys.exit(124)
-except FileNotFoundError:
-    sys.exit(127)
-identities = re.findall(
-    r'\b([A-Fa-f0-9]{40}) "(Developer ID Application: [^"\n]+ \(([A-Z0-9]{10})\))"',
-    result.stdout,
-)
-requested = os.environ.get("MUSTER_SIGNING_IDENTITY")
-if requested:
-    normalized = requested.replace(":", "").upper()
-    identities = [
-        item for item in identities
-        if normalized == item[0].upper() or requested == item[1]
-    ]
-if len(identities) != 1:
-    sys.exit("Expected exactly one matching valid Developer ID Application identity; "
-             "set MUSTER_SIGNING_IDENTITY to the certificate SHA-1 (colons optional) "
-             "or the full 'Developer ID Application: <name> (<TEAM>)' label.")
-fingerprint, _, team = identities[0]
-print(fingerprint, team)
-PY
-)"
+SIGNING_SELECTION="$(python3 "$ROOT_DIR/script/build_support.py" signing-identity)"
 read -r SIGNING_IDENTITY TEAM_ID <<< "$SIGNING_SELECTION"
 
 # The certificate is public and can be read by path,  but codesign needs the private
@@ -134,32 +94,7 @@ read -r SIGNING_IDENTITY TEAM_ID <<< "$SIGNING_SELECTION"
 # login keychain is locked or is not on that list,  the build fails deep inside
 # xcodebuild with a message about certificates that does not name the cause.  So the
 # cause is checked here,  where it can be named.
-python3 - <<'PYKEYCHAIN'
-import os
-import subprocess
-import sys
-
-login = os.path.expanduser("~/Library/Keychains/login.keychain-db")
-try:
-    listing = subprocess.run(
-        ["/usr/bin/security", "list-keychains"],
-        check=True, capture_output=True, text=True, timeout=30,
-    ).stdout
-except (subprocess.TimeoutExpired, FileNotFoundError):
-    sys.exit(0)
-if login in listing:
-    sys.exit(0)
-print(
-    "The login keychain is not on the keychain search list,  so the private key that "
-    "signs this app cannot be reached.  The certificate is there and the identity is "
-    "correct;  the key is locked away.  The owner restores it with:\n"
-    "  security list-keychains -s \"$HOME/Library/Keychains/login.keychain-db\" "
-    "/Library/Keychains/System.keychain\n"
-    "and by unlocking the login keychain,  which needs the owner's password.",
-    file=sys.stderr,
-)
-sys.exit(3)
-PYKEYCHAIN
+python3 "$ROOT_DIR/script/build_support.py" keychain-preflight
 cd "$ROOT_DIR"
 xcodegen generate --spec project.yml
 mkdir -p "$DIST_DIR"
