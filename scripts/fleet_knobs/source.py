@@ -15,9 +15,9 @@ package.  ``fleet_rag/infisical_settings.py`` is the reference for the contract 
 load once, keep the last-known-good, names only in logs).
 
 Auth, first match wins, the same order as ``fleet-secrets`` (scripts/fleet_secrets/core.py):
-``INFISICAL_TOKEN`` already in the environment;  else the universal-auth machine identity in
-the login Keychain, then in the System keychain, then the automation pair in the environment
-on the Hetzner server, logged in through fleet-secrets' own helper;  else the CLI's own login
+``INFISICAL_TOKEN`` already in the environment;  else, on the Hetzner server, the automation
+pair in the environment, logged in through fleet-secrets' own helper;  else the universal-auth
+machine identity in the login Keychain, then in the System keychain;  else the CLI's own login
 session.  The machine identity matters for pm2:  pm2 runs as the
 system LaunchDaemon ``com.pm2.daemon``, in the launchd System session, where the login
 Keychain (and so the CLI's session) is unreachable, and a session-only fetch there exits 1 or

@@ -299,14 +299,11 @@ def automation_env_presence(env: Mapping[str, str]) -> tuple[bool, bool]:
 
 
 def auth_mode(env: Mapping[str, str]) -> str:
-    """ "token", "keychain", "system-keychain", "automation-env" (Linux only) or "session".  Raises on a
+    """ "token", "automation-env" (Linux only), "keychain", "system-keychain" or "session", in that order:
+    an identity handed to the process in its environment always beats a keychain one.  Raises on a
     half-filled keychain or a half-set automation pair rather than downgrade."""
     if (env.get(ENV_TOKEN) or "").strip():
         return "token"
-    if _complete_or_none("the login Keychain", login_keychain()):
-        return "keychain"
-    if _complete_or_none("the System keychain", SYSTEM_KEYCHAIN):
-        return "system-keychain"
     if is_linux():
         have_id, have_secret = automation_env_presence(env)
         if have_id and have_secret:
@@ -315,6 +312,10 @@ def auth_mode(env: Mapping[str, str]) -> str:
             raise SecretsError(
                 f"automation-env-incomplete:  set both {ENV_AUTOMATION_ID} and {ENV_AUTOMATION_SECRET}, or neither"
             )
+    if _complete_or_none("the login Keychain", login_keychain()):
+        return "keychain"
+    if _complete_or_none("the System keychain", SYSTEM_KEYCHAIN):
+        return "system-keychain"
     return "session"
 
 

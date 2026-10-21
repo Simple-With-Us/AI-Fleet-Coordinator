@@ -216,12 +216,32 @@ def doctor_report(env: Mapping[str, str]) -> dict[str, object]:
         rep["unresolved_reference_count"] = sum(1 for v in secrets.values() if core.REF_RE.match(v))
     except SecretsError as exc:
         rep["failure_reason"] = exc.message.split(":")[0][:60]
+    # The read-only second project (the FleetLink seat tokens, `get --project`):  its id and a read of /fleetlink.
+    other_ok = True
+    for project in core.PROJECT_SOURCES:
+        if project == core.DEFAULT_PROJECT:
+            continue
+        slug = project.replace("-", "_")
+        try:
+            core.infisical_project_id(env, core.home_dir(env), project)
+            rep[f"{slug}_project_id_resolvable"] = True
+        except SecretsError:
+            rep[f"{slug}_project_id_resolvable"] = False
+        rep[f"{slug}_fetch_ok"] = False
+        if rep[f"{slug}_project_id_resolvable"] and rep["cli_present"]:
+            try:
+                core.fetch_all("/fleetlink", env, project)
+                rep[f"{slug}_fetch_ok"] = True
+            except SecretsError:
+                pass
+        other_ok = other_ok and bool(rep[f"{slug}_fetch_ok"])
     ok = (
         rep["environment_ok"]
         and rep["cli_present"]
         and rep["project_id_resolvable"]
         and rep["fetch_names_ok"]
         and rep["unresolved_reference_count"] == 0
+        and (other_ok or not core.is_linux())  # the server needs the FleetLink tokens;  a Mac reads its own
     )
     rep["ok"] = bool(ok)
     return rep

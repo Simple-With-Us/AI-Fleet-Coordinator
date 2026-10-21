@@ -16,6 +16,7 @@ from fleet_secrets import cli, core
 
 FAKE_CLI = "/fake/bin/infisical"
 PROJECT = "00000000-0000-4000-8000-000000000001"  # a placeholder, not the real project id
+OTHER_PROJECT = "00000000-0000-4000-8000-000000000002"  # placeholder for the AI Fleet Coordinator project
 VAL_A = "SENTINEL_VALUE_A_9f3c"
 VAL_B = "SENTINEL_VALUE_B_77d1"
 CLIENT_ID = "SENTINEL_CLIENT_ID_c0de"
@@ -103,7 +104,12 @@ class Base(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)
-        self.env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin", core.ENV_PROJECT: PROJECT}
+        self.env = {
+            "HOME": str(self.home),
+            "PATH": "/usr/bin:/bin",
+            core.ENV_PROJECT: PROJECT,
+            core.PROJECT_SOURCES["ai-fleet-coordinator"][0]: OTHER_PROJECT,
+        }
         self.exec_calls = []
         patches = [
             mock.patch.object(core, "find_cli", lambda env: FAKE_CLI),
@@ -303,8 +309,9 @@ class RunTests(Base):
         env = self.exec_calls[0][2]
         self.assertEqual(env["ALPHA"], VAL_A)
         self.assertEqual(
-            {k for k in env if k.startswith("INFISICAL_")}, {core.ENV_PROJECT}
-        )  # only the parent's own
+            {k for k in env if k.startswith("INFISICAL_")},
+            {k for k in self.env if k.startswith("INFISICAL_")},
+        )  # only the parent's own (the project ids), none from Infisical
         for var in ("INFISICAL_TOKEN", "INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET"):
             code, _, _err = self.call("run", "--only", "ALPHA," + var, "--", "mycmd")
             self.assertEqual(code, 2, var)
@@ -468,9 +475,19 @@ class AuthSelectionTests(Base):
         self._automation_env(linux=False)
         self.assertEqual(core.auth_mode(self.env), "session")
 
-    def test_a_keychain_identity_beats_the_automation_env(self):
-        self.use(World(keychain=KEYCHAIN_FULL))
+    def test_the_automation_env_beats_a_keychain_identity_on_linux(self):
+        w = self.use(World(keychain=KEYCHAIN_FULL))
         self._automation_env()
+        self.assertEqual(core.auth_mode(self.env), "automation-env")
+        self.assertEqual(self.call("get", "ALPHA")[:2], (0, VAL_A))
+        ((_, lenv),) = w.logins()
+        self.assertEqual(lenv[core.ENV_CLIENT_ID], CLIENT_ID)
+
+    def test_a_keychain_identity_is_used_when_no_automation_env_is_set(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        p = mock.patch.object(core, "is_linux", lambda: True)
+        p.start()
+        self.addCleanup(p.stop)
         self.assertEqual(core.auth_mode(self.env), "keychain")
 
     def test_half_set_automation_env_refuses_rather_than_downgrade(self):
@@ -675,6 +692,23 @@ class ConfigTests(Base):
 
 
 class DoctorTests(Base):
+    def test_doctor_checks_the_second_project_and_fails_on_linux_without_it(self):
+        self.use(World(keychain=KEYCHAIN_FULL))
+        with mock.patch.object(core, "is_linux", lambda: True):
+            code, out, _ = self.call("doctor", "--json")
+            rep = json.loads(out)
+            self.assertEqual(code, 0)
+            self.assertTrue(rep["ai_fleet_coordinator_project_id_resolvable"])
+            self.assertTrue(rep["ai_fleet_coordinator_fetch_ok"])
+            self.env.pop(core.PROJECT_SOURCES["ai-fleet-coordinator"][0])
+            code, out, _ = self.call("doctor", "--json")
+            rep = json.loads(out)
+            self.assertEqual(code, 1)
+            self.assertFalse(rep["ai_fleet_coordinator_project_id_resolvable"])
+            self.assertFalse(rep["ok"])
+        with mock.patch.object(core, "is_linux", lambda: False):
+            self.assertEqual(self.call("doctor", "--json")[0], 0)  # a Mac does not need it
+
     def test_doctor_reports_booleans_and_counts_only(self):
         self.use(World(keychain=KEYCHAIN_FULL))
         code, out, err = self.call("doctor", "--json")

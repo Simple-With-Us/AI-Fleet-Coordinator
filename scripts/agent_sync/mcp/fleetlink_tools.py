@@ -58,6 +58,8 @@ INFISICAL_PATH = "/fleetlink"  # folder of the per-seat FLEETLINK_TOKEN_<SEAT> n
 INFISICAL_PROJECT = "ai-fleet-coordinator"  # the project that folder lives in (Fleet-OPS has none)
 INFISICAL_LABEL = "Infisical AI Fleet Coordinator"
 TOKEN_CACHE_TTL = 600.0
+FETCH_TIMEOUT_S = 60.0  # one `fleet-secrets get`:  the machine-identity login and the export, under load
+KEY_ABSENT_EXIT = 3  # fleet-secrets: the key is not there (a failure of any other kind says nothing about it)
 TIMEOUT_S = 120.0
 OUTPUT_LIMIT = (
     8_000_000  # bytes of CLI output;  read_file returns up to 1 MB of text, pretty-printed
@@ -172,8 +174,9 @@ _token_cache: dict[str, tuple[float, str | None]] = {}
 
 def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str | None:
     """`fleet-secrets get NAME --path /fleetlink`, or None when absent or unreadable.  Cached in memory per
-    process (a miss too, so a seat with no token does not pay the Infisical round trip on every call).  Its
-    output is never logged and its stderr never read."""
+    process (a clean miss too, exit 3, so a seat with no token does not pay the Infisical round trip on every
+    call;  a timeout or any other failure is not cached, so a passing fault cannot hide a good token for ten
+    minutes).  Its output is never logged and its stderr never read."""
     import time
 
     from .. import zulip as Z
@@ -183,6 +186,7 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
     if held is not None and now - held[0] < TOKEN_CACHE_TTL:
         return held[1]
     value: str | None = None
+    definitive = True  # a token, or a clean "no such key" (exit 3);  anything else may pass, so it is not cached
     binary = Z.fleet_secrets_bin(env, home) if Z.infisical_enabled(env) else None
     if binary:
         child = dict(env)
@@ -192,16 +196,20 @@ def _fleet_secrets_token(name: str, env: Mapping[str, str], home: Path) -> str |
                 [binary, "get", name, "--path", INFISICAL_PATH, "--project", INFISICAL_PROJECT],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                timeout=15,
+                timeout=FETCH_TIMEOUT_S,
                 cwd="/",
                 env=child,
                 check=False,
             )
             if proc.returncode == 0:
                 value = proc.stdout.decode("utf-8").strip() or None
+            else:
+                definitive = proc.returncode == KEY_ABSENT_EXIT
         except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
             value = None
-    _token_cache[name] = (now, value)
+            definitive = False
+    if definitive:
+        _token_cache[name] = (now, value)
     return value
 
 
@@ -334,7 +342,7 @@ def run(
     timeout = TIMEOUT_S if timeout is None else timeout
     cli = find_cli(env)
     credential = resolve_credential(seat, env, home)
-    extra_known = [credential[2]] if credential[0] == "env" else []
+    extra_known = [credential[2]]  # the token's own value, whatever its source, never leaves in text
     for field in SCANNED_FIELDS:
         value = args.get(field)
         if isinstance(value, str) and value:
