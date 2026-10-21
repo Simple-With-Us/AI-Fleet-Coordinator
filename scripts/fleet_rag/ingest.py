@@ -85,6 +85,11 @@ GROUP_CHUNKS = 512
 EMBED_RATE = 24.0  # texts per second budget for the shared TEI box
 PROGRESS_EVERY = 200
 EXIT_LOCKED = 3
+#  The marker a pending nightly leaves behind, so a partial refresh that arrives while the
+#  nightly is still waiting cannot steal the lock in the gap between the waiter's polls and
+#  then hold it for its whole budget.  The file holds the nightley's deadline in epoch ms;
+#  an expired marker is treated as absent, so a killed nightly cannot wedge the fleet.
+PENDING_NIGHTLY_NAME = "ingest.nightly.pending"
 
 # Payload fields that describe the owning document (everything except the content fields).
 _CONTENT_FIELDS = ("text", "content_hash", "embed_model")
@@ -100,6 +105,10 @@ GENERATORS = sources.GENERATORS
 
 class IngestLocked(FleetRagError):
     """Another ingest holds the lock file."""
+
+
+class NightlyPending(FleetRagError):
+    """A nightly ingest is pending, so a partial refresh must not take the lock."""
 
 
 # --------------------------------------------------------------------------- lock
@@ -496,6 +505,78 @@ def prune_source(
     return gone
 
 
+def _pending_nightly_path(state_path: pathlib.Path) -> pathlib.Path:
+    """Where a pending nightly leaves its marker, beside the lock it is waiting for."""
+    return pathlib.Path(state_path).parent / PENDING_NIGHTLY_NAME
+
+
+def _write_pending_nightly(path: pathlib.Path, deadline_ms: int) -> None:
+    """Claim the queue for a nightly that is about to wait for the lock."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+        tmp.write_text(
+            json.dumps({"pid": os.getpid(), "deadline_ms": deadline_ms}) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
+    except OSError:
+        #  A marker that cannot be written must not stop the nightly:  the lock still
+        #  serializes the runs, and a partial that slips in is no worse than before.
+        pass
+
+
+def _clear_pending_nightly(path: pathlib.Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _nightly_pending(path: pathlib.Path) -> bool:
+    """Whether a nightly has claimed the queue and its claim has not expired.
+
+    An expired marker is treated as absent, so a nightly that was killed leaves nothing
+    behind that wedges the partial refreshes.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        deadline_ms = int(payload.get("deadline_ms", 0))
+    except (OSError, ValueError, TypeError):
+        return False
+    return deadline_ms > now_ms()
+
+
+def _resolve_names(source_names: Iterable[str] | str | None) -> list[str]:
+    """The source list a run will actually use.
+
+    One resolver, so every caller decides on the same list.  The command line needs it to
+    answer "is this run a health-attesting nightly?" before the run starts, and the run
+    needs it to decide the same thing after it resolves the names (AFC-423).
+    """
+    if source_names in ("all", None):
+        return list(sources.NIGHTLY_SOURCES)
+    if isinstance(source_names, str):
+        return [s.strip() for s in source_names.split(",") if s.strip()]
+    return [s.strip() for s in source_names if s.strip()]
+
+
+def _attests_health(names: list[str], prune: bool, since_ms: int | None, limit: int | None) -> bool:
+    """Whether this run writes the sentinel and last-run.json, and so can attest health.
+
+    One predicate, used by the run that writes the sentinel and by the command line that
+    decides the wait budget.  The two used to disagree -- the sentinel was keyed on the
+    resolved source set and the wait on the `--all` flag -- so an explicitly enumerated
+    nightly run attested health and still failed at once with exit 3 when the lock was
+    held, which is the exact hole the wait was added to close (AFC-423).
+    """
+    return (
+        prune
+        and set(names) == set(sources.NIGHTLY_SOURCES)
+        and since_ms is None
+        and limit is None
+    )
+
+
 def run(
     source_names: Iterable[str] | str = "all",
     dry_run: bool = False,
@@ -516,15 +597,7 @@ def run(
 
     Raises IngestLocked (exit 3 from the CLI) when another ingest holds the lock.
     """
-    names = (
-        list(sources.NIGHTLY_SOURCES)
-        if source_names in ("all", None)
-        else [
-            s.strip()
-            for s in (source_names.split(",") if isinstance(source_names, str) else source_names)
-            if s.strip()
-        ]
-    )
+    names = _resolve_names(source_names)
     unknown = [n for n in names if n not in GENERATORS]
     if unknown:
         raise FleetRagError(
@@ -537,21 +610,42 @@ def run(
         )
     since_ms = _parse_since(since)
     lock_path = lock_path or (state_path.parent / "ingest.lock")
-    with IngestLock(lock_path, timeout_s=lock_timeout_s):
-        return _run_locked(
-            names,
-            dry_run,
-            since_ms,
-            limit,
-            state_path,
-            last_run_path,
-            log_path,
-            cfg,
-            qd,
-            log,
-            heartbeat,
-            prune,
+    pending_path = _pending_nightly_path(state_path)
+    attests = _attests_health(names, prune, since_ms, limit)
+    if attests:
+        #  Claim the queue BEFORE the lock:  a partial refresh that arrives while this run is
+        #  still waiting would otherwise take the lock in the gap between the waiter's polls
+        #  and then hold it for its whole budget, which is how a nightly gets locked out
+        #  even though it is willing to wait (AFC-423).  The marker expires, so a killed
+        #  nightly leaves nothing behind.
+        _write_pending_nightly(pending_path, now_ms() + int((2 * max(lock_timeout_s, 3600)) * 1000))
+    elif _nightly_pending(pending_path):
+        #  A partial refresh never waits:  it fails fast, because the sheet sync's ingest is
+        #  best-effort and a long wait there would hold its own budget open.  It must not take
+        #  the lock from a nightly that is waiting for it either.
+        raise NightlyPending(
+            f"a nightly ingest is pending ({pending_path}); a partial refresh must not take the "
+            f"lock, exit {EXIT_LOCKED}"
         )
+    try:
+        with IngestLock(lock_path, timeout_s=lock_timeout_s):
+            return _run_locked(
+                names,
+                dry_run,
+                since_ms,
+                limit,
+                state_path,
+                last_run_path,
+                log_path,
+                cfg,
+                qd,
+                log,
+                heartbeat,
+                prune,
+            )
+    finally:
+        if attests:
+            _clear_pending_nightly(pending_path)
 
 
 def _run_locked(
@@ -675,12 +769,7 @@ def _run_locked(
     if not dry_run:
         # Only an untruncated full nightly-source pass can attest global health.
         # Partial/manual refreshes keep their log and state without hiding a stale night.
-        nightly = (
-            prune
-            and set(names) == set(sources.NIGHTLY_SOURCES)
-            and since_ms is None
-            and limit is None
-        )
+        nightly = _attests_health(names, prune, since_ms, limit)
         if nightly:
             _write_sentinel_safely(cfg, qd, report, log)
             _write_json(last_run_path, report)
@@ -880,8 +969,12 @@ def main(argv: list[str] | None = None) -> int:
         # The nightly is the only run that attests health (sentinel + last-run.json),
         # so it waits out a partial refresh instead of exiting 3 into a stale sentinel.
         # A partial refresh keeps the fast exit and itself backs off (Kody review, PR #740).
-        nightly = args.all and args.prune and not args.since and not args.limit
-        lock_timeout = args.lock_timeout if args.lock_timeout is not None else (6000.0 if nightly else 0.0)
+        # The wait is keyed on the SAME predicate that gates the sentinel, not on the
+        # `--all` flag, so an explicitly enumerated nightly run waits too (Kody review,
+        # PR #800):  keying them differently let a health-attesting run be locked out.
+        names = _resolve_names("all" if args.all else args.source)
+        attests = _attests_health(names, args.prune, _parse_since(args.since), args.limit)
+        lock_timeout = args.lock_timeout if args.lock_timeout is not None else (6000.0 if attests else 0.0)
         report = run(
             "all" if args.all else args.source,
             dry_run=args.dry_run,
@@ -891,7 +984,9 @@ def main(argv: list[str] | None = None) -> int:
             prune=args.prune,
             lock_timeout_s=lock_timeout,
         )
-    except IngestLocked as e:
+    except (IngestLocked, NightlyPending) as e:
+        #  Both are the same class of refusal —  this run must not hold the lock now —  so
+        #  both exit 3, which is what the sheet sync's best-effort ingest expects.
         eprint(f"error: {e}")
         return EXIT_LOCKED
     except (FleetRagError, GitleaksError) as e:
