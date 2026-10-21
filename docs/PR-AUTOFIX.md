@@ -129,7 +129,7 @@ The fleet runs three autofix bots (this PR Autofix, the Claude Code Autofix reus
 
 - PR Autofix, this workflow.
 - Claude Code Autofix, the Claude Code Autofix reusable (anthropics/claude-code-action on MiniMax; the filename is left over from its DeepSeek "Codex Autofix" days).
-- Kody autofix, the Kody reusable (MiniMax M3 (`MiniMax-M3`) through MiniMax’s direct OpenAI-compatible endpoint, `https://api.minimax.io/v1`, using `MINIMAX_API_KEY`, enabled fleet-wide 2026-10-11 by the org variable `SWU_KODY_AUTOFIX_ENABLED`; board 99e559ea).
+- Kody autofix, the Kody reusable (MiniMax M3.1 Flash (`MiniMax-M3.1-Flash`) through MiniMax’s direct OpenAI-compatible endpoint, `https://api.minimax.io/v1`, using `MINIMAX_API_KEY`, enabled fleet-wide 2026-10-11 by the org variable `SWU_KODY_AUTOFIX_ENABLED`; board 99e559ea).
 
 GitHub keeps one running and one pending run per group, and a newer pending run replaces the older one.
 
