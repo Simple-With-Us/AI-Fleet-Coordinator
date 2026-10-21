@@ -8,8 +8,8 @@ import os
 import subprocess
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location(
@@ -85,9 +85,8 @@ class PrivateStateTests(unittest.TestCase):
     def test_directory_symlink_rejected_and_flock_still_excludes(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "base"
-            with U.locked(base):
-                with self.assertRaisesRegex(U.Failed, "update_locked"):
-                    U.locked(base)
+            with U.locked(base), self.assertRaisesRegex(U.Failed, "update_locked"):
+                U.locked(base)
             link = Path(tmp) / "link"
             link.symlink_to(base)
             with self.assertRaisesRegex(U.Failed, "unsafe_state_directory"):
@@ -101,7 +100,13 @@ class PrivateStateTests(unittest.TestCase):
             self.assertEqual(target.read_text(), "synthetic")
 
     def test_dash_home_clone_uses_absolute_destination_and_option_terminator(self):
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(U, "locked"), mock.patch.object(U.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "git")) as run_clone:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(U, "locked"),
+            mock.patch.object(
+                U.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "git")
+            ) as run_clone,
+        ):
             with self.assertRaisesRegex(U.Failed, "clone_failed"):
                 U.setup(Path("-synthetic-home"))
             argv = run_clone.call_args.args[0]
