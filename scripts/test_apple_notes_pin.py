@@ -43,6 +43,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -593,6 +594,34 @@ class PinDecisionTests(unittest.TestCase):
         self.assertEqual(kept_runs, 0, "a lock younger than a 120 s bound allows was taken over")
         self.assertIn("pin skipped: another pin or unpin run held the lock", kept.stderr)
         self.assertTrue(self.lock_left)
+
+    def test_every_pin_skipped_reason_fits_the_consumers_cap_with_its_tail(self):
+        """agent_sync.notes keeps 200 characters of the reason, and the tail says the note was saved.
+
+        A reason that runs over loses exactly that tail, so a caller could not tell a saved, unpinned note from a
+        failed write.  Every `pin skipped:` line of the real script is rendered with the longest outcome, a
+        three-digit lock wait and a 100-character lock path (a long HOME), then read back through the consumer."""
+        sys.path.insert(0, str(SCRIPT.parent))
+        from agent_sync import notes as N
+
+        text = SCRIPT.read_text()
+        start = text.index('case "$_pin_rc" in\n  1)')
+        block = text[start : text.index("\nesac\n", start)]
+        lock_path = "/Users/" + "u" * 20 + "/Library/Caches/apple-notes-coding/" + "p" * 31 + "/pin.lock"
+        self.assertGreaterEqual(len(lock_path), 100)
+        reasons = re.findall(r'echo "pin skipped: ([^"]*)" >&2', block)
+        self.assertGreaterEqual(len(reasons), 8, "a pin skipped reason is missing from the case block")
+        for template in reasons:
+            reason = (
+                template.replace("$_pin_outcome", "note saved unpinned")
+                .replace("${NOTES_PIN_LOCK_DIR}", lock_path)
+                .replace("${NOTES_PIN_LOCK_WAIT_S}", "999")
+            )
+            with self.subTest(reason=reason[:60]):
+                self.assertLessEqual(len(reason), 200, reason)
+                self.assertTrue(reason.endswith("note saved unpinned"), reason)
+                carried = N._pin_skipped(f"pin skipped: {reason}\n".encode())
+                self.assertEqual(carried, reason, "the consumer cut the reason off")
 
     def test_a_lock_directory_that_cannot_be_made_is_named_as_that(self):
         """Not a busy lock:  the parent of the lock directory is a file, so no run holds anything."""

@@ -1269,6 +1269,10 @@ if [[ "$MODE" == "pin" ]]; then
 else
   _pin_outcome="note saved unpinned"
 fi
+#  The "pin skipped:" line is read back by agent_sync.notes, which keeps the first 200 characters of the
+#  reason.  Each reason ends with $_pin_outcome, which tells a caller the note was saved, so every reason
+#  has to fit in 200 characters with a long lock path or that tail is cut off
+#  (scripts/test_apple_notes_pin.py checks the length of each one).
 case "$_pin_rc" in
   1)
     echo "pinned: skipped ('Pin Coding Note' shortcut run failed)"
@@ -1294,11 +1298,11 @@ case "$_pin_rc" in
     ;;
   7)
     echo "pinned: skipped (the pin lock directory could not be made)"
-    echo "pin skipped: the pin lock directory ${NOTES_PIN_LOCK_DIR} could not be made, so the Shortcut was not run; $_pin_outcome" >&2
+    echo "pin skipped: the pin lock directory ${NOTES_PIN_LOCK_DIR} could not be made; $_pin_outcome" >&2
     ;;
   8)
     echo "pinned: skipped (the pin lock kept coming back stale)"
-    echo "pin skipped: the pin lock kept coming back stale (more than 3 takeovers in one call), so the Shortcut was not run; remove ${NOTES_PIN_LOCK_DIR} if no other pin is running; $_pin_outcome" >&2
+    echo "pin skipped: the pin lock kept coming back stale; remove ${NOTES_PIN_LOCK_DIR} if no pin is running; $_pin_outcome" >&2
     ;;
   *)
     echo "pinned: skipped (another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s)"
