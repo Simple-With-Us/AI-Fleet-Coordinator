@@ -874,7 +874,7 @@ class InstallLockAndPrivateDirTests(World):
         self.assertEqual(list(elsewhere.iterdir()), [])
 
     def test_the_lock_is_exclusive_and_lives_outside_the_platform_home(self) -> None:
-        target = self.home / ".vibe" / "hooks.toml"
+        target = self.home / ".claude" / "hooks.toml"
         lock_dir = self.home / ".local" / "state" / "fleet-lanes" / "locks"
         with T._target_lock(str(self.home), str(target)):
             self.assertTrue(lock_dir.is_dir())
@@ -895,11 +895,11 @@ class InstallLockAndPrivateDirTests(World):
             os.close(other)
 
     def test_the_lock_file_is_not_left_in_the_platform_directory(self) -> None:
-        vibe = self.home / ".vibe"
-        vibe.mkdir()
-        with T._target_lock(str(self.home), str(vibe / "hooks.toml")):
+        platform = self.home / ".claude"
+        platform.mkdir()
+        with T._target_lock(str(self.home), str(platform / "hooks.toml")):
             pass
-        self.assertEqual(sorted(p.name for p in vibe.iterdir()), [])
+        self.assertEqual(sorted(p.name for p in platform.iterdir()), [])
 
 
 if __name__ == "__main__":
