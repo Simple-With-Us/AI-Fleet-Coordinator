@@ -466,7 +466,12 @@ class IngestTests(unittest.TestCase):
         worker.start()
         try:
             started = time.monotonic()
-            rep = self._run(lock_timeout_s=30.0)
+            #  The budget is 0.6 s, not 30 s:  IngestLock polls at
+            #  min(5.0, max(0.1, deadline - now)),  so a large budget makes the first sleep a
+            #  full 5 s and the test then sits out a whole poll interval to prove a 0.2 s
+            #  release.  0.6 s still sleeps past the release at 0.2 s and keeps
+            #  elapsed > 0.15 true,  while keeping the whole test under a second.
+            rep = self._run(lock_timeout_s=0.6)
             elapsed = time.monotonic() - started
         finally:
             worker.join(5)
@@ -516,6 +521,22 @@ class IngestTests(unittest.TestCase):
                 ingest.main(["--all", "--prune", "--lock-timeout", "0", "--no-heartbeat"]), 0
             )
         self.assertEqual(run.call_args.kwargs["lock_timeout_s"], 0.0)
+
+    def test_an_enumerated_nightly_run_gets_no_wait_even_though_it_writes_the_sentinel(self) -> None:
+        # The wait is keyed on the --all flag, but the sentinel is keyed on the resolved source
+        # set equalling NIGHTLY_SOURCES.  The two predicates disagree, so this run attests health
+        # (it writes the sentinel and last-run.json, per _run_locked) and yet is given no wait:
+        # a health-attesting run can still be locked out.  Asserted rather than fixed here,
+        # because the wait predicate belongs to the merged ingest.py and this PR is the tests
+        # and docs follow-up;  the mismatch is documented in RAG-FLEET-INFRA.md and tracked.
+        enumerated = ",".join(sources.NIGHTLY_SOURCES)
+        with mock.patch.object(ingest, "run", return_value={"ok": True}) as run:
+            self.assertEqual(ingest.main(["--source", enumerated, "--prune", "--no-heartbeat"]), 0)
+        self.assertEqual(
+            run.call_args.kwargs["lock_timeout_s"],
+            0.0,
+            "this run is a sentinel-writing nightly, so it should have been given the wait",
+        )
 
     def test_gitleaks_drop_plumbing(self) -> None:
         staged: list[list[dict]] = []
