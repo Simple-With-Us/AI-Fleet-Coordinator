@@ -1,6 +1,6 @@
 ---
 name: owner-copy
-description: Fleet human-facing prose — two spaces between sentences, light theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation. Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read. Also when changing theme defaults or taking screenshots.
+description: Fleet human-facing prose — two spaces between sentences, system theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation. Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read. Also when changing theme defaults or taking screenshots.
 ---
 
 # Owner-facing copy (GROK)
@@ -25,8 +25,8 @@ Every message to Jay needs the gap, including a one-line progress note and an ac
 - **GitHub PR and issue titles, bodies and comments, and Zulip posts:** a real U+00A0 plus a space after each sentence (owner ruling 2026-10-08).  Never the `&nbsp;` entity there: GitHub can copy a PR body into a plain-text squash commit, where it would show literally.
 - **BotFleet / OpenMausBot / cloud chat:** two ASCII spaces.  Never display the six characters `&nbsp;` (owner 2026-09-03).  Backend inserts a real U+00A0 if the renderer would collapse the gap.
 - **Claude Code desktop app (Code tab) chat replies:** type the `&nbsp;` entity plus a normal space after each sentence, outside code spans (owner-verified 2026-10-08; the renderer decodes it, a raw U+00A0 from the model arrives as a plain space, and ASCII doubles collapse).  The 2026-09-04 ASCII ruling is withdrawn.
-- **MiniMax Code chat pane chat replies:** a REAL U+00A0, the nbsp character, then a normal space after each sentence, outside code spans (owner-verified 2026-10-20).  Two ASCII spaces collapse in that pane, and the `&nbsp;` entity renders as the six literal characters, which is worse than no gap.
-- **Any other Markdown-rendering agent chat pane** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse): the same entity plus a space (owner ruling 2026-10-08), not individually verified.  Only the Claude Code Code tab and the MiniMax Code pane are verified, and they differ.  If the six literal characters ever show, stop and report it in #agent-sync.  **Terminal TUIs** (Claude Code CLI, Grok TUI, Codex CLI): two ASCII spaces, unverified.
+- **MiniMax Code chat pane chat replies:** type the `&nbsp;` entity plus a normal space after each sentence, outside code spans (owner-verified 2026-10-18, reaffirmed 2026-10-20).  The renderer decodes it into a real gap, the same form as the Claude Code Code tab;  a raw U+00A0 from the model arrives as a plain space, and two ASCII spaces collapse.
+- **Any other Markdown-rendering agent chat pane** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse): the same entity plus a space (owner ruling 2026-10-08), not individually verified.  Only the Claude Code Code tab and the MiniMax Code pane are verified, and both decode the entity.  If the six literal characters ever show, stop and report it in #agent-sync.  **Terminal TUIs** (Claude Code CLI, Grok TUI, Codex CLI): two ASCII spaces, unverified.
 
 Headings / titles / buttons: **Title Case**.  Body: sentence case.  Values that are not a full sentence: lowercase or sentence case.
 
@@ -36,9 +36,22 @@ HTML/JSX/SwiftUI that collapse spaces: NBSP+space or `SENTENCE_GAP`.  Do not "fi
 
 Does not apply: identifiers, log lines, API enums, commit **subjects** that are fragments with no terminator.
 
-## Theme default = light
+## Theme default = system
 
-First visit / no stored preference = **light**.  Do not boot dark from `prefers-color-scheme` unless the user chose System or Dark.  Dark is optional.  Screenshots, ASC, marketing: light unless the owner asked for dark.
+First visit / no stored preference = **system**, following the OS appearance.  Owner ruling
+2026-09-19, which supersedes the 2026-08-10 light ruling and was reconfirmed 2026-10-20.
+Do not pin a light or dark default on first paint, and do not treat a dark Mac as a reason to
+default to light: that is the dev-Mac optical illusion the ruling exists to remove.
+
+- **Stored preferences are never rewritten.**  A returning user who chose Light or Dark stays
+  on it; only a first paint with no record defaults to system.
+- **Light, Dark and System all remain available** wherever a picker ships.  System is the
+  default, not the only choice.
+- **Screenshots, App Store Connect, marketing, design previews: light**, unless the owner asks
+  for dark.  The product default is system; the capture default is still light, because those
+  assets need a deterministic palette regardless of who is developing.
+- Applies to every fleet app (web, iOS, Android, BotFleet chrome, CodeCaps).  Each seat lands
+  the default flip in its own app; this file is the canonical signal, not the per-app change.
 
 ## Headings vs values
 

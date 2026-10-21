@@ -6,12 +6,12 @@ description: >-
 
 # Session start (MA)
 
-> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  Lanes `~/apps/lanes/<Repo>/muse-assist-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM):  use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
 
-This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` (historical `muse/<slug>`).  No lane on the Mac (cloud VM).  Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly distinguish from Muse Code (`[MC]`).  `MA` is the default seat of an ordinary session; a launcher's seat wins (Identity).
+This pack is for **MA** (Muse Assist cloud VM batch compute & creative agent).  Session tag `[MA·session8]`.  Notes name `Muse Assist`.  Branches `muse-assist/<slug>` (historical `muse/<slug>`).  No Mac lane (cloud VM):  use your durable VM checkout, one per repo named `muse-assist-<repo>`, so never create `~/apps/lanes` or run `~/apps/lane`.  Former tag `MUSE` is migrated to `MA` (owner 2026-10-04) to cleanly distinguish from Muse Code (`[MC]`).  `MA` is the default seat of an ordinary session; a launcher's seat wins (Identity).
 
 ## 1. Identity
 
@@ -53,35 +53,29 @@ recall "<what this session is about>" --limit 5
 
 or MCP `recall_search`.  A hit is a lead, not a verdict — open the Linear issue / note / doc.  Cloud seats: `https://agents.jays.services/mcp` or REST `/recall/search`.  Owner 2026-09-02: **contribute every reusable lesson** at closeout (`recall_contribute`); do not bulk-ingest chat logs as lessons.
 
-## 3. Pick the lane — never `~/Code/<repo>`
+## 3. Use The Durable VM Checkout
 
 The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.  Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders` (Lane Map, owner 2026-10-07: `docs/protocols/lane-map.md` in AI-Fleet-Coordinator).
 
-Make one lane per task with `lane new`.  It needs `AGENT_SEAT` set to the seat you verified in section 1 (never a guess) and prints the path:
+Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  Reuse this durable VM checkout across tasks; do not invoke the Mac lane tool or create Mac lane directories.
 
-```bash
-~/apps/lane new <app> <slug>                # ~/apps/lanes/<Repo>/<seat>-<slug>, on a branch named <your prefix>/<slug>; start the slug with the lowercase issue id (afc-123-fix-thing) so the branch links the Linear issue
-~/apps/lane new <app> --review --pr <n>     # a read-only check of someone else's PR, at ~/apps/lanes/<Repo>/review-pr-<n>
-cd "$(~/apps/lane path <app> <slug>)"
-```
+| App | Zulip `repo:` | Acronym (Linear team) |
+|-----|---------------|-----------------------|
+| Socratic.Trade | `Socratic.Trade` | ST |
+| Congress.Trade | `Congress.Trade` | CT |
+| Usage Monitor | `API-usage-monitor` | UM |
+| congress-trading-shared | `congress-trading-shared` | CTS |
+| DealDex | `DealDex` | DD |
+| Personal-Site | `Personal-Site` | PS |
+| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC |
 
-| App | Zulip `repo:` | Acronym (Linear team) | Lane folder |
-|-----|---------------|-----------------------|-------------|
-| Socratic.Trade | `Socratic.Trade` | ST | `~/apps/lanes/Socratic-Trade/<seat>-<slug>` |
-| Congress.Trade | `Congress.Trade` | CT | `~/apps/lanes/Congress.Trade/<seat>-<slug>` |
-| Usage Monitor | `API-usage-monitor` | UM | `~/apps/lanes/Usage-Monitor/<seat>-<slug>` |
-| congress-trading-shared | `congress-trading-shared` | CTS | `~/apps/lanes/congress-trading-shared/<seat>-<slug>` |
-| DealDex | `DealDex` | DD | `~/apps/lanes/DealDex/<seat>-<slug>` |
-| Personal-Site | `Personal-Site` | PS | `~/apps/lanes/Personal-Site/<seat>-<slug>` |
-| AI-Fleet-Coordinator / machine infra | `AI-Fleet-Coordinator` or `fleet-infra` | AFC | `~/apps/lanes/AI-Fleet-Coordinator/<seat>-<slug>` |
-
-Machine-infra issues file to the `OPS` team (`board file --app fleet-infra` routes there).  `<seat>` is your seat's whole folder name from `fleet-apps.json` (`worktreeSuffix`), never a short tag, and the folder above it is the repo's folder name under `~/Code` (`codeDir`), exactly as spelled there.  Lanes in the old places under `~/apps/lanes` (`<prefix>/` such as `lanes/trading`, `_managed`, `_review`) stay until the layout migration moves them, and flat ones such as `~/apps/trading-muse-assist` are not moved at all and retire normally; do not create new ones in any old place.  Inventory is `~/Code/AI-Fleet-Coordinator/fleet-apps.json`.  `scripts/setup-agent-lanes.sh` is retired (it exits 2); do not run it.  If `~/apps/lane` is missing, the owner has not installed it yet: run `python3 -m fleet_lanes.lane new <app> <slug>` from the `scripts/` folder of an AI-Fleet-Coordinator checkout, or create the lane by hand to match the table in `docs/protocols/lane-map.md`.
+Machine-infra issues file to the `OPS` team (`board file --app fleet-infra` routes there).  Use the actual durable VM checkout path and task branch in every cloud claim; never report a Mac lane path.
 
 Then read that app's `AGENTS.md`, `STATUS.md`, latest `docs/rollouts/`, and its open Linear issues (`board list --app <app>`).  `docs/EFFORT-LOG.md` is archived history now; read it only for background.  Personal-Site `AGENTS.md` can lag `README.md` (the live source is `site/`); believe README + current tree over a stale "static snapshot" paragraph.
 
 ## 4. Claim before substantial edits
 
-1. **Linear** — `board list --app <app>` then `board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/<Repo>/<seat>-<slug> @ <branch>"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by "$AGENT_SEAT" --env Mac --where "..." --desc "..."`, then claim it.  The claim sets In Progress and the `claimed:<SEAT>` label; it exits 3 if another seat holds the issue.
+1. **Linear** — `board list --app <app>` then `board claim <id> --by "$AGENT_SEAT" --env cloud --where "$(pwd -P) @ $(git branch --show-current)"`.  If nothing exists: `board file --title "..." --app <app> --severity P1 --by "$AGENT_SEAT" --env cloud --where "$(pwd -P) @ $(git branch --show-current)" --desc "..."`, then claim it.  The claim sets In Progress and the `claimed:<SEAT>` label; it exits 3 if another seat holds the issue.
 2. **Zulip** — open the work topic and post the claim (below).  There is no effort log and no separate GitHub issue to mark; a GitHub issue filed after the cutover is already a Linear issue.
 3. **Branch and PR** — branch `<seat>/<id>-<slug>` (`muse-assist/afc-123-zulip-cutover`), and the PR body says `Fixes <ID>` when it finishes the issue or `Refs <ID>` for partial work.
 

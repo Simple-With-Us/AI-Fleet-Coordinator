@@ -17,7 +17,17 @@ Since 2026-10-19 the Hetzner server runs `agent-sync`, `board`, `recall`, `lane`
 
 The workflow runs only when the repository variable `FLEET_CLI_SIGNAL_ENABLED` is `true`.  It reads three repository secrets, which Infisical (AFC `prod` `/fleet-cli`) holds as the source of truth:  `FLEET_CLI_UPDATE_SSH_KEY`, `FLEET_CLI_UPDATE_HOST` and `FLEET_CLI_UPDATE_KNOWN_HOSTS`.
 
-## Commands
+## Linux Secret Bootstrap (AFC-427)
+
+Code installation does not provision authentication.  The server's `fleet-secrets` entry point can use `scripts/fleet_secrets/linux-entrypoint.py`, installed beside the existing `~/.local/share/fleet-secrets/fleet-secrets` executable.  Point `~/.local/bin/fleet-secrets` at that entry point and make it executable.  Re-point the link after every `install-fleet-secrets.sh` run, because the installer restores the plain CLI link.  It is an on-demand helper; no service or session restart is needed.
+
+Provide `INFISICAL_TOKEN` or the complete `INFISICAL_AUTOMATION_CLIENT_ID` and `INFISICAL_AUTOMATION_CLIENT_SECRET` pair through the trusted process environment.  An inherited token takes precedence; an incomplete pair fails with the missing variable names.  The entry point reads no credential file, keeps long-lived credentials confined to login, and passes only the short-lived token to direct consumers.  No credential value or masked preview appears in diagnostics.  Authentication runs from `/` with update checks disabled, a bounded lifetime and interruption cleanup.  Infisical remains the source of application secrets; provision and rotate the machine identity through its canonical secret manager.
+
+The generated wrappers for `agent-sync`, `board`, `recall`, and the CODEX stdio MCP exec with their inherited environment (`wrapper()` in `scripts/fleet-cli-release.py` does not load this entry point or inject a token), so provision approved authentication in that environment.  A direct Infisical consumer such as fleet knobs can exchange the complete automation pair through its fleet-secrets helper;  a consumer that requires a token must receive one through its approved launcher.  Token injection by separately installed server wrappers is unverified here;  a code update alone does not establish it.
+
+Verify `fleet-secrets doctor`, `agent-sync --as CODEX whoami`, and `AGENT_SEAT=CODEX board whoami`.  Linear should identify the Codex app.  A server retaining the old cutover gate also needs `LINEAR_BOARD_WRITES=1` in its board wrapper.  App Store Connect's existing client reads `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_KEY_P8` from Fleet-OPS prod `/asc`; a read of `/v1/apps?limit=1` verifies authentication without registering or releasing an app.
+
+## Server Commands
 
 ```bash
 python3 -I ~/.local/share/fleet-cli/repo/scripts/fleet-cli-git-update.py status

@@ -19,6 +19,14 @@ Binding for every agent on every platform (Claude, Codex, Cursor, Antigravity/Ge
 Monet, Copilot, …). Canonical: `/Users/jay/apps/AGENT-SYNC.md` “Prior messages stay in scope”.
 Owner preference, 2026-08-06.
 
+## Working rules (owner — ALL agents, ALL platforms, 2026-10-21)
+
+1. **Read every review finding yourself.**  Before you call a PR ready, green or done, and again after every push, read all of its review findings without being asked:  inline review comments, review bodies and issue comments, from every reviewer (Kody, Codex, Sentry, humans), with pagination.  Fix each real one or reply with the reason you decline, then re-check for new ones.  Never report a PR as ready from the check status alone, and tell the owner which findings you fixed, declined or left open.
+2. **Do not assume.**  Before you tell the owner what is blocking something, what caused it, what state a system is in, or that the owner must do something, check it (read the code, the PR, the logs, the settings).  If you did not check, say so instead of guessing, and never hand the owner a task you have not verified is theirs.
+3. **Finish the task.**  Carry every task to done yourself (merged, deployed, verified), including the fix for each review finding and the follow-up after a merge.  When one route is blocked, try the other legitimate route before stopping.  Stop only for a decision that is truly the owner's, say exactly what you need in one sentence, and post it where the owner will see it (the Zulip topic or DM), so work never sits parked until the owner finds the thread again.
+
+Binding for every agent on every platform (Claude, Codex, Cursor, Antigravity/Gemini, Grok, Monet, Copilot, …).  Owner ruling, 2026-10-21.
+
 ## App Icon & Logo Design Policy: Full-Bleed Square Only, Never Pre-Baked Squircle (Owner ruling 2026-08-22 — ALL seats)
 
 **Never generate or deliver app icons / logos solely in a pre-baked squircle format.**
@@ -362,9 +370,9 @@ other document the owner needs to read/review**, also put it in **Apple Notes**
 
 1. **Folder:** always iCloud **`Coding`** (create if missing) — never only the default Notes inbox.
 2. **Pin:** pin so it sits at the top under Pinned.
-3. **Title:** `[APP, Agent] short topic` — apps + agent **first**. Multi-app:
-   `[APP1, APP2, Grok] …`. Acronyms: `CT` `ST` `UM` `CTS` `FLEET`. Agent Title Case
-   (`Grok` / `Monet` / `Claude` / `Codex` / `AG` / `Cursor` / …). **No "session"** in title; **no date** in title.
+3. **Title:** `[TEAM_KEY, SEAT_TAG] short topic` — team key + seat **first**. Multi-team:
+   `[CT1, CT2, Grok] …`. Acronyms: `CT` `ST` `UM` `CTS` `FLEET`. Seat Title Case
+   (`Grok` / `Claude` / `Codex` / `AG` / `Cursor` / `MM` / `Wise` / …). **No "session"** in title; **no date** in title.
 4. **Second body line:** local create/update stamp + optional PR #, e.g. `Sun, Aug 9, 3:52pm · PR #18`
    (refresh on every material update; pass `--pr "18"` to helper). Helper auto-injects/preserves this.
 5. **Helper:** `/Users/jay/apps/apple-notes-coding.sh "Title" "body"`  
@@ -405,7 +413,7 @@ Owner ruling 2026-08-13.  Canonical: `~/apps/AGENT-SYNC.md` § iOS agent build l
 - **Do not hand-edit** `.pbxproj`, `.xcodeproj/`, `.xcworkspace/`, `.xib`, `.storyboard`, `.entitlements`.  New `.swift` files: create the file and report target membership.  XcodeGen apps: edit `project.yml` then `xcodegen generate`.
 - Claude seats: copy `scripts/block-xcode-project-writes.py` to `.claude/hooks/` and the PreToolUse snippet from `github-workflows-template/claude-ios-settings.json`.
 - Per-app annotated tree: `ios/CLAUDE.md` (or `clients/ios/CLAUDE.md` / `native/ios/CLAUDE.md`).
-- `@Observable` + `@MainActor`; `NavigationStack`; light theme default.
+- `@Observable` + `@MainActor`; `NavigationStack`; system theme default (follow the OS, owner ruling 2026-09-19).
 - **Debug vs TestFlight (owner 2026-08-21):** do Xcode-console debug autonomously via `bash ~/apps/ios-fleet/ios-debug.sh <app>`.  Simulator `--console` is the default.  Device `--logs-only` keeps TestFlight.  `--target device --install-debug` replaces TestFlight for that bundle — say so.  Ask the owner to press Run in Xcode only for LLDB / a paste of the IDE console.  Canonical: `~/apps/AGENT-SYNC.md` § iOS agent build loop.
 
 ## Fleet UI copy (web + iOS)
@@ -453,7 +461,7 @@ when it finishes the issue and `Refs <ID>` for partial work.  When done: real st
 `--resolution`.  There is no effort log to land and no GitHub-issues mirror any more.
 Canonical: `~/apps/AGENT-SYNC.md` § Linear and the Claim Lifecycle.
 
-**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own variable:  `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `CURSOR_CONVERSATION_ID` then `CURSOR_AGENT_CHAT_ID` (Cursor), `GROK_SESSION_ID` (Grok TUI), `OPENCODE_SESSION_ID` (OpenCode), `__MAVIS_RUNTIME_SESSION_ID` (MiniMax Code, when present).  FX, Clutch, Antigravity, Muse Code and Grok Web have no variable that is known to be set, so they pass `--session <id>` or export `AGENT_SESSION`, using the id their app shows for the current chat.  A Claude Code MCP server may not inherit its variable, so Claude Code passes `session` explicitly on `notes_create` / `notes_update` (the value of `CLAUDE_CODE_SESSION_ID` from its shell).  Cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot (GROK-BOT and GB-*), MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.  For your seat the platform variable is `<SEAT-SESSION-VAR>` (delete this sentence if the platform has none).
+**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own variable:  `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `CURSOR_CONVERSATION_ID` then `CURSOR_AGENT_CHAT_ID` (Cursor), `GROK_SESSION_ID` (Grok TUI), `OPENCODE_SESSION_ID` (OpenCode), `__MAVIS_RUNTIME_SESSION_ID` (MiniMax Code).  FX, Clutch, Antigravity, Muse Code and Grok Web have no variable that is known to be set, so they pass `--session <id>` or export `AGENT_SESSION`, using the id their app shows for the current chat.  A platform variable is not a promise:  a Claude Code MCP server may not inherit its variable, so Claude Code passes `session` explicitly on `notes_create` / `notes_update` (the value of `CLAUDE_CODE_SESSION_ID` from its shell), and the MiniMax Code runtime registers `__MAVIS_RUNTIME_SESSION_ID` but does not export it into the MCP server's environment, so the MiniMax Code seat passes `session` explicitly too.  Cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot (GROK-BOT and GB-*), MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.  For your seat the platform variable is `<SEAT-SESSION-VAR>` (delete this sentence if the platform has none).
 
 ## Two spaces between sentences (owner — ALL contexts)
 

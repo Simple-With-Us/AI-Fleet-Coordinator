@@ -1,7 +1,7 @@
 # 2026-10-08 — Sentence gap: the chat entity returns, GitHub and Zulip use U+00A0
 
 Type: Fleet change  (board `86aa2176`)
-> **Correction, 2026-10-20:**  the MiniMax Code pane does NOT decode the `&nbsp;` entity — it shows the six literal characters.  In that pane the gap is a real U+00A0 followed by a normal space, and two ASCII spaces collapse as well.  See the `sentence-gap` skill for the per-surface table.
+> **Correction, 2026-10-20, and its own reversal the same day.**  A note here briefly said the MiniMax Code pane does NOT decode the `&nbsp;` entity and that the gap there is a real U+00A0 plus a normal space.  That was an inference, it was never owner-verified, and the owner reversed it:  the MiniMax Code chat pane decodes the entity, the same form as the Claude Code Code tab (owner-verified 2026-10-18, reaffirmed 2026-10-20).  See the `sentence-gap` skill for the per-surface table.
 
 
 ## Why
@@ -55,6 +55,44 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 > shell, markdown read as source) are unaffected and keep two literal ASCII spaces; never put a
 > U+00A0 into a committed source file.  This file is a dated record of the 2026-10-08 ruling and
 > is kept as-is above;  the live procedure is in `docs/fleet-skills/sentence-gap/SKILL.md`.
+
+> 🔁 **Updated 2026-10-19 (AFC-415) — the 2026-10-18 pattern above still misses a shape.**  That
+> pattern wants the space right after the sentence end, so it never matches a sentence end that
+> sits *inside* a markup span:  `**Bold sentence.**  Next sentence.` has its space after the
+> closing `**`, not after the period, and the gap is missed.  Neither check catches it, because
+> the file still holds other U+00A0 characters and this shape is not a single space after a
+> sentence end.  The live pattern adds the markup group ``([*_`)\]"]*)``, which captures the markup
+> after the sentence end and re-emits it before the gap, so the span survives and the gap lands
+> after the closing markup:
+> ``perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`)\]"]*) +(?=[A-Z0-9"*`#@])/$1$2\x{a0} /g' body.txt > body.nbsp.txt``.
+> The two checks carry the same markup group, because the gap they have to see is emitted as
+> <punctuation><markup><U+00A0><space>:  a check that looks for the U+00A0 straight after the
+> punctuation cannot see that gap, and a check that looks for a space straight after the
+> punctuation cannot see the one that was missed.  Before posting run both checks:
+> ``grep -o $'[.!?][]*_`)"]*\xc2\xa0' body.nbsp.txt | wc -l`` must be `> 0`, and
+> ``grep -cE '[^0-9][.!?][]*_`)"]* +[A-Z"]' body.nbsp.txt`` must be `0`.
+> The 2026-10-08 and 2026-10-18 commands are left as they were written;  the one home is
+> `docs/fleet-skills/sentence-gap/SKILL.md`.  `AGENT-SYNC.md` is a generated mirror:  it is
+> built from the Fleet-OPS handbook and rewritten by the handbook sync, so it carries the
+> command as of its last sync and not necessarily this one.  Take the command from the one
+> home, not from the mirror.
+>
+> 🔁 **Updated 2026-10-20 (AFC-415) — the pattern now carries the closing quotes.**  The group above
+> captured the closing *markup* but not a closing *quote*, and the lookahead accepted an opening
+> capital or a digit but not an opening quote.  So a sentence end inside a quoted span, as in
+> `'Quoted sentence.'  Next sentence.`, was still missed:  the period is inside the quote, the quote
+> stands between it and the space, and neither the converter nor the two checks could see the shape.
+> A body with it passed both checks and reached GitHub with no gap.  The live pattern carries the
+> three closing quotes in the group and the three opening ones in the lookahead, which is the same
+> set the fleet's own outbound converter already used:
+> ``perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt``.
+> The two checks carry the same class, and the leftover check moved to bash's `$'...'` so the class
+> can hold a straight quote at all —  in single quotes it cannot.  The follower class carries the
+> opening quotes too, because a gap missed before a quoted sentence reads `Second. 'Quoted`:
+> ``grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l`` must be `> 0`, and
+> ``grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt`` must be `0`.
+> The 2026-10-08, 2026-10-18 and 2026-10-19 commands are left as they were written;  the one home is
+> `docs/fleet-skills/sentence-gap/SKILL.md`.  Take the command from the one home.
 
 ## What landed (docs, in this PR)
 

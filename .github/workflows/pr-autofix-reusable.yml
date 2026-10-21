@@ -26,10 +26,12 @@ on:
     inputs:
       allowed_bots:
         description: >-
-          Comma-separated logins of the bots whose comments may start a run.  A repository's
-          .autofix.yml allowed_bots list, when it has one, replaces this.
+          Comma-separated logins of the bots whose comments may start a run.  The
+          default-branch .github/pr-autofix-trusted.yml allowed_bots list, when it has one,
+          replaces this.  A PR branch's own .autofix.yml list may only narrow the trusted
+          list, never widen it.
         type: string
-        default: "kody-ai[bot],chatgpt-codex-connector[bot],cursor[bot],claude[bot]"
+        default: "kody-ai[bot],chatgpt-codex-connector[bot],cursor[bot],claude[bot],swu-ag[bot],swu-bf-builder[bot],swu-bf-compiler[bot],swu-bf-deployer[bot],swu-bf-designer[bot],swu-bf-director[bot],swu-bf-fixer[bot],swu-bf-housekeeper[bot],swu-bf-monitor[bot],swu-bf-oracle[bot],swu-bf-plumber[bot],swu-bf-publisher[bot],swu-claude[bot],swu-clutch[bot],swu-codex[bot],swu-cursor[bot],swu-cursor-cloud[bot],swu-echo[bot],swu-fx[bot],swu-gb-compiler[bot],swu-gb-deployer[bot],swu-gb-designer[bot],swu-gb-director[bot],swu-gb-engineer[bot],swu-gb-fixer[bot],swu-gb-housekeeper[bot],swu-gb-monitor[bot],swu-gb-oracle[bot],swu-gb-plumber[bot],swu-gb-publisher[bot],swu-gb-trader[bot],swu-grok-build[bot],swu-grok-web[bot],swu-jet[bot],swu-mc[bot],swu-minimax[bot],swu-opencode[bot],swu-operator[bot],swu-rob[bot],swu-wise[bot]"
       max_iterations:
         description: Most autofix commits allowed on one PR (trusted default-branch policy only).
         type: number
@@ -38,12 +40,16 @@ on:
         description: Version of @anthropic-ai/claude-code to install.
         type: string
         default: "2.1.295"
+      # The id the owner chose for all fleet MiniMax use on 2026-10-20.  A model id that is
+      # absent from the MiniMax Code runtime catalog can still be a valid public API id, and an
+      # id must never be rewritten from one route's evidence (contrib/MM/2026-10-19/f11f7046),
+      # so the retired spelling is named here in a comment and never as a value.
       model:
         description: >-
           MiniMax model id for ANTHROPIC_MODEL.  Overridden by .github/pr-autofix-trusted.yml on the
           default branch when that file sets model.
         type: string
-        default: "MiniMax-M3.1-Flash-Preview"
+        default: "MiniMax-M3.1-Flash"
       max_turns:
         description: >-
           Claude Code turn budget.  Overridden by .github/pr-autofix-trusted.yml on the default
@@ -93,6 +99,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+      # Marker comments record which bot already used its one run on a PR.
+      issues: write
     env:
       ANTHROPIC_BASE_URL: https://api.minimax.io/anthropic
       ANTHROPIC_AUTH_TOKEN: ${{ secrets.MINIMAX_API_KEY }}
@@ -165,6 +173,18 @@ jobs:
               '' | *[!0-9]*) ;;
               *) echo "max_iterations=$file_max" >> "$GITHUB_OUTPUT" ;;
             esac
+            file_bots=$(awk '
+              /^allowed_bots:/ { in_list = 1; next }
+              in_list && /^[[:space:]]*-/ {
+                sub(/^[[:space:]]*-[[:space:]]*/, "")
+                sub(/[[:space:]]*#.*$/, "")
+                sub(/[[:space:]]+$/, "")
+                print
+                next
+              }
+              in_list && /^[^[:space:]#-]/ { in_list = 0 }
+            ' "$RUNNER_TEMP/trusted.yml" | tr -d "\"'" | paste -sd, -)
+            if [ -n "$file_bots" ]; then echo "allowed_bots=$file_bots" >> "$GITHUB_OUTPUT"; fi
           fi
           {
             echo "model=$model"
@@ -215,6 +235,8 @@ jobs:
         if: steps.pr.outputs.proceed == 'true'
         env:
           TRUSTED_MAX_ITERATIONS: ${{ steps.trusted.outputs.max_iterations }}
+          TRUSTED_ALLOWED_BOTS: ${{ steps.trusted.outputs.allowed_bots }}
+          NOTIFY_URL: ${{ vars.SWU_AUTOFIX_NOTIFY_URL }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/autofix"
@@ -239,14 +261,29 @@ jobs:
           # jq prints an empty string as a blank line, so test for any non-blank character.
           grep -q '[^[:space:]]' "$dir/comment.txt" || skip "Empty comment body, skipping"
 
-          # The caller's inputs are the defaults.  A repository's own .autofix.yml may override
-          # allowed_bots only.  Model, turn budget, iteration cap, and verify commands come from the
-          # trusted default-branch policy loaded above.
+          # Owner rule 2026-10-20:  a comment or review is an autofix request only when it
+          # carries the @pr-autofix tag — an untagged bot comment is discussion, not a
+          # request.  Sentry is exempt from the tag, the once-per-PR cap, and the
+          # notification (owner:  "Sentry can request all you want").
+          requester=$(printf '%s' "$author" | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
+          if [ "$requester" != "sentry" ] && \
+             ! grep -qiE '(^|[^A-Za-z0-9_-])@pr-autofix([^A-Za-z0-9_-]|$)' "$dir/comment.txt"; then
+            skip "No @pr-autofix tag in the comment, skipping"
+          fi
+
+          # Trust boundary: the list comes from the default branch, never from the PR checkout.
+          # The default-branch trusted policy's allowed_bots, when it has one, wins over the
+          # caller input — a same-repo branch edits its own copy of the caller workflow, so the
+          # input alone is not the boundary.  The PR branch's .autofix.yml may only REMOVE bots
+          # from that list.  A branch file that could add one would swap the trust boundary on a
+          # workflow holding contents: write, which is how any same-repo branch PR could point the
+          # run at an arbitrary bot before this check narrowed instead of replaced.
           allowed="$INPUT_ALLOWED_BOTS"
+          if [ -n "${TRUSTED_ALLOWED_BOTS:-}" ]; then allowed="$TRUSTED_ALLOWED_BOTS"; fi
           max="$DEFAULT_MAX_ITERATIONS"
           if [ -n "${TRUSTED_MAX_ITERATIONS:-}" ]; then max="$TRUSTED_MAX_ITERATIONS"; fi
           if [ -f .autofix.yml ]; then
-            echo "::notice::Loading allowed_bots from .autofix.yml"
+            echo "::notice::Narrowing allowed_bots from .autofix.yml"
             file_allowed=$(awk '
               /^allowed_bots:/ { in_list = 1; next }
               in_list && /^[[:space:]]*-/ {
@@ -258,7 +295,29 @@ jobs:
               }
               in_list && /^[^[:space:]#-]/ { in_list = 0 }
             ' .autofix.yml | tr -d "\"'" | paste -sd, -)
-            if [ -n "$file_allowed" ]; then allowed="$file_allowed"; fi
+            if [ -n "$file_allowed" ]; then
+              if [ -z "$allowed" ]; then
+                # The caller trusted every bot, so any branch list is still a narrowing.
+                allowed="$file_allowed"
+              else
+                narrowed=""
+                IFS=',' read -r -a file_bots <<< "$file_allowed"
+                for file_bot in "${file_bots[@]}"; do
+                  file_bot=$(printf '%s' "$file_bot" | tr -d '[:space:]')
+                  if [ -z "$file_bot" ]; then continue; fi
+                  case ",$allowed," in
+                    *",$file_bot,"*)
+                      if [ -n "$narrowed" ]; then narrowed="$narrowed,$file_bot"; else narrowed="$file_bot"; fi ;;
+                    *)
+                      echo "::notice::.autofix.yml allowed_bots entry '$file_bot' is outside the trusted list, dropping it" ;;
+                  esac
+                done
+                if [ -z "$narrowed" ]; then
+                  skip ".autofix.yml narrows the trusted bot list to nothing, skipping"
+                fi
+                allowed="$narrowed"
+              fi
+            fi
           fi
 
           # The list is authoritative:  only a listed bot may start a run.  An earlier version let
@@ -275,6 +334,35 @@ jobs:
             if [ "$match" -ne 1 ]; then
               skip "Author '$author' is not in the allowed bot list, skipping"
             fi
+          fi
+
+          # Owner rule 2026-10-20:  one autofix run per bot per PR;  the owner
+          # (jaywedgeworth22) is unlimited,  and Sentry is exempt from the limit and the
+          # notification.  The record is a marker comment the accepted run leaves on the PR —
+          # deleting that comment is the manual reset.  Every other bot request,  accepted or
+          # not,  is reported to the owner through SWU_AUTOFIX_NOTIFY_URL when configured.
+          if [ "$requester" != "jaywedgeworth22" ] && [ "$requester" != "sentry" ]; then
+            marker="swu-autofix-run: bot=$requester"
+            prior=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
+              --jq ".[].body | select(contains(\"$marker\"))" 2> /dev/null | head -1 || true)
+            accepted=true
+            if [ -n "$prior" ]; then accepted=false; fi
+            if [ -n "${NOTIFY_URL:-}" ]; then
+              jq -n --arg repo "$GH_REPO" --arg pr "$PR_NUMBER" --arg bot "$requester" \
+                --arg event "$GITHUB_EVENT_NAME" --arg accepted "$accepted" \
+                --arg run "$GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID" \
+                '{repo:$repo, pr:$pr, bot:$bot, event:$event, accepted:$accepted, run:$run}' \
+              | curl -sfS -m 10 -X POST -H 'Content-Type: application/json' --data-binary @- "$NOTIFY_URL" \
+                || echo "::notice::owner notification for $requester's request failed (non-blocking)"
+            else
+              echo "::notice::SWU_AUTOFIX_NOTIFY_URL is not set, owner notification for $requester's request skipped"
+            fi
+            if [ "$accepted" = "false" ]; then
+              skip "$author already used its one autofix run on this PR, skipping"
+            fi
+            gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+              -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  One autofix run per bot per PR (owner rule 2026-10-20);  delete this comment to reset." \
+              > /dev/null
           fi
 
           # The cap is per PR:  count the autofix commits this branch has that the default branch

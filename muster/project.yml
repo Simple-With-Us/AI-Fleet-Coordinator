@@ -1,0 +1,60 @@
+name: Muster
+options:
+  minimumXcodeGenVersion: 2.38.0
+  deploymentTarget:
+    macOS: "14.0"
+configs:
+  Debug: debug
+  Release: release
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: Developer ID Application
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_APP_SANDBOX: NO
+    OTHER_CODE_SIGN_FLAGS: "--timestamp"
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+targets:
+  Muster:
+    type: application
+    platform: macOS
+    sources:
+      - Muster
+    settings:
+      base:
+        PRODUCT_NAME: Muster
+        PRODUCT_BUNDLE_IDENTIFIER: services.jays.Muster
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Muster
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: services.jays.Muster.dev
+    scheme:
+      gatherCoverageData: false
+      buildImplicitDependencies: true
+  MusterTests:
+    type: bundle.unit-test
+    platform: macOS
+    # Logic tests compile the non-view sources directly rather than hosting the signed app, so
+    # they run unsigned anywhere (CI included) with no entitlements or hardened runtime.
+    sources:
+      - path: MusterTests
+      - path: Muster/FleetConfigCLI.swift
+      - path: Muster/FleetConfigStatus.swift
+      - path: Muster/ApplyPlanModel.swift
+      - path: Muster/ApplyCoordinator.swift
+    settings:
+      base:
+        PRODUCT_NAME: MusterTests
+        PRODUCT_BUNDLE_IDENTIFIER: services.jays.Muster.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: NO
+        OTHER_CODE_SIGN_FLAGS: ""

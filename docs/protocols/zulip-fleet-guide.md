@@ -241,10 +241,10 @@ Roster drift, checked live Thu, Oct 15, 2026:  the realm's display names are `Ec
 
 ## Bot Setup
 
-1. Jay creates one bot user per seat or role in Settings → Bots, or runs `scripts/zulip_provision_bots.py` himself (it signs in as the realm-admin bot from Infisical Fleet-OPS `/zulipadmin`, writes each new bot's zuliprc into `~/.agent-sync/provisioned/`, and prints the `/zulip` key names to store;  an existing bot's key cannot be read back, only rotated with `--regenerate`).  Each bot gets its own name and its own API key — never share keys between bots, so posts are attributable and one key can be revoked without touching the rest.  Agents never create bots.  Enter only the code in the short-name field (`codex`, not `codex-bot`):  Zulip appends `-bot` itself, in the web form and the API alike, and `codex-bot` becomes codex-bot-bot@ (owner-confirmed, Wed, Oct 7).
+1. Jay creates one bot user per seat or role in Settings → Bots, or runs `scripts/zulip_provision_bots.py` himself (it signs in as the realm-admin bot from Infisical Fleet-OPS `/zulip_operator`, writes each new bot's zuliprc into `~/.agent-sync/provisioned/`, and prints the `/zulip` key names to store;  an existing bot's key cannot be read back, only rotated with `--regenerate`).  Each bot gets its own name and its own API key — never share keys between bots, so posts are attributable and one key can be revoked without touching the rest.  Agents never create bots.  Enter only the code in the short-name field (`codex`, not `codex-bot`):  Zulip appends `-bot` itself, in the web form and the API alike, and `codex-bot` becomes codex-bot-bot@ (owner-confirmed, Wed, Oct 7).
 The business rules that script enforces (AFC-359 acceptance criteria):
 
-   - **Authority.**  The caller must be the owner (role 100) or an administrator (role 200);  anyone else is refused before any POST.  A bot caller with role 200 is fine — `is_bot` alone is not a disqualifier.  The credential must be for this realm, and the script never prompts and never needs Jay's key:  it signs in only as the realm-admin bot (`REALM_ADMIN_ZULIP_EMAIL`/`_KEY`, env first then Infisical Fleet-OPS `/zulipadmin`).  A missing value stops the run naming the folder and key, never the value, and never the tool's stderr.
+   - **Authority.**  The caller must be the owner (role 100) or an administrator (role 200);  anyone else is refused before any POST.  A bot caller with role 200 is fine — `is_bot` alone is not a disqualifier.  The credential must be for this realm, and the script never prompts and never needs Jay's key:  it signs in only as the realm-admin bot (`ZULIP_OPERATOR_EMAIL`/`_KEY`, env first then Infisical Fleet-OPS `/zulip_operator`).  A missing value stops the run naming the folder and key, never the value, and never the tool's stderr.
    - **Never lose a key.**  An existing roster bot is left alone and reported as `key not recoverable here`, because Zulip never returns an existing bot's key.  Only `--regenerate --only NAME` rotates one, with a warning that the old key dies everywhere until `/zulip` is updated.  A roster name held by a non-bot user is skipped, never overwritten.  An existing zuliprc file blocks creation or rotation until `--force` or removal, checked before anything is created, so a kept file can never cost a bot its key.
    - **Nothing under `~/.secrets`.**  `--out-dir` defaults to `~/.agent-sync/provisioned/` (created mode 700);  a path under `~/.secrets` is refused.  Each file is written atomically at mode 600.
    - **Keys are never printed.**  Output is names, emails and paths only.  After each bot it prints the `/zulip` key names to store:  `<PREFIX>_ZULIP_EMAIL`, `_KEY`, `_SITE`, where PREFIX is the file stem upper-cased with hyphens as underscores.  Each new bot is subscribed to `CHANNELS` with its own key.  `GET /bots` is never called:  it answers HTTP 400 to a bot caller.
@@ -927,14 +927,16 @@ These bind every message, bot-to-bot included.
 - **Sentence gap.**  A real U+00A0 plus a space between sentences in every Zulip post, DM included, from the CLI or the raw API, and in GitHub titles, bodies, and comments (owner ruling Thu, Oct 8, which supersedes the Wed, Oct 7 finding that two literal ASCII spaces rendered the same).  Never type the HTML entity for a non-breaking space.  You cannot type U+00A0 in chat, and a double space you emit into a tool call **sometimes** arrives collapsed to a single space.  That collapse is intermittent, not deterministic — on 2026-10-18, same machine and same tool, a ~3 KB PR body kept all eight of its double spaces while a ~3 KB Zulip body lost every one.  So generate the gap in the shell.  The pattern must match one *or more* spaces so it is correct in both states:
 
   ```
-  perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
-  grep -o $'\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
-  grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt          # must be 0 — a leftover single-space gap
+  perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
+  grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
+  grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt   # must be 0 — a leftover gap
   chmod 600 body.nbsp.txt                       # agent-sync post --body-file refuses other modes
   agent-sync post --topic "<ID> <subject>" --body-file body.nbsp.txt
   ```
 
   Run both greps every time.  A no-op conversion still exits 0, and a count above zero is not by itself sufficient — a partly converted body can hold real U+00A0 and still ship one wrong gap, which only the second grep catches.  Expect rare benign hits from abbreviations such as `Dr. Smith`.  Never type a raw U+00A0 into a message body or tool call; it is normalized the same way a double space is, so let perl emit it.
+
+  The ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` group is what catches a sentence end **inside** markup or inside a quoted span.  `**Bold sentence.**  Next sentence.` has the space after the closing `**`, not after the period, so a pattern without the group silently misses it — and neither grep above catches that either, because the file still holds other U+00A0 characters.  The group captures the markup and re-emits it before the gap, so the gap lands after the closing markup.  It carries the three closing quotes as well as the opening ones, because a sentence that ends inside a quoted span is followed by the closing quote and only then by the space.
 
   **This is for renderer-bound text only.**  Swift, TypeScript, shell, and markdown read as source want two literal ASCII spaces and are *not* affected — those gaps came through the write tool intact in the same session.  Never put a U+00A0 into a committed source file; that is a real defect, not a fix.  Let perl emit it.
 
@@ -1013,7 +1015,7 @@ Get the seat's own `email` and key path from `agent-sync whoami`.  Never print a
 ```bash
 python3 scripts/zulip_linkifiers.py            # any member key:  diff live rules against TARGET
 python3 scripts/zulip_linkifiers.py --check    # any member key:  render every CHECKS string, and diff Linear's team keys against 5119 (skipped when the board CLI is missing)
-python3 scripts/zulip_linkifiers.py --apply --admin   # realm-admin bot (Infisical /zulipadmin):  edit, add, keep the generic rule last, then check
+python3 scripts/zulip_linkifiers.py --apply --admin   # realm-admin bot (Infisical /zulip_operator):  edit, add, keep the generic rule last, then check
 ```
 
 `--apply` edits rules in place by id, adds missing ones, and then reorders the realm so the generic `repo#id` rule is last (new rules land last, behind it, where it would claim `PagerDuty#384` first).  Tests:  `cd scripts && python3 -m unittest test_zulip_linkifiers`.

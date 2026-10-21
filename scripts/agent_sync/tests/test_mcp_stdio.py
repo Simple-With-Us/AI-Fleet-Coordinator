@@ -1451,15 +1451,26 @@ class WriteToolTests(McpHarness):
             "zulip_post", session.call("zulip_post", {"topic": "s", "text": "bare"})
         )
         self.assertEqual(self.fake.messages[-1]["content"], "[CLAUDE] bare")
+        # A caller's `session` is validated against ID_PATTERN AND length:  an id no longer
+        # than the tag would persist the tag AS the session id and a resume-wake could not
+        # tell them apart.  Pick an id strictly longer than the 8-character tag.
+        arg_session = "ab12efghij"
+        arg_tag = Z.session_tag(arg_session)
         self.assert_structured(
             "zulip_post",
-            session.call("zulip_post", {"topic": "s", "text": "tagged", "session": "ab12"}),
+            session.call(
+                "zulip_post", {"topic": "s", "text": "tagged", "session": arg_session}
+            ),
         )
-        self.assertEqual(self.fake.messages[-1]["content"], "[CLAUDE·ab12] tagged")
+        self.assertEqual(
+            self.fake.messages[-1]["content"], "[CLAUDE·%s] tagged" % arg_tag
+        )
         pinned = self.session()
         self.assert_structured(
             "zulip_post",
-            pinned.call("zulip_post", {"topic": "s", "text": "env wins", "session": "ab12"}),
+            pinned.call(
+                "zulip_post", {"topic": "s", "text": "env wins", "session": arg_session}
+            ),
         )
         self.assertEqual(self.fake.messages[-1]["content"], "[CLAUDE·%s] env wins" % TAG)
 
@@ -1605,6 +1616,28 @@ class LimitTests(McpHarness):
                     self.assertIs(error.retryable, case["retryable"])
                 if "retry_after_s" in case:
                     self.assertEqual(error.retry_after_s, case["retry_after_s"])
+
+    def test_map_exception_preserves_a_tool_error_and_drops_a_plain_value_error(self):
+        # An argument guard that wants its message to reach the caller must raise a
+        # `ToolError("invalid_argument", ...)` (the project carries its own domain code, and
+        # `map_exception` passes the ToolError through unchanged).  A plain `ValueError` is not
+        # one of the known domain exceptions and falls through to a generic `internal` ToolError
+        # whose message is replaced, so a guard that raises `ValueError` shows up as
+        # "internal error (ValueError)" instead of the message it wrote.
+        preserved = T.ToolError(
+            "invalid_argument",
+            "session must be strictly longer than the 8-character tag, not 'mvsdf2c1' (length 8)",
+        )
+        tool_error = T.map_exception(preserved)
+        self.assertIs(tool_error, preserved)
+        self.assertEqual(tool_error.code, "invalid_argument")
+        self.assertIn("8-character tag", tool_error.message)
+        # Plain ValueError:  falls through to a generic internal error with a substituted message,
+        # so callers (and tests) cannot tell the argument apart from any other internal fault.
+        fallback = T.map_exception(ValueError("session must be a non-empty string when given"))
+        self.assertEqual(fallback.code, "internal")
+        self.assertNotIn("session must be a non-empty string", fallback.message)
+        self.assertIn("ValueError", fallback.message)
 
 
 class StartupTests(McpHarness):

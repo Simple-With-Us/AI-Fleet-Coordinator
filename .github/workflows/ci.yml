@@ -15,6 +15,34 @@ jobs:
     - uses: actions/checkout@v7
       with:
         fetch-depth: 2
+    # No conflict markers anywhere in the tree.  A rebase can merge a file without
+    # reporting a conflict and still leave the markers in it,  so the file does not parse
+    # and the failure looks like a syntax error in whatever module imported it.
+    #
+    # The scan is tree-wide, so a marker in a repository-root config that no test reads
+    # is caught too.  The exit status is checked separately, because a grep that could
+    # not read the tree must fail the gate rather than pass it silently.  The `=======`
+    # alternative is the separator git writes between the two halves of a conflict.
+    - name: No conflict markers
+      run: |
+        # The substitution is in an `if` condition on purpose.  A standalone
+        # assignment takes the status of the command it holds,  and grep exits 1 when
+        # it finds nothing,  so under `bash -e` a CLEAN tree would abort the step
+        # before any check ran.  In the `else` branch the status is available as $?.
+        if out="$(grep -rlE '^(<<<<<<<|>>>>>>>|\|\|\|\|\|\||=======$)' \
+          --exclude-dir=.git --exclude-dir=node_modules \
+          --include='*.py' --include='*.sh' --include='*.yml' --include='*.yaml' \
+          --include='*.json' --include='*.js' --include='*.cjs' --include='*.mjs' \
+          --include='*.ts' . 2>&1)"; then
+          echo "$out"
+          echo "conflict markers found:  resolve them before merging"; exit 1
+        else
+          st=$?
+          if [ "$st" -gt 1 ]; then
+            echo "$out"
+            echo "conflict-marker scan failed:  cannot read the tree"; exit 1
+          fi
+        fi
     - name: Set up Python
       uses: actions/setup-python@v7
       with:
@@ -79,6 +107,17 @@ jobs:
     - name: fleet_knobs tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_knobs/tests -t . -v
+    # fleet_config (Muster Phase 2):  the desired-state manifest and its validators, the six L0 check
+    # kinds, the L1 and L2 proof machinery, the aggregator's fail-closed verdict math, the plan and the
+    # apply side, and the Touch ID gate.  Every test uses a temp home;  none touches the real Mac.
+    - name: fleet_config tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_config/tests -t . -v
+    # fleet_view (AFC-394):  the Fleet View collectors for lanes, open PRs and Linear claims, the
+    # request budget, the blocker mapping and the pinned envelope.  Fake runners only;  no network.
+    - name: fleet_view tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_view/tests -t . -v
     # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
     # unresolved-reference guard, auth selection, and no secret in argv or error text.
     - name: fleet_secrets tests
@@ -119,6 +158,8 @@ jobs:
     # policy and the live dispatch, so an installed-but-never-fired guard cannot read as
     # protected.  The test builds a temporary plugin directory and a fake hook command, so
     # it starts no MiniMax session and reads no installed plugin.
+    - name: Muster install transaction tests
+      run: python3 -m unittest discover -s muster/script -t muster/script -v
     - name: Muster guard live proof tests
       run: python3 scripts/test_muster_guard_live_proof.py
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
@@ -126,6 +167,18 @@ jobs:
     - name: Fleet skill identity tests
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # The sentence-gap converter, read from the one home:  its shape (one or more
+    # spaces, the numbered-list lookbehind, the markup group) and its behaviour on
+    # every shape a body can hold, plus the check that no copy has drifted.
+    - name: Sentence gap converter tests
+      run: |
+        cd scripts && python3 -m unittest test_sentence_gap_converter -v
+    # The MiniMax model id the autofix bots dispatch: the trusted policy, every
+    # reusable workflow default, and the reference doc all name one id, and a
+    # retired spelling may appear in a comment but never as a value.
+    - name: Autofix model default tests
+      run: |
+        cd scripts && python3 -m unittest test_autofix_model_defaults -v
     # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
@@ -184,6 +237,12 @@ jobs:
       run: |
         cd scripts && python3 -m unittest test_session_ids_parity test_apple_notes_session
         cd .. && python3 scripts/linear-board/test_board.py SessionIdTests
+    # AFC-431:  the pin Shortcut must be retried once, so a timing race does not leave a coding note
+    # unpinned, and a failed run must not be reported as a missing Shortcut.  The test drives the real
+    # pin block out of the script with a stub `shortcuts` on PATH, so it touches no Notes and runs here.
+    - name: Notes pin decision (AFC-431)
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_pin
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
@@ -226,6 +285,10 @@ jobs:
         python3 scripts/mac-collab/test_app_normalization.py
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    # Shared alert ingress: state transitions, vendor normalization, and the
+    # Zulip status rendering.  Pure functions, so no Workers runtime needed.
+    - name: Alert ingress unit tests
+      run: node --test workers/alert-ingress/src/
     # Hosted agent-sync MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
     - name: agent-sync MCP Worker unit tests
@@ -240,10 +303,16 @@ jobs:
       run: node --test scripts/pr_sweep/tests/claude_adapter.test.mjs
     - name: PR Autofix reusable workflow contract
       run: node --test .github/pr-autofix-reusable.node-test.mjs
+    # The shared auto-merge armer against a fake `gh`:  a merge queue refuses
+    # --delete-branch, and the armer has to arm again without the flag instead of
+    # failing every PR in the repo (AFC-413).  No network:  the fake records its
+    # arguments and answers what the test tells it to.
+    - name: Auto-merge reusable workflow contract
+      run: python3 scripts/test_auto_merge_reusable.py
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
     # network:  the tests import the script, which runs main() only as an entry point.
     - name: Fleet Reference Sheet registry sync tests
-      run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs
+      run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs scripts/fleet-apps-sheet-sync.ingest.test.mjs
     # The TestFlight freshness deploy check (AFC-341).  App Store Connect, gh, build-window.sh,
     # the state file and Zulip are stubbed;  the last test validates testflight-apps.json.
     - name: TestFlight freshness check tests
@@ -260,3 +329,18 @@ jobs:
     # open-loops routines depend on.  A stub curl and a stub node stand in for the real ones.
     - name: BotFleet start wrapper tests
       run: bash scripts/test-botfleet-server-start.sh
+
+  muster-macos-build:
+    name: Muster macOS build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate and compile unsigned scaffold
+        working-directory: muster
+        run: |
+          xcodegen generate --spec project.yml
+          xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
+            -destination 'platform=macOS' -derivedDataPath .build/CI \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build

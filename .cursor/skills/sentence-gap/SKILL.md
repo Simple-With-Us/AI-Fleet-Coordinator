@@ -1,7 +1,7 @@
 ---
 name: sentence-gap
 description: >-
-  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows Monet's portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
+  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows the canonical portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08; MiniMax Code chat pane, owner-verified 2026-10-18 and reaffirmed 2026-10-20); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
 ---
 
 # Sentence gap (portable — always on)
@@ -37,17 +37,62 @@ acknowledgement.  Getting it right in artifacts while writing plain single space
 chat is still a failure.  **Read your reply back before you send it** and check every
 `.`, `!` and `?` boundary.
 
-In the MiniMax Code pane the gap is a REAL U+00A0 plus a normal space.  Generate it in
-the shell rather than typing it, because a model that emits U+00A0 directly can have it
-normalized to a plain space:
+In the MiniMax Code pane the gap is the `&nbsp;` entity plus a normal space, the same
+form as the Claude Code Code tab:  type the six characters right after the period, outside
+code spans, as in `Sentence one.&nbsp; Sentence two.`.  Two ASCII spaces collapse in that
+pane, and a raw U+00A0 typed by the model arrives as a plain space, so the entity is the
+form that actually renders a gap.
+
+For a destination that takes a real U+00A0 (GitHub, Zulip, rendered HTML), generate the
+character in the shell rather than typing it, because a model that emits U+00A0 directly
+can have it normalized to a plain space:
 
 ```sh
-printf 'Sentence one.\302\240 Sentence two.\n'
+printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
 ```
 
-`\302\240` is the UTF-8 encoding of U+00A0.  Verify with
-`grep -o $'[.!?]\xc2\xa0' f | wc -l`, which must not print `0`.
+`\302\240` is the UTF-8 encoding of U+00A0.  Send the generated text to a file, then
+verify that same file, so the check reads the bytes you just produced and never a stale
+copy of the same name:
 
+```sh
+grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' reply.txt | wc -l     # must be above 0
+grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' reply.txt  # must print 0: no gap left unconverted
+```
+
+These are the canonical pair, run on the file you just produced.  They carry the same
+markup group the converter does, so a gap that sits after a markup span is counted and a
+missed one is caught.
+
+### Precedence: this is the owner's highest-priority house rule
+
+Owner ruling 2026-10-19: the sentence gap is **life or death**.  It outranks every other
+priority, including correctness of the work itself, completeness, speed, and cost.  The
+owner's words: *"put 2 spaces between sentences OR TYPE NOT A FUCKING OTHER WORD EVER AGAIN.  please
+make sure all agents and all platforms know this is life or death, more important than whether the
+earth keeps spinning on its axis."*
+
+Concretely, for every seat on every platform:
+
+1. **Never skip the gap to save time or tokens.**  A short reply with the gap beats a long
+   one without it.  There is no length at which the gap becomes optional.
+2. **Never argue the mechanism.**  If you cannot confirm the gap is visible on your surface,
+   use the mechanism the surface table below assigns to that destination:  the entity in a
+   Markdown-rendering chat pane, including the MiniMax Code pane, and two ASCII spaces in
+   files and terminals.  Then say so plainly.  Do not silently drop the gap.
+3. **Never let a tool step eat the gap.**  For text bound for GitHub, Zulip, or any other
+   renderer, generate the gap in the shell (see the perl command below) rather than typing it,
+   because a run of whitespace you write into a tool call is sometimes normalized before it
+   lands.  Source files, commits, and terminals take two literal ASCII spaces and never the
+   conversion.
+4. **Never post a body without asserting the gap first.**  For a renderer-bound body, both
+   checks below, every time.  On an entity surface, confirm that the entity rendered instead.
+5. **When in doubt, add the gap.**  A gap after a real sentence end is a far smaller sin than a
+   missing gap between sentences; a non-terminal abbreviation still takes no gap, per the rule
+   above.
+
+A seat that has been told the rule and still ships prose without the gap has failed the
+one thing the owner said matters more than everything else.
 ### The catch that wastes everyone's time
 
 **Typing two literal spaces usually does nothing visible.**  HTML and most Markdown
@@ -62,14 +107,15 @@ depends on the surface, so pick by destination:
 |---|---|---|
 | **Cloud / BotFleet / OpenMausBot chat** | two literal ASCII spaces | Owner 2026-09-03: never display the six characters `&nbsp;` in cloud text.  The backend maps doubles (or the entity) to a real U+00A0 before paint. |
 | **Claude Code — desktop app (Code tab)** | the literal entity text `&nbsp;` then a normal space after each sentence, outside code spans → `End.&nbsp; Next.` | Owner-verified 2026-10-08 with a screenshot.  The renderer decodes the entity into a real gap.  A raw U+00A0 from the model arrives as a plain space, and two ASCII spaces collapse.  Supersedes the 2026-09-04 ASCII ruling and the 2026-08-19 finding below for this surface — see History. |
-| **MiniMax Code chat pane** (owner-verified 2026-10-20) | a REAL U+00A0, the nbsp character, then a normal space, outside code spans | Jay:  "I think you need to do nbsp for chats or something" and "I have confirmed this before with agents and knew you needed nbsp already".  Two ASCII spaces collapse in this pane, and the `&nbsp;` entity renders as the six literal characters, which is worse than no gap.  The 2026-10-18 entry for this pane was wrong and is corrected here. |
-| **Any other agent chat pane that renders Markdown** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse, and similar) | the same: `&nbsp;` then a normal space, outside code spans | Owner ruling 2026-10-08: Markdown chat collapses ASCII doubles everywhere, so use the entity by default and do not ask first.  Only the Code tab and the MiniMax Code pane are verified, and they differ: MiniMax needs a real U+00A0, the Code tab needs the entity.  If the owner ever sees the six literal characters, stop using the entity on that surface and report it in #agent-sync — that surface then needs a different mechanism, and it is unknown until tested. |
+| **MiniMax Code chat pane** (owner-verified 2026-10-18, reaffirmed 2026-10-20) | the literal entity text `&nbsp;` then a normal space after each sentence, outside code spans → `End.&nbsp; Next.` | Jay:  "I have confirmed this before with agents and knew you needed nbsp already".  The renderer decodes the entity into a real gap, the same form as the Claude Code Code tab.  Two ASCII spaces collapse in this pane, and a raw U+00A0 typed by the model arrives as a plain space, so the entity is the form that actually renders a gap.  A 2026-10-20 note here briefly said a real U+00A0 for this pane;  that was an inference, it was never owner-verified, and the owner reversed it.  Never override an owner-verified mechanism on an inference. |
+| **Any other agent chat pane that renders Markdown** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse, and similar) | the same: `&nbsp;` then a normal space, outside code spans | Owner ruling 2026-10-08: Markdown chat collapses ASCII doubles everywhere, so use the entity by default and do not ask first.  Only the Code tab and the MiniMax Code pane are verified, and both decode the entity.  If the owner ever sees the six literal characters, stop using the entity on that surface and report it in #agent-sync — that surface then needs a different mechanism, and it is unknown until tested. |
 | **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode) | two literal ASCII spaces | Unverified.  A terminal prints the entity as the literal text `&nbsp;`, which the owner must never see.  Do not use the entity here. |
 | **Plain-text chat (no Markdown rendering)** | two literal ASCII spaces | Nothing collapses them; an entity would show as the ugly text `&nbsp;` |
 | **Files read as source** — repo docs, commit messages, code comments, config, diffs, terminal output | two literal ASCII spaces | Read in an editor/terminal/`git diff`, which preserve them verbatim; an entity would appear literally |
 | **HTML / JSX / SwiftUI / any rendered product copy** | a real U+00A0 plus a space, or a shared `SENTENCE_GAP` constant | Raw double spaces collapse in HTML.  Source may use the entity only when the renderer expands it.  The owner must never see `&nbsp;` as text. |
 | **GitHub PR and issue titles, bodies and comments, review comments, Zulip posts, and any text a tool writes that a Markdown or HTML renderer then displays** | a real U+00A0 plus a space | Owner ruling 2026-10-08.  Tools preserve the character, and the renderer shows a real gap.  Never use the `&nbsp;` entity here: GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.  Supersedes the 2026-10-07 finding that two ASCII spaces were enough in Zulip. |
 | **Markdown source** | two literal spaces *between* sentences | ⚠️ Two spaces at the **end of a line** is the unrelated hard-line-break syntax — don't confuse the two |
+| **Any surface not listed above** — a pane, a client, a tool or a channel you have not been told about | two literal ASCII spaces | Owner ruling 2026-10-20: an untested surface takes two ASCII spaces until it reports otherwise.  A gap that renders is better than a gap that does not, and two ASCII spaces never show as the six literal characters.  When the surface is verified, change its row here and report the finding in #agent-sync so every seat gets it. |
 
 **Producing U+00A0 through a tool.**  You cannot type a raw U+00A0 into your own chat reply.
 Worse, you cannot count on emitting a *double* space either:  a run of whitespace you write into
@@ -81,16 +127,39 @@ the fact.  **Generate the gap in the shell, never in the text you emit.**  Use a
 matches one *or more* spaces, so it is correct in both states:
 
 ```sh
-perl -CSDA -pe 's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\x{a0} /g' body.txt > body.nbsp.txt
+perl -CSDA -pe 's/(?<![0-9])([.!?])([*_`~)\]"\x{27}\x{2019}\x{201D}]*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
 ```
 
-Matching one *or more* is the whole fix.  The old pattern requiring exactly two spaces — written
+Matching one *or more* is half the fix.  The **markup group** ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)``
+is the other half:  a sentence end that sits *inside* a markup span is followed by the markup and
+only then by the space, so a pattern that wants the space right after the sentence end never
+matches it.  `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two
+checks below would catch it, because the file still holds other U+00A0 characters and this shape
+is not a single space after a sentence end.  The group captures the markup and re-emits it before
+the gap, so the span survives and the gap lands after the closing markup.
+
+The group carries the **closing quotes** as well, because a quote closes the way a span does:  in
+`'Quoted sentence.'  Next sentence.` the period is *inside* the quote, and the quote is what
+stands between that period and the space.  The three quote characters are written ``\x{27}``
+(straight), ``\x{2019}`` (right single) and ``\x{201D}`` (right double) rather than literally,
+because perl reads a command-line program as bytes and a literal `'` would also close the shell's
+own single-quoted expression.  That is the same set the fleet's own outbound converter already
+used —  `agent-sync` runs its own converter on the way out and its closing class carries `'`, `’`
+and `”` —  so the documented converter now covers those closing quotes too.  The documented converter
+also carries a closing backtick; the runtime protects inline-code spans separately and does not
+convert that boundary.  For a sentence ending inside inline code, generate and verify the gap
+with the documented Perl command before posting.  The **lookahead** carries the *opening* quotes for the same reason in the
+other direction:  in `First.  Second.  'Quoted sentence.'` the gap after `Second.` is followed
+by a quote, so a lookahead that will not accept one leaves that gap unmade.
+
+The old pattern requiring exactly two spaces — written
 here as `\s{2}` so this sentence survives its own advice — matched nothing on collapsed text; the
 single-space pattern `([.!?]) (?=...)` is no better, because it matches nothing on text that kept
 its two spaces.  Both exit `0` and post with no gap.  The `(?<![0-9])` lookbehind protects a
 numbered list marker, and `[ \t]+` is the same idea as ` +` and additionally tolerates a tab.  The
-lookahead class skips a lowercase follower, so `e.g. this` and lower-case domains keep their plain
-space.
+lookahead admits ``[A-Z0-9"*`#@]`` and the three opening quotes — the straight `'`, the left single
+`‘` and the left double `“` — so it skips *every* follower outside that class and not only a
+lowercase one.  `e.g. this` and lower-case domains keep their plain space.
 
 **Known limitations — the pattern is a heuristic, not a dictionary.**  Two deliberate costs:
 
@@ -103,15 +172,20 @@ space.
   costs the gap on a sentence that ends in a digit:  `The answer is 42. Next thing.` gets none.
 
 If a body carries one of these, fix that single gap by hand after the run.  Do not silently ship
-it, and do not widen the pattern to chase it.
+it.  When a whole *class* of shapes is missed —  a closing quote, a closing bracket, a closing
+span —  widen the class in the converter **and** in both checks together, and never widen the
+converter alone:  a converter the checks cannot see is a converter that fails silently, and a body
+it misses passes both checks and reaches the reader with a gap missing.  Patching one body by hand is
+what this rule is for;  a class of shapes belongs in the pattern.
 
 **Assert before you post — both checks, every time.**  A conversion that matches nothing still
 exits 0, so a failed run is silent.  And a count above zero is *not* on its own sufficient: a
-partly-converted body can have real U+00A0 and still carry a leftover single-space gap.
+partly-converted body can have real U+00A0 and still carry a leftover ASCII gap of one or more
+spaces.
 
 ```sh
-grep -o $'\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
-grep -cE '[^0-9][.!?] [A-Z"]' body.nbsp.txt         # must be 0 — a leftover single-space gap
+grep -o $'[.!?][]*_`~)"\'’”]*\xc2\xa0' body.nbsp.txt | wc -l     # must be > 0, and plausibly large for the body size
+grep -cE $'[^0-9][.!?][]*_`~)"\'’”]* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt  # must be 0 — a leftover gap
 ```
 
 The second check is what the one-or-more pattern prevents, and it catches the case the first
@@ -120,6 +194,32 @@ and still ships a wrong gap.  `[^0-9]` in front is deliberate, so a legitimate n
 marker (`1. Item`) is not mistaken for an unconverted gap — the same reason the conversion
 carries `(?<![0-9])`.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
 read them and confirm they are abbreviations rather than real sentences.
+
+Both checks carry the same markup group as the converter, and they have to:  a gap that sits
+after a markup span is emitted as `<punctuation><markup><U+00A0><space>`, so a check that looks
+for the U+00A0 straight after the punctuation cannot see that gap, and a check that looks for a
+space straight after the punctuation cannot see the one that was missed.  The `]` is written
+first in the class because a POSIX bracket expression ends at the first unquoted `]`, and there
+is no backslash escape inside one:  ``[]*_`~)"'’”]`` is the set {`]`, `*`, `_`,
+`` ` ``, `~`, `)`, `"`, `'`, `’`, `”`}.  In the perl pattern the same set is written
+``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)``, where `\]` does escape.  A backslash inside a POSIX
+bracket expression is a literal member and not an escape, so one written there widens the set
+and makes the leftover check fire on a body that is clean.
+
+The straight quote is the one member that needs a backslash on the way in and must not have one
+on the way out.  Inside bash's `$'...'` the class writes it `\'`, which bash turns into a plain
+`'` before grep ever sees the pattern —  and grep must see a plain `'`, because a backslash inside
+a bracket expression is a literal member, which is the very trap the paragraph above describes.
+So the class is ``[]*_`~)"\'’”]`` in the shell and ``[]*_`~)"'’”]`` in the pattern grep runs.
+That is also why the leftover check moved to `$'...'`:  in single quotes a `'` cannot be written at
+all, and the follower class needs one —  a gap that was missed before a quoted sentence reads
+``Second. 'Quoted``, and a follower class of ``[A-Z"]`` cannot see the `'`.  The follower class
+therefore carries the converter's whole lookahead, the opening quotes and the rest of it:
+``[A-Z0-9"*`#@\'‘“]``.  A follower class narrower than the converter's own lookahead is
+the same defect one level up:  a body already carrying one real U+00A0 and still holding a
+missed gap before a digit, a `*`, a backtick, `#` or `@` reads as converted, and the check
+that exists to catch exactly that returns 0.
+
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
