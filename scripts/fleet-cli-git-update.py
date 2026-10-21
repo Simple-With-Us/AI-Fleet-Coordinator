@@ -28,8 +28,8 @@ import fcntl
 import importlib.util
 import json
 import os
-import subprocess
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -121,9 +121,12 @@ def load_state(path: Path) -> dict:
         raise Failed("invalid_state_file")
     for key in ("commit", "previous", "bad"):
         value = data.get(key)
-        if value is not None and (not isinstance(value, str) or not value or
-                                  any(c not in "0123456789abcdef" for c in value) or
-                                  len(value) not in (40, 64)):
+        if value is not None and (
+            not isinstance(value, str)
+            or not value
+            or any(c not in "0123456789abcdef" for c in value)
+            or len(value) not in (40, 64)
+        ):
             raise Failed("invalid_state_file")
     return data
 

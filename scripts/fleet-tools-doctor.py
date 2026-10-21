@@ -527,6 +527,7 @@ def client_servers(seat: str, home: Path = HOME) -> dict:
         elif seat == "CODEX":
             text = (home / ".codex/config.toml").read_text()
             import tomllib
+
             data = tomllib.loads(text)
             field = "mcp_servers"
         else:
@@ -542,8 +543,9 @@ def client_servers(seat: str, home: Path = HOME) -> dict:
         if not isinstance(name, str) or not isinstance(server, dict):
             raise ClientConfigError(source + " has invalid server entry")
         env = server.get("env", {})
-        if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str)
-                                            for k, v in env.items()):
+        if not isinstance(env, dict) or any(
+            not isinstance(k, str) or not isinstance(v, str) for k, v in env.items()
+        ):
             raise ClientConfigError(source + " has invalid server environment")
     return servers
 
@@ -622,9 +624,13 @@ def check_mcp(report: Report) -> None:
             report.add(label, "FAIL", str(exc))
             continue
         lacking = [name for name in ("agent-sync", "fleetlink") if name not in names]
-        report.add(label, "WARN" if lacking else "OK",
-                   "registered: " + (", ".join(names) or "none") +
-                   (";  missing " + ", ".join(lacking) if lacking else ""))
+        report.add(
+            label,
+            "WARN" if lacking else "OK",
+            "registered: "
+            + (", ".join(names) or "none")
+            + (";  missing " + ", ".join(lacking) if lacking else ""),
+        )
 
 
 def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:

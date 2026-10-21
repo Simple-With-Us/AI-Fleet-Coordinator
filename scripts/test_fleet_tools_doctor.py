@@ -358,15 +358,35 @@ class RegisteredEnvTests(unittest.TestCase):
     def test_client_secrets_and_lookup_redirects_are_never_forwarded(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            (home / ".claude.json").write_text(json.dumps({"mcpServers": {"agent-sync": {
-                "env": {"INFISICAL_TOKEN": "synthetic-file-token", "ZULIP_KEY": "synthetic-key",
-                        "ZULIP_RC": "/synthetic/alternate", "AGENT_SEAT": "OTHER", "LANG": "C"}
-            }}}))
+            (home / ".claude.json").write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "agent-sync": {
+                                "env": {
+                                    "INFISICAL_TOKEN": "synthetic-file-token",
+                                    "ZULIP_KEY": "synthetic-key",
+                                    "ZULIP_RC": "/synthetic/alternate",
+                                    "AGENT_SEAT": "OTHER",
+                                    "LANG": "C",
+                                }
+                            }
+                        }
+                    }
+                )
+            )
             self.assertEqual(doctor.registered_env("CLAUDE", home), {"LANG": "C"})
 
     def test_malformed_source_fails_without_starting_probe_or_leaking_contents(self):
         runner = mock.Mock()
-        with mock.patch.object(doctor, "registered_env", side_effect=doctor.ClientConfigError("Claude client JSON unavailable or malformed")), mock.patch.object(doctor.shutil, "which", return_value="agent-sync"):
+        with (
+            mock.patch.object(
+                doctor,
+                "registered_env",
+                side_effect=doctor.ClientConfigError("Claude client JSON unavailable or malformed"),
+            ),
+            mock.patch.object(doctor.shutil, "which", return_value="agent-sync"),
+        ):
             report = doctor.Report()
             doctor.check_mcp_startup(report, "CLAUDE", runner)
         runner.assert_not_called()
@@ -383,7 +403,9 @@ class RegisteredEnvTests(unittest.TestCase):
         with (
             mock.patch.object(doctor, "registered_env", return_value={"LANG": "file-locale"}),
             mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/agent-sync"),
-            mock.patch.dict(os.environ, {"LANG": "process-locale", "INFISICAL_TOKEN": "synthetic-process-token"}),
+            mock.patch.dict(
+                os.environ, {"LANG": "process-locale", "INFISICAL_TOKEN": "synthetic-process-token"}
+            ),
         ):
             doctor.check_mcp_startup(doctor.Report(), "CLAUDE", runner)
         self.assertEqual(seen.get("LANG"), "process-locale")
