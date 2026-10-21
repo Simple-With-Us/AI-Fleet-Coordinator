@@ -13,7 +13,7 @@ scripts/apple-notes-coding.sh.  This module is the shared half of the two ways a
 An envelope is one fenced JSON block in a message:
 
     ```json
-    {"v":1,"action":"create","title":"[AFC, Claude] topic","markdown":"...","flags":{"pin":true},
+    {"v":1,"action":"create","title":"[AFC, CLAUDE] Topic","markdown":"...","flags":{"pin":true},
      "request_id":"nr0123456789abcdef0123","identity":"CLAUDE"}
     ```
 
@@ -74,8 +74,9 @@ UPLOAD_PATH_RE = re.compile(r"^/user_uploads/[A-Za-z0-9_./-]{1,200}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
 _TITLE_BAD_RE = re.compile(r'["\\\x00-\x1f\x7f\x85\u2028\u2029]')
 _PR_RE = re.compile(r"^[0-9#, ]{1,40}$")
-_BRACKET_RE = re.compile(r"^\[([^\]]+)\] \S")
-_APPS_RE = re.compile(r"^[A-Z0-9]+(?:, [A-Z0-9]+)*$")
+_BRACKET_RE = re.compile(
+    r"\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*)\] \S.*"
+)
 _FENCE_OPEN = "```json\n"
 _FENCE_CLOSE = "\n```"
 
@@ -147,12 +148,17 @@ def check_title(raw: Any) -> str:
     if not title.startswith("["):
         raise NotesError(
             "invalid_argument",
-            "argument 'title' must start with [APP, Agent], such as \"[AFC, Claude] topic\"",
+            "argument 'title' must start with [TEAM_KEY, SEAT_TAG], such as \"[AFC, MM] Topic\"",
         )
     if _TITLE_BAD_RE.search(title):
         raise NotesError(
             "invalid_argument",
             "argument 'title' must not hold a double quote, a backslash or a control character",
+        )
+    if title_agent(title) is None:
+        raise NotesError(
+            "invalid_argument",
+            'argument \'title\' must read "[TEAM_KEY, SEAT_TAG] Topic", such as "[AFC, MM] Topic"',
         )
     return title
 
@@ -320,17 +326,17 @@ def relay_consumer(
 
 
 # --------------------------------------------------------------------------------------------
-# The Agent in a title
+# The Seat Tag in a title
 # --------------------------------------------------------------------------------------------
 
 
 def _notes_names(
     identity: str, registry_path: str | None, env: Mapping[str, str] | None
 ) -> set[str]:
-    """Every spelling of `identity`'s Agent name a title may carry, case folded:  its fleet-apps.json
-    `notesName` (Claude, Grok Web, Muse Assist), the tag itself (CLAUDE, GROK-WEB, BF-DEPLOYER, GB-FIXER)
-    and the tag with spaces for hyphens."""
-    names = {identity.casefold(), identity.replace("-", " ").casefold()}
+    """Exact canonical display names from the registry, plus the compatible uppercase tag."""
+    names = {identity}
+    if identity in {"CODEX", "CLAUDE"}:
+        names.add(identity.title())
     path = registry_path or I.seat_registry_path(env)
     try:
         with open(path, encoding="utf-8") as fh:
@@ -343,23 +349,16 @@ def _notes_names(
             and str(row.get("tag") or "").upper() == identity
             and isinstance(row.get("notesName"), str)
         ):
-            names.add(row["notesName"].strip().casefold())
+            names.add(row["notesName"].strip())
     return names
 
 
 def title_agent(title: str) -> tuple[str, str] | None:
-    """(apps, agent) from `[APP, APP2, Agent] topic`, or None when the title has no such shape.  The
-    apps are the capitalised acronyms before the last comma, the agent is what follows it."""
-    match = _BRACKET_RE.match(title)
-    if not match:
+    """Return uppercase scope keys and the agent name from the closed title grammar."""
+    if _TITLE_BAD_RE.search(title):
         return None
-    inner = match.group(1)
-    if ", " not in inner:
-        return None
-    apps, agent = inner.rsplit(", ", 1)
-    if not _APPS_RE.match(apps) or not agent.strip():
-        return None
-    return apps, agent.strip()
+    match = _BRACKET_RE.fullmatch(title)
+    return (match.group(1), match.group(2)) if match else None
 
 
 def title_problem(
@@ -369,11 +368,11 @@ def title_problem(
     registry_path: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> str | None:
-    """None when the title's Agent is `identity`'s own name, else why not."""
+    """None only when the title carries the sender's canonical display name or compatible uppercase seat tag."""
     parts = title_agent(title)
     if parts is None:
-        return 'the title must read "[APP, Agent] topic" with the app acronyms in capitals'
-    if parts[1].casefold() not in _notes_names(identity, registry_path, env):
+        return 'the title must read "[TEAM_KEY, SEAT_TAG] Topic" with uppercase team keys and the canonical agent display name'
+    if parts[1] not in _notes_names(identity, registry_path, env):
         return 'the title names agent "%s", which is not %s' % (parts[1][:40], identity)
     return None
 
@@ -654,7 +653,7 @@ def with_provenance(
 ) -> dict:
     """The envelope with a footer saying who asked for the note and where (AFC-331, owner 2026-10-18).
 
-    Apple Notes has no authorship, so a title like `[APP, Agent]` is only text.  The relay stamps every note it
+    Apple Notes has no authorship, so a title like `[TEAM_KEY, SEAT_TAG]` is only text.  The relay stamps every note it
     creates or updates with the requesting bot and a permalink to its #notes-relay message, so any relayed note can
     be checked against Zulip, and a note without the footer is visibly unverified.  Pin and unpin carry no body."""
     if envelope.get("action") not in ("create", "update"):

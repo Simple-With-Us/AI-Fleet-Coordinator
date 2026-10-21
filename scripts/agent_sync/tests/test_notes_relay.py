@@ -23,7 +23,7 @@ from agent_sync import zulip as Z
 
 OWNER_ID = 1000
 READER_ID = 10
-TITLE = "[AFC, Claude] relay check"
+TITLE = "[AFC, CLAUDE] relay check"
 
 SESSION = "relay-test-session-0001"  # AFC-361:  a create or update from a non-exempt sender carries a session id
 
@@ -164,7 +164,7 @@ class RelayHarness(unittest.TestCase):
     def request(
         self,
         identity="CURSOR",
-        title="[AFC, Cursor] relay check",
+        title="[AFC, CURSOR] relay check",
         rid="request-0001",
         action="create",
         markdown="hello body",
@@ -172,6 +172,24 @@ class RelayHarness(unittest.TestCase):
         claimed=None,
     ):
         env = make_envelope(action, title, markdown, flags or {}, rid, claimed or identity)
+        return self.message(
+            SENDERS[identity], "[%s·ab12cd34] %s" % (identity, N.render_message(env))
+        )
+
+    def raw_request(self, identity, title, rid="request-0001", action="create", markdown="hello body"):
+        """A post that skips `make_envelope`, so the listener's own checks are still under test.
+
+        The tool layer now refuses a title with no `[TEAM_KEY, SEAT_TAG]` scope, but a message can
+        reach `#notes-relay` from anywhere, so the listener must still reject it itself."""
+        env = {
+            "v": N.ENVELOPE_VERSION,
+            "action": action,
+            "title": title,
+            "markdown": markdown,
+            "flags": {},
+            "request_id": rid,
+            "identity": identity,
+        }
         return self.message(
             SENDERS[identity], "[%s·ab12cd34] %s" % (identity, N.render_message(env))
         )
@@ -202,7 +220,7 @@ class SenderTests(RelayHarness):
             "[request message](https://simplewithus.zulipchat.com/#narrow/id/%d)" % message["id"],
             body,
         )
-        self.assertEqual(self.calls[0]["argv"][-2:], ["--title", "[AFC, Cursor] relay check"])
+        self.assertEqual(self.calls[0]["argv"][-2:], ["--title", "[AFC, CURSOR] relay check"])
         self.assertIn((message["id"], "check"), self.client.reactions)
         self.assertEqual(self.client.replies, [])
 
@@ -213,7 +231,7 @@ class SenderTests(RelayHarness):
         self.assertFalse(self.calls[-1]["input"], "pin sends no body, so no footer")
         env = N.with_provenance(
             N.make_envelope(
-                "create", "[AFC, Cursor] t", "<p>x</p>", {"html": True}, "html-request-01", "CURSOR"
+                "create", "[AFC, CURSOR] t", "<p>x</p>", {"html": True}, "html-request-01", "CURSOR"
             ),
             "CURSOR",
             42,
@@ -227,7 +245,7 @@ class SenderTests(RelayHarness):
     def test_the_footer_escapes_markdown_dates_portably_and_keeps_the_newline_recovery(self):
         def footer_of(markdown, identity="CURSOR"):
             env = N.make_envelope(
-                "create", "[AFC, Cursor] t", markdown, {}, "footer-request-1", "CURSOR"
+                "create", "[AFC, CURSOR] t", markdown, {}, "footer-request-1", "CURSOR"
             )
             return N.with_provenance(env, identity, 7)["markdown"]
 
@@ -242,10 +260,10 @@ class SenderTests(RelayHarness):
 
     def test_every_kind_of_agent_bot_may_send(self):
         titles = {
-            "CURSOR": "[AFC, Cursor] t",
-            "GROK-WEB": "[AFC, Grok Web] t",
-            "BF-DEPLOYER": "[BF, BF-Deployer] t",
-            "GB-FIXER": "[AFC, gb-fixer] t",
+            "CURSOR": "[AFC, CURSOR] t",
+            "GROK-WEB": "[AFC, GROK-WEB] t",
+            "BF-DEPLOYER": "[BF, BF-DEPLOYER] t",
+            "GB-FIXER": "[AFC, GB-FIXER] t",
         }
         for identity, title in titles.items():
             with self.subTest(identity):
@@ -275,20 +293,20 @@ class SenderTests(RelayHarness):
 
     def test_the_identity_in_the_envelope_must_be_the_sender(self):
         self.assert_refused(
-            self.request("CURSOR", "[AFC, Cursor] t", claimed="CLAUDE"), "is not the sender"
+            self.request("CURSOR", "[AFC, CURSOR] t", claimed="CLAUDE"), "is not the sender"
         )
 
     def test_the_agent_in_the_title_must_be_the_senders_name(self):
         self.assert_refused(
-            self.request("CURSOR", "[AFC, Claude] t", rid="rid-wrong-agent-1"),
+            self.request("CURSOR", "[AFC, CLAUDE] t", rid="rid-wrong-agent-1"),
             "which is not CURSOR",
         )
         self.assert_refused(
-            self.request("GB-FIXER", "[AFC, GB-Deployer] t", rid="rid-wrong-agent-2"),
+            self.request("GB-FIXER", "[AFC, GB-DEPLOYER] t", rid="rid-wrong-agent-2"),
             "which is not GB-FIXER",
         )
         self.assert_refused(
-            self.request("CURSOR", "[AFC] no agent", rid="rid-wrong-agent-3"), "must read"
+            self.raw_request("CURSOR", "[AFC] no agent", rid="rid-wrong-agent-3"), "must read"
         )
 
     def test_a_reply_cannot_mention_anyone_through_the_sender_chosen_text(self):
@@ -314,10 +332,10 @@ class IdempotencyAndFailureTests(RelayHarness):
 
     def test_a_request_id_is_per_sender(self):
         self.assertEqual(
-            self.process(self.request("CURSOR", "[AFC, Cursor] t", rid="shared-request-1")), "done"
+            self.process(self.request("CURSOR", "[AFC, CURSOR] t", rid="shared-request-1")), "done"
         )
         self.assertEqual(
-            self.process(self.request("GROK-WEB", "[AFC, Grok Web] t", rid="shared-request-1")),
+            self.process(self.request("GROK-WEB", "[AFC, GROK-WEB] t", rid="shared-request-1")),
             "done",
         )
         self.assertEqual(len(self.calls), 2)
@@ -363,7 +381,7 @@ class IdempotencyAndFailureTests(RelayHarness):
     def test_a_cross_mark_that_zulip_does_not_know_falls_back_to_the_next_name(self):
         self.client.react_fails = {"cross_mark"}
         self.assert_refused_with_alias = None
-        message = self.request("CURSOR", "[AFC, Claude] wrong agent")
+        message = self.request("CURSOR", "[AFC, CLAUDE] wrong agent")
         self.process(message)
         self.assertIn((message["id"], "x"), self.client.reactions)
 
@@ -372,7 +390,7 @@ class AttachmentTests(RelayHarness):
     def test_an_attached_body_is_fetched_checked_and_run(self):
         body = "a long sentence.  " * 700
         data = body.encode()
-        base = make_envelope("create", "[AFC, Cursor] big", "", {}, "attach-request-1", "CURSOR")
+        base = make_envelope("create", "[AFC, CURSOR] big", "", {}, "attach-request-1", "CURSOR")
         ref = N.with_upload(base, url="/user_uploads/2/ab/9/note.md", data=data)
         message = self.message(SENDERS["CURSOR"], N.render_message(ref))
         fetched = []
@@ -390,11 +408,11 @@ class AttachmentTests(RelayHarness):
         token = "ghp_" + "EXAMPLE0" * 5
         body = "notes about a deploy.  the token is %s and it must not be written." % token
         inline = self.request(
-            "CURSOR", "[AFC, Cursor] inline", rid="secret-inline-01", markdown=body
+            "CURSOR", "[AFC, CURSOR] inline", rid="secret-inline-01", markdown=body
         )
         data = body.encode()
         ref = N.with_upload(
-            make_envelope("create", "[AFC, Cursor] big", "", {}, "secret-upload-01", "CURSOR"),
+            make_envelope("create", "[AFC, CURSOR] big", "", {}, "secret-upload-01", "CURSOR"),
             url="/user_uploads/2/ab/9/note.md",
             data=data,
         )
@@ -419,7 +437,7 @@ class AttachmentTests(RelayHarness):
         token = "ghp_" + "EXAMPLE0" * 5
         message = self.request(
             "CURSOR",
-            "[AFC, Cursor] summary",
+            "[AFC, CURSOR] summary",
             rid="secret-summary-01",
             flags={"summary": "see " + token},
         )
@@ -431,7 +449,7 @@ class AttachmentTests(RelayHarness):
     def test_a_tampered_attachment_is_refused(self):
         data = b"original body"
         ref = N.with_upload(
-            make_envelope("create", "[AFC, Cursor] big", "", {}, "tamper-request-1", "CURSOR"),
+            make_envelope("create", "[AFC, CURSOR] big", "", {}, "tamper-request-1", "CURSOR"),
             url="/user_uploads/2/ab/9/note.md",
             data=data,
         )
@@ -524,7 +542,7 @@ class PublishFailureTests(RelayHarness):
     def test_a_download_that_fails_on_the_network_retries_from_a_clean_start(self):
         data = b"attached body"
         ref = N.with_upload(
-            make_envelope("create", "[AFC, Cursor] big", "", {}, "download-retry-1", "CURSOR"),
+            make_envelope("create", "[AFC, CURSOR] big", "", {}, "download-retry-1", "CURSOR"),
             url="/user_uploads/2/ab/9/note.md",
             data=data,
         )
@@ -586,7 +604,7 @@ class ApiFailureTests(RelayHarness):
 
     def test_a_failing_refusal_reply_is_retried_not_swallowed(self):
         self.consumer.start = lambda: None
-        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="api-reply-0001")
+        message = self.request("CURSOR", "[AFC, CLAUDE] wrong agent", rid="api-reply-0001")
         self.consumer.offer(self.runner, message)
         original = self.client.post
 
@@ -803,7 +821,7 @@ class SelfSentTests(RelayHarness):
 
     def test_its_own_envelope_still_obeys_the_title_rule(self):
         self.assertEqual(
-            self.process(self.own_request("self-request-0002", "[AFC, Codex] wrong agent")),
+            self.process(self.own_request("self-request-0002", "[AFC, CODEX] wrong agent")),
             "refused",
         )
         self.assertEqual(self.calls, [])
@@ -934,7 +952,7 @@ class RefusalReplayTests(RelayHarness):
     """Zulip's send-message API takes no idempotency key, so a replayed refusal is made safe by looking first."""
 
     def test_replaying_a_refused_message_posts_one_reply(self):
-        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-01")
+        message = self.request("CURSOR", "[AFC, CLAUDE] wrong agent", rid="replay-request-01")
         self.assertEqual(self.process(message), "refused")
         self.assertEqual(len(self.client.replies), 1)
         # A crash after the reply but before the cursor moved:  the same message is processed again.
@@ -949,7 +967,7 @@ class RefusalReplayTests(RelayHarness):
         )
 
     def test_a_crash_between_the_reaction_and_the_reply_still_gets_its_reply(self):
-        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-02")
+        message = self.request("CURSOR", "[AFC, CLAUDE] wrong agent", rid="replay-request-02")
         original_post = self.client.post
 
         def crashing(path, params=None):
@@ -968,7 +986,7 @@ class RefusalReplayTests(RelayHarness):
         self.assertEqual(len(self.client.replies), 1)
 
     def test_a_reply_posted_after_a_long_backlog_is_found_and_not_posted_twice(self):
-        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-03")
+        message = self.request("CURSOR", "[AFC, CLAUDE] wrong agent", rid="replay-request-03")
         self.assertEqual(self.process(message), "refused")
         self.assertEqual(len(self.client.replies), 1)
         # Far more than one page of other messages arrive in the topic after the request, newer than the refusal's
@@ -983,7 +1001,7 @@ class RefusalReplayTests(RelayHarness):
         self.assertGreater(len(self.client.message_gets), 1)
 
     def test_the_scan_pages_forward_until_the_topics_newest_message(self):
-        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-04")
+        message = self.request("CURSOR", "[AFC, CLAUDE] wrong agent", rid="replay-request-04")
         self.client.backlog = [
             {"id": 2000 + i, "sender_id": READER_ID, "content": "other bot post %d" % i}
             for i in range(250)
@@ -999,7 +1017,7 @@ class RefusalReplayTests(RelayHarness):
         )
 
     def test_a_scan_that_hits_its_bound_stays_incomplete(self):
-        message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-05")
+        message = self.request("CURSOR", "[AFC, CLAUDE] wrong agent", rid="replay-request-05")
         self.client.backlog = [
             {"id": 2000 + i, "sender_id": READER_ID, "content": "x"} for i in range(60)
         ]
@@ -1015,9 +1033,9 @@ class RefusalReplayTests(RelayHarness):
 
     def test_a_refusal_of_a_parsed_envelope_is_labelled_with_its_request_id_for_notes_status(self):
         cases = {
-            "wrong-agent-title": self.request("CURSOR", "[AFC, Claude] t", rid="label-request-01"),
+            "wrong-agent-title": self.request("CURSOR", "[AFC, CLAUDE] t", rid="label-request-01"),
             "wrong-identity": self.request(
-                "CURSOR", "[AFC, Cursor] t", rid="label-request-02", claimed="CLAUDE"
+                "CURSOR", "[AFC, CURSOR] t", rid="label-request-02", claimed="CLAUDE"
             ),
         }
         env = N.render_message(
@@ -1049,8 +1067,8 @@ class RefusalReplayTests(RelayHarness):
         )
 
     def test_a_refusal_reply_for_a_longer_request_id_is_not_taken_for_this_ones(self):
-        longer = self.request("CURSOR", "[AFC, Claude] t", rid="exact-request-12")
-        shorter = self.request("CURSOR", "[AFC, Claude] t", rid="exact-request-1")
+        longer = self.request("CURSOR", "[AFC, CLAUDE] t", rid="exact-request-12")
+        shorter = self.request("CURSOR", "[AFC, CLAUDE] t", rid="exact-request-1")
         self.assertEqual(self.process(longer), "refused")
         self.assertEqual(self.process(shorter), "refused")
         self.assertEqual(len(self.client.replies), 2, "each request gets its own reply")
@@ -1084,9 +1102,9 @@ class RefusalReplayTests(RelayHarness):
             "sender_owner": self.message(OWNER_ID, env),
             "sender_identity": self.message(15, env),
             "identity_mismatch": self.request(
-                "CURSOR", "[AFC, Cursor] t", rid="code-request-002", claimed="CLAUDE"
+                "CURSOR", "[AFC, CURSOR] t", rid="code-request-002", claimed="CLAUDE"
             ),
-            "title": self.request("CURSOR", "[AFC, Claude] t", rid="code-request-003"),
+            "title": self.request("CURSOR", "[AFC, CLAUDE] t", rid="code-request-003"),
             "envelope": self.message(SENDERS["CURSOR"], "no fence here"),
         }
         for code, message in cases.items():

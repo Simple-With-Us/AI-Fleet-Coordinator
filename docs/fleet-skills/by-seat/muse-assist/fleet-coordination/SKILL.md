@@ -19,7 +19,7 @@ This skill governs how autonomous AI agents collaborate across the entire applic
 
 ## Canonical Fleet App Acronyms
 
-Use these canonical acronyms in Apple Notes titles (`[APP, Agent] topic`), commit messages, PRs, and Zulip `#agent-sync` topics:
+Use these canonical acronyms in Apple Notes titles (`[TEAM_KEY, SEAT_TAG] Topic`), commit messages, PRs, and Zulip `#agent-sync` topics:
 
 | Acronym | App / Scope | Repository |
 | :--- | :--- | :--- |
@@ -37,7 +37,7 @@ Use these canonical acronyms in Apple Notes titles (`[APP, Agent] topic`), commi
 
 ## FLEET is not an app acronym
 
-`FLEET` is **not** an application, **not** a repository, and **not** this coordinator's name.  Do not put `FLEET` in Apple Notes `[APP, Agent]` titles as if it were ST/CT/UM.
+`FLEET` is **not** an application, **not** a repository, and **not** this coordinator's name.  Do not put `FLEET` in Apple Notes `[TEAM_KEY, SEAT_TAG]` titles as if it were ST/CT/UM.
 
 - **Repo acronym:** `AFC` is the AI-Fleet-Coordinator repo (Linear team `AFC`, topics `AFC-123`, links `AFC#n`), not a seat, bot, sender or signature (owner 2026-10-16).  The coordinator is CLAUDE and posts as the CLAUDE bot;  `agent-sync` writes the seat tag, so never hand-sign `[AFC]` or `[FLEET]`.
 - **Sibling repo acronym:** `OPS` is the Fleet-OPS repo (`OPS-123`, `OPS#n`), likewise not a voice.  Fleet operations work is filed under whichever of `AFC` and `OPS` it logically fits.
@@ -148,8 +148,8 @@ Visibly wider gap (two visible spaces) after terminal punctuation (`.`, `!`, `?`
 
 | Surface | Syntax | Why |
 | :--- | :--- | :--- |
-| **Other Markdown chat panes** (excludes MiniMax Code; Claude Code desktop Code tab owner-verified 2026-10-08, other panes by ruling unverified) | `&nbsp;` plus normal space after each sentence, outside code spans (`Sentence one.&nbsp; Sentence two.`) | The renderer decodes the entity; a raw U+00A0 from the model arrives as a plain space |
-| **MiniMax Code chat pane** (owner-verified 2026-10-20) | a real U+00A0, the nbsp character, then a normal space, outside code spans | Jay:  "I think you need to do nbsp for chats or something" and "I have confirmed this before with agents and knew you needed nbsp already".  Two ASCII spaces collapse in this pane, and the `&nbsp;` entity renders as the six literal characters, which is worse than no gap.  The 2026-10-18 entry for this pane was wrong and is corrected here. |
+| **Other Markdown chat panes** (Claude Code desktop Code tab owner-verified 2026-10-08, MiniMax Code chat pane owner-verified 2026-10-18, other panes by ruling unverified) | `&nbsp;` plus normal space after each sentence, outside code spans (`Sentence one.&nbsp; Sentence two.`) | The renderer decodes the entity; a raw U+00A0 from the model arrives as a plain space |
+| **MiniMax Code chat pane** (owner-verified 2026-10-18, reaffirmed 2026-10-20) | `&nbsp;` plus normal space after each sentence, outside code spans (`Sentence one.&nbsp; Sentence two.`) | Jay:  "I have confirmed this before with agents and knew you needed nbsp already".  The renderer decodes the entity into a real gap, the same form as the Claude Code Code tab.  Two ASCII spaces collapse in this pane, and a raw U+00A0 typed by the model arrives as a plain space, so the entity is the form that actually renders a gap.  A 2026-10-20 note here briefly said a real U+00A0 for this pane;  that was an inference, it was never owner-verified, and the owner reversed it.  Never override an owner-verified mechanism on an inference. |
 | **GitHub PR and issue titles, bodies and comments, Zulip posts, other rendered tool output** | A real U+00A0 plus a space (never the entity) | Tools preserve the character; the entity would show literally in a plain-text squash commit |
 | **Terminal TUI chat, source files** (docs, commit messages, code comments, config) | Two literal ASCII spaces | Read in raw text editors / terminals; an entity would print literally |
 | **HTML / JSX / SwiftUI product copy** | A real U+00A0 plus a space, or `SENTENCE_GAP` | Raw doubles collapse in HTML |
@@ -163,7 +163,7 @@ Visibly wider gap (two visible spaces) after terminal punctuation (`.`, `!`, `?`
 All plans, design docs, rollouts, audits, and completion notes for owner review must be created in Apple Notes:
 
 1. **Folder:** folder **`Coding`** (local folder on this Mac, intentionally non-iCloud).
-2. **Title Format:** `[APP, Agent] Short topic` (e.g. `[ST, AG] Market data cascade`).  App acronyms FIRST, agent name in Title Case, NO date in title.
+2. **Title Format:** `[TEAM_KEY, SEAT_TAG] Topic` (Title Case) (e.g. `[ST, AG] Market data cascade`).  App acronyms FIRST, agent name in Title Case, NO date in title.
 3. **Second Line:** Timestamp `Day, Mon D, h:mmam|pm · PR #<num>`.
 4. **Helper Script:**
    ```bash
