@@ -115,7 +115,10 @@ jobs:
       ANTHROPIC_BASE_URL: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && 'https://api.meta.ai' || 'https://api.minimax.io/anthropic' }}
       ANTHROPIC_AUTH_TOKEN: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL == 'https://api.meta.ai' && (secrets.META_MODEL_API_TOKEN || 'MISSING-META-MODEL-API-TOKEN') || secrets.MINIMAX_API_KEY }}
       VAR_MODEL: ${{ vars.SWU_AUTOFIX_MODEL }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # github.token, not secrets.GITHUB_TOKEN:  in a called reusable the secrets-context token
+      # 403'd issue-comment writes despite the job granting issues:write (run 39608718486,
+      # 2026-10-21);  the github context carries the job's actual permissions.
+      GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -274,7 +277,7 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.branch }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
 
       - name: Check The Comment And Build The Prompt
         id: guard
@@ -576,7 +579,7 @@ jobs:
           ITERATION: ${{ steps.guard.outputs.iteration }}
           MAX_ITERATIONS: ${{ steps.guard.outputs.max_iterations }}
           START_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
-          PUSH_TOKEN: ${{ steps.push_token.outputs.token || secrets.GITHUB_TOKEN }}
+          PUSH_TOKEN: ${{ steps.push_token.outputs.token || github.token }}
         run: |
           set -euo pipefail
           current=$(gh pr view "$PR_NUMBER" --json headRefOid -q .headRefOid)
