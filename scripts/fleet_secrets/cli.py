@@ -46,7 +46,21 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("--path", "--only"):
+        if a in ("--name", "--from", "--var", "--service", "--account"):
+            if i + 1 >= len(args):
+                raise UsageError(f"{a} needs a value")
+            opts[a[2:]] = args[i + 1]
+            i += 2
+        elif (
+            a.startswith("--name=")
+            or a.startswith("--from=")
+            or a.startswith("--var=")
+            or (a.startswith("--service=") or a.startswith("--account="))
+        ):
+            key, _, val = a[2:].partition("=")
+            opts[key] = val
+            i += 1
+        elif a in ("--path", "--only"):
             if a == "--only" and not allow_only:
                 raise UsageError("unknown option --only for this command")
             if i + 1 >= len(args):
