@@ -472,7 +472,9 @@ class GateSource(unittest.TestCase):
             marker_post = text.index("Owner/sentry request:  exempt from the per-bot cap")
             self.assertLess(exempt, marker_post, name)
         # pr-autofix: the marker write sits after the cap branch, not inside it.
-        text = (REPO / ".github" / "workflows" / "pr-autofix-reusable.yml").read_text(encoding="utf-8")
+        text = (REPO / ".github" / "workflows" / "pr-autofix-reusable.yml").read_text(
+            encoding="utf-8"
+        )
         cap = text.index("already used its one autofix run")
         marker_write = text.index("Every accepted run leaves its run-id marker")
         self.assertLess(cap, marker_write)
