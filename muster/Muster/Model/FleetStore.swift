@@ -80,6 +80,20 @@ final class FleetStore: ObservableObject {
         let coverReason: String?
     }
 
+    /// The citation each rule carries in the manifest,  by rule id.
+    ///
+    /// The manifest's `source` field is where the directive,  the date or the message
+    /// that asked for a rule is recorded.  It is empty on every rule today,  and the
+    /// panel says that rather than showing a blank line.
+    func ruleSources(seat: String, kind: ConfigKind) -> [String: String] {
+        guard let manifest else { return [:] }
+        var sources: [String: String] = [:]
+        for rule in manifest.rules(seat: seat, kind: kind) {
+            if let source = rule.source { sources[rule.id] = source }
+        }
+        return sources
+    }
+
     /// The artifacts a cell is about,  read for the panel to show.
     ///
     /// The envelope carries no path,  so the manifest is the only place that knows

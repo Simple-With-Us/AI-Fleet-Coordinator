@@ -109,7 +109,7 @@ enum Fixtures {
     /// A manifest with one seat that has a rule and one that is covered.
     static let manifest = """
     {
-     "schemaVersion": 1,
+     "schemaVersion": 2,
      "seats": {
       "CLAUDE": {
        "platforms": ["claude"],

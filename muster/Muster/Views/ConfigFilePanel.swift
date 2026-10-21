@@ -13,6 +13,8 @@ import SwiftUI
 struct ConfigFilePanel: View {
     let cell: GridCell
     let artifacts: FleetStore.CellArtifacts
+    /// The citation each rule carries in the manifest,  by rule id.
+    let sources: [String: String]
     /// Called when the operator closes the panel.
     let onClose: () -> Void
 
@@ -102,6 +104,14 @@ struct ConfigFilePanel: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            // The citation the manifest carries,  which is the directive or the
+            // message that asked for the rule.  It is empty on every rule today,  and
+            // the panel says so rather than showing a blank line.
+            ProofLine(
+                label: "Source",
+                value: sources[rule.ruleId].flatMap { $0.isEmpty ? nil : $0 } ?? "not cited yet"
+            )
 
             HStack(alignment: .top, spacing: 18) {
                 ValueTable(title: "Expected", values: rule.expected)
