@@ -366,7 +366,9 @@ class RegisteredEnvTests(unittest.TestCase):
                 '[mcp_servers."fleetlink"]\ncommand = "y"\n'
             )
             with mock.patch.dict(sys.modules, {"tomllib": None}):
-                self.assertEqual(sorted(doctor.client_servers("CODEX", home)), ["agent-sync", "fleetlink"])
+                self.assertEqual(
+                    sorted(doctor.client_servers("CODEX", home)), ["agent-sync", "fleetlink"]
+                )
                 self.assertEqual(doctor.registered_env("CODEX", home), {})
                 report = doctor.Report()
                 with mock.patch.object(doctor, "HOME", home):
