@@ -46,11 +46,15 @@ class NonceLedger:
         return db
 
     def begin(self, seat, nonce, expires, now, capacity):
-        """Claim a nonce as pending, or report the recorded outcome of a repeat.
+        """Claim a nonce as pending, or report/claim the recorded repeat.
 
-        Returns "fresh", "capacity", or ("repeat", outcome, response).  A
-        "pending"/"outcome_unknown" repeat means the first attempt's result is
-        not known, so the caller must refuse rather than risk a duplicate mint.
+        Returns "fresh", "capacity", ("repeat", outcome, response), or
+        ("repeat-claimed", "ok", response).  A "pending"/"outcome_unknown"/
+        "replay" repeat means an attempt's result is not known, so the caller
+        must refuse rather than risk a duplicate mint.  A "repeat-claimed" row
+        has been atomically re-claimed by THIS call inside the same BEGIN
+        IMMEDIATE transaction:  the caller owns it and must settle, restore or
+        release it, so two concurrent replays can never both mint.
         """
         try:
             with contextlib.closing(self.connect()) as db, db:
@@ -61,6 +65,15 @@ class NonceLedger:
                     (seat, nonce),
                 ).fetchone()
                 if row:
+                    if row[0] == "ok" and row[1]:
+                        claimed = db.execute(
+                            "UPDATE nonces SET outcome='replay' "
+                            "WHERE seat=? AND nonce=? AND outcome='ok'",
+                            (seat, nonce),
+                        )
+                        if claimed.rowcount == 1:
+                            return ("repeat-claimed", "ok", row[1])
+                        return ("repeat", "replay", None)
                     return ("repeat", row[0], row[1])
                 if db.execute("SELECT count(*) FROM nonces").fetchone()[0] >= capacity:
                     return "capacity"

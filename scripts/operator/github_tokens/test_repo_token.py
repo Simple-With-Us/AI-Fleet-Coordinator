@@ -128,3 +128,56 @@ class Tests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFixTests(unittest.TestCase):
+    """Regression tests for the second Kody review round."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.router = TokenRouter(
+            lambda slug: (100, "NOT-A-KEY"),
+            Path(self.temp.name) / "cache",
+            api=lambda *a, **k: None,
+            signer=lambda *a: "MOCK",
+        )
+
+    def test_openai_shaped_target_refused_with_stable_code(self):
+        for target in ("Simple-With-Us/sk-abc123", "Simple-With-Us/disk-utils"):
+            with self.assertRaises(RoutingError) as ctx:
+                self.router.token_for("swu-echo", target, {"contents": "read"})
+            self.assertEqual(str(ctx.exception), "secret_refused:target")
+            self.assertNotIn("abc123", str(ctx.exception))
+
+    def test_malformed_app_identity_fails_closed(self):
+        def api(method, path, bearer, body=None):
+            if path == "/app":
+                return {"id": "100", "slug": "swu-echo"}
+            return {}
+
+        router = TokenRouter(
+            lambda slug: (100, "NOT-A-KEY"),
+            Path(self.temp.name) / "c2",
+            api=api,
+            signer=lambda *a: "MOCK",
+        )
+        with self.assertRaises(RoutingError) as ctx:
+            router.token_for("swu-echo", "a/b", {"contents": "read"})
+        self.assertIn("malformed", str(ctx.exception))
+
+    def test_malformed_installation_account_fails_closed(self):
+        def api(method, path, bearer, body=None):
+            if path == "/app":
+                return {"id": 100, "slug": "swu-echo"}
+            return {"id": 111, "app_id": 100, "account": {"login": 7}, "suspended_at": None}
+
+        router = TokenRouter(
+            lambda slug: (100, "NOT-A-KEY"),
+            Path(self.temp.name) / "c3",
+            api=api,
+            signer=lambda *a: "MOCK",
+        )
+        with self.assertRaises(RoutingError) as ctx:
+            router.token_for("swu-echo", "a/b", {"contents": "read"})
+        self.assertIn("identity", str(ctx.exception))

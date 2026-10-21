@@ -99,12 +99,62 @@ class Broker:
             + "@users.noreply.github.com",
         }
 
+    def _release_quietly(self, seat, nonce):
+        """Free a nonce after a definite refusal;  fail closed on ledger errors."""
+        try:
+            self.nonce_ledger.release(seat, nonce)
+        except LedgerError:
+            pass  # row stays pending:  retries see 409, never a duplicate mint
+
+    def _settle_quietly(self, seat, nonce, settle_outcome):
+        try:
+            self.nonce_ledger.settle(seat, nonce, settle_outcome)
+        except LedgerError:
+            pass  # row stays pending:  retries see 409, never a duplicate mint
+
+    def _restore(self, seat, nonce, prior_response):
+        """Return a claimed replay row to its recorded ok state (fail-closed)."""
+        try:
+            self.nonce_ledger.settle(seat, nonce, "ok", prior_response)
+        except LedgerError:
+            pass  # row stays claimed:  retries see 409, never a duplicate mint
+
+    def _mint_guarded(self, seat, nonce, policy, repo, requested, audit_state):
+        """Mint once for a claimed nonce, keeping the ledger and audit honest.
+
+        A definite provider answer (401/403/429, or a read-side "retryable"/
+        "refused" RoutingError, both of which precede any mint POST) releases
+        the nonce so a corrected request may reuse it.  Anything uncertain -
+        a POST transport failure, a POST 408/5xx, or an unclassifiable error -
+        settles outcome_unknown and marks the audit row, because a credential
+        may already exist.  Never mislabels a minted token as refused.
+        """
+        try:
+            return self._mint(policy, repo, requested)
+        except Exception as exc:
+            if not _classifiable(exc):
+                self._settle_quietly(seat, nonce, "outcome_unknown")
+                audit_state["outcome"] = "outcome_unknown"
+                raise
+            status = getattr(exc, "status", None)
+            exc_outcome = getattr(exc, "outcome", None)
+            if status in (401, 403, 429) or exc_outcome in ("retryable", "refused"):
+                self._release_quietly(seat, nonce)
+                if status in (401, 403, 429):
+                    raise Refused(502, "token issuance refused") from None
+                raise Refused(502, "token issuance failed") from None
+            self._settle_quietly(seat, nonce, "outcome_unknown")
+            audit_state["outcome"] = "outcome_unknown"
+            if status == 408 or (isinstance(status, int) and status >= 500):
+                raise Refused(503, "token issuance uncertain; retry with a fresh nonce") from None
+            raise Refused(502, "token issuance failed") from None
+
     def issue(self, path: str, stamp: str, nonce: str, sig: str, body: bytes):
         # Exactly one audit row per call, emitted from the finally below so no
         # return path or exception - validation, authentication, refusal, or
         # issuance - leaves the trail without a record.
         seat = None
-        outcome = "refused"
+        audit_state = {"outcome": "refused"}
         extra = {}
         try:
             if not self.enabled:
@@ -129,7 +179,10 @@ class Broker:
                 self.rates[seat] = bucket + [now]
             key = self.key_for(seat)
             if not isinstance(key, str) or len(key) < 32:
-                raise Refused(401, "authentication failed")
+                # A missing or malformed caller secret is a provisioning
+                # problem, not a client authentication failure:  name the
+                # variable operators must provision, never the value seen.
+                raise Refused(503, "OPERATOR_GITHUB_CALLER_KEY is not provisioned")
             if (
                 not isinstance(sig, str)
                 or not re.fullmatch(r"[a-f0-9]{64}", sig)
@@ -149,16 +202,18 @@ class Broker:
             if state == "capacity":
                 raise Refused(503, "request capacity exceeded")
             if state != "fresh":
-                _, prior_outcome, prior_response = state
-                if prior_outcome != "ok" or not prior_response:
-                    # pending or outcome_unknown: the first attempt's result is
-                    # not known, so refuse rather than risk a duplicate mint.
+                kind, _, prior_response = state
+                if kind != "repeat-claimed":
+                    # pending, outcome_unknown, or a replay already claimed by
+                    # a concurrent request: the first attempt's result is not
+                    # known, so refuse rather than risk a duplicate mint.
                     raise Refused(409, "prior outcome unknown; retry with a fresh nonce")
-                # Idempotent retry: the first response was lost.  The ledger
-                # stores only non-secret metadata, never the token, so the
-                # recorded request is re-validated against the CURRENT policy
-                # and a fresh token is minted.  Replay stays bounded by the
-                # HMAC and the timestamp-skew window.
+                # Idempotent retry: the first response was lost and this call
+                # now owns the claimed nonce row.  The ledger stores only
+                # non-secret metadata, never the token, so the recorded
+                # request is re-validated against the CURRENT policy and a
+                # fresh token is minted.  Every exit from this branch settles,
+                # restores or releases the claimed row.
                 try:
                     data = json.loads(prior_response)
                     if not isinstance(data, dict):
@@ -166,6 +221,7 @@ class Broker:
                     target_parts(data["repo"])
                     requested = permission_set(data["permissions"])
                 except (ValueError, TypeError, KeyError, RoutingError, RecursionError):
+                    self._restore(seat, nonce, prior_response)
                     raise Refused(
                         409, "recorded request is not replayable; retry with a fresh nonce"
                     ) from None
@@ -179,17 +235,15 @@ class Broker:
                 if not isinstance(allowed, Mapping) or any(
                     ranks.get(allowed.get(k), 0) < ranks[v] for k, v in requested.items()
                 ):
+                    self._restore(seat, nonce, prior_response)
                     raise Refused(403, "caller not authorized")
-                try:
-                    response = self._mint(policy, data["repo"], requested)
-                except Exception as exc:
-                    if not _classifiable(exc):
-                        raise
-                    status = getattr(exc, "status", None)
-                    if status == 408 or (isinstance(status, int) and status >= 500):
-                        raise Refused(503, "token issuance uncertain; retry later") from None
-                    raise Refused(502, "token issuance failed") from None
-                outcome = "served-retry"
+                response = self._mint_guarded(
+                    seat, nonce, policy, data["repo"], requested, audit_state
+                )
+                audit_state["outcome"] = "outcome_unknown"
+                stored = {k: v for k, v in response.items() if k != "token"}
+                self.nonce_ledger.settle(seat, nonce, "ok", json.dumps(stored))
+                audit_state["outcome"] = "served-retry"
                 extra = {
                     "repo": data["repo"],
                     "permissions": requested,
@@ -206,42 +260,29 @@ class Broker:
                 target_parts(data["repo"])
                 requested = permission_set(data["permissions"])
             except (ValueError, TypeError, KeyError, RoutingError, RecursionError):
-                self.nonce_ledger.release(seat, nonce)
+                self._release_quietly(seat, nonce)
                 raise Refused(400, "invalid request") from None
             policy = self.policy_for(seat)
             if not isinstance(policy, CallerPolicy):
-                self.nonce_ledger.release(seat, nonce)
+                self._release_quietly(seat, nonce)
                 raise Refused(403, "caller not authorized")
             allowed = policy.repositories.get(data["repo"].casefold())
             if not isinstance(allowed, Mapping):
-                self.nonce_ledger.release(seat, nonce)
+                self._release_quietly(seat, nonce)
                 raise Refused(403, "repository not authorized")
             ranks = {"read": 1, "write": 2}
             if any(ranks.get(allowed.get(k), 0) < ranks[v] for k, v in requested.items()):
-                self.nonce_ledger.release(seat, nonce)
+                self._release_quietly(seat, nonce)
                 raise Refused(403, "permission not authorized")
-            try:
-                response = self._mint(policy, data["repo"], requested)
-            except Exception as exc:
-                if not _classifiable(exc):
-                    self.nonce_ledger.settle(seat, nonce, "outcome_unknown")
-                    raise
-                status = getattr(exc, "status", None)
-                if status in (401, 403, 429):
-                    # Definite provider rejection: the mint never happened, so
-                    # a corrected request may reuse the nonce.
-                    self.nonce_ledger.release(seat, nonce)
-                    raise Refused(502, "token issuance refused") from None
-                self.nonce_ledger.settle(seat, nonce, "outcome_unknown")
-                if status == 408 or (isinstance(status, int) and status >= 500):
-                    raise Refused(
-                        503, "token issuance uncertain; retry with a fresh nonce"
-                    ) from None
-                raise Refused(502, "token issuance failed") from None
-            # Only non-secret metadata is persisted:  never the token.
+            response = self._mint_guarded(seat, nonce, policy, data["repo"], requested, audit_state)
+            # Only non-secret metadata is persisted:  never the token.  Until
+            # the settle lands the audit row must read outcome_unknown, because
+            # the credential already exists even if this process dies or the
+            # settle itself fails.
+            audit_state["outcome"] = "outcome_unknown"
             stored = {k: v for k, v in response.items() if k != "token"}
             self.nonce_ledger.settle(seat, nonce, "ok", json.dumps(stored))
-            outcome = "issued"
+            audit_state["outcome"] = "issued"
             extra = {
                 "repo": data["repo"],
                 "permissions": requested,
@@ -251,7 +292,7 @@ class Broker:
         finally:
             # Auditing must never mask the request's own outcome.
             try:
-                self.audit(seat=seat, outcome=outcome, at=self.clock(), **extra)
+                self.audit(seat=seat, outcome=audit_state["outcome"], at=self.clock(), **extra)
             except Exception:
                 pass
 

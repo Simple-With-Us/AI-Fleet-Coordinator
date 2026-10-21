@@ -24,9 +24,18 @@ API = "https://api.github.com"
 
 
 class RoutingError(Exception):
-    def __init__(self, message, status=None):
+    """status is the provider HTTP code when one exists.
+
+    outcome classifies the failure for callers that must decide whether a
+    retry can duplicate a side effect:  "refused" (a definite provider
+    answer), "retryable" (a read-side failure before any write), or
+    "outcome_unknown" (a write may already have happened).
+    """
+
+    def __init__(self, message, status=None, outcome=None):
         super().__init__(message)
         self.status = status
+        self.outcome = outcome
 
 
 def secret_names(slug):
@@ -46,6 +55,7 @@ _CREDENTIAL_MARKERS = (
     "xoxb-",
     "xoxp-",
     "AKIA",
+    "sk-",
     "-----BEGIN",
 )
 
@@ -55,7 +65,7 @@ def target_parts(target):
     # persisted in a cache key, and never echo it back.
     if not isinstance(target, str) or any(m in target for m in _CREDENTIAL_MARKERS):
         # Field-specific refusal code;  callers log the code, never the value.
-        raise RoutingError("Repository target refused: credential-shaped value in repo field")
+        raise RoutingError("secret_refused:target", outcome="refused")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", target):
         raise RoutingError("Explicit owner/repo required; no inferred default")
     owner, repo = target.split("/")
@@ -81,7 +91,9 @@ def compact(data):
 
 
 def jwt(app_id, pem, clock=time.time):
-    b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=")
+    def b64(b):
+        return base64.urlsafe_b64encode(b).rstrip(b"=")
+
     now = int(clock())
     unsigned = b".".join(
         [
@@ -136,15 +148,33 @@ def github_call(method, path, bearer, body=None):
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=30) as r:
             raw = r.read(1048577)
             if len(raw) > 1048576:
-                raise RoutingError("GitHub response too large")
+                raise RoutingError(
+                    "GitHub response too large",
+                    outcome="outcome_unknown" if method == "POST" else "retryable",
+                )
             data = json.loads(raw)
             _bounded_json(data)
+            if not isinstance(data, dict):
+                raise RoutingError(
+                    "GitHub response is not a JSON object",
+                    outcome="outcome_unknown" if method == "POST" else "retryable",
+                )
             return data
     except urllib.error.HTTPError as e:
         # Never include response bodies or headers in exceptions/logs.
-        raise RoutingError("GitHub request failed, HTTP " + str(e.code), status=e.code) from None
+        # A POST that timed out or hit 408/5xx may already have minted.
+        if e.code == 408 or e.code >= 500:
+            outcome = "outcome_unknown" if method == "POST" else "retryable"
+        else:
+            outcome = "refused"
+        raise RoutingError(
+            "GitHub request failed, HTTP " + str(e.code), status=e.code, outcome=outcome
+        ) from None
     except (OSError, ValueError):
-        raise RoutingError("GitHub transport or response failed") from None
+        raise RoutingError(
+            "GitHub transport or response failed",
+            outcome="outcome_unknown" if method == "POST" else "retryable",
+        ) from None
 
 
 def _bounded_json(value, _depth=0, _budget=None):
@@ -221,13 +251,23 @@ class TokenRouter:
         bearer = self.signer(app_id, pem)
         del pem
         app = self.api("GET", "/app", bearer)
-        if app.get("id") != app_id or app.get("slug") != slug:
+        if (
+            not isinstance(app.get("id"), int)
+            or isinstance(app.get("id"), bool)
+            or not isinstance(app.get("slug"), str)
+        ):
+            raise RoutingError("GitHub /app identity has malformed fields")
+        if app["id"] != app_id or app["slug"] != slug:
             raise RoutingError("Key belongs to a different App")
         install = self.api("GET", "/repos/" + owner + "/" + repo + "/installation", bearer)
+        account = install.get("account")
         if (
-            install.get("app_id") != app_id
+            not isinstance(install.get("app_id"), int)
+            or isinstance(install.get("app_id"), bool)
             or install.get("suspended_at")
-            or str(install.get("account", {}).get("login", "")).casefold() != owner.casefold()
+            or not isinstance(account, dict)
+            or not isinstance(account.get("login"), str)
+            or account["login"].casefold() != owner.casefold()
         ):
             raise RoutingError("Installation identity mismatch or suspension")
         iid = install.get("id")

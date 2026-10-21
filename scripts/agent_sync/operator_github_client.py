@@ -13,7 +13,6 @@ import os
 import re
 import secrets
 import signal
-import stat
 import subprocess
 import sys
 import time
@@ -34,24 +33,33 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def private_key(path):
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError:
-        raise ClientError(
-            "OPERATOR_GITHUB_CALLER_KEY unavailable: caller key file cannot be opened"
-        ) from None
-    with os.fdopen(fd) as f:
-        s = os.fstat(f.fileno())
-        if (
-            not stat.S_ISREG(s.st_mode)
-            or s.st_uid != os.getuid()
-            or stat.S_IMODE(s.st_mode) & 0o077
-        ):
-            raise ClientError("Caller key must be an owned mode 0600 regular file")
-        key = f.read(4097).strip()
+CALLER_KEY_NAME = "OPERATOR_GITHUB_CALLER_KEY"
+
+
+def caller_key():
+    """Load the caller signing key from approved sources only.
+
+    Environment first, then `fleet-secrets get`.  A caller-chosen local file
+    is not an approved credential path and is not consulted.  Failures name
+    the variable operators must provision, never the value seen.
+    """
+    key = os.environ.get(CALLER_KEY_NAME)
+    if key is None:
+        try:
+            result = subprocess.run(
+                ["fleet-secrets", "get", CALLER_KEY_NAME],
+                capture_output=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise ClientError(
+                CALLER_KEY_NAME + " unavailable: fleet-secrets lookup failed"
+            ) from None
+        if result.returncode:
+            raise ClientError(CALLER_KEY_NAME + " unavailable: fleet-secrets lookup failed")
+        key = result.stdout.decode("utf-8", "replace").strip()
     if not 32 <= len(key) <= 4096:
-        raise ClientError("Invalid caller key")
+        raise ClientError(CALLER_KEY_NAME + " is missing or invalid")
     return key
 
 
@@ -102,7 +110,7 @@ def child_environment(original, result):
     return env
 
 
-def execute(url, seat, key_path, repo, permissions, command, *, run=subprocess.run):
+def execute(url, seat, repo, permissions, command, *, popen=subprocess.Popen):
     parts = urllib.parse.urlsplit(url)
     if (
         parts.scheme != "https"
@@ -120,7 +128,7 @@ def execute(url, seat, key_path, repo, permissions, command, *, run=subprocess.r
     perms = permission_set(permissions)
     if any(v != "read" for v in perms.values()):
         raise ClientError("Initial client supports read permissions only")
-    key = private_key(key_path)
+    key = caller_key()
     path = "/operator/v1/github/" + seat + "/token"
     body = json.dumps(
         {"repo": repo, "permissions": perms}, sort_keys=True, separators=(",", ":")
@@ -178,18 +186,23 @@ def execute(url, seat, key_path, repo, permissions, command, *, run=subprocess.r
     env = child_environment(os.environ, result)
     del result
     try:
-        return run_bounded(cmd, env=env)
+        return run_bounded(cmd, env=env, popen=popen)
     finally:
         env.pop("GH_TOKEN", None)
 
 
-def run_bounded(command, env, timeout=300):
+def run_bounded(command, env, timeout=300, *, popen=subprocess.Popen):
     """Run the reviewed gh command with a hard ceiling.
 
-    The child is terminated and reaped on timeout, interruption and SIGTERM,
-    so an interrupted runner never leaves a gh process holding GH_TOKEN.
+    The child is terminated and reaped on timeout, interruption, SIGTERM and
+    any unexpected wait failure, so an interrupted runner never leaves a gh
+    process holding GH_TOKEN.  A missing executable exits 127 so callers can
+    distinguish it from a command failure.
     """
-    proc = subprocess.Popen(command, env=env)
+    try:
+        proc = popen(command, env=env)
+    except FileNotFoundError:
+        raise SystemExit(127) from None
     previous = signal.getsignal(signal.SIGTERM)
 
     def _forward(signum, frame):
@@ -205,7 +218,9 @@ def run_bounded(command, env, timeout=300):
             proc.kill()
             proc.wait()
             raise ClientError("gh command timed out") from None
-        except (KeyboardInterrupt, SystemExit):
+        except BaseException:
+            # KeyboardInterrupt, SystemExit and unexpected wait failures all
+            # terminate and reap the child before propagating.
             if proc.poll() is None:
                 proc.terminate()
                 try:
@@ -222,7 +237,6 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="operator github exec")
     parser.add_argument("--origin", required=True)
     parser.add_argument("--caller", required=True)
-    parser.add_argument("--caller-key-file", required=True)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--permissions", required=True)
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -232,7 +246,7 @@ def main(argv=None):
         if any(len(p) != 2 for p in pairs) or len({p[0] for p in pairs}) != len(pairs):
             raise ClientError("Invalid permissions")
         command = a.command[1:] if a.command[:1] == ["--"] else a.command
-        return execute(a.origin, a.caller, a.caller_key_file, a.repo, dict(pairs), command)
+        return execute(a.origin, a.caller, a.repo, dict(pairs), command)
     except Exception as e:
         # Safe typed errors only; never display external HTTP bodies or tokens.
         msg = str(e) if isinstance(e, ClientError) else "request failed"

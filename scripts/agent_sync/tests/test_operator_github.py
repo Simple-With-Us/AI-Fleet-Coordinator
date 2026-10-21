@@ -1,7 +1,7 @@
 import json
 import tempfile
 from pathlib import Path
-from agent_sync.operator_github_state import NonceLedger
+from agent_sync.operator_github_state import LedgerError, NonceLedger
 import threading
 import unittest
 import urllib.request
@@ -155,3 +155,120 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(env['GIT_AUTHOR_NAME'],'swu-codex[bot]')
 
 if __name__=='__main__':unittest.main()
+
+class ReviewFixTests(unittest.TestCase):
+    """Regression tests for the second Kody review round on 19ddfb2a."""
+
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.ledger=NonceLedger(Path(self.temp.name)/"replay")
+        self.router=Router();self.audit=[]
+        self.broker=Broker(lambda seat:'a'*64 if seat=='CODEX' else None,
+            lambda seat:CallerPolicy('swu-codex',{'simple-with-us/ai-fleet-coordinator':{'contents':'read','metadata':'read'}}),
+            self.router,lambda slug:{'login':slug+'[bot]','id':123},clock=lambda:1000,audit=lambda **kw:self.audit.append(kw),enabled=True,nonce_ledger=self.ledger)
+        self.path='/operator/v1/github/CODEX/token';self.body=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'contents':'read'}}).encode()
+    def request(self,nonce='1'*64):
+        return self.broker.issue(self.path,'1000',nonce,signature('a'*64,self.path,'1000',nonce,self.body),self.body)
+    def test_missing_key_is_503_naming_variable(self):
+        self.path='/operator/v1/github/WISE/token'
+        body=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'contents':'read'}}).encode()
+        with self.assertRaises(Refused) as c:
+            self.broker.issue(self.path,'1000','9'*64,signature('a'*64,self.path,'1000','9'*64,body),body)
+        self.assertEqual(c.exception.status,503)
+        self.assertIn('OPERATOR_GITHUB_CALLER_KEY',c.exception.reason)
+    def test_claimed_replay_blocks_a_second_replay(self):
+        first=self.request()
+        # A concurrent replay claims the ok row first;  the broker's own replay must refuse.
+        claimed=self.ledger.begin('CODEX','1'*64,1061,1000,100)
+        self.assertEqual(claimed[0],'repeat-claimed')
+        with self.assertRaises(Refused) as c:self.request()
+        self.assertEqual(c.exception.status,409)
+        self.assertEqual(first['token'],'MOCK-TOKEN-NOT-A-CREDENTIAL')
+    def test_replay_restores_row_when_policy_now_denies(self):
+        self.request()
+        self.broker.policy_for=lambda seat:None
+        with self.assertRaises(Refused) as c:self.request()
+        self.assertEqual(c.exception.status,403)
+        import sqlite3
+        con=sqlite3.connect(self.ledger.path)
+        outcome=con.execute("select outcome from nonces").fetchone()[0];con.close()
+        self.assertEqual(outcome,'ok')
+    def test_replay_definite_rejection_releases_nonce(self):
+        from agent_sync.github_token_router import RoutingError
+        self.request()
+        def fail(*args):raise RoutingError('GitHub request failed, HTTP 401',status=401)
+        self.router.token_for=fail
+        with self.assertRaises(Refused) as c:self.request()
+        self.assertEqual(c.exception.status,502)
+        self.router.token_for=Router().token_for
+        self.assertEqual(self.request()['token'],'MOCK-TOKEN-NOT-A-CREDENTIAL')
+    def test_settle_failure_audits_outcome_unknown(self):
+        self.request()
+        def boom(*args,**kw):raise LedgerError('replay storage unavailable')
+        self.ledger.settle=boom
+        with self.assertRaises(LedgerError):self.request(nonce='2'*64)
+        self.assertEqual(self.audit[-1]['outcome'],'outcome_unknown')
+
+class CallerKeyTests(unittest.TestCase):
+    def test_env_var_is_used_first(self):
+        import os
+        from unittest.mock import patch
+        from agent_sync.operator_github_client import caller_key
+        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_KEY':'e'*32}):
+            with patch('agent_sync.operator_github_client.subprocess.run') as run:
+                self.assertEqual(caller_key(),'e'*32)
+                run.assert_not_called()
+    def test_fleet_secrets_fallback(self):
+        import os
+        from unittest.mock import patch
+        from agent_sync.operator_github_client import caller_key
+        class Done:
+            returncode=0
+            stdout=b'f'*32+b'\n'
+        with patch.dict(os.environ,{},clear=True):
+            with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()) as run:
+                self.assertEqual(caller_key(),'f'*32)
+                args=run.call_args[0][0]
+                self.assertEqual(args,['fleet-secrets','get','OPERATOR_GITHUB_CALLER_KEY'])
+    def test_missing_everywhere_names_variable_not_value(self):
+        import os
+        from unittest.mock import patch
+        from agent_sync.operator_github_client import caller_key
+        class Done:
+            returncode=3
+            stdout=b''
+        with patch.dict(os.environ,{},clear=True):
+            with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()):
+                with self.assertRaises(ClientError) as c:caller_key()
+        self.assertIn('OPERATOR_GITHUB_CALLER_KEY',str(c.exception))
+    def test_short_key_refused(self):
+        import os
+        from unittest.mock import patch
+        from agent_sync.operator_github_client import caller_key
+        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_KEY':'short'}):
+            with self.assertRaises(ClientError):caller_key()
+
+class RunBoundedTests(unittest.TestCase):
+    def test_missing_executable_exits_127(self):
+        from agent_sync.operator_github_client import run_bounded
+        def popen(*a,**k):raise FileNotFoundError()
+        with self.assertRaises(SystemExit) as c:run_bounded(['gh'],{},popen=popen)
+        self.assertEqual(c.exception.code,127)
+    def test_unexpected_wait_failure_reaps_child(self):
+        import subprocess as sp
+        from agent_sync.operator_github_client import run_bounded
+        class FakeProc:
+            def __init__(self):self.terminated=False
+            def poll(self):return None
+            def wait(self,timeout=None):raise RuntimeError('wait broke')
+            def terminate(self):self.terminated=True
+        proc=FakeProc()
+        with self.assertRaises(RuntimeError):
+            run_bounded(['gh'],{},popen=lambda *a,**k:proc)
+        self.assertTrue(proc.terminated)
+    def test_success_returns_status(self):
+        from agent_sync.operator_github_client import run_bounded
+        class FakeProc:
+            def poll(self):return 0
+            def wait(self,timeout=None):return 0
+        self.assertEqual(run_bounded(['gh'],{},popen=lambda *a,**k:FakeProc()),0)
