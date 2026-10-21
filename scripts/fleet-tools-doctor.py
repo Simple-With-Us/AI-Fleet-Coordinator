@@ -173,6 +173,10 @@ MAX_REMOTE_BYTES = 1024 * 1024  # the same bound fleet_config puts on a doctor's
 PROBE_TIMEOUT = 5  # each `<tool> --version`
 LATEST_TIMEOUT = 20  # each npm view / brew info
 GITHUB_TIMEOUT = 8
+# Probes run four at a time:  a burst of a dozen Node and Bun CLIs on a loaded Mac starved each
+# other past the 5 second cap under launchd (AFC-461).  A probe or lookup that timed out gets one
+# more try afterwards, on its own.
+REGISTRY_WORKERS = 4
 GRACE_MINUTES = 70  # an hourly timer that fired within this window is still on schedule
 MAC_UPDATER_LABEL = "com.jay.agent-sync-runtime-sync"
 SERVER_TIMERS = ("fleet-cli-git-update.timer", "fleet-tools-doctor.timer")
@@ -184,6 +188,10 @@ STATUS_FOR_STATE = {
     "unknown": "WARN",
 }
 STATE_FOR_STATUS = {"OK": "current", "WARN": "unknown", "FAIL": "missing"}
+# Rows a reader leaves out of its verdict:  the seat harness, ~/Code (the human tree) on the Mac, and
+# presence checks (`command:`, `tool-file:`, and `catalog:` on the server), whose `current` means only
+# "present";  each fleet tool's currency, a missing one included, is on its `tool:` row.
+VERDICT_EXCLUDED = ("harness", "human-tree", "presence")
 ROW_FIELDS = ("state", "category", "tool", "installed", "expectedRev", "behindCommits", "reason")
 # Owner decision pending (AFC-461):  what "current" means for a vendor CLI.  "latest":  the
 # package manager's latest version is the bar, and a tool behind it is stale with the gap shown.
@@ -1048,14 +1056,9 @@ def check_checkouts(
         check = f"checkout:{name}"
         repo = find_repo(name)
         if not repo:
-            report.add(
-                check,
-                "WARN",
-                "no checkout under /root/Code or ~/Code",
-                state="missing",
-                category=category,
-            )
-            states[name] = "missing"
+            why = "no checkout under /root/Code or ~/Code"
+            report.add(check, "WARN", why, state="unknown", category=category, reason=why)
+            states[name] = "unknown"
             continue
         head = git(repo, "rev-parse", "HEAD", runner=runner)
         branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD", runner=runner)
@@ -1113,7 +1116,7 @@ def check_commands(report: Report) -> None:
             "OK" if path else "FAIL",
             path or "not on PATH",
             state="current" if path else "missing",
-            category="fleet-tool",
+            category="presence",
             tool=name,
             reason="present (presence only;  currency is on tool:" + name + ")"
             if path
@@ -1135,7 +1138,7 @@ def check_catalogs(report: Report, host: str | None = None) -> None:
             status,
             f"{'present' if present else 'missing'} in {base}",
             state="current" if present else "missing",
-            category="human-tree" if human else "fleet-tool",
+            category="human-tree" if human else "presence",
         )
 
 
@@ -1157,7 +1160,7 @@ def check_tool_files(report: Report) -> None:
             "OK" if present else "FAIL",
             f"{'present' if present else 'missing'} in {base}",
             state="current" if present else "missing",
-            category="fleet-tool",
+            category="presence",
         )
 
 
@@ -1976,6 +1979,7 @@ def probe_version(entry: dict, path: str, runner: Callable = subprocess.run) -> 
             "version": None,
             "raw": None,
             "error": f"--version did not answer within {PROBE_TIMEOUT} seconds",
+            "timedOut": True,
         }
     except (OSError, subprocess.SubprocessError) as exc:
         return {
@@ -2032,7 +2036,11 @@ def npm_latest(package: str, runner: Callable = subprocess.run) -> dict:
             env=tool_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return {"version": None, "error": f"npm view failed ({type(exc).__name__})"}
+        return {
+            "version": None,
+            "error": f"npm view failed ({type(exc).__name__})",
+            "timedOut": isinstance(exc, subprocess.TimeoutExpired),
+        }
     version = parse_version(out.stdout) if out.returncode == 0 else None
     return {"version": version, "error": None if version else f"npm view exited {out.returncode}"}
 
@@ -2168,6 +2176,16 @@ def registry_row(
     )
 
 
+def safe_result(job, fallback):
+    """One item's answer;  an unexpected error in it becomes `fallback`, never the whole batch's."""
+    try:
+        return job.result()
+    except Exception as exc:  # noqa: BLE001 - isolate each item
+        if isinstance(fallback, dict) and "error" in fallback:
+            return dict(fallback, error=f"{fallback['error']} ({type(exc).__name__})")
+        return fallback
+
+
 def check_registry(
     report: Report,
     host: str,
@@ -2187,7 +2205,7 @@ def check_registry(
             if kind:
                 sources[entry["name"]] = (kind, ident)
     latest: dict = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=REGISTRY_WORKERS) as pool:
         probes = {
             e["name"]: pool.submit(probe_version, e, paths[e["name"]], runner)
             for e in entries
@@ -2202,7 +2220,7 @@ def check_registry(
                     lookups[name] = pool.submit(npm_latest, ident, runner)
                 elif kind == "github":
                     lookups[name] = pool.submit(github_latest, ident, fetch)
-            brew_found = brew_job.result() if brew_job else {}
+            brew_found = safe_result(brew_job, {}) if brew_job else {}
             for name, (kind, ident) in sources.items():
                 if kind == "brew":
                     latest[name] = dict(
@@ -2210,12 +2228,22 @@ def check_registry(
                         source="brew",
                     )
         for name, job in lookups.items():
-            latest[name] = dict(job.result(), source=sources[name][0])
+            failed = {"version": None, "error": "latest lookup failed"}
+            latest[name] = dict(safe_result(job, failed), source=sources[name][0])
         for name, (kind, _) in sources.items():
             latest.setdefault(
                 name, {"source": kind, "version": None, "error": "not read (--no-network)"}
             )
-        results = {name: job.result() for name, job in probes.items()}
+        failed_probe = {"version": None, "raw": None, "error": "version probe failed"}
+        results = {name: safe_result(job, failed_probe) for name, job in probes.items()}
+    # One more try, alone, for whatever timed out while it shared the machine with the others.
+    by_name = {e["name"]: e for e in entries}
+    for name, result in results.items():
+        if result.get("timedOut"):
+            results[name] = probe_version(by_name[name], paths[name], runner)
+    for name, found in latest.items():
+        if found.get("timedOut") and sources.get(name, (None,))[0] == "npm":
+            latest[name] = dict(npm_latest(sources[name][1], runner), source="npm")
     for entry in entries:
         name = entry["name"]
         fields = registry_row(entry, host, paths[name], results.get(name), latest.get(name))
@@ -2336,6 +2364,11 @@ def unreachable_server(error: str) -> dict:
                     "category": entry["kind"],
                     "tool": entry["name"],
                     "required": entry["server"] == REQUIRED,
+                    "path": None,
+                    "version": None,
+                    "latest": None,
+                    "latestSource": None,
+                    "basis": None,
                     "installed": None,
                     "expectedRev": None,
                     "behindCommits": None,
@@ -2352,9 +2385,61 @@ def unreachable_server(error: str) -> dict:
     }
 
 
+# What an ssh failure may say in the report:  a fixed phrase per known class, never ssh's own text
+# (which can carry host names and addresses).
+SSH_ERRORS = (
+    ("permission denied", "the server refused the key"),
+    ("host key verification failed", "the server's host key is not trusted"),
+    ("timed out", "the connection timed out"),
+    ("connection refused", "the connection was refused"),
+    ("could not resolve hostname", "the host name did not resolve"),
+    ("no route to host", "there is no route to the host"),
+    ("connection closed", "the server closed the connection"),
+)
+ALIAS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]*")
+MAX_REMOTE_DEPTH = 32
+MAX_REMOTE_NODES = 100000
+MAX_REMOTE_ROWS = 5000
+TOO_DEEP = "the server's answer is nested too deeply or has too many nodes"
+
+
+def json_within_limits(
+    value, max_depth: int = MAX_REMOTE_DEPTH, max_nodes: int = MAX_REMOTE_NODES
+) -> bool:
+    """True when a parsed JSON value is at most `max_depth` deep and has at most `max_nodes` nodes."""
+    stack, nodes = [(value, 1)], 0
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if nodes > max_nodes or depth > max_depth:
+            return False
+        if isinstance(item, dict):
+            stack.extend((v, depth + 1) for v in item.values())
+        elif isinstance(item, list):
+            stack.extend((v, depth + 1) for v in item)
+    return True
+
+
+def remote_rows_valid(rows: list) -> bool:
+    """Every row a reader will touch has the types it expects."""
+    if len(rows) > MAX_REMOTE_ROWS:
+        return False
+    for row in rows:
+        if not isinstance(row, dict):
+            return False
+        if not all(isinstance(row.get(key), str) for key in ("check", "status", "detail")):
+            return False
+        for key in ("state", "category", "tool", "reason", "version"):
+            if row.get(key) is not None and not isinstance(row.get(key), str):
+                return False
+    return True
+
+
 def fetch_remote(alias: str, runner: Callable = subprocess.run) -> dict:
     """The server's doctor document over the read-only key:  the forced command runs the doctor with
     --json whatever is asked, so nothing is sent.  Any failure is `reachable: false` with the reason."""
+    if not ALIAS_RE.fullmatch(alias or ""):
+        return unreachable_server(f"{NO_ROUTE} (the ssh alias is not a plain host alias)")
     try:
         config = runner(
             ["ssh", "-G", alias],
@@ -2393,16 +2478,21 @@ def fetch_remote(alias: str, runner: Callable = subprocess.run) -> dict:
         err = out.stderr or b""
         if isinstance(err, bytes):
             err = err.decode("utf-8", "replace")
-        first = err.strip().splitlines()[:1]
+        err = err.lower()
+        phrase = next((says for marker, says in SSH_ERRORS if marker in err), None)
         return unreachable_server(
-            f"ssh {alias} exited {out.returncode}" + (f":  {first[0][:160]}" if first else "")
+            f"ssh {alias} exited {out.returncode}" + (f" ({phrase})" if phrase else "")
         )
     if len(stdout) > MAX_REMOTE_BYTES:
         return unreachable_server(f"the server's answer is larger than {MAX_REMOTE_BYTES} bytes")
     try:
         doc = json.loads(stdout.decode("utf-8", "replace"))
+    except RecursionError:
+        return unreachable_server(TOO_DEEP)
     except ValueError:
         return unreachable_server("the server answered with something that is not JSON")
+    if not json_within_limits(doc):
+        return unreachable_server(TOO_DEEP)
     if not isinstance(doc, dict) or not isinstance(doc.get("checks"), list):
         return unreachable_server("the server answered without a doctor document")
     if "schemaVersion" not in doc:
@@ -2415,6 +2505,8 @@ def fetch_remote(alias: str, runner: Callable = subprocess.run) -> dict:
         )
     if doc.get("host") != "server":
         return unreachable_server(f"{alias} answered as host {doc.get('host')!r}, not the server")
+    if not remote_rows_valid(doc["checks"]):
+        return unreachable_server("the server's doctor answered with a malformed check row")
     doc["reachable"] = True
     doc["error"] = None
     return doc
@@ -2431,7 +2523,10 @@ def combined_report(docs: list) -> dict:
 
 
 def write_report(path: Path, report_doc: dict) -> None:
-    """Atomic and private:  a 0600 temporary file in the same folder, fsynced, then renamed over."""
+    """Atomic and private:  a 0600 temporary file in the same folder, fsynced, then renamed over.
+    The folder must be a real directory (a symlink is refused), created 0700 when absent."""
+    if path.parent.is_symlink():
+        raise ValueError(f"refusing to write the report through a symlinked folder:  {path.parent}")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, tmp = tempfile.mkstemp(prefix=".report.", suffix=".tmp", dir=str(path.parent))
     try:
@@ -2448,6 +2543,9 @@ def write_report(path: Path, report_doc: dict) -> None:
         except OSError:
             pass
         raise
+    # The rename has already replaced the report atomically;  syncing the folder only makes that
+    # rename survive a power cut.  Some file systems refuse a directory fsync, and a lost rename only
+    # leaves the previous report, which a reader ages out to unknown, so this step is best effort.
     try:
         dir_fd = os.open(str(path.parent), os.O_RDONLY)
     except OSError:
@@ -2463,7 +2561,7 @@ def write_report(path: Path, report_doc: dict) -> None:
 def state_counts(doc: dict) -> str:
     counts: dict = {}
     for row in doc.get("checks") or []:
-        if isinstance(row, dict) and row.get("category") not in ("harness", "human-tree"):
+        if isinstance(row, dict) and row.get("category") not in VERDICT_EXCLUDED:
             counts[row.get("state")] = counts.get(row.get("state"), 0) + 1
     order = ("current", "stale", "missing", "unknown", "absent")
     return ", ".join(f"{counts[s]} {s}" for s in order if counts.get(s)) or "no rows"
@@ -2543,6 +2641,11 @@ def run(
         help="when the set of failing checks changes, post it with agent-sync to #agent-sync, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as agent-sync resolves it)",
     )
     parser.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="skip the tool registry (no `<tool> --version` probes), for a caller with a short time budget",
+    )
+    parser.add_argument(
         "--remote",
         metavar="ALIAS",
         help="also read the server's doctor over this read-only ssh alias (fleet-tools-ro;  docs/protocols/fleet-tool-parity.md)",
@@ -2566,7 +2669,12 @@ def run(
     )
     if on_mac_runtime:
         updater = check_mac_updater(report, runner, previous)
-    rt = check_runtime(report, network, runner, expected, updater, previous)
+    if on_mac_runtime:
+        # agent-sync, board and every Mac copy come from the managed runtime, so the Mac's rows are
+        # always judged against it, even if an old release receipt is still on disk.
+        rt = check_mac_runtime(report, runner, expected, updater, previous)
+    else:
+        rt = check_runtime(report, network, runner, expected, updater, previous)
     checkouts = check_checkouts(report, network, runner, host)
     check_commands(report)
     check_catalogs(report, host)
@@ -2577,7 +2685,8 @@ def run(
     elif host == "server" and (RUNTIME / "repo/.git").exists():
         check_server_timers(report, runner)
         check_server_tools(report, rt, checkouts, runner)
-    check_registry(report, host, network, runner, fetch)
+    if not args.no_registry:
+        check_registry(report, host, network, runner, fetch)
     for seat in [s.strip().upper() for s in args.seats.split(",") if s.strip()]:
         check_seat(report, seat, env)
         check_mcp_startup(report, seat)

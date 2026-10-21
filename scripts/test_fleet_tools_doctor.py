@@ -687,6 +687,19 @@ class RegistryCheckTests(HomeCase):
         self.assertFalse([c for c in calls if c and c[0].endswith("/muse")])
         self.assertEqual(rows["tool:gitleaks"]["latestSource"], "github")
 
+    def test_one_tools_unexpected_error_does_not_hide_the_others(self):
+        def answer(argv, **kw):
+            if Path(argv[0]).name == "fx":
+                raise RuntimeError("boom")
+            return subprocess.CompletedProcess(argv, 0, "1.0.0\n", "")
+
+        report = doctor.Report()
+        with mock.patch.object(doctor, "TOOL_REGISTRY", self.registry):
+            doctor.check_registry(report, "mac", False, answer)
+        self.assertEqual(report.row("tool:fx")["state"], "unknown")
+        self.assertIn("RuntimeError", report.row("tool:fx")["detail"])
+        self.assertEqual(report.row("tool:muse")["state"], "current")
+
     def test_a_probe_timeout_is_unknown(self):
         rows, _ = self.run_registry(
             False, [(("--version",), subprocess.TimeoutExpired(["x", "--version"], 5))]
@@ -694,6 +707,27 @@ class RegistryCheckTests(HomeCase):
         self.assertEqual(rows["tool:fx"]["state"], "unknown")
         self.assertEqual(rows["tool:fx"]["status"], "WARN")
         self.assertIn("did not answer", rows["tool:fx"]["detail"])
+
+    def test_a_probe_or_npm_lookup_that_timed_out_gets_one_more_try_alone(self):
+        tries: dict = {}
+
+        def answer(argv, **kw):
+            key = "view" if "view" in argv else Path(argv[0]).name
+            tries[key] = tries.get(key, 0) + 1
+            if tries[key] == 1:
+                raise subprocess.TimeoutExpired(argv, 5)
+            out = "2.1.306\n" if key == "view" else "2.1.306 (Claude Code)\n"
+            return subprocess.CompletedProcess(argv, 0, out, "")
+
+        report = doctor.Report()
+        with mock.patch.object(doctor, "TOOL_REGISTRY", self.registry[:1]):
+            doctor.check_registry(report, "mac", True, answer)
+        row = report.row("tool:claude")
+        self.assertEqual(
+            (row["state"], row["version"], row["latest"]), ("current", "2.1.306", "2.1.306")
+        )
+        self.assertEqual(tries, {"claude": 2, "view": 2})
+        self.assertEqual(doctor.REGISTRY_WORKERS, 4)
 
     def test_brew_is_the_source_for_a_cellar_install(self):
         cellar = self.home / "opt/homebrew/Cellar/gitleaks/8.29.0/bin"
@@ -888,6 +922,7 @@ def git_repo(root: Path, commits):
             capture_output=True,
             text=True,
             check=True,
+            timeout=60,
         ).stdout.strip()
 
     root.mkdir(parents=True, exist_ok=True)
@@ -1098,7 +1133,7 @@ class ServerTests(HomeCase):
 
 
 class RemoteTests(unittest.TestCase):
-    CONFIGURED = (("ssh", "-G"), (0, "user root\nhostname 100.64.0.9\n"))
+    CONFIGURED = (("ssh", "-G"), (0, "user root\nhostname 192.0.2.10\n"))
 
     def doc(self, **overrides):
         doc = {"ok": True, "checks": [], "schemaVersion": 1, "host": "server"}
@@ -1116,6 +1151,16 @@ class RemoteTests(unittest.TestCase):
         self.assertTrue({"runtime", "tool:agent-sync", "tool:gitleaks", "tool:claude"} <= set(rows))
         self.assertTrue(all(r["state"] == "unknown" for r in rows.values()))
         self.assertTrue(rows["tool:gitleaks"]["required"])
+        for key in ("path", "version", "latest", "latestSource", "basis"):
+            self.assertIn(key, rows["tool:gitleaks"])  # the same shape as a reachable registry row
+
+    def test_an_alias_that_looks_like_an_option_is_refused_before_ssh_runs(self):
+        calls = []
+        for alias in ("-oProxyCommand=touch /tmp/x", "", "two words"):
+            doc = doctor.fetch_remote(alias, fake_runner([self.CONFIGURED], calls))
+            self.assertFalse(doc["reachable"])
+            self.assertIn("not a plain host alias", doc["error"])
+        self.assertEqual(calls, [])
 
     def test_the_ssh_call_is_read_only_and_batch(self):
         calls = []
@@ -1136,16 +1181,37 @@ class RemoteTests(unittest.TestCase):
         )
         for answer, why in (
             (subprocess.TimeoutExpired(["ssh"], 150), "did not answer"),
-            ((255, b"", b"Permission denied (publickey).\n"), "exited 255"),
+            ((255, b"", b"Permission denied (publickey).\n"), "refused the key"),
             ((0, b"not json"), "not JSON"),
             ((0, json.dumps({"ok": True, "checks": []}).encode()), "predates schemaVersion"),
             ((0, self.doc(schemaVersion=2)), "schemaVersion 2"),
             ((0, self.doc(host="mac")), "not the server"),
+            ((0, b"[" * 50000 + b"]" * 50000), "nested too deeply"),
+            (
+                (0, self.doc(checks=[{"check": "x", "status": 1, "detail": "d"}])),
+                "malformed check row",
+            ),
+            ((0, self.doc(checks=["not a row"])), "malformed check row"),
         ):
             doc = self.fetch(self.CONFIGURED, (("BatchMode=yes",), answer))
             self.assertFalse(doc["reachable"], why)
             self.assertIn(why, doc["error"])
             self.assertTrue(all(r["state"] == "unknown" for r in doc["checks"]))
+
+    def test_ssh_error_text_never_reaches_the_report(self):
+        stderr = b"ssh: connect to host 192.0.2.77 port 22: Operation timed out\n"
+        doc = self.fetch(self.CONFIGURED, (("BatchMode=yes",), (255, b"", stderr)))
+        self.assertEqual(doc["error"], "ssh fleet-tools-ro exited 255 (the connection timed out)")
+        doc = self.fetch(self.CONFIGURED, (("BatchMode=yes",), (255, b"", b"something new\n")))
+        self.assertEqual(doc["error"], "ssh fleet-tools-ro exited 255")
+
+    def test_depth_and_node_limits(self):
+        self.assertTrue(doctor.json_within_limits({"a": [1, 2, {"b": 3}]}))
+        deep = []
+        for _ in range(40):
+            deep = [deep]
+        self.assertFalse(doctor.json_within_limits(deep))
+        self.assertFalse(doctor.json_within_limits(list(range(10)), max_nodes=5))
 
 
 class ReportAndRunTests(HomeCase):
@@ -1236,6 +1302,38 @@ class ReportAndRunTests(HomeCase):
     def test_write_dash_prints_the_report(self):
         text, _ = self.run_doctor(["--no-network", "--write", "-"], host="server")
         self.assertEqual(json.loads(text)["hosts"][0]["host"], "server")
+
+    def test_a_symlinked_report_folder_is_refused(self):
+        real = self.home / "elsewhere"
+        real.mkdir()
+        (self.home / "state").mkdir()
+        (self.home / "state/fleet-tools").symlink_to(real)
+        with self.assertRaises(ValueError):
+            doctor.write_report(self.home / "state/fleet-tools/report.json", {"schemaVersion": 1})
+        self.assertEqual(list(real.iterdir()), [])
+
+    def test_no_registry_skips_the_version_probes(self):
+        text, _ = self.run_doctor(["--json", "--no-network", "--no-registry"])
+        checks = [r["check"] for r in json.loads(text)["checks"]]
+        self.assertNotIn("tool:gitleaks", checks)
+
+    def test_presence_rows_are_their_own_category_and_an_absent_checkout_is_unknown(self):
+        text, _ = self.run_doctor(["--json", "--no-network"])
+        rows = {r["check"]: r for r in json.loads(text)["checks"]}
+        self.assertEqual(rows["command:agent-sync"]["category"], "presence")
+        self.assertEqual(rows["tool-file:scripts/recall"]["category"], "presence")
+        self.assertIn("presence", doctor.VERDICT_EXCLUDED)
+        self.assertEqual(rows["checkout:FleetLink"]["state"], "unknown")  # find_repo finds none
+
+    def test_the_mac_judges_its_tools_by_the_managed_runtime_even_with_a_release_receipt(self):
+        self.rt_dir.mkdir(parents=True)
+        (self.rt_dir / ".git").write_text("gitdir: x\n")
+        self.touch(".local/share/fleet-cli/status.json", json.dumps({"source_commit": OLD}))
+        rules = [(("rev-parse", "HEAD"), (0, TIP + "\n")), (("launchctl",), (113, ""))]
+        text, _ = self.run_doctor(["--json", "--no-network"], rules, host="mac")
+        runtime = {r["check"]: r for r in json.loads(text)["checks"]}["runtime"]
+        self.assertEqual(runtime["installed"], TIP)  # the managed runtime's HEAD, not the release's
+        self.assertNotIn("release", runtime["detail"])
 
 
 if __name__ == "__main__":

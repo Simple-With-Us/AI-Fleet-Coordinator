@@ -53,6 +53,8 @@ On the server, `fleet-tools-doctor.timer` runs it every hour as CLAUDE with `--p
 
 ### States
 
+`--no-registry` skips the registry (no `--version` probes) for a caller with a short time budget.
+
 Every row keeps `check`, `status` and `detail` and adds `state`, `category`, `tool`, `installed`, `expectedRev`, `behindCommits` and `reason`;  registry rows add `version`, `latest`, `latestSource`, `required`, `path` and `basis`.
 
 | `state` | `status` | Means |
@@ -86,7 +88,7 @@ What "current" means for a vendor CLI is one constant, `VENDOR_CURRENCY_POLICY`,
            {"host": "server", "reachable": false, "error": "no read-only route to the server (...)", "checks": ["every server row, unknown"]}]}
 ```
 
-Each host document carries `schemaVersion` 1, `host`, `generatedAt`, `doctorCommit`, `expected` (the tip and how it was read) and its rows.  A reader treats a report older than 45 minutes, a missing or malformed file, or any other `schemaVersion` as unknown, and leaves `harness` and `human-tree` rows out of its verdict.
+Each host document carries `schemaVersion` 1, `host`, `generatedAt`, `doctorCommit`, `expected` (the tip and how it was read) and its rows.  A reader treats a report older than 45 minutes, a missing or malformed file, or any other `schemaVersion` as unknown, and leaves `harness`, `human-tree` and `presence` rows out of its verdict.  A `presence` row (`command:`, `tool-file:`, and `catalog:` on the server) only says a command or file exists, so its `current` means present;  every fleet tool's currency, a missing one included, is on its `tool:` row.
 
 ### The server route (owner step)
 
@@ -115,4 +117,4 @@ The server half is read over a key that can do one thing:  run this doctor with 
    ```
 4. Check it:  `ssh fleet-tools-ro | head -c 200` and `ssh fleet-tools-ro whoami` both print the doctor's JSON (the forced command ignores what is asked), `ssh -N -L 9999:localhost:22 fleet-tools-ro` is refused, and `python3 scripts/fleet-tools-doctor.py --remote fleet-tools-ro` lists the server's rows.  Renaming the key turns them `unknown` again.
 
-The doctor calls it with `-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes` and no command.  An exit of 1 with a document is still an answer (the server has a FAIL row);  a timeout, any other exit, something that is not JSON, or a doctor too old to report `schemaVersion` 1 makes the server `reachable: false` and every server row `unknown`.  Removing the `authorized_keys` line revokes it.
+The doctor calls it with `-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes` and no command.  An exit of 1 with a document is still an answer (the server has a FAIL row);  a timeout, any other exit, something that is not JSON, an answer nested past 32 levels or 100,000 nodes, a malformed row, or a doctor too old to report `schemaVersion` 1 makes the server `reachable: false` and every server row `unknown`.  The report names a known ssh failure with a fixed phrase (the key was refused, the connection timed out, and so on) and never copies ssh's own text, which can carry host names and addresses.  Removing the `authorized_keys` line revokes it.
