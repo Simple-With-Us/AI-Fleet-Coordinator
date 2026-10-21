@@ -172,7 +172,9 @@ def failure_path() -> str:
 
 
 def _clean_reason(reason: str) -> str:
-    text = str(reason or "unknown").lower()[:64]
+    # 128 keeps the whole reason token:  the automation-env token is 68 characters, and the
+    # old 64-character cap cut the missing variable's name off mid-word.
+    text = str(reason or "unknown").lower()[:128]
     return "".join(c if c in _REASON_OK else "-" for c in text) or "unknown"
 
 

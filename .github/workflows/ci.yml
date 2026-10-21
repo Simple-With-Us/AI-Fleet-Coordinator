@@ -113,6 +113,11 @@ jobs:
     - name: fleet_config tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_config/tests -t . -v
+    # fleet_view (AFC-394):  the Fleet View collectors for lanes, open PRs and Linear claims, the
+    # request budget, the blocker mapping and the pinned envelope.  Fake runners only;  no network.
+    - name: fleet_view tests
+      run: |
+        cd scripts && python3 -m unittest discover -s fleet_view/tests -t . -v
     # fleet-secrets (OPS-818):  fake infisical and Keychain at subprocess.run;  get, run, --only, exit 3, the
     # unresolved-reference guard, auth selection, and no secret in argv or error text.
     - name: fleet_secrets tests
@@ -280,6 +285,10 @@ jobs:
         python3 scripts/mac-collab/test_app_normalization.py
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    # Shared alert ingress: state transitions, vendor normalization, and the
+    # Zulip status rendering.  Pure functions, so no Workers runtime needed.
+    - name: Alert ingress unit tests
+      run: node --test workers/alert-ingress/src/
     # Hosted agent-sync MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
     - name: agent-sync MCP Worker unit tests
@@ -303,7 +312,7 @@ jobs:
     # Pure builders and readers of the Fleet Reference Sheet registry sync.  No
     # network:  the tests import the script, which runs main() only as an entry point.
     - name: Fleet Reference Sheet registry sync tests
-      run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs
+      run: node --test scripts/fleet-apps-sheet-sync.format.test.mjs scripts/fleet-apps-sheet-sync.tabs.test.mjs scripts/fleet-apps-sheet-sync.ingest.test.mjs
     # The TestFlight freshness deploy check (AFC-341).  App Store Connect, gh, build-window.sh,
     # the state file and Zulip are stubbed;  the last test validates testflight-apps.json.
     - name: TestFlight freshness check tests

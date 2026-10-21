@@ -49,6 +49,13 @@ import threading
 import time
 from pathlib import Path
 
+# The secret scanner lives in the managed agent-sync runtime, which is a
+# separate checkout and is not on the interpreter's path.  Add it before the
+# import, so the bridge does not depend on how it was launched.
+_AGENT_SYNC_SCRIPTS = os.path.expanduser("~/apps/lanes/_managed/fleet/agent-sync-runtime/scripts")
+if os.path.isdir(_AGENT_SYNC_SCRIPTS) and _AGENT_SYNC_SCRIPTS not in sys.path:
+    sys.path.insert(0, _AGENT_SYNC_SCRIPTS)
+
 from agent_sync.secretscan import scan as scan_secret
 
 LARK_EVENT_KEY = "im.message.receive_v1"
@@ -56,7 +63,16 @@ DEFAULT_LARK_CLI = os.path.expanduser("~/.local/npm-global/bin/lark-cli")
 DEFAULT_MCODE = os.path.expanduser("~/.local/bin/mcode")
 DEFAULT_STATE_DIR = os.path.expanduser("~/.minimax/lark-mm-bridge")
 DEFAULT_CWD = os.path.expanduser("~/apps")
-DEFAULT_TIMEOUT = 600
+DEFAULT_TIMEOUT = 1200
+# A Lark write is one HTTP call, but lark-cli is a node process and the Mac
+# has been at a load of 190, where it took 54 seconds and then lost the
+# acknowledgement.  A short timeout here loses the reply.
+REPLY_TIMEOUT = 300
+# The owner watches Zulip, so every Lark exchange is mirrored there with the
+# MiniMax session id, which is the thread the answer came from.
+AGENT_SYNC = os.path.expanduser("~/.local/bin/agent-sync")
+AGENT_SYNC_ROOT = os.path.expanduser("~/.agent-sync")
+ZULIP_TOPIC_PREFIX = "Lark"
 MAX_REPLY_CHARS = 4000
 # How many delivered message ids the dedup state remembers.  Rows that have
 # not reached a final state are kept beyond this window, because dropping one
@@ -80,18 +96,23 @@ ACP_HANDSHAKE_TIMEOUT = 300
 # just 2 spaces".  A real U+00A0 is the mechanism for Markdown panes that
 # collapse spaces (the MiniMax Code pane, GitHub, Zulip), not for Lark.
 SENTENCE_GAP = "  "
+# A Lark plain-text message is rendered literally, so two ASCII spaces already
+# show as a wide gap there, and the owner asked for exactly that on Oct 19,
+# 2026: "No nbsp here please just 2 spaces".  A Markdown pane (Zulip, GitHub)
+# collapses spaces instead, so the wide gap there is a real U+00A0 plus a space.
+ZULIP_SENTENCE_GAP = "\u00a0 "
 _SENTENCE_END = re.compile(r"([A-Za-z]+)([.!?])( +)(?=[\"'(\[A-Z])")
 _ABBREVIATIONS = ("mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "no")
 
 
-def _widen_sentence(match):
+def _widen_sentence(match, gap):
     """Normalise the spaces after a sentence end to the wide gap."""
     if match.group(1).lower() in _ABBREVIATIONS:
         return match.group(0)
-    return match.group(1) + match.group(2) + SENTENCE_GAP
+    return match.group(1) + match.group(2) + gap
 
 
-def sentence_gap(text):
+def sentence_gap(text, gap=SENTENCE_GAP):
     """Widen the gap after a sentence end, leaving code alone.
 
     The seat answers in plain prose, and prose carries one space between
@@ -115,7 +136,7 @@ def sentence_gap(text):
         rebuilt = []
         for i, piece in enumerate(pieces):
             if i % 2 == 0:
-                piece = _SENTENCE_END.sub(_widen_sentence, piece)
+                piece = _SENTENCE_END.sub(lambda m: _widen_sentence(m, gap), piece)
             rebuilt.append(piece)
         out.append("".join(rebuilt))
     return "\n".join(out)
@@ -174,9 +195,13 @@ def run(command, stdin_text=None, timeout=120, env=None):
     except OSError as exc:
         raise CommandError("%s could not start: %s" % (command[0], exc))
     if completed.returncode != 0:
-        detail = (completed.stderr or "").strip().splitlines()
-        tail = detail[-1] if detail else "exit %s" % completed.returncode
-        raise CommandError("%s failed: %s" % (command[0], tail))
+        # The whole stderr, not just its last line: lark-cli prints a JSON
+        # error, and the last line of that is "}", which told the reader
+        # nothing about what actually went wrong.
+        detail = (completed.stderr or "").strip()
+        if not detail:
+            detail = "exit %s" % completed.returncode
+        raise CommandError("%s failed: %s" % (command[0], detail[-500:]))
     return completed.stdout
 
 
@@ -815,9 +840,101 @@ class Bridge:
             "--text=" + text,
         ]
         try:
-            run(command, timeout=120, env=self.env)
+            run(command, timeout=REPLY_TIMEOUT, env=self.env)
         except CommandError as exc:
             raise DeliveryError(self._classify_reply_failure(str(exc)), str(exc))
+
+    def _mirror(self, chat_id, session_id, question, answer, failed=False):
+        """Post the Lark exchange to Zulip, where the owner is watching.
+
+        Lark is a second surface, not a second seat: the answer comes from
+        the MiniMax session named in the post, so the owner can see which
+        thread it was and can find the same session in Lark.  Without this
+        the Lark conversation is invisible from the fleet side.
+        """
+        if not getattr(getattr(self, "args", None), "zulip_mirror", True):
+            return
+        topic = "%s %s" % (ZULIP_TOPIC_PREFIX, chat_id[-8:])
+        kind = "failed turn" if failed else "answered"
+        body = sentence_gap(
+            "Lark chat %s (%s)  |  MiniMax session %s  |  %s\n\n"
+            "Owner: %s\n\nMM: %s"
+            % (chat_id, chat_id, session_id or "none", kind, question, answer),
+            gap=ZULIP_SENTENCE_GAP,
+        )
+        env = dict(self.env)
+        env["AGENT_SEAT"] = "MM"
+        if isinstance(session_id, str) and session_id:
+            # The MiniMax session id is a real session id, so the post carries
+            # the same thread the Lark reply came from.
+            env["AGENT_SESSION"] = session_id
+        try:
+            run(
+                [AGENT_SYNC, "post", "--topic", topic, body],
+                timeout=REPLY_TIMEOUT,
+                env=env,
+            )
+            log("mirrored the Lark exchange to Zulip topic %s" % topic)
+        except CommandError as exc:
+            # A mirror that fails must not fail the reply: the owner has the
+            # answer in Lark either way.
+            log("could not mirror the Lark exchange to Zulip: %s" % exc)
+
+    def _record_in_seat_inbox(
+        self, chat_id, message_id, session_id, question, answer, sender_id=None
+    ):
+        """Put the exchange in the seat inbox, the queue a Zulip DM lands in.
+
+        This is how the seat hears about Lark traffic at all.  The listener
+        writes the seat inbox for a Zulip event, and nothing wrote it for
+        Lark, so a Lark chat was invisible to the seat that answered it even
+        though the answer was correct.  The listener's own primitives are
+        used, under its own lock, so the two writers cannot interleave.
+        """
+        try:
+            from agent_sync import live as L
+        except ImportError as exc:
+            log("could not record the Lark exchange in the seat inbox: %s" % exc)
+            return
+        try:
+            paths = L.SeatPaths(self.args.agent_sync_root, self.args.seat)
+            now = time.time()
+            row = {
+                "channel": "lark",
+                "classes": ["direct"],
+                "content": "Jay: %s\n\nMM: %s\n\n(MiniMax session %s)"
+                % (question, answer, session_id or "unknown"),
+                "delivered_to": None,
+                "flags": ["mentioned"],
+                "id": "lark:%s" % message_id,
+                "is_bot": False,
+                "kind": "message",
+                "muse_bridge": False,
+                "owner": True,
+                "owner_api": False,
+                "recipients": [],
+                "sender": "Jay Wedgeworth" if sender_id is None else sender_id,
+                "sender_email": "",
+                "sender_id": sender_id,
+                "stream_id": 0,
+                "time": time.strftime("%a, %b %-d, %-I:%M%p", time.localtime(now)),
+                "topic": "%s %s" % (ZULIP_TOPIC_PREFIX, chat_id[-8:]),
+                "ts": int(now),
+                "type": "stream",
+                "wake_owner": True,
+                "wake_worthy": True,
+            }
+            with L.locked(paths.seat_inbox_meta):
+                meta = L.read_json(paths.seat_inbox_meta)
+                seq = int(meta.get("next_seq") or 1)
+                L.append_jsonl(paths.seat_inbox, [dict(row, seq=seq)])
+                meta["next_seq"] = seq + 1
+                L.write_json(paths.seat_inbox_meta, meta)
+            log("recorded the Lark exchange in the %s seat inbox" % self.args.seat)
+        except Exception as exc:
+            # The seat inbox is a convenience, not the reply path: a failure
+            # here must never cost the answer.
+            log("could not record the Lark exchange in the seat inbox: %s" % exc)
 
     def _handle(self, event):
         # Every field below is read off a frame the Lark socket delivered, and
@@ -947,15 +1064,19 @@ class Bridge:
             if not self._save_state():
                 return True
         session = self._session_for(chat_id)
+        session_id = session.session_id
         try:
             answer = session.prompt(content)
-        except Exception:
-            log("turn failed for %s" % message_id)
-            answer = "MM could not answer this turn."
+        except Exception as exc:
+            log("turn failed for %s: %s" % (message_id, exc))
+            note = "MM could not answer: %s" % exc
+            self._mirror(chat_id, session_id, content, note, failed=True)
+            done = self._send(message_id, note)
             with self.sessions_lock:
                 broken = self.sessions.pop(chat_id, None)
             if broken is not None:
                 broken.close()
+            return done
         if scan_secret(answer or ""):
             self._record_delivery(message_id, "refused")
             return True
@@ -965,6 +1086,11 @@ class Bridge:
             job.update(stage="reply", reply=answer or "(MM produced no reply.)")
             if not self._save_state():
                 return True
+        # Name the thread in the chat itself, so the owner can tell which
+        # MiniMax session answered even when he only has the Lark window.
+        answer = "%s\n\n(MiniMax session %s)" % (answer, session_id or "unknown")
+        self._mirror(chat_id, session_id, content, answer)
+        self._record_in_seat_inbox(chat_id, message_id, session_id, content, answer)
         return self._send(message_id, answer, attempt)
 
     def _send(self, message_id, text, attempt=0):
@@ -1096,6 +1222,24 @@ def build_parser():
     )
     parser.add_argument(
         "--dry-run", dest="dry_run", action="store_true", help="log messages, do not answer"
+    )
+    parser.add_argument(
+        "--no-zulip-mirror",
+        dest="zulip_mirror",
+        action="store_false",
+        help="do not mirror the Lark exchange into Zulip",
+    )
+    parser.add_argument(
+        "--seat",
+        dest="seat",
+        default="MM",
+        help="the fleet seat whose inbox records the Lark exchange",
+    )
+    parser.add_argument(
+        "--agent-sync-root",
+        dest="agent_sync_root",
+        default=AGENT_SYNC_ROOT,
+        help="the agent-sync state root that holds the seat inbox",
     )
     return parser
 
