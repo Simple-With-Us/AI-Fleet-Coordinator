@@ -45,15 +45,6 @@ struct GridCell: Identifiable {
 
     var id: String { "\(seat)/\(kind.rawValue)" }
 
-    /// The cell the panel shows before any cell has been picked.
-    static let placeholder = GridCell(
-        seat: "—",
-        kind: .instructions,
-        state: .unknown,
-        rules: [],
-        coverReason: "Pick a cell and this panel shows what it refers to."
-    )
-
     /// The proof level the cell's rules require, the strongest of them.
     var proofLevel: String? {
         let levels = rules.map { $0.proofLevelRequired ?? "L0" }

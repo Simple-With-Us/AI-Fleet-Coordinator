@@ -28,6 +28,13 @@ extension CellState {
 /// One cell's badge:  the state, the proof level and the age of the observation.
 struct CellBadge: View {
     let cell: GridCell
+    /// The age the cell carries,  when it is the exception and not the run's own time.
+    ///
+    /// Every rule in a run is checked at the same moment,  so ninety cells showing the
+    /// same age is noise and hides the one that matters.  A cell shows its age only
+    /// when it was checked apart from the rest,  which is a rule served from the cache
+    /// and not looked at again.
+    var age: String?
     var width: CGFloat = 108
 
     var body: some View {
@@ -41,28 +48,48 @@ struct CellBadge: View {
             Text(cell.proofLevel ?? "—")
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
-            Text(cell.ageText)
-                .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(.secondary)
+            if let age {
+                Text(age)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(Color.orange)
+                    .help("This rule was checked apart from the rest of the run.")
+            }
         }
         .padding(.horizontal, 7)
         .frame(width: width, height: 30)
         .background(cell.state.background, in: RoundedRectangle(cornerRadius: 7))
         .overlay {
             RoundedRectangle(cornerRadius: 7)
-                .strokeBorder(cell.state.border, lineWidth: 1)
+                .strokeBorder(cell.borderColor(age != nil), lineWidth: 1)
         }
         .contentShape(Rectangle())
     }
 }
 
+extension GridCell {
+    /// The border the badge uses,  which is stronger on an exception.
+    func borderColor(_ isException: Bool) -> Color {
+        isException ? Color.orange.opacity(0.7) : state.border
+    }
+}
+
 /// The seat by config grid:  rows are seats, columns are the six config kinds.
+///
+/// The detail lives in one place,  the panel under the grid.  There was a popup as
+/// well once,  and two surfaces for one cell is a trap:  closing the popup put the
+/// panel back to the previous cell,  so the panel and the popup could disagree about
+/// what was selected and neither was the place the operator was reading.
 struct FleetGridView: View {
     @EnvironmentObject private var store: FleetStore
     @State private var selectedCell: GridCell?
+    /// The height of the detail panel,  which the operator drags and which survives
+    /// the next launch.
+    @AppStorage("muster.detailPanelHeight") private var panelHeight: Double = 420
 
     private let seatWidth: CGFloat = 132
     private let columnWidth: CGFloat = 108
+    private let minPanelHeight: CGFloat = 170
+    private let maxPanelHeight: CGFloat = 900
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -78,41 +105,67 @@ struct FleetGridView: View {
                 .padding(.horizontal, 22)
                 .padding(.vertical, 18)
             }
-            Divider()
-            // The panel is always there,  not only after a click:  an operator opening
-            // the grid should see what the first cell refers to without touching it.
-            ConfigFilePanel(
-                cell: selectedCell ?? store.cells.first ?? GridCell.placeholder,
-                artifacts: artifacts
-            )
-            .frame(maxHeight: 420)
-        }
-        .sheet(item: $selectedCell) { cell in
-            CellDetailSheet(cell: cell)
+            if let cell = selectedCell {
+                PanelResizeHandle(height: panelHeightBinding)
+                ConfigFilePanel(
+                    cell: cell,
+                    artifacts: store.artifacts(for: cell),
+                    onClose: { selectedCell = nil }
+                )
+                .frame(height: CGFloat(panelHeight))
+            }
         }
     }
 
-    /// The artifacts the panel shows.
-    private var artifacts: FleetStore.CellArtifacts {
-        if let cell = selectedCell { return store.artifacts(for: cell) }
-        if let first = store.cells.first { return store.artifacts(for: first) }
-        return FleetStore.CellArtifacts(rules: [], views: [], coverReason: nil)
+    /// The panel's height,  kept inside its bounds.
+    private var panelHeightBinding: Binding<CGFloat> {
+        Binding(
+            get: { CGFloat(panelHeight) },
+            set: { newValue in
+                panelHeight = Double(min(max(newValue, minPanelHeight), maxPanelHeight))
+            }
+        )
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Text("Seat")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: seatWidth, alignment: .leading)
-            ForEach(ConfigKind.columnOrder, id: \.self) { kind in
-                Text(kind.title)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Seat")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: columnWidth, alignment: .leading)
+                    .frame(width: seatWidth, alignment: .leading)
+                ForEach(ConfigKind.columnOrder, id: \.self) { kind in
+                    Text(kind.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: columnWidth, alignment: .leading)
+                }
+                Spacer()
+            }
+            if let common = store.commonCheckedAt {
+                // The run checks every rule at one moment,  so the time goes here once
+                // instead of in ninety cells.
+                HStack(spacing: 8) {
+                    Spacer().frame(width: seatWidth)
+                    Text("Checked \(FleetTime.clock(common)),  \(FleetTime.ageText(since: common)) ago")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    .help("When the engine checked the rules this run.  A cell shows its own age only when it was checked apart from the rest.")
+                    Spacer()
+                }
             }
         }
         .padding(.bottom, 8)
+    }
+
+    /// The age a cell carries,  when it was checked apart from the rest of the run.
+    private func exceptionAge(for cell: GridCell) -> String? {
+        guard
+            let common = store.commonCheckedAt,
+            let checkedAt = cell.checkedAt,
+            abs(checkedAt.timeIntervalSince(common)) > 60
+        else { return nil }
+        return cell.ageText
     }
 
     /// The legend,  so a badge is never a puzzle.
@@ -168,7 +221,7 @@ struct FleetGridView: View {
                     Button {
                         selectedCell = cell
                     } label: {
-                        CellBadge(cell: cell, width: columnWidth)
+                        CellBadge(cell: cell, age: exceptionAge(for: cell), width: columnWidth)
                     }
                     .buttonStyle(.plain)
                     .help(cell.tooltip)
@@ -181,101 +234,42 @@ struct FleetGridView: View {
     }
 }
 
-/// The detail sheet for one cell:  expected against observed, and the last proof.
-struct CellDetailSheet: View {
-    let cell: GridCell
-    @Environment(\.dismiss) private var dismiss
+/// The drag bar between the grid and the detail panel.
+///
+/// Dragging it up makes the panel taller and dragging it down makes it shorter,  so
+/// the operator can give the detail as much room as the cell in front of them needs.
+struct PanelResizeHandle: View {
+    @Binding var height: CGFloat
+    @State private var startHeight: CGFloat = 0
+    @State private var hovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    if cell.rules.isEmpty {
-                        Text(
-                            cell.coverReason
-                                ?? "No rule and no not-applicable cover account for this seat and kind."
-                        )
-                        .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(cell.rules) { rule in
-                            ruleDetail(rule)
-                        }
-                    }
+        ZStack {
+            Rectangle()
+                .fill(Color.clear)
+                .frame(height: 9)
+            Capsule()
+                .fill(Color.secondary.opacity(hovering ? 0.65 : 0.3))
+                .frame(width: 44, height: 3)
+        }
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if startHeight == 0 { hovering = inside }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    if startHeight == 0 { startHeight = height }
+                    // Dragging up grows the panel,  so the change is the opposite sign.
+                    height = startHeight - value.translation.height
                 }
-                .padding(20)
-            }
-        }
-        .frame(width: 660, height: 560)
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(cell.seat)
-                .font(.system(size: 15, weight: .semibold, design: .monospaced))
-            Text("/")
-                .foregroundStyle(.secondary)
-            Text(cell.kind.title)
-                .font(.headline)
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(cell.state.tint)
-                    .frame(width: 8, height: 8)
-                Text(cell.state.rawValue)
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-            }
-            .foregroundStyle(cell.state.tint)
-            Spacer()
-            Button("Close") {
-                dismiss()
-            }
-            .keyboardShortcut(.cancelAction)
-        }
-        .padding(20)
-    }
-
-    private func ruleDetail(_ rule: CheckResult) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(rule.ruleId)
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                Text(rule.platform)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(rule.state)
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(rule.checkState == .passed ? Color.green : Color.orange)
-            }
-
-            Text(rule.reason)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(alignment: .top, spacing: 18) {
-                ValueTable(title: "Expected", values: rule.expected)
-                ValueTable(title: "Observed", values: rule.observed)
-            }
-
-            GroupBox("Last proof") {
-                VStack(alignment: .leading, spacing: 4) {
-                    ProofLine(label: "Proof", value: rule.proofText)
-                    ProofLine(label: "Check type", value: rule.checkType)
-                    ProofLine(label: "Collector", value: rule.collector)
-                    ProofLine(label: "Reason code", value: rule.reasonCode)
-                    ProofLine(label: "Checked at", value: rule.checkedAt)
-                    ProofLine(label: "Expires at", value: rule.expiresAt ?? "—")
-                    ProofLine(label: "Time to live", value: "\(rule.ttlSeconds)s")
-                    ProofLine(label: "Stale", value: rule.stale ? "yes" : "no")
-                    ProofLine(label: "Counts as failing", value: rule.failing ? "yes" : "no")
+                .onEnded { _ in
+                    startHeight = 0
+                    hovering = false
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(4)
-            }
-        }
-        .padding(.bottom, 6)
+        )
+        .accessibilityLabel("Resize the detail panel")
+        .accessibilityHint("Drag up to make the panel taller")
     }
 }
 
