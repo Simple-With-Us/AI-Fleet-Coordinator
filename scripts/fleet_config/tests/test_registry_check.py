@@ -52,6 +52,7 @@ def _rule(rule_id: str, kind: str, platforms: list, **overrides) -> dict:
         "autofixAllowed": False,
         "collector": "mac",
         "ttlSeconds": 900,
+        "source": "",
     }
     rule.update(overrides)
     return rule
@@ -91,7 +92,7 @@ class RegistryCheckerManifestTests(unittest.TestCase):
             for kind in ("instructions", "hooks", "mcp", "skills", "subagents", "permissions")
         ]
         return {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "seats": {
                 "CLAUDE": {
                     "platforms": ["claude"],

@@ -255,6 +255,7 @@ def _rule(
     proof_level: str = "L0",
     autofix_allowed: bool = False,
     ttl_seconds: int = 900,
+    source: str = "",
 ) -> dict[str, object]:
     """One manifest rule, in the shape the design doc pins (section 6.1)."""
     return {
@@ -269,6 +270,7 @@ def _rule(
         "collector": "mac",
         "ttlSeconds": ttl_seconds,
         "description": description,
+        "source": source,
     }
 
 
@@ -857,7 +859,7 @@ def build_manifest() -> dict[str, object]:
             "the seed has an entry for a seat the registry does not hold live: %s"
             % ", ".join(unknown)
         )
-    return {"schemaVersion": 1, "seats": {tag: seats[tag] for tag in sorted(seats)}}
+    return {"schemaVersion": 2, "seats": {tag: seats[tag] for tag in sorted(seats)}}
 
 
 def render_manifest(manifest: dict[str, object]) -> str:

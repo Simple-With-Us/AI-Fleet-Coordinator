@@ -278,25 +278,42 @@ class L1SafetyTests(FakeHookCase):
         self.assertTrue(os.path.realpath(destination).startswith(temp + os.sep))
 
     def test_the_payload_is_the_claude_shape(self):
-        proof.run_l1_probe("claude", self.ctx, hook_command=self.hook("deny"))
-        payload = self.recorded_payload()
+        adapter = proof.PLATFORM_ADAPTERS["claude"]
+        payload = proof.build_payload(adapter, "git clone src dst", "/tmp/work")
         self.assertEqual(payload["hook_event_name"], "PreToolUse")
         self.assertEqual(payload["tool_name"], "Bash")
         self.assertIn("command", payload["tool_input"])
         self.assertIn("cwd", payload)
 
     def test_the_cursor_payload_is_the_cursor_shape(self):
-        proof.run_l1_probe("cursor", self.ctx, hook_command=self.hook("deny"))
-        payload = self.recorded_payload()
+        adapter = proof.PLATFORM_ADAPTERS["cursor"]
+        payload = proof.build_payload(adapter, "git clone src dst", "/tmp/work")
         self.assertEqual(payload["hook_event_name"], "beforeShellExecution")
         self.assertIn("command", payload)
         self.assertIn("workspace_roots", payload)
 
     def test_the_antigravity_payload_is_the_antigravity_shape(self):
-        proof.run_l1_probe("antigravity", self.ctx, hook_command=self.hook("deny"))
-        payload = self.recorded_payload()
+        adapter = proof.PLATFORM_ADAPTERS["antigravity"]
+        payload = proof.build_payload(adapter, "git clone src dst", "/tmp/work")
         self.assertEqual(payload["tool_name"], "run_command")
         self.assertIn("CommandLine", payload["tool_input"])
+
+    def test_the_minimax_shell_natives_cover_both_spellings(self):
+        self.assertEqual(proof.NATIVE_SHELL_TOOL_NAMES["minimax"], ("bash", "Bash"))
+
+    def test_the_minimax_probe_denies_both_shell_spellings(self):
+        outcome = proof.run_l1_probe("minimax", self.ctx, hook_command=self.hook("deny"))
+        self.assertTrue(outcome.passed)
+        self.assertIs(outcome.state, CheckState.PASS)
+
+    def test_the_file_payload_carries_its_path_field(self):
+        adapter = proof.PLATFORM_ADAPTERS["claude"]
+        for tool_name, path_field in proof.NATIVE_FILE_TOOLS:
+            payload = proof.build_file_payload(
+                adapter, "/tmp/sentinel/dst", "/tmp/work", tool_name, path_field
+            )
+            self.assertEqual(payload["tool_name"], tool_name)
+            self.assertEqual(payload["tool_input"][path_field], "/tmp/sentinel/dst")
 
 
 class HookResolutionTests(FakeHookCase):
