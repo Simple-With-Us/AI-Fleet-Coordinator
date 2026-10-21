@@ -6211,6 +6211,11 @@ def verify_minimax(
                 + f"exit={res.returncode} stdout={_brief(res.stdout)}",
             )
         )
+    # The verify CLI surfaces an invalid registry as a structured refusal
+    # (main prints `REFUSED ...`), not a downgraded check FAIL: verify runs a
+    # single platform, so the `apply all` unwind the downgrade inside
+    # probe_minimax_files protects against does not apply here.
+    registry_tree(paths.registry)
     out.extend(probe_minimax_files(cmd, paths.home, paths.registry, timeout, minimal_path))
     switch, _off = guard_switch()
     if _is_off(os.environ.get(switch, "")):
