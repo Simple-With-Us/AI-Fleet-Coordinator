@@ -59,6 +59,8 @@ def docs_fleet_skills_path() -> Path | None:
     if root is None:
         return None
     return root / "docs" / "fleet-skills"
+
+
 AGENT_CONFIG_ROOT = "fleet-agent-config"
 FLEET_SKILLS_ROOT = "fleet-skills"
 

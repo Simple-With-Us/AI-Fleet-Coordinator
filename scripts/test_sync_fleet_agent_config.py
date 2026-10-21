@@ -101,7 +101,9 @@ class MirrorFailureIsNotFatalTests(unittest.TestCase):
         self.assertEqual(mirrored, ["good/skills"])
         self.assertEqual(failures, ["broken/skills"])
         # The subtree that worked is really there.
-        self.assertTrue((self.gdrive / "fleet-agent-config" / "good" / "skills" / "SKILL.md").is_file())
+        self.assertTrue(
+            (self.gdrive / "fleet-agent-config" / "good" / "skills" / "SKILL.md").is_file()
+        )
 
     def test_the_skills_catalog_failure_is_reported_not_raised(self) -> None:
         def boom(_src, _dest):

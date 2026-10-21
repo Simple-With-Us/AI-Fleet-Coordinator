@@ -304,7 +304,11 @@ def main() -> int:
     repos = planned_repos()
     if args.only:
         wanted = set(args.only)
-        missing = sorted(wanted - set(repos) - {p.name for p in CODE_ROOT.iterdir() if p.is_dir()} if CODE_ROOT.is_dir() else wanted)
+        missing = sorted(
+            wanted - set(repos) - {p.name for p in CODE_ROOT.iterdir() if p.is_dir()}
+            if CODE_ROOT.is_dir()
+            else wanted
+        )
         repos = [r for r in repos if r in wanted]
         extra = [name for name in args.only if name not in repos]
         repos.extend(extra)
@@ -350,6 +354,7 @@ def main() -> int:
     if findings_db.is_file():
         try:
             import sqlite3
+
             db_dest = dest_dir / f"findings-{DATE_STR}.db"
             src_conn = sqlite3.connect(findings_db)
             dst_conn = sqlite3.connect(db_dest)
