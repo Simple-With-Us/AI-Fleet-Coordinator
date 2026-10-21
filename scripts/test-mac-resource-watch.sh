@@ -36,16 +36,33 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("watch", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+# The samples ride the module's own thresholds, so the conjunct is still tested
+# (percent alone does not fire, percent AND absolute used GB does) whatever the
+# live defaults are.
 sample = {
     "disk_free_gb": 200.0, "disk_used_pct": 20.0,
-    "swap_total_gb": 20.0, "swap_used_gb": 1.0, "swap_used_pct": 90.0,
+    "swap_total_gb": 64.0, "swap_used_gb": 1.0, "swap_used_pct": mod.SWAP_USED_PCT + 1.0,
     "load1": 1.0, "load5": 1.0, "load15": 1.0, "at": 0,
 }
 hits = mod.evaluate(sample, 200.0)
 assert not any(h["metric"] == "swap" for h in hits), hits
-sample["swap_used_gb"] = 9.0
+sample["swap_used_gb"] = mod.SWAP_USED_GB + 1.0
 hits = mod.evaluate(sample, 200.0)
 assert any(h["metric"] == "swap" for h in hits), hits
 print("evaluate ok")
+PY
+python3 - "$ROOT/mac-resource-watch.py" "$ROOT/mac-auto-cleanup.sh" <<'PY' || fail "housekeeper lock contract"
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("watch", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+auto = Path(sys.argv[2]).read_text(encoding="utf-8")
+# The watch and the cleanup script must take the SAME lock, or two schedulers
+# reclaim at once.
+assert mod.HOUSEKEEPER_LOCK == mod.STATE_DIR / ".housekeeper.lock", mod.HOUSEKEEPER_LOCK
+assert ".claude-disk-janitor/.housekeeper.lock" in auto, "mac-auto-cleanup.sh takes another lock"
+assert mod.HOUSEKEEPER_LOCK_STALE_SEC == 7200, mod.HOUSEKEEPER_LOCK_STALE_SEC
+print("housekeeper lock ok")
 PY
 echo OK
