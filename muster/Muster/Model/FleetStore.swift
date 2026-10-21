@@ -125,6 +125,8 @@ final class FleetStore: ObservableObject {
     func refresh() {
         guard let location = location else {
             results = []
+            summary = nil
+            generatedAt = nil
             phase = .failed(
                 "no engine checkout was found;  set FLEET_ENGINE_ROOT to a checkout that "
                     + "carries scripts/fleet_config"
@@ -133,6 +135,11 @@ final class FleetStore: ObservableObject {
             return
         }
         results = []
+        // The summary and the clock go with the results.  A run in flight must not
+        // leave the previous run's counts and timestamp on the screen,  because the
+        // count is what the operator reads as "current".
+        summary = nil
+        generatedAt = nil
         rebuild()
         phase = .running
         let runner = EngineRunner(location: location)

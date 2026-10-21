@@ -244,6 +244,12 @@ struct EngineRunner {
             try process.run()
         } catch {
             timeoutItem.cancel()
+            // The process never started,  so no child holds the write ends of the pipes
+            // and the reader threads would wait for an EOF that never comes.  Closing
+            // the write ends here gives them the EOF and lets them finish.
+            outputPipe.fileHandleForWriting.closeFile()
+            errorPipe.fileHandleForWriting.closeFile()
+            readers.wait()
             completion(
                 EngineRun(
                     envelope: nil,

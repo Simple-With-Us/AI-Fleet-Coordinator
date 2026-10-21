@@ -103,7 +103,7 @@ struct ConfigFilePanel: View {
                 Spacer()
             }
             switch artifact {
-            case .file(_, let text, let truncated):
+            case .file(_, let text, let truncated, _):
                 if truncated {
                     Text("The file is longer than the panel reads, so this is its first part.")
                         .font(.caption2)
