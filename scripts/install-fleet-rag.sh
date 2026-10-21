@@ -14,7 +14,7 @@
 #        {command: "python3", args: ["<install root>/fleet-recall-mcp.py"]}
 #      in ~/.claude.json, ~/.cursor/mcp.json, ~/.gemini/config/mcp_config.json,
 #      ~/.codex/config.toml and ~/.grok/config.toml.  Never writes a token anywhere.
-#      The harnesses with a different config format (OpenCode, Kimi Code, Muse Code, MiniMax, fx)
+#      The harnesses with a different config format (OpenCode, Kimi Code, Copilot CLI, Muse Code, MiniMax, fx)
 #      go through `python3 -m fleet_lanes.install_mcp`, which this script calls with --home "$HOME"; it writes
 #      each tool's native shape, skips a tool that is not installed, and leaves a hand-registered entry alone.
 #      Clutch is not touched here: it carries fleet-recall as a native agent preset.  agent-sync is not
@@ -399,7 +399,7 @@ register_all() {
 
 # The harnesses whose MCP config is not the flat mcpServers JSON or an [mcp_servers.X] TOML table above.
 # fleet_lanes.install_mcp owns their formats and its own tests; this only runs it.  Its output is printed as is.
-MORE_TARGETS=(opencode kimi muse minimax fx)
+MORE_TARGETS=(opencode kimi copilot muse minimax fx)
 
 register_more() {
   local action="$1" cmd rc=0
@@ -698,7 +698,7 @@ for row in "${SUMMARY[@]}"; do
 done
 if [[ "$UNINSTALL" -eq 0 && "$DRY" -eq 0 ]]; then
   say ""
-  say "next: restart Claude Code / Cursor / Gemini / Codex / Grok / OpenCode / Kimi / Muse sessions so they pick up '$SERVER_NAME'."
+  say "next: restart Claude Code / Cursor / Gemini / Codex / Grok / OpenCode / Kimi / Copilot / Muse sessions so they pick up '$SERVER_NAME'."
 fi
 if [[ "$FAILED_MORE" -ne 0 ]]; then
   say "install_mcp failed for at least one tool; its output is above" >&2
