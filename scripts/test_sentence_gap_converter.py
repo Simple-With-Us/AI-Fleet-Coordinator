@@ -48,6 +48,13 @@ _ASSERT_MARKUP_GROUP = "[]*_`~)\"\\'’”]"
 _COUNT_RE = re.compile(r"grep -oE?\s+\$'(?P<ansi>(?:[^'\\]|\\.)*)'")
 _LEFTOVER_RE = re.compile(r"grep -cE\s+(?:\$'(?P<ansi>(?:[^'\\]|\\.)*)'|'(?P<plain>[^']*)')")
 
+# The mirror ships its leftover check in the plain, non -E form, so the shared extraction
+# does not see it.  This one takes both forms, and is used for the mirrors alone:  the
+# plain form matches unrelated commands elsewhere in the checkout.
+_MIRROR_LEFTOVER_RE = re.compile(
+    r"grep -c[E]?\s+(?:\$'(?P<ansi>(?:[^'\\]|\\.)*)'|'(?P<plain>[^']*)')"
+)
+
 # The check the fleet used to write, before the markup group.  It cannot see a gap that
 # sits after a markup span, which is the defect these tests exist to hold shut.
 _BLIND_LEFTOVER = r"""[^0-9][.!?] +[A-Z"]"""
@@ -60,10 +67,16 @@ _QUOTE_BLIND_LEFTOVER = r'[^0-9][.!?][]*_`)"]* +[A-Z"]'
 # in.  The live procedure is in the one home;  a record is not a copy of it.
 DATED_RECORDS = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
 
-# Generated mirrors can only be updated by the Fleet-OPS handbook publisher.
-# Draft PR #755 owns exact converter/assertion parity after that publication; its
-# explicit comparison is kept out of this consolidated PR to avoid duplicate gates.
-# Canonical source: Fleet-OPS handbook/owner/writing-for-owner.md.  Never hand-edit the mirror.
+# Generated mirrors.  These are built from Fleet-OPS handbook/ and this repository cannot
+# change them:  scripts/check-generated-mirror.py refuses any edit from a branch that is
+# not handbook-sync/mirror, so the pattern reaches one only when the upstream handbook page
+# changes and the sync job rewrites the mirror.  The checkout-wide sweep below skips them
+# for the same reason DATED_RECORDS is skipped -- not a copy this repository may edit --
+# and check-generated-mirror.py is the gate that holds their bytes honest in the meantime.
+#
+# The mirror is still the file every seat reads first, so it does not stay a blind
+# exemption:  GeneratedMirrorTests below asserts every mirror this registry names, so a
+# mirror added here is asserted too and not silently left unchecked.
 GENERATED_MIRRORS = ("AGENT-SYNC.md",)
 
 # This file holds the checks themselves, so the sweep below finds its own command
@@ -215,6 +228,19 @@ def leftover_checks(text: str) -> list[str]:
     """
     out = []
     for match in _LEFTOVER_RE.finditer(text):
+        ansi = match.group("ansi")
+        out.append(ansi if ansi is not None else match.group("plain"))
+    return out
+
+
+def mirror_leftover_checks(text: str) -> list[str]:
+    """Every leftover check a mirror holds, in either quoting and in either grep form.
+
+    The mirror ships its check in the plain, non -E form, so the shared extraction does
+    not see it and would report the mirror clean while it ships a blind check.
+    """
+    out = []
+    for match in _MIRROR_LEFTOVER_RE.finditer(text):
         ansi = match.group("ansi")
         out.append(ansi if ansi is not None else match.group("plain"))
     return out
@@ -438,13 +464,8 @@ class OneSourceOfTruthTests(unittest.TestCase):
     def test_no_live_file_holds_a_converter_without_the_markup_group(self) -> None:
         """A copy that drifts is a body that ships with no gap, so every converter in the
         checkout carries the markup group.  A dated record of a ruling keeps the form it
-        was written in and is listed as such, and generated-mirror parity belongs to
-        draft PR #755 after the publisher updates the mirror.
-
-        A retired seat's catalog pack is exempt for the same reason a dated record is:
-        it is frozen history, not a body that ships (Rule 12).  Demanding today's
-        converter there would push every change to the one home back into the retired
-        seats, which is the drift the rule forbids."""
+        was written in and is listed as such, and a generated mirror is built elsewhere and
+        cannot be edited here, so it is asserted on its own."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
             if (
@@ -702,8 +723,9 @@ class AssertionCommandTests(unittest.TestCase):
 
     def test_no_live_file_holds_a_blind_leftover_check(self) -> None:
         """No live file may hold the check that cannot see a gap after a markup span.
-        A dated record of a ruling keeps the form it was written in and is skipped;
-        draft PR #755 owns the generated mirror's explicit parity assertion."""
+        A dated record of a ruling keeps the form it was written in and is skipped, and a
+        generated mirror is built elsewhere and cannot be edited here, so it is asserted
+        on its own."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
             if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
@@ -718,6 +740,119 @@ class AssertionCommandTests(unittest.TestCase):
                     _ASSERT_MARKUP_GROUP,
                     pattern,
                     "%s holds a blind leftover check:  %s" % (rel, pattern),
+                )
+
+
+class GeneratedMirrorTests(unittest.TestCase):
+    """AGENT-SYNC.md is the file every seat reads first, so it is asserted, not skipped.
+
+    The mirror is built from the Fleet-OPS handbook and this repository cannot change it:
+    scripts/check-generated-mirror.py refuses any hand edit from a branch that is not
+    handbook-sync/mirror.  It is also the copy a seat reads before it reads anything
+    else, so a stale converter in it ships a body with no gap.  The assertions below
+    hold every mirror in the registry to a known state and fail with a pointer to the
+    handbook sync, rather than letting the mirror drift unnoticed behind a blanket
+    exemption.
+
+    The mirror is still behind the one home:  the handbook page behind it carries the
+    converter without the markup group, and that fix belongs to Fleet-OPS, not here.  So
+    every mirror in the registry is held to one of two known states -- the one home's
+    converter, or the pinned converter the mirror ships until the sync job rewrites it --
+    and to nothing else.  A mirror that carries anything else fails here, with the
+    pointer.  The strict shape of the converter is asserted the moment the mirror
+    carries the one home's converter.
+    """
+
+    # The mirrors come from the registry, so a mirror added to it is asserted here too
+    # and not silently left unchecked.
+    MIRRORS = tuple(ROOT / rel for rel in GENERATED_MIRRORS)
+
+    # The converter the mirror ships until the upstream sync rewrites it.  It is the one
+    # home's converter without the markup group, so it is the state the pointer is about.
+    PRE_SYNC_CONVERTERS = (
+        's/([.!?]) +(?=[A-Z0-9"*`#@])/$1\\x{a0} /g',
+        's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\\x{a0} /g',
+    )
+
+    POINTER = (
+        "A generated mirror is built from the Fleet-OPS handbook, so it cannot be fixed "
+        "here:  change the handbook page behind it (for AGENT-SYNC.md, "
+        "handbook/owner/writing-for-owner.md) in a Fleet-OPS pull request and the sync "
+        "job writes the mirror from the merge.  A hand edit is refused by "
+        "scripts/check-generated-mirror.py."
+    )
+
+    def _mirror_texts(self) -> list[tuple[str, str]]:
+        """Every mirror in the registry, with the text it holds."""
+        out = []
+        for path in self.MIRRORS:
+            with open(path, encoding="utf-8") as fh:
+                out.append((path.relative_to(ROOT).as_posix(), fh.read()))
+        return out
+
+    def _is_pre_sync(self, found: list[str]) -> bool:
+        """Whether the mirror still ships the converter it holds until the upstream sync
+        rewrites it."""
+        return sorted(found) == sorted(self.PRE_SYNC_CONVERTERS)
+
+    def test_the_mirror_holds_the_one_homes_converter(self) -> None:
+        """The mirror carries the same converter the one home ships, so a seat that
+        reads only the mirror reads a converter that can see a markup gap.  Until the
+        upstream sync lands it carries the pinned converter instead, and the pointer
+        says where that fix goes."""
+        canonical = one_home_patterns()[0]
+        for rel, text in self._mirror_texts():
+            found = patterns_in(text)
+            self.assertTrue(found, "%s holds no converter pattern" % rel)
+            if canonical in found:
+                continue
+            if self._is_pre_sync(found):
+                self.skipTest(
+                    "%s still ships the converter it holds until the upstream sync "
+                    "rewrites it:  %s\n%s" % (rel, found, self.POINTER)
+                )
+            self.fail(
+                "%s holds neither the one home's converter nor the pinned pre-sync "
+                "converter:  %s\n%s" % (rel, found, self.POINTER)
+            )
+
+    def test_the_mirror_holds_no_converter_without_the_markup_group(self) -> None:
+        """Every converter the mirror holds can see a gap that sits after a markup span.
+        The markup group reaches the mirror with the upstream sync, so the mirror that
+        still ships the pinned pre-sync converter waits for it."""
+        for rel, text in self._mirror_texts():
+            found = patterns_in(text)
+            self.assertTrue(found, "%s holds no converter pattern" % rel)
+            if self._is_pre_sync(found):
+                self.skipTest(
+                    "%s still ships the pre-sync converter, so the markup group has not "
+                    "reached it yet:  %s\n%s" % (rel, found, self.POINTER)
+                )
+            for pattern in found:
+                self.assertIn(
+                    _MARKUP_GROUP,
+                    pattern,
+                    "%s holds a converter without the markup group:  %s\n%s"
+                    % (rel, pattern, self.POINTER),
+                )
+
+    def test_the_mirror_holds_no_blind_leftover_check(self) -> None:
+        """The leftover check the mirror ships must be able to see a gap that was never
+        converted, including one that sits after a markup span."""
+        for rel, text in self._mirror_texts():
+            found = patterns_in(text)
+            if self._is_pre_sync(found):
+                self.skipTest(
+                    "%s still ships the pre-sync converter, so its leftover check has "
+                    "not been widened yet:  %s\n%s" % (rel, found, self.POINTER)
+                )
+            checks = mirror_leftover_checks(text)
+            self.assertTrue(checks, "%s holds no leftover check" % rel)
+            for pattern in checks:
+                self.assertIn(
+                    _ASSERT_MARKUP_GROUP,
+                    pattern,
+                    "%s holds a blind leftover check:  %s\n%s" % (rel, pattern, self.POINTER),
                 )
 
 
