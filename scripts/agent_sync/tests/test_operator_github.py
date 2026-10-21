@@ -60,9 +60,14 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(Refused):self.request()
         self.assertEqual(self.router.calls,[])
     def test_cross_repo(self):
-        b=json.dumps({'repo':'jaywedgeworth22/Fleet-OPS','permissions':{'contents':'read'}}).encode()
+        b=json.dumps({'repo':'acme-owner/road-runner','permissions':{'contents':'read'}}).encode()
         with self.assertRaises(Refused) as c:self.request(body=b)
         self.assertEqual(c.exception.status,403)
+    def test_pull_requests_read_issues(self):
+        b=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'pull_requests':'read'}}).encode()
+        self.request(body=b)
+        # permission_set adds the implicit metadata:read, as the GitHub API does
+        self.assertEqual(self.router.calls[-1][2],{'pull_requests':'read','metadata':'read'})
     def test_above_permissions(self):
         b=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'contents':'write'}}).encode()
         with self.assertRaises(Refused):self.request(body=b)

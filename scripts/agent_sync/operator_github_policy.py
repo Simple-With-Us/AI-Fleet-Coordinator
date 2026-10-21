@@ -21,7 +21,7 @@ from .operator_github import CallerPolicy
 
 #: seat -> (app slug, {owner/repo: {permission: ceiling}}).  Exact names only;
 #: no wildcards, no inferred seats, no PAT fallback.
-_READ_PILOT = {"contents": "read", "pull-requests": "read", "metadata": "read"}
+_READ_PILOT = {"contents": "read", "pull_requests": "read", "metadata": "read"}
 
 POLICY = {
     "CODEX": (
@@ -38,7 +38,7 @@ POLICY = {
     ),
 }
 
-_CEILING_KEYS = frozenset({"contents", "pull-requests", "issues", "metadata"})
+_CEILING_KEYS = frozenset({"contents", "pull_requests", "issues", "metadata"})
 _CEILING_VALUES = frozenset({"read", "write"})
 
 

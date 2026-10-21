@@ -1,6 +1,7 @@
 """Private persistent replay ledger. Mount parent directory on durable storage."""
 
 import os
+import contextlib
 import sqlite3
 import stat
 from pathlib import Path
@@ -46,7 +47,7 @@ class NonceLedger:
 
     def consume(self, seat, nonce, expires, now, capacity):
         try:
-            with self.connect() as db:
+            with contextlib.closing(self.connect()) as db, db:
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("DELETE FROM nonces WHERE expires < ?", (now,))
                 if db.execute(

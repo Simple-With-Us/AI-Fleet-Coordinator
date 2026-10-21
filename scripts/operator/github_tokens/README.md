@@ -4,7 +4,7 @@ Status: OFFLINE PROTOTYPE ONLY. Not installed, enabled, or connected to a live s
 
 ## Verified credential schema
 
-Infisical Fleet-OPS project `8dae6d03-8f12-48b2-adf3-e5c1b881c8c5`, environment `prod`, folder `/github-apps`.
+Infisical Fleet-OPS project, resolved at runtime from `INFISICAL_FLEET_OPS_PROJECT_ID` (never commit the project UUID), environment `prod`, folder `/github-apps`.
 
 On October 19, 2026 at about 7:38 PM America/Chicago, a values-hidden live metadata read returned 78 secrets: 39 complete `GH_APP_SWU_<SEAT>_ID` / `GH_APP_SWU_<SEAT>_PRIVATE_KEY` pairs. Operator was absent at that check. Example slug `swu-bf-builder` maps to `GH_APP_SWU_BF_BUILDER_ID` and `GH_APP_SWU_BF_BUILDER_PRIVATE_KEY`.
 

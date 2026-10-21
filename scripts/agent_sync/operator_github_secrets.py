@@ -5,29 +5,31 @@ verify that the supplied identity is denied outside the approved secret paths.
 """
 
 import json
+import os
 import re
 import urllib.parse
 import urllib.request
 
 from .github_token_router import NoRedirect, RoutingError, secret_names
 
-PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
-
 
 class NamedSecrets:
-    def __init__(self, bearer_for, seats, apps, *, transport=None):
+    def __init__(self, bearer_for, seats, apps, *, project=None, transport=None):
+        self.project = project or os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID")
         self.bearer_for = bearer_for
         self.seats = frozenset(seats)
         self.apps = frozenset(apps)
         self.transport = transport or self._read
 
     def _read(self, path, name):
+        if not self.project:
+            raise RoutingError("INFISICAL_FLEET_OPS_PROJECT_ID is not configured")
         token = self.bearer_for()
         if not isinstance(token, str) or not token:
             raise RoutingError("Scoped secret identity unavailable")
         query = urllib.parse.urlencode(
             {
-                "projectId": PROJECT,
+                "projectId": self.project,
                 "environment": "prod",
                 "secretPath": path,
                 "expandSecretReferences": "false",
@@ -36,7 +38,10 @@ class NamedSecrets:
         )
         req = urllib.request.Request(
             "https://app.infisical.com/api/v4/secrets/" + name + "?" + query,
-            headers={"Authorization": "Bearer " + token},
+            headers={
+                "Authorization": "Bearer " + token,
+                "User-Agent": "swu-operator-github-broker/0.1",
+            },
         )
         try:
             with urllib.request.build_opener(NoRedirect()).open(req, timeout=10) as response:

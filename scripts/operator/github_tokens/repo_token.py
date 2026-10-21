@@ -75,9 +75,17 @@ def jwt(app_id, pem, clock=time.time):
     try:
         with os.fdopen(fd, "w") as f:
             f.write(pem)
-        result = subprocess.run(
-            ["openssl", "dgst", "-sha256", "-sign", name], input=unsigned, capture_output=True
-        )
+        try:
+            result = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-sign", name],
+                input=unsigned,
+                capture_output=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            raise RoutingError("App signer timed out") from None
+        except FileNotFoundError:
+            raise RoutingError("openssl is not installed") from None
         if result.returncode:
             raise RoutingError("App signing failed")
         return (unsigned + b"." + b64(result.stdout)).decode()
@@ -100,6 +108,7 @@ def github_call(method, path, bearer, body=None):
         headers={
             "Authorization": "Bearer " + bearer,
             "Accept": "application/vnd.github+json",
+            "User-Agent": "swu-operator-github-router/0.1",
             "X-GitHub-Api-Version": "2026-03-10",
             "Content-Type": "application/json",
         },
@@ -120,6 +129,8 @@ class TokenRouter:
         self.api, self.signer, self.clock = api, signer, clock
 
     def _cache_file(self, scope):
+        if self.cache.is_symlink():
+            raise RoutingError("Cache directory must not be a symlink")
         self.cache.mkdir(mode=0o700, parents=True, exist_ok=True)
         s = self.cache.lstat()
         if (

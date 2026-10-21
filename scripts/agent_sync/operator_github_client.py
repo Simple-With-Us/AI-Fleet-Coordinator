@@ -80,11 +80,7 @@ def bound_command(command, repo):
 
 
 def child_environment(original, result):
-    env = {
-        k: v
-        for k, v in original.items()
-        if not k.startswith(("GH_", "GITHUB_", "GIT_CONFIG_", "GIT_AUTHOR_", "GIT_COMMITTER_"))
-    }
+    env = {k: v for k, v in original.items() if not k.startswith(("GH_", "GITHUB_", "GIT_"))}
     env.update(
         {
             "GH_TOKEN": result["token"],

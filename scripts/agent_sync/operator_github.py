@@ -94,6 +94,11 @@ class Broker:
             or not NONCE.fullmatch(nonce)
         ):
             raise Refused(401, "authentication failed")
+        with self.lock:
+            bucket = [t for t in self.rates.get(seat, []) if t > now - 60]
+            if len(bucket) >= MAX_REQUESTS_PER_MINUTE:
+                raise Refused(429, "rate limited")
+            self.rates[seat] = bucket + [now]
         key = self.key_for(seat)
         if not isinstance(key, str) or len(key) < 32:
             raise Refused(401, "authentication failed")
@@ -104,10 +109,6 @@ class Broker:
         ):
             raise Refused(401, "authentication failed")
         with self.lock:
-            bucket = [t for t in self.rates.get(seat, []) if t > now - 60]
-            if len(bucket) >= MAX_REQUESTS_PER_MINUTE:
-                raise Refused(429, "rate limited")
-            self.rates[seat] = bucket + [now]
             # Retain until even the future edge of this timestamp is stale.
             if self.nonce_ledger is None:
                 raise Refused(503, "replay storage unavailable")
@@ -124,11 +125,12 @@ class Broker:
                 )
         try:
             data = json.loads(body, object_pairs_hook=_unique)
+            _bounded(data)
             if not isinstance(data, dict) or set(data) != {"repo", "permissions"}:
                 raise ValueError()
             target_parts(data["repo"])
             requested = permission_set(data["permissions"])
-        except (ValueError, TypeError, KeyError, RoutingError):
+        except (ValueError, TypeError, KeyError, RoutingError, RecursionError):
             raise Refused(400, "invalid request") from None
         policy = self.policy_for(seat)
         if not isinstance(policy, CallerPolicy):
@@ -170,6 +172,26 @@ class Broker:
             + identity["login"]
             + "@users.noreply.github.com",
         }
+
+
+def _bounded(value, _depth=0, _budget=None):
+    """Reject hostile JSON shapes before any field is trusted.
+
+    Body bytes are already capped by MAX_BODY; this caps what those bytes can
+    parse into - at most 32 levels deep and 512 nodes total.
+    """
+    if _budget is None:
+        _budget = [512]
+    _budget[0] -= 1
+    if _depth > 32 or _budget[0] < 0:
+        raise Refused(400, "invalid request")
+    if isinstance(value, dict):
+        for k, v in value.items():
+            _bounded(k, _depth + 1, _budget)
+            _bounded(v, _depth + 1, _budget)
+    elif isinstance(value, list):
+        for item in value:
+            _bounded(item, _depth + 1, _budget)
 
 
 def _unique(pairs):
