@@ -145,10 +145,12 @@ jobs:
           [ -n "$GATE_TOKEN" ] || GATE_TOKEN="$GH_TOKEN"
 
           kody_status="$RUNNER_TEMP/kody-status.txt"
-          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/commits/$HEAD/check-runs?per_page=100" --jq "[.check_runs[] | select(.name == \"$KODY_CHECK_NAME\") | .status] | .[]" > "$kody_status" 2>"$RUNNER_TEMP/kody.err"; then
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/commits/$HEAD/check-runs?per_page=100" > "$RUNNER_TEMP/kody.json" 2>"$RUNNER_TEMP/kody.err"; then
             cat "$RUNNER_TEMP/kody.err" >&2
             skip "Kodus review check lookup failed - fail closed"
           fi
+          # jq --arg, never interpolation: the check name is a caller input.
+          jq -r --arg name "$KODY_CHECK_NAME" '[.check_runs[] | select(.name == $name) | .status] | .[]' "$RUNNER_TEMP/kody.json" > "$kody_status"
           if grep -qxE 'queued|in_progress' "$kody_status"; then
             skip "Kodus review running on head $HEAD"
           fi
@@ -158,15 +160,24 @@ jobs:
           # by the head branch would never see them.  Two precise sources instead:
           # the per-PR marker comments the lanes leave (they carry the run id), and
           # repo-wide active runs whose pull_requests list this PR.
-          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate --jq '.[] | @json' > "$RUNNER_TEMP/pr-comments.txt" 2>"$RUNNER_TEMP/comments.err"; then
+          if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate --jq '.[] | {body, user_type: .user.type} | @json' > "$RUNNER_TEMP/pr-comments.txt" 2>"$RUNNER_TEMP/comments.err"; then
             cat "$RUNNER_TEMP/comments.err" >&2
             skip "PR comment lookup failed - fail closed"
           fi
-          grep 'swu-autofix-run: bot=' "$RUNNER_TEMP/pr-comments.txt" | grep -oE 'actions/runs/[0-9]+' | cut -d/ -f3 | sort -u > "$RUNNER_TEMP/marker-runs.txt" || true
+          # Markers count only when a Bot wrote them: a human commenter could
+          # otherwise forge one with a bogus run id and disarm the gate.  Only
+          # the 50 newest run ids are queried, so long-lived PRs do not spend
+          # the token's quota on ancient history.
+          grep 'swu-autofix-run: bot=' "$RUNNER_TEMP/pr-comments.txt" | grep '"user_type":"Bot"' | grep -oE 'actions/runs/[0-9]+' | cut -d/ -f3 | sort -un | tail -50 > "$RUNNER_TEMP/marker-runs.txt" || true
           while read -r run_id; do
             [ -n "$run_id" ] || continue
-            run_status="$(GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs/$run_id" --jq '.status' 2>/dev/null || echo lookup-failed)"
-            if [ "$run_status" = "lookup-failed" ]; then
+            if run_json="$(GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/actions/runs/$run_id" 2>"$RUNNER_TEMP/run-err.txt")"; then
+              run_status="$(printf '%s' "$run_json" | jq -r '.status')"
+            elif grep -q 'HTTP 404' "$RUNNER_TEMP/run-err.txt"; then
+              # Retention deleted the run, so it cannot be in flight.
+              continue
+            else
+              cat "$RUNNER_TEMP/run-err.txt" >&2
               skip "autofix run status lookup failed - fail closed"
             fi
             if [ "$run_status" = "queued" ] || [ "$run_status" = "in_progress" ]; then

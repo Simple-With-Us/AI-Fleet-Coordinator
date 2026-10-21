@@ -267,25 +267,29 @@ case "$*" in
   *check-runs*)
     case "$GH_FAKE_MODE" in
       kody_api_fails) echo "gh: api down" >&2; exit 1 ;;
-      kody_running) printf 'in_progress\n' ;;
-      *) printf 'completed\n' ;;
+      kody_running) printf '%s\n' '{"check_runs":[{"name":"Kody Code Review","status":"in_progress"}]}' ;;
+      *) printf '%s\n' '{"check_runs":[{"name":"Kody Code Review","status":"completed"}]}' ;;
     esac
     exit 0
     ;;
   *issues/1/comments*)
     case "$GH_FAKE_MODE" in
       comments_api_fails) echo "gh: api down" >&2; exit 1 ;;
-      marker_run_active|marker_run_done)
-        printf '%s\n' '{"body":"<!-- swu-autofix-run: bot=swu-echo --> Autofix run https://example.com/o/r/actions/runs/555 started"}'
+      marker_run_active|marker_run_done|marker_status_fails|marker_run_404)
+        printf '%s\n' '{"body":"<!-- swu-autofix-run: bot=swu-echo --> Autofix run https://example.com/o/r/actions/runs/555 started","user_type":"Bot"}'
+        ;;
+      forged_marker)
+        printf '%s\n' '{"body":"<!-- swu-autofix-run: bot=swu-echo --> Autofix run https://example.com/o/r/actions/runs/999 started","user_type":"User"}'
         ;;
     esac
     exit 0
     ;;
   *actions/runs/555*)
     case "$GH_FAKE_MODE" in
-      marker_status_fails) echo "gh: api down" >&2; exit 1 ;;
-      marker_run_active) printf 'in_progress\n' ;;
-      *) printf 'completed\n' ;;
+      marker_status_fails) echo "gh: api down (HTTP 500)" >&2; exit 1 ;;
+      marker_run_404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      marker_run_active) printf '%s\n' '{"status":"in_progress"}' ;;
+      *) printf '%s\n' '{"status":"completed"}' ;;
     esac
     exit 0
     ;;
@@ -402,7 +406,17 @@ class ClassifyInFlightGates(unittest.TestCase):
     def test_the_marker_status_lookup_fails_closed(self):
         code, output, reason = run_classify("marker_status_fails")
         self.assertEqual(code, 0, output)
-        self.assertIn("fail closed", reason)
+        self.assertIn("autofix run status lookup failed", reason)
+
+    def test_a_deleted_marker_run_is_not_in_flight(self):
+        code, output, reason = run_classify("marker_run_404")
+        self.assertEqual(code, 0, output)
+        self.assertIn("compare API failed", reason)
+
+    def test_a_human_forged_marker_is_ignored(self):
+        code, output, reason = run_classify("forged_marker")
+        self.assertEqual(code, 0, output)
+        self.assertIn("compare API failed", reason)
 
     def test_a_pr_linked_autofix_run_blocks_and_disarms(self):
         code, output, reason = run_classify("pr_linked_run")
