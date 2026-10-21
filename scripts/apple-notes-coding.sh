@@ -3,7 +3,7 @@
 # Owner preference 2026-08-05: coding notes always go to Coding + pin to top.
 # Owner 2026-08-09: title + timestamp shape (ALL apps, ALL agents):
 #
-#   Title:  "[TEAM_KEY, SEAT_TAG] Topic"  e.g. "[UM, MM] TestFlight first ship"
+#   Title:  "[TEAM_KEY, Agent] Topic"  e.g. "[UM, Claude] TestFlight first ship"
 #           Multi-app: "[ST, CT, MM] …"  Acronyms: UM ST CT CTS AFC (TEAM_KEY is the team key)
 #   Row 2:  "Sun, Aug 9, 3:52pm"         local create/update stamp (auto-injected)
 #
@@ -26,7 +26,7 @@
 # CODEX_THREAD_ID, Cursor CURSOR_CONVERSATION_ID, Grok GROK_SESSION_ID, OpenCode OPENCODE_SESSION_ID, MiniMax
 # __MAVIS_RUNTIME_SESSION_ID).  With none the script exits 2 before it touches Notes.  A seat with one thread with the
 # owner (Grok bots, MA/Rob, JET, WISE, ECHO) needs none.  The seat is $AGENT_LAUNCH_SEAT (with $AGENT_LAUNCHER),
-# else $AGENT_SEAT, else the SEAT_TAG named in the title ("[TEAM_KEY, WISE] topic", how Instinct's bots call this over ssh);
+# else $AGENT_SEAT, else the agent named in the title ("[TEAM_KEY, WISE] topic", how Instinct's bots call this over ssh);
 # it is never a flag.  Data copy of fleet-apps.json `sessionIds`;  scripts/test_session_ids_parity.py keeps it equal.
 # APPLE_NOTES_PRINT_HTML=1 prints the note HTML and exits before Notes is touched (the tests use it).
 #
@@ -145,7 +145,7 @@ if [[ -z "$TITLE" ]]; then
   exit 2
 fi
 
-# Strip accidental backslash escaping on title brackets e.g. \[TEAM_KEY, SEAT_TAG\]
+# Strip accidental backslash escaping on title brackets e.g. \[TEAM_KEY, Agent\]
 TITLE=$(printf '%s' "$TITLE" | sed -e 's/^\\\[/[/' -e 's/\\\]$/]/' -e 's/\\\[/[/g' -e 's/\\\]/]/g')
 
 # Secret scan on the title (AFC-422).  The title reaches AppleScript source, the relay envelope, the
@@ -664,10 +664,10 @@ if [[ "$SKIP_BODY" == "0" ]]; then
 fi
 
 # Title shape check + ensure second-row timestamp (owner 2026-08-09).
-# Title: "[TEAM_KEY, SEAT_TAG] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52pm".
+# Title: "[TEAM_KEY, Agent] Topic" — multi-app OK.  Body first line: "Sun, Aug 9, 3:52pm".
 # Do NOT put a second markdown # Title in the body — that doubles the title in Notes.
 if ! printf '%s' "$TITLE" | grep -Eq '^\[[^]]+\][[:space:]]+'; then
-  echo "warning: title should start with [TEAM_KEY, SEAT_TAG] e.g. \"[UM, MM] Topic\"" >&2
+  echo "warning: title should start with [TEAM_KEY, Agent] e.g. \"[UM, Claude] Topic\"" >&2
 fi
 if printf '%s' "$TITLE" | grep -Eiq 'session'; then
   echo "warning: do not put 'session' in Apple Note titles" >&2

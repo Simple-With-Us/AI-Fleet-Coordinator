@@ -83,7 +83,7 @@ class TitleAndFlagTests(unittest.TestCase):
 
     def test_the_whole_scope_is_validated_not_just_the_leading_bracket(self):
         """AFC-422:  a leading `[` let `[AFC` and `[]` reach the relay envelope.  The title must
-        read `[TEAM_KEY, SEAT_TAG] Topic`:  capitalised team keys, a seat tag, and a topic."""
+        read `[TEAM_KEY, Agent] Topic`:  capitalised team keys, the agent, and a topic."""
         for good in (
             "[AFC, CLAUDE] relay rollout",
             "[AFC, CT, GROK-WEB] notes",

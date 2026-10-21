@@ -45,4 +45,4 @@ A new app gets a Linear team (Jay creates it, key = the app acronym) instead of 
 
 ## Apple Notes close-out (all agents, all apps)
 
-The Apple Notes rules are in `AGENT-SYNC.md` § Apple Notes and the `apple-notes` skill.  The title shape is `[TEAM_KEY, SEAT_TAG] topic`, with a second row `Sun, Aug 9, 3:52pm · PR #18`, and the helper is `~/apps/apple-notes-coding.sh`.
+The Apple Notes rules are in `AGENT-SYNC.md` § Apple Notes and the `apple-notes` skill.  The title shape is `[TEAM_KEY, Agent] Topic`, with a second row `Sun, Aug 9, 3:52pm · PR #18`, and the helper is `~/apps/apple-notes-coding.sh`.

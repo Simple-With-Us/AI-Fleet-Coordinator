@@ -58,7 +58,7 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
     nsub = p.add_subparsers(dest="notes_action", metavar="ACTION", required=True)
     for action in ("create", "update"):
         q = add(nsub, action, "%s a note (body from stdin, --body-file or --html)" % action)
-        q.add_argument("title", metavar="TITLE", help="[TEAM_KEY, SEAT_TAG] Topic")
+        q.add_argument("title", metavar="TITLE", help="[TEAM_KEY, Agent] Topic")
         q.add_argument(
             "body",
             nargs="*",

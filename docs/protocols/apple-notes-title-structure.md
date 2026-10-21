@@ -2,10 +2,10 @@
 
 > Moved from `AGENT-SYNC.md` on 2026-09-01 (Plan B slice 2, doc diet).  Still binding for every agent on every platform.  Canonical pointer stays in AGENT-SYNC.md; this file is the full text and is ingested into the fleet-agents corpus (`recall`).
 
-**Title (note name / first heading row) — ALWAYS start with team key acronym(s) + SEAT_TAG:**
+**Title (note name / first heading row) — ALWAYS start with team key acronym(s) + Agent:**
 
 ```
-[TEAM_KEY, SEAT_TAG] Topic
+[TEAM_KEY, Agent] Topic
 ```
 
 Examples:
@@ -16,11 +16,11 @@ Examples:
 - `[AFC, Grok] Apple Notes title/timestamp standard`
 
 Rules:
-- **TEAM_KEY FIRST, then SEAT_TAG**, comma-separated inside `[]`, then a space,
+- **TEAM_KEY FIRST, then Agent**, comma-separated inside `[]`, then a space,
   then the short topic. **No** bare `Team key — topics` titles; **no** "session" in the title.
 - **Multiple apps** when more than one is impacted: list each acronym
   (`[ST, CT, UM, GROK] …`). Order = impact order (primary first).
-- **SEAT_TAG rendering:** use the canonical Title Case `notesName` for the verified calling seat, such as `Claude`, `Codex` or `Grok Web`.  The exact uppercase seat tag remains accepted for compatibility; another seat’s name is refused.
+- **Agent rendering:** use the canonical Title Case `notesName` for the verified calling seat, such as `Claude`, `Codex` or `Grok Web`.  The exact uppercase seat tag remains accepted for compatibility; another seat’s name is refused.
 - **Never put the date in the title** — date lives on the **second row** (body).
 - **Never repeat the title as an H1 inside the body** — Notes already shows the title.
 
