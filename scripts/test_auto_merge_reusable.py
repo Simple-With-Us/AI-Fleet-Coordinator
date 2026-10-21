@@ -78,33 +78,39 @@ exit 0
 """
 
 
-def arm_script() -> str:
-    """The arm step's own `run` script, pulled out of the reusable workflow."""
+def step_script(step_name: str) -> str:
+    """A named step's own `run` script, pulled out of the reusable workflow."""
     text = WORKFLOW.read_text(encoding="utf-8")
     lines = text.splitlines()
     start = None
     for index, line in enumerate(lines):
-        if line.strip() == f"- name: {ARM_STEP_NAME}":
+        if line.strip() == f"- name: {step_name}":
             start = index
             break
     if start is None:
-        raise AssertionError(f"the workflow has no step named {ARM_STEP_NAME!r}")
+        raise AssertionError(f"the workflow has no step named {step_name!r}")
     run_at = None
     for index in range(start, len(lines)):
         if lines[index].strip() == "run: |":
             run_at = index
             break
+        if index > start and lines[index].strip() and not lines[index].startswith(" " * 6):
+            break
     if run_at is None:
-        raise AssertionError("the arm step has no `run: |` block")
+        raise AssertionError(f"the {step_name!r} step has no `run: |` block")
     body = []
     for line in lines[run_at + 1 :]:
         if line.strip() and not line.startswith(" " * 10):
             break
         body.append(line)
     if not body:
-        raise AssertionError("the arm step's run block is empty")
+        raise AssertionError(f"the {step_name!r} step's run block is empty")
     indent = min(len(line) - len(line.lstrip()) for line in body if line.strip())
     return "\n".join(line[indent:] if line.strip() else "" for line in body) + "\n"
+
+
+def arm_script() -> str:
+    return step_script(ARM_STEP_NAME)
 
 
 def run_arm(mode: str, delete_branch: str) -> tuple[int, str, list[str]]:
@@ -250,3 +256,132 @@ class ArmStep(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+CLASSIFY_STEP_NAME = "Classify PR for auto-merge eligibility"
+
+# The fake answers each API call with the --jq-filtered lines the step expects:
+# check-run statuses for the Kody lookup, workflow paths for the runs lookups.
+# The compare call fails on purpose:  it bounds the script after the gates, so a
+# "compare API failed" skip proves the gates passed.
+FAKE_GH_CLASSIFY = """#!/bin/bash
+printf '%s\\n' "$*" >> "$GH_CALLS"
+case "$*" in
+  *check-runs*)
+    case "$GH_FAKE_MODE" in
+      kody_api_fails) echo "gh: api down" >&2; exit 1 ;;
+      kody_running) printf 'in_progress\\n' ;;
+      *) printf 'completed\\n' ;;
+    esac
+    exit 0
+    ;;
+  *actions/runs*)
+    case "$GH_FAKE_MODE" in
+      runs_api_fails) echo "gh: api down" >&2; exit 1 ;;
+      autofix_queued)
+        if [[ "$*" == *status=queued* ]]; then printf '.github/workflows/kody-fleet-autofix.yml\\n'; fi
+        ;;
+      autofix_in_progress)
+        if [[ "$*" == *status=in_progress* ]]; then printf '.github/workflows/autofix.yml\\n'; fi
+        ;;
+      clear)
+        if [[ "$*" == *status=queued* ]]; then printf '.github/workflows/ci.yml\\n'; fi
+        ;;
+    esac
+    exit 0
+    ;;
+  *compare*)
+    echo "gh: compare exploded" >&2
+    exit 1
+    ;;
+esac
+echo "gh: fake gh answers only check-runs, actions/runs and compare, got: $*" >&2
+exit 1
+"""
+
+
+def run_classify(mode: str) -> tuple[int, str, str]:
+    """Run the classify step with a fake `gh`; return (exit code, output, skip reason)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        calls = root / "calls.txt"
+        out = root / "gh_output.txt"
+        fake = root / "gh"
+        fake.write_text(FAKE_GH_CLASSIFY, encoding="utf-8")
+        fake.chmod(0o755)
+        script = root / "classify.sh"
+        script.write_text(step_script(CLASSIFY_STEP_NAME), encoding="utf-8")
+        env = dict(os.environ)
+        env["PATH"] = f"{root}:{env.get('PATH', '')}"
+        env.update(
+            {
+                "GH_FAKE_MODE": mode,
+                "GH_CALLS": str(calls),
+                "GH_TOKEN": "fake-token",
+                "GITHUB_OUTPUT": str(out),
+                "RUNNER_TEMP": str(root),
+                "BASE": "0" * 40,
+                "HEAD": "1" * 40,
+                "HEAD_REF": "feature/x",
+                "TITLE": "x",
+                "REPO": "Simple-With-Us/Example",
+                "RESTRICT": "",
+                "SELF_GUARD": "",
+                "HOLD_LABELS": "do-not-automerge,needs-human-merge",
+                "LABELS_JSON": "[]",
+                "REQUIRE_GATE": "false",
+                "GATE_SCRIPT": "",
+            }
+        )
+        proc = subprocess.run(
+            ["bash", str(script)],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+            check=False,
+        )
+        reason = ""
+        if out.exists():
+            for line in out.read_text(encoding="utf-8").splitlines():
+                if line.startswith("reason="):
+                    reason = line[len("reason=") :]
+        return proc.returncode, proc.stdout + proc.stderr, reason
+
+
+class ClassifyInFlightGates(unittest.TestCase):
+    """The owner 2026-10-21 rule: no merge while Kodus reviews or autofix runs."""
+
+    def test_the_classify_step_is_the_one_under_test(self):
+        self.assertIn("Kodus review running", step_script(CLASSIFY_STEP_NAME))
+        self.assertIn("autofix run queued or in progress", step_script(CLASSIFY_STEP_NAME))
+
+    def test_a_running_kodus_review_blocks_and_disarms(self):
+        code, output, reason = run_classify("kody_running")
+        self.assertEqual(code, 0, output)
+        self.assertIn("Kodus review running", reason)
+
+    def test_a_completed_kodus_review_passes_the_gate(self):
+        code, output, reason = run_classify("clear")
+        self.assertEqual(code, 0, output)
+        self.assertIn("compare API failed", reason)
+
+    def test_the_kody_lookup_fails_closed(self):
+        code, output, reason = run_classify("kody_api_fails")
+        self.assertEqual(code, 0, output)
+        self.assertIn("fail closed", reason)
+
+    def test_a_queued_autofix_run_blocks_and_disarms(self):
+        code, output, reason = run_classify("autofix_queued")
+        self.assertEqual(code, 0, output)
+        self.assertIn("autofix run queued or in progress", reason)
+
+    def test_an_in_progress_autofix_run_blocks_and_disarms(self):
+        code, output, reason = run_classify("autofix_in_progress")
+        self.assertEqual(code, 0, output)
+        self.assertIn("autofix run queued or in progress", reason)
+
+    def test_the_runs_lookup_fails_closed(self):
+        code, output, reason = run_classify("runs_api_fails")
+        self.assertEqual(code, 0, output)
+        self.assertIn("fail closed", reason)
