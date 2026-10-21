@@ -47,10 +47,19 @@ test('pickOldest sorts by created_at with a stable tiebreak', () => {
   assert.equal(pickOldest([]), null);
 });
 
-test('dispatchCommentBody carries the tag and the owner cc', () => {
-  const body = dispatchCommentBody();
-  assert.match(body, /^@pr-autofix\b/);
+test('dispatchCommentBody carries the tag, the owner cc and where the findings are', () => {
+  const body = dispatchCommentBody({ owner: 'Simple-With-Us', repo: 'BotFleet', number: 12 });
+  assert.match(body, /^@pr-autofix dispatcher trial/);
   assert.match(body, /@jaywedgeworth22/);
+  // The run's prompt is this comment plus the diff, so it must name the review comments.
+  assert.match(body, /gh api repos\/Simple-With-Us\/BotFleet\/pulls\/12\/comments --paginate/);
+  for (const reviewer of ['kody-ai[bot]', 'chatgpt-codex-connector[bot]', 'sentry[bot]']) {
+    assert.ok(body.includes(reviewer), `names ${reviewer}`);
+  }
+  // No other @mention: a reviewer bot mention in this comment would start that bot.
+  assert.deepEqual(body.match(/@[A-Za-z][\w-]*/g), ['@pr-autofix', '@jaywedgeworth22']);
+  assert.throws(() => dispatchCommentBody(), TypeError);
+  assert.throws(() => dispatchCommentBody({ owner: 'Simple-With-Us', repo: 'BotFleet' }), TypeError);
 });
 
 test('extractCostUsd reads the last total_cost_usd in a log', () => {

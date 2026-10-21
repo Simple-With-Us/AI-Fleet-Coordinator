@@ -42,8 +42,16 @@ export function pickOldest(candidates) {
   return sorted[0] || null;
 }
 
-export function dispatchCommentBody() {
-  return `${DISPATCH_TAG} dispatcher trial: this is the oldest open fleet PR with review findings autofix has not attempted.  One autofix run per bot per PR (owner rule 2026-10-20);  this uses ${DISPATCHER_BOT}'s one run here.  cc @jaywedgeworth22`;
+// The reusable builds the run's prompt from this comment's text plus the PR diff, not from
+// the PR's review threads, so the comment must say where the findings are and what to do
+// with them.  It points at the live review comments instead of copying them: a copy would
+// go stale against new review rounds and would carry reviewer boilerplate with @mentions.
+export function dispatchCommentBody({ owner, repo, number } = {}) {
+  if (!owner || !repo || number == null) {
+    throw new TypeError('dispatchCommentBody needs owner, repo and number');
+  }
+  const reviewers = REVIEWER_BOTS.join(', ');
+  return `${DISPATCH_TAG} dispatcher trial: this is the oldest open fleet PR with review findings autofix has not attempted.  The findings are the review comments from ${reviewers} on this PR:  read them with \`gh api repos/${owner}/${repo}/pulls/${number}/comments --paginate\`, fix each one that is still real at the current head, skip any the code already fixes or a later reply answers, and make the minimum change.  One autofix run per bot per PR (owner rule 2026-10-20);  this uses ${DISPATCHER_BOT}'s one run here.  cc @jaywedgeworth22`;
 }
 
 export function extractCostUsd(logText) {

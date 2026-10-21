@@ -19,7 +19,12 @@ variable `SWU_AUTOFIX_DISPATCHER_ENABLED` is `true`.  Each tick:
 3. Picks the oldest by `created_at` and posts `@pr-autofix ... cc @jaywedgeworth22`
    as `swu-echo[bot]`.  The repo's normal pr-autofix caller starts the run and leaves
    the tried marker; the tag consumes swu-echo's one run on that PR under the
-   one-run-per-bot-per-PR owner rule.
+   one-run-per-bot-per-PR owner rule.  The reusable builds the run's prompt from the
+   tag comment plus the PR diff, not from the review threads, so the tag comment names
+   the findings (the PR's review comments, read with
+   `gh api repos/<owner>/<repo>/pulls/<n>/comments --paginate`) and tells the run to fix
+   the ones still real at the head.  It points at them instead of copying them, so a
+   new review round is never stale and no reviewer `@mention` is replayed.
 4. Appends the dispatch to `autofix-dispatcher/tally.jsonl` on the
    `autofix-dispatcher-state` branch.  Every tick also reconciles up to 20 of
    the oldest unreconciled entries: run id from the marker comment, conclusion,

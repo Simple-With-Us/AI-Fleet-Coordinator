@@ -266,7 +266,7 @@ function main() {
             const posted = JSON.parse(
               gh([
                 'api', '-X', 'POST', `repos/${OWNER}/${pick.repo}/issues/${pick.number}/comments`,
-                '-f', `body=${dispatchCommentBody()}`,
+                '-f', `body=${dispatchCommentBody({ owner: OWNER, repo: pick.repo, number: pick.number })}`,
               ]),
             );
             commentUrl = posted.html_url;
