@@ -42,8 +42,10 @@ on:
         default: "2.1.295"
       # The id the owner chose for all fleet MiniMax use on 2026-10-20.  A model id that is
       # absent from the MiniMax Code runtime catalog can still be a valid public API id, and an
-      # id must never be rewritten from one route's evidence (contrib/MM/2026-10-19/f11f7046),
-      # so the retired spelling is named here in a comment and never as a value.
+      # id must never be rewritten from one route's evidence; the fleet recall contribution
+      # contrib/MM/2026-10-19/f11f7046 records that lesson, and it is a recall id rather than
+      # a path in this repository.  The retired spelling is named here in a comment and never
+      # as a value.
       model:
         description: >-
           MiniMax model id for ANTHROPIC_MODEL.  Overridden by .github/pr-autofix-trusted.yml on the
