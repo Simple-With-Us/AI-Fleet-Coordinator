@@ -395,15 +395,19 @@ _pin_lock_stale() {
   [[ -n "$(find "$NOTES_PIN_LOCK_DIR" -maxdepth 0 -mmin "+$stale_min" 2>/dev/null)" ]]
 }
 
-# Take the pin lock.  Returns 0 when held, 1 when it could not be had in NOTES_PIN_LOCK_WAIT_S seconds
-# (or its parent directory could not be made).  A stale lock is moved aside with mv, which is atomic,
-# before it is removed;  two waiters that find the same stale lock at the same instant can still step on
-# each other, and the worst that costs is two overlapping runs, which is what happened every time before
-# this lock existed.
+# Take the pin lock.  Returns 0 when held, 1 when another run held it for the whole NOTES_PIN_LOCK_WAIT_S
+# wait, 2 when the lock directory could not be made, 3 when it kept coming back stale.  A stale lock is
+# moved aside with mv, which is atomic, before it is removed.  The check that calls a lock stale and the mv
+# that replaces it are two steps, so two waiters that find the same stale lock at the same instant can
+# still step on each other:  that needs a crashed holder and two waiters inside the same few
+# milliseconds, and the worst it costs is two overlapping runs, which is what happened every time before
+# this lock existed.  A second lock to guard the first would itself need a stale-lock rule, so it is not
+# added.  A reused pid can likewise keep a dead holder's lock alive, but only until the age rule above
+# takes it over.
 _pin_lock_acquire() {
   local waited=0 takeovers=0
-  mkdir -p "$(dirname "$NOTES_PIN_LOCK_DIR")" 2>/dev/null || return 1
-  until mkdir "$NOTES_PIN_LOCK_DIR" 2>/dev/null; do
+  mkdir -p -m 700 "$(dirname "$NOTES_PIN_LOCK_DIR")" 2>/dev/null || return 2
+  until mkdir -m 700 "$NOTES_PIN_LOCK_DIR" 2>/dev/null; do
     if _pin_lock_stale && mv "$NOTES_PIN_LOCK_DIR" "$NOTES_PIN_LOCK_DIR.stale.$$" 2>/dev/null; then
       rm -rf "$NOTES_PIN_LOCK_DIR.stale.$$"
       #  A takeover takes no time, so it does not move the wait counter,  and the counter alone would
@@ -411,7 +415,7 @@ _pin_lock_acquire() {
       #  one in a single call means something is recreating dead locks,  and the pin is skipped.
       takeovers=$((takeovers + 1))
       if (( takeovers > 3 )); then
-        return 1
+        return 3
       fi
       continue
     fi
@@ -510,11 +514,18 @@ _run_note_shortcut_locked() {  # $1 = shortcut name;  the caller holds the pin l
   return 1
 }
 
-# Run a note Shortcut under the pin lock.  Same return codes as above, plus 6 when another pin or unpin
-# run held the lock for the whole wait, so this one was skipped rather than stacked behind it.
+# Run a note Shortcut under the pin lock.  Same return codes as above, plus the reasons the lock was not
+# taken, so the run was skipped rather than stacked behind another:  6 another pin or unpin run held it
+# for the whole wait, 7 its directory could not be made, 8 it kept coming back stale.
 _run_note_shortcut() {  # $1 = shortcut name
-  local rc=0
-  _pin_lock_acquire || return 6
+  local rc=0 lock_rc=0
+  _pin_lock_acquire || lock_rc=$?
+  case "$lock_rc" in
+    0) ;;
+    2) return 7 ;;
+    3) return 8 ;;
+    *) return 6 ;;
+  esac
   _run_note_shortcut_locked "$1" || rc=$?
   _pin_lock_release
   return "$rc"
@@ -538,7 +549,13 @@ if [[ "$MODE" == "unpin" ]]; then
     echo "unpinned: no — the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry" >&2
     exit 4
   elif [[ "$_unpin_rc" == "6" ]]; then
-    echo "unpinned: no — another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s (or the lock directory could not be made), so this one was skipped; retry in a moment" >&2
+    echo "unpinned: no — another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s, so this one was skipped; retry in a moment" >&2
+    exit 4
+  elif [[ "$_unpin_rc" == "7" ]]; then
+    echo "unpinned: no — the pin lock directory ${NOTES_PIN_LOCK_DIR} could not be made, so the Shortcut was not run" >&2
+    exit 4
+  elif [[ "$_unpin_rc" == "8" ]]; then
+    echo "unpinned: no — the pin lock kept coming back stale (more than 3 takeovers in one call), so the Shortcut was not run; remove ${NOTES_PIN_LOCK_DIR} if no other pin is running" >&2
     exit 4
   else
     echo "unpinned: no — 'Unpin Coding Note' shortcut run failed" >&2
@@ -1217,7 +1234,8 @@ fi
 # _pin_rc: 0 pinned, 1 the run failed, 2 the Shortcut is not installed,
 # 3 the Shortcut list could not be read, 4 pinning was disabled
 # (APPLE_NOTES_PIN=0), 5 the Shortcuts app could not be started (AFC-436),
-# 6 another pin run held the lock for the whole wait.
+# 6 another pin run held the lock for the whole wait, 7 the lock directory could not be made, 8 the lock
+# kept coming back stale.
 # These are different problems and must not be reported
 # as one (AFC-431).
 #
@@ -1266,9 +1284,17 @@ case "$_pin_rc" in
     echo "pinned: skipped (the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry)"
     echo "pin skipped: the Shortcuts app could not be started in the background, so the Shortcut could not run; open Shortcuts once and retry; $_pin_outcome" >&2
     ;;
+  7)
+    echo "pinned: skipped (the pin lock directory could not be made)"
+    echo "pin skipped: the pin lock directory ${NOTES_PIN_LOCK_DIR} could not be made, so the Shortcut was not run; $_pin_outcome" >&2
+    ;;
+  8)
+    echo "pinned: skipped (the pin lock kept coming back stale)"
+    echo "pin skipped: the pin lock kept coming back stale (more than 3 takeovers in one call), so the Shortcut was not run; remove ${NOTES_PIN_LOCK_DIR} if no other pin is running; $_pin_outcome" >&2
+    ;;
   *)
-    echo "pinned: skipped (another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s, or the lock directory could not be made)"
-    echo "pin skipped: another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s (or the lock directory could not be made); $_pin_outcome" >&2
+    echo "pinned: skipped (another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s)"
+    echo "pin skipped: another pin or unpin run held the lock for ${NOTES_PIN_LOCK_WAIT_S}s; $_pin_outcome" >&2
     ;;
 esac
 if [[ "$MODE" == "pin" ]]; then

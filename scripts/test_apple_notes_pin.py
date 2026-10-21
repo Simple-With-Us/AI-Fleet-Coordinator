@@ -72,6 +72,10 @@ if [ "${STUB_RECORD_INPUT:-0}" = "1" ] && [ -n "$input_file" ]; then
   #  a record-per-line record, so a test can assert attempt N passed input M
   printf '%s\\n' "$(cat "$input_file" 2>/dev/null || printf '')" >> "$STUB_COUNTER.inputs"
 fi
+if [ -n "${STUB_LOCK_MODE_FILE:-}" ]; then
+  #  the lock directory's mode while this run holds it:  drwx------ is owner-only
+  ls -ld "$NOTES_PIN_LOCK_DIR" | cut -c1-10 > "$STUB_LOCK_MODE_FILE"
+fi
 if [ "${STUB_HOLD:-0}" = "1" ]; then
   #  a run that lasts a moment, so two overlapping runs can be seen:  the second one to start finds the marker
   if [ -f "$STUB_COUNTER.active" ]; then printf x >> "$STUB_COUNTER.overlap"; fi
@@ -107,6 +111,7 @@ exit 0
 """
 
 HARNESS = """set -uo pipefail
+[ -z "${HARNESS_UMASK:-}" ] || umask "$HARNESS_UMASK"
 TITLE="${HARNESS_TITLE:-AFC test note}"
 MODE="${HARNESS_MODE:-update}"
 APPLE_NOTES_PIN="${HARNESS_APPLE_NOTES_PIN:-1}"
@@ -589,6 +594,43 @@ class PinDecisionTests(unittest.TestCase):
         self.assertIn("pin skipped: another pin or unpin run held the lock", kept.stderr)
         self.assertTrue(self.lock_left)
 
+    def test_a_lock_directory_that_cannot_be_made_is_named_as_that(self):
+        """Not a busy lock:  the parent of the lock directory is a file, so no run holds anything."""
+        for mode, expect in (("update", 0), ("pin", 4)):
+            with self.subTest(mode=mode):
+                with tempfile.TemporaryDirectory() as tmp:
+                    blocker = Path(tmp) / "blocker"
+                    blocker.write_text("not a directory")
+                    p, runs = self.run_block(
+                        HARNESS_MODE=mode, NOTES_PIN_LOCK_DIR=str(blocker / "pin.lock")
+                    )
+                self.assertEqual(p.returncode, expect, p.stdout + p.stderr)
+                self.assertIn("pin skipped: the pin lock directory", p.stderr)
+                self.assertIn("could not be made", p.stderr)
+                self.assertNotIn("another pin or unpin run held the lock", p.stderr)
+                self.assertEqual(runs, 0)
+
+    def test_unpin_names_a_lock_directory_that_cannot_be_made(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / "blocker"
+            blocker.write_text("not a directory")
+            p, runs = self.run_unpin_block(
+                HARNESS_MODE="unpin",
+                STUB_NAME="Unpin Coding Note",
+                NOTES_PIN_LOCK_DIR=str(blocker / "pin.lock"),
+            )
+        self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
+        self.assertIn("could not be made", p.stderr)
+        self.assertEqual(runs, 0)
+
+    def test_the_lock_directory_is_private_to_the_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "lock-mode"
+            #  a permissive umask is the case that matters:  mkdir -m must not depend on it
+            p, runs = self.run_block(STUB_LOCK_MODE_FILE=str(record), HARNESS_UMASK="000")
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertEqual(record.read_text().strip(), "drwx------")
+
     def test_a_lock_that_keeps_coming_back_stale_is_given_up_on(self):
         """Takeovers take no time, so the wait counter alone never stopped a lock recreated dead every time."""
         source = SCRIPT.read_text()
@@ -603,7 +645,7 @@ class PinDecisionTests(unittest.TestCase):
                 ("shortcuts", STUB),
                 ("pgrep", PGREP_STUB),
                 ("open", OPEN_STUB),
-                ("mv", f'#!/bin/bash\n{real_mv} "$@" && mkdir "$1"\n'),
+                ("mv", f'#!/bin/bash\n{real_mv} "$@" && mkdir -m 700 -- "$1"\n'),
             ):
                 side = bindir / name
                 side.write_text(body)
@@ -633,7 +675,8 @@ class PinDecisionTests(unittest.TestCase):
             )
             self.assertLess(time.monotonic() - started, 20, "the lock loop did not give up")
             self.assertEqual(p.returncode, 4, p.stdout + p.stderr)
-            self.assertIn("pin skipped: another pin or unpin run held the lock", p.stderr)
+            self.assertIn("pin skipped: the pin lock kept coming back stale", p.stderr)
+            self.assertNotIn("another pin or unpin run held the lock", p.stderr)
             self.assertFalse((Path(tmp) / "counter").exists(), "the Shortcut ran without the lock")
 
     def test_two_pins_at_once_never_overlap(self):
