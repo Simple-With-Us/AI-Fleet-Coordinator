@@ -22,7 +22,7 @@ import json
 import os
 import pathlib
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TextIO
 
 from . import collectors, contract
@@ -80,8 +80,12 @@ def _expiry_hours(args) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="fleet-view", description="Collect lanes, PRs and claims for Muster.")
     parser.add_argument("--lanes-root", default=None, help="default: ~/apps/lanes")
-    parser.add_argument("--registry", default=None, help="default: fleet-apps.json at the repo root")
-    parser.add_argument("--expiry-hours", type=int, default=None, help="claim expiry ceiling in hours")
+    parser.add_argument(
+        "--registry", default=None, help="default: fleet-apps.json at the repo root"
+    )
+    parser.add_argument(
+        "--expiry-hours", type=int, default=None, help="claim expiry ceiling in hours"
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
     status = sub.add_parser("status", help="collect once and report")
     status.add_argument("--json", action="store_true", help="print the pinned JSON envelope")
@@ -93,11 +97,21 @@ def _build_parser() -> argparse.ArgumentParser:
 def _render(report: FleetReport) -> str:
     lines = ["fleet-view status  (%s)" % report.generated_at]
     lines.append("verdict: %s" % contract.overall_verdict(report))
-    for name, section in (("lanes", report.lanes), ("pullRequests", report.pull_requests), ("claims", report.claims)):
+    for name, section in (
+        ("lanes", report.lanes),
+        ("pullRequests", report.pull_requests),
+        ("claims", report.claims),
+    ):
         lines.append("  %-12s %-8s %s" % (name, section.state, section.reason))
-    lines.append("requests: github %d/%d, linear %d/%d" % (
-        report.budget.github_used, report.budget.github_max,
-        report.budget.linear_used, report.budget.linear_max))
+    lines.append(
+        "requests: github %d/%d, linear %d/%d"
+        % (
+            report.budget.github_used,
+            report.budget.github_max,
+            report.budget.linear_used,
+            report.budget.linear_max,
+        )
+    )
     for note in report.notes:
         lines.append("note:  %s" % note)
     return "\n".join(lines) + "\n"
@@ -111,8 +125,10 @@ def _status(args, out: TextIO, err: TextIO) -> int:
     except (OSError, ValueError) as exc:
         err.write("fleet-view: registry unreadable: %s\n" % exc)
         return EXIT_REFUSED
-    lanes_root = pathlib.Path(args.lanes_root) if args.lanes_root else pathlib.Path.home() / "apps" / "lanes"
-    now = datetime.now(timezone.utc)
+    lanes_root = (
+        pathlib.Path(args.lanes_root) if args.lanes_root else pathlib.Path.home() / "apps" / "lanes"
+    )
+    now = datetime.now(UTC)
     budget = RequestBudget(github_max=args.github_max, linear_max=args.linear_max)
     runner = collectors.make_runner()
     expiry = _expiry_hours(args)

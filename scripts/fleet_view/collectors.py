@@ -16,7 +16,7 @@ import json
 import pathlib
 import subprocess
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .types import (
     ClaimRecord,
@@ -55,9 +55,7 @@ def make_runner(timeout_seconds: int = 20) -> Runner:
         if not argv or pathlib.Path(argv[0]).name not in ALLOWED_EXECUTABLES:
             raise ValueError("refused executable: %r" % (argv[0] if argv else ""))
         try:
-            proc = subprocess.run(
-                argv, capture_output=True, text=True, timeout=timeout_seconds
-            )
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError(str(exc)) from exc
         except OSError as exc:
@@ -74,7 +72,7 @@ def parse_iso(raw: str) -> datetime:
         text = text[:-1] + "+00:00"
     parsed = datetime.fromisoformat(text)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 
@@ -216,8 +214,16 @@ def collect_pull_requests(
                 items=tuple(items),
             )
         argv = [
-            "gh", "pr", "list", "--repo", repo, "--state", "open",
-            "--limit", "50", "--json",
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            "50",
+            "--json",
             "number,title,headRefName,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,statusCheckRollup",
         ]
         # One bad repo must not hide the rest:  keep what was observed, name
@@ -242,15 +248,17 @@ def collect_pull_requests(
             if not isinstance(row, dict):
                 continue
             branch = row.get("headRefName") or ""
-            items.append(PullRequestRecord(
-                repo=repo,
-                number=int(row.get("number") or 0),
-                title=row.get("title") or "",
-                branch=branch,
-                seat=index.seat_for_branch_name(branch),
-                blocker=blocker_for(row),
-                state="OK",
-            ))
+            items.append(
+                PullRequestRecord(
+                    repo=repo,
+                    number=int(row.get("number") or 0),
+                    title=row.get("title") or "",
+                    branch=branch,
+                    seat=index.seat_for_branch_name(branch),
+                    blocker=blocker_for(row),
+                    state="OK",
+                )
+            )
     if failures:
         return Section(
             state="UNKNOWN",
@@ -273,7 +281,9 @@ def collect_claims(
     resolved from the fleet knobs);  an expired claim is flagged, never hidden.
     """
     if not budget.spend_linear():
-        return Section(state="UNKNOWN", reason="Linear request budget spent (%d)" % budget.linear_max)
+        return Section(
+            state="UNKNOWN", reason="Linear request budget spent (%d)" % budget.linear_max
+        )
     try:
         code, out = runner(["board", "list", "--status", "in_progress", "--limit", "200", "--json"])
     except (TimeoutError, RuntimeError, ValueError) as exc:
@@ -299,11 +309,13 @@ def collect_claims(
             age = max(0, int((now - parse_iso(stamp)).total_seconds())) if stamp else 0
         except ValueError:
             age = 0
-        items.append(ClaimRecord(
-            identifier=row.get("identifier") or "",
-            title=row.get("title") or "",
-            seat=seat,
-            age_seconds=age,
-            expired=bool(expiry_hours > 0 and age > expiry_hours * 3600),
-        ))
+        items.append(
+            ClaimRecord(
+                identifier=row.get("identifier") or "",
+                title=row.get("title") or "",
+                seat=seat,
+                age_seconds=age,
+                expired=bool(expiry_hours > 0 and age > expiry_hours * 3600),
+            )
+        )
     return Section(state="OK", reason="%d claim(s)" % len(items), items=tuple(items))

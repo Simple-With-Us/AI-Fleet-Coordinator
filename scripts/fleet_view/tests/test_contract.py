@@ -12,12 +12,33 @@ from fleet_view.types import ClaimRecord, FleetReport, LaneRecord, PullRequestRe
 def ok_report() -> FleetReport:
     return FleetReport(
         generated_at="2026-10-20T12:00:00Z",
-        lanes=Section(state="OK", reason="1 lane(s)", items=(
-            LaneRecord("AI-Fleet-Coordinator", "muse-code-x", "MC", "muse-code/x", 0, 60, "OK"),)),
-        pull_requests=Section(state="OK", reason="1 open PR(s)", items=(
-            PullRequestRecord("Simple-With-Us/AI-Fleet-Coordinator", 757, "guards", "opencode/x", "OPENCODE", "ready", "OK"),)),
-        claims=Section(state="OK", reason="1 claim(s)", items=(
-            ClaimRecord("AFC-394", "Fleet View", "MC", 60, False),)),
+        lanes=Section(
+            state="OK",
+            reason="1 lane(s)",
+            items=(
+                LaneRecord("AI-Fleet-Coordinator", "muse-code-x", "MC", "muse-code/x", 0, 60, "OK"),
+            ),
+        ),
+        pull_requests=Section(
+            state="OK",
+            reason="1 open PR(s)",
+            items=(
+                PullRequestRecord(
+                    "Simple-With-Us/AI-Fleet-Coordinator",
+                    757,
+                    "guards",
+                    "opencode/x",
+                    "OPENCODE",
+                    "ready",
+                    "OK",
+                ),
+            ),
+        ),
+        claims=Section(
+            state="OK",
+            reason="1 claim(s)",
+            items=(ClaimRecord("AFC-394", "Fleet View", "MC", 60, False),),
+        ),
     )
 
 

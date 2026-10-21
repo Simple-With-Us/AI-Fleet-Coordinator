@@ -6,12 +6,12 @@ import json
 import pathlib
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fleet_view import collectors
 from fleet_view.types import RequestBudget
 
-NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
 
 SEATS = [
     {"tag": "CLAUDE", "worktreeSuffix": "claude", "branchPrefixes": ["claude/"]},
@@ -51,19 +51,34 @@ class LaneTests(unittest.TestCase):
 
     def test_missing_lanes_root_is_unknown_never_ok(self):
         index = collectors.SeatIndex(SEATS)
-        section = collectors.collect_lanes(pathlib.Path("/nonexistent-lanes-root"), index, git_runner, NOW)
+        section = collectors.collect_lanes(
+            pathlib.Path("/nonexistent-lanes-root"), index, git_runner, NOW
+        )
         self.assertEqual(section.state, "UNKNOWN")
         self.assertEqual(section.items, ())
 
 
 class BlockerTests(unittest.TestCase):
     def test_blocker_mapping(self):
-        base = {"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "reviewDecision": "APPROVED",
-                "autoMergeRequest": {"enabledAt": "x"}, "statusCheckRollup": []}
+        base = {
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "reviewDecision": "APPROVED",
+            "autoMergeRequest": {"enabledAt": "x"},
+            "statusCheckRollup": [],
+        }
         self.assertEqual(collectors.blocker_for(base), "ready")
-        self.assertEqual(collectors.blocker_for({**base, "reviewDecision": "CHANGES_REQUESTED"}), "changes requested")
-        self.assertEqual(collectors.blocker_for({**base, "autoMergeRequest": None}), "auto-merge not armed")
-        self.assertEqual(collectors.blocker_for({**base, "mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN"}), "unknown")
+        self.assertEqual(
+            collectors.blocker_for({**base, "reviewDecision": "CHANGES_REQUESTED"}),
+            "changes requested",
+        )
+        self.assertEqual(
+            collectors.blocker_for({**base, "autoMergeRequest": None}), "auto-merge not armed"
+        )
+        self.assertEqual(
+            collectors.blocker_for({**base, "mergeable": "UNKNOWN", "mergeStateStatus": "UNKNOWN"}),
+            "unknown",
+        )
         failing = [{**base, "statusCheckRollup": [{"conclusion": "FAILURE"}]}][0]
         self.assertEqual(collectors.blocker_for(failing), "failing checks")
 
@@ -71,15 +86,28 @@ class BlockerTests(unittest.TestCase):
 class PullRequestTests(unittest.TestCase):
     def test_pr_collection_counts_one_request_per_repo(self):
         index = collectors.SeatIndex(SEATS)
-        payload = json.dumps([{"number": 757, "title": "guards", "headRefName": "opencode/muster-guards",
-                               "mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED",
-                               "reviewDecision": "", "autoMergeRequest": None, "statusCheckRollup": []}])
+        payload = json.dumps(
+            [
+                {
+                    "number": 757,
+                    "title": "guards",
+                    "headRefName": "opencode/muster-guards",
+                    "mergeable": "MERGEABLE",
+                    "mergeStateStatus": "BLOCKED",
+                    "reviewDecision": "",
+                    "autoMergeRequest": None,
+                    "statusCheckRollup": [],
+                }
+            ]
+        )
 
         def runner(argv):
             return 0, payload
 
         budget = RequestBudget()
-        section = collectors.collect_pull_requests(["Simple-With-Us/AI-Fleet-Coordinator"], index, runner, budget)
+        section = collectors.collect_pull_requests(
+            ["Simple-With-Us/AI-Fleet-Coordinator"], index, runner, budget
+        )
         self.assertEqual(section.state, "OK")
         self.assertEqual(budget.github_used, 1)
         self.assertEqual(section.items[0].blocker, "auto-merge not armed")
@@ -97,17 +125,29 @@ class PullRequestTests(unittest.TestCase):
 
     def test_one_bad_repo_keeps_good_items_but_stays_unknown(self):
         index = collectors.SeatIndex(SEATS)
-        payload = json.dumps([{"number": 1, "title": "ok", "headRefName": "claude/x",
-                               "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
-                               "reviewDecision": "APPROVED", "autoMergeRequest": {"enabledAt": "x"},
-                               "statusCheckRollup": []}])
+        payload = json.dumps(
+            [
+                {
+                    "number": 1,
+                    "title": "ok",
+                    "headRefName": "claude/x",
+                    "mergeable": "MERGEABLE",
+                    "mergeStateStatus": "CLEAN",
+                    "reviewDecision": "APPROVED",
+                    "autoMergeRequest": {"enabledAt": "x"},
+                    "statusCheckRollup": [],
+                }
+            ]
+        )
 
         def runner(argv):
             if "bad/repo" in argv:
                 return 1, ""
             return 0, payload
 
-        section = collectors.collect_pull_requests(["good/repo", "bad/repo"], index, runner, RequestBudget())
+        section = collectors.collect_pull_requests(
+            ["good/repo", "bad/repo"], index, runner, RequestBudget()
+        )
         self.assertEqual(section.state, "UNKNOWN")
         self.assertEqual(len(section.items), 1)
         self.assertIn("bad/repo", section.reason)
@@ -126,11 +166,23 @@ class ClaimTests(unittest.TestCase):
     def test_claims_group_by_seat_and_flag_expiry(self):
         old = (NOW - timedelta(hours=100)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         fresh = (NOW - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        payload = json.dumps([
-            {"identifier": "AFC-394", "title": "Fleet View", "labels": ["claimed:MC"], "updated_at": old},
-            {"identifier": "AFC-389", "title": "Grid", "labels": ["claimed:MM"], "updated_at": fresh},
-            {"identifier": "AFC-390", "title": "Alerts", "labels": [], "updated_at": fresh},
-        ])
+        payload = json.dumps(
+            [
+                {
+                    "identifier": "AFC-394",
+                    "title": "Fleet View",
+                    "labels": ["claimed:MC"],
+                    "updated_at": old,
+                },
+                {
+                    "identifier": "AFC-389",
+                    "title": "Grid",
+                    "labels": ["claimed:MM"],
+                    "updated_at": fresh,
+                },
+                {"identifier": "AFC-390", "title": "Alerts", "labels": [], "updated_at": fresh},
+            ]
+        )
 
         def runner(argv):
             return 0, payload
