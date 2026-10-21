@@ -28,11 +28,45 @@ HOUSEKEEPER_LOCK="$HOME/.claude-disk-janitor/.housekeeper.lock"
 mkdir -p "$(dirname "$HOUSEKEEPER_LOCK")" 2>/dev/null || true
 if [ "${HOUSEKEEPER_LOCK_OWNER:-0}" != "1" ]; then
     if ! mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null; then
-        # Steal a lock older than 2h -- same idiom as janitor.sh.
-        if [ -n "$(find "$HOUSEKEEPER_LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
-            rmdir "$HOUSEKEEPER_LOCK" 2>/dev/null || true
-            mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null || { echo "skipped, peer holds housekeeper lock"; exit 0; }
+        # The lock is there.  Take it only when it is free to take, and take it
+        # the way the Python engine (scripts/vacuum/lock.py) and the Swift lock
+        # (Sources/Storage/HousekeeperLock.swift) do: by MOVING it aside, not
+        # by removing it and creating a new one.  Checking that a lock is
+        # stale and then removing it is two steps, and two reclaimers can
+        # interleave them: both see the stale lock, one removes it and creates
+        # a fresh one, and the other then removes that fresh, empty lock and
+        # creates its own, so both believe they hold it.  A rename is atomic,
+        # so only one caller can win it.
+        HOUSEKEEPER_STALE="$HOUSEKEEPER_LOCK.stale-$$.$RANDOM"
+        while [ -e "$HOUSEKEEPER_STALE" ]; do
+            HOUSEKEEPER_STALE="$HOUSEKEEPER_LOCK.stale-$$.$RANDOM"
+        done
+        if mv "$HOUSEKEEPER_LOCK" "$HOUSEKEEPER_STALE" 2>/dev/null; then
+            # We moved whatever was at the path.  It is free to take when it
+            # is older than the stale window -- the same two hour rule the
+            # Python and Swift locks use.
+            if [ -n "$(find "$HOUSEKEEPER_STALE" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+                if ! rmdir "$HOUSEKEEPER_STALE" 2>/dev/null; then
+                    # Not the empty marker we made: a lock directory with
+                    # something in it is not ours to take.  Put it back.
+                    if [ ! -e "$HOUSEKEEPER_LOCK" ]; then
+                        mv "$HOUSEKEEPER_STALE" "$HOUSEKEEPER_LOCK" 2>/dev/null || true
+                    fi
+                    echo "skipped, peer holds housekeeper lock"; exit 0
+                fi
+                mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null || { echo "skipped, peer holds housekeeper lock"; exit 0; }
+            else
+                # It was fresh, so somebody else holds it.  Put it back, and
+                # only while the path is still free, so a third holder's lock
+                # is never replaced by ours.
+                if [ ! -e "$HOUSEKEEPER_LOCK" ]; then
+                    mv "$HOUSEKEEPER_STALE" "$HOUSEKEEPER_LOCK" 2>/dev/null || true
+                fi
+                echo "skipped, peer holds housekeeper lock"; exit 0
+            fi
         else
+            # Nothing to move: another caller won the race, or the holder
+            # released the lock between the mkdir and the move.
             echo "skipped, peer holds housekeeper lock"; exit 0
         fi
     fi

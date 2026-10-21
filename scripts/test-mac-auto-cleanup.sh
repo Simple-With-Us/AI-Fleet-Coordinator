@@ -56,6 +56,95 @@ if ! grep -q 'name Journals' "$SCRIPT"; then
   fail "mac-auto-cleanup.sh must prune every PipelineStorage Journals dir, not only Urgent"
 fi
 
+# The housekeeper lock must be taken over atomically.
+#
+# Checking that a lock is stale and then removing it is two steps, and two
+# reclaimers can interleave them: both see the stale lock, one removes it and
+# creates a fresh one, and the other then removes that fresh, empty lock and
+# creates its own, so both believe they hold it.  The removal is therefore a
+# rename, which only one caller can win.  The Python lock
+# (HogHunter scripts/vacuum/lock.py) and the Swift lock
+# (Sources/Storage/HousekeeperLock.swift) do it this way too, and the three
+# have to agree: they share one lock directory.
+if [ -n "$(code_lines 'rmdir "\$HOUSEKEEPER_LOCK"' | grep -v 'trap ')" ]; then
+  fail "mac-auto-cleanup.sh must not remove the housekeeper lock and create it again; take it over by moving it aside"
+fi
+
+if ! grep -q 'HOUSEKEEPER_STALE' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must take a stale housekeeper lock by moving it aside, so only one caller can win"
+fi
+
+# Behavioural checks on the lock block itself.  The block is extracted from
+# the script and run against a temporary HOME, so nothing real is touched.
+LOCK_BLOCK="$(sed -n '/^HOUSEKEEPER_LOCK=/,/^fi$/p' "$SCRIPT")"
+if [ -z "$LOCK_BLOCK" ]; then
+  fail "could not extract the housekeeper lock block from mac-auto-cleanup.sh"
+fi
+
+LOCK_TEST_ROOT="$(mktemp -d)"
+trap 'rm -rf "$LOCK_TEST_ROOT"' EXIT
+
+run_lock_block() {
+  # HOME points at a scratch tree; the block only touches the lock under it.
+  # The block releases the lock on exit, so the outcome is reported from
+  # inside the block's own lifetime, not after it.
+  HOME="$1" HOUSEKEEPER_LOCK_OWNER= bash -c "$LOCK_BLOCK"$'\n''[ -d "$HOUSEKEEPER_LOCK" ] && echo LOCK_HELD=yes || echo LOCK_HELD=no'
+}
+
+make_lock() {
+  mkdir -p "$1/.claude-disk-janitor/.housekeeper.lock"
+}
+
+# 1. No lock: the block takes it.
+H1="$LOCK_TEST_ROOT/case1"
+mkdir -p "$H1"
+OUT="$(run_lock_block "$H1" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
+  fail "the housekeeper lock must be taken when it is free"
+fi
+
+# 2. A fresh lock held by a peer: refused, and the peer's lock is untouched.
+H2="$LOCK_TEST_ROOT/case2"
+mkdir -p "$H2"
+make_lock "$H2"
+OUT="$(run_lock_block "$H2" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
+  fail "a fresh housekeeper lock must be refused with 'skipped, peer holds housekeeper lock'"
+fi
+if [ ! -d "$H2/.claude-disk-janitor/.housekeeper.lock" ]; then
+  fail "a refused takeover must leave the peer's lock in place"
+fi
+if [ -n "$(find "$H2/.claude-disk-janitor" -maxdepth 1 -name '.housekeeper.lock.stale-*' 2>/dev/null)" ]; then
+  fail "a refused takeover must not leave a moved-aside copy behind"
+fi
+
+# 3. A stale lock: taken over, and the moved-aside copy is gone.
+H3="$LOCK_TEST_ROOT/case3"
+mkdir -p "$H3"
+make_lock "$H3"
+touch -t 202001010000 "$H3/.claude-disk-janitor/.housekeeper.lock"
+OUT="$(run_lock_block "$H3" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
+  fail "a stale housekeeper lock must be taken over"
+fi
+if [ -n "$(find "$H3/.claude-disk-janitor" -maxdepth 1 -name '.housekeeper.lock.stale-*' 2>/dev/null)" ]; then
+  fail "a taken-over stale lock must not leave a moved-aside copy behind"
+fi
+
+# 4. A stale lock with something in it is not the marker we made: put back.
+H4="$LOCK_TEST_ROOT/case4"
+mkdir -p "$H4"
+make_lock "$H4"
+echo "not ours" > "$H4/.claude-disk-janitor/.housekeeper.lock/leftover.txt"
+touch -t 202001010000 "$H4/.claude-disk-janitor/.housekeeper.lock"
+OUT="$(run_lock_block "$H4" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
+  fail "a lock directory with contents in it must not be taken"
+fi
+if [ ! -f "$H4/.claude-disk-janitor/.housekeeper.lock/leftover.txt" ]; then
+  fail "a lock directory with contents in it must be put back, not removed"
+fi
+
 bash -n "$SCRIPT" || fail "bash -n failed"
 
 echo OK
