@@ -130,6 +130,22 @@ export class SeatGate extends DurableObject {
     return state.linearHealth(this.store);
   }
 
+  gbBearerMint(entry) {
+    return state.gbBearerMint(this.store, entry);
+  }
+
+  gbBearerRevoke(entry) {
+    return state.gbBearerRevoke(this.store, entry);
+  }
+
+  gbBearerCheck(hash) {
+    return state.gbBearerCheck(this.store, hash);
+  }
+
+  gbBearerStatus() {
+    return state.gbBearerStatus(this.store);
+  }
+
   linearTokenClear() {
     return state.linearTokenClear(this.store);
   }
