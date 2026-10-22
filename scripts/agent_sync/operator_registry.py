@@ -591,9 +591,7 @@ def register_session(
     before anything is written.
     """
     if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
-        raise ValueError(
-            "only the Operator may issue a letter (issuer %r)" % (issuer or "")
-        )
+        raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
     native = SI.check(native_session_id, "the native session id")
     platform = normalize_platform(platform)
     for name, value in (
