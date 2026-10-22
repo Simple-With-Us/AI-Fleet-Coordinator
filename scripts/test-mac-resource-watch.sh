@@ -452,6 +452,50 @@ try:
         "a refused restore must name the moved-aside copy, or the orphaned "
         "peer lock accumulates invisibly (messages: %r)" % (messages,))
 
+    # 20. The release removes the lock directory BEFORE it clears the owner
+    #     file.
+    #
+    #     The other order strands the lock.  A lock directory that survives
+    #     the removal with no owner file falls back to the age rule, so every
+    #     implementation waits the full stale window for a lock that nobody
+    #     holds.  That is a two-hour wedge on every run, and it is exactly
+    #     what a failed removal used to leave behind on this host.
+    shutil.rmtree(lock, ignore_errors=True)
+    owner.unlink(missing_ok=True)
+    assert mod._acquire_housekeeper_lock() is True
+    seen = {}
+    real_clear_locked = mod._clear_housekeeper_owner_locked
+
+    def spy_clear(only_pid):
+        seen["lock_still_there"] = lock.exists()
+        real_clear_locked(only_pid)
+
+    mod._clear_housekeeper_owner_locked = spy_clear
+    try:
+        mod._release_housekeeper_lock()
+    finally:
+        mod._clear_housekeeper_owner_locked = real_clear_locked
+    assert seen.get("lock_still_there") is False, (
+        "the lock directory must be removed before the owner file is cleared; "
+        "clearing it first strands the lock with no owner")
+
+    # And a removal that FAILS must leave the owner file alone, so the next
+    # caller knows the lock is still held instead of waiting out the age
+    # rule for a lock nobody owns.
+    shutil.rmtree(lock, ignore_errors=True)
+    owner.unlink(missing_ok=True)
+    assert mod._acquire_housekeeper_lock() is True
+    (lock / "leftover.txt").write_text("not ours", encoding="utf-8")
+    mod._release_housekeeper_lock()
+    assert lock.is_dir(), "the lock directory could not be removed"
+    assert owner.exists(), (
+        "the owner file must survive a failed removal; clearing it first "
+        "strands the lock with no owner, and every implementation then waits "
+        "the full stale window for a lock nobody holds")
+    (lock / "leftover.txt").unlink()
+    shutil.rmtree(lock, ignore_errors=True)
+    owner.unlink(missing_ok=True)
+
 finally:
     shutil.rmtree(scratch, ignore_errors=True)
 print("housekeeper lock behaviour ok")

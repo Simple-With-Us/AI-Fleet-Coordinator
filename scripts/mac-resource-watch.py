@@ -665,15 +665,30 @@ def _release_housekeeper_lock() -> None:
 
 
 def _release_housekeeper_lock_locked() -> None:
-    """The release itself, with the shared guard already held."""
+    """The release itself, with the shared guard already held.
+
+    The lock directory goes first and the owner file second.  The other
+    order strands the lock:  a lock directory that survives the removal with
+    no owner file falls back to the age rule, so every implementation waits
+    the full stale window for a lock that nobody holds.  That is a two-hour
+    wedge on every run, and it is exactly what a failed removal used to
+    leave behind.
+
+    Removing the directory first is the safe order in the other direction
+    too:  the worst case is an owner file naming a process that has gone,
+    and the next caller takes that over at once instead of waiting.
+    """
     global _HOUSEKEEPER_LOCK_INODE
     if _HOUSEKEEPER_LOCK_INODE is not None and _lock_inode() != _HOUSEKEEPER_LOCK_INODE:
         return
-    _clear_housekeeper_owner(only_pid=os.getpid())
+    removed = False
     try:
         HOUSEKEEPER_LOCK.rmdir()
+        removed = True
     except OSError:
         pass
+    if removed:
+        _clear_housekeeper_owner(only_pid=os.getpid())
     _HOUSEKEEPER_LOCK_INODE = None
 
 
