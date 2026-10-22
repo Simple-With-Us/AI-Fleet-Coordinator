@@ -27,7 +27,8 @@ This reverses the 2026-09-04 ruling that put two ASCII spaces in the Code tab.
 | Surface | Mechanism |
 | --- | --- |
 | Claude Code desktop app, Code tab (chat replies) | `&nbsp;` plus a normal space, outside code spans.  Owner-verified 2026-10-08. |
-| Any other Markdown-rendering agent chat pane (Codex, Cursor, Antigravity, Grok, Kimi, MiniMax, DeepSeek, Fx, Muse) | The same.  By owner ruling, not individually verified. |
+| MiniMax Code pane (chat replies) | A real U+00A0 plus a normal space, outside code spans.  Owner-verified 2026-10-20:  two ASCII spaces collapse in this pane and the entity renders as the six literal characters. |
+| Any other Markdown-rendering agent chat pane, and any surface not yet verified (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse) | Two ASCII spaces.  Owner ruling 2026-10-20: an untested surface takes two literal ASCII spaces until it reports otherwise.  The entity is not the default; its failure mode is the six literal characters on screen. |
 | Terminal TUI chat (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode) | Two ASCII spaces.  Unverified. |
 | Cloud, BotFleet and OpenMausBot chat | Two ASCII spaces.  The backend maps them to U+00A0. |
 | GitHub PR and issue titles, bodies and comments, review comments; Zulip posts | A real U+00A0 plus a space.  Never the entity: GitHub can copy a PR body into a plain-text squash commit, where it would show literally. |
