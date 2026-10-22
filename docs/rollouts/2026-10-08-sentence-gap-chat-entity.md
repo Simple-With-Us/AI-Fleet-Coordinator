@@ -54,6 +54,15 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
 > U+00A0 into a committed source file.  This file is a dated record of the 2026-10-08 ruling and
 > is kept as-is above;  the live procedure is in `docs/fleet-skills/sentence-gap/SKILL.md`.
 
+> ⚠️ **Superseded 2026-10-20 for the MiniMax Code pane — the table above is wrong for it.**  The
+> "Any other Markdown-rendering agent chat pane" row above lists MiniMax with the entity, but the
+> owner verified on 2026-10-20 that the MiniMax Code pane renders a REAL U+00A0 plus a normal
+> space as a visible gap, and renders the `&nbsp;` entity as the six literal characters, which is
+> worse than no gap.  Jay:  "I think you need to do nbsp for chats or something".  The Claude Code
+> desktop Code tab keeps the entity.  The two owner-verified surfaces therefore use DIFFERENT
+> mechanisms, and one surface's mechanism must never be carried to another.  The live table is in
+> `docs/fleet-skills/sentence-gap/SKILL.md` and `FLEET-UI-COPY.md`.
+
 ## What landed (docs, in this PR)
 
 - `AGENT-SYNC.md` § Sentence Gap (the authoritative per-surface table), the Zulip summary

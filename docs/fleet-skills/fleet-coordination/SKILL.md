@@ -151,12 +151,16 @@ Visibly wider gap (two visible spaces) after terminal punctuation (`.`, `!`, `?`
 
 | Surface | Syntax | Why |
 | :--- | :--- | :--- |
-| **Markdown chat panes** (Claude Code desktop Code tab, owner-verified 2026-10-08; other panes by ruling, unverified) | `&nbsp;` plus normal space after each sentence, outside code spans (`Sentence one.&nbsp; Sentence two.`) | The renderer decodes the entity; a raw U+00A0 from the model arrives as a plain space |
+| **Claude Code desktop Code tab** (owner-verified 2026-10-08) | `&nbsp;` plus normal space after each sentence, outside code spans (`Sentence one.&nbsp; Sentence two.`) | The renderer decodes the entity; a raw U+00A0 from the model arrives as a plain space |
+| **MiniMax Code chat pane** (owner-verified 2026-10-20) | A REAL U+00A0 plus a normal space, outside code spans | Two ASCII spaces collapse in this pane, and the `&nbsp;` entity renders as the six literal characters, which is worse than no gap.  Generate it in the shell: `printf 'Sentence one.\302\240 Sentence two.\n'` |
+| **Any other Markdown chat pane** (by ruling 2026-10-08, unverified per pane) | `&nbsp;` plus normal space after each sentence, outside code spans | The two owner-verified surfaces differ, so never carry one surface's mechanism to another; report the surface in #agent-sync |
 | **GitHub PR and issue titles, bodies and comments, Zulip posts, other rendered tool output** | A real U+00A0 plus a space (never the entity) | Tools preserve the character; the entity would show literally in a plain-text squash commit |
 | **Terminal TUI chat, source files** (docs, commit messages, code comments, config) | Two literal ASCII spaces | Read in raw text editors / terminals; an entity would print literally |
 | **HTML / JSX / SwiftUI product copy** | A real U+00A0 plus a space, or `SENTENCE_GAP` | Raw doubles collapse in HTML |
 
 *Do not apply after abbreviations (`e.g.`, `v1.2.3`) or in URLs/identifiers.*
+
+**The gap covers your CHAT PROSE, not only your artifacts.**  Owner ruling 2026-10-20: every message you write to Jay, including one-line progress notes and acknowledgements.  Getting it right in files, commits, PRs, board rows and Zulip posts while writing plain single spaces in the chat is still a failure.  Read the reply back before sending it.
 
 ---
 
