@@ -1287,7 +1287,10 @@ const handler = {
     const source = hookMatch[1].toLowerCase();
     const raw = await request.text();
     // Bound the work a Sentry body can cause before it is verified or parsed.
-    if (source === "sentry" && raw.length > MAX_SENTRY_BODY_CHARS) {
+    // The bound is in ENCODED BYTES, the same unit as the general limit below, so
+    // "too large" means one thing:  a body of 64 KiB of multi-byte characters is
+    // over the limit, and a body of 256 KiB of characters is far over it.
+    if (source === "sentry" && new TextEncoder().encode(raw).length > MAX_SENTRY_BODY_BYTES) {
       return json({ error: "payload too large" }, 413);
     }
     if (!(await verify(request, raw, env, source))) {
@@ -1496,7 +1499,7 @@ function validatePayload(payload, depth = 0) {
  * characters are refused.  The parser reads only text, so a nested blob can
  * never become a topic name, a label or a link.
  */
-const MAX_SENTRY_BODY_CHARS = 256 * 1024;
+const MAX_SENTRY_BODY_BYTES = 256 * 1024;
 const MAX_SENTRY_NODES = 2000;
 
 function validateSentryPayload(payload) {
