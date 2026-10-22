@@ -325,11 +325,10 @@ class TestMcpWrapper(unittest.TestCase):
                 "edit_pr",
                 "reply_thread",
                 "comment_pr",
-                "mint_token",
                 "merge_pr",
                 "workflow_dispatch",
                 "resolve_thread",
-            ],
+            ],  # mint_token stays HTTP-only: raw App tokens never cross stdio
         )
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):
@@ -567,3 +566,95 @@ class TestAppClientShapes(unittest.TestCase):
         self.assertTrue(result["resolved"])
         with self.assertRaises(ValueError):
             client.resolve_thread("bogus", bearer="MINTED")
+
+
+class TestSecretScan(unittest.TestCase):
+    def test_flags_credential_shapes(self):
+        from ghr.secret_scan import find_secret
+
+        self.assertEqual(find_secret("token: ghp_" + "a" * 30), "github_token")
+        self.assertEqual(find_secret("use github_pat_" + "b" * 40), "github_fine_grained_pat")
+        self.assertEqual(find_secret("-----BEGIN " + "RSA PRIVATE KEY-----"), "private_key_block")
+        self.assertEqual(find_secret("st." + "c" * 30), "infisical_service_token")
+
+    def test_clean_text_passes(self):
+        from ghr.secret_scan import find_secret
+
+        self.assertIsNone(find_secret("fix: resolve the latest.stable parser bug"))
+        self.assertIsNone(find_secret("list.everything and st. short prose"))
+        self.assertIsNone(find_secret(None))
+        self.assertIsNone(find_secret(123))
+
+    def _relay(self, tmp):
+        client = StubClient()
+        relay = Relay(SeatPolicy(SEATS_JSON), client, AuditLog(os.path.join(tmp, "a.jsonl")))
+        return relay, client
+
+    def test_open_pr_with_pasted_token_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, client = self._relay(tmp)
+            code, payload = relay.handle(
+                SEAT_TOKEN,
+                "open_pr",
+                {
+                    "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+                    "base": "main",
+                    "head": "b",
+                    "title": "t",
+                    "body": "leak ghp_" + "a" * 30,
+                },
+            )
+            self.assertEqual(code, 400)
+            self.assertIn("credential", payload["error"])
+            self.assertEqual(client.calls, [])
+            rows = [json.loads(line) for line in open(os.path.join(tmp, "a.jsonl"))]
+            self.assertEqual(rows[-1]["result"], "bad_request")
+
+    def test_reply_thread_with_private_key_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, client = self._relay(tmp)
+            code, payload = relay.handle(
+                SEAT_TOKEN,
+                "reply_thread",
+                {
+                    "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+                    "number": 1,
+                    "comment_id": 2,
+                    "body": "-----BEGIN " + "OPENSSH PRIVATE KEY-----",
+                },
+            )
+            self.assertEqual(code, 400)
+            self.assertEqual(client.calls, [])
+
+    def test_clean_open_pr_still_flows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, client = self._relay(tmp)
+            code, payload = relay.handle(
+                SEAT_TOKEN,
+                "open_pr",
+                {
+                    "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+                    "base": "main",
+                    "head": "b",
+                    "title": "t",
+                    "body": "ordinary body",
+                },
+            )
+            self.assertEqual(code, 200)
+            self.assertEqual(client.calls[0][0], "open_pr")
+
+
+class TestAuditSecretHashing(unittest.TestCase):
+    def test_token_shaped_value_under_unknown_key_is_hashed(self):
+        from ghr.audit import AuditLog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "audit.jsonl")
+            AuditLog(path).record(
+                "seat", "act", "r", "ok", {"note": "ghp_" + "a" * 30, "keep": "v"}
+            )
+            row = json.loads(open(path).readline())
+        self.assertIn("note_sha256", row)
+        self.assertEqual(row["note_len"], 34)
+        self.assertEqual(row["keep"], "v")
+        self.assertNotIn("note", row)

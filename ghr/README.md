@@ -96,6 +96,18 @@ Every check is an allowlist: an action or repo not named is denied. Token compar
 constant-time over all seats. A per-seat hourly call cap (`PR_RELAY_RATE_PER_HOUR`, default 120)
 limits a leaked seat token's blast radius.
 
+## Outbound hygiene
+
+Seat-supplied text (PR titles, bodies, review replies) is scanned for credential shapes
+(fine-grained and classic GitHub tokens, private-key blocks, Infisical service tokens) and
+refused with a 400 before anything leaves for GitHub - a seat cannot paste or smuggle a secret
+into content authored under the owner's token.  The audit log applies the same scan:  any detail
+value matching a credential shape is stored hashed, whatever key it arrived under.
+
+`mint_token` returns a raw App installation token, so it is NOT exposed over the MCP wrapper
+(a stdio transcript is too easy to capture);  seats that need a token for git-over-HTTPS call the
+relay's HTTP API directly, where the response goes only to that caller.
+
 ## Audit
 
 One JSON object per line at `PR_RELAY_AUDIT_PATH` (default `pr-relay-audit.jsonl`), fsynced after

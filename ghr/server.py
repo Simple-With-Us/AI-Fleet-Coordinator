@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .audit import AuditLog
 from .github_client import GitHubClient, RelayGitHubError
 from .policy import PolicyError, SeatPolicy
+from .secret_scan import reject_secrets
 
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_TEXT_FIELD = 32 * 1024
@@ -40,6 +41,14 @@ def _text(value, field: str, required: bool = True) -> str | None:
     if len(value) > MAX_TEXT_FIELD:
         raise ValueError(f"{field} exceeds the 32 KiB bound")
     return value
+
+
+def _clean_text(value, field: str, required: bool = True) -> str:
+    """_text plus a credential-shape refusal for seat-supplied outbound text."""
+    text = _text(value, field, required=required)
+    if text is not None:
+        reject_secrets(field, text)
+    return text
 
 
 def _number(value, field: str) -> int:
@@ -115,25 +124,25 @@ class Relay:
                 repo,
                 base=_text(args.get("base"), "base"),
                 head=_text(args.get("head"), "head"),
-                title=_text(args.get("title"), "title"),
-                body=_text(args.get("body"), "body"),
+                title=_clean_text(args.get("title"), "title"),
+                body=_clean_text(args.get("body"), "body"),
             )
         if action == "edit_pr":
             return self.client.edit_pr(
                 repo,
                 _number(number, "number"),
-                title=_text(args.get("title"), "title", required=False),
-                body=_text(args.get("body"), "body", required=False),
+                title=_clean_text(args.get("title"), "title", required=False),
+                body=_clean_text(args.get("body"), "body", required=False),
             )
         if action == "reply_thread":
             return self.client.reply_thread(
                 repo,
                 _number(number, "number"),
                 _number(args.get("comment_id"), "comment_id"),
-                _text(args.get("body"), "body"),
+                _clean_text(args.get("body"), "body"),
             )
         return self.client.comment_pr(
-            repo, _number(number, "number"), _text(args.get("body"), "body")
+            repo, _number(number, "number"), _clean_text(args.get("body"), "body")
         )
 
 

@@ -78,22 +78,11 @@ TOOLS = [
     },
 ]
 
+# mint_token is deliberately NOT exposed over MCP:  it returns a raw App
+# installation token, which would land in the MCP client's stdio transcript and
+# any logging around it.  Seats that need a token for git-over-HTTPS call the
+# relay's HTTP API directly, where the response goes only to that caller.
 TOOLS += [
-    {
-        "name": "mint_token",
-        "description": "Mint a short-lived GitHub App installation token for the caller's own app",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "repo": {"type": "string", "description": "owner/name"},
-                "permissions": {
-                    "type": "object",
-                    "description": "permission name to read|write, within the seat ceiling",
-                },
-            },
-            "required": ["repo", "permissions"],
-        },
-    },
     {
         "name": "merge_pr",
         "description": "Merge a pull request as the caller's own GitHub App",
