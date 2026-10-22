@@ -203,7 +203,9 @@ class Broker:
                 audit_state["outcome"] = getattr(exc, "outcome", None) or "refused"
                 raise Refused(
                     503,
-                    "OPERATOR_GITHUB_CALLER_" + seat + "_HMAC lookup unavailable"
+                    "OPERATOR_GITHUB_CALLER_"
+                    + seat
+                    + "_HMAC lookup unavailable"
                     + ("; retry" if audit_state["outcome"] == "retryable" else ""),
                 ) from None
             if key is None:
