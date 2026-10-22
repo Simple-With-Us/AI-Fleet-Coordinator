@@ -32,6 +32,8 @@ struct FleetOverviewView: View {
                     .tabItem { Label("Fleet", systemImage: "list.bullet.rectangle") }
                 ControlsView()
                     .tabItem { Label("Controls", systemImage: "slider.horizontal.3") }
+                WakeSettingsView()
+                    .tabItem { Label("Wake Settings", systemImage: "bell.badge") }
             }
             Divider()
             ApplyActivityView()
