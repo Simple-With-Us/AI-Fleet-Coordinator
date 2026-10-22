@@ -1700,9 +1700,7 @@ class LegacyStateAdoption(unittest.TestCase):
                     old = time.time() - server.ADOPT_LOCK_STALE_SECONDS - 60.0
                     os.utime(lock, (old, old))
 
-                adopted = server.adopt_legacy_state(
-                    str(directory / "git-relay-outcomes.json")
-                )
+                adopted = server.adopt_legacy_state(str(directory / "git-relay-outcomes.json"))
 
                 self.assertTrue(pathlib.Path(adopted).exists())
                 self.assertFalse(legacy.exists(), "the stale lock must not stop the move")

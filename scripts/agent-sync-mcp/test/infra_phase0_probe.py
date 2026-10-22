@@ -294,7 +294,7 @@ def secret_probes() -> dict:
     # The probe's own cleanup must restore the caller's SIGTERM handler, not
     # reset it to the default.
     real_handler = signal.getsignal(signal.SIGTERM)
-    marker = lambda *args: None  # noqa: E731
+    marker = lambda *args: None
     signal.signal(signal.SIGTERM, marker)
     try:
         run_with_fake_child(FakeChild(None, returncode=0, stdout="", stderr=""), secret=secret)
