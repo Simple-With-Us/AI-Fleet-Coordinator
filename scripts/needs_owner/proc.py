@@ -79,7 +79,14 @@ class Runner:
                 os.unlink(path)
 
     # ---- children --------------------------------------------------------------------------
-    def _run(self, tool: str, args: Sequence[str], stdin: str | None, timeout: int) -> Result:
+    def _run(
+        self,
+        tool: str,
+        args: Sequence[str],
+        stdin: str | None,
+        timeout: int,
+        env: Mapping[str, str] | None = None,
+    ) -> Result:
         exe = find_tool(tool, self.env)
         if exe is None:
             return Result(127, err="%s is not installed or not on PATH" % tool, missing=True)
@@ -92,7 +99,7 @@ class Runner:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                env=self.env,
+                env=dict(env) if env is not None else self.env,
                 timeout=timeout,
                 check=False,
             )
@@ -109,7 +116,11 @@ class Runner:
         return Result(done.returncode, done.stdout or "", done.stderr or "")
 
     def board(self, *args: str) -> Result:
-        return self._run("simple-board", args, None, BOARD_TIMEOUT)
+        # The retired board wrapper exported LINEAR_BOARD_WRITES=1;  simple-board is the board
+        # entry point itself, so without the opt-in every file/comment/label exits 7.
+        env = dict(self.env)
+        env["LINEAR_BOARD_WRITES"] = "1"
+        return self._run("simple-board", args, None, BOARD_TIMEOUT, env)
 
     def board_json(self, *args: str):
         """Run a `board ... --json` read and return the parsed JSON, or raise BoardFailed."""
