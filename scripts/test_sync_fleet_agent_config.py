@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """copy_mirror contract: File Provider-safe recursive copy + delete extras.
 
-Also the two contracts the daily backup job depends on:
+Also the contracts the daily backup job depends on:
 
   - A subtree that cannot be mirrored is reported, not raised.  The mirror is
     the optional half of the job; the repository zips are the half the owner
     depends on, and they were already safely in Drive before the mirror ran.
   - Retention drops the dated backup folders beyond the newest N, and a dry
     run changes nothing.
+  - A Drive that cannot be listed is a skipped retention, not a failed job:
+    the exit status stays 0, and the operator is told the retention was
+    skipped instead of seeing a healthy looking "removed 0" summary.
 
 The dry run covers the whole job, not just the retention:  a dry run writes
 no dated folder, no zips and no notes either.
@@ -16,7 +19,9 @@ no dated folder, no zips and no notes either.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +36,38 @@ def load_mod(path: Path = SCRIPT, name: str = "sync_fleet_agent_config"):
     assert spec.loader is not None
     spec.loader.exec_module(mod)
     return mod
+
+
+@contextlib.contextmanager
+def refusing_listing():
+    """Make the Drive root refuse to be listed, the way the mount does."""
+    real_iterdir = Path.iterdir
+
+    def refuse(iterated_path):
+        raise PermissionError(1, "Operation not permitted", str(iterated_path))
+
+    Path.iterdir = refuse
+    try:
+        yield
+    finally:
+        Path.iterdir = real_iterdir
+
+
+@contextlib.contextmanager
+def refusing_entry_stat(entry_name: str):
+    """Make the stat of one Drive entry refuse, the way the mount does."""
+    real_is_dir = Path.is_dir
+
+    def refuse(path_self):
+        if path_self.name == entry_name:
+            raise PermissionError(1, "Operation not permitted", str(path_self))
+        return real_is_dir(path_self)
+
+    Path.is_dir = refuse
+    try:
+        yield
+    finally:
+        Path.is_dir = real_is_dir
 
 
 class CopyMirrorTests(unittest.TestCase):
@@ -194,24 +231,101 @@ class RetentionTests(unittest.TestCase):
         # already succeeded.
         self.make_backup("2026-10-01")
 
-        real_iterdir = Path.iterdir
+        err = io.StringIO()
+        with refusing_listing():
+            with contextlib.redirect_stderr(err):
+                found = self.mod.dated_backup_folders(self.gdrive)
+                removed = self.mod.prune_old_backups(self.gdrive, keep=0)
 
-        def refuse(iterated_path):
-            raise PermissionError(1, "Operation not permitted", str(iterated_path))
-
-        Path.iterdir = refuse
-        try:
-            found = self.mod.dated_backup_folders(self.gdrive)
-            removed = self.mod.prune_old_backups(self.gdrive, keep=0)
-        finally:
-            Path.iterdir = real_iterdir
-
-        self.assertEqual(found, [], "an unlistable Drive yields no backup folders")
-        self.assertEqual(removed, [], "an unlistable Drive removes nothing")
+        self.assertIsNone(
+            found,
+            "an unlistable Drive is a refusal, not a Drive with nothing in it",
+        )
+        self.assertIsNone(
+            removed,
+            "a refused retention is skipped, not a prune that removed nothing",
+        )
         self.assertTrue(
             (self.gdrive / "Website & App Source Backups - 2026-10-01").is_dir(),
             "the backup folder is still there",
         )
+        self.assertIn(
+            "could not list",
+            err.getvalue(),
+            "the refusal is reported, not swallowed silently",
+        )
+        self.assertIn(
+            "skipped",
+            err.getvalue(),
+            "the operator is told the retention was skipped",
+        )
+
+    def test_a_drive_with_no_dated_folders_is_an_ordinary_no_op_prune(self) -> None:
+        # The other half of the refusal contract.  A Drive that lists fine but
+        # holds no dated backup folders is a successful no-op, and the
+        # operator has to be able to tell it from a refusal.  The old code
+        # returned the same empty list for both, which is how a refusal read
+        # as "there was nothing to prune" and the backup set grew unnoticed.
+        (self.gdrive / "Personal-Site").mkdir()
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            listed = self.mod.prune_old_backups(self.gdrive, keep=14)
+
+        self.assertIsNotNone(listed, "a Drive that lists fine is not a refusal")
+        self.assertEqual(listed, [], "a Drive with no dated folders removes nothing")
+        self.assertNotIn(
+            "skipped",
+            err.getvalue(),
+            "an ordinary no-op prune is not reported as a skipped retention",
+        )
+
+        refused_err = io.StringIO()
+        with refusing_listing():
+            with contextlib.redirect_stderr(refused_err):
+                refused = self.mod.prune_old_backups(self.gdrive, keep=14)
+
+        self.assertIsNone(refused, "a Drive that cannot be listed is a refusal")
+        self.assertIn(
+            "could not list",
+            refused_err.getvalue(),
+            "the refusal is reported, not swallowed silently",
+        )
+        self.assertNotEqual(
+            listed,
+            refused,
+            "the two outcomes have to be different outcomes",
+        )
+
+    def test_a_per_entry_permission_error_is_skipped_not_raised(self) -> None:
+        # The refusal can come for one entry instead of the whole listing, so
+        # the stat that decides whether an entry is a folder has to be guarded
+        # too.  One unreadable folder in the Drive must not cost the owner the
+        # whole backup.
+        oldest = self.make_backup("2026-10-01")
+        middle = self.make_backup("2026-10-02")
+        self.make_backup("2026-10-03")
+
+        err = io.StringIO()
+        with refusing_entry_stat(oldest.name):
+            with contextlib.redirect_stderr(err):
+                removed = self.mod.prune_old_backups(self.gdrive, keep=1)
+
+        self.assertEqual(
+            [p.name for p in removed],
+            [middle.name],
+            "the rest of the prune still happened",
+        )
+        self.assertTrue(
+            oldest.is_dir(),
+            "the entry that could not be stat-ed is left alone",
+        )
+        self.assertIn(
+            oldest.name,
+            err.getvalue(),
+            "the warning names the path it could not read",
+        )
+        self.assertIn("could not stat", err.getvalue())
 
 
 class DryRunTests(unittest.TestCase):
@@ -261,6 +375,100 @@ class DryRunTests(unittest.TestCase):
         dest = self.gdrive / f"Website & App Source Backups - {self.mod.DATE_STR}"
         self.assertTrue((dest / f"Some-App-backup-{self.mod.DATE_STR}.zip").is_file())
         self.assertTrue((dest / "BACKUP-NOTES.md").is_file())
+
+
+class RefusedDriveRunTests(unittest.TestCase):
+    """A refused Drive costs the operator the retention, not the backup."""
+
+    def setUp(self) -> None:
+        self.mod = load_mod(BACKUP_SCRIPT, "backup_fleet_to_gdrive")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.gdrive = self.root / "gdrive"
+        self.gdrive.mkdir()
+        self.code = self.root / "Code"
+        self.repo = self.code / "Some-App"
+        self.repo.mkdir(parents=True)
+        (self.repo / "README.md").write_text("hello")
+        self.mod.CODE_ROOT = self.code
+        self.mod.find_gdrive = lambda: self.gdrive
+        self.mod.planned_repos = lambda: ["Some-App"]
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def run_main(self, **overrides) -> int:
+        args = dict(
+            list=False,
+            only=None,
+            keep=14,
+            dry_run=False,
+            prune_only=False,
+        )
+        args.update(overrides)
+        self.mod.parse_args = lambda: argparse.Namespace(**args)
+        return self.mod.main()
+
+    def test_an_unlistable_drive_still_backs_up_and_exits_zero(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with refusing_listing():
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = self.run_main()
+
+        self.assertEqual(code, 0, "housekeeping never takes the daily job down")
+        dest = self.gdrive / f"Website & App Source Backups - {self.mod.DATE_STR}"
+        self.assertTrue(
+            (dest / f"Some-App-backup-{self.mod.DATE_STR}.zip").is_file(),
+            "the repository zip is still in Drive",
+        )
+        self.assertIn(
+            "Retention: skipped",
+            out.getvalue(),
+            "the operator sees that the retention was skipped",
+        )
+        self.assertIn("could not list", err.getvalue())
+
+    def test_a_refused_drive_entry_does_not_stop_the_backup(self) -> None:
+        old = self.gdrive / "Website & App Source Backups - 2026-10-01"
+        old.mkdir()
+
+        out, err = io.StringIO(), io.StringIO()
+        with refusing_entry_stat(old.name):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = self.run_main()
+
+        self.assertEqual(code, 0)
+        dest = self.gdrive / f"Website & App Source Backups - {self.mod.DATE_STR}"
+        self.assertTrue(
+            (dest / f"Some-App-backup-{self.mod.DATE_STR}.zip").is_file(),
+            "the repository zip is still in Drive",
+        )
+        self.assertIn("Retention:", out.getvalue(), "the run reported its retention")
+        self.assertIn("could not stat", err.getvalue())
+        self.assertTrue(old.is_dir(), "the unreadable folder is left alone")
+
+    def test_prune_only_reports_the_skipped_retention_and_exits_zero(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with refusing_listing():
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = self.run_main(prune_only=True)
+
+        self.assertEqual(code, 0, "housekeeping never takes the daily job down")
+        self.assertIn("Retention: skipped", out.getvalue())
+        self.assertIn("skipped", err.getvalue())
+
+    def test_prune_only_dry_run_reports_the_skipped_retention(self) -> None:
+        # The dry run is how the operator inspects what the retention would
+        # do, so a refusal has to say so there too instead of reporting an
+        # empty plan.
+        out, err = io.StringIO(), io.StringIO()
+        with refusing_listing():
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = self.run_main(prune_only=True, dry_run=True)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Retention: skipped", out.getvalue())
+        self.assertIn("skipped", err.getvalue())
 
 
 if __name__ == "__main__":
