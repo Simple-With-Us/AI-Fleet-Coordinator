@@ -454,6 +454,33 @@ export async function linearTokenSet(store, entry) {
   return { ...row };
 }
 
+// The last mint outcome per seat, for the health route (src/health.js).  Only a
+// fixed kind code and two times:  never Linear's message text.
+export async function linearMintNote(store, { ok, kind = null, at } = {}) {
+  const row = (await store.get("linear_mint_note")) ?? {};
+  const t = Math.floor(Number(at) / 1000) || 0;
+  if (ok) row.last_ok_at = t;
+  else {
+    row.last_fail_at = t;
+    row.last_fail_kind = typeof kind === "string" ? kind.slice(0, 20) : "unexpected";
+  }
+  await store.put("linear_mint_note", {
+    last_ok_at: Number(row.last_ok_at) || 0,
+    last_fail_at: Number(row.last_fail_at) || 0,
+    last_fail_kind: typeof row.last_fail_kind === "string" ? row.last_fail_kind : null,
+  });
+}
+
+/** Token ages and the last mint outcome, with no token value. */
+export async function linearHealth(store) {
+  const cached = await linearTokenGet(store);
+  const note = (await store.get("linear_mint_note")) ?? {};
+  return {
+    token: cached ? { minted_at: cached.minted_at, expires_at: cached.expires_at, mint_count: cached.mint_count } : null,
+    note: { last_ok_at: Number(note.last_ok_at) || 0, last_fail_at: Number(note.last_fail_at) || 0, last_fail_kind: typeof note.last_fail_kind === "string" ? note.last_fail_kind : null },
+  };
+}
+
 /** Forget the token, so the next call mints.  Only the owner needs this. */
 export async function linearTokenClear(store) {
   await store.delete("linear_token");
