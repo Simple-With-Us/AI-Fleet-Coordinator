@@ -53,6 +53,9 @@ def human(user_id: int, name: str = "Human") -> dict[str, Any]:
 # Obviously nobody's Zulip id, for fixtures that need a sender on a private message and no more.
 # Never the production Operator id:  a committed test fixture should not carry a real identity.
 SYNTHETIC_OPERATOR_ID = 999_000_001
+# A synthetic key long enough to have a first-eight and a last-four, so a masked
+# preview has something to show.
+SYNTHETIC_KEY = "abcdefgh" + "x" * 20 + "wxyz"
 
 
 class ClarifyingWakeTests(unittest.TestCase):
@@ -145,7 +148,7 @@ class SeatDmRefusedTests(unittest.TestCase):
 
     def test_a_reply_inside_a_dm_operator_opened_is_allowed(self) -> None:
         # Nothing to refuse:  the conversation is Operator's and the seat is answering in it.
-        DMP.check_new_dm({}, identity="CLAUDE", recipients=[bot(DMP.Z.OPERATOR_USER_ID)],
+        DMP.check_new_dm({}, identity="CLAUDE", recipients=[bot(SYNTHETIC_OPERATOR_ID)],
                          operator_opened=True)
 
     def test_operator_may_open_only_a_clarifying_question(self) -> None:
@@ -248,7 +251,7 @@ class TimeoutDropTests(unittest.TestCase):
 
 class OperatorOpenedDmTests(unittest.TestCase):
     """Synthetic ids throughout:  `operator_user_id` is passed in, so no fixture needs the live
-    Operator user id and `operator_opened_dm` never falls back to the pinned production one."""
+    Operator user id and `operator_opened_dm` never falls back to one."""
 
     def test_only_a_conversation_operator_opened_counts(self) -> None:
         people = [bot(SYNTHETIC_OPERATOR_ID)]
@@ -582,8 +585,8 @@ class DmLookupCredentialTests(unittest.TestCase):
     Returning `[]` for either one tells the rule "no conversation", and it then refuses a seat's
     legitimate reply inside an Operator-opened DM with a terminal `dm_not_allowed` that no retry
     can clear.  A 401/403 swallowed that way loses its status and Zulip code, and a 429/5xx is not
-    terminal at all.  So credential rejection propagates (and `map_exception` renders it with the
-    status and code, never any part of the key), a 429
+    terminal at all.  So credential rejection propagates (and it renders with the status and
+    Zulip's code, and names the key by a masked preview only), a 429
     is re-raised unchanged (and renders as `rate_limited` with its retry hint), and the other
     transient statuses are re-raised as `NetworkError`, which the caller makes retryable."""
 
@@ -592,6 +595,12 @@ class DmLookupCredentialTests(unittest.TestCase):
         class RaisingAgent:
             seat = "CLAUDE"
             tag = "claude-code/1.2.3"
+            creds = Z.Credentials(
+                email="bot@example.test",
+                key=SYNTHETIC_KEY,
+                site="https://realm.example.test",
+                source="env",
+            )
 
             def fetch(self, operands: Any, **kw: Any) -> list[dict[str, Any]]:
                 raise raising
@@ -604,9 +613,24 @@ class DmLookupCredentialTests(unittest.TestCase):
 
     def test_a_rejected_key_is_not_an_empty_conversation(self) -> None:
         for status in (401, 403):
-            with self.assertRaises(Z.ApiError) as caught:
-                self._tools(Z.ApiError("zulip refused the key", status=status))._dm_exists([9])
-            self.assertEqual(caught.exception.status, status, "the credential error survives")
+            with self.assertRaises(T.ToolError) as caught:
+                self._tools(
+                    Z.ApiError("zulip refused the key", status=status, code="UNAUTHORIZED")
+                )._dm_exists([9])
+            error = caught.exception
+            self.assertEqual(error.extra["status"], status, "the credential error survives")
+            self.assertEqual(error.extra["zulip_code"], "UNAUTHORIZED")
+            self.assertEqual(error.code, "not_authorized" if status == 401 else "zulip_error")
+
+    def test_a_rejected_key_is_named_by_a_masked_preview_only(self) -> None:
+        # The key has to be identifiable without ever being written out in full.
+        with self.assertRaises(T.ToolError) as caught:
+            self._tools(
+                Z.ApiError("zulip refused the key", status=401, code="UNAUTHORIZED")
+            )._dm_exists([9])
+        message = caught.exception.message
+        self.assertIn("abcdefgh\u2026wxyz", message)
+        self.assertNotIn(SYNTHETIC_KEY, message)
 
     def test_a_rejected_key_surfaces_as_not_authorized_not_as_a_dm_refusal(self) -> None:
         # The rendered error names the status and Zulip's code;  it never carries the key itself.
@@ -631,6 +655,12 @@ class DmLookupCredentialTests(unittest.TestCase):
                 seat = "CLAUDE"
                 tag = "claude-code/1.2.3"
                 rt = types.SimpleNamespace(env={})
+                creds = Z.Credentials(
+                    email="bot@example.test",
+                    key=SYNTHETIC_KEY,
+                    site="https://realm.example.test",
+                    source="env",
+                )
 
                 def users(self) -> list[dict[str, Any]]:
                     return [{"user_id": 9, "is_bot": True}]
@@ -642,6 +672,8 @@ class DmLookupCredentialTests(unittest.TestCase):
             with self.assertRaises(Z.ApiError) as caught:
                 cli._dm_rule(RejectedAgent(), types.SimpleNamespace(), to)
             self.assertEqual(caught.exception.status, status, "the credential error survives")
+            self.assertIn("abcdefgh\u2026wxyz", str(caught.exception))
+            self.assertNotIn(SYNTHETIC_KEY, str(caught.exception))
 
     def test_a_transient_status_is_retryable_not_an_empty_conversation(self) -> None:
         for status in (408, 500, 502, 503):

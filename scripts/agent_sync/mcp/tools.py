@@ -1555,11 +1555,10 @@ class Tools:
         refusal that no retry can clear.  Two failures are separated for that reason:
 
         - a **credential rejection** (401, 403) means this bot's key was refused, which says
-          nothing at all about the conversation.  It is re-raised so `map_exception` renders it as
-          `not_authorized` (401) or `zulip_error` (403) with the HTTP status and Zulip's code, never
-          as "no such DM".  The rendered error carries no part of the key, not even a masked
-          preview:  the status and code identify the refusal, and the seat's key is named by the
-          seat itself.
+          nothing at all about the conversation.  It becomes a sanitized error of its own, so the
+          refusal is never read as "no such DM".  The error names the key by a masked preview
+          only (the first eight and the last four characters), with the HTTP status and Zulip's
+          code, and never any other part of the key.
         - a **rate limit** (429) is re-raised unchanged, so `map_exception` renders it as
           `rate_limited` with the `retry_after_s` hint instead of a generic outage.
         - a **transient** failure (408, a gateway or any other 5xx) becomes a `NetworkError`,
@@ -1591,7 +1590,12 @@ class Tools:
                     "Zulip answered HTTP %s for the direct message narrow" % status
                 ) from exc
             if status in (401, 403):
-                raise
+                raise ToolError(
+                    "not_authorized" if status == 401 else "zulip_error",
+                    "Zulip refused the bot credential (%s);  verify the configured API key"
+                    % Z.masked_credential(getattr(getattr(self.agent, "creds", None), "key", "")),
+                    extra={"zulip_code": exc.code, "status": status},
+                ) from exc
             return []
 
     @staticmethod

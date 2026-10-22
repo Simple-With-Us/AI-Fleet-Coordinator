@@ -1904,7 +1904,12 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
                 "Zulip answered HTTP %s for the direct message narrow" % status
             ) from exc
         if status in (401, 403):
-            raise
+            raise Z.ApiError(
+                "Zulip refused the bot credential (%s);  verify the configured API key"
+                % Z.masked_credential(getattr(getattr(agent, "creds", None), "key", "")),
+                code=exc.code,
+                status=status,
+            ) from exc
         existing = []
     try:
         DMP.check_new_dm(

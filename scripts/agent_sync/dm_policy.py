@@ -267,19 +267,20 @@ def operator_opened_dm(
     sender = oldest.get("sender_id")
     if sender is None:
         return False
-    operator_id = operator_user_id if operator_user_id is not None else Z.OPERATOR_USER_ID
+    operator_id = operator_user_id if operator_user_id is not None else Z.operator_user_id()
+    if operator_id is None:
+        # The Operator's id is not configured, so no conversation is provably Operator-opened.
+        # The new-direct-message rule then applies, which is the safe direction.
+        return False
     return int(sender) == int(operator_id)
 
 
-def operator_user_id(env: Mapping[str, str] | None = None) -> int:
-    """The Operator bot's Zulip user id:  OPERATOR_ZULIP_USER_ID, else the pinned 1217148.
+def operator_user_id(env: Mapping[str, str] | None = None) -> int | None:
+    """The Operator bot's Zulip user id:  OPERATOR_ZULIP_USER_ID, else None when it is unset.
 
-    Only an id, never a key;  it is safe to log."""
-    raw = (env or {}).get("OPERATOR_ZULIP_USER_ID")
-    try:
-        return int(str(raw).strip()) if raw and str(raw).strip() else Z.OPERATOR_USER_ID
-    except ValueError:
-        return Z.OPERATOR_USER_ID
+    No id is committed, so a deployment that has not set the variable gets None rather than a
+    guess, and the caller fails closed.  Only an id, never a key;  it is safe to log."""
+    return Z.operator_user_id(env)
 
 
 def env_or_root_default(env: Mapping[str, str] | None, name: str, fallback: str) -> str:
