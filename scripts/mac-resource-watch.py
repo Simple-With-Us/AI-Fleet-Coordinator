@@ -248,6 +248,31 @@ def load_webhooks() -> list[tuple[str, str, str]]:
     return hooks
 
 
+def _housekeeper_lock_is_stale(path: Path) -> bool:
+    """True when the lock at `path` is older than the stale window.
+
+    A lock that cannot be read (it vanished meanwhile) is not stale:  it is
+    not there to take.
+    """
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return False
+    return age >= HOUSEKEEPER_LOCK_STALE_SEC
+
+
+def _housekeeper_lock_is_marker(path: Path) -> bool:
+    """True for an empty, real directory:  the marker a holder makes.
+
+    Anything else at the path (a file, a link, a directory with contents) is
+    not a lock this watch may take.
+    """
+    try:
+        return path.is_dir() and not path.is_symlink() and not any(path.iterdir())
+    except OSError:
+        return False
+
+
 def _acquire_housekeeper_lock() -> bool:
     """Take the lock every reclaiming scheduler shares, so two never reclaim at once.
 
@@ -255,28 +280,100 @@ def _acquire_housekeeper_lock() -> bool:
     mkdir exactly as mac-auto-cleanup.sh takes it, and stale after 120 minutes.  A
     caller that already holds it exports HOUSEKEEPER_LOCK_OWNER=1; then the lock is
     neither taken nor released here -- the caller keeps it for the whole run.
+
+    A stale lock is taken over the way mac-auto-cleanup.sh takes it (AFC-458):
+    staleness is decided at the lock path first, so a live holder's lock is never
+    moved, and the stale lock is then MOVED aside rather than removed and made
+    again.  Checking that a lock is stale and then removing it is two steps, and
+    two reclaimers can interleave them:  both see the stale lock, one removes it
+    and makes a fresh one, and the other then removes that fresh, empty lock and
+    makes its own, so both believe they hold it.  A rename is atomic, so only one
+    caller can win it.
     """
     if os.environ.get("HOUSEKEEPER_LOCK_OWNER") == "1":
         return True
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    for _ in range(2):
+    try:
+        HOUSEKEEPER_LOCK.mkdir()
+        return _took_housekeeper_lock()
+    except FileExistsError:
+        pass
+    if not (
+        _housekeeper_lock_is_stale(HOUSEKEEPER_LOCK)
+        and _housekeeper_lock_is_marker(HOUSEKEEPER_LOCK)
+    ):
+        log("housekeeper lock held by a peer; skipping cleanup")
+        return False
+    aside = HOUSEKEEPER_LOCK.with_name(
+        f"{HOUSEKEEPER_LOCK.name}.stale-{os.getpid()}.{os.urandom(4).hex()}"
+    )
+    try:
+        os.rename(HOUSEKEEPER_LOCK, aside)
+    except OSError:
+        # Nothing to move:  another caller won the race.
+        log("housekeeper lock taken over by a peer; skipping cleanup")
+        return False
+    # The rename moves whatever is at the path at that instant, and a peer may
+    # have replaced the stale lock with its own fresh one since the check.  So
+    # check what was moved again (a rename keeps the age).
+    if _housekeeper_lock_is_stale(aside):
         try:
-            HOUSEKEEPER_LOCK.mkdir()
-            return True
-        except FileExistsError:
+            aside.rmdir()
+        except OSError:
+            pass
+        else:
+            log("took over a stale housekeeper lock")
             try:
-                age = time.time() - HOUSEKEEPER_LOCK.stat().st_mtime
-            except OSError:
-                age = 0.0
-            if age < HOUSEKEEPER_LOCK_STALE_SEC:
-                log(f"housekeeper lock held by a peer ({int(age)}s old); skipping cleanup")
+                HOUSEKEEPER_LOCK.mkdir()
+            except FileExistsError:
+                log("housekeeper lock held by a peer; skipping cleanup")
                 return False
-            log(f"stealing stale housekeeper lock ({int(age)}s old)")
-            try:
-                HOUSEKEEPER_LOCK.rmdir()
-            except OSError:
-                return False
+            return _took_housekeeper_lock()
+    _put_back_housekeeper_lock(aside)
+    log("housekeeper lock held by a peer; skipping cleanup")
     return False
+
+
+def _put_back_housekeeper_lock(aside: Path) -> None:
+    """Give back a lock that was moved aside and turned out to be a peer's.
+
+    Not with a rename:  a rename replaces an empty directory that a third caller
+    made at the path meanwhile.  mkdir fails instead of replacing anything, and the
+    age is carried over.  When the path is taken, its holder's lock stands and the
+    empty copy is dropped.  A copy with contents is left where it is.
+    """
+    try:
+        HOUSEKEEPER_LOCK.mkdir()
+    except OSError:
+        pass
+    else:
+        try:
+            st = aside.stat()
+            os.utime(HOUSEKEEPER_LOCK, (st.st_atime, st.st_mtime))
+        except OSError:
+            pass
+    try:
+        aside.rmdir()
+    except OSError:
+        log(f"left a housekeeper lock with contents at {aside}")
+
+
+def _took_housekeeper_lock() -> bool:
+    """Sweep the copies a cut-short takeover left, now that this watch holds the lock.
+
+    An empty `.stale-` copy older than the stale window is nobody's lock any
+    more.  A copy with something in it is left alone (rmdir refuses it).
+    """
+    now = time.time()
+    for copy in STATE_DIR.glob(f"{HOUSEKEEPER_LOCK.name}.stale-*"):
+        try:
+            if copy.is_symlink() or not copy.is_dir():
+                continue
+            if now - copy.stat().st_mtime >= HOUSEKEEPER_LOCK_STALE_SEC:
+                copy.rmdir()
+        except OSError:
+            pass
+    return True
 
 
 def _release_housekeeper_lock() -> None:

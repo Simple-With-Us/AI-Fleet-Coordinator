@@ -27,51 +27,85 @@ fi
 HOUSEKEEPER_LOCK="$HOME/.claude-disk-janitor/.housekeeper.lock"
 mkdir -p "$(dirname "$HOUSEKEEPER_LOCK")" 2>/dev/null || true
 if [ "${HOUSEKEEPER_LOCK_OWNER:-0}" != "1" ]; then
-    if ! mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null; then
-        # The lock is there.  Take it only when it is free to take, and take it
-        # the way the Python engine (scripts/vacuum/lock.py) and the Swift lock
-        # (Sources/Storage/HousekeeperLock.swift) do: by MOVING it aside, not
-        # by removing it and creating a new one.  Checking that a lock is
-        # stale and then removing it is two steps, and two reclaimers can
-        # interleave them: both see the stale lock, one removes it and creates
-        # a fresh one, and the other then removes that fresh, empty lock and
-        # creates its own, so both believe they hold it.  A rename is atomic,
-        # so only one caller can win it.
+    housekeeper_skip() { echo "skipped, peer holds housekeeper lock"; exit 0; }
+
+    # Make the lock.  0: made, so this run holds it.  1: the path is taken
+    # (EEXIST), which is contention.  Any other failure -- permissions, a
+    # missing parent, a full disk -- is not contention and must not pass for
+    # it, so it fails loudly.  LC_ALL=C keeps mkdir's message in English.
+    housekeeper_mkdir() {
+        housekeeper_err="$(LC_ALL=C mkdir "$HOUSEKEEPER_LOCK" 2>&1)" && return 0
+        case "$housekeeper_err" in *"File exists"*) return 1 ;; esac
+        if [ -e "$HOUSEKEEPER_LOCK" ] || [ -L "$HOUSEKEEPER_LOCK" ]; then return 1; fi
+        echo "mac-auto-cleanup: cannot create the housekeeper lock: $housekeeper_err" >&2
+        exit 1
+    }
+
+    # Older than the stale window: the two hour rule every holder of this
+    # lock uses (scripts/mac-resource-watch.py, HogHunter's vacuum).
+    housekeeper_is_stale() { [ -n "$(find "$1" -maxdepth 0 -mmin +120 2>/dev/null)" ]; }
+
+    # An empty, real directory: the marker a holder makes.  Anything else --
+    # a file, a link, a directory with something in it -- is not a lock this
+    # script may take.
+    housekeeper_is_marker() { [ -d "$1" ] && [ ! -L "$1" ] && [ -z "$(ls -A "$1" 2>/dev/null)" ]; }
+
+    if ! housekeeper_mkdir; then
+        # The lock is there.  Decide whether it is free to take AT THE LOCK
+        # PATH, before touching it.  A live holder's lock is never moved:
+        # while it is gone from the path, any other caller can make a fresh
+        # one, and two sweeps run at once.
+        housekeeper_is_stale "$HOUSEKEEPER_LOCK" || housekeeper_skip
+        housekeeper_is_marker "$HOUSEKEEPER_LOCK" || housekeeper_skip
+
+        # Take the stale lock by MOVING it aside, not by removing it and
+        # making a new one.  Checking that a lock is stale and then removing
+        # it is two steps, and two reclaimers can interleave them: both see
+        # the stale lock, one removes it and makes a fresh one, and the other
+        # then removes that fresh, empty lock and makes its own, so both
+        # believe they hold it.  A rename is atomic, so only one caller can
+        # win it, and a caller that finds nothing to move lost the race.
         HOUSEKEEPER_STALE="$HOUSEKEEPER_LOCK.stale-$$.$RANDOM"
         while [ -e "$HOUSEKEEPER_STALE" ]; do
             HOUSEKEEPER_STALE="$HOUSEKEEPER_LOCK.stale-$$.$RANDOM"
         done
-        if mv "$HOUSEKEEPER_LOCK" "$HOUSEKEEPER_STALE" 2>/dev/null; then
-            # We moved whatever was at the path.  It is free to take when it
-            # is older than the stale window -- the same two hour rule the
-            # Python and Swift locks use.
-            if [ -n "$(find "$HOUSEKEEPER_STALE" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
-                if ! rmdir "$HOUSEKEEPER_STALE" 2>/dev/null; then
-                    # Not the empty marker we made: a lock directory with
-                    # something in it is not ours to take.  Put it back.
-                    if [ ! -e "$HOUSEKEEPER_LOCK" ]; then
-                        mv "$HOUSEKEEPER_STALE" "$HOUSEKEEPER_LOCK" 2>/dev/null || true
-                    fi
-                    echo "skipped, peer holds housekeeper lock"; exit 0
-                fi
-                mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null || { echo "skipped, peer holds housekeeper lock"; exit 0; }
-            else
-                # It was fresh, so somebody else holds it.  Put it back, and
-                # only while the path is still free, so a third holder's lock
-                # is never replaced by ours.
-                if [ ! -e "$HOUSEKEEPER_LOCK" ]; then
-                    mv "$HOUSEKEEPER_STALE" "$HOUSEKEEPER_LOCK" 2>/dev/null || true
-                fi
-                echo "skipped, peer holds housekeeper lock"; exit 0
-            fi
+        mv "$HOUSEKEEPER_LOCK" "$HOUSEKEEPER_STALE" 2>/dev/null || housekeeper_skip
+
+        # The rename moves whatever is at the path at that instant, and a
+        # peer may have replaced the stale lock with its own fresh one since
+        # the check.  So check what was moved again (a rename keeps the age).
+        if housekeeper_is_stale "$HOUSEKEEPER_STALE" && rmdir "$HOUSEKEEPER_STALE" 2>/dev/null; then
+            housekeeper_mkdir || housekeeper_skip
         else
-            # Nothing to move: another caller won the race, or the holder
-            # released the lock between the mkdir and the move.
-            echo "skipped, peer holds housekeeper lock"; exit 0
+            # A peer's lock: give it back.  Not with mv.  When a third caller
+            # has made the lock since, mv moves this copy INTO that lock,
+            # which is then not empty, so its holder can never release it.
+            # mkdir fails instead of replacing anything, and touch -r carries
+            # the age over.  When the path is taken, its holder's lock stands
+            # and the empty copy is dropped.
+            #
+            # This is the window a rename cannot close: while the peer's lock
+            # is aside, a third caller can make the lock and hold it beside
+            # the peer.  It takes three callers inside the same few
+            # milliseconds of a lock already two hours old; only a lock
+            # primitive every holder shares could close it.
+            if mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null; then
+                touch -r "$HOUSEKEEPER_STALE" "$HOUSEKEEPER_LOCK" 2>/dev/null || true
+            fi
+            rmdir "$HOUSEKEEPER_STALE" 2>/dev/null \
+                || echo "mac-auto-cleanup: left a housekeeper lock with contents at $HOUSEKEEPER_STALE" >&2
+            housekeeper_skip
         fi
     fi
     export HOUSEKEEPER_LOCK_OWNER=1
     trap 'rmdir "$HOUSEKEEPER_LOCK" 2>/dev/null || true' EXIT
+
+    # A takeover cut short between its move and its cleanup leaves a .stale-
+    # copy beside the lock.  An empty copy older than the stale window is
+    # nobody's lock any more, so this holder sweeps it.  A copy with
+    # something in it is left alone.
+    find "$(dirname "$HOUSEKEEPER_LOCK")" -maxdepth 1 -type d -name '.housekeeper.lock.stale-*' \
+        -mmin +120 -empty -exec rmdir {} + 2>/dev/null || true
 fi
 
 echo "[$(date)] Starting Mac automated cleanup${PRESSURE:+ (pressure)}..."
