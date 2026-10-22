@@ -296,6 +296,10 @@ class KeyLookupTests(unittest.TestCase):
             self.assertIn(want, why)
             self.assertNotIn("secret-value-xyz", why)
 
+    def test_placeholders_in_values_are_not_expanded_again(self):
+        argv = WA._hook_argv("run {topic} {seat}", "echo", {"topic": "{seat}{state}"})
+        self.assertEqual(argv, ["run", "{seat}{state}", "echo"])
+
     def test_a_name_that_could_be_an_option_is_refused_before_any_call(self):
         def run(*a, **k):
             raise AssertionError("must not run")

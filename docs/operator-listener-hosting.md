@@ -77,11 +77,11 @@ wake alerter's hook mode provides it:
       # /opt/fleet/muse-wake.sh SEAT WAKE_ID CHANNEL TOPIC
       exec muse exec "You are the $1 seat on the fleet.  A wake event arrived
       for you in $3 / $4 (wake $2).  Read the event through your normal
-      ST-MCP bridge on the tailnet and run your wake routine.  Take
+      ST-MCP on the tailnet and run your wake routine.  Take
       no action outside the seat's lane;  the Operator decides, you execute."
 
   The prompt points the seat at the event through its normal authenticated
-  bridge rather than pasting content into the prompt, which keeps chat text
+  ST-MCP rather than pasting content into the prompt, which keeps chat text
   out of argv and out of logs.
 - Dedupe, state and retry come from the alerter itself;  Muse Code needs no
   wake ledger access.  Multiple seats on the box run one alerter process per

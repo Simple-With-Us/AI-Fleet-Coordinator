@@ -130,12 +130,9 @@ def _hook_argv(template: str, seat: str, item: dict) -> list[str]:
     values = {"{seat}": seat}
     for field in _HOOK_FIELDS[1:]:
         values["{" + field + "}"] = _str(item.get(field))
-    argv = []
-    for token in shlex.split(template):
-        for placeholder, value in values.items():
-            token = token.replace(placeholder, value)
-        argv.append(token)
-    return argv
+    pattern = re.compile("|".join(re.escape(k) for k in values))
+    # One pass per token:  a value that itself contains "{seat}" is not expanded again.
+    return [pattern.sub(lambda m: values[m.group(0)], token) for token in shlex.split(template)]
 
 
 def _hook_env(item: dict) -> dict:
@@ -252,7 +249,7 @@ def poll_once(
     except urllib.error.HTTPError as exc:
         print(f"wake_alerter: read API answered HTTP {exc.code}", file=sys.stderr)
         return 0
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except (urllib.error.URLError, OSError, ValueError, RecursionError) as exc:
         print(f"wake_alerter: read failed ({type(exc).__name__})", file=sys.stderr)
         return 0
     # The signature covers the request only, so check the answer is for this seat.
