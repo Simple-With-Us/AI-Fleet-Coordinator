@@ -28,9 +28,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .app_tokens import AppTokenError
 from .audit import AuditLog
 from .github_client import GitHubClient, RelayGitHubError
-from .outcomes import OutcomeStore, key_for
+from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import PolicyError, SeatPolicy
-from .secret_scan import reject_secrets, scan_args
+from .secret_scan import find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_TEXT_FIELD = 32 * 1024
@@ -63,6 +63,89 @@ def _number(value, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{field} must be a positive integer")
     return value
+
+
+def _validate_args(action: str, args: dict) -> dict:
+    """Full shape validation for one action;  returns the canonical arguments.
+
+    Runs before any durable state or side effect:  every field the action
+    accepts is checked here, and any field it does NOT accept is rejected, so
+    ignored envelope fields cannot defeat the idempotency key and malformed
+    input never reaches the outcome store or GitHub.
+    """
+    if action not in SeatPolicy.ALL_ACTIONS:
+        raise ValueError(f"unknown action {action!r}")
+    if action in SeatPolicy.REGISTERED_ACTIONS:
+        raise ValueError(f"action {action!r} is registered but not implemented yet")
+    specs: dict = {"repo": ("text", True)}
+    if action == "open_pr":
+        specs.update(
+            {
+                "base": ("text", True),
+                "head": ("text", True),
+                "title": ("clean", True),
+                "body": ("clean", True),
+            }
+        )
+    elif action == "edit_pr":
+        specs.update(
+            {"number": ("number", True), "title": ("clean", False), "body": ("clean", False)}
+        )
+    elif action == "reply_thread":
+        specs.update(
+            {"number": ("number", True), "comment_id": ("number", True), "body": ("clean", True)}
+        )
+    elif action == "comment_pr":
+        specs.update({"number": ("number", True), "body": ("clean", True)})
+    elif action == "mint_token":
+        specs["permissions"] = ("permissions", True)
+    elif action == "merge_pr":
+        specs.update({"number": ("number", True), "method": ("method", False)})
+    elif action == "workflow_dispatch":
+        specs.update(
+            {"workflow": ("text", True), "ref": ("text", True), "inputs": ("inputs", False)}
+        )
+    elif action == "resolve_thread":
+        specs["thread_id"] = ("text", True)
+    extra = sorted(set(args) - set(specs))
+    if extra:
+        raise ValueError(f"{action}: unexpected fields {extra}")
+    canonical: dict = {}
+    for field, (kind, required) in specs.items():
+        value = args.get(field)
+        if kind == "text":
+            value = _text(value, field, required=required)
+        elif kind == "clean":
+            value = _clean_text(value, field, required=required)
+        elif kind == "number":
+            value = _number(value, field)
+        elif kind == "method":
+            if value is None:
+                value = "squash"
+            if value not in ("merge", "squash", "rebase"):
+                raise ValueError("method must be merge, squash, or rebase")
+        elif kind == "permissions":
+            if not isinstance(value, dict) or not value:
+                raise ValueError("permissions must be a non-empty object")
+            if any(not isinstance(k, str) or v not in ("read", "write") for k, v in value.items()):
+                raise ValueError("permissions values must be read or write")
+        elif kind == "inputs":
+            if value is not None and not isinstance(value, dict):
+                raise ValueError("inputs must be an object")
+            if isinstance(value, dict):
+                if len(value) > 32:
+                    raise ValueError("inputs is capped at 32 keys")
+                for key, item in value.items():
+                    if not isinstance(key, str):
+                        raise ValueError("inputs keys must be strings")
+                    if not isinstance(item, (str, int, float, bool)):
+                        raise ValueError("inputs values must be scalars")
+                    if isinstance(item, str) and len(item) > 1024:
+                        raise ValueError("inputs values are capped at 1024 characters")
+        if value is not None:
+            canonical[field] = value
+    GitHubClient._check_repo(canonical["repo"])
+    return canonical
 
 
 class PolicyDenied(Exception):
@@ -103,6 +186,11 @@ class Relay:
         seat = self.policy.authenticate(token)
         if seat is None:
             return 401, {"error": "unauthenticated"}
+        # The action string comes from the URL path:  a credential-shaped one
+        # must never be persisted in the audit row or echoed in an error.
+        if find_secret(action):
+            self.audit.record(seat, "<credential-shaped>", "", "bad_request", {"field": "action"})
+            return 400, {"error": "action is not acceptable"}
         repo = str(args.get("repo") or "")
         key = None
         # Every allowed or denied call writes exactly one audit row, from the
@@ -111,19 +199,46 @@ class Relay:
         outcome = "ok"
         detail: dict = {}
         try:
-            if (
-                action in SeatPolicy.VALID_ACTIONS + SeatPolicy.APP_ACTIONS
-                and action != "mint_token"
-            ):
+            # Order is deliberate:  secret scan, full shape validation, then the
+            # policy check (allowlist + hourly rate) ALL run before the
+            # idempotency gate, so malformed or unauthorized input creates no
+            # durable outcome row and replayed requests still consume quota.
+            try:
+                # Credential-shaped input is refused before any durable state
+                # or side effect (SecretInputError is a ValueError).
+                scan_args(args)
+                canonical = _validate_args(action, args)
+                denial = self.policy.authorize(seat, action, canonical["repo"])
+                if denial:
+                    raise PolicyDenied(denial)
+            except PolicyDenied as exc:
+                outcome = "denied"
+                detail = {"reason": str(exc)}
+                return 403, {"error": str(exc)}
+            except ValueError as exc:
+                outcome = "bad_request"
+                detail = {"reason": str(exc)}
+                return 400, {"error": str(exc)}
+            if action != "mint_token":
                 # Idempotency gate for non-idempotent writes:  mint_token is exempt
-                # because it returns a credential (never cached) and a re-mint is
-                # safe - the minter cache and its lock already cover it.
-                key = key_for(seat, action, args)
-                prior = self.outcomes.begin(key)
+                # because it returns a credential (a replay could only be served
+                # by persisting that credential in the store, which is worse) and
+                # a duplicate mint is benign - installation tokens expire within
+                # the hour and the minter's per-key lock dedups concurrent calls.
+                key = key_for(seat, action, canonical)
+                try:
+                    prior = self.outcomes.begin(key)
+                except OutcomeStoreError as exc:
+                    outcome = "unavailable"
+                    detail = {"reason": type(exc).__name__}
+                    return 503, {
+                        "error": "outcome store is at capacity; reconcile held outcomes",
+                        "retryable": True,
+                    }
+                if prior is not None and prior["state"] == "ok":
+                    detail = {"idempotent_replay": True}
+                    return 200, dict(prior.get("result") or {})
                 if prior is not None:
-                    if prior["state"] == "ok":
-                        detail = {"idempotent_replay": True}
-                        return 200, dict(prior.get("result") or {})
                     outcome = "duplicate_refused"
                     return 409, {
                         "error": "an identical request is in flight or its outcome is "
@@ -132,10 +247,7 @@ class Relay:
                         "retryable": False,
                     }
             try:
-                # Credential-shaped input is refused before any dispatch or
-                # side effect (SecretInputError is a ValueError).
-                scan_args(args)
-                result = self._dispatch(seat, action, args, repo)
+                result = self._dispatch(seat, action, canonical, canonical["repo"])
             except PolicyDenied as exc:
                 self._release(key, "refused")
                 outcome = "denied"
@@ -146,13 +258,15 @@ class Relay:
                 outcome = "unavailable"
                 detail = {"reason": str(exc)}
                 return 503, {"error": str(exc)}
-            except AppTokenError:
+            except AppTokenError as exc:
                 # The mint failed before any GitHub write was attempted:  definite
-                # refusal, the key is released, the seat can retry as-is.
+                # refusal, the key is released, the seat can retry as-is.  The
+                # message names the missing variable but never carries a value
+                # (AppTokenError's contract).
                 self._release(key, "refused")
                 outcome = "unavailable"
                 detail = {"error": "app_token_error"}
-                return 503, {"error": "app-token minting failed"}
+                return 503, {"error": f"app-token minting failed: {exc}"}
             except ValueError as exc:
                 self._release(key, "refused")
                 outcome = "bad_request"
@@ -163,15 +277,20 @@ class Relay:
                 # can carry response-body content, so it is never logged.
                 if exc.code == "invalid_grant":
                     # A definite credential-grant refusal:  nothing was written,
-                    # the key is released, and a fixed credential may retry.
+                    # the key is released, and a fixed credential may retry.  The
+                    # masked preview identifies the rejected key without exposing it.
                     self._release(key, "refused")
                     outcome = "github_auth"
                     detail = {"status": exc.status}
-                    return 503, {
+                    payload = {
                         "error": "github refused the credential grant",
                         "github_status": exc.status,
                         "retryable": True,
                     }
+                    if exc.credential_preview is not None:
+                        payload["credential_preview"] = exc.credential_preview
+                        detail["credential_preview"] = exc.credential_preview
+                    return 503, payload
                 if exc.status in (0, 408) or exc.status >= 500:
                     # Transport failure, timeout, or 5xx:  GitHub may have accepted
                     # the write.  The outcome is unknown;  the key is held and
@@ -179,12 +298,16 @@ class Relay:
                     self._release(key, "unknown")
                     outcome = "github_unknown"
                     detail = {"status": exc.status}
-                    return 502, {
+                    payload = {
                         "error": "github call outcome unknown",
                         "github_status": exc.status,
                         "retryable": False,
                         "outcome": "unknown",
                     }
+                    if exc.code is not None:
+                        payload["github_code"] = exc.code
+                        detail["github_code"] = exc.code
+                    return 502, payload
                 if exc.status == 429:
                     # Rate limited before the write ran:  a definite refusal.
                     # The key is released and the seat may retry, honoring any
@@ -204,14 +327,18 @@ class Relay:
                 self._release(key, "refused")
                 outcome = "github_terminal"
                 detail = {"status": exc.status}
-                return 400, {
+                payload = {
                     "error": "github refused the request",
                     "github_status": exc.status,
                     "retryable": False,
                 }
+                if exc.credential_preview is not None:
+                    payload["credential_preview"] = exc.credential_preview
+                    detail["credential_preview"] = exc.credential_preview
+                return 400, payload
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
-            detail = {**args, **result}
+            detail = {**canonical, **result}
             return 200, result
         except Exception as exc:
             # An unexpected relay failure:  whether GitHub was reached is
@@ -229,15 +356,8 @@ class Relay:
             self.outcomes.finish(key, state)
 
     def _dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
-        if action not in SeatPolicy.ALL_ACTIONS:
-            raise ValueError(f"unknown action {action!r}")
-        repo = _text(repo, "repo")
-        GitHubClient._check_repo(repo)
-        denial = self.policy.authorize(seat, action, repo)
-        if denial:
-            raise PolicyDenied(denial)
-        if action in SeatPolicy.REGISTERED_ACTIONS:
-            raise ValueError(f"action {action!r} is registered but not implemented yet")
+        # handle() has already scanned, shape-validated, and authorized this
+        # call (allowlist + hourly quota, once);  dispatch only executes.
         if action in SeatPolicy.APP_ACTIONS:
             return self._dispatch_app(seat, action, args, repo)
         number = args.get("number")

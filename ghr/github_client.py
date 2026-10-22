@@ -13,6 +13,8 @@ import json
 import urllib.error
 import urllib.request
 
+from .secret_scan import mask_credential
+
 MAX_BODY = 1024 * 1024
 MAX_ERROR_PREVIEW = 512
 TIMEOUT_SECONDS = 30
@@ -36,15 +38,26 @@ class RelayGitHubError(Exception):
     integer Retry-After seconds a 429/403 response asked for, when present.
     """
 
-    def __init__(self, status: int, message: str, code: str | None = None, retry_after=None):
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        code: str | None = None,
+        retry_after=None,
+        credential_preview: str | None = None,
+    ):
         super().__init__(f"github {status}: {message}")
         self.status = status
         self.message = message
         self.code = code
         self.retry_after = retry_after
+        # First-eight/last-four of the bearer GitHub refused, when the failure
+        # is about the credential itself;  identifies the dead key without
+        # exposing it.
+        self.credential_preview = credential_preview
 
 
-def _retry_after_seconds(headers) -> "int | None":
+def _retry_after_seconds(headers) -> int | None:
     raw = headers.get("Retry-After") if headers is not None else None
     # int() accepts "+5" and unicode digits isdigit() would pass;  accept only
     # a plain ASCII decimal so a malformed header can never crash the handler.
@@ -109,6 +122,9 @@ class GitHubClient:
                 message[:MAX_ERROR_PREVIEW],
                 code=code,
                 retry_after=_retry_after_seconds(exc.headers),
+                credential_preview=(
+                    mask_credential(bearer or self._token) if exc.code in (401, 403) else None
+                ),
             ) from exc
         except urllib.error.URLError as exc:
             raise RelayGitHubError(0, f"connection failed: {exc.reason}") from exc
@@ -223,6 +239,7 @@ class GitHubClient:
                 0,
                 f"graphql resolveReviewThread failed{detail}",
                 code=kind if isinstance(kind, str) and kind else None,
+                credential_preview=mask_credential(bearer),
             )
         payload_data = data.get("data")
         thread = (

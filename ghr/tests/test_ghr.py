@@ -939,19 +939,53 @@ class TestOutcomeStoreHardening(unittest.TestCase):
 
         ceiling = oc.MAX_ENTRIES
         oc.MAX_ENTRIES = 3
+        now = 1_700_000_000.0
         try:
-            store = OutcomeStore(None)
+            store = OutcomeStore(None, clock=lambda: now)
             store._rows = {
-                "k0": {"state": "unknown", "ts": 0.0},
-                "k1": {"state": "ok", "ts": 1.0},
-                "k2": {"state": "refused", "ts": 2.0},
-                "k3": {"state": "refused", "ts": 3.0},
+                "k0": {"state": "unknown", "ts": now - 100},
+                "k1": {"state": "ok", "ts": now - 60},
+                "k2": {"state": "refused", "ts": now - 50},
+                "k3": {"state": "refused", "ts": now - 40},
             }
             store._trim()
             self.assertNotIn("k2", store._rows)  # oldest releasable row goes first
             self.assertIn("k3", store._rows)
-            self.assertIn("k0", store._rows)  # unknown and ok are never evicted
-            self.assertIn("k1", store._rows)
+            self.assertIn("k0", store._rows)  # unknown rows are never evicted
+            self.assertIn("k1", store._rows)  # fresh ok rows stay inside the replay window
+        finally:
+            oc.MAX_ENTRIES = ceiling
+
+    def test_trim_evicts_stale_ok_rows_past_the_replay_window(self):
+        from ghr.outcomes import OK_TTL_SECONDS, OutcomeStore
+
+        now = 1_700_000_000.0
+        store = OutcomeStore(None, clock=lambda: now)
+        store._rows = {
+            "stale_ok": {"state": "ok", "ts": now - OK_TTL_SECONDS - 10},
+            "fresh_ok": {"state": "ok", "ts": now - 60},
+            "held": {"state": "unknown", "ts": now - OK_TTL_SECONDS - 20},
+        }
+        store._trim()
+        self.assertNotIn("stale_ok", store._rows)
+        self.assertIn("fresh_ok", store._rows)
+        self.assertIn("held", store._rows)  # unknown is held past any TTL
+
+    def test_begin_refuses_when_full_of_held_rows(self):
+        import ghr.outcomes as oc
+        from ghr.outcomes import OutcomeStore, OutcomeStoreError
+
+        ceiling = oc.MAX_ENTRIES
+        oc.MAX_ENTRIES = 2
+        try:
+            store = OutcomeStore(None)
+            store._rows = {
+                "u1": {"state": "unknown", "ts": 1.0},
+                "p2": {"state": "pending", "ts": 2.0},
+            }
+            with self.assertRaises(OutcomeStoreError):
+                store.begin("new-key")
+            self.assertNotIn("new-key", store._rows)
         finally:
             oc.MAX_ENTRIES = ceiling
 
@@ -1184,3 +1218,199 @@ class TestMcpSchemaEnforcement(unittest.TestCase):
     def test_missing_required_rejected_before_forwarding(self):
         reply = self._call("open_pr", {"repo": "a/b"})
         self.assertEqual(reply["error"]["code"], -32602)
+
+
+class TestScanBounds(unittest.TestCase):
+    def _relay(self, tmp):
+        client = StubClient()
+        relay = Relay(SeatPolicy(SEATS_JSON), client, AuditLog(os.path.join(tmp, "a.jsonl")))
+        return relay, client
+
+    def test_over_breadth_request_is_refused_not_skipped(self):
+        # 65 keys at one level:  the scan must refuse the request, because a
+        # skipped branch could carry a credential the dispatcher still relays.
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, client = self._relay(tmp)
+            args = {
+                "repo": "example/fixture-repo",
+                "base": "main",
+                "head": "b",
+                "title": "t",
+                "body": "x",
+            }
+            args.update({f"pad{i}": "v" for i in range(65)})
+            code, _payload = relay.handle(SEAT_TOKEN, "open_pr", args)
+            self.assertEqual(code, 400)
+            self.assertEqual(client.calls, [])
+
+    def test_credential_in_the_65th_key_never_reaches_github(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, client = self._relay(tmp)
+            args = {
+                "repo": "example/fixture-repo",
+                "base": "main",
+                "head": "b",
+                "title": "t",
+                "body": "x",
+            }
+            args.update({f"pad{i}": "v" for i in range(64)})
+            args["zz_leak"] = "ghp_" + "a" * 30
+            code, _payload = relay.handle(SEAT_TOKEN, "open_pr", args)
+            self.assertEqual(code, 400)
+            self.assertEqual(client.calls, [])
+
+    def test_over_depth_request_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay, client = self._relay(tmp)
+            deep = current = {}
+            for _ in range(12):
+                current["n"] = {}
+                current = current["n"]
+            args = {
+                "repo": "example/fixture-repo",
+                "base": "main",
+                "head": "b",
+                "title": "t",
+                "body": deep,
+            }
+            code, _payload = relay.handle(SEAT_TOKEN, "open_pr", args)
+            self.assertEqual(code, 400)
+            self.assertEqual(client.calls, [])
+
+
+class TestValidationGate(unittest.TestCase):
+    def test_unexpected_fields_are_rejected_and_create_no_durable_state(self):
+        from ghr.outcomes import OutcomeStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outcomes = OutcomeStore(os.path.join(tmp, "out.json"))
+            relay = Relay(
+                SeatPolicy(SEATS_JSON),
+                StubClient(),
+                AuditLog(os.path.join(tmp, "a.jsonl")),
+                outcomes=outcomes,
+            )
+            code, payload = relay.handle(
+                SEAT_TOKEN,
+                "open_pr",
+                {
+                    "repo": "example/fixture-repo",
+                    "base": "main",
+                    "head": "b",
+                    "title": "t",
+                    "body": "x",
+                    "trace_id": "ignored-by-design-now-refused",
+                },
+            )
+            self.assertEqual(code, 400)
+            self.assertIn("unexpected fields", payload["error"])
+            self.assertEqual(outcomes._rows, {})  # malformed input leaves no durable row
+
+    def test_bad_shape_creates_no_durable_state(self):
+        from ghr.outcomes import OutcomeStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outcomes = OutcomeStore(os.path.join(tmp, "out.json"))
+            relay = Relay(
+                SeatPolicy(SEATS_JSON),
+                StubClient(),
+                AuditLog(os.path.join(tmp, "a.jsonl")),
+                outcomes=outcomes,
+            )
+            code, _ = relay.handle(
+                SEAT_TOKEN,
+                "open_pr",
+                {"repo": "example/fixture-repo", "base": "main", "head": "b", "title": "t"},
+            )
+            self.assertEqual(code, 400)
+            self.assertEqual(outcomes._rows, {})
+
+    def test_policy_denial_runs_before_the_idempotency_gate(self):
+        from ghr.outcomes import OutcomeStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            outcomes = OutcomeStore(os.path.join(tmp, "out.json"))
+            relay = Relay(
+                SeatPolicy(SEATS_JSON),
+                StubClient(),
+                AuditLog(os.path.join(tmp, "a.jsonl")),
+                outcomes=outcomes,
+            )
+            code, _ = relay.handle(
+                OTHER_TOKEN,  # swu-prime may only comment_pr
+                "open_pr",
+                {
+                    "repo": "example/fixture-repo",
+                    "base": "main",
+                    "head": "b",
+                    "title": "t",
+                    "body": "x",
+                },
+            )
+            self.assertEqual(code, 403)
+            self.assertEqual(outcomes._rows, {})  # a denial never occupies an outcome key
+
+
+class TestActionHygiene(unittest.TestCase):
+    def test_credential_shaped_action_is_not_persisted_or_echoed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = Relay(
+                SeatPolicy(SEATS_JSON), StubClient(), AuditLog(os.path.join(tmp, "a.jsonl"))
+            )
+            leaked = "ghp_" + "a" * 30
+            code, payload = relay.handle(SEAT_TOKEN, leaked, {})
+            self.assertEqual(code, 400)
+            self.assertNotIn(leaked, json.dumps(payload))
+            with open(os.path.join(tmp, "a.jsonl")) as fh:
+                rows = [json.loads(line) for line in fh]
+            self.assertEqual(rows[-1]["action"], "<credential-shaped>")
+            self.assertEqual(rows[-1]["result"], "bad_request")
+
+
+class TestCredentialPreview(unittest.TestCase):
+    class PreviewClient(StubClient):
+        def __init__(self, err):
+            super().__init__()
+            self._err = err
+
+        def open_pr(self, repo, base, head, title, body):
+            raise self._err
+
+    def _handle(self, err):
+        tmp = tempfile.mkdtemp()
+        relay = Relay(
+            SeatPolicy(SEATS_JSON), self.PreviewClient(err), AuditLog(os.path.join(tmp, "a.jsonl"))
+        )
+        return relay.handle(
+            SEAT_TOKEN,
+            "open_pr",
+            {
+                "repo": "example/fixture-repo",
+                "base": "main",
+                "head": "b",
+                "title": "t",
+                "body": "x",
+            },
+        )
+
+    def test_invalid_grant_reports_the_masked_credential_preview(self):
+        err = RelayGitHubError(
+            401, "bad credentials", code="invalid_grant", credential_preview="ghp_abcd\u2026wxyz"
+        )
+        code, payload = self._handle(err)
+        self.assertEqual(code, 503)
+        self.assertEqual(payload["credential_preview"], "ghp_abcd\u2026wxyz")
+
+    def test_unknown_outcome_carries_the_mapped_error_code(self):
+        err = RelayGitHubError(502, "bad gateway", code="http_502")
+        code, payload = self._handle(err)
+        self.assertEqual(code, 502)
+        self.assertEqual(payload["github_code"], "http_502")
+        self.assertFalse(payload["retryable"])
+
+    def test_mask_credential_shape(self):
+        from ghr.secret_scan import mask_credential
+
+        self.assertEqual(mask_credential("ghp_abcdefghijklmnop"), "ghp_abcd\u2026mnop")
+        self.assertEqual(mask_credential("short"), "<masked>")
+        self.assertEqual(mask_credential(None), "<masked>")

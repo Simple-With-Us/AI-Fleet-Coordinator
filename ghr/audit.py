@@ -20,12 +20,28 @@ from .secret_scan import find_secret
 SENSITIVE_KEYS = ("title", "body", "token")
 MAX_DEPTH = 8
 MAX_ENTRIES_PER_LEVEL = 64
+MAX_NODES = 2000
+MAX_TEXT_BYTES = 256 * 1024
+
+_OVER_LIMIT = "<over audit detail limit>"
 
 
-def _clean(value, key: str, depth: int):
+def _clean(value, key: str, depth: int, budget):
+    """Bound one detail value by cumulative node and text-byte budgets.
+
+    Request arguments never reach here over-limit (the secret scan refuses
+    them first), so overflow means a server-side result blob;  it degrades to
+    a marker because an audit row must never fail outright.
+    """
+    budget[0] -= 1
+    if budget[0] < 0:
+        return _OVER_LIMIT
     if depth > MAX_DEPTH:
         return "<depth limit>"
     if isinstance(value, str):
+        budget[1] -= len(value.encode("utf-8", "replace"))
+        if budget[1] < 0:
+            return _OVER_LIMIT
         if key in SENSITIVE_KEYS or find_secret(value):
             return {
                 "_sha256": hashlib.sha256(value.encode()).hexdigest(),
@@ -34,12 +50,22 @@ def _clean(value, key: str, depth: int):
         return value
     if isinstance(value, dict):
         return {
-            str(k): _clean(v, str(k), depth + 1)
+            str(k): _clean(v, str(k), depth + 1, budget)
             for k, v in list(value.items())[:MAX_ENTRIES_PER_LEVEL]
         }
     if isinstance(value, (list, tuple)):
-        return [_clean(v, key, depth + 1) for v in list(value)[:MAX_ENTRIES_PER_LEVEL]]
+        return [_clean(v, key, depth + 1, budget) for v in list(value)[:MAX_ENTRIES_PER_LEVEL]]
     return value
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte or raise:  os.write may legally write short."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short write to audit log")
+        view = view[written:]
 
 
 class AuditLog:
@@ -48,8 +74,9 @@ class AuditLog:
 
     def record(self, seat: str, action: str, repo: str, result: str, detail: dict) -> None:
         safe_detail = {}
+        budget = [MAX_NODES, MAX_TEXT_BYTES]
         for key, value in detail.items():
-            cleaned = _clean(value, key, 0)
+            cleaned = _clean(value, key, 0, budget)
             if isinstance(cleaned, dict) and set(cleaned) == {"_sha256", "_len"}:
                 safe_detail[f"{key}_sha256"] = cleaned["_sha256"]
                 safe_detail[f"{key}_len"] = cleaned["_len"]
@@ -68,7 +95,7 @@ class AuditLog:
         line = json.dumps(row, sort_keys=True) + "\n"
         fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            os.write(fd, line.encode())
+            _write_all(fd, line.encode())
             os.fsync(fd)
         finally:
             os.close(fd)

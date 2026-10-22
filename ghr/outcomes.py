@@ -20,9 +20,11 @@ Durability rules:
   complete fsynced temp sibling left behind by an interrupted rename;  a
   good one is promoted into place while the corrupt file is preserved next
   to it as <path>.corrupt-<ts> for reconciliation.
-- Capacity trimming deletes only explicitly releasable "refused" rows,
-  oldest first.  pending/ok/unknown rows are never evicted:  losing one
-  would re-arm a side effect or lose a cached result.
+- Capacity trimming deletes only releasable rows:  "ok" rows past the 24 h
+  replay window and explicitly releasable "refused" rows, oldest first.
+  pending/unknown rows are never evicted:  losing one would re-arm a side
+  effect.  A store full of held rows refuses new writes (fail closed) until
+  an operator reconciles the unknowns.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ import threading
 import time
 
 MAX_ENTRIES = 5000
+OK_TTL_SECONDS = 24 * 3600
 STATES = ("pending", "ok", "refused", "unknown")
 
 _KEY_HEX = set("0123456789abcdef")
@@ -116,11 +119,22 @@ class OutcomeStore:
         return rows
 
     def begin(self, key: str) -> dict | None:
-        """Mark a key in flight;  return the existing row when the key is already taken."""
+        """Mark a key in flight;  return the existing row when the key is already taken.
+
+        Refuses (OutcomeStoreError) when the registry is at capacity with no
+        evictable row:  every remaining row is a held pending/unknown side
+        effect, and silently dropping one could re-arm a duplicate write.
+        """
         with self._lock:
             existing = self._rows.get(key)
             if existing and existing["state"] in ("ok", "unknown", "pending"):
                 return existing
+            self._trim()
+            if len(self._rows) >= MAX_ENTRIES:
+                raise OutcomeStoreError(
+                    f"outcome store holds {MAX_ENTRIES} rows with none evictable; "
+                    "reconcile the held unknown outcomes before new writes"
+                )
             self._rows[key] = {"state": "pending", "ts": self._clock()}
             self._save()
             return None
@@ -135,6 +149,17 @@ class OutcomeStore:
             self._save()
 
     def _trim(self) -> None:
+        # ok rows outlive their usefulness once a real retry window has
+        # passed;  evicting them keeps the registry bounded without re-arming
+        # any side effect (an ok row never protects an unresolved write).
+        cutoff = self._clock() - OK_TTL_SECONDS
+        stale = [
+            key
+            for key, row in self._rows.items()
+            if row.get("state") == "ok" and row.get("ts", 0) < cutoff
+        ]
+        for key in stale:
+            del self._rows[key]
         excess = len(self._rows) - MAX_ENTRIES
         if excess <= 0:
             return
@@ -152,7 +177,17 @@ class OutcomeStore:
         tmp = self._path + ".tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.write(fd, json.dumps(self._rows, sort_keys=True).encode())
+            # os.write may legally write short (ENOSPC, signals):  a truncated
+            # payload renamed over the registry would corrupt it, so write the
+            # whole buffer or fail loudly before the rename.
+            view = memoryview(json.dumps(self._rows, sort_keys=True).encode())
+            while view:
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OutcomeStoreError(
+                        f"short write to outcome store {self._path!r}; registry left untouched"
+                    )
+                view = view[written:]
             os.fsync(fd)
         finally:
             os.close(fd)

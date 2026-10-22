@@ -116,7 +116,11 @@ class AppTokenMinter:
         self._signer = signer
         self._clock = clock
         self._tokens: dict[str, tuple[float, str]] = {}
-        self._lock = threading.Lock()
+        # One lock per cache key, not one global lock:  a slow mint for one
+        # (app, repo, permissions) triple must not head-of-line block every
+        # other seat's unrelated mints on the ThreadingHTTPServer.
+        self._locks: dict[str, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
 
     def _app_credentials(self, slug: str) -> tuple[int, str]:
         prefix = "GH_APP_" + slug.upper().replace("-", "_")
@@ -134,9 +138,12 @@ class AppTokenMinter:
         cache_key = json.dumps(
             [slug, repo.casefold(), sorted(permissions.items())], separators=(",", ":")
         )
-        # The check-then-mint runs under one lock:  two concurrent calls for the
-        # same key must not both run the whole mint (openssl + three GitHub calls).
-        with self._lock:
+        # The check-then-mint runs under this key's lock:  two concurrent
+        # calls for the same key must not both run the whole mint (openssl +
+        # three GitHub calls), while different keys proceed in parallel.
+        with self._locks_guard:
+            lock = self._locks.setdefault(cache_key, threading.Lock())
+        with lock:
             now = self._clock()
             cached = self._tokens.get(cache_key)
             if cached and cached[0] - now > REFRESH_MARGIN_SECONDS:

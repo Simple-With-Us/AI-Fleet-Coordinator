@@ -61,7 +61,8 @@ App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read one named 
 through the `fleet-secrets` CLI only (owner decision 2026-10-21:  no process-environment
 secrets, no direct Infisical HTTP in the relay), JWT signed with the local openssl binary
 (the key reaches openssl through an inherited pipe fd, never a file), installation tokens
-cached in memory under a lock and refreshed 5 minutes early.  Values are cached in memory
+cached in memory under per-(app, repo, permissions) locks (one slow mint never blocks another
+seat's) and refreshed 5 minutes early.  Values are cached in memory
 per process.  Nothing secret is written to disk, logged, or audited;  audit rows hash token
 values.  PR_RELAY_APP_MINT=0 disables App actions;  otherwise the fleet-secrets executable
 must be on PATH at startup.
@@ -142,11 +143,16 @@ Every non-idempotent write (open_pr, edit_pr, reply_thread, comment_pr, merge_pr
 workflow_dispatch, resolve_thread) is gated by a durable outcome record at
 `PR_RELAY_OUTCOMES_PATH` (default `pr-relay-outcomes.json`), keyed by seat + action + canonical
 arguments, with explicit pending / ok / refused / unknown states.  A 4xx answer from GitHub is a
-definite refusal and releases the key (429 is simply retryable).  A transport failure or 5xx
-leaves the outcome UNKNOWN:  the relay answers 502 with `"retryable": false`, and an identical
+definite refusal and releases the key, with two exceptions:  408 (request timeout) can arrive
+after GitHub applied the write, so it is treated as outcome UNKNOWN, and 429 is simply
+retryable.  A transport failure or 5xx likewise leaves the outcome UNKNOWN:  the relay answers 502 with `"retryable": false`, and an identical
 replay is refused with 409 until the seat checks GitHub and changes the request.  A replay of a
 successful call returns the stored result without touching GitHub twice.  A crash mid-write loads
-as unknown - the store fails closed, never replays.  `mint_token` is exempt:  it returns a raw
+as unknown - the store fails closed, never replays.  The registry is bounded:  ok rows are
+evicted after a 24 h replay window, refused rows are evicted oldest-first under capacity, and
+a store full of held pending/unknown rows refuses new writes with 503 until an operator
+reconciles them (fail closed - never evict a held side effect).  Writes go through a
+full-write loop, so a short write fails loudly instead of renaming a truncated registry.  `mint_token` is exempt:  it returns a raw
 credential (never cached in the store) and a re-mint is safe under the minter's own lock.
 
 ## Configuration and running
