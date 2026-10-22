@@ -983,7 +983,8 @@ try {
       const enumOf = listed.find((tool) => tool.name === "zulip_post").inputSchema.properties.identity.enum;
       assert.deepEqual(enumOf.slice(0, 2), ["GROK-WEB", "CURSOR"]);
       assert.ok(enumOf.every((name) => ["GROK-WEB", "CURSOR"].includes(name) || name.startsWith("GB-")));
-      assert.ok(!enumOf.includes("GB-ENGINEER"));
+      assert.ok(enumOf.includes("GB-ENGINEER"));
+      assert.ok(!enumOf.includes("GB-RETIRED"));
       const ids = (await call(t.body.access_token, "identities")).json.result.structuredContent;
       assert.equal(ids.default_identity, "GROK-WEB");
       assert.deepEqual(ids.identities.map((row) => row.identity), enumOf);

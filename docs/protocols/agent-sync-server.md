@@ -139,7 +139,7 @@ Every GB persona's routine is a Grok Bot routine webhook at `https://api2.cursor
 | `infisical_env.py` | Loads the listener's variables from Infisical at start (see [Infisical at Start](#infisical-at-start)), standard library only |
 | `apply_live_config.py` | Copies the sample's JET and GB seat sections into the live `/data/listener.toml`, leaving `[daemon]` (the pins) and every other section byte for byte (see [Activation Checklist](#activation-checklist-one-restart)) |
 | `healthcheck.py` | Unhealthy when `/data/listener/status.json` is missing or older than 60 seconds.  The daemon rewrites it every 2 seconds; a refused start never writes it |
-| `listener.toml` | The server sample:  the cloud seats MA, GROK-WEB, WISE and ECHO enabled with `wake = "inbox"`, JET enabled with `wake = "http"` (its routine is the hosted MCP Worker), the eleven GB personas other than GB-ENGINEER enabled with `wake = "http"` on their `ZULIP_ALERT_GB_<ROLE>_ENDPOINT` and `_KEY` webhooks, and GB-ENGINEER plus BF-DIRECTOR held disabled until their routine keys are inventoried |
+| `listener.toml` | The server sample:  the cloud seats MA, GROK-WEB, WISE and ECHO enabled with `wake = "inbox"`, JET enabled with `wake = "http"` (its routine is the hosted MCP Worker), the twelve GB personas (GB-ENGINEER since 2026-10-22) enabled with `wake = "http"` on their `ZULIP_ALERT_GB_<ROLE>_ENDPOINT` and `_KEY` webhooks, and BF-DIRECTOR held disabled until its routine key is inventoried |
 
 **Environment the container expects.**  The image sets these:
 
@@ -291,7 +291,7 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
    ```
    It backs up `/data/listener.toml` to `/data/listener.toml.bak-<UTC stamp>` (mode 600), checks the result with the listener's own parser and the partition, and refuses on any problem.  A second run prints `no changes`.
 5. **Restart** the app in Coolify (the new sections name variables the running daemon has not read).
-6. **Check** `docker exec "$C" agent-sync status`:  `listener: running`, `instance server; owner pinned: yes`, no `RED` line, the eleven enabled personas and JET `connected` with `wake http (routine ready, <host>)`, MA, GROK-WEB, WISE and ECHO `connected` with `wake inbox`, and `GB-ENGINEER` the only line under `disabled seats`.  BF-DIRECTOR is disabled in the sample and is not one of the sections this apply copies, so it does not appear here.  Its sender eligibility is the live `[daemon] outgoing_webhook_seats` list, which this apply also leaves untouched.  Any persona that is red for a credential reason:  set `enabled = false` in its section with the scoped `sed` above, restart, and note it under Open Questions.
+6. **Check** `docker exec "$C" agent-sync status`:  `listener: running`, `instance server; owner pinned: yes`, no `RED` line, the twelve enabled personas and JET `connected` with `wake http (routine ready, <host>)`, MA, GROK-WEB, WISE and ECHO `connected` with `wake inbox`, and `BF-DIRECTOR` the only line under `disabled seats`.  BF-DIRECTOR is disabled in the sample and is not one of the sections this apply copies, so it does not appear here.  Its sender eligibility is the live `[daemon] outgoing_webhook_seats` list, which this apply also leaves untouched.  Any persona that is red for a credential reason:  set `enabled = false` in its section with the scoped `sed` above, restart, and note it under Open Questions.
 
 ## Sentry Heartbeat
 

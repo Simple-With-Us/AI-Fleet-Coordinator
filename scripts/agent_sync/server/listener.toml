@@ -2,12 +2,14 @@
 # Design:  docs/protocols/agent-sync-server.md in AI-Fleet-Coordinator.
 #
 # It holds no secrets.  Each seat's Zulip email and API key, ZULIP_SITE, and each routine's URL and sender key reach
-# the container as environment variables, from one of two sources under the same names:
+# the container as environment variables, from one of two sources under the same names.  Infisical (fleet-secrets'
+# source) is the intended one;  Coolify copies are the fallback:
 #   - Infisical at start:  when Coolify sets INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET and INFISICAL_PROJECT_ID
 #     (a read-only machine identity), the entrypoint loads the listener's variables from Infisical (project
 #     "AI Fleet Coordinator", environment prod, folder /zulip) on every start (server/infisical_env.py), and an
 #     Infisical value wins over a Coolify one of the same name;
-#   - otherwise, runtime-only Coolify variables copied from that folder.
+#   - fallback, runtime-only Coolify variables copied from that folder (the entrypoint logs an ERROR when a
+#     partial Infisical identity forces this).
 # ZULIP_SITE is never in Infisical:  Coolify sets it.  The Zulip names are the defaults (ZULIP_<CODE>_EMAIL and
 # ZULIP_<CODE>_API_KEY, where CODE is the seat with hyphens as underscores).  A Grok Bot persona's routine reads
 # the webhook names Infisical already holds, ZULIP_ALERT_GB_<ROLE>_ENDPOINT (the https URL) and
@@ -231,13 +233,12 @@ wake = "http"
 routine = { url_env = "ZULIP_ALERT_BF_DIRECTOR_ENDPOINT", key_env = "ZULIP_ALERT_BF_DIRECTOR_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
 budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }
 
-# GB-ENGINEER (Engineering seat, engineer-grok-bot@).  Disabled:  the seat has a Zulip bot
-# (Infisical Fleet-OPS /zulip GB_ENGINEER_ZULIP_*), but its ZULIP_ALERT_GB_ENGINEER_ENDPOINT and
-# ZULIP_ALERT_GB_ENGINEER_KEY have not passed an Infisical inventory yet.  Set enabled = true
-# once they do; apply_live_config.py copies this section to the live volume on the GB- prefix.
+# GB-ENGINEER (Engineering seat, engineer-grok-bot@).  Enabled:  the seat's Zulip bot pair, outgoing token and
+# ZULIP_ALERT_GB_ENGINEER_ENDPOINT / _KEY are set on the live container like the other personas'.
+# apply_live_config.py copies this section to the live volume on the GB- prefix.
 [seat.GB-ENGINEER]
 instance = "server"
-enabled = false
+enabled = true
 creds = "env"                     # ZULIP_GB_ENGINEER_EMAIL, ZULIP_GB_ENGINEER_API_KEY; the site from ZULIP_SITE
 wake = "http"
 routine = { url_env = "ZULIP_ALERT_GB_ENGINEER_ENDPOINT", key_env = "ZULIP_ALERT_GB_ENGINEER_KEY", method = "POST", auth = "bearer", header = "Authorization", timeout_seconds = 15 }
