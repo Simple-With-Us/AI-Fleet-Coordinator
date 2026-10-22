@@ -578,6 +578,8 @@ Each phase needs Jay's go-ahead:
 12. Whether agent-chat text may be relayed to ChatGPT under Meta's terms, once those terms are verified (assumption A8).
 13. Read receipts and typing indicators.  The creator re-check shows at least one read receipt every 7 days.
 14. A Worker cron trigger for re-rings while the bridge is down, or not.
+15. The `same_text_as_unknown` refusal:  keep it for the full 35-day send ledger, or narrow it to a shorter window, so a later reply with the same text isn't blocked (section 10).
+16. A reply refused after its retry cap:  release its `client_ref` for a later attempt by Jet (as written), or lock it for good (section 10).
 
 ### For Jet
 
