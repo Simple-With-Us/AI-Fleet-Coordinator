@@ -25,8 +25,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from . import comment_keys
-from . import f3, records
+from . import comment_keys, f3, records
 from . import links as linkmod
 from . import text as T
 from .errors import Refusal

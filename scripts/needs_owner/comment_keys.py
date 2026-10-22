@@ -11,13 +11,14 @@ The file lives beside the fallback notifier's own state, under the needs-owner
 state directory, and holds digests and outcome words only:  never a question,
 an answer, a comment's words or a credential.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import time
-from typing import Mapping
+from collections.abc import Mapping
 
 from . import ledger
 
