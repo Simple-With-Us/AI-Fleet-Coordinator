@@ -1,7 +1,7 @@
 # 2026-10-08 — Sentence gap: the chat entity returns, GitHub and Zulip use U+00A0
 
 Type: Fleet change  (board `86aa2176`)
-> **Correction, 2026-10-20:**  the MiniMax Code pane does NOT decode the `&nbsp;` entity — it shows the six literal characters.  In that pane the gap is a real U+00A0 followed by a normal space, and two ASCII spaces collapse as well.  See the `sentence-gap` skill for the per-surface table.
+> **Correction, 2026-10-20, and its own reversal the same day.**  A note here briefly said the MiniMax Code pane does NOT decode the `&nbsp;` entity and that the gap there is a real U+00A0 plus a normal space.  That was an inference, it was never owner-verified, and the owner reversed it:  the MiniMax Code chat pane decodes the entity, the same form as the Claude Code Code tab (owner-verified 2026-10-18, reaffirmed 2026-10-20).  See the `sentence-gap` skill for the per-surface table.
 
 
 ## Why

@@ -1,7 +1,7 @@
 ---
 name: sentence-gap
 description: >-
-  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows the canonical portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08); in the MiniMax Code chat pane use a real U+00A0 plus a space (owner-verified 2026-10-20 — the entity renders there as the six literal characters); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
+  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows the canonical portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08; MiniMax Code chat pane, owner-verified 2026-10-18 and reaffirmed 2026-10-20); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
 ---
 
 # Sentence gap (portable — always on)
@@ -37,9 +37,15 @@ acknowledgement.  Getting it right in artifacts while writing plain single space
 chat is still a failure.  **Read your reply back before you send it** and check every
 `.`, `!` and `?` boundary.
 
-In the MiniMax Code pane the gap is a REAL U+00A0 plus a normal space.  Generate it in
-the shell rather than typing it, because a model that emits U+00A0 directly can have it
-normalized to a plain space:
+In the MiniMax Code pane the gap is the `&nbsp;` entity plus a normal space, the same
+form as the Claude Code Code tab:  type the six characters right after the period, outside
+code spans, as in `Sentence one.&nbsp; Sentence two.`.  Two ASCII spaces collapse in that
+pane, and a raw U+00A0 typed by the model arrives as a plain space, so the entity is the
+form that actually renders a gap.
+
+For a destination that takes a real U+00A0 (GitHub, Zulip, rendered HTML), generate the
+character in the shell rather than typing it, because a model that emits U+00A0 directly
+can have it normalized to a plain space:
 
 ```sh
 printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
@@ -72,8 +78,8 @@ Concretely, for every seat on every platform:
    one without it.  There is no length at which the gap becomes optional.
 2. **Never argue the mechanism.**  If you cannot confirm the gap is visible on your surface,
    use the mechanism the surface table below assigns to that destination:  the entity in a
-   Markdown-rendering chat pane, except the MiniMax Code pane, which needs a real U+00A0, and
-   two ASCII spaces in files and terminals.  Then say so plainly.  Do not silently drop the gap.
+   Markdown-rendering chat pane, including the MiniMax Code pane, and two ASCII spaces in
+   files and terminals.  Then say so plainly.  Do not silently drop the gap.
 3. **Never let a tool step eat the gap.**  For text bound for GitHub, Zulip, or any other
    renderer, generate the gap in the shell (see the perl command below) rather than typing it,
    because a run of whitespace you write into a tool call is sometimes normalized before it
@@ -101,8 +107,8 @@ depends on the surface, so pick by destination:
 |---|---|---|
 | **Cloud / BotFleet / OpenMausBot chat** | two literal ASCII spaces | Owner 2026-09-03: never display the six characters `&nbsp;` in cloud text.  The backend maps doubles (or the entity) to a real U+00A0 before paint. |
 | **Claude Code — desktop app (Code tab)** | the literal entity text `&nbsp;` then a normal space after each sentence, outside code spans → `End.&nbsp; Next.` | Owner-verified 2026-10-08 with a screenshot.  The renderer decodes the entity into a real gap.  A raw U+00A0 from the model arrives as a plain space, and two ASCII spaces collapse.  Supersedes the 2026-09-04 ASCII ruling and the 2026-08-19 finding below for this surface — see History. |
-| **MiniMax Code chat pane** (owner-verified 2026-10-20) | a REAL U+00A0, the nbsp character, then a normal space, outside code spans | Jay:  "I think you need to do nbsp for chats or something" and "I have confirmed this before with agents and knew you needed nbsp already".  Two ASCII spaces collapse in this pane, and the `&nbsp;` entity renders as the six literal characters, which is worse than no gap.  The 2026-10-18 entry for this pane was wrong and is corrected here. |
-| **Any other agent chat pane that renders Markdown** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse, and similar) | the same: `&nbsp;` then a normal space, outside code spans | Owner ruling 2026-10-08: Markdown chat collapses ASCII doubles everywhere, so use the entity by default and do not ask first.  Only the Code tab and the MiniMax Code pane are verified, and they differ: MiniMax needs a real U+00A0, the Code tab needs the entity.  If the owner ever sees the six literal characters, stop using the entity on that surface and report it in #agent-sync — that surface then needs a different mechanism, and it is unknown until tested. |
+| **MiniMax Code chat pane** (owner-verified 2026-10-18, reaffirmed 2026-10-20) | the literal entity text `&nbsp;` then a normal space after each sentence, outside code spans → `End.&nbsp; Next.` | Jay:  "I have confirmed this before with agents and knew you needed nbsp already".  The renderer decodes the entity into a real gap, the same form as the Claude Code Code tab.  Two ASCII spaces collapse in this pane, and a raw U+00A0 typed by the model arrives as a plain space, so the entity is the form that actually renders a gap.  A 2026-10-20 note here briefly said a real U+00A0 for this pane;  that was an inference, it was never owner-verified, and the owner reversed it.  Never override an owner-verified mechanism on an inference. |
+| **Any other agent chat pane that renders Markdown** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse, and similar) | the same: `&nbsp;` then a normal space, outside code spans | Owner ruling 2026-10-08: Markdown chat collapses ASCII doubles everywhere, so use the entity by default and do not ask first.  Only the Code tab and the MiniMax Code pane are verified, and both decode the entity.  If the owner ever sees the six literal characters, stop using the entity on that surface and report it in #agent-sync — that surface then needs a different mechanism, and it is unknown until tested. |
 | **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode) | two literal ASCII spaces | Unverified.  A terminal prints the entity as the literal text `&nbsp;`, which the owner must never see.  Do not use the entity here. |
 | **Plain-text chat (no Markdown rendering)** | two literal ASCII spaces | Nothing collapses them; an entity would show as the ugly text `&nbsp;` |
 | **Files read as source** — repo docs, commit messages, code comments, config, diffs, terminal output | two literal ASCII spaces | Read in an editor/terminal/`git diff`, which preserve them verbatim; an entity would appear literally |
