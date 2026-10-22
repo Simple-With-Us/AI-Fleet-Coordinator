@@ -165,7 +165,7 @@ class Facts(Sandbox):
         self.assertEqual(first["question"], "Pick a color")
         self.assertEqual(first["low_stakes"], [1, 2])
         self.assertTrue(first["tap_to_answer"])
-        self.assertTrue(first["topic_url"].startswith(urls.REALM + "/#narrow/channel/%d-agent-sync/topic/" % urls.STREAM_ID))
+        self.assertTrue(first["topic_url"].startswith(urls.REALM + "/#narrow/channel/%d-%s/topic/" % (urls.STREAM_ID, urls.CHANNEL)))
         self.assertEqual(d["low_stakes"], 1)
         self.assertEqual(d["over_five"], ["CLAUDE"])
         self.assertTrue(first["url"].startswith("https://linear.app/"))
