@@ -73,6 +73,7 @@ import { listenerClientFromEnv } from "./listener.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "./events.js";
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
+import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 
 export { SeatGate };
@@ -481,6 +482,49 @@ async function serveSpike(request, env, ctx, config) {
   console.log(JSON.stringify({ event: "spike", seat, verdict: claim.verdict, outcome: result.outcome ?? null, subscribers: result.subscribers ?? 0, delivered: result.delivered ?? 0 }));
   const reply = spikeReply(result);
   return jsonResponse(reply.body, reply.status, reply.retryAfterS ? { "Retry-After": String(reply.retryAfterS) } : {});
+}
+
+// ---------------------------------------------------------------- /internal/health/linear
+
+/**
+ * The Linear token health of every seat that has Linear credentials (the six
+ * LINEAR_SEATS and the twelve Grok Bot personas), for Muster's launchd reader.
+ * 404 when HEALTH_HMAC_KEY is unset or equals any seat's wake key, POST only,
+ * signed.  The body holds ages, counts and fixed codes:  no token or credential.
+ */
+async function serveLinearHealth(request, env, config) {
+  const key = healthKey(env.HEALTH_HMAC_KEY);
+  if (!key) return notFound();
+  const wakeKeys = Object.values(WAKE_SECRETS).map((name) => (typeof env[name] === "string" ? env[name].trim() : ""));
+  if (wakeKeys.includes(key)) {
+    console.log(JSON.stringify({ event: "health_refused", reason: "key_reused" }));
+    return notFound();
+  }
+  if (request.method !== "POST") return textResponse("Method Not Allowed", 405, { Allow: "POST" });
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > HEALTH_MAX_BODY) return textResponse("Payload Too Large", 413);
+  const bytes = await readBodyBytes(request, HEALTH_MAX_BODY);
+  if (bytes === null) return textResponse("Payload Too Large", 413);
+  const checked = await verifyHealth({ bytes, signature: request.headers.get(HEALTH_SIGNATURE_HEADER), key });
+  if (!checked.ok) {
+    console.log(JSON.stringify({ event: "health_refused", reason: checked.reason }));
+    return checked.status === 404 ? notFound() : textResponse(checked.status === 401 ? "Unauthorized" : checked.status === 413 ? "Payload Too Large" : "Bad Request", checked.status);
+  }
+  const identities = [];
+  for (const seat of LINEAR_SEATS) {
+    const names = linearSecretNames(seat);
+    if (names && config.hostedSeats.includes(seat) && [names.clientId, names.clientSecret].every((n) => typeof env[n] === "string" && env[n].trim() !== "")) identities.push(seat);
+  }
+  const delegated = loadDelegatedCredentials(env);
+  for (const identity of delegated.roles.keys()) identities.push(identity);
+  const rows = await Promise.all(identities.map(async (seat) => {
+    try {
+      return { seat, row: await gate(env, seat).linearHealth() };
+    } catch {
+      return { seat, row: { token: null, note: { last_fail_at: 1, last_ok_at: 0, last_fail_kind: "unexpected" } } };
+    }
+  }));
+  return jsonResponse({ ...healthReport(rows, Math.floor(Date.now() / 1000)), bundle: delegated.valid ? "ok" : "invalid" }, 200);
 }
 
 /**
@@ -1015,6 +1059,7 @@ export default {
     }
     if (route === "wake") return serveWake(request, env, ctx, config);
     if (route === "spike") return serveSpike(request, env, ctx, config);
+    if (route === "linear_health") return serveLinearHealth(request, env, config);
     if (route === "token") {
       const gated = await gateToken(request, env, config);
       if (gated instanceof Response) return gated;

@@ -122,6 +122,14 @@ export class SeatGate extends DurableObject {
     return state.linearTokenSet(this.store, entry);
   }
 
+  linearMintNote(entry) {
+    return state.linearMintNote(this.store, entry);
+  }
+
+  linearHealth() {
+    return state.linearHealth(this.store);
+  }
+
   linearTokenClear() {
     return state.linearTokenClear(this.store);
   }

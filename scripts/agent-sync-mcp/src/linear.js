@@ -773,6 +773,7 @@ export class LinearClient {
     try {
       fresh = await this.#mint();
     } catch (error) {
+      await this.#noteMint({ ok: false, kind: error instanceof LinearError ? error.kind : "unexpected" });
       await this.safelyDrop();
       throw error;
     }
@@ -787,8 +788,18 @@ export class LinearClient {
     // leaves a window in which a second request sees an empty cache, takes the
     // lock, and mints again - which is the one thing the 24-hour cap forbids.
     await this.gate.linearTokenSet(entry);
+    await this.#noteMint({ ok: true });
     await this.safelyDrop();
     return entry.access_token;
+  }
+
+  /** Record the mint outcome for the health route.  A gate without it, or one that throws, must not fail the call. */
+  async #noteMint(entry) {
+    try {
+      await this.gate.linearMintNote?.({ ...entry, at: this.now() });
+    } catch {
+      // A missing note is a gap in the health view, never a failed call.
+    }
   }
 
   seatLabel() {
