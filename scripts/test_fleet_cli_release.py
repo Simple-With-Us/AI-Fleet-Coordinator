@@ -406,7 +406,7 @@ class ReleaseTests(unittest.TestCase):
         legacy = str(self.home / ".local/bin/agent-sync-codex-mcp")
         config.write_bytes(
             (
-                "[mcp_servers.agent-sync]\ncommand = \"%s\"\n"
+                '[mcp_servers.agent-sync]\ncommand = "%s"\n'
                 'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
                 ' "AGENT_SESSION"]\n' % legacy
             ).encode()
