@@ -406,17 +406,17 @@ Check with `fleetlink_whoami` from any seat:  `user.id` is `usr_agent_<seat>` an
 
 ## Linear token health (AFC-478 follow-up, deploy step)
 
-`POST /internal/health/linear` answers each seat's Linear token state (age, days to the day-28 re-mint, expiry, mint count, last mint ok and failure kind, and `state` ok, warn or fail) for the six Linear seats and the twelve Grok Bot personas. It holds no token, client id, secret or upstream message text. It is signed with its own `HEALTH_HMAC_KEY` (at least 32 characters, never a seat's wake key; equal to one means 404) and is outside Access like the wake. Without the secret the route is a 404.
+`POST /internal/health/linear` answers each seat's Linear token state (age, days to the day-28 re-mint, expiry, mint count, last mint ok and failure kind, and `state` ok, warn or fail) for the six Linear seats and the twelve Grok Bot personas.  It holds no token, client id, secret or upstream message text.  It is signed with its own `HEALTH_HMAC_KEY` (at least 32 characters, never a seat's wake key; equal to one means 404) and is outside Access like the wake.  Without the secret the route is a 404.
 
-Deploy step (by hand, after the merge, with Jay's go): `openssl rand -hex 32 | wrangler secret put HEALTH_HMAC_KEY`, store the same value in Fleet-OPS as `HEALTH_HMAC_KEY`, then deploy. Muster reads the file written by `scripts/fleet-worker-health.py` (`--dry-run` first), run on the Mac by a launchd job like `com.jay.fleet-tools-doctor`, to `~/.local/state/fleet-tools/worker-health.json` (0600, atomic, `schemaVersion` 1, unknown when older than 45 minutes). No timer is installed by this change.
+Deploy step (by hand, after the merge, with Jay's go): `openssl rand -hex 32 | wrangler secret put HEALTH_HMAC_KEY`, store the same value in Fleet-OPS as `HEALTH_HMAC_KEY`, then deploy.  Muster reads the file written by `scripts/fleet-worker-health.py` (`--dry-run` first), run on the Mac by a launchd job like `com.jay.fleet-tools-doctor`, to `~/.local/state/fleet-tools/worker-health.json` (0600, atomic, `schemaVersion` 1, unknown when older than 45 minutes).  No timer is installed by this change.
 
 ## Per-bot MCP bearers for the Grok Bot personas
 
-Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers"), which sits behind the Cloudflare Access gate. No new secret and no new machine identity is needed.
+Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers"), which sits behind the Cloudflare Access gate.  No new secret and no new machine identity is needed.
 
-- The token looks like `gbb_<role>_<43 characters>`. It is shown once, on the response to the mint button (no-store). The Worker keeps only its SHA-256 hash in the persona's Durable Object. It is not in Infisical, KV, logs or audit rows.
-- A bearer works on `/mcp` only, and only as its own persona. Any other `identity` is refused. It cannot create identities and cannot reach ECHO, JET or any hosted seat.
-- Rotate is mint again: the old token stops at once. Revoke is the Revoke button. Tokens expire after 90 days. A paused persona is refused.
+- The token looks like `gbb_<role>_<43 characters>`.  It is shown once, on the response to the mint button (no-store).  The Worker keeps only its SHA-256 hash in the persona's Durable Object.  It is not in Infisical, KV, logs or audit rows.
+- A bearer works on `/mcp` only, and only as its own persona.  Any other `identity` is refused.  It cannot create identities and cannot reach ECHO, JET or any hosted seat.
+- Rotate is mint again: the old token stops at once.  Revoke is the Revoke button.  Tokens expire after 90 days.  A paused persona is refused.
 - A persona with no credentials in the bindings cannot mint.
 - Leak paths to know: whoever holds an Access session for the admin email can mint; the page response is the only place the token appears.
-- Deploy is normal. Nothing to configure first.
+- Deploy is normal.  Nothing to configure first.
