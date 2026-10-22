@@ -127,6 +127,31 @@ export async function writeStatus({
   return created && created.id ? created.id : null;
 }
 
+/**
+ * Read one message back from Zulip.
+ *
+ * The reconcile lever adopts a message id an operator named, so the worker
+ * has to see the message before it adopts it:  the bot only ever writes into
+ * the alerts channel, and an id that names a message somewhere else must not
+ * be adopted.  A message that cannot be read is null, so the caller refuses
+ * the adoption rather than guessing.
+ *
+ * @returns {Promise<object|null>} the message, or null
+ */
+export async function readMessage({ email, apiKey, id }) {
+  if (!Number.isSafeInteger(id) || id <= 0) return null;
+  try {
+    const data = await zulip(`/messages/${id}`, { email, apiKey, method: "GET" });
+    if (!data || typeof data !== "object") return null;
+    const message =
+      data.message && typeof data.message === "object" ? data.message : data;
+    if (!Number.isSafeInteger(message.id) || message.id <= 0) return null;
+    return message;
+  } catch {
+    return null;
+  }
+}
+
 /** Render the standing status block for a topic's current states. */
 export function renderStatus({ topic, states, updatedAt, source }) {
   const rows = states

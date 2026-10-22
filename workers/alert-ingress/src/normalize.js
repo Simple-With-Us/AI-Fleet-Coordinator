@@ -36,8 +36,13 @@ function oneLine(s) {
  *
  * An unknown level is SEVERE while firing: over-severing a new alert is
  * recoverable, and under-severing one is not.
+ *
+ * The map has no prototype, and the lookup is an own-property check, because
+ * the level comes from the vendor payload:  a level of "constructor" or
+ * "toString" must not resolve to an inherited value and slip past the
+ * fallback.
  */
-const SENTRY_SEVERITY = {
+const SENTRY_SEVERITY = Object.assign(Object.create(null), {
   fatal: "SEVERE",
   critical: "SEVERE",
   error: "SEVERE",
@@ -45,7 +50,7 @@ const SENTRY_SEVERITY = {
   warn: "MODERATE",
   info: "INFO",
   debug: "INFO",
-};
+});
 
 /**
  * Datadog monitor notification.
@@ -217,6 +222,10 @@ export function fromSentry(payload) {
     data.metric_alert && typeof data.metric_alert === "object" && data.metric_alert
       ? data.metric_alert
       : null;
+  // The actions that are an alert.  Sentry's action set is wider than that:
+  // an issue can be assigned, ignored or deleted, and none of those is a new
+  // alert.  Every action outside the list is not a firing alert, so an
+  // incident a human already handled is never reopened.
   const action = sentryFirst(payload.action).toLowerCase();
   const level = sentryFirst(
     issue?.level,
@@ -229,10 +238,14 @@ export function fromSentry(payload) {
   // An unrecognized status stays firing, which is the safe direction: a
   // status-less delivery must never close a live incident.
   const firing = action
-    ? !/^(resolved|closed|complete|completed|ok)$/.test(action)
+    ? /^(created|reopened|escalated|triggered|unresolved)$/.test(action)
     : !/^(ok|resolved|recovered|closed)$/.test(level);
 
-  const severity = SENTRY_SEVERITY[level] || (firing ? "SEVERE" : "INFO");
+  const severity = Object.hasOwn(SENTRY_SEVERITY, level)
+    ? SENTRY_SEVERITY[level]
+    : firing
+      ? "SEVERE"
+      : "INFO";
 
   const project = issue?.project && typeof issue.project === "object" ? issue.project : {};
   const service = issue
@@ -248,8 +261,22 @@ export function fromSentry(payload) {
 
   // The issue key names the issue, so a metric alert and an issue can never
   // share one identity.
+  //
+  // The key carries the issue's own id, which is unique across every Sentry
+  // organization and project.  The short id is not:  it is numbered per
+  // project, so two projects whose short names truncate alike both mint
+  // "PROJ-1", and one incident would then absorb the other vendor's alert
+  // and answer with the wrong standing row.
+  const issueId = sentryFirst(issue?.id).toLowerCase();
+  const projectSlug = sentryFirst(project.slug, project.name).toLowerCase();
+  const shortId = sentryFirst(issue?.shortId).toLowerCase();
   const key = issue
-    ? `sentry:${sentryFirst(issue.shortId, issue.id).toLowerCase() || "issue"}`
+    ? `sentry:${
+        issueId ||
+        (projectSlug && shortId
+          ? `${projectSlug}:${shortId}`
+          : shortId || "issue")
+      }`
     : `sentry:metric:${sentryFirst(metric?.id, metric?.alert_rule?.id).toLowerCase() || "alert"}`;
 
   const text = issue

@@ -45,7 +45,8 @@ import {
   DEFAULT_MIN_OPEN_MS,
   PROD_DOWN_MIN_OPEN_MS,
 } from "./state.js";
-import { postEvent, writeStatus, renderStatus } from "./zulip.js";
+import { postEvent, writeStatus, renderStatus, readMessage } from "./zulip.js";
+import { parseSentryPayload } from "./sentry-schema.js";
 
 const DEFAULT_CHANNEL = "alerts";
 
@@ -267,6 +268,56 @@ function sourceFromKey(key) {
   return SOURCE_TOKEN.test(head) ? head : "generic";
 }
 
+/**
+ * The channel and topic of a Zulip message, or null.
+ *
+ * The reconcile lever adopts a message id an operator named, so the worker
+ * has to see where the message lives before it adopts it.  A message that is
+ * not a stream message, or whose channel cannot be read, has no channel here
+ * and is refused.
+ */
+function messageChannel(message) {
+  if (!message || typeof message !== "object") return null;
+  if (typeof message.type === "string" && message.type !== "stream") return null;
+  const recipient =
+    message.display_recipient && typeof message.display_recipient === "object"
+      ? message.display_recipient
+      : {};
+  const channel =
+    recipient.name ||
+    recipient.stream_name ||
+    message.stream_name ||
+    message.channel_name ||
+    null;
+  if (!channel) return null;
+  const topic = recipient.topic || message.topic || "";
+  return {
+    channel: String(channel).toLowerCase(),
+    topic: topic ? String(topic) : "",
+  };
+}
+
+/**
+ * Forget every revision-scoped delivery row of one source's standing status.
+ *
+ * The rows carry the message id the standing block was last written to.  A
+ * reconciliation adopts a different id, and a row that still carries the old
+ * one would win over the adopted id on the next refresh, so the
+ * reconciliation would be a no-op that still answered 200.
+ */
+async function clearDeliveryRows(env, source, channel, topic) {
+  const storage = env.WRITER_STORAGE;
+  if (!storage || typeof storage.list !== "function") return;
+  const prefix = `delivery:${JSON.stringify([source, channel, topic]).slice(
+    0,
+    -1,
+  )},`;
+  const rows = await storage.list({ prefix });
+  for (const key of rows.keys()) {
+    if (typeof storage.delete === "function") await storage.delete(key);
+  }
+}
+
 /** Constant-time-ish compare so signature checks do not leak by timing. */
 function safeEqual(a, b) {
   if (a.length !== b.length) return false;
@@ -291,6 +342,25 @@ async function hmacHex(secret, body, algo = "SHA-256") {
   return [...new Uint8Array(mac)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/** The same HMAC, base64 encoded, for a vendor that signs that way. */
+async function hmacBase64(secret, body, algo = "SHA-256") {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: algo },
+    false,
+    ["sign"],
+  );
+  const bytes =
+    typeof body === "string" ? new TextEncoder().encode(body) : body;
+  const mac = await crypto.subtle.sign("HMAC", key, bytes);
+  let binary = "";
+  for (const byte of new Uint8Array(mac)) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
 }
 
 /**
@@ -324,13 +394,52 @@ async function verify(request, raw, env, source) {
   if (source === "sentry") {
     const secret = env.SENTRY_WEBHOOK_SECRET;
     if (!secret) return false;
-    // Sentry sends the shared webhook secret in the sentry-hook-secret
-    // header.  A Sentry route with no verifier of its own would fall
-    // through to the shared bearer token, which means any holder of that
-    // token could inject a Sentry alert, so the source is refused instead.
-    return safeEqual(request.headers.get("sentry-hook-secret") || "", secret);
+    // Sentry signs the request body with the shared secret and sends the
+    // signature in the `Sentry-Hook-Signature` header.  The secret itself is
+    // never echoed back, so a header comparison could never match a real
+    // delivery, and every genuine Sentry alert was answered 401.
+    //
+    // The header carries the signature, optionally in the `t=<timestamp>,
+    // v1=<signature>` envelope.  Every accepted form is an HMAC-SHA256 of
+    // the raw body (or of the timestamp and the raw body) under the shared
+    // secret, so a forgery still needs the secret, and the comparison is
+    // constant time.
+    const header = request.headers.get("sentry-hook-signature") || "";
+    if (!header) return false;
+    const parts = header.split(",").map((part) => part.trim());
+    const signature = (
+      parts.find((part) => part.startsWith("v1=")) || parts[0] || ""
+    ).replace(/^v1=/, "");
+    const timestamp = (parts.find((part) => part.startsWith("t=")) || "").replace(
+      /^t=/,
+      "",
+    );
+    if (!signature) return false;
+    for (const candidate of await sentrySignatureCandidates(secret, raw, timestamp)) {
+      if (safeEqual(signature, candidate)) return true;
+    }
+    return false;
   }
   return authorized(request, env);
+}
+
+/**
+ * The signature forms a Sentry delivery may carry.
+ *
+ * Sentry's signing has two shapes in the wild:  a bare digest of the body,
+ * and the `t=<timestamp>,v1=<digest>` envelope whose digest covers the
+ * timestamp and the body.  Each digest is hex or base64.  All four forms are
+ * HMAC-SHA256 under the shared secret, so accepting all of them does not
+ * weaken the check:  a forgery still needs the secret.
+ */
+async function sentrySignatureCandidates(secret, raw, timestamp) {
+  const bodies = timestamp ? [`${timestamp}.${raw}`, raw] : [raw];
+  const candidates = [];
+  for (const body of bodies) {
+    candidates.push(await hmacHex(secret, body));
+    candidates.push(await hmacBase64(secret, body));
+  }
+  return candidates;
 }
 
 /** Header-only shared-token gate; credentials must never be placed in URLs. */
@@ -609,6 +718,42 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   if (!credential) {
     throw credentialError(source, missingCredentialNames(env, source));
   }
+  // The whole read-decide-write section of one topic runs under that topic's
+  // lock, so the standing message id, the barrier and the write that follows
+  // them cannot interleave with another refresh of the same topic.  Without
+  // it, two refreshes can both read "no standing message yet" and both post
+  // one, and the topic would carry two standing blocks.
+  return withTopicLock(`${source}\u0000${channel}\u0000${topic}`, () =>
+    refreshStatusLocked(env, source, channel, topic, { ...options, credential }),
+  );
+}
+
+/**
+ * The locks, one per source, channel and topic.
+ *
+ * A refresh of one topic holds its lock for the whole section, so the second
+ * refresh of that topic waits and then reads what the first one wrote.  The
+ * Durable Object already serializes whole requests;  this lock is what makes
+ * the section correct on its own, whatever calls it.
+ */
+const topicLocks = new Map();
+
+function withTopicLock(key, fn) {
+  const previous = topicLocks.get(key) || Promise.resolve();
+  const run = previous.then(fn, fn);
+  const settled = run.then(
+    () => {},
+    () => {},
+  );
+  topicLocks.set(key, settled);
+  settled.then(() => {
+    if (topicLocks.get(key) === settled) topicLocks.delete(key);
+  });
+  return run;
+}
+
+async function refreshStatusLocked(env, source, channel, topic, options = {}) {
+  const credential = options.credential;
   const states = await collectStates(env, source, channel, topic);
   const content = renderStatus({
     topic,
@@ -621,17 +766,22 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   const outcomeKey = deliveryKey(source, channel, topic, revision);
   const barrierKey = deliveryBarrierKey(source, channel, topic);
   const prior = await env.WRITER_STORAGE.get(outcomeKey);
-  const barrier = await env.WRITER_STORAGE.get(barrierKey);
   // The uncertainty barrier is scoped to the source, channel and topic, not
   // to the revision of the content.  A POST whose acknowledgement was lost
   // may have landed, so a changed standing block must not post a second
-  // standing message on top of it.  A write whose message id is known is
-  // safe to retry, because it edits the message it already owns instead of
-  // creating another one.
-  if (barrier?.outcome === "unknown" && !barrier.id) {
-    throw deliveryError(source, "unknown", { code: null, retryAfter: null });
-  }
+  // standing message on top of it.
+  //
+  // A held barrier refuses every further write for the topic, whatever the
+  // revision and whatever the message id is.  The write that is held may
+  // have landed, so the fleet cannot know whether the standing block is
+  // current, and repeating the call risks a second standing message in the
+  // topic.  An operator releases the topic with `?reconcile=<message id>`,
+  // which names the message the lost write created.
   let statusId =
+    // An id an operator adopted wins:  the delivery row of the current
+    // revision may still carry the id of a message that no longer exists,
+    // and reconciling must not be overridden by that stale row.
+    options.adoptId ||
     prior?.id ||
     Number(await env.ALERT_STATE.get(statusKey(source, channel, topic), "json")) ||
     null;
@@ -656,19 +806,18 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
     }
   }
   // Commit uncertainty before crossing the network.  A crash or ambiguous reply
-  // cannot turn a possibly accepted create into another automatic POST.  The
-  // barrier carries the message id as well: an id means the write can be
-  // retried, and no id means the write may have created a message nobody
-  // knows about, so no further POST may happen for this topic.
-  await env.WRITER_STORAGE.put(outcomeKey, {
-    outcome: "unknown",
-    id: statusId,
+  // cannot turn a possibly accepted create into another automatic POST.
+  //
+  // The check and the claim are one transaction, so two refreshes cannot both
+  // see an open barrier and both write.  The barrier is claimed before the
+  // network is crossed, so the window between the claim and the reply is
+  // the only one a crash can leave behind, and the claim is what covers it.
+  await claimDeliveryBarrier(env, {
+    source,
+    outcomeKey,
+    barrierKey,
     revision,
-  });
-  await env.WRITER_STORAGE.put(barrierKey, {
-    outcome: "unknown",
-    id: statusId,
-    revision,
+    statusId,
   });
   try {
     const id = await writeStatus({
@@ -720,6 +869,39 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
     throw deliveryError(source, outcome, detail);
   }
   return content;
+}
+
+/**
+ * Claim the uncertainty barrier of one source, channel and topic.
+ *
+ * The check and the claim are one transaction, so two refreshes of the same
+ * topic cannot both see an open barrier and both write:  the first claims it
+ * and the second is refused before it reaches the network.  The Durable
+ * Object's storage is the only writer of the barrier, and its transaction is
+ * exclusive.
+ *
+ * A held barrier refuses the claim outright.  The write it covers may have
+ * landed, so the standing block is not known to be current and no further
+ * write may happen for that topic until an operator reconciles it.
+ */
+async function claimDeliveryBarrier(env, { source, outcomeKey, barrierKey, revision, statusId }) {
+  const storage = env.WRITER_STORAGE;
+  const claim = async (txn) => {
+    const barrier = await txn.get(barrierKey);
+    if (barrier?.outcome === "unknown") {
+      throw deliveryError(source, "unknown", { code: null, retryAfter: null });
+    }
+    await txn.put(outcomeKey, { outcome: "unknown", id: statusId, revision });
+    await txn.put(barrierKey, { outcome: "unknown", id: statusId, revision });
+  };
+  if (typeof storage.transaction === "function") {
+    await storage.transaction(claim);
+    return;
+  }
+  // A storage binding without transactions still cannot interleave:  the
+  // Durable Object serializes whole requests, so the check and the claim
+  // run one after the other.
+  await claim(storage);
 }
 
 function advanceRevision(previous, next) {
@@ -1096,6 +1278,7 @@ const handler = {
         // the Zulip channel; the worker adopts it, claims it for this source
         // and releases the barrier, so the topic resumes on its own.
         const reconcile = url.searchParams.get("reconcile");
+        let adoptId = null;
         if (reconcile !== null) {
           const id = Number(reconcile);
           if (!Number.isSafeInteger(id) || id <= 0) {
@@ -1104,6 +1287,60 @@ const handler = {
           if (!env.WRITER_STORAGE) {
             return json({ error: "durable writer required" }, 503);
           }
+          const credential = resolveCredential(env, source);
+          const owner = await env.ALERT_STATE.get(statusOwnerKey(id), "json");
+          if (owner && owner !== source) {
+            // A standing message belongs to exactly one source.  Adopting a
+            // message another source pinned would steal its ownership:  the
+            // other source would then post a second standing message into
+            // the same topic, and this one would edit a message that is not
+            // its own.
+            return json(
+              {
+                error: "standing message owned by another source",
+                source,
+                owner,
+              },
+              409,
+            );
+          }
+          const own = Number(
+            await env.ALERT_STATE.get(
+              statusKey(source, DEFAULT_CHANNEL, topic),
+              "json",
+            ),
+          );
+          if (own !== id) {
+            // An id this source does not already own is read back from Zulip
+            // before it is adopted.  The bot only ever writes into the alerts
+            // channel, so an id that names a message somewhere else must not
+            // be adopted:  the worker would PATCH it.
+            const message = await readMessage({ ...credential, id });
+            const where = messageChannel(message);
+            if (!where) {
+              return json(
+                { error: "message not found", source, id },
+                409,
+              );
+            }
+            if (where.channel !== DEFAULT_CHANNEL) {
+              return json(
+                { error: "message outside the alerts channel", source, id },
+                409,
+              );
+            }
+            if (where.topic && where.topic !== topic) {
+              return json(
+                { error: "message in another topic", source, id },
+                409,
+              );
+            }
+          }
+          // The revision-scoped rows of this topic still carry the id of the
+          // message the lost write was editing, so they would win over the
+          // adopted id on the next refresh.  They are cleared, so the
+          // adopted id is the one the standing block is written to.
+          await clearDeliveryRows(env, source, DEFAULT_CHANNEL, topic);
           await env.ALERT_STATE.put(
             statusKey(source, DEFAULT_CHANNEL, topic),
             JSON.stringify(id),
@@ -1113,6 +1350,7 @@ const handler = {
             deliveryBarrierKey(source, DEFAULT_CHANNEL, topic),
             { outcome: "ok", id, reconciled: true },
           );
+          adoptId = id;
         }
         try {
           const content = await refreshStatus(
@@ -1120,6 +1358,7 @@ const handler = {
             source,
             DEFAULT_CHANNEL,
             topic,
+            adoptId ? { adoptId } : {},
           );
           return json({ source, channel: DEFAULT_CHANNEL, topic, content });
         } catch (error) {
@@ -1257,11 +1496,23 @@ const handler = {
 
     try {
       // A Sentry body carries the vendor's native shape, which the generic
-      // boundary rule refuses, so it has a rule of its own.  Every other
-      // source keeps the generic rule unchanged.
-      if (source === "sentry") validateSentryPayload(payload);
-      else validatePayload(payload);
-    } catch {
+      // boundary rule refuses, so it has a rule of its own:  two strict
+      // schemas, one per native shape.  The parsed body carries only the
+      // declared fields, so an unknown or wrongly shaped field never reaches
+      // the renderer, the writer or the channel.  Every other source keeps
+      // the generic rule unchanged.
+      if (source === "sentry") {
+        payload = parseSentryPayload(payload);
+      } else {
+        validatePayload(payload);
+      }
+    } catch (error) {
+      // A credential-like value is refused by its own code and names the
+      // field it was found in.  The value itself is never echoed:  it is not
+      // in the response, not in the logs and not in the error message.
+      if (error?.code === "secret") {
+        return json({ error: "secret", field: error.field || null }, 400);
+      }
       return json({ error: "invalid payload" }, 400);
     }
     try {
@@ -1417,71 +1668,6 @@ function validatePayload(payload, depth = 0) {
     )
       throw new Error("invalid text");
   }
-}
-
-/**
- * Validate a Sentry payload.
- *
- * A native Sentry payload nests objects -- the issue, its project, its
- * metadata, the metric alert and its rule -- and the generic boundary rule
- * rejects every object it does not know, so a Sentry body failed validation
- * as an invalid text field and the route could never accept one.
- *
- * This rule accepts the native shape and keeps the guarantee that matters:
- * the body is bounded in depth, in breadth and in text length, and control
- * characters are refused.  The parser reads only text, so a nested blob can
- * never become a topic name, a label or a link.
- */
-function validateSentryPayload(payload) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new Error("invalid payload");
-  }
-  if (Object.keys(payload).length > 100) throw new Error("too many fields");
-  if (payload.action !== undefined && payload.action !== null) {
-    if (typeof payload.action !== "string") throw new Error("invalid text field");
-    if (payload.action.length > 4096) throw new Error("invalid text");
-  }
-  const data = payload.data;
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
-    throw new Error("invalid payload");
-  }
-  if (Object.keys(data).length > 20) throw new Error("too many fields");
-  const issue = data.issue;
-  const metric = data.metric_alert;
-  // Sentry sends exactly one of the two shapes.  A body carrying both, or
-  // neither, is not a Sentry alert and is refused.
-  if ((issue === undefined) === (metric === undefined)) {
-    throw new Error("invalid payload");
-  }
-  const body = issue !== undefined ? issue : metric;
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw new Error("invalid payload");
-  }
-  const walk = (value, depth) => {
-    if (depth > MAX_PAYLOAD_DEPTH) throw new Error("payload nested too deep");
-    if (value === null || value === undefined) return;
-    if (typeof value === "string") {
-      if (value.length > 4096) throw new Error("invalid text");
-      if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value)) {
-        throw new Error("invalid text");
-      }
-      return;
-    }
-    if (typeof value === "number" || typeof value === "boolean") return;
-    if (Array.isArray(value)) {
-      if (value.length > 100) throw new Error("too many fields");
-      for (const item of value) walk(item, depth + 1);
-      return;
-    }
-    if (typeof value === "object") {
-      const entries = Object.entries(value);
-      if (entries.length > 100) throw new Error("too many fields");
-      for (const [, item] of entries) walk(item, depth + 1);
-      return;
-    }
-    throw new Error("invalid text field");
-  };
-  walk(body, 0);
 }
 
 // One named object owns every read/render/write transaction.  Durable storage

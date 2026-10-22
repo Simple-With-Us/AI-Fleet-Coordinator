@@ -11,6 +11,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing } from "./index.js";
 import { fromSentry } from "./normalize.js";
+import {
+  parseSentryPayload,
+  safeParse,
+  __testing as schemaTesting,
+} from "./sentry-schema.js";
 
 const {
   handleEvent,
@@ -66,7 +71,8 @@ function fakeKV(seed = {}, options = {}) {
 /** Minimal in-memory stand-in for the Durable Object storage binding. */
 function fakeStorage() {
   const data = new Map();
-  return {
+  let tail = Promise.resolve();
+  const storage = {
     data,
     async get(key) {
       return data.get(key);
@@ -74,10 +80,24 @@ function fakeStorage() {
     async put(key, value) {
       data.set(key, value);
     },
+    async delete(key) {
+      data.delete(key);
+    },
     async list({ prefix }) {
       return new Map([...data].filter(([key]) => key.startsWith(prefix)));
     },
+    // The Durable Object's storage transaction is exclusive:  one at a time,
+    // and a callback that throws leaves the storage untouched.
+    transaction(fn) {
+      const task = tail.then(() => fn(storage));
+      tail = task.then(
+        () => {},
+        () => {},
+      );
+      return task;
+    },
   };
+  return storage;
 }
 
 const CREDENTIALS = {
@@ -143,6 +163,17 @@ function stubZulip(behaviour = {}) {
         return { ok: true, json: async () => ({ result: "success" }) };
       }
       return { ok: true, json: async () => ({ result: "success", id: nextId++ }) };
+    }
+    if (opts.method === "GET") {
+      // A read of one message:  the reconcile lever adopts an id an operator
+      // named, so the worker reads the message back before it adopts it.
+      const id = Number(String(url).split("/").pop());
+      const message = behaviour.messageFor?.(call) ?? {
+        id,
+        type: "stream",
+        display_recipient: { id: 1, name: "alerts", stream_id: 1 },
+      };
+      return { ok: true, json: async () => ({ result: "success", message }) };
     }
     return { ok: true, json: async () => ({ result: "success" }) };
   };
@@ -1089,14 +1120,88 @@ const SENTRY_METRIC_PAYLOAD = {
   },
 };
 
+/**
+ * The signature Sentry sends:  an HMAC-SHA256 of the raw body under the
+ * shared secret.
+ */
+async function sentrySignature(secret, body, timestamp) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(timestamp ? `${timestamp}.${body}` : body),
+  );
+  return [...new Uint8Array(mac)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 test("S1 a Sentry issue payload becomes one incident with the fleet severities", () => {
   const event = fromSentry(SENTRY_ISSUE_PAYLOAD);
   assert.equal(event.source, "sentry");
-  assert.equal(event.key, "sentry:proj-1");
+  // The key carries the issue id, which is unique across every organization
+  // and project;  the short id is numbered per project and can collide.
+  assert.equal(event.key, "sentry:1234567");
   assert.equal(event.service, "orders");
   assert.equal(event.severity, "SEVERE");
   assert.equal(event.firing, true);
   assert.match(event.link, /sentry\.io/);
+});
+
+test("S1 two projects whose short ids agree keep two incidents apart", () => {
+  const first = fromSentry({
+    ...SENTRY_ISSUE_PAYLOAD,
+    data: {
+      issue: {
+        ...SENTRY_ISSUE_PAYLOAD.data.issue,
+        id: "111",
+        project: { slug: "alpha", name: "Alpha" },
+      },
+    },
+  });
+  const second = fromSentry({
+    ...SENTRY_ISSUE_PAYLOAD,
+    data: {
+      issue: {
+        ...SENTRY_ISSUE_PAYLOAD.data.issue,
+        id: "222",
+        project: { slug: "beta", name: "Beta" },
+      },
+    },
+  });
+  assert.notEqual(first.key, second.key);
+});
+
+test("S1 a Sentry action that is not an alert never reopens an incident", () => {
+  for (const action of ["assigned", "ignored", "deleted"]) {
+    const event = fromSentry({ ...SENTRY_ISSUE_PAYLOAD, action });
+    assert.equal(event.firing, false, action);
+    assert.equal(event.severity, "INFO", action);
+  }
+  // The actions that are an alert still fire.
+  for (const action of ["created", "reopened", "escalated", "triggered"]) {
+    const event = fromSentry({ ...SENTRY_ISSUE_PAYLOAD, action });
+    assert.equal(event.firing, true, action);
+  }
+});
+
+test("S1 a vendor level that names an inherited property is not a severity", () => {
+  // "constructor" and "toString" resolve to an inherited value on a plain
+  // object, which would be stored as the severity of a firing alert.
+  for (const level of ["constructor", "toString", "__proto__", "valueOf"]) {
+    const event = fromSentry({
+      ...SENTRY_ISSUE_PAYLOAD,
+      action: "",
+      data: { issue: { ...SENTRY_ISSUE_PAYLOAD.data.issue, level } },
+    });
+    assert.equal(event.severity, "SEVERE", level);
+  }
 });
 
 test("S1 a Sentry metric alert has its own incident identity", () => {
@@ -1117,23 +1222,26 @@ test("S1 a Sentry issue webhook is accepted and posts under the Sentry identity"
   const kv = fakeKV();
   const env = envFor(kv);
   const zulip = stubZulip();
+  const body = JSON.stringify(SENTRY_ISSUE_PAYLOAD);
   try {
     const response = await handler.fetch(
       new Request("https://test/webhook/sentry", {
         method: "POST",
-        headers: { "sentry-hook-secret": "fixture" },
-        body: JSON.stringify(SENTRY_ISSUE_PAYLOAD),
+        headers: {
+          "sentry-hook-signature": await sentrySignature("fixture", body),
+        },
+        body,
       }),
       env,
       {},
     );
     assert.equal(response.status, 200);
-    // The incident lives in the Sentry namespace, under the project slug.
-    const state = JSON.parse(kv.store.get(stateKey("sentry:proj-1")));
+    // The incident lives in the Sentry namespace, under the issue id.
+    const state = JSON.parse(kv.store.get(stateKey("sentry:1234567")));
     assert.equal(state.phase, "pending");
     assert.equal(state.severity, "SEVERE");
     assert.equal(
-      JSON.parse(kv.store.get(svcKey("sentry:proj-1"))),
+      JSON.parse(kv.store.get(svcKey("sentry:1234567"))),
       "orders",
     );
     // The standing status was written with the Sentry identity and no other.
@@ -1145,16 +1253,102 @@ test("S1 a Sentry issue webhook is accepted and posts under the Sentry identity"
   }
 });
 
-test("S1 a Sentry webhook without its own secret is refused", async () => {
+test("S1 a Sentry delivery is accepted with the timestamped signature envelope", async () => {
   const kv = fakeKV();
   const env = envFor(kv);
   const zulip = stubZulip();
+  const body = JSON.stringify(SENTRY_ISSUE_PAYLOAD);
+  const timestamp = "1760000000";
   try {
     const response = await handler.fetch(
       new Request("https://test/webhook/sentry", {
         method: "POST",
-        headers: { "sentry-hook-secret": "wrong" },
-        body: JSON.stringify(SENTRY_ISSUE_PAYLOAD),
+        headers: {
+          "sentry-hook-signature": `t=${timestamp},v1=${await sentrySignature(
+            "fixture",
+            body,
+            timestamp,
+          )}`,
+        },
+        body,
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 200);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("S1 a Sentry webhook with a wrong signature is refused", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  const body = JSON.stringify(SENTRY_ISSUE_PAYLOAD);
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: {
+          "sentry-hook-signature": await sentrySignature("wrong", body),
+        },
+        body,
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 401);
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("S1 a Sentry webhook whose body was changed after signing is refused", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  const body = JSON.stringify(SENTRY_ISSUE_PAYLOAD);
+  const signature = await sentrySignature("fixture", body);
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: { "sentry-hook-signature": signature },
+        body: JSON.stringify({
+          ...SENTRY_ISSUE_PAYLOAD,
+          data: {
+            issue: {
+              ...SENTRY_ISSUE_PAYLOAD.data.issue,
+              title: "TypeError: something else entirely",
+            },
+          },
+        }),
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 401);
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("S1 a Sentry webhook without its own secret is refused", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  const body = JSON.stringify(SENTRY_ISSUE_PAYLOAD);
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: {
+          "sentry-hook-signature": await sentrySignature("wrong", body),
+        },
+        body,
       }),
       env,
       {},
@@ -1329,6 +1523,344 @@ test("O1 a write that cannot be confirmed answers as a failure, not a refresh", 
     assert.equal(response.status, 502);
     const body = await response.json();
     assert.equal(body.outcome, "unknown");
+  } finally {
+    zulip.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AFC-471 review round two: the Sentry schema, the credential scan, the
+// atomic barrier claim, and the reconciliation that may not steal a message.
+// ---------------------------------------------------------------------------
+
+test("S2 a Sentry body carries only the fields the schema declares", () => {
+  const parsed = parseSentryPayload({
+    action: "created",
+    data: {
+      issue: {
+        id: "1234567",
+        shortId: "PROJ-1",
+        title: "TypeError",
+        level: "error",
+        culprit: "app/orders.js",
+        tags: [{ key: "environment", value: "production" }],
+        project: { id: 42, slug: "orders", name: "Orders" },
+      },
+      metric_alert: undefined,
+    },
+    actor: { id: 1, name: "someone" },
+  });
+  // The fields the fleet reads survive;  the ones it never reads are gone,
+  // so they can never reach the renderer, the writer or the channel.
+  assert.equal(parsed.data.issue.id, "1234567");
+  assert.equal(parsed.data.issue.project.slug, "orders");
+  assert.equal("culprit" in parsed.data.issue, false);
+  assert.equal("tags" in parsed.data.issue, false);
+  assert.equal("actor" in parsed, false);
+});
+
+test("S2 a credential in a Sentry title is refused by its field path", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  // Built at run time and low-entropy:  gitleaks runs on this repo.
+  const token = "lin_" + "api_" + "Ab12".repeat(8);
+  const body = JSON.stringify({
+    ...SENTRY_ISSUE_PAYLOAD,
+    data: {
+      issue: {
+        ...SENTRY_ISSUE_PAYLOAD.data.issue,
+        title: `TypeError while sending ${token}`,
+      },
+    },
+  });
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: {
+          "sentry-hook-signature": await sentrySignature("fixture", body),
+        },
+        body,
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 400);
+    const answer = await response.json();
+    // The field is named;  the value never is.
+    assert.equal(answer.error, "secret");
+    assert.equal(answer.field, "data.issue.title");
+    assert.equal(JSON.stringify(answer).includes(token), false);
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("S2 an incomplete Sentry body is refused before it reaches the writer", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  for (const payload of [
+    { action: "created", data: { issue: { title: "no identity" } } },
+    { action: "created", data: {} },
+    {
+      action: "created",
+      data: {
+        issue: { id: "1", shortId: "A-1" },
+        metric_alert: { id: "2", title: "both shapes" },
+      },
+    },
+  ]) {
+    const body = JSON.stringify(payload);
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: {
+          "sentry-hook-signature": await sentrySignature("fixture", body),
+        },
+        body,
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 400, body);
+  }
+  assert.equal(zulip.calls.length, 0);
+});
+
+test("S2 a body over the byte limit is refused before it is parsed", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  const body = JSON.stringify({
+    ...SENTRY_ISSUE_PAYLOAD,
+    padding: "x".repeat(70000),
+  });
+  const response = await handler.fetch(
+    new Request("https://test/webhook/sentry", {
+      method: "POST",
+      headers: {
+        "sentry-hook-signature": await sentrySignature("fixture", body),
+      },
+      body,
+    }),
+    env,
+    {},
+  );
+  assert.equal(response.status, 413);
+  assert.equal(zulip.calls.length, 0);
+});
+
+test("S2 the parse counts every visited node against one global budget", () => {
+  // A broad shape can carry exponentially many values while every
+  // per-container limit is satisfied, so the whole parse is counted.
+  const shape = schemaTesting.object(
+    Object.fromEntries(
+      Array.from({ length: schemaTesting.MAX_NODES + 10 }, (_, index) => [
+        `field${index}`,
+        schemaTesting.optional(schemaTesting.text()),
+      ]),
+    ),
+  );
+  const value = Object.fromEntries(
+    Array.from({ length: schemaTesting.MAX_NODES + 10 }, (_, index) => [
+      `field${index}`,
+      "x",
+    ]),
+  );
+  const parsed = safeParse(shape, value);
+  assert.equal(parsed.success, false);
+  assert.match(parsed.error.message, /payload too large/);
+});
+
+test("F4 the barrier is claimed once, so two refreshes make one standing message", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  const zulip = stubZulip();
+  try {
+    // Two refreshes of one topic, at the same time.  The barrier is claimed
+    // in one transaction and the whole section runs under the topic's lock,
+    // so the two cannot both post a standing message.
+    const results = await Promise.allSettled([
+      refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+    ]);
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    assert.equal(fulfilled.length, 2);
+    // One standing message, created once;  the second refresh edits it.
+    assert.equal(zulip.posts().length, 1);
+    const patched = zulip.patches();
+    assert.equal(patched.length, 1);
+    assert.match(patched[0].url, /\/messages\/100$/);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("F4 a held topic makes no further call for it", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  const losing = stubZulip({ throwOn: (call) => isStatusWrite(call) });
+  try {
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+  } finally {
+    losing.restore();
+  }
+  const working = stubZulip();
+  try {
+    const before = working.calls.length;
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+    // The write may have landed, so no further call may be made for the
+    // topic until an operator reconciles it.
+    assert.equal(working.calls.length, before);
+  } finally {
+    working.restore();
+  }
+});
+
+test("F4 a reconciliation never steals another source's standing message", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  kv.store.set(statusOwnerKey(4242), JSON.stringify("betterstack"));
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    const response = await handler.fetch(
+      new Request(
+        "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+        { headers: { authorization: "Bearer fixture" } },
+      ),
+      env,
+      {},
+    );
+    assert.equal(response.status, 409);
+    const body = await response.json();
+    assert.equal(body.error, "standing message owned by another source");
+    assert.equal(body.owner, "betterstack");
+    // The other source's ownership is untouched.
+    assert.equal(
+      kv.store.get(statusOwnerKey(4242)),
+      JSON.stringify("betterstack"),
+    );
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("F4 a reconciliation refuses a message outside the alerts channel", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const env = envFor(kv);
+  const zulip = stubZulip({
+    messageFor: () => ({
+      id: 4242,
+      type: "stream",
+      display_recipient: { id: 9, name: "general", stream_id: 9 },
+    }),
+  });
+  try {
+    const response = await handler.fetch(
+      new Request(
+        "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+        { headers: { authorization: "Bearer fixture" } },
+      ),
+      env,
+      {},
+    );
+    assert.equal(response.status, 409);
+    const body = await response.json();
+    assert.equal(body.error, "message outside the alerts channel");
+    assert.equal(zulip.patches().length, 0);
+    assert.equal(zulip.posts().length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("F4 a reconciliation adopts its id over a stale delivery row", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  // The revision-scoped row of the current revision still carries the id of
+  // a message that was never created, because the write that would have
+  // created it lost its acknowledgement.
+  const revision = await statusRevision([
+    {
+      phase: "pending",
+      severity: "MODERATE",
+      service: "Shared.Service",
+      text: "load high",
+      link: "",
+    },
+  ]);
+  await storage.put(deliveryKey("datadog", "alerts", "Shared.Service", revision), {
+    outcome: "unknown",
+    id: 5000,
+    revision,
+  });
+  const zulip = stubZulip();
+  try {
+    const response = await handler.fetch(
+      new Request(
+        "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+        { headers: { authorization: "Bearer fixture" } },
+      ),
+      env,
+      {},
+    );
+    assert.equal(response.status, 200);
+    // The adopted message is the one that is edited, not the stale one.
+    const patched = zulip.patches();
+    assert.equal(patched.length, 1);
+    assert.match(patched[0].url, /\/messages\/4242$/);
+    assert.equal(
+      Number(kv.store.get(statusKey("datadog", "alerts", "Shared.Service"))),
+      4242,
+    );
+    // The stale row is gone, so the next refresh keeps the adopted id.
+    assert.equal(deliveryRows(storage, "datadog", "alerts", "Shared.Service").length, 1);
+    const row = deliveryRow(storage, "datadog", "alerts", "Shared.Service");
+    assert.equal(row.id, 4242);
+    assert.equal(row.outcome, "ok");
   } finally {
     zulip.restore();
   }
