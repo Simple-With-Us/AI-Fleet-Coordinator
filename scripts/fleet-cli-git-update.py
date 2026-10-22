@@ -162,7 +162,9 @@ def save_state(path: Path, state: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def smoke_settings(repo: Path) -> tuple[tuple[tuple[str, str, list[str], int], ...], frozenset[str], int]:
+def smoke_settings(
+    repo: Path,
+) -> tuple[tuple[tuple[str, str, list[str], int], ...], frozenset[str], int]:
     """The smoke's own settings, taken from the checkout being tested.
 
     The running updater's settings are not the right ones:  when a release removes a CLI, the
