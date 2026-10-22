@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent-sync-runtime-sync.sh  --  keep the agent-sync runtime checkout on AFC origin/main.
 #
-# The always-on Zulip listener (com.jay.agent-sync-listener) and the `agent-sync` CLI run from a
+# The always-on Zulip listener (com.jay.operator) and the `agent-sync` CLI run from a
 # dedicated managed checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator:
 #
 #   /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime     (detached worktree, locked)
@@ -25,7 +25,7 @@
 set -u
 
 RUNTIME="${AGENT_SYNC_RUNTIME:-/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime}"
-LISTENER_LABEL="${AGENT_SYNC_LISTENER_LABEL:-com.jay.agent-sync-listener}"
+LISTENER_LABEL="${AGENT_SYNC_LISTENER_LABEL:-com.jay.operator}"
 STATE_DIR="$HOME/.agent-sync"
 LOCK_DIR="$STATE_DIR/runtime-sync.lock"
 PAUSE_FILE="$STATE_DIR/runtime-sync.pause"

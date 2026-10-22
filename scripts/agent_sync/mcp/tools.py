@@ -66,7 +66,7 @@ from . import recall_tools as RECALL
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS_PATH = os.path.join(HERE, "tools.json")
-LISTENER_TOOLS_PATH = os.path.join(HERE, "listener-tools.json")
+EAVESDROPPER_TOOLS_PATH = os.path.join(HERE, "eavesdropper-tools.json")
 NOTES_TOOLS_PATH = os.path.join(HERE, "notes-tools.json")
 RECALL_TOOLS_PATH = os.path.join(HERE, "recall-tools.json")
 FLEETLINK_TOOLS_PATH = os.path.join(HERE, "fleetlink-tools.json")
@@ -117,7 +117,7 @@ WRITE_TOOLS = (
             "zulip_draft_edit",
             "zulip_draft_delete",
             "zulip_typing",
-            "listener_ack",
+            "eavesdropper_ack",
             "notes_create",
             "notes_update",
             "notes_pin",
@@ -151,11 +151,11 @@ READ_TOOLS = (
             "zulip_custom_emoji",
             "zulip_scheduled_list",
             "zulip_drafts_list",
-            "listener_status",
-            "listener_inbox",
-            "listener_owner_queue",
-            "listener_wakes",
-            "listener_held_back",
+            "eavesdropper_status",
+            "eavesdropper_inbox",
+            "eavesdropper_owner_queue",
+            "eavesdropper_wakes",
+            "eavesdropper_held_back",
             "notes_status",
             "recall_search",
             "recall_stats",
@@ -166,7 +166,7 @@ READ_TOOLS = (
 )
 # Every MCP tool and the CLI command that does the same job (AFC-330:  "keeping the CLI, stdio and
 # hosted in step").  tools.json is the contract;  a test checks that every tool in it and in
-# listener-tools.json is here and that each command parses.  One tool may map to several commands.
+# eavesdropper-tools.json is here and that each command parses.  One tool may map to several commands.
 CLI_VERBS: dict[str, tuple[str, ...]] = {
     "whoami": ("whoami",),
     "identities": ("identities",),
@@ -212,12 +212,12 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
     "zulip_draft_edit": ("drafts edit",),
     "zulip_draft_delete": ("drafts delete",),
     "zulip_typing": ("typing",),
-    "listener_status": ("listener status",),
-    "listener_inbox": ("listener inbox",),
-    "listener_owner_queue": ("listener owner-queue",),
-    "listener_wakes": ("listener wakes",),
-    "listener_held_back": ("listener held-back",),
-    "listener_ack": ("listener ack", "listener surface", "listener clear-held"),
+    "eavesdropper_status": ("listener status",),
+    "eavesdropper_inbox": ("listener inbox",),
+    "eavesdropper_owner_queue": ("listener owner-queue",),
+    "eavesdropper_wakes": ("listener wakes",),
+    "eavesdropper_held_back": ("listener held-back",),
+    "eavesdropper_ack": ("listener ack", "listener surface", "listener clear-held"),
     "guide": ("guide",),
     "notes_create": ("notes create",),
     "notes_update": ("notes update",),
@@ -284,10 +284,10 @@ def load_tools() -> dict[str, Any]:
         return json.load(fh)
 
 
-def load_listener_tools() -> dict[str, Any]:
-    """listener-tools.json:  the listener_* tools (AFC-330 part B).  Not in tools.json, because the
+def load_eavesdropper_tools() -> dict[str, Any]:
+    """eavesdropper-tools.json:  the listener_* tools (AFC-330 part B).  Not in tools.json, because the
     hosted Worker serves only the read-only ones (it has no write path into the server listener)."""
-    with open(LISTENER_TOOLS_PATH, encoding="utf-8") as fh:
+    with open(EAVESDROPPER_TOOLS_PATH, encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -297,13 +297,13 @@ def _load(path: str) -> dict[str, Any]:
 
 
 def load_served_tools() -> dict[str, Any]:
-    """What stdio tools/list serves:  tools.json, then listener-tools.json, notes-tools.json (the notes_*
+    """What stdio tools/list serves:  tools.json, then eavesdropper-tools.json, notes-tools.json (the notes_*
     tools), recall-tools.json (the recall_* tools, generated from the hosted src/recall.js), the linear_*
     tools from the board catalogs (linear_tools.py) and fleetlink-tools.json (the fleetlink_* tools, generated
     from the hosted src/fleetlink.js).  The hosted Worker serves the same names."""
     return {
         "tools": load_tools()["tools"]
-        + load_listener_tools()["tools"]
+        + load_eavesdropper_tools()["tools"]
         + _load(NOTES_TOOLS_PATH)["tools"]
         + _load(RECALL_TOOLS_PATH)["tools"]
         + LINEAR.tool_specs()
@@ -2783,7 +2783,7 @@ class Tools:
             view["next_seq"],
         )
         return self._list_result(
-            "listener_inbox",
+            "eavesdropper_inbox",
             [],
             summary,
             items,
@@ -2799,7 +2799,7 @@ class Tools:
         view = self._listener("owner-queue", args)
         items = self._listener_items(view["items"])
         return self._list_result(
-            "listener_owner_queue",
+            "eavesdropper_owner_queue",
             [],
             "%s, %d not surfaced" % (self._plural(len(items), "note"), view["pending"]),
             items,
@@ -2810,7 +2810,7 @@ class Tools:
         view = self._listener("wakes", args)
         items = self._listener_items(view["items"])
         return self._list_result(
-            "listener_wakes",
+            "eavesdropper_wakes",
             [],
             "%s of %d" % (self._plural(len(items), "wake"), view["total"]),
             items,
@@ -2821,7 +2821,7 @@ class Tools:
         view = self._listener("held-back", args)
         items = self._listener_items(view["items"])
         return self._list_result(
-            "listener_held_back",
+            "eavesdropper_held_back",
             [],
             "%d held back, %d lost" % (view["count"], view["lost"]),
             items,

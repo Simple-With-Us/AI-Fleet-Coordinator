@@ -66,7 +66,7 @@ import { recallClientFromEnv } from "./recall.js";
 import { fleetlinkClientFromEnv } from "./fleetlink.js";
 import { LinearClient, linearClientFromEnv, LINEAR_SEATS, linearSecretNames } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
-import { listenerClientFromEnv } from "./listener.js";
+import { listenerClientFromEnv } from "./eavesdropper.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS } from "./events.js";
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";

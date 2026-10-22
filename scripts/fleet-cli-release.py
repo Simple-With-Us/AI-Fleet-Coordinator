@@ -66,7 +66,7 @@ EXACT = frozenset(
         "scripts/agent_sync/mcp/fixtures.jsonl",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok Bot personas).
-        "scripts/agent_sync/mcp/listener-tools.json",
+        "scripts/agent_sync/mcp/eavesdropper-tools.json",
         "scripts/agent_sync/mcp/renamed-tools.json",
         "scripts/agent_sync/mcp/gb-identities.json",
         # AFC-331:  the notes_* and recall_* tool contracts, the core Linear tools the stdio server serves
@@ -113,7 +113,7 @@ TOOL_REQUIRED = frozenset(
         "docs/FLEET-MODE.md",
         *AFC331_FILES,
         # The listener_* MCP tools (AFC-330):  `agent-sync mcp` reads it at startup.
-        "scripts/agent_sync/mcp/listener-tools.json",
+        "scripts/agent_sync/mcp/eavesdropper-tools.json",
         # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
         # The fleetlink_* MCP tools:  `agent-sync mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained

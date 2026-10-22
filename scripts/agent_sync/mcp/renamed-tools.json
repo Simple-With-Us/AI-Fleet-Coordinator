@@ -1,5 +1,5 @@
 {
-  "//": "AFC-331 (docs/protocols/per-call-identity.md section 4):  every tool name is <family>_<verb>.  The old names were removed, not aliased (owner 2026-10-16).  Both servers read this map so a call to an old name is refused with unknown_tool naming its replacement.  Never add a new tool here;  only a name that was once served and is gone.",
+  "//": "AFC-331 (docs/protocols/per-call-identity.md section 4):  every tool name is <family>_<verb>.  The old names were removed, not aliased (owner 2026-10-16).  Both servers read this map so a call to an old name is refused with unknown_tool naming its replacement.  Never add a new tool here;  only a name that was once served and is gone.  The listener_* family was renamed to eavesdropper_* the same way (owner 2026-10-22:  Operator is the listener and its eavesdropper_* tools read its records;  Q3 decided a hard cutover, no alias).",
   "renamed": {
     "topics": "zulip_topics",
     "read_topic": "zulip_read_topic",
@@ -43,6 +43,12 @@
     "draft_edit": "zulip_draft_edit",
     "draft_delete": "zulip_draft_delete",
     "typing": "zulip_typing",
-    "agent_sync_identities": "identities"
+    "agent_sync_identities": "identities",
+    "listener_status": "eavesdropper_status",
+    "listener_inbox": "eavesdropper_inbox",
+    "listener_owner_queue": "eavesdropper_owner_queue",
+    "listener_wakes": "eavesdropper_wakes",
+    "listener_held_back": "eavesdropper_held_back",
+    "listener_ack": "eavesdropper_ack"
   }
 }

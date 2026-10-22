@@ -41,7 +41,7 @@ from agent_sync.tests.mcp_harness import (
 
 IDENTITY_ARGS = {"seat", "as", "as_seat", "rc", "no_tag", "fleet", "identity"}
 # AFC-331 renamed every Zulip tool to zulip_<name> (the old names are refused with unknown_tool) and
-# added identities.  The order is whoami, identities, the Zulip tools, then listener-tools.json.  These
+# added identities.  The order is whoami, identities, the Zulip tools, then eavesdropper-tools.json.  These
 # are literals on purpose:  tools.py's own READ_TOOLS and WRITE_TOOLS must equal them.
 READ_TOOLS = {
     "whoami",
@@ -67,11 +67,11 @@ READ_TOOLS = {
     "zulip_custom_emoji",
     "zulip_scheduled_list",
     "zulip_drafts_list",
-    "listener_status",
-    "listener_inbox",
-    "listener_owner_queue",
-    "listener_wakes",
-    "listener_held_back",
+    "eavesdropper_status",
+    "eavesdropper_inbox",
+    "eavesdropper_owner_queue",
+    "eavesdropper_wakes",
+    "eavesdropper_held_back",
     "fleetlink_list_shares",
     "fleetlink_get_share",
     "fleetlink_list_teams",
@@ -104,7 +104,7 @@ WRITE_TOOLS = {
     "zulip_draft_edit",
     "zulip_draft_delete",
     "zulip_typing",
-    "listener_ack",
+    "eavesdropper_ack",
     "notes_create",
     "notes_update",
     "notes_pin",
@@ -796,7 +796,7 @@ class ProtocolTests(McpHarness):
             self.assertTrue(
                 name in ("whoami", "identities", "guide")
                 or name.startswith(
-                    ("zulip_", "listener_", "notes_", "recall_", "linear_", "fleetlink_")
+                    ("zulip_", "eavesdropper_", "notes_", "recall_", "linear_", "fleetlink_")
                 ),
                 name,
             )
@@ -810,7 +810,7 @@ class ProtocolTests(McpHarness):
         )
 
     def test_every_tool_maps_to_a_cli_command_that_parses(self):
-        """tools.json is the contract:  every MCP tool (and every listener tool) names the CLI command
+        """tools.json is the contract:  every MCP tool (and every eavesdropper tool) names the CLI command
         that does the same job, and that command exists in the CLI's parser."""
         external = ("recall_", "fleetlink_")  # the recall CLI and FleetLink's own CLI, fleet-share
         served = [
@@ -1775,6 +1775,36 @@ class StartupTests(McpHarness):
                 )
                 self.assertEqual((code, lines), (3, []))
                 self.assertIn("role %d" % role, stderr)
+
+    def test_subprocess_accepts_the_operator_admin_key_and_refuses_it_for_other_seats(self):
+        """Operator is the admin [Operator] bot (owner decision, Oct 22 2026).  Only the OPERATOR
+        identity may authenticate with an administrator key:  every other seat holding the same admin
+        key is still refused, and OPERATOR itself is still refused an owner key."""
+        operator_key = zulip_shaped()
+        self.extra_secrets.append(operator_key)
+        operator_id = self.fake.add_bot(
+            "operator-bot@zulip.test", "Operator", operator_key, role=200
+        )["user_id"]
+        self.add_infisical_bot("OPERATOR", email="operator-bot@zulip.test", key=operator_key)
+        ping = [{"jsonrpc": "2.0", "id": 1, "method": "ping"}]
+
+        # The allowed case:  OPERATOR on the admin key starts.
+        code, lines, stderr = self.spawn(self.mcp_env(AGENT_SEAT="OPERATOR"), ping)
+        self.assertEqual(code, 0, stderr)
+
+        # The refused case:  the very same admin key cannot be borrowed by another seat.  (A seat's
+        # OWN bot holding an admin key is refused by the role check, proven by
+        # test_subprocess_refuses_admin_and_owner_bots.)
+        self.add_infisical_bot("CLAUDE", email="operator-bot@zulip.test", key=operator_key)
+        code, lines, stderr = self.spawn(self.mcp_env(AGENT_SEAT="CLAUDE"), ping)
+        self.assertEqual((code, lines), (3, []))
+        self.assertIn("not to CLAUDE", stderr)
+
+        # An owner (100) key is refused for OPERATOR too:  the exception is an administrator's only.
+        self.fake.set_role(operator_id, 100)
+        code, lines, stderr = self.spawn(self.mcp_env(AGENT_SEAT="OPERATOR"), ping)
+        self.assertEqual((code, lines), (3, []))
+        self.assertIn("role 100", stderr)
 
     def test_subprocess_refuses_a_credential_of_another_bot(self):
         self.add_infisical_bot(

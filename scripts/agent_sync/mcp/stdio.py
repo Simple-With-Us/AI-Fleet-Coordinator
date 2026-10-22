@@ -65,6 +65,9 @@ from .. import identities as X
 from .. import identity as I
 from .. import notes as NOTES
 from .. import zulip as Z
+
+# The one identity allowed to hold an administrator key (owner decision, Oct 22 2026).
+OPERATOR_SEAT = Z.OPERATOR_SEAT
 from ..state import state_root
 from . import identity_router as R
 from . import tools as T
@@ -571,10 +574,16 @@ def _open_identity(
             3,
         )
     role = me.get("role")
-    if me.get("is_admin") or me.get("is_owner") or role not in T.FLEET_ROLES:
+    # The OPERATOR seat is the admin [Operator] bot (owner decision, Oct 22 2026), so it is the one
+    # identity allowed to authenticate with an administrator (200) key.  Every other seat, and the
+    # owner (100) for every seat including OPERATOR, keeps the member-only rule.
+    if not (identity == OPERATOR_SEAT and role == 200 and not me.get("is_owner")) and (
+        me.get("is_admin") or me.get("is_owner") or role not in T.FLEET_ROLES
+    ):
         raise _Refused(
             "the %s bot has role %s; mcp accepts only moderator (300) and member (400) bots and refuses "
-            "admin and owner keys" % (identity, role),
+            "admin and owner keys, except for the OPERATOR seat, which accepts an administrator (200) but "
+            "never an owner" % (identity, role),
             3,
         )
     return agent, me

@@ -1,7 +1,7 @@
-// The server listener's records for a hosted seat (AFC-330 part B):  listener_status,
-// listener_inbox, listener_owner_queue, listener_wakes and listener_held_back.  The specs are
-// scripts/agent_sync/mcp/listener-tools.json (shared with the stdio server);  the hosted server
-// lists every one of them except listener_ack, because the listener's read API is read-only.
+// The server listener's records for a hosted seat (AFC-330 part B):  eavesdropper_status,
+// eavesdropper_inbox, eavesdropper_owner_queue, eavesdropper_wakes and eavesdropper_held_back.  The specs are
+// scripts/agent_sync/mcp/eavesdropper-tools.json (shared with the stdio server);  the hosted server
+// lists every one of them except eavesdropper_ack, because the listener's read API is read-only.
 //
 // The Worker reads them from the server listener's signed GET API
 // (scripts/agent_sync/listener_api.py):  GET <LISTENER_API_URL>/listener/v1/<SEAT>/<record>?<query>
@@ -14,7 +14,7 @@
 //
 // Pure module:  WebCrypto and fetch only, so `node --test` loads it.
 
-import LISTENER_CONTRACT from "../../agent_sync/mcp/listener-tools.json" with { type: "json" };
+import EAVESDROPPER_CONTRACT from "../../agent_sync/mcp/eavesdropper-tools.json" with { type: "json" };
 import { z } from "zod";
 import { ToolError, clean, envelope, okResult, BODY_LIMIT, NAME_LIMIT } from "./contract.js";
 import { WAKE_SECRETS } from "./config.js";
@@ -45,14 +45,14 @@ export const LISTENER_TIMEOUT_MS = 10_000;
 export const LISTENER_MIN_KEY_LEN = 32;
 export const LISTENER_USER_AGENT = "agent-sync-mcp (hosted listener reader)";
 export const LISTENER_RECORDS = Object.freeze({
-  listener_status: "status",
-  listener_inbox: "inbox",
-  listener_owner_queue: "owner-queue",
-  listener_wakes: "wakes",
-  listener_held_back: "held-back",
+  eavesdropper_status: "status",
+  eavesdropper_inbox: "inbox",
+  eavesdropper_owner_queue: "owner-queue",
+  eavesdropper_wakes: "wakes",
+  eavesdropper_held_back: "held-back",
 });
-export const LISTENER_TOOLS = Object.freeze(LISTENER_CONTRACT.tools.filter((tool) => Object.hasOwn(LISTENER_RECORDS, tool.name)));
-export const LISTENER_READ_TOOLS = Object.freeze(new Set(LISTENER_TOOLS.map((tool) => tool.name)));
+export const EAVESDROPPER_TOOLS = Object.freeze(EAVESDROPPER_CONTRACT.tools.filter((tool) => Object.hasOwn(LISTENER_RECORDS, tool.name)));
+export const EAVESDROPPER_READ_TOOLS = Object.freeze(new Set(EAVESDROPPER_TOOLS.map((tool) => tool.name)));
 
 const isInt = (v) => typeof v === "number" && Number.isSafeInteger(v);
 const ints = (list) => (Array.isArray(list) ? list.filter(isInt) : []);
@@ -160,7 +160,7 @@ export function listenerItem(item) {
 
 const count = (value) => (isInt(value) && value >= 0 ? value : 0);
 
-export const LISTENER_METHODS = {
+export const EAVESDROPPER_METHODS = {
   requireListener() {
     if (this.listener) return this.listener;
     throw new ToolError(
@@ -173,17 +173,17 @@ export const LISTENER_METHODS = {
     const client = this.requireListener();
     await this.reserve("read");
     const params = {
-      listener_status: {},
-      listener_inbox: { since_seq: args.since_seq, limit: args.limit },
-      listener_owner_queue: { all: args.all ? "true" : undefined, limit: args.limit },
-      listener_wakes: { since_hours: args.since_hours, state: args.state, limit: args.limit },
-      listener_held_back: { limit: args.limit },
+      eavesdropper_status: {},
+      eavesdropper_inbox: { since_seq: args.since_seq, limit: args.limit },
+      eavesdropper_owner_queue: { all: args.all ? "true" : undefined, limit: args.limit },
+      eavesdropper_wakes: { since_hours: args.since_hours, state: args.state, limit: args.limit },
+      eavesdropper_held_back: { limit: args.limit },
     }[tool];
     return client.read(LISTENER_RECORDS[tool], params);
   },
 
-  async tool_listener_status(args, audit) {
-    const view = await this.listenerView("listener_status", args);
+  async tool_eavesdropper_status(args, audit) {
+    const view = await this.listenerView("eavesdropper_status", args);
     const structured = {
       inbox_pending: count(view.inbox_pending),
       owner_queue_pending: count(view.owner_queue_pending),
@@ -197,12 +197,12 @@ export const LISTENER_METHODS = {
     return okResult(JSON.stringify(text), structured);
   },
 
-  async tool_listener_inbox(args, audit) {
-    const view = await this.listenerView("listener_inbox", args);
+  async tool_eavesdropper_inbox(args, audit) {
+    const view = await this.listenerView("eavesdropper_inbox", args);
     const items = (Array.isArray(view.items) ? view.items : []).map(listenerItem);
     const nextSeq = isInt(view.next_seq) ? view.next_seq : null;
     const summary = `${items.length} item${items.length === 1 ? "" : "s"}, ${count(view.pending)} pending after cursor ${count(view.cursor)}, next_seq ${nextSeq ?? "None"}`;
-    return okResult(envelope("listener_inbox", [], summary, items), {
+    return okResult(envelope("eavesdropper_inbox", [], summary, items), {
       count: items.length,
       ids: items.map((i) => i.id).filter(isInt),
       seqs: items.map((i) => i.seq).filter(isInt),
@@ -210,28 +210,28 @@ export const LISTENER_METHODS = {
     });
   },
 
-  async tool_listener_owner_queue(args, audit) {
-    const view = await this.listenerView("listener_owner_queue", args);
+  async tool_eavesdropper_owner_queue(args, audit) {
+    const view = await this.listenerView("eavesdropper_owner_queue", args);
     const items = (Array.isArray(view.items) ? view.items : []).map(listenerItem);
-    return okResult(envelope("listener_owner_queue", [], `${items.length} note${items.length === 1 ? "" : "s"}, ${count(view.pending)} not surfaced`, items), {
+    return okResult(envelope("eavesdropper_owner_queue", [], `${items.length} note${items.length === 1 ? "" : "s"}, ${count(view.pending)} not surfaced`, items), {
       count: items.length,
       seqs: items.map((i) => i.seq).filter(isInt),
     });
   },
 
-  async tool_listener_wakes(args, audit) {
-    const view = await this.listenerView("listener_wakes", args);
+  async tool_eavesdropper_wakes(args, audit) {
+    const view = await this.listenerView("eavesdropper_wakes", args);
     const items = (Array.isArray(view.items) ? view.items : []).map(listenerItem);
-    return okResult(envelope("listener_wakes", [], `${items.length} wake${items.length === 1 ? "" : "s"} of ${count(view.total)}`, items), {
+    return okResult(envelope("eavesdropper_wakes", [], `${items.length} wake${items.length === 1 ? "" : "s"} of ${count(view.total)}`, items), {
       count: items.length,
       ids: items.flatMap((i) => ints(i.trigger_ids)),
     });
   },
 
-  async tool_listener_held_back(args, audit) {
-    const view = await this.listenerView("listener_held_back", args);
+  async tool_eavesdropper_held_back(args, audit) {
+    const view = await this.listenerView("eavesdropper_held_back", args);
     const items = (Array.isArray(view.items) ? view.items : []).map(listenerItem);
-    return okResult(envelope("listener_held_back", [], `${count(view.count)} held back, ${count(view.lost)} lost`, items), {
+    return okResult(envelope("eavesdropper_held_back", [], `${count(view.count)} held back, ${count(view.lost)} lost`, items), {
       count: items.length,
       ids: items.map((i) => i.message_id).filter(isInt),
       lost: count(view.lost),

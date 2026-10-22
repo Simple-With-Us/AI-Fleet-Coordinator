@@ -215,9 +215,16 @@ test("row 7:  refusal rows carry the grant's own seat and the claimed identity, 
 test("a removed name is refused with unknown_tool naming its replacement;  an unknown name stays a protocol error", async () => {
   const { r, caller } = router("JET");
   const names = new Set(toolListFor("JET").list.map((t) => t.name));
+  // The replacement must name a real tool.  The hosted server serves only the read-only
+  // eavesdropper_* tools, so eavesdropper_ack (stdio-only, like listener_ack before the rename)
+  // is a real name that this transport never served;  the old name is still refused here.
+  const contract = new Set(
+    JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/eavesdropper-tools.json"), "utf8"))
+      .tools.map((t) => t.name),
+  );
   for (const [old, replacement] of Object.entries(RENAMED_TOOLS)) {
     assert.ok(!names.has(old), old);
-    assert.ok(names.has(replacement), replacement);
+    assert.ok(names.has(replacement) || contract.has(replacement), replacement);
     const error = errorOf(await r.call(old, { topic: "t" }));
     assert.equal(error.code, "unknown_tool");
     assert.equal(error.replacement, replacement);

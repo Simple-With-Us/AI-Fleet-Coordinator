@@ -240,7 +240,7 @@ class McpHarness(Harness):
         self.add_infisical_bot("CLAUDE", email=BOT_EMAIL, key=self.key)
         self.fake_secrets_file = self.tmp / "fake-fleet-secrets.json"
         self.clock = FakeClock()
-        self.spec = T.load_served_tools()  # tools.json, then listener-tools.json (AFC-330)
+        self.spec = T.load_served_tools()  # tools.json, then eavesdropper-tools.json (AFC-330)
         # What tools/list serves a CLAUDE session whose Infisical holds only Claude's keys:  every tool with an
         # identity property whose enum is that one bot (AFC-331).
         self.served = R.decorate(self.spec, ["CLAUDE"], "CLAUDE")

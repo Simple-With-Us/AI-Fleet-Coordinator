@@ -124,6 +124,11 @@ NOT_SEAT_PREFIXES = frozenset(
     }
 )
 DEFAULT_CHANNEL = "agent-sync"
+# The Operator seat:  the admin [Operator] Zulip bot (user 1217148, role 200) and the GitHub identity
+# `swu-operator` (owner decision, Oct 22 2026).  It is the only seat whose key may be an
+# administrator's;  every other seat, and the owner for every seat, stays moderator/member only.
+OPERATOR_SEAT = "OPERATOR"
+OPERATOR_USER_ID = 1217148
 MAX_TOPIC_LENGTH = 60
 USER_AGENT = "agent-sync/1 (fleet)"
 
