@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.jay.operator-wake-alerter:  every 60 seconds, poll the HOSTED Operator
+  listener's signed read API for new wake events and pop one macOS banner per
+  event (adapters.osascript_argv; bodies never reach a banner).  This is the
+  thin Mac client for the hosted-listener cutover:  it holds no Zulip key,
+  no listener state.  Its one secret, the seat's routine key, is read with
+  `fleet-secrets get` (Infisical).
+
+  No secret lives in this plist or in any file:  the client reads the seat's
+  routine key with `fleet-secrets get` (Infisical) on every poll.  Set
+  OPERATOR_SEAT and OPERATOR_LISTENER_URL below before installing;  SET_ME makes
+  the client refuse to run.
+  The client runs by script path (not -m):  -I strips the working directory
+  from sys.path, so -m cannot resolve the package, and the vendored helpers in
+  wake_alerter.py keep it on the Mac's /usr/bin/python3 (3.9).
+  Install:  cp this file to ~/Library/LaunchAgents/ and
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.operator-wake-alerter.plist
+  Stop:     launchctl bootout gui/$(id -u)/com.jay.operator-wake-alerter
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.operator-wake-alerter</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>umask 077 &amp;&amp; mkdir -p "$HOME/.local/state/operator" &amp;&amp; chmod 700 "$HOME/.local/state/operator" &amp;&amp; exec /usr/bin/python3 -I /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/agent_sync/wake_alerter.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+    <key>OPERATOR_SEAT</key>
+    <string>SET_ME</string>
+    <key>OPERATOR_LISTENER_URL</key>
+    <string>SET_ME</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/.local/state/operator/wake-alerter.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/.local/state/operator/wake-alerter.log</string>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>
