@@ -203,13 +203,13 @@ WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPIKE_HMAC_KEY 
 printf on | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPIKE_EXTRA_EVENTS >/dev/null && echo "set SPIKE_EXTRA_EVENTS"
 ```
 
-`wrangler secret put` deploys a new version at once.  Check:  `/health` answers `{"ok":true}`, an unsigned `POST /internal/spike/JET` answers 401 (404 means the flag, the key or JET's wake key is missing, or the two keys are equal), an unsigned `POST /internal/wake/JET` still answers 401, and a connected JET chat's `events/list` shows `zulip.mention` then `fleet.spike.ping`.  `server/discover` does not change (`events: {}`).
+`wrangler secret put` deploys a new version at once.  Check:  `/health` answers `{"ok":true}`, an unsigned `POST /internal/spike/JET` answers 401 (404 means the flag, the key or JET's wake key is missing, or `SPIKE_HMAC_KEY` equals any seat's wake key, not only JET's), an unsigned `POST /internal/wake/JET` still answers 401, and a connected JET chat's `events/list` shows `zulip.mention` then `fleet.spike.ping`.  `server/discover` does not change (`events: {}`).
 
 **Fire one ping.**  Only after Jet says it subscribed.  The body is exactly four fields, and the signature is the lowercase hex HMAC-SHA256 of the raw bytes.  The key comes from an inherited `SPIKE_HMAC_KEY` first, else from `$KEYFILE` (the only other place it lives, because no Infisical writer takes it), and is never printed, not even in part.  The script exits non-zero on anything but a 2xx:
 
 ```bash
 SPIKE_HMAC_KEY="${SPIKE_HMAC_KEY:-$(cat "$KEYFILE")}" python3 -I - <<'PY'
-import hmac, hashlib, json, os, sys, time, urllib.error, urllib.request, uuid
+import hmac, hashlib, http.client, json, os, sys, time, urllib.error, urllib.request, uuid
 key = os.environ.get("SPIKE_HMAC_KEY", "")
 if len(key) < 32: sys.exit("SPIKE_HMAC_KEY is missing or shorter than 32 characters")
 spike_id = str(uuid.uuid4())
@@ -221,8 +221,12 @@ try:
     with urllib.request.urlopen(req, timeout=25) as r: print(spike_id, r.status, r.read().decode()[:300])
 except urllib.error.HTTPError as e:
     kind = "outcome_unknown" if e.code >= 500 else "retry_later" if e.code in (408, 429) else "refused"
-    sys.exit(f"{spike_id} HTTP {e.code} {kind}:  {e.read().decode()[:200]}")
-except (urllib.error.URLError, TimeoutError) as e:
+    try:
+        detail = e.read().decode()[:200]
+    except Exception:
+        detail = "<unreadable body>"
+    sys.exit(f"{spike_id} HTTP {e.code} {kind}:  {detail}")
+except (OSError, http.client.HTTPException) as e:  # URLError, timeouts, resets, RemoteDisconnected, IncompleteRead
     sys.exit(f"{spike_id} no answer (outcome_unknown):  {type(e).__name__}")
 PY
 ```
@@ -399,3 +403,14 @@ On FleetLink's side, the same value goes to `AGENT_SYNC_SECRET` on the `fleetlin
 **Seat tokens.**  A seat that has its own FleetLink bot token signs in with it instead of the server credential, so it works under that token's limits:  the fleet's tokens are minted to follow Jay's limits as they change (FleetLink `limits_from: "manager"`).  The tokens live in Infisical `/fleetlink` as `FLEETLINK_TOKEN_<SEAT>` (hyphens as underscores), and the Worker reads them from one secret, `FLEETLINK_SEAT_TOKENS`, a JSON object of seat to token (`{"JET": "fla_…", "GB-FIXER": "fla_…"}`), because the Worker is near its binding limit.  Build it in memory from Infisical for every hosted seat and GB identity, and pipe it to `wrangler secret put FLEETLINK_SEAT_TOKENS`;  never print it.  A malformed bundle is ignored whole and every seat falls back to `FLEETLINK_AGENT_SECRET`.  Re-run it after minting a token for a new seat.
 
 Check with `fleetlink_whoami` from any seat:  `user.id` is `usr_agent_<seat>` and `auth.kind` is `agent`.  In the Worker log, `"tool":"fleetlink_whoami"` with `outcome` `ok` means the credential works.  Jay is the fleet owner (FleetLink's `FLEET_OWNER_EMAIL` secret, or "Make Me The Fleet Owner" in its admin console):  every seat's bot account sits under his account and he owns the Fleet team.
+
+## Per-bot MCP bearers for the Grok Bot personas
+
+Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers"), which sits behind the Cloudflare Access gate. No new secret and no new machine identity is needed.
+
+- The token looks like `gbb_<role>_<43 characters>`. It is shown once, on the response to the mint button (no-store). The Worker keeps only its SHA-256 hash in the persona's Durable Object. It is not in Infisical, KV, logs or audit rows.
+- A bearer works on `/mcp` only, and only as its own persona. Any other `identity` is refused. It cannot create identities and cannot reach ECHO, JET or any hosted seat.
+- Rotate is mint again: the old token stops at once. Revoke is the Revoke button. Tokens expire after 90 days. A paused persona is refused.
+- A persona with no credentials in the bindings cannot mint.
+- Leak paths to know: whoever holds an Access session for the admin email can mint; the page response is the only place the token appears.
+- Deploy is normal. Nothing to configure first.

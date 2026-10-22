@@ -1017,3 +1017,66 @@ export function memoryStore() {
   };
   return store;
 }
+
+// ---- per-bot MCP bearer (src/gb-bearer.js):  the SHA-256 only, never the token
+
+const GB_BEARER_KEY = "gb_bearer";
+
+function sameHash(a, b) {
+  if (a.length !== b.length || a.length === 0) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** Install `hash` as the persona's bearer, replacing any earlier one (rotate).  Audits who and when, never the hash. */
+export async function gbBearerMint(store, { hash, by, expiresAt }, now = Date.now()) {
+  const prev = (await store.get(GB_BEARER_KEY)) ?? null;
+  const row = {
+    hash: String(hash),
+    created_at: now,
+    created_by: String(by ?? ""),
+    expires_at: Number(expiresAt) || now,
+    last_used_at: 0,
+    mint_count: Number(prev?.mint_count ?? 0) + 1,
+  };
+  await store.put(GB_BEARER_KEY, row);
+  await audit(store, { event: "gb_bearer_minted", by: row.created_by, expires_at: row.expires_at, replaced: Boolean(prev) }, now);
+  return { created_at: row.created_at, expires_at: row.expires_at, mint_count: row.mint_count };
+}
+
+export async function gbBearerRevoke(store, { by }, now = Date.now()) {
+  const had = (await store.get(GB_BEARER_KEY)) ?? null;
+  await store.delete(GB_BEARER_KEY);
+  await audit(store, { event: "gb_bearer_revoked", by: String(by ?? ""), had: Boolean(had) }, now);
+  return { revoked: Boolean(had) };
+}
+
+/**
+ * Check a presented hash.  {ok: true} or {ok: false, reason} with reason one of
+ * none, mismatch, expired.  last_used_at is written at most once an hour, so a busy bot
+ * does not turn every call into a storage write.
+ */
+export async function gbBearerCheck(store, hash, now = Date.now()) {
+  const row = (await store.get(GB_BEARER_KEY)) ?? null;
+  if (!row?.hash) return { ok: false, reason: "none" };
+  if (!sameHash(String(row.hash), String(hash))) return { ok: false, reason: "mismatch" };
+  if (Number(row.expires_at) <= now) return { ok: false, reason: "expired" };
+  if (now - Number(row.last_used_at || 0) >= 3_600_000) await store.put(GB_BEARER_KEY, { ...row, last_used_at: now });
+  return { ok: true };
+}
+
+/** For /admin:  times and counts only, no hash. */
+export async function gbBearerStatus(store, now = Date.now()) {
+  const row = (await store.get(GB_BEARER_KEY)) ?? null;
+  if (!row?.hash) return { active: false };
+  return {
+    active: Number(row.expires_at) > now,
+    expired: Number(row.expires_at) <= now,
+    created_at: Number(row.created_at) || 0,
+    created_by: String(row.created_by ?? ""),
+    expires_at: Number(row.expires_at) || 0,
+    last_used_at: Number(row.last_used_at) || 0,
+    mint_count: Number(row.mint_count) || 0,
+  };
+}

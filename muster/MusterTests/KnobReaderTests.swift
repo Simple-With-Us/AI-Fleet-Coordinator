@@ -103,13 +103,18 @@ final class KnobReaderTests: XCTestCase {
     ///
     /// This needs a copy that is there,  because a copy that is missing says the
     /// value is unknown rather than that it is the default.
+    ///
+    /// The engine answers the same way.  Its own reader drops every knob that is
+    /// unset from the copy it writes,  so a knob that is missing from a copy the
+    /// engine wrote was unset at the last good fetch,  and the engine's answer for
+    /// it is the base default  (`scripts/fleet_knobs/knobs.py`,  `_from_sources`).
     func test_a_knob_with_no_value_in_the_copy_holds_its_default() throws {
         let (root, home) = try makeRepo()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
         try writeCopy(in: home, knobs: ["FLEET_IDLE_HOURS": "3"])
         let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
-        XCTAssertEqual(knob?.current, .defaultValue)
+        XCTAssertEqual(knob?.current, .defaultValue("off"))
     }
 
     /// A knob with a value in the copy shows it.
@@ -460,6 +465,23 @@ final class KnobReaderTests: XCTestCase {
         let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
         let row = registry.rows.first { $0.name == "FLEET_AUTOPUSH_MODE" }
         XCTAssertEqual(row?.now, "default (off)")
+    }
+
+    /// The value the model holds says which value it is,  and the panel agrees.
+    ///
+    /// The model and the panel are one rendering,  so a knob that holds its default
+    /// cannot read as "default" in one place and "default (off)" in the other.
+    func test_the_value_a_knob_holds_says_which_value_it_is() throws {
+        let (root, home) = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try writeCopy(in: home, knobs: ["FLEET_IDLE_HOURS": "3"])
+        let registry = KnobReader.read(repoRoot: root, home: home, identity: identity)
+        let knob = registry.knobs.first { $0.name == "FLEET_AUTOPUSH_MODE" }
+        XCTAssertEqual(knob?.current.displayText, "default (off)")
+        XCTAssertEqual(knob?.nowText, knob?.current.displayText)
+        // A knob with a value in the copy says that value,  and nothing else.
+        let valued = registry.knobs.first { $0.name == "FLEET_IDLE_HOURS" }
+        XCTAssertEqual(valued?.current.displayText, "3")
     }
 
     /// A secret knob's default is not shown,  because the secret is what is unknown.

@@ -1611,6 +1611,62 @@ try {
     const reused = await spikePost("JET", spikeBytes(), { key: WAKE_KEY_JET });
     assert.equal(reused.status, 404, "the wake key never signs a spike");
     await reused.arrayBuffer();
+    // Another seat's wake key is refused too, while JET's own key differs from it.
+    const otherWakeKey = randomBytes(32).toString("hex");
+    await mf.dispose();
+    mf = startWorker(HOST, { SPIKE_EXTRA_EVENTS: "on", SPIKE_HMAC_KEY: otherWakeKey, WAKE_HMAC_KEY_GROK_WEB: otherWakeKey });
+    const crossSeat = await spikePost("JET", spikeBytes(), { key: otherWakeKey });
+    assert.equal(crossSeat.status, 404, "no seat's wake key signs a spike");
+    await crossSeat.arrayBuffer();
+    // And with a key of its own, the same instance answers (401 here:  the signature is wrong).
+    await mf.dispose();
+    mf = startWorker(HOST, { SPIKE_EXTRA_EVENTS: "on", WAKE_HMAC_KEY_GROK_WEB: otherWakeKey });
+    const own = await spikePost("JET", spikeBytes(), { key: otherWakeKey });
+    assert.equal(own.status, 401, "SPIKE_HMAC_KEY is set and distinct, so the route is open and the wrong key is refused");
+    await own.arrayBuffer();
+  });
+
+  await step(`a per-bot bearer: minted once on /admin, hash-only, acts only as ${PERSONA}, rotates and revokes`, async () => {
+    const minted = await adminAction("mint_gb_bearer", { identity: PERSONA });
+    assert.equal(minted.status, 200);
+    assert.match(minted.headers.get("cache-control"), /no-store/);
+    const html = await minted.text();
+    const bearer = html.match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)?.[0];
+    assert.ok(bearer, "the mint response shows the token");
+    // Never again:  the admin page shows state, not the token.
+    const page = await (await browser("/admin")).text();
+    assert.ok(!page.includes(bearer));
+    assert.match(page, /Grok Bot Bearers/);
+    const who = (await call(bearer, "whoami")).json.result;
+    assert.equal(who.isError, undefined, JSON.stringify(who));
+    assert.equal(who.structuredContent.seat, PERSONA);
+    assert.equal(who.structuredContent.email, PERSONA_EMAIL);
+    const other = GB_IDENTITIES.find((name) => name !== PERSONA);
+    const wrong = await call(bearer, "whoami", { identity: other });
+    assert.equal(wrong.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
+    const echo = await call(bearer, "whoami", { identity: "ECHO" });
+    assert.equal(echo.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
+    const posted = await call(bearer, "zulip_post", { channel: "sandbox", topic: "bearer", text: "From a bearer.", identity: PERSONA });
+    assert.equal(posted.json.result.isError, undefined, JSON.stringify(posted.json));
+    assert.equal(zulip.messages.at(-1).sender_email, PERSONA_EMAIL);
+    // A malformed or unknown token is the same 401.
+    for (const bad of ["gbb_fixer_" + "A".repeat(43), "gbb_echo_" + "A".repeat(43), "gbb_nobody_x", "gbb_"]) {
+      const refused = await mcp(bad, "tools/list");
+      assert.equal(refused.status, 401, bad);
+    }
+    // Rotating replaces it at once.
+    const rotated = await adminAction("mint_gb_bearer", { identity: PERSONA });
+    const next = (await rotated.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
+    assert.ok(next !== bearer, "a rotation mints a different token");
+    assert.equal((await mcp(bearer, "tools/list")).status, 401, "the old bearer is dead");
+    assert.equal((await call(next, "whoami")).json.result.structuredContent.seat, PERSONA);
+    // Revoke.
+    const revoked = await adminAction("revoke_gb_bearer", { identity: PERSONA });
+    assert.equal(revoked.status, 303);
+    assert.equal((await mcp(next, "tools/list")).status, 401, "a revoked bearer is dead");
+    // A persona with no credentials cannot mint.
+    const none = await adminAction("mint_gb_bearer", { identity: other });
+    assert.equal(none.status, 400);
   });
 
   console.log(`\n${passed} passed`);
