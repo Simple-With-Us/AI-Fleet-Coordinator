@@ -14,7 +14,7 @@ from typing import NamedTuple
 from .errors import Refusal
 
 DEFAULT_REALM = "https://simplewithus.zulipchat.com"
-CHANNEL = "agent-sync"
+CHANNEL = os.environ.get("AGENT_SYNC_CHANNEL", "").strip() or "work-in-progress"  # the realm renamed #agent-sync; the env var overrides
 
 
 class TopicLink(NamedTuple):
@@ -45,7 +45,7 @@ def parse_topic_link(raw: str, environ: dict | None = None) -> TopicLink:
     match = re.fullmatch(r"narrow/(?:channel|stream)/(?P<chan>[^/]+)/topic/(?P<topic>[^/]+)/near/(?P<id>[0-9]{1,12})",
                          parts.fragment.strip("/"))
     if not match:
-        raise Refusal("--mirror-of must look like .../#narrow/channel/<id>-agent-sync/topic/<topic>/near/<message id>")
+        raise Refusal("--mirror-of must look like .../#narrow/channel/<id>-work-in-progress/topic/<topic>/near/<message id>")
     chan = _decode(match.group("chan"))
     chan = re.sub(r"^[0-9]+-", "", chan)
     topic = _decode(match.group("topic"))
@@ -64,7 +64,7 @@ def _encode(part: str) -> str:
 def make_topic_link(topic: str, message_id: int, *, stream_id: int | None = None, channel: str = CHANNEL,
                     environ: dict | None = None) -> str:
     """The link to message `message_id` in `topic` of #agent-sync on this realm, in the form `parse_topic_link`
-    reads back (`.../#narrow/channel/<stream id>-agent-sync/topic/<topic>/near/<id>`).  Without the stream id the
+    reads back (`.../#narrow/channel/<stream id>-work-in-progress/topic/<topic>/near/<id>`).  Without the stream id the
     channel part is its name alone, which Zulip also resolves."""
     host = realm_host(environ)
     chan = "%d-%s" % (stream_id, channel) if isinstance(stream_id, int) and stream_id > 0 else channel

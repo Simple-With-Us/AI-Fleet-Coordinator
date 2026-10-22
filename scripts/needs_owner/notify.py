@@ -21,6 +21,7 @@ a peer who copies the (public) uid can never become the notice.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 
@@ -33,7 +34,7 @@ from .items import Item
 from .proc import Result, Runner
 
 SESSION = "needsown"  # agent-sync cuts a session label to 8 characters
-CHANNEL = "agent-sync"
+CHANNEL = os.environ.get("AGENT_SYNC_CHANNEL", "").strip() or "work-in-progress"  # the realm renamed #agent-sync; the env var overrides
 READ_BACK = 30  # messages read when looking for a post that may have landed
 MAYBE_SENT_CODES = (5, 6)
 FALLBACK_SEAT = "CLAUDE"  # CLAUDE's fallback notifier (C6-2) posts a pending notice for any seat

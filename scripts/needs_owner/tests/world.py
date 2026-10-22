@@ -29,7 +29,7 @@ if str(SCRIPTS) not in sys.path:
 
 from needs_owner import cli  # noqa: E402
 
-REALM_LINK = "https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/%s/near/%d"
+REALM_LINK = "https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/%s/near/%d"
 OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_agent_sync.OWNER_ID)
 KEYCAP = {n: "003%d-20e3" % n for n in range(1, 6)}  # Zulip's emoji_code for 1️⃣ to 5️⃣
 
@@ -150,7 +150,7 @@ class World:
         world.update(changes)
         (self.state / "zulip.json").write_text(json.dumps(world), encoding="utf-8")
 
-    def add_message(self, topic: str, content: str, *, seat: str | None = None, channel: str = "agent-sync",
+    def add_message(self, topic: str, content: str, *, seat: str | None = None, channel: str = "work-in-progress",
                     sender_id: int | None = None, client: str | None = None, email: str | None = None,
                     reactions: list | None = None) -> int:
         """A message someone else put in a topic, after the fact.  `seat` is a bot's seat tag;  with none it

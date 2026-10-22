@@ -65,11 +65,11 @@ class TextTests(unittest.TestCase):
 
 
 class LinkTests(unittest.TestCase):
-    OK = "https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/OWNER.20AFC-9.20Key.2E.20Now.3F/near/777"
+    OK = "https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/OWNER.20AFC-9.20Key.2E.20Now.3F/near/777"
 
     def test_a_good_link(self) -> None:
         link = links.parse_topic_link(self.OK, {})
-        self.assertEqual((link.channel, link.topic, link.message_id), ("agent-sync", "OWNER AFC-9 Key. Now?", 777))
+        self.assertEqual((link.channel, link.topic, link.message_id), ("work-in-progress", "OWNER AFC-9 Key. Now?", 777))
 
     def test_the_older_stream_form_and_the_realm_override(self) -> None:
         old = self.OK.replace("channel", "stream")
@@ -88,7 +88,7 @@ class LinkTests(unittest.TestCase):
 
 class BlockTests(unittest.TestCase):
     def test_round_trip_with_every_field(self) -> None:
-        mirror = "https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/OWNER.20x/near/9"
+        mirror = "https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/OWNER.20x/near/9"
         b = sample(version=3, again_of="AFC-12 msg 456", mirror_of=mirror, parent="AFC-5", low_stakes=[1, 2])
         text = B.render_block(b)
         self.assertEqual(B.parse_block("intro\n\n" + text + "\n\noutro"), b)

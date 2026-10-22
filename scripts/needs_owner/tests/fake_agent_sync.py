@@ -93,9 +93,9 @@ def message_json(m):
 
 def main():
     argv = sys.argv[1:]
-    # The fake realm is "agent-sync":  pin it the way agent_sync/tests/harness.py pins its own,
-    # or every command line without --channel defaults to the live realm name.
-    args = C.build_parser("agent-sync").parse_args(argv)
+    # The fake realm is "work-in-progress" (the renamed #agent-sync):  pin it the way
+    # agent_sync/tests/harness.py pins its own, or channel-less commands lose the realm.
+    args = C.build_parser("work-in-progress").parse_args(argv)
     stdin = ""
     if getattr(args, "text", None) == ["-"]:
         stdin = sys.stdin.read()
@@ -122,7 +122,7 @@ def dispatch(world, args, seat, stdin):
     if args.command == "topics":
         return topics(world, args)
     if args.command == "channels":
-        print(json.dumps([{"name": "agent-sync", "description": "", "stream_id": world.get("stream_id", 12)}]))
+        print(json.dumps([{"name": "work-in-progress", "description": "", "stream_id": world.get("stream_id", 12)}]))
         return 0
     sys.stderr.write("fake agent-sync: unexpected command %s\n" % args.command)
     return 64
