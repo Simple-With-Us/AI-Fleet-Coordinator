@@ -29,8 +29,9 @@ not perform or schedule that cutover.
 `GET /healthz` needs no auth. Everything else needs `Authorization: Bearer <seat token>`.
 
 PRs and comments are authored as whoever the GitHub token belongs to (a scoped fine-grained PAT
-on the owner's account, PR write only). Seats cannot push, merge, or resolve threads through this
-service; those stay with the swu-echo app.
+on the owner's account, PR write only).  Merges, workflow dispatches, thread resolves and token
+mints run under each seat's OWN GitHub App with a relay-minted installation token - see the action
+catalog below.  Seats can never push;  no seat policy can exceed its GitHub credential.
 
 ## Scope and action catalog (owner direction 2026-10-21)
 
@@ -56,10 +57,12 @@ is only a policy entry.
 | resolve_thread | seat's App (pull_requests write) | implemented |
 | create_release, rerun_workflow, cancel_workflow, set_labels, create_issue_comment, request_reviewers, set_branch_protection, create_repo | seat's App | registered, refused until implemented |
 
-App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read one named key at a time from
-Infisical (INFISICAL_CLIENT_ID / _SECRET / _WORKSPACE_ID env, prod /github-apps), JWT signed with
-the local openssl binary, installation tokens cached in memory and refreshed 5 minutes early.
-Nothing secret is written to disk, logged, or audited;  audit rows hash token values.
+App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read one named key at a time,
+environment first, then Infisical (INFISICAL_CLIENT_ID / _SECRET / _WORKSPACE_ID env, prod
+/github-apps), JWT signed with the local openssl binary (the key reaches openssl through an
+inherited pipe fd, never a file), installation tokens cached in memory under a lock and refreshed
+5 minutes early.  An expired or revoked Infisical access token triggers one fresh login and one
+retry.  Nothing secret is written to disk, logged, or audited;  audit rows hash token values.
 
 ## MCP wrapper
 
@@ -111,16 +114,38 @@ relay's HTTP API directly, where the response goes only to that caller.
 ## Audit
 
 One JSON object per line at `PR_RELAY_AUDIT_PATH` (default `pr-relay-audit.jsonl`), fsynced after
-every write: timestamp, seat, action, repo, result (ok / denied / bad_request / github_error),
-and the GitHub id/URL returned. Titles and bodies are never logged; the row keeps their length
-and SHA-256 so a call is attributable without storing text that might contain a pasted secret.
-The GitHub token is never logged or returned.
+every write: timestamp, seat, action, repo, result (ok / denied / bad_request / unavailable /
+github_terminal / github_unknown / duplicate_refused), and the GitHub id/URL returned. Titles and
+bodies are never logged; the row keeps their length and SHA-256 so a call is attributable without
+storing text that might contain a pasted secret - the same hashing applies to credential-shaped
+strings nested anywhere in the detail payload.  Upstream error MESSAGES are never logged (an
+error body can carry content);  the row keeps the numeric status only.  Seat-supplied detail keys
+can never overwrite the reserved seat/action/result/ts fields.  The GitHub token is never logged
+or returned.
 
 ## Bounds and failure shape
 
 Request bodies are capped at 64 KiB, text fields at 32 KiB, GitHub responses at 1 MiB, and every
-GitHub call has a 30 s timeout. Errors: 401 unauthenticated, 403 policy denial, 400 bad request,
-502 GitHub failure (upstream status included, upstream body is not).
+GitHub call has a 30 s timeout.  Workflow-dispatch inputs are a flat object of at most 32 scalar
+values (strings capped at 1024 characters).  Neither the GitHub client nor the Infisical client
+follows 3xx redirects, so a bearer can never be forwarded to another origin.  Errors: 401
+unauthenticated, 403 policy denial, 400 bad request or terminal GitHub refusal, 409 idempotent
+replay refusal (an identical request is in flight or its outcome is unknown), 429 GitHub rate
+limit (retryable), 502 GitHub outcome unknown (NOT retryable - see the outcome store), 503
+app-token minting unavailable.
+
+## Outcome store (write idempotency)
+
+Every non-idempotent write (open_pr, edit_pr, reply_thread, comment_pr, merge_pr,
+workflow_dispatch, resolve_thread) is gated by a durable outcome record at
+`PR_RELAY_OUTCOMES_PATH` (default `pr-relay-outcomes.json`), keyed by seat + action + canonical
+arguments, with explicit pending / ok / refused / unknown states.  A 4xx answer from GitHub is a
+definite refusal and releases the key (429 is simply retryable).  A transport failure or 5xx
+leaves the outcome UNKNOWN:  the relay answers 502 with `"retryable": false`, and an identical
+replay is refused with 409 until the seat checks GitHub and changes the request.  A replay of a
+successful call returns the stored result without touching GitHub twice.  A crash mid-write loads
+as unknown - the store fails closed, never replays.  `mint_token` is exempt:  it returns a raw
+credential (never cached in the store) and a re-mint is safe under the minter's own lock.
 
 ## Configuration and running
 
@@ -129,6 +154,7 @@ GitHub call has a 30 s timeout. Errors: 401 unauthenticated, 403 policy denial, 
 | GITHUB_TOKEN | (required) | Scoped PR-only token; the only credential the service holds |
 | PR_RELAY_SEATS_JSON | (required) | Seat tokens, action allowlists, repo allowlists |
 | PR_RELAY_AUDIT_PATH | pr-relay-audit.jsonl | Audit log location |
+| PR_RELAY_OUTCOMES_PATH | pr-relay-outcomes.json | Write idempotency outcome store |
 | PR_RELAY_HOST | 127.0.0.1 | Bind address |
 | PR_RELAY_PORT | 8471 | Bind port |
 | PR_RELAY_RATE_PER_HOUR | 120 | Per-seat hourly call cap |

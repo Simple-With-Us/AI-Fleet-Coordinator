@@ -2,10 +2,14 @@
 
 Endpoints (all JSON in, JSON out):
     GET  /healthz
-    POST /v1/open_pr       {repo, base, head, title, body}
-    POST /v1/edit_pr       {repo, number, title?, body?}
-    POST /v1/reply_thread  {repo, number, comment_id, body}
-    POST /v1/comment_pr    {repo, number, body}
+    POST /v1/open_pr           {repo, base, head, title, body}      (owner token)
+    POST /v1/edit_pr           {repo, number, title?, body?}        (owner token)
+    POST /v1/reply_thread      {repo, number, comment_id, body}     (owner token)
+    POST /v1/comment_pr        {repo, number, body}                 (owner token)
+    POST /v1/mint_token        {repo, permissions}                  (seat's App)
+    POST /v1/merge_pr          {repo, number, method?}              (seat's App)
+    POST /v1/workflow_dispatch {repo, workflow, ref, inputs?}       (seat's App)
+    POST /v1/resolve_thread    {repo, thread_id}                    (seat's App)
 
 Auth: "Authorization: Bearer <seat token>".  Every call, allowed or denied,
 writes one audit row.  The GitHub token comes from GITHUB_TOKEN in the
@@ -17,10 +21,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .app_tokens import AppTokenError
 from .audit import AuditLog
 from .github_client import GitHubClient, RelayGitHubError
+from .outcomes import OutcomeStore, key_for
 from .policy import PolicyError, SeatPolicy
 from .secret_scan import reject_secrets
 
@@ -77,37 +84,82 @@ ACTION_REQUIRED_PERMISSIONS = {
 class Relay:
     """Wires policy, client and audit together; easy to drive without HTTP."""
 
-    def __init__(self, policy: SeatPolicy, client: GitHubClient, audit: AuditLog, app_minter=None):
+    def __init__(
+        self,
+        policy: SeatPolicy,
+        client: GitHubClient,
+        audit: AuditLog,
+        app_minter=None,
+        outcomes: OutcomeStore | None = None,
+    ):
         self.policy = policy
         self.client = client
         self.audit = audit
         self.app_minter = app_minter
+        self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
 
     def handle(self, token: str, action: str, args: dict) -> tuple[int, dict]:
         seat = self.policy.authenticate(token)
         if seat is None:
             return 401, {"error": "unauthenticated"}
         repo = str(args.get("repo") or "")
+        key = None
+        if action in SeatPolicy.VALID_ACTIONS + SeatPolicy.APP_ACTIONS and action != "mint_token":
+            # Idempotency gate for non-idempotent writes:  mint_token is exempt
+            # because it returns a credential (never cached) and a re-mint is
+            # safe - the minter cache and its lock already cover it.
+            key = key_for(seat, action, args)
+            prior = self.outcomes.begin(key)
+            if prior is not None:
+                if prior["state"] == "ok":
+                    self.audit.record(seat, action, repo, "ok", {"idempotent_replay": True})
+                    return 200, dict(prior.get("result") or {})
+                self.audit.record(seat, action, repo, "duplicate_refused", {})
+                return 409, {
+                    "error": "an identical request is in flight or its outcome is "
+                    "unknown; refusing to replay",
+                    "outcome": prior["state"],
+                    "retryable": False,
+                }
         try:
             result = self._dispatch(seat, action, args, repo)
         except PolicyDenied as exc:
+            self._release(key, "refused")
             self.audit.record(seat, action, repo, "denied", {"reason": str(exc)})
             return 403, {"error": str(exc)}
         except ServerUnavailable as exc:
+            self._release(key, "refused")
             self.audit.record(seat, action, repo, "unavailable", {"reason": str(exc)})
             return 503, {"error": str(exc)}
+        except AppTokenError:
+            # The mint failed before any GitHub write was attempted:  definite
+            # refusal, the key is released, the seat can retry as-is.
+            self._release(key, "refused")
+            self.audit.record(seat, action, repo, "unavailable", {"error": "app_token_error"})
+            return 503, {"error": "app-token minting failed"}
         except ValueError as exc:
+            self._release(key, "refused")
             self.audit.record(seat, action, repo, "bad_request", {"reason": str(exc)})
             return 400, {"error": str(exc)}
         except RelayGitHubError as exc:
-            retryable = exc.status == 0 or exc.status == 429 or exc.status >= 500
-            outcome = "github_retryable" if retryable else "github_terminal"
-            self.audit.record(
-                seat, action, repo, outcome, {"status": exc.status, "message": exc.message}
-            )
-            if retryable:
+            # Audit only allow-listed scalar fields:  an upstream error message
+            # can carry response-body content, so it is never logged.
+            if exc.status == 0 or exc.status >= 500:
+                # Transport failure or 5xx:  GitHub may have accepted the write.
+                # The outcome is unknown;  the key is held and replay is refused.
+                self._release(key, "unknown")
+                self.audit.record(seat, action, repo, "github_unknown", {"status": exc.status})
                 return 502, {
-                    "error": "github call failed",
+                    "error": "github call outcome unknown",
+                    "github_status": exc.status,
+                    "retryable": False,
+                    "outcome": "unknown",
+                }
+            self._release(key, "refused")
+            self.audit.record(seat, action, repo, "github_terminal", {"status": exc.status})
+            if exc.status == 429:
+                return 429, {
+                    "error": "github rate limited the request",
                     "github_status": exc.status,
                     "retryable": True,
                 }
@@ -116,13 +168,20 @@ class Relay:
                 "github_status": exc.status,
                 "retryable": False,
             }
+        if key is not None:
+            self.outcomes.finish(key, "ok", result)
         self.audit.record(seat, action, repo, "ok", {**args, **result})
         return 200, result
+
+    def _release(self, key: str | None, state: str) -> None:
+        if key is not None:
+            self.outcomes.finish(key, state)
 
     def _dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         if action not in SeatPolicy.ALL_ACTIONS:
             raise ValueError(f"unknown action {action!r}")
         repo = _text(repo, "repo")
+        GitHubClient._check_repo(repo)
         denial = self.policy.authorize(seat, action, repo)
         if denial:
             raise PolicyDenied(denial)
@@ -180,13 +239,17 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         missing = _perm_within_ceiling(requested, ceiling)
         if missing:
             raise PolicyDenied(f"seat ceiling does not cover permission {missing!r}")
-        token = self.app_minter.token_for(app_slug, repo, dict(requested))
-        return {"token": token, "app_slug": app_slug, "expires_in_seconds": 3600}
+        token, expiry = self.app_minter.token_for(app_slug, repo, dict(requested))
+        return {
+            "token": token,
+            "app_slug": app_slug,
+            "expires_in_seconds": max(0, int(expiry - time.time())),
+        }
     required = ACTION_REQUIRED_PERMISSIONS[action]
     missing = _perm_within_ceiling(required, ceiling)
     if missing:
         raise PolicyDenied(f"seat ceiling does not cover permission {missing!r}")
-    token = self.app_minter.token_for(app_slug, repo, dict(required))
+    token, _ = self.app_minter.token_for(app_slug, repo, dict(required))
     if action == "merge_pr":
         return self.client.merge_pr(
             repo,
@@ -270,22 +333,35 @@ def from_env() -> Relay:
         raise SystemExit(f"ghr config: {exc}") from exc
     client = GitHubClient(os.environ.get("GITHUB_TOKEN", ""))
     audit = AuditLog(os.environ.get("PR_RELAY_AUDIT_PATH", "pr-relay-audit.jsonl"))
+    outcomes = OutcomeStore(os.environ.get("PR_RELAY_OUTCOMES_PATH", "pr-relay-outcomes.json"))
     app_minter = None
     if os.environ.get("INFISICAL_CLIENT_ID"):
+        missing = [
+            name
+            for name in ("INFISICAL_CLIENT_SECRET", "INFISICAL_WORKSPACE_ID")
+            if not os.environ.get(name)
+        ]
+        if missing:
+            raise SystemExit(
+                f"ghr config: {', '.join(missing)} required when INFISICAL_CLIENT_ID is set"
+            )
         from .app_tokens import AppTokenMinter, InfisicalSource
 
-        source = InfisicalSource(
-            os.environ["INFISICAL_CLIENT_ID"],
-            os.environ.get("INFISICAL_CLIENT_SECRET", ""),
-            os.environ.get("INFISICAL_WORKSPACE_ID", ""),
-        )
+        try:
+            source = InfisicalSource(
+                os.environ["INFISICAL_CLIENT_ID"],
+                os.environ["INFISICAL_CLIENT_SECRET"],
+                os.environ["INFISICAL_WORKSPACE_ID"],
+            )
+        except AppTokenError as exc:
+            raise SystemExit(f"ghr config: {exc}") from exc
         app_minter = AppTokenMinter(
             source,
             lambda method, path, bearer, payload=None: client._call(
                 method, path, payload, bearer=bearer
             ),
         )
-    return Relay(policy, client, audit, app_minter=app_minter)
+    return Relay(policy, client, audit, app_minter=app_minter, outcomes=outcomes)
 
 
 def main() -> None:

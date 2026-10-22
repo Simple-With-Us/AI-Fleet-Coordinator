@@ -13,6 +13,8 @@ import json
 import threading
 import time
 
+from .app_tokens import MINT_PERMISSION_CEILING
+
 
 class PolicyError(ValueError):
     """A seat config or request is invalid."""
@@ -74,6 +76,8 @@ class SeatPolicy:
                 raise PolicyError(f"seat {seat!r}: actions and repos must both be non-empty")
             app_slug = cfg.get("app_slug")
             mint_perms = cfg.get("mint_permissions") or {}
+            if not isinstance(mint_perms, dict):
+                raise PolicyError(f"seat {seat!r}: mint_permissions must be an object")
             wants_app = any(a in self.APP_ACTIONS for a in actions)
             if wants_app and not app_slug:
                 raise PolicyError(f"seat {seat!r}: app actions need an app_slug")
@@ -85,6 +89,13 @@ class SeatPolicy:
                     for k, v in mint_perms.items()
                 ):
                     raise PolicyError(f"seat {seat!r}: mint_permissions must be name: read|write")
+                outside = [k for k in mint_perms if k not in MINT_PERMISSION_CEILING]
+                if outside:
+                    # Config load must refuse names the minter always rejects,
+                    # so a bad seat entry cannot pass startup and fail every mint.
+                    raise PolicyError(
+                        f"seat {seat!r}: mint_permissions outside the mint ceiling {outside}"
+                    )
             self._seats[seat] = {
                 "token_hash": hashlib.sha256(token.encode()).hexdigest(),
                 "actions": set(actions),

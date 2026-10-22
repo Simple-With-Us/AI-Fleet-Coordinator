@@ -16,6 +16,15 @@ import urllib.request
 MAX_BODY = 1024 * 1024
 MAX_ERROR_PREVIEW = 512
 TIMEOUT_SECONDS = 30
+MAX_DISPATCH_INPUTS = 32
+MAX_DISPATCH_INPUT_VALUE = 1024
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx must never be followed:  redirects can carry the bearer to another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class RelayGitHubError(Exception):
@@ -33,9 +42,13 @@ class GitHubClient:
             raise ValueError("GitHubClient requires a token")
         self._token = token
         self._base = base_url.rstrip("/")
-        self._opener = opener or urllib.request.urlopen
+        self._opener = opener or urllib.request.build_opener(_NoRedirect()).open
 
     def _call(self, method: str, path: str, payload: dict | None = None, bearer=None) -> dict:
+        if bearer is not None and not bearer:
+            # Fail closed:  an empty task credential must never fall back to the
+            # owner token and run a privileged write under the wrong identity.
+            raise ValueError("empty task credential; refusing to use the owner token")
         url = f"{self._base}{path}"
         req = urllib.request.Request(
             url,
@@ -129,8 +142,16 @@ class GitHubClient:
             raise ValueError("workflow must be a file name or numeric id")
         if not isinstance(ref, str) or not ref:
             raise ValueError("ref is required")
-        if inputs is not None and not isinstance(inputs, dict):
-            raise ValueError("inputs must be an object")
+        if inputs is not None:
+            if not isinstance(inputs, dict) or len(inputs) > MAX_DISPATCH_INPUTS:
+                raise ValueError(f"inputs must be an object of at most {MAX_DISPATCH_INPUTS} keys")
+            for key, value in inputs.items():
+                if not isinstance(key, str) or value is None or isinstance(value, (dict, list)):
+                    raise ValueError("inputs must be a flat object of scalar values")
+                if isinstance(value, str) and len(value) > MAX_DISPATCH_INPUT_VALUE:
+                    raise ValueError(
+                        f"inputs string values are capped at {MAX_DISPATCH_INPUT_VALUE} characters"
+                    )
         self._call(
             "POST",
             f"/repos/{repo}/actions/workflows/{workflow}/dispatches",
@@ -152,7 +173,20 @@ class GitHubClient:
             {"query": query, "variables": {"id": thread_id}},
             bearer=bearer,
         )
-        thread = ((data.get("data") or {}).get("resolveReviewThread") or {}).get("thread") or {}
-        if data.get("errors"):
-            raise RelayGitHubError(0, "graphql resolveReviewThread failed")
+        if not isinstance(data, dict):
+            raise RelayGitHubError(0, "graphql reply was not an object")
+        errors = data.get("errors")
+        if errors:
+            first = errors[0] if isinstance(errors, list) and errors else {}
+            kind = first.get("type") if isinstance(first, dict) else None
+            detail = f" ({kind})" if isinstance(kind, str) and kind else ""
+            raise RelayGitHubError(0, f"graphql resolveReviewThread failed{detail}")
+        payload_data = data.get("data")
+        thread = (
+            (payload_data.get("resolveReviewThread") or {}).get("thread")
+            if isinstance(payload_data, dict)
+            else None
+        )
+        if not isinstance(thread, dict):
+            raise RelayGitHubError(0, "graphql reply was malformed")
         return {"thread": thread_id, "resolved": bool(thread.get("isResolved"))}

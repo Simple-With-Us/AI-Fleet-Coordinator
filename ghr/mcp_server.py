@@ -127,6 +127,47 @@ TOOLS += [
 
 TOOL_NAMES = {t["name"] for t in TOOLS}
 
+MAX_DISPATCH_INPUTS = 32
+MAX_DISPATCH_INPUT_VALUE = 1024
+
+
+def _validate_args(name: str, args: dict) -> str | None:
+    """Enforce the advertised tool schema server-side before anything is forwarded."""
+    schema = next(t["inputSchema"] for t in TOOLS if t["name"] == name)
+    props = schema.get("properties", {})
+    for required in schema.get("required", []):
+        if required not in args:
+            return f"missing argument {required!r}"
+    for key, value in args.items():
+        spec = props.get(key)
+        if spec is None:
+            return f"unexpected argument {key!r}"
+        kind = spec.get("type")
+        if kind == "string" and not isinstance(value, str):
+            return f"argument {key!r} must be a string"
+        if kind == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
+            return f"argument {key!r} must be an integer"
+        if kind == "object" and not isinstance(value, dict):
+            return f"argument {key!r} must be an object"
+    thread_id = args.get("thread_id")
+    if name == "resolve_thread" and not (
+        isinstance(thread_id, str) and thread_id.startswith("PRRT_") and len(thread_id) < 128
+    ):
+        return "thread_id must be a PRRT_ review-thread id"
+    if name == "workflow_dispatch":
+        inputs = args.get("inputs")
+        if inputs is not None:
+            if len(inputs) > MAX_DISPATCH_INPUTS:
+                return f"inputs is capped at {MAX_DISPATCH_INPUTS} keys"
+            for key, value in inputs.items():
+                if not isinstance(key, str) or value is None or isinstance(value, (dict, list)):
+                    return "inputs must be a flat object of scalar values"
+                if isinstance(value, str) and len(value) > MAX_DISPATCH_INPUT_VALUE:
+                    return (
+                        f"inputs string values are capped at {MAX_DISPATCH_INPUT_VALUE} characters"
+                    )
+    return None
+
 
 class RelayMcp:
     """Transport-free core, so tests drive it without stdio."""
@@ -161,6 +202,9 @@ class RelayMcp:
             args = params.get("arguments")
             if not isinstance(args, dict):
                 return _error(message, -32602, "arguments must be an object")
+            invalid = _validate_args(name, args)
+            if invalid:
+                return _error(message, -32602, invalid)
             return self._call_tool(message, name, args)
         if method == "ping":
             return _result(message, {})

@@ -11,6 +11,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import unittest.mock
 import urllib.error
@@ -424,7 +425,7 @@ class FakeMinter:
 
     def token_for(self, slug, repo, permissions):
         self.calls.append((slug, repo, permissions))
-        return "MINTED-FAKE-TOKEN"
+        return "MINTED-FAKE-TOKEN", time.time() + 3600
 
 
 class TestAppActions(unittest.TestCase):
@@ -524,9 +525,10 @@ class TestMinter(unittest.TestCase):
             }
 
         minter = AppTokenMinter(Source(), api, signer=lambda *a: "JWT", clock=lambda: 1_700_000_000)
-        t1 = minter.token_for("swu-echo", "Simple-With-Us/x", {"contents": "write"})
-        t2 = minter.token_for("swu-echo", "Simple-With-Us/x", {"contents": "write"})
+        t1, expiry1 = minter.token_for("swu-echo", "Simple-With-Us/x", {"contents": "write"})
+        t2, expiry2 = minter.token_for("swu-echo", "Simple-With-Us/x", {"contents": "write"})
         self.assertEqual(t1, t2)
+        self.assertEqual(expiry1, expiry2)
         mints = [c for c in api_calls if c[0] == "POST"]
         self.assertEqual(len(mints), 1)
 
@@ -717,12 +719,23 @@ class TestGithubErrorSplit(unittest.TestCase):
         rows = [json.loads(line) for line in open(os.path.join(tmp, "a.jsonl"))]
         return code, payload, rows[-1]["result"]
 
-    def test_retryable_failures_are_502_and_marked(self):
-        for status in (0, 429, 500, 503):
+    def test_unknown_outcomes_are_502_not_retryable_and_marked(self):
+        # A transport failure or 5xx can arrive after GitHub accepted the write,
+        # so it is never marked retryable:  replaying it could duplicate the write.
+        for status in (0, 500, 503):
             code, payload, outcome = self._handle(status)
             self.assertEqual(code, 502, status)
-            self.assertTrue(payload["retryable"], status)
-            self.assertEqual(outcome, "github_retryable", status)
+            self.assertFalse(payload["retryable"], status)
+            self.assertEqual(payload["outcome"], "unknown", status)
+            self.assertEqual(outcome, "github_unknown", status)
+
+    def test_rate_limit_is_a_definite_refusal_and_retryable(self):
+        # 429 is an HTTP refusal from GitHub:  the write did not happen, the
+        # idempotency key is released, and the seat may retry as-is.
+        code, payload, outcome = self._handle(429)
+        self.assertEqual(code, 429)
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(outcome, "github_terminal")
 
     def test_terminal_failures_are_400_and_marked(self):
         for status in (401, 403, 404, 422):
@@ -730,3 +743,320 @@ class TestGithubErrorSplit(unittest.TestCase):
             self.assertEqual(code, 400, status)
             self.assertFalse(payload["retryable"], status)
             self.assertEqual(outcome, "github_terminal", status)
+
+    def test_replay_of_unknown_outcome_is_refused_409(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = Relay(
+                SeatPolicy(SEATS_JSON),
+                self.ErrClient(503),
+                AuditLog(os.path.join(tmp, "a.jsonl")),
+            )
+            args = {
+                "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+                "base": "main",
+                "head": "b",
+                "title": "t",
+                "body": "x",
+            }
+            code, _ = relay.handle(SEAT_TOKEN, "open_pr", args)
+            self.assertEqual(code, 502)
+            code, payload = relay.handle(SEAT_TOKEN, "open_pr", args)
+            self.assertEqual(code, 409)
+            self.assertEqual(payload["outcome"], "unknown")
+            self.assertFalse(payload["retryable"])
+
+    def test_retry_after_definite_refusal_proceeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = Relay(
+                SeatPolicy(SEATS_JSON),
+                self.ErrClient(429),
+                AuditLog(os.path.join(tmp, "a.jsonl")),
+            )
+            args = {
+                "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+                "base": "main",
+                "head": "b",
+                "title": "t",
+                "body": "x",
+            }
+            for _ in range(2):
+                code, _ = relay.handle(SEAT_TOKEN, "open_pr", args)
+                self.assertEqual(code, 429)
+
+    def test_successful_replay_returns_stored_result_without_github(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            class CountingClient(StubClient):
+                def __init__(self):
+                    super().__init__()
+                    self.open_calls = 0
+
+                def open_pr(self, repo, base, head, title, body):
+                    self.open_calls += 1
+                    return {"number": 9, "url": "https://example/pr/9"}
+
+            client = CountingClient()
+            relay = Relay(SeatPolicy(SEATS_JSON), client, AuditLog(os.path.join(tmp, "a.jsonl")))
+            args = {
+                "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+                "base": "main",
+                "head": "b",
+                "title": "t",
+                "body": "x",
+            }
+            code, body1 = relay.handle(SEAT_TOKEN, "open_pr", args)
+            self.assertEqual(code, 200)
+            code, body2 = relay.handle(SEAT_TOKEN, "open_pr", args)
+            self.assertEqual(code, 200)
+            self.assertEqual(body1, body2)
+            self.assertEqual(client.open_calls, 1)
+
+    def test_pending_rows_load_as_unknown(self):
+        from ghr.outcomes import OutcomeStore, key_for
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "outcomes.json")
+            store = OutcomeStore(path)
+            key = key_for("swu-echo", "open_pr", {"repo": "a/b"})
+            store.begin(key)
+            # crash mid-write: reload turns pending into unknown, never replayable
+            reloaded = OutcomeStore(path)
+            prior = reloaded.begin(key)
+            self.assertIsNotNone(prior)
+            self.assertEqual(prior["state"], "unknown")
+
+
+class TestAuditNestedSecrets(unittest.TestCase):
+    def test_nested_credential_shapes_are_hashed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = AuditLog(os.path.join(tmp, "a.jsonl"))
+            secretish = "ghp_" + "x" * 30
+            log.record(
+                "swu-echo",
+                "open_pr",
+                "a/b",
+                "ok",
+                {"repo": "a/b", "extra": {"nested": ["k", secretish]}},
+            )
+            with open(os.path.join(tmp, "a.jsonl")) as fh:
+                row = fh.read()
+            self.assertNotIn(secretish, row)
+            self.assertIn("_sha256", row)
+
+    def test_reserved_fields_cannot_be_overwritten_by_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = AuditLog(os.path.join(tmp, "a.jsonl"))
+            log.record(
+                "swu-echo",
+                "open_pr",
+                "a/b",
+                "ok",
+                {"seat": "attacker", "result": "denied", "ts": "1999-01-01"},
+            )
+            with open(os.path.join(tmp, "a.jsonl")) as fh:
+                row = json.loads(fh.read())
+            self.assertEqual(row["seat"], "swu-echo")
+            self.assertEqual(row["result"], "ok")
+            self.assertNotEqual(row["ts"], "1999-01-01")
+
+
+class TestFailClosedBearer(unittest.TestCase):
+    def test_empty_task_bearer_never_falls_back_to_owner_token(self):
+        client = GitHubClient("PAT", base_url="https://api.test", opener=FakeOpener({}))
+        with self.assertRaises(ValueError):
+            client.merge_pr("o/r", 3, "squash", bearer="")
+
+    def test_graphql_error_type_is_preserved(self):
+        opener = FakeOpener({"errors": [{"type": "FORBIDDEN", "message": "nope"}]})
+        client = GitHubClient("PAT", base_url="https://api.test", opener=opener)
+        with self.assertRaises(RelayGitHubError) as ctx:
+            client.resolve_thread("PRRT_abc", bearer="MINTED")
+        self.assertIn("FORBIDDEN", str(ctx.exception))
+
+    def test_graphql_non_dict_reply_is_an_error_not_attributeerror(self):
+        opener = FakeOpener(["not", "a", "dict"])
+        client = GitHubClient("PAT", base_url="https://api.test", opener=opener)
+        with self.assertRaises(RelayGitHubError):
+            client.resolve_thread("PRRT_abc", bearer="MINTED")
+
+
+class TestDispatchInputsBounds(unittest.TestCase):
+    def _client(self):
+        return GitHubClient("PAT", base_url="https://api.test", opener=FakeOpener({}))
+
+    def test_nested_inputs_refused(self):
+        with self.assertRaises(ValueError):
+            self._client().workflow_dispatch(
+                "o/r", "ci.yml", "main", {"env": {"nested": True}}, bearer="MINTED"
+            )
+
+    def test_too_many_inputs_refused(self):
+        with self.assertRaises(ValueError):
+            self._client().workflow_dispatch(
+                "o/r", "ci.yml", "main", {f"k{i}": "v" for i in range(33)}, bearer="MINTED"
+            )
+
+    def test_oversized_input_value_refused(self):
+        with self.assertRaises(ValueError):
+            self._client().workflow_dispatch(
+                "o/r", "ci.yml", "main", {"k": "v" * 2000}, bearer="MINTED"
+            )
+
+
+class TestPolicyMintPermissionsValidation(unittest.TestCase):
+    def test_non_object_mint_permissions_refused_at_load(self):
+        with self.assertRaises(PolicyError):
+            SeatPolicy(
+                json.dumps(
+                    {
+                        "seat": {
+                            "token": "x" * 16,
+                            "actions": ["mint_token"],
+                            "repos": ["a/b"],
+                            "app_slug": "swu-echo",
+                            "mint_permissions": ["contents"],
+                        }
+                    }
+                )
+            )
+
+    def test_permission_outside_ceiling_refused_at_load(self):
+        with self.assertRaises(PolicyError) as ctx:
+            SeatPolicy(
+                json.dumps(
+                    {
+                        "seat": {
+                            "token": "x" * 16,
+                            "actions": ["mint_token"],
+                            "repos": ["a/b"],
+                            "app_slug": "swu-echo",
+                            "mint_permissions": {"workflows": "write"},
+                        }
+                    }
+                )
+            )
+        self.assertIn("ceiling", str(ctx.exception))
+
+
+class TestMintTokenExpiry(unittest.TestCase):
+    def test_expires_in_seconds_reflects_real_expiry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+
+            class ShortMinter:
+                def token_for(self, slug, repo, permissions):
+                    return "MINTED-FAKE-TOKEN", time.time() + 600
+
+            relay = Relay(
+                SeatPolicy(APP_SEATS_JSON),
+                StubClient(),
+                AuditLog(os.path.join(tmp, "a.jsonl")),
+                app_minter=ShortMinter(),
+            )
+            status, body = relay.handle(
+                SEAT_TOKEN,
+                "mint_token",
+                {"repo": "Simple-With-Us/x", "permissions": {"contents": "read"}},
+            )
+            self.assertEqual(status, 200)
+            self.assertLessEqual(body["expires_in_seconds"], 600)
+            self.assertGreater(body["expires_in_seconds"], 500)
+
+
+class TestAppTokenErrorMapped(unittest.TestCase):
+    def test_mint_failure_is_503_not_dropped(self):
+        from ghr.app_tokens import AppTokenError
+
+        with tempfile.TemporaryDirectory() as tmp:
+
+            class BrokenMinter:
+                def token_for(self, slug, repo, permissions):
+                    raise AppTokenError("infisical unavailable")
+
+            relay = Relay(
+                SeatPolicy(APP_SEATS_JSON),
+                StubClient(),
+                AuditLog(os.path.join(tmp, "a.jsonl")),
+                app_minter=BrokenMinter(),
+            )
+            status, body = relay.handle(
+                SEAT_TOKEN, "merge_pr", {"repo": "Simple-With-Us/x", "number": 1}
+            )
+            self.assertEqual(status, 503)
+            with open(os.path.join(tmp, "a.jsonl")) as fh:
+                logged = fh.read()
+            self.assertIn("unavailable", logged)
+
+
+class TestMcpSchemaEnforcement(unittest.TestCase):
+    def _server(self):
+        from ghr.mcp_server import RelayMcp
+
+        return RelayMcp("http://relay.test", "seat-token", opener=None)
+
+    def _call(self, name, args):
+        return self._server().handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": args},
+            }
+        )
+
+    def test_bad_thread_id_rejected_before_forwarding(self):
+        reply = self._call("resolve_thread", {"repo": "a/b", "thread_id": "not-a-thread"})
+        self.assertEqual(reply["error"]["code"], -32602)
+
+    def test_nested_workflow_inputs_rejected_before_forwarding(self):
+        reply = self._call(
+            "workflow_dispatch",
+            {"repo": "a/b", "workflow": "ci.yml", "ref": "main", "inputs": {"a": {"b": 1}}},
+        )
+        self.assertEqual(reply["error"]["code"], -32602)
+
+    def test_unexpected_argument_rejected_before_forwarding(self):
+        reply = self._call(
+            "open_pr",
+            {"repo": "a/b", "base": "m", "head": "h", "title": "t", "body": "b", "admin": True},
+        )
+        self.assertEqual(reply["error"]["code"], -32602)
+
+    def test_missing_required_rejected_before_forwarding(self):
+        reply = self._call("open_pr", {"repo": "a/b"})
+        self.assertEqual(reply["error"]["code"], -32602)
+
+
+class TestInfisicalRelogin(unittest.TestCase):
+    def test_401_triggers_one_relogin_and_retry(self):
+        from ghr.app_tokens import InfisicalSource
+
+        calls = []
+
+        logins = []
+
+        def opener(req, timeout=30):
+            calls.append(req.full_url)
+            if "login" in req.full_url:
+                logins.append(1)
+                return _FakeResp({"accessToken": "tok-%d" % len(logins)})
+            if req.headers.get("Authorization") == "Bearer tok-2":
+                return _FakeResp({"secret": {"secretValue": "value"}})
+            raise urllib.error.HTTPError(req.full_url, 401, "unauthorized", {}, None)
+
+        source = InfisicalSource("cid-1234", "secret", "ws", opener=opener)
+        self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "value")
+        self.assertEqual(sum(1 for c in calls if "login" in c), 2)
+
+
+class _FakeResp:
+    def __init__(self, data):
+        self._data = data
+
+    def read(self, _n=10_000_000):
+        return json.dumps(self._data).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
