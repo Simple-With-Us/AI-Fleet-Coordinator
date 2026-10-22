@@ -87,7 +87,32 @@ class LaunchAgentTests(unittest.TestCase):
         for needle in (ISSUE, "mac-process-watch.sh", "FLEET_FACTS_SIGNING_KEY", "FLEET_LOOPS_DATA_ALLOWED_APPS", "FLEET_FACTS_PUBLISH_FULL_COPY", "mac-facts-publish.json",
                        "mac-facts-publish.log", "gb/full-list.md", "gb/mac-facts.json", "fleet-facts verify", "L16c", "Removable Volumes"):
             self.assertIn(needle, row)
-        self.assertIn(ISSUE, text.split("## Inventory Changelog & Historical Updates", 1)[1][:600])
+        self.assertIn(ISSUE, text.split("## Inventory Changelog & Historical Updates", 1)[1])
+
+    def test_the_changelog_records_the_inventory_that_added_the_row(self) -> None:
+        """The launch agent's provenance is in the changelog,  as an inventory entry.
+
+        The window used to be the first 600 characters of the section,  which only
+        reached the entry by accident:  it held while the entries above it happened
+        to be short,  and every new inventory pass adds one line at the top and
+        pushes that entry further out,  so the next inventory by any seat would have
+        failed a test about a launch agent.  The record is what matters,  so the
+        entry is looked for where it is,  and it has to be an inventory entry like
+        every other.
+        """
+        text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
+        changelog = text.split("## Inventory Changelog & Historical Updates", 1)[1]
+        # The section ends at the next heading:  a later section's "Last inventory:"
+        # line is not part of this changelog and must not be counted here.
+        changelog = changelog.split("\n## ", 1)[0]
+        entries = [line for line in changelog.splitlines() if line.startswith("Last inventory:")]
+        self.assertTrue(entries, "the changelog has no inventory entries")
+        matching = [line for line in entries if ISSUE in line]
+        self.assertTrue(matching, "the changelog does not record the launch agent's inventory")
+        self.assertTrue(
+            any(LABEL in line for line in matching),
+            "the entry that names the launch agent does not name it",
+        )
 
     def test_the_helper_row_no_longer_calls_the_launcher_a_stub(self) -> None:
         text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
@@ -95,6 +120,66 @@ class LaunchAgentTests(unittest.TestCase):
         self.assertNotIn("not yet written", row)
         self.assertNotIn("exits 3", row)
         self.assertIn("publish-mac", row)
+
+
+class ZshenvRowTests(unittest.TestCase):
+    """The always-on `~/.zshenv` row has to name the order the shell really uses.
+
+    The row is the record of a shell init on the owner's Mac,  so a claim in it
+    that the shell does not honour is the defect this class guards against:  the
+    binding order has to say which fleet default it departs from and why,  the
+    cache has to say what it holds and who reads it,  the identity has to be the
+    credential that was measured,  and the durable piece has to name a mechanism
+    the repository actually tracks.
+    """
+
+    def setUp(self) -> None:
+        text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
+        (self.row,) = [line for line in text.splitlines() if line.startswith("| `~/.zshenv` (the `GH_TOKEN` refresh)")]
+
+    def test_the_order_names_the_fleet_default_and_this_shell_as_the_exception(self) -> None:
+        self.assertIn("A nonempty inherited `GH_TOKEN` wins", self.row)
+        self.assertIn("That is the fleet default", self.row)
+        self.assertIn("this shell is the one documented exception", self.row)
+        self.assertIn("approved by Jay on Oct 21, 2026", self.row)
+
+    def test_the_sync_row_lists_the_sources_the_script_accepts(self) -> None:
+        text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
+        (row,) = [line for line in text.splitlines() if line.startswith("| `scripts/fleet_secrets/sync_cli_login.py`")]
+        script = (REPO / "scripts" / "fleet_secrets" / "sync_cli_login.py").read_text(encoding="utf-8")
+        for source in ('"env"', '"fleet-secrets"', '"file"'):
+            self.assertIn(source, script, "the script no longer accepts this source")
+        for source in ("--from env NAME", "--from fleet-secrets --from-path PATH", "--from file PATH"):
+            self.assertIn(source, row, "the row does not list a source the script accepts")
+        for rejected in ("--from gh", "--from stdin", "--from keychain"):
+            self.assertNotIn(rejected, row, "the row lists a source the script rejects")
+
+    def test_the_store_side_is_qualified_and_the_fallbacks_are_named(self) -> None:
+        self.assertIn("a nonempty fleet-store value wins whenever the store answers with one", self.row)
+        self.assertIn("An empty store result or an unreachable store leaves the inherited token alone", self.row)
+        self.assertIn("fails closed with `GH_TOKEN is unavailable`", self.row)
+
+    def test_the_cache_says_what_it_holds_and_who_reads_it(self) -> None:
+        self.assertIn("umask 077", self.row)
+        self.assertIn("It holds one value,  the store's,  copied verbatim", self.row)
+        self.assertIn("this shell is its only reader", self.row)
+
+    def test_the_identity_is_the_credential_that_was_measured(self) -> None:
+        self.assertIn("fine-grained personal access token", self.row)
+        self.assertIn("the `github_pat_` shape", self.row)
+        self.assertNotIn("`gith_`", self.row)
+        self.assertIn("it writes nothing", self.row)
+        self.assertIn("git's helper hands that one to git only when this file has not exported a variable", self.row)
+
+    def test_the_durable_piece_names_a_mechanism_the_repository_tracks(self) -> None:
+        self.assertIn("docs/protocols/cli-login-sync.md", self.row)
+        self.assertIn("scripts/fleet_secrets/sync_cli_login.py", self.row)
+        self.assertIn("`git-relay` is the consumer of those per-seat logins", self.row)
+        self.assertNotIn("Agents do not handle tokens at all", self.row)
+
+    def test_the_durable_piece_says_where_a_seat_own_login_comes_from(self) -> None:
+        self.assertIn("A seat's own login is written from `--from file`", self.row)
+        self.assertIn("it is not a per-seat source", self.row)
 
 
 if __name__ == "__main__":  # pragma: no cover

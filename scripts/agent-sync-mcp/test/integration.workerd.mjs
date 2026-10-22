@@ -76,7 +76,7 @@ linear.graphqlResponse = (entry) => {
   return linearGraphqlResponse(entry);
 };
 
-const HOST = "https://agent-sync.jays.services";
+const HOST = "https://agents.simplewithus.com";
 const TEAM = "silent-frost-37e0.cloudflareaccess.com";
 const AUD = "d".repeat(64);
 const CHATGPT_CIMD = {
@@ -108,6 +108,10 @@ const GROK_CIMD = {
 };
 
 let claudeHostedTokens;
+// events/list's zulip.mention entry with the spike flag off, compared byte for byte once it is on.
+let zulipDefinition;
+let spikeTokens;
+let spikeSubId;
 let passed = 0;
 async function step(name, fn) {
   try {
@@ -147,6 +151,9 @@ const callbackCalls = [];
 const callbackStatuses = [];
 let onDelivery = null;
 const WAKE_KEY_JET = randomBytes(32).toString("hex");
+// AFC-477 spike:  its own key, installed on every instance;  the flag decides.
+const SPIKE_KEY = randomBytes(32).toString("hex");
+const SPIKE_CALLBACK = `${CALLBACK}_spike`;
 
 const outbound = [];
 // A countdown of ChatGPT document fetches that fail with 503 before it recovers.
@@ -205,7 +212,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, SPIKE_HMAC_KEY: SPIKE_KEY, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -221,6 +228,19 @@ function startWorker(upstream, bindingOverrides = {}) {
         const res = await raw.dispatchFetch(url);
         assert.equal(res.status, 404, url);
         assert.equal(await res.text(), "Not Found");
+      }
+    });
+
+    // Hard cutover (owner ruling Oct 22, 2026):  the old agent-sync.jays.services
+    // host is gone.  Every path on it answers 404 "Not Found" with no Location
+    // header:  not an alias, not a redirect to the new host, no hanging
+    // fallback.  An old client pointed here fails fast and visibly.
+    await step("the old agent-sync.jays.services host is refused, not redirected", async () => {
+      for (const path of ["/mcp", "/health", "/authorize", "/oauth/token", "/admin", "/.well-known/oauth-authorization-server"]) {
+        const res = await raw.dispatchFetch(`https://agent-sync.jays.services${path}`);
+        assert.equal(res.status, 404, path);
+        assert.equal(res.headers.get("location"), null, `${path} must not redirect`);
+        assert.equal(await res.text(), "Not Found", path);
       }
     });
   } finally {
@@ -360,6 +380,18 @@ function wakePost(seat, bytes, { key = WAKE_KEY_JET, method = "POST", signature 
   });
 }
 
+/** An AFC-477 spike POST:  the four-field body, hex HMAC of the raw bytes with SPIKE_HMAC_KEY. */
+function spikeBytes(overrides = {}) {
+  return Buffer.from(JSON.stringify({ contract: "agent-sync-spike/1", seat: "JET", spike_id: crypto.randomUUID(), sent_at: Math.floor(Date.now() / 1000), ...overrides }));
+}
+function spikePost(seat, bytes, { key = SPIKE_KEY, signature } = {}) {
+  return mf.dispatchFetch(`${HOST}/internal/spike/${seat}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Agent-Sync-Spike-Signature": signature ?? createHmac("sha256", Buffer.from(key, "utf8")).update(bytes).digest("hex") },
+    body: bytes,
+  });
+}
+
 const INIT = { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "workerd-test", version: "0" } };
 const call = (accessToken, name, args = {}) => mcp(accessToken, "tools/call", { name, arguments: args });
 const seatOf = async (accessToken) => (await call(accessToken, "whoami")).json?.result?.structuredContent?.seat;
@@ -399,7 +431,7 @@ try {
   await step("unauthenticated initialize gets 401 with resource_metadata", async () => {
     const r = await mcp(null, "initialize", INIT);
     assert.equal(r.status, 401);
-    assert.match(r.headers.get("www-authenticate"), /resource_metadata="https:\/\/agent-sync\.jays\.services\/\.well-known\/oauth-protected-resource\/mcp"/);
+    assert.match(r.headers.get("www-authenticate"), /resource_metadata="https:\/\/agents\.simplewithus\.com\/\.well-known\/oauth-protected-resource\/mcp"/);
   });
 
   await step("/authorize and /admin without an Access JWT are 403", async () => {
@@ -539,6 +571,8 @@ try {
     const list = await mcpModern(tokens.access_token, "events/list");
     assert.equal(list.status, 200, JSON.stringify(list.json));
     const [ev] = list.json.result.events;
+    zulipDefinition = JSON.stringify(ev);
+    assert.deepEqual(list.json.result.events.map((e) => e.name), ["zulip.mention"], "SPIKE_EXTRA_EVENTS is off:  no spike event");
     assert.equal(ev.name, "zulip.mention");
     assert.deepEqual(ev.delivery, ["webhook"]);
     // Any public channel the bot is in:  the filter is a free string, checked at subscribe time.
@@ -620,6 +654,17 @@ try {
     // A public channel that was never on the old allowlist is a usable channel now:  not refused, just not this filter's.
     const design = await wakePost("JET", wakeBytes({ channel: "design", stream_id: STREAMS.design, reply_to: { type: "stream", channel: "design", topic: "x" } }));
     assert.deepEqual(await design.json(), { ok: true, subscribers: 1, delivered: 0, outcome: "no_subscriber" });
+  });
+
+  await step("AFC-477 spike, flag off:  POST /internal/spike/JET is 404 even signed, and a spike subscribe is an unknown event", async () => {
+    const before = callbackCalls.length;
+    for (const res of [await spikePost("JET", spikeBytes()), await spikePost("JET", spikeBytes(), { signature: "0".repeat(64) }), await mf.dispatchFetch(`${HOST}/internal/spike/JET`)]) {
+      assert.equal(res.status, 404);
+      assert.equal(await res.text(), "Not Found");
+    }
+    const sub = await mcpModern(tokens.access_token, "events/subscribe", { name: "fleet.spike.ping", arguments: {}, delivery: { mode: "webhook", url: SPIKE_CALLBACK, secret: CALLBACK_SECRET }, cursor: null });
+    assert.equal(sub.json.error?.code, -32602, JSON.stringify(sub.json));
+    assert.equal(callbackCalls.length, before, "nothing verified or delivered");
   });
 
   await step("wake:  a failed delivery is 503 so the listener retries;  the retry delivers (202);  one more is a duplicate;  a copy mid-delivery is 503 in_flight", async () => {
@@ -970,7 +1015,8 @@ try {
       const enumOf = listed.find((tool) => tool.name === "zulip_post").inputSchema.properties.identity.enum;
       assert.deepEqual(enumOf.slice(0, 2), ["GROK-WEB", "CURSOR"]);
       assert.ok(enumOf.every((name) => ["GROK-WEB", "CURSOR"].includes(name) || name.startsWith("GB-")));
-      assert.ok(!enumOf.includes("GB-ENGINEER"));
+      assert.ok(enumOf.includes("GB-ENGINEER"));
+      assert.ok(!enumOf.includes("GB-RETIRED"));
       const ids = (await call(t.body.access_token, "identities")).json.result.structuredContent;
       assert.equal(ids.default_identity, "GROK-WEB");
       assert.deepEqual(ids.identities.map((row) => row.identity), enumOf);
@@ -1473,6 +1519,98 @@ try {
     assert.equal(errors.length, 2);
     assert.equal(errors[0].error_code, "not_authorized");
     assert.match(errors[0].error_message, /No Zulip key/);
+  });
+
+  await step("AFC-477 spike, flag on:  both events listed, zulip.mention byte for byte unchanged, one subscription each in the same chat", async () => {
+    await mf.dispose();
+    mf = startWorker(HOST, { SPIKE_EXTRA_EVENTS: "on" });
+    jar.clear();
+    pagePolicy = null;
+    callbackCalls.length = 0;
+    assert.equal((await adminAction("arm", { seat: "JET" })).status, 303);
+    const c = pkce();
+    const handle = await openConsent(c.challenge, "spike-on");
+    const consent = await browser("/authorize", { method: "POST", form: { handle, seat: "JET", decision: "approve", scope: "zulip:read" } });
+    assert.equal(consent.status, 302, await consent.clone().text());
+    const loc = new URL(consent.headers.get("location"));
+    const granted = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: c.verifier, redirect_uri: CHATGPT_REDIRECT, client_id: CHATGPT_CLIENT, resource: RESOURCE });
+    // Only the OAuth error code on failure, never the body (it would hold tokens on success).
+    assert.equal(granted.status, 200, String(granted.body?.error ?? ""));
+    spikeTokens = granted.body;
+
+    const discover = await mcpModern(spikeTokens.access_token, "server/discover");
+    assert.deepEqual(discover.json.result.capabilities, { tools: {}, events: {} }, "discover is unchanged:  event names are in events/list");
+    const list = await mcpModern(spikeTokens.access_token, "events/list");
+    const events = list.json.result.events;
+    assert.deepEqual(events.map((e) => e.name), ["zulip.mention", "fleet.spike.ping"]);
+    assert.equal(JSON.stringify(events[0]), zulipDefinition, "zulip.mention's definition is byte for byte the flag-off one");
+    assert.deepEqual(Object.keys(events[1].payloadSchema.properties), ["id", "fired_at"]);
+
+    const zulipSub = await mcpModern(spikeTokens.access_token, "events/subscribe", { name: "zulip.mention", arguments: { channel: "sandbox" }, delivery: { mode: "webhook", url: CALLBACK, secret: CALLBACK_SECRET }, cursor: null });
+    assert.equal(zulipSub.status, 200, JSON.stringify(zulipSub.json));
+    const spikeSub = await mcpModern(spikeTokens.access_token, "events/subscribe", { name: "fleet.spike.ping", arguments: {}, delivery: { mode: "webhook", url: SPIKE_CALLBACK, secret: CALLBACK_SECRET }, cursor: null });
+    assert.equal(spikeSub.status, 200, JSON.stringify(spikeSub.json));
+    assert.notEqual(spikeSub.json.result.id, zulipSub.json.result.id);
+    spikeSubId = spikeSub.json.result.id;
+    const second = await mcpModern(spikeTokens.access_token, "events/subscribe", { name: "fleet.spike.ping", arguments: {}, delivery: { mode: "webhook", url: `${CALLBACK}_second`, secret: CALLBACK_SECRET }, cursor: null });
+    assert.equal(second.json.error?.code, -32600, JSON.stringify(second.json));
+    assert.match(second.json.error.message, /already sends fleet\.spike\.ping/);
+  });
+
+  await step("AFC-477 spike, flag on:  a wake reaches zulip.mention only;  a signed spike reaches fleet.spike.ping only, with {id, fired_at}", async () => {
+    const before = callbackCalls.length;
+    const wake = await wakePost("JET", wakeBytes());
+    assert.equal(wake.status, 202);
+    assert.deepEqual(await wake.json(), { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" }, "the spike subscription is not counted");
+    assert.deepEqual(callbackCalls.slice(before).map((c) => [c.url, c.body.name]), [[CALLBACK, "zulip.mention"]]);
+
+    const bytes = spikeBytes();
+    const sent = JSON.parse(bytes);
+    const fired = await spikePost("JET", bytes);
+    assert.equal(fired.status, 202, await fired.clone().text());
+    assert.deepEqual(await fired.json(), { ok: true, subscribers: 1, delivered: 1, outcome: "delivered" });
+    const delivery = callbackCalls[callbackCalls.length - 1];
+    assert.equal(delivery.url, SPIKE_CALLBACK);
+    assert.equal(callbackCalls.length, before + 2);
+    const event = new Webhook(CALLBACK_SECRET).verify(delivery.raw, delivery.headers);
+    assert.equal(event.name, "fleet.spike.ping");
+    assert.equal(delivery.headers["x-mcp-subscription-id"], spikeSubId);
+    assert.deepEqual(Object.keys(event.data), ["id", "fired_at"]);
+    assert.equal(event.data.id, sent.spike_id);
+    assert.ok(!delivery.raw.includes(SPIKE_KEY) && !delivery.raw.includes(WAKE_KEY_JET), "no key in the payload");
+
+    const replay = await spikePost("JET", bytes);
+    assert.equal(replay.status, 200);
+    assert.deepEqual(await replay.json(), { ok: true, duplicate: true });
+    assert.equal(callbackCalls.length, before + 2, "a replay delivers nothing");
+  });
+
+  await step("AFC-477 spike, flag on:  a bad, missing or wake-key signature is 401;  a fourth ping in the hour is 429", async () => {
+    const before = callbackCalls.length;
+    const bytes = spikeBytes();
+    for (const opts of [{ signature: "0".repeat(64) }, { signature: "" }, { key: WAKE_KEY_JET }]) {
+      const res = await spikePost("JET", bytes, opts);
+      assert.equal(res.status, 401, JSON.stringify(opts.key ? "wake key" : opts));
+      await res.arrayBuffer();
+    }
+    // A wake signed with the spike key is refused by the wake route too.
+    const crossed = await wakePost("JET", wakeBytes(), { key: SPIKE_KEY });
+    assert.equal(crossed.status, 401);
+    await crossed.arrayBuffer();
+    // One ping went out in the step before;  two more fit the hour, the next is 429.
+    for (let i = 0; i < 2; i++) assert.equal((await spikePost("JET", spikeBytes())).status, 202);
+    const limited = await spikePost("JET", spikeBytes());
+    assert.equal(limited.status, 429);
+    assert.deepEqual(await limited.json(), { ok: false, rate_limited: true });
+    assert.match(limited.headers.get("retry-after"), /^\d+$/);
+    assert.equal(callbackCalls.length, before + 2, "only the two accepted pings were delivered");
+    // A seat that is not offered events, and a SPIKE_HMAC_KEY equal to the wake key, are 404.
+    assert.equal((await spikePost("GROK-WEB", spikeBytes({ seat: "GROK-WEB" }))).status, 404);
+    await mf.dispose();
+    mf = startWorker(HOST, { SPIKE_EXTRA_EVENTS: "on", SPIKE_HMAC_KEY: WAKE_KEY_JET });
+    const reused = await spikePost("JET", spikeBytes(), { key: WAKE_KEY_JET });
+    assert.equal(reused.status, 404, "the wake key never signs a spike");
+    await reused.arrayBuffer();
   });
 
   console.log(`\n${passed} passed`);

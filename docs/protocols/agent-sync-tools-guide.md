@@ -1,6 +1,6 @@
 # Agent-Sync Tools Guide
 
-The one guide to the Agent-Sync tools on every transport:  the stdio server (`agent-sync mcp`), the hosted server (`https://agent-sync.jays.services/mcp`) and the `agent-sync` CLI.  It is served four ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, `https://fleetlink.online/agent-sync-tools-guide/`, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a published copy.
+The one guide to the Agent-Sync tools on every transport:  the stdio server (`agent-sync mcp`), the hosted server (`https://agents.simplewithus.com/mcp`) and the `agent-sync` CLI.  It is served four ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, `https://fleetlink.online/agent-sync-tools-guide/`, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a published copy.
 
 At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 270 tools and the hosted server 269 (the difference is explained under Tools by Family).
 
@@ -29,7 +29,7 @@ Call `identities` first when a client is new, then `whoami` with an `identity` t
 ## Which Connection a Client Gets
 
 - **A Mac or server app that can run a local command** uses the **stdio** server:  `{"command": "agent-sync", "args": ["mcp"]}` in its MCP config.  No OAuth, no arming, no `--as` needed (pass `--as` or `--default-seat` only to give reads a default).  Never put a Zulip key in the config.
-- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses the **hosted** server at `https://agent-sync.jays.services/mcp` with OAuth.  The owner arms the seat in `https://agent-sync.jays.services/admin` first, then the client starts its sign-in and the owner approves it;  steps per app are in `scripts/agent-sync-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
+- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses the **hosted** server at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it;  steps per app are in `scripts/agent-sync-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
 
 Allowed sets, as the code builds them:
 
