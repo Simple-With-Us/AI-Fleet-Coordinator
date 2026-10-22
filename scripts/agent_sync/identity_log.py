@@ -9,14 +9,16 @@ other Zulip-authored text.  A failure to write the log never fails the write it 
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from .state import state_root
 
@@ -46,10 +48,20 @@ def client_label(info: Any) -> dict[str, str | None] | None:
     return {"name": name, "version": version}
 
 
-def append(env: Mapping[str, str], home: Path | None, *, transport: str, default_identity: str | None,
-           identity: str | None, tool: str, outcome: str, message_id: int | None = None,
-           client: Mapping[str, Any] | None = None, seat: str | None = None,
-           clock: Any = time.time) -> bool:
+def append(
+    env: Mapping[str, str],
+    home: Path | None,
+    *,
+    transport: str,
+    default_identity: str | None,
+    identity: str | None,
+    tool: str,
+    outcome: str,
+    message_id: int | None = None,
+    client: Mapping[str, Any] | None = None,
+    seat: str | None = None,
+    clock: Any = time.time,
+) -> bool:
     """Append one row.  True when it was written.
 
     `seat` is the seat the caller was authenticated as, which is not always the identity it acted
@@ -65,7 +77,9 @@ def append(env: Mapping[str, str], home: Path | None, *, transport: str, default
         "identity": safe_text(identity),
         "tool": safe_text(tool),
         "outcome": safe_text(outcome),
-        "message_id": message_id if isinstance(message_id, int) and not isinstance(message_id, bool) else None,
+        "message_id": message_id
+        if isinstance(message_id, int) and not isinstance(message_id, bool)
+        else None,
     }
     path = log_path(env, home)
     try:
@@ -73,7 +87,10 @@ def append(env: Mapping[str, str], home: Path | None, *, transport: str, default
         fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
             os.fchmod(fd, 0o600)
-            os.write(fd, (json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n").encode("ascii"))
+            os.write(
+                fd,
+                (json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n").encode("ascii"),
+            )
         finally:
             os.close(fd)
     except OSError:
