@@ -185,4 +185,9 @@ export class SeatGate extends DurableObject {
   eventSubsSummary() {
     return state.eventSubsSummary(this.store);
   }
+
+  // AFC-477 spike (temporary, src/spike.js).
+  spikeClaim(options) {
+    return state.spikeClaim(this.store, options);
+  }
 }

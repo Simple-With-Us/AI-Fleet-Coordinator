@@ -10,6 +10,7 @@
 
 import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE } from "./config.js";
 import { scanSecret } from "./contract.js";
+import { EVENT_NAME, SPIKE_EVENT_NAME, subEventName } from "./events.js";
 
 const AUDIT_CAP = 200;
 // Authorize refusals come from a request that passed Cloudflare Access, so the
@@ -701,16 +702,22 @@ async function persistDropped(store, subs, dropped, now) {
   for (const id of ids) await audit(store, { event: "event_sub_dropped", sub_ref: subRef(id), reason: dropped[id] }, now);
 }
 
+/** The live subscriptions for one event name (AFC-477:  the cap and the fan-out are per name). */
+const subsNamed = (subs, name) => Object.values(subs).filter((sub) => subEventName(sub) === name);
+
 /**
- * Is there room for subscription `id`?  It exists already (a refresh), or the
- * seat is under the cap.  With a cap of one, a second chat is refused rather
- * than replacing the first (`until` says when the live one lapses).
+ * Is there room for subscription `id` of event `name`?  It exists already (a
+ * refresh), or the seat is under the cap for that name.  With a cap of one, a
+ * second chat for the same event is refused rather than replacing the first
+ * (`until` says when the live one lapses).  Another event's subscription
+ * never counts.
  */
-export async function eventSubRoom(store, { id, max = 1 }, now = Date.now()) {
+export async function eventSubRoom(store, { id, max = 1, name = EVENT_NAME }, now = Date.now()) {
   const { subs, dropped } = await liveSubs(store, now);
   await persistDropped(store, subs, dropped, now);
-  if (Object.hasOwn(subs, id) || Object.keys(subs).length < max) return { ok: true };
-  return { ok: false, until: Math.min(...Object.values(subs).map((sub) => sub.refresh_before)) };
+  const same = subsNamed(subs, name);
+  if (Object.hasOwn(subs, id) || same.length < max) return { ok: true };
+  return { ok: false, until: Math.min(...same.map((sub) => sub.refresh_before)) };
 }
 
 /**
@@ -723,7 +730,7 @@ export async function eventSubUpsert(store, { sub, ttlMs, rotationMs = 10 * MINU
   const { subs, dropped } = await liveSubs(store, now);
   await persistDropped(store, subs, dropped, now);
   const prior = subs[sub.id];
-  if (!prior && Object.keys(subs).length >= max) {
+  if (!prior && subsNamed(subs, subEventName(sub)).length >= max) {
     await audit(store, { event: "event_subscribe_refused", sub_ref: subRef(sub.id), reason: "cap" }, now);
     return { ok: false, reason: "cap" };
   }
@@ -823,10 +830,12 @@ async function putWakeSeen(store, seen) {
  * past refresh_before, from a grant epoch that is no longer current (Revoke
  * All And Bump Epoch), or from a grant past its 90-day age are dropped here
  * (liveSubs), and eventSubLive checks each one again before every attempt.
+ * Only subscriptions to `name` (zulip.mention) are returned and counted, so a
+ * spike subscription (AFC-477) never changes a wake's answer.
  * Returns {verdict: "go", subs, token}, {verdict: "duplicate"},
  * {verdict: "in_flight", retryAfterS} or {verdict: "paused"}.
  */
-export async function eventClaimWake(store, { wakeId, messageId = null }, now = Date.now()) {
+export async function eventClaimWake(store, { wakeId, messageId = null, name = EVENT_NAME }, now = Date.now()) {
   const seen = await wakeSeen(store, now);
   const prior = wakeEntry(seen[wakeId]);
   if (prior?.s === "settled") return { verdict: "duplicate" };
@@ -844,11 +853,12 @@ export async function eventClaimWake(store, { wakeId, messageId = null }, now = 
   }
   const { subs, dropped } = await liveSubs(store, now);
   await persistDropped(store, subs, dropped, now);
+  const mine = subsNamed(subs, name);
   const token = crypto.randomUUID();
   seen[wakeId] = { s: "claimed", at: now, until: now + WAKE_LEASE_MS, token };
   await putWakeSeen(store, seen);
-  await audit(store, { event: "event_wake_captured", wake_ref: wakeRef, message_id: messageId ?? null, subscribers: Object.keys(subs).length, ...(prior ? { reclaimed: true } : {}) }, now);
-  return { verdict: "go", token, subs: Object.values(subs).map((sub) => ({ ...sub })) };
+  await audit(store, { event: "event_wake_captured", wake_ref: wakeRef, message_id: messageId ?? null, subscribers: mine.length, ...(prior ? { reclaimed: true } : {}) }, now);
+  return { verdict: "go", token, subs: mine.map((sub) => ({ ...sub })) };
 }
 
 /**
@@ -914,11 +924,62 @@ export async function eventDeliveryResult(store, { subId, outcome, status, attem
   if (sub && outcome === "gone") await audit(store, { event: "event_sub_dropped", sub_ref: subRef(subId), reason: "gone_410" }, now);
 }
 
+// ---------------------------------------------------------------- AFC-477 spike (src/spike.js)
+//
+// One signed, hand-fired `fleet.spike.ping` at a time.  A ledger of the ids
+// fired in the last `windowMs` is both the dedupe (a replayed id is a
+// duplicate, and the body's 5-minute sent_at window is far shorter than the
+// ledger) and the rate limit (at most `max` ids per window).  Temporary:  it
+// goes with the spike.
+
+export const SPIKE_LEDGER_CAP = 50;
+
+/**
+ * Claim one spike for delivery.  A repeated id is "duplicate".  A paused seat
+ * delivers nothing ("paused", and the id is spent).  Past `max` ids in the
+ * window it is "rate_limited", with the seconds until the oldest leaves the
+ * window, and the id is not spent.  Otherwise the id is recorded and the live
+ * `fleet.spike.ping` subscriptions come back, never another event's.
+ * Returns {verdict: "go", subs}, {verdict: "duplicate"}, {verdict: "paused"}
+ * or {verdict: "rate_limited", retryAfterS}.
+ */
+export async function spikeClaim(store, { spikeId, max = 3, windowMs = 60 * MINUTE_MS }, now = Date.now()) {
+  if (typeof spikeId !== "string" || spikeId.length === 0 || spikeId.length > 64) throw new Error("bad spike id");
+  const ledger = (await store.get("spike_seen")) ?? {};
+  for (const [id, at] of Object.entries(ledger)) if (!(Number.isFinite(at) && at > now - windowMs && at <= now + MINUTE_MS)) delete ledger[id];
+  const ref = spikeId.slice(0, 8);
+  if (Object.hasOwn(ledger, spikeId)) return { verdict: "duplicate" };
+  const putLedger = async () => {
+    const keys = Object.keys(ledger);
+    while (keys.length > SPIKE_LEDGER_CAP) delete ledger[keys.shift()];
+    await store.put("spike_seen", ledger);
+  };
+  if ((await read(store)).paused) {
+    ledger[spikeId] = now;
+    await putLedger();
+    await audit(store, { event: "spike_paused", spike_ref: ref }, now);
+    return { verdict: "paused" };
+  }
+  const times = Object.values(ledger);
+  if (times.length >= max) {
+    await audit(store, { event: "spike_rate_limited", spike_ref: ref }, now);
+    return { verdict: "rate_limited", retryAfterS: Math.max(1, Math.ceil((Math.min(...times) + windowMs - now) / 1000)) };
+  }
+  ledger[spikeId] = now;
+  await putLedger();
+  const { subs, dropped } = await liveSubs(store, now);
+  await persistDropped(store, subs, dropped, now);
+  const mine = subsNamed(subs, SPIKE_EVENT_NAME);
+  await audit(store, { event: "spike_captured", spike_ref: ref, subscribers: mine.length }, now);
+  return { verdict: "go", subs: mine.map((sub) => ({ ...sub })) };
+}
+
 /** Live subscriptions for /admin:  never the URL path or the secret. */
 export async function eventSubsSummary(store, now = Date.now()) {
   const { subs } = await liveSubs(store, now);
   return Object.values(subs).map((sub) => ({
     sub_ref: subRef(sub.id),
+    name: subEventName(sub),
     host: sub.host,
     arguments: sub.arguments,
     refresh_before: sub.refresh_before,

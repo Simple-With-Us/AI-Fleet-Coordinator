@@ -40,6 +40,11 @@
 //     arrived (seat-state.js eventSettleWake).
 //   - The payload carries Zulip data only.  The excerpt keeps the listener's
 //     nonce fence, and nothing in `data` tells the model what to do.
+//   - AFC-477 spike (temporary):  while SPIKE_EXTRA_EVENTS is "on" a seat may
+//     also subscribe to `fleet.spike.ping`, a content-free event fired only by
+//     the signed POST /internal/spike/<SEAT> (src/spike.js).  Subscriptions are
+//     capped per (seat, event name), and a wake reaches zulip.mention
+//     subscriptions only.  With the flag off nothing here changes.
 //
 // Outbound fetches happen here, in the Worker request (verification and
 // delivery), never inside SeatGate, whose methods stay storage-only so its
@@ -49,9 +54,20 @@ import { logSafe, safeEqual } from "./policy.js";
 import { HELD_BACK_MAX_ITEMS } from "./wake.js";
 
 export const EVENT_NAME = "zulip.mention";
-// One live destination per seat (Jay:  hold ambiguous routing rather than
-// wake several chats).  A refresh of the same subscription is fine;  a second
-// chat is refused, never silently swapped in.
+// AFC-477 spike (temporary):  a second, content-free event that proves whether
+// one ChatGPT conversation can hold a second subscription and be woken by it.
+// Offered only while the Worker's SPIKE_EXTRA_EVENTS is "on" (config
+// spikeExtraEvents), and fired only by the signed POST /internal/spike/<SEAT>
+// (src/spike.js).  It implies nothing about WhatsApp or any other source.
+export const SPIKE_EVENT_NAME = "fleet.spike.ping";
+// Every name a subscription may carry.  An unsubscribe accepts any of them
+// whatever the flag says, so a subscription can always be removed.
+export const KNOWN_EVENT_NAMES = Object.freeze([EVENT_NAME, SPIKE_EVENT_NAME]);
+// One live destination per seat and event name (Jay:  hold ambiguous routing
+// rather than wake several chats).  A refresh of the same subscription is
+// fine;  a second chat for the same event is refused, never silently swapped
+// in.  The cap is per name, so the spike's subscription never takes the
+// zulip.mention slot, and the other way round.
 export const MAX_SUBSCRIPTIONS_PER_SEAT = 1;
 export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 export const MIN_TTL_MS = 60 * 60 * 1000;
@@ -176,6 +192,57 @@ export function eventDefinition(_config) {
       additionalProperties: false,
     },
   };
+}
+
+/**
+ * The AFC-477 spike event:  no arguments, and a payload of an id and the time
+ * it was fired, with no content.  The description says what it is and nothing
+ * about what to do.
+ */
+export function spikeEventDefinition() {
+  return {
+    name: SPIKE_EVENT_NAME,
+    description:
+      "A content-free test ping for a temporary fleet experiment (AFC-477).  It fires only when the fleet operator sends one by hand.  " +
+      "data holds an id and the time it was fired, nothing else.",
+    delivery: ["webhook"],
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    payloadSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The ping's id (a UUID), unique per ping." },
+        fired_at: { type: "string", description: "When the operator fired it (ISO 8601, UTC)." },
+      },
+      required: ["id", "fired_at"],
+      additionalProperties: false,
+    },
+  };
+}
+
+/** The events a seat offers:  zulip.mention always, and the spike only while SPIKE_EXTRA_EVENTS is "on". */
+export function eventDefinitions(config) {
+  const out = [eventDefinition(config)];
+  if (config?.spikeExtraEvents === true) out.push(spikeEventDefinition());
+  return out;
+}
+
+/** The event names a seat may subscribe to now. */
+export function offeredEventNames(config) {
+  return config?.spikeExtraEvents === true ? [EVENT_NAME, SPIKE_EVENT_NAME] : [EVENT_NAME];
+}
+
+/** The event a stored subscription is for.  Every row from before the spike is zulip.mention. */
+export function subEventName(sub) {
+  return typeof sub?.name === "string" && sub.name ? sub.name : EVENT_NAME;
+}
+
+/** The spike takes no arguments:  absent, null or an empty object.  Anything else is refused. */
+export function validateSpikeArguments(args) {
+  if (args === undefined || args === null) return {};
+  if (typeof args !== "object" || Array.isArray(args)) throw new EventError(INVALID_PARAMS, "arguments must be an object");
+  // The refusal never echoes the argument's name (review finding):  the spike has no arguments to name.
+  if (Object.keys(args).length > 0) throw new EventError(INVALID_PARAMS, "fleet.spike.ping takes no arguments");
+  return {};
 }
 
 /**
@@ -592,8 +659,10 @@ export async function deliverEvent(
  * listener's request.  `subs` come from SeatGate.eventClaimWake, and
  * SeatGate.eventSubLive checks each one again before every attempt.  A wake
  * wakeChannelRefusal refuses reaches nobody.  `allowed` is the seat's
- * ChannelSet (or null).  Each result goes back to SeatGate:  410 drops the
- * subscription, and everything is audited without URLs, secrets or excerpts.
+ * ChannelSet (or null).  Only zulip.mention subscriptions get a wake, so the
+ * spike's subscription never sees Zulip data.  Each result goes back to
+ * SeatGate:  410 drops the subscription, and everything is audited without
+ * URLs, secrets or excerpts.
  */
 export async function fanOut({ gate, wake, subs, allowed, fetchFn, now = Date.now, sleep, deadline = Infinity }) {
   if (wakeChannelRefusal(wake, allowed)) return [];
@@ -601,6 +670,7 @@ export async function fanOut({ gate, wake, subs, allowed, fetchFn, now = Date.no
   const timestamp = iso(Number.isSafeInteger(wake.sent_at) ? wake.sent_at * 1000 : now());
   const results = await Promise.all(
     subs
+      .filter((sub) => subEventName(sub) === EVENT_NAME)
       .filter((sub) => wakeMatches(sub.arguments, wake, allowed))
       .map(async (sub) => {
         const event = { eventId: await eventIdFor(wake.wake_id, sub.id), name: EVENT_NAME, timestamp, data, cursor: null };
@@ -706,9 +776,9 @@ export function wakeReply(result) {
 
 // ---------------------------------------------------------------- MCP methods
 
-function oneDestination(until) {
+function oneDestination(name, until) {
   return (
-    "Agent-Sync already sends zulip.mention for this seat to another chat.  Stop monitoring there first" +
+    `Agent-Sync already sends ${name} for this seat to another chat.  Stop monitoring there first` +
     (Number.isFinite(until) ? `, or wait until it lapses at ${iso(until)} unless refreshed.` : ".")
   );
 }
@@ -741,22 +811,24 @@ export class SeatEvents {
   }
 
   list() {
-    return { events: this.canRead ? [eventDefinition(this.config)] : [] };
+    return { events: this.canRead ? eventDefinitions(this.config) : [] };
   }
 
   requireRead() {
     if (!this.canRead) throw new EventError(INVALID_REQUEST, "Subscribing needs the zulip:read scope.");
   }
 
+  /** An event this seat offers now (the spike only while its flag is on).  Returns the name. */
   checkName(name) {
-    if (name !== EVENT_NAME) throw new EventError(INVALID_PARAMS, "Unknown event");
+    if (!offeredEventNames(this.config).includes(name)) throw new EventError(INVALID_PARAMS, "Unknown event");
+    return name;
   }
 
   async subscribe(params) {
     this.requireRead();
     if (this.paused) throw new EventError(INVALID_REQUEST, "This seat is paused.");
-    this.checkName(params.name);
-    const args = await validateArguments(params.arguments, this.channels);
+    const name = this.checkName(params.name);
+    const args = name === EVENT_NAME ? await validateArguments(params.arguments, this.channels) : validateSpikeArguments(params.arguments);
     const delivery = params.delivery;
     if (!delivery || typeof delivery !== "object" || delivery.mode !== "webhook") throw new EventError(INVALID_PARAMS, "Only webhook delivery is supported.");
     if (!parseWhsec(delivery.secret)) throw new EventError(INVALID_PARAMS, "delivery.secret must be whsec_ followed by base64 of 24 to 64 bytes.");
@@ -768,12 +840,12 @@ export class SeatEvents {
       if (problem.reason === "malformed" || problem.reason === "not_https") throw new EventError(INVALID_PARAMS, "delivery.url must be an https URL.");
       throw new EventError(CALLBACK_ENDPOINT_ERROR, "Callback URL refused.", { reason: "callback_url_refused" });
     }
-    const id = await subscriptionId(this.seat, url, EVENT_NAME, args);
+    const id = await subscriptionId(this.seat, url, name, args);
     const ref = await urlRef(url);
     const host = new URL(url).hostname.toLowerCase();
 
-    const room = await this.gate.eventSubRoom({ id, max: MAX_SUBSCRIPTIONS_PER_SEAT });
-    if (!room.ok) throw new EventError(INVALID_REQUEST, oneDestination(room.until));
+    const room = await this.gate.eventSubRoom({ id, max: MAX_SUBSCRIPTIONS_PER_SEAT, name });
+    if (!room.ok) throw new EventError(INVALID_REQUEST, oneDestination(name, room.until));
     if (!(await this.gate.eventVerifiedGet({ ref }))) {
       const reason = await verifyCallback(this.fetchFn, { url, subId: id, secret: delivery.secret, now: this.now });
       if (reason) {
@@ -783,18 +855,21 @@ export class SeatEvents {
       await this.gate.eventVerifiedSet({ ref, ttlMs: VERIFY_CACHE_MS });
     }
     const saved = await this.gate.eventSubUpsert({
-      sub: { id, name: EVENT_NAME, arguments: args, url, host, secret: delivery.secret, epoch: this.epoch, approved_at: this.approvedAt, client_id: logSafe(this.clientId, 200) },
+      sub: { id, name, arguments: args, url, host, secret: delivery.secret, epoch: this.epoch, approved_at: this.approvedAt, client_id: logSafe(this.clientId, 200) },
       ttlMs: ttl,
       rotationMs: ROTATION_WINDOW_MS,
       max: MAX_SUBSCRIPTIONS_PER_SEAT,
     });
-    if (!saved.ok) throw new EventError(INVALID_REQUEST, oneDestination(null));
+    if (!saved.ok) throw new EventError(INVALID_REQUEST, oneDestination(name, null));
     return { id, refreshBefore: iso(saved.refreshBefore), cursor: null, truncated: false };
   }
 
   async unsubscribe(params) {
     this.requireRead();
-    this.checkName(params.name);
+    // Any known name, whatever SPIKE_EXTRA_EVENTS says now, so turning the flag
+    // off never strands a spike subscription.
+    const name = params.name;
+    if (!KNOWN_EVENT_NAMES.includes(name)) throw new EventError(INVALID_PARAMS, "Unknown event");
     // Not re-validated against today's channels:  a channel the seat lost (or
     // renamed) later must not make its subscription impossible to remove.
     const raw = params.arguments;
@@ -802,7 +877,7 @@ export class SeatEvents {
     const args = raw ?? {};
     const url = params.delivery?.url;
     if (typeof url !== "string" || url.length === 0 || url.length > MAX_CALLBACK_URL) throw new EventError(INVALID_PARAMS, "delivery.url is required.");
-    await this.gate.eventSubDelete({ id: await subscriptionId(this.seat, url, EVENT_NAME, args), reason: "unsubscribe" });
+    await this.gate.eventSubDelete({ id: await subscriptionId(this.seat, url, name, args), reason: "unsubscribe" });
     return {};
   }
 }
