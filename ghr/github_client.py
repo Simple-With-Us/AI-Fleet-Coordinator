@@ -123,7 +123,7 @@ class GitHubClient:
                 code=code,
                 retry_after=_retry_after_seconds(exc.headers),
                 credential_preview=(
-                    mask_credential(bearer or self._token) if exc.code in (401, 403) else None
+                    mask_credential(bearer) if bearer and exc.code in (401, 403) else None
                 ),
             ) from exc
         except urllib.error.URLError as exc:

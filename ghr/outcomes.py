@@ -129,7 +129,7 @@ class OutcomeStore:
             existing = self._rows.get(key)
             if existing and existing["state"] in ("ok", "unknown", "pending"):
                 return existing
-            self._trim()
+            self._trim(MAX_ENTRIES - 1)
             if len(self._rows) >= MAX_ENTRIES:
                 raise OutcomeStoreError(
                     f"outcome store holds {MAX_ENTRIES} rows with none evictable; "
@@ -148,7 +148,7 @@ class OutcomeStore:
             self._trim()
             self._save()
 
-    def _trim(self) -> None:
+    def _trim(self, limit: int | None = None) -> None:
         # ok rows outlive their usefulness once a real retry window has
         # passed;  evicting them keeps the registry bounded without re-arming
         # any side effect (an ok row never protects an unresolved write).
@@ -160,7 +160,7 @@ class OutcomeStore:
         ]
         for key in stale:
             del self._rows[key]
-        excess = len(self._rows) - MAX_ENTRIES
+        excess = len(self._rows) - (MAX_ENTRIES if limit is None else limit)
         if excess <= 0:
             return
         removable = sorted(

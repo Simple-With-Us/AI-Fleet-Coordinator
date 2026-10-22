@@ -1414,3 +1414,25 @@ class TestCredentialPreview(unittest.TestCase):
         self.assertEqual(mask_credential("ghp_abcdefghijklmnop"), "ghp_abcd\u2026mnop")
         self.assertEqual(mask_credential("short"), "<masked>")
         self.assertEqual(mask_credential(None), "<masked>")
+
+
+class Round6Tests(unittest.TestCase):
+    def test_outcome_store_at_capacity_evicts_a_refused_row(self):
+        from ghr import outcomes
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = outcomes.OutcomeStore(os.path.join(tmp, "o.json"))
+            for i in range(outcomes.MAX_ENTRIES):
+                store.begin(f"k{i}")
+                store.finish(f"k{i}", "refused")
+            self.assertIsNone(store.begin("fresh"))
+
+    def test_thread_id_shape_and_unexpected_names_are_400s(self):
+        from ghr.server import _validate_args
+
+        base = {"repo": "Example-Org/widget-repo"}
+        with self.assertRaises(ValueError):
+            _validate_args("resolve_thread", {**base, "thread_id": "not-a-thread"})
+        with self.assertRaises(ValueError) as c:
+            _validate_args("comment_pr", {**base, "number": 1, "body": "x", "ghp_" + "a" * 30: 1})
+        self.assertNotIn("ghp_", str(c.exception))

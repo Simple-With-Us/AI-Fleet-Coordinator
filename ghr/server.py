@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -106,10 +107,10 @@ def _validate_args(action: str, args: dict) -> dict:
             {"workflow": ("text", True), "ref": ("text", True), "inputs": ("inputs", False)}
         )
     elif action == "resolve_thread":
-        specs["thread_id"] = ("text", True)
+        specs["thread_id"] = ("thread_id", True)
     extra = sorted(set(args) - set(specs))
     if extra:
-        raise ValueError(f"{action}: unexpected fields {extra}")
+        raise ValueError(f"{action}: unexpected fields ({len(extra)})")
     canonical: dict = {}
     for field, (kind, required) in specs.items():
         value = args.get(field)
@@ -117,6 +118,10 @@ def _validate_args(action: str, args: dict) -> dict:
             value = _text(value, field, required=required)
         elif kind == "clean":
             value = _clean_text(value, field, required=required)
+        elif kind == "thread_id":
+            value = _text(value, field, required=required)
+            if not re.fullmatch(r"PRRT_[A-Za-z0-9_-]{6,128}", value):
+                raise ValueError("thread_id must be a pull request review thread id")
         elif kind == "number":
             value = _number(value, field)
         elif kind == "method":
@@ -192,6 +197,10 @@ class Relay:
             self.audit.record(seat, "<credential-shaped>", "", "bad_request", {"field": "action"})
             return 400, {"error": "action is not acceptable"}
         repo = str(args.get("repo") or "")
+        if find_secret(repo):
+            # A credential-shaped repo is refused by the scan below;  it must
+            # never reach the audit log verbatim.
+            repo = ""
         key = None
         # Every allowed or denied call writes exactly one audit row, from the
         # finally block below:  no branch (including an unexpected exception
@@ -287,6 +296,8 @@ class Relay:
                         "github_status": exc.status,
                         "retryable": True,
                     }
+                    if exc.code:
+                        payload["github_code"] = detail["github_code"] = exc.code
                     if exc.credential_preview is not None:
                         payload["credential_preview"] = exc.credential_preview
                         detail["credential_preview"] = exc.credential_preview
@@ -332,6 +343,8 @@ class Relay:
                     "github_status": exc.status,
                     "retryable": False,
                 }
+                if exc.code:
+                    payload["github_code"] = detail["github_code"] = exc.code
                 if exc.credential_preview is not None:
                     payload["credential_preview"] = exc.credential_preview
                     detail["credential_preview"] = exc.credential_preview
