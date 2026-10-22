@@ -60,8 +60,12 @@ class Urls(unittest.TestCase):
         # The realm renamed the coordination channel on 2026-10-22, so a narrow link built
         # from the old name points at a stream nobody reads.  This is the drift guard:  when the
         # realm renames the channel again, urls.CHANNEL has to move with it.
+        # The stream id stays out of this test on purpose:  a test must not carry a production
+        # resource id, and the id itself does not move when the channel is renamed.
         self.assertEqual(urls.CHANNEL, "work-in-progress")
-        self.assertEqual(urls.STREAM_ID, 642232)
+        self.assertIsInstance(urls.STREAM_ID, int)
+        self.assertGreater(urls.STREAM_ID, 0)
+        self.assertIn("/channel/%d-%s/" % (urls.STREAM_ID, urls.CHANNEL), urls.topic_url("t"))
 
     def test_pr_and_linear_links_are_validated(self):
         self.assertEqual(urls.pr_url("Simple-With-Us/example-repo", 3), "https://github.com/Simple-With-Us/example-repo/pull/3")
