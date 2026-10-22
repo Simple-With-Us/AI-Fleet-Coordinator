@@ -14,6 +14,7 @@ another schemaVersion as unknown.  Python 3.9, standard library only.
 nothing.  Exit 0 on a written or dry-run answer, 1 when the Worker answered badly or not at all
 (the file then records state "unknown" with a fixed error code, so Muster shows it).
 """
+
 import argparse
 import hashlib
 import hmac
@@ -38,20 +39,30 @@ def sign(key, body):
 
 
 def request_body(now=None):
-    return json.dumps({"contract": CONTRACT, "sent_at": int(now if now is not None else time.time())}, separators=(",", ":")).encode("utf-8")
+    return json.dumps(
+        {"contract": CONTRACT, "sent_at": int(now if now is not None else time.time())},
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def read_key():
     key = os.environ.get("HEALTH_HMAC_KEY", "").strip()
     if key:
         return key
-    out = subprocess.run(["fleet-secrets", "get", "HEALTH_HMAC_KEY"], capture_output=True, text=True, timeout=30)
+    out = subprocess.run(
+        ["fleet-secrets", "get", "HEALTH_HMAC_KEY"], capture_output=True, text=True, timeout=30
+    )
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
 def fetch(url, key, now=None):
     body = request_body(now)
-    req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json", SIGNATURE_HEADER: sign(key, body)})
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", SIGNATURE_HEADER: sign(key, body)},
+    )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return resp.status, json.loads(resp.read(1_000_000).decode("utf-8"))
@@ -62,11 +73,35 @@ def fetch(url, key, now=None):
 
 
 def document(status, answer, generated_at=None):
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(generated_at if generated_at is not None else time.time()))
+    stamp = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(generated_at if generated_at is not None else time.time())
+    )
     if status == 200 and isinstance(answer, dict) and answer.get("contract") == CONTRACT:
-        return {"schemaVersion": SCHEMA_VERSION, "tool": "fleet-worker-health", "generatedAt": stamp, "reachable": True, "worst": answer.get("worst"), "bundle": answer.get("bundle"), "seats": answer.get("seats", [])}
-    code = "no_answer" if status == 0 else "not_configured_or_refused" if status in (401, 404) else "http_%d" % status
-    return {"schemaVersion": SCHEMA_VERSION, "tool": "fleet-worker-health", "generatedAt": stamp, "reachable": False, "worst": "unknown", "error": code, "seats": []}
+        return {
+            "schemaVersion": SCHEMA_VERSION,
+            "tool": "fleet-worker-health",
+            "generatedAt": stamp,
+            "reachable": True,
+            "worst": answer.get("worst"),
+            "bundle": answer.get("bundle"),
+            "seats": answer.get("seats", []),
+        }
+    code = (
+        "no_answer"
+        if status == 0
+        else "not_configured_or_refused"
+        if status in (401, 404)
+        else "http_%d" % status
+    )
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "tool": "fleet-worker-health",
+        "generatedAt": stamp,
+        "reachable": False,
+        "worst": "unknown",
+        "error": code,
+        "seats": [],
+    }
 
 
 def write_atomic(path, doc):
@@ -103,7 +138,17 @@ def main(argv=None):
         counts = {}
         for seat in doc["seats"]:
             counts[seat.get("state")] = counts.get(seat.get("state"), 0) + 1
-        print(json.dumps({"reachable": doc["reachable"], "worst": doc["worst"], "seats": len(doc["seats"]), "by_state": counts, "error": doc.get("error")}))
+        print(
+            json.dumps(
+                {
+                    "reachable": doc["reachable"],
+                    "worst": doc["worst"],
+                    "seats": len(doc["seats"]),
+                    "by_state": counts,
+                    "error": doc.get("error"),
+                }
+            )
+        )
     else:
         write_atomic(args.write, doc)
     return 0 if doc["reachable"] else 1
