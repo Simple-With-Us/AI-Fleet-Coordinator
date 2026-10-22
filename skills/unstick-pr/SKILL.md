@@ -40,7 +40,7 @@ git push origin <seat>/<slug>
 
 GitHub recomputes in ~20–60s and re-dispatches CI.  If several PRs are stuck, push one at a time, ~10–15s apart.
 
-**Real conflict:** merge `origin/main` by hand in the worktree.  `STATUS.md`, `PLAN.md`, and the archived `docs/EFFORT-LOG.md` often have `merge=union` — additive prose combines.  Never delete another agent's row.  If code intent is unclear, abort and escalate with a Linear comment + `#agent-sync`.
+**Real conflict:** merge `origin/main` by hand in the worktree.  `STATUS.md`, `PLAN.md`, and the archived `docs/EFFORT-LOG.md` often have `merge=union` — additive prose combines.  Never delete another agent's row.  If code intent is unclear, abort and escalate with a Linear comment + `#Work-In-Progress`.
 
 ### B) BLOCKED, checks green
 

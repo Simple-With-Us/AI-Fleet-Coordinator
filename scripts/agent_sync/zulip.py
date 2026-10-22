@@ -123,7 +123,26 @@ NOT_SEAT_PREFIXES = frozenset(
         "SENTRY",
     }
 )
-DEFAULT_CHANNEL = "agent-sync"
+ENV_CHANNEL = "AGENT_SYNC_CHANNEL"
+# The fleet's live coordination channel.  The realm renamed it on Oct 22, 2026, and a
+# hardcoded name that no longer exists makes every seat's post fail with
+# STREAM_DOES_NOT_EXIST, so the built-in default follows the realm and the name is
+# settable for a deployment that puts the fleet somewhere else.
+DEFAULT_CHANNEL = "work-in-progress"
+
+
+def default_channel(env: Mapping[str, str] | None = None) -> str:
+    """The channel a post goes to when the caller names none.
+
+    The override is read from the environment mapping the runtime already carries, not
+    from the process environment at import, so a caller that hands the runtime an
+    explicit environment (every test does) gets the channel it asked for.
+    """
+    if env:
+        override = env.get(ENV_CHANNEL)
+        if override and override.strip():
+            return override.strip()
+    return DEFAULT_CHANNEL
 MAX_TOPIC_LENGTH = 60
 USER_AGENT = "agent-sync/1 (fleet)"
 

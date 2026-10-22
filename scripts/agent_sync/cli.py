@@ -764,14 +764,14 @@ def _common_parent() -> argparse.ArgumentParser:
     return parent
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(channel_default: str = Z.DEFAULT_CHANNEL) -> argparse.ArgumentParser:
     common = _common_parent()
     parser = argparse.ArgumentParser(
         prog="agent-sync",
         parents=[common],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Coordinate with the fleet on Zulip.  Every post goes to a channel and a topic, "
-        "and the default channel is %s." % Z.DEFAULT_CHANNEL,
+        "and the default channel is %s." % channel_default,
         epilog="Exit codes: 0 ok, 2 usage, 3 credentials or realm, 4 wait timeout, 5 Zulip API error, "
         "6 network error, 7 verify-owner-msg did not verify.  See scripts/agent_sync/README.md.",
     )
@@ -785,7 +785,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--channel",
             type=_channel,
-            default=Z.DEFAULT_CHANNEL,
+            default=channel_default,
             metavar="C",
             help="channel name (default: %(default)s)",
         )
@@ -995,7 +995,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--channel",
         type=_channel,
-        default=Z.DEFAULT_CHANNEL,
+        default=channel_default,
         metavar="C",
         help="channel the topic is in (default: %(default)s)",
     )
@@ -1121,7 +1121,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="CODEX-only: attribute calls from native MCP _meta.threadId; no automatic nosession fallback",
     )
 
-    zulip_cli.add_parsers(sub, common)
+    zulip_cli.add_parsers(sub, common, channel_default)
     listener_cli.add_parsers(sub, common)
     notes_cli.add_parsers(sub, common)
     return parser
@@ -2553,7 +2553,7 @@ def main(
             stdout=rt.stdout,
             stderr=rt.stderr,
         )
-    parser = build_parser()
+    parser = build_parser(Z.default_channel(rt.env))
     try:
         with contextlib.redirect_stdout(rt.stdout), contextlib.redirect_stderr(rt.stderr):
             args = parser.parse_args(argv)

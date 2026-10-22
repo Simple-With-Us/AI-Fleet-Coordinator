@@ -465,7 +465,8 @@ def target_params(agent: Any, *, channel: str | None, topic: str | None, user_id
         return {"type": "direct", "to": sorted(set(int(i) for i in user_ids))}
     if topic is None:
         raise UsageError("a channel message needs a topic")
-    return {"type": "stream", "to": agent.stream_id(channel or Z.DEFAULT_CHANNEL), "topic": check_topic(topic)}
+    env = getattr(getattr(agent, "rt", None), "env", None)
+    return {"type": "stream", "to": agent.stream_id(channel or Z.default_channel(env)), "topic": check_topic(topic)}
 
 
 def scheduled_list(agent: Any) -> list[dict[str, Any]]:
