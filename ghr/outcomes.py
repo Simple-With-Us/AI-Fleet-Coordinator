@@ -9,9 +9,20 @@ unknown.  A definite refusal releases the key, so a rate-limited or rejected
 call can simply be tried again.  A successful replay returns the stored
 result without touching GitHub twice.
 
-The file is rewritten atomically (temp file, fsync, rename, fsync of the
-directory).  A crash between the GitHub call and the record leaves the key
-"pending", which is loaded as "unknown":  fail closed, never replay.
+Durability rules:
+
+- Writes are atomic (temp file, fsync, rename, fsync of the directory).
+- A crash between the GitHub call and the record leaves the key "pending",
+  which is loaded as "unknown":  fail closed, never replay.
+- A registry that cannot be read or fails validation blocks startup with an
+  OutcomeStoreError naming the path and key - an empty stand-in would let a
+  prior side effect run twice.  Before giving up, the loader tries the
+  complete fsynced temp sibling left behind by an interrupted rename;  a
+  good one is promoted into place while the corrupt file is preserved next
+  to it as <path>.corrupt-<ts> for reconciliation.
+- Capacity trimming deletes only explicitly releasable "refused" rows,
+  oldest first.  pending/ok/unknown rows are never evicted:  losing one
+  would re-arm a side effect or lose a cached result.
 """
 
 from __future__ import annotations
@@ -25,10 +36,43 @@ import time
 MAX_ENTRIES = 5000
 STATES = ("pending", "ok", "refused", "unknown")
 
+_KEY_HEX = set("0123456789abcdef")
+
+
+class OutcomeStoreError(RuntimeError):
+    """The persisted registry is unreadable or invalid;  refuse to continue."""
+
 
 def key_for(seat: str, action: str, args: dict) -> str:
     canonical = json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(f"{seat}\0{action}\0{canonical}".encode()).hexdigest()
+
+
+def _validate_row(path: str, key: object, row: object) -> dict:
+    if not isinstance(key, str) or len(key) != 64 or any(ch not in _KEY_HEX for ch in key):
+        raise OutcomeStoreError(f"outcome store {path!r} has an invalid key {key!r}")
+    if not isinstance(row, dict):
+        raise OutcomeStoreError(f"outcome store {path!r} has an invalid row for {key!r}")
+    state = row.get("state")
+    ts = row.get("ts")
+    result = row.get("result")
+    if (
+        not isinstance(state, str)
+        or state not in STATES
+        or isinstance(ts, bool)
+        or not isinstance(ts, (int, float))
+        or (result is not None and not isinstance(result, dict))
+    ):
+        raise OutcomeStoreError(f"outcome store {path!r} has an invalid row for {key!r}")
+    return row
+
+
+def _load_rows(path: str) -> dict:
+    with open(path, encoding="utf-8") as fh:
+        raw = json.load(fh)
+    if not isinstance(raw, dict):
+        raise OutcomeStoreError(f"outcome store {path!r} must contain a JSON object")
+    return {key: _validate_row(path, key, row) for key, row in raw.items()}
 
 
 class OutcomeStore:
@@ -40,18 +84,36 @@ class OutcomeStore:
         self._lock = threading.Lock()
         self._rows: dict[str, dict] = {}
         if path and os.path.exists(path):
-            try:
-                with open(path, encoding="utf-8") as fh:
-                    raw = json.load(fh)
-            except (OSError, ValueError):
-                raw = {}
-            if isinstance(raw, dict):
-                for key, row in raw.items():
-                    if isinstance(row, dict) and row.get("state") in STATES:
-                        self._rows[key] = row
+            self._rows = self._load_with_recovery(path)
             for row in self._rows.values():
                 if row["state"] == "pending":
                     row["state"] = "unknown"  # crashed mid-write: the outcome is unknown
+
+    def _load_with_recovery(self, path: str) -> dict:
+        try:
+            return _load_rows(path)
+        except (OSError, ValueError, OutcomeStoreError) as exc:
+            corrupt = exc
+        # The final name is damaged.  A write that was interrupted between the
+        # fsynced temp file and the rename leaves a complete sibling:  promote
+        # it, preserving the bad file for reconciliation.  Anything else fails
+        # closed so a prior side effect can never be silently re-armed.
+        tmp = path + ".tmp"
+        try:
+            rows = _load_rows(tmp)
+        except (OSError, ValueError, OutcomeStoreError):
+            if isinstance(corrupt, OutcomeStoreError):
+                # The registry parsed far enough to name the precise bad key:
+                # surface that error so reconciliation starts from specifics.
+                raise corrupt
+            raise OutcomeStoreError(
+                f"outcome store {path!r} is unreadable or corrupt; refusing to continue"
+            ) from corrupt
+        preserved = f"{path}.corrupt-{int(self._clock())}"
+        os.replace(path, preserved)
+        self._rows = rows
+        self._save()
+        return rows
 
     def begin(self, key: str) -> dict | None:
         """Mark a key in flight;  return the existing row when the key is already taken."""
@@ -73,10 +135,16 @@ class OutcomeStore:
             self._save()
 
     def _trim(self) -> None:
-        if len(self._rows) > MAX_ENTRIES:
-            oldest = sorted(self._rows.items(), key=lambda kv: kv[1].get("ts", 0))
-            for key, _ in oldest[: len(self._rows) - MAX_ENTRIES]:
-                del self._rows[key]
+        excess = len(self._rows) - MAX_ENTRIES
+        if excess <= 0:
+            return
+        removable = sorted(
+            (row.get("ts", 0), key)
+            for key, row in self._rows.items()
+            if row.get("state") == "refused"
+        )
+        for _, key in removable[:excess]:
+            del self._rows[key]
 
     def _save(self) -> None:
         if not self._path:

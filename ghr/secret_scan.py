@@ -40,3 +40,44 @@ def reject_secrets(field: str, value: object) -> None:
         raise ValueError(
             f"{field} looks like it contains a credential ({name}); refusing to relay it"
         )
+
+
+MAX_SCAN_DEPTH = 8
+MAX_SCAN_ENTRIES_PER_LEVEL = 64
+
+
+class SecretInputError(ValueError):
+    """A seat-supplied field anywhere in the request carries a credential shape.
+
+    Carries only the dotted field path and the pattern name - never the value.
+    """
+
+    def __init__(self, field_path: str, pattern_name: str):
+        super().__init__(
+            f"{field_path} looks like it contains a credential ({pattern_name}); "
+            "refusing to relay it"
+        )
+        self.field_path = field_path
+        self.pattern_name = pattern_name
+
+
+def scan_args(value: object, path: str = "args", _depth: int = 0) -> None:
+    """Refuse a request when any nested string field matches a credential shape.
+
+    Bounded like the audit cleaner (8 levels, 64 entries per level) so a
+    hostile payload cannot make the scan itself unbounded.
+    """
+    if _depth > MAX_SCAN_DEPTH:
+        return
+    if isinstance(value, str):
+        name = find_secret(value)
+        if name:
+            raise SecretInputError(path, name)
+        return
+    if isinstance(value, dict):
+        for key, item in list(value.items())[:MAX_SCAN_ENTRIES_PER_LEVEL]:
+            scan_args(item, f"{path}.{key}", _depth + 1)
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(list(value)[:MAX_SCAN_ENTRIES_PER_LEVEL]):
+            scan_args(item, f"{path}[{index}]", _depth + 1)

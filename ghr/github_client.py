@@ -28,12 +28,33 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class RelayGitHubError(Exception):
-    """A GitHub call failed; carries the status code, never the token."""
+    """A GitHub call failed; carries the status code, never the token.
 
-    def __init__(self, status: int, message: str):
+    code preserves a machine-readable upstream error code (a REST ``code`` or a
+    GraphQL error ``type``) so the server can classify definite auth failures
+    such as ``invalid_grant`` without parsing prose.  retry_after carries the
+    integer Retry-After seconds a 429/403 response asked for, when present.
+    """
+
+    def __init__(self, status: int, message: str, code: str | None = None, retry_after=None):
         super().__init__(f"github {status}: {message}")
         self.status = status
         self.message = message
+        self.code = code
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(headers) -> "int | None":
+    raw = headers.get("Retry-After") if headers is not None else None
+    # int() accepts "+5" and unicode digits isdigit() would pass;  accept only
+    # a plain ASCII decimal so a malformed header can never crash the handler.
+    if raw and all("0" <= ch <= "9" for ch in raw):
+        try:
+            value = int(raw)
+        except ValueError:
+            return None
+        return value if value >= 0 else None
+    return None
 
 
 class GitHubClient:
@@ -66,11 +87,29 @@ class GitHubClient:
                 raw = resp.read(MAX_BODY + 1)
         except urllib.error.HTTPError as exc:
             preview = exc.read(MAX_ERROR_PREVIEW).decode("utf-8", "replace")
+            code = None
             try:
-                message = json.loads(preview).get("message") or preview
+                body = json.loads(preview)
             except json.JSONDecodeError:
+                body = None
+            if isinstance(body, dict):
+                message = body.get("message") or preview
+                if isinstance(body.get("code"), str):
+                    code = body["code"]
+                else:
+                    errs = body.get("errors")
+                    if isinstance(errs, list) and errs and isinstance(errs[0], dict):
+                        first = errs[0].get("code") or errs[0].get("type")
+                        if isinstance(first, str):
+                            code = first
+            else:
                 message = preview
-            raise RelayGitHubError(exc.code, message[:MAX_ERROR_PREVIEW]) from exc
+            raise RelayGitHubError(
+                exc.code,
+                message[:MAX_ERROR_PREVIEW],
+                code=code,
+                retry_after=_retry_after_seconds(exc.headers),
+            ) from exc
         except urllib.error.URLError as exc:
             raise RelayGitHubError(0, f"connection failed: {exc.reason}") from exc
         except (OSError, http.client.HTTPException) as exc:
@@ -180,7 +219,11 @@ class GitHubClient:
             first = errors[0] if isinstance(errors, list) and errors else {}
             kind = first.get("type") if isinstance(first, dict) else None
             detail = f" ({kind})" if isinstance(kind, str) and kind else ""
-            raise RelayGitHubError(0, f"graphql resolveReviewThread failed{detail}")
+            raise RelayGitHubError(
+                0,
+                f"graphql resolveReviewThread failed{detail}",
+                code=kind if isinstance(kind, str) and kind else None,
+            )
         payload_data = data.get("data")
         thread = (
             (payload_data.get("resolveReviewThread") or {}).get("thread")

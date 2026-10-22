@@ -29,7 +29,7 @@ from .audit import AuditLog
 from .github_client import GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, key_for
 from .policy import PolicyError, SeatPolicy
-from .secret_scan import reject_secrets
+from .secret_scan import reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_TEXT_FIELD = 32 * 1024
@@ -104,74 +104,124 @@ class Relay:
             return 401, {"error": "unauthenticated"}
         repo = str(args.get("repo") or "")
         key = None
-        if action in SeatPolicy.VALID_ACTIONS + SeatPolicy.APP_ACTIONS and action != "mint_token":
-            # Idempotency gate for non-idempotent writes:  mint_token is exempt
-            # because it returns a credential (never cached) and a re-mint is
-            # safe - the minter cache and its lock already cover it.
-            key = key_for(seat, action, args)
-            prior = self.outcomes.begin(key)
-            if prior is not None:
-                if prior["state"] == "ok":
-                    self.audit.record(seat, action, repo, "ok", {"idempotent_replay": True})
-                    return 200, dict(prior.get("result") or {})
-                self.audit.record(seat, action, repo, "duplicate_refused", {})
-                return 409, {
-                    "error": "an identical request is in flight or its outcome is "
-                    "unknown; refusing to replay",
-                    "outcome": prior["state"],
-                    "retryable": False,
-                }
+        # Every allowed or denied call writes exactly one audit row, from the
+        # finally block below:  no branch (including an unexpected exception
+        # from key_for, the outcome store, or dispatch) can skip it or double it.
+        outcome = "ok"
+        detail: dict = {}
         try:
-            result = self._dispatch(seat, action, args, repo)
-        except PolicyDenied as exc:
-            self._release(key, "refused")
-            self.audit.record(seat, action, repo, "denied", {"reason": str(exc)})
-            return 403, {"error": str(exc)}
-        except ServerUnavailable as exc:
-            self._release(key, "refused")
-            self.audit.record(seat, action, repo, "unavailable", {"reason": str(exc)})
-            return 503, {"error": str(exc)}
-        except AppTokenError:
-            # The mint failed before any GitHub write was attempted:  definite
-            # refusal, the key is released, the seat can retry as-is.
-            self._release(key, "refused")
-            self.audit.record(seat, action, repo, "unavailable", {"error": "app_token_error"})
-            return 503, {"error": "app-token minting failed"}
-        except ValueError as exc:
-            self._release(key, "refused")
-            self.audit.record(seat, action, repo, "bad_request", {"reason": str(exc)})
-            return 400, {"error": str(exc)}
-        except RelayGitHubError as exc:
-            # Audit only allow-listed scalar fields:  an upstream error message
-            # can carry response-body content, so it is never logged.
-            if exc.status == 0 or exc.status >= 500:
-                # Transport failure or 5xx:  GitHub may have accepted the write.
-                # The outcome is unknown;  the key is held and replay is refused.
-                self._release(key, "unknown")
-                self.audit.record(seat, action, repo, "github_unknown", {"status": exc.status})
-                return 502, {
-                    "error": "github call outcome unknown",
+            if (
+                action in SeatPolicy.VALID_ACTIONS + SeatPolicy.APP_ACTIONS
+                and action != "mint_token"
+            ):
+                # Idempotency gate for non-idempotent writes:  mint_token is exempt
+                # because it returns a credential (never cached) and a re-mint is
+                # safe - the minter cache and its lock already cover it.
+                key = key_for(seat, action, args)
+                prior = self.outcomes.begin(key)
+                if prior is not None:
+                    if prior["state"] == "ok":
+                        detail = {"idempotent_replay": True}
+                        return 200, dict(prior.get("result") or {})
+                    outcome = "duplicate_refused"
+                    return 409, {
+                        "error": "an identical request is in flight or its outcome is "
+                        "unknown; refusing to replay",
+                        "outcome": prior["state"],
+                        "retryable": False,
+                    }
+            try:
+                # Credential-shaped input is refused before any dispatch or
+                # side effect (SecretInputError is a ValueError).
+                scan_args(args)
+                result = self._dispatch(seat, action, args, repo)
+            except PolicyDenied as exc:
+                self._release(key, "refused")
+                outcome = "denied"
+                detail = {"reason": str(exc)}
+                return 403, {"error": str(exc)}
+            except ServerUnavailable as exc:
+                self._release(key, "refused")
+                outcome = "unavailable"
+                detail = {"reason": str(exc)}
+                return 503, {"error": str(exc)}
+            except AppTokenError:
+                # The mint failed before any GitHub write was attempted:  definite
+                # refusal, the key is released, the seat can retry as-is.
+                self._release(key, "refused")
+                outcome = "unavailable"
+                detail = {"error": "app_token_error"}
+                return 503, {"error": "app-token minting failed"}
+            except ValueError as exc:
+                self._release(key, "refused")
+                outcome = "bad_request"
+                detail = {"reason": str(exc)}
+                return 400, {"error": str(exc)}
+            except RelayGitHubError as exc:
+                # Audit only allow-listed scalar fields:  an upstream error message
+                # can carry response-body content, so it is never logged.
+                if exc.code == "invalid_grant":
+                    # A definite credential-grant refusal:  nothing was written,
+                    # the key is released, and a fixed credential may retry.
+                    self._release(key, "refused")
+                    outcome = "github_auth"
+                    detail = {"status": exc.status}
+                    return 503, {
+                        "error": "github refused the credential grant",
+                        "github_status": exc.status,
+                        "retryable": True,
+                    }
+                if exc.status in (0, 408) or exc.status >= 500:
+                    # Transport failure, timeout, or 5xx:  GitHub may have accepted
+                    # the write.  The outcome is unknown;  the key is held and
+                    # replay is refused until the outcome is resolved.
+                    self._release(key, "unknown")
+                    outcome = "github_unknown"
+                    detail = {"status": exc.status}
+                    return 502, {
+                        "error": "github call outcome unknown",
+                        "github_status": exc.status,
+                        "retryable": False,
+                        "outcome": "unknown",
+                    }
+                if exc.status == 429:
+                    # Rate limited before the write ran:  a definite refusal.
+                    # The key is released and the seat may retry, honoring any
+                    # Retry-After GitHub asked for.
+                    self._release(key, "refused")
+                    outcome = "github_retryable"
+                    detail = {"status": exc.status}
+                    payload = {
+                        "error": "github rate limited the request",
+                        "github_status": exc.status,
+                        "retryable": True,
+                    }
+                    if exc.retry_after is not None:
+                        payload["retry_after_seconds"] = exc.retry_after
+                        detail["retry_after_seconds"] = exc.retry_after
+                    return 429, payload
+                self._release(key, "refused")
+                outcome = "github_terminal"
+                detail = {"status": exc.status}
+                return 400, {
+                    "error": "github refused the request",
                     "github_status": exc.status,
                     "retryable": False,
-                    "outcome": "unknown",
                 }
-            self._release(key, "refused")
-            self.audit.record(seat, action, repo, "github_terminal", {"status": exc.status})
-            if exc.status == 429:
-                return 429, {
-                    "error": "github rate limited the request",
-                    "github_status": exc.status,
-                    "retryable": True,
-                }
-            return 400, {
-                "error": "github refused the request",
-                "github_status": exc.status,
-                "retryable": False,
-            }
-        if key is not None:
-            self.outcomes.finish(key, "ok", result)
-        self.audit.record(seat, action, repo, "ok", {**args, **result})
-        return 200, result
+            if key is not None:
+                self.outcomes.finish(key, "ok", result)
+            detail = {**args, **result}
+            return 200, result
+        except Exception as exc:
+            # An unexpected relay failure:  whether GitHub was reached is
+            # unknowable here, so hold the key as unknown (fail closed) and
+            # still record the audit row in finally.
+            self._release(key, "unknown")
+            outcome = "error"
+            detail = {"exception": type(exc).__name__}
+            return 500, {"error": "internal relay error"}
+        finally:
+            self.audit.record(seat, action, repo, outcome, detail)
 
     def _release(self, key: str | None, state: str) -> None:
         if key is not None:
