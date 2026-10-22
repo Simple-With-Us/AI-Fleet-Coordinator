@@ -1,16 +1,19 @@
 import Foundation
 
-// A general wrapper around the `fleet-config` engine (`python3 -m fleet_config`, run from the
-// repository's scripts directory).  Nothing here is specific to apply:  any view can run any
-// verb through `FleetConfigRunning`, and tests substitute a fake runner.
+// A general wrapper around the `fleet-config` engine.  Nothing here is specific to apply:  any
+// view can run any verb through `FleetConfigRunning`, and tests substitute a fake runner.
 //
-// Safety properties, each pinned by a test:
+// What it does to limit what can influence the engine (and what it does not):
+//   * the interpreter is the absolute /usr/bin/python3, started isolated (`-I -B`), with the
+//     validated repository's scripts directory put on sys.path by a fixed bootstrap;  the root
+//     reaches the bootstrap as an argv element, never inside the code string
 //   * arguments are an argv array, never a shell string, and seat and kind tokens are validated
-//   * the interpreter is the absolute /usr/bin/python3
 //   * the engine's global flags (--manifest, --registry, --home) are never passed
-//   * the child environment drops FLEET_CONFIG_* and PYTHON* variables, so nothing in the app's
-//     environment can point the engine at a stand-in helper or a different module path
-//   * the Touch ID gate lives inside the engine;  this file never reaches it
+//   * the child gets an allow-listed environment (HOME, USER, LOGNAME, TMPDIR, LANG, LC_ALL and a
+//     fixed PATH), so ambient variables cannot redirect the engine
+//   * the repository root is validated before every run (FleetConfigRepoValidation.swift)
+// This is hygiene, not a sandbox:  the engine is code from the validated checkout, and it can do
+// whatever the user can.  The Touch ID gate lives inside the engine, which this file never reaches.
 
 // MARK: - Invocation
 
@@ -81,6 +84,14 @@ struct FleetConfigCLIResult: Equatable {
     var stdout: String
     var stderr: String
     var timedOut: Bool = false
+    /// True when the process ended on an uncaught signal;  `exitCode` is then the signal number.
+    var endedBySignal: Bool = false
+
+    /// A timeout or a signal means the exit code says nothing about the engine's verdict.
+    func requireCompleted(timeout: TimeInterval) throws {
+        if timedOut { throw FleetConfigCLIError.timedOut(Int(timeout)) }
+        if endedBySignal { throw FleetConfigCLIError.endedBySignal(exitCode) }
+    }
 
     /// The last few non-empty stderr lines, bounded, for showing a refusal or an error.
     var stderrTail: String {
@@ -94,9 +105,9 @@ struct FleetConfigCLIResult: Equatable {
 
 enum FleetConfigCLIError: Error, Equatable, LocalizedError {
     case invalidArgument(String)
-    case engineNotFound(String)
     case launchFailed(String)
     case timedOut(Int)
+    case endedBySignal(Int32)
     case outputTooLarge
     case engineRefused(exitCode: Int32, message: String)
     case undecodable(String)
@@ -106,15 +117,19 @@ enum FleetConfigCLIError: Error, Equatable, LocalizedError {
         switch self {
         case .invalidArgument(let label):
             return "The \(label) value is not a plain token, so nothing was run."
-        case .engineNotFound(let path):
-            return ApplyCopy.join(
-                "The fleet-config engine was not found at \(path).",
-                "Set the fleetConfigRepoRoot default or the MUSTER_REPO_ROOT variable to the repository root."
-            )
         case .launchFailed(let detail):
             return "The fleet-config engine could not be started: \(detail)"
         case .timedOut(let seconds):
-            return "The fleet-config engine did not finish within \(seconds) seconds."
+            return ApplyCopy.join(
+                "The fleet-config engine did not finish within \(seconds) seconds and was stopped.",
+                "Installers it started may still be running.",
+                "A cell is re-proved only after the engine exits, so its state may not reflect them yet."
+            )
+        case .endedBySignal(let signal):
+            return ApplyCopy.join(
+                "The fleet-config engine was ended by signal \(signal) before it finished.",
+                "Installers it started may still be running."
+            )
         case .outputTooLarge:
             return "The fleet-config engine produced more output than Muster will read."
         case .engineRefused(let code, let message):
@@ -130,103 +145,62 @@ enum FleetConfigCLIError: Error, Equatable, LocalizedError {
 
 // MARK: - Location
 
-/// Where the engine lives.  The repository root is a setting:  the `fleetConfigRepoRoot` user
-/// default, then the `MUSTER_REPO_ROOT` environment variable, then `~/Code/AI-Fleet-Coordinator`.
+/// Where the engine lives.  The root is a setting read from Muster's persistent preferences only
+/// (`defaults write services.jays.Muster fleetConfigRepoRoot PATH`), never from the environment or
+/// the launch arguments, and then falls back to `~/Code/AI-Fleet-Coordinator`.  Wherever it points,
+/// `FleetConfigRootValidator` decides whether it may run.
 struct FleetConfigLocation: Equatable {
     static let defaultsKey = "fleetConfigRepoRoot"
-    static let environmentKey = "MUSTER_REPO_ROOT"
 
     var repoRoot: URL
 
     var scriptsDirectory: URL { repoRoot.appendingPathComponent("scripts", isDirectory: true) }
-    var engineEntryPoint: URL {
-        scriptsDirectory.appendingPathComponent("fleet_config/__main__.py")
+
+    /// The persistent app domain.  `UserDefaults.standard.string(forKey:)` would also see the
+    /// argument domain, which any process can fill with `-fleetConfigRepoRoot X`.
+    static func appPersistentSettings() -> [String: Any]? {
+        guard let identifier = Bundle.main.bundleIdentifier else { return nil }
+        return UserDefaults.standard.persistentDomain(forName: identifier)
     }
 
     static func resolve(
-        defaults: UserDefaults = .standard,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
+        persistentSettings: [String: Any]? = FleetConfigLocation.appPersistentSettings(),
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> FleetConfigLocation {
-        func expanded(_ raw: String) -> URL {
-            URL(fileURLWithPath: (raw as NSString).expandingTildeInPath, isDirectory: true)
-        }
-        if let saved = defaults.string(forKey: defaultsKey), !saved.isEmpty {
-            return FleetConfigLocation(repoRoot: expanded(saved))
-        }
-        if let fromEnvironment = environment[environmentKey], !fromEnvironment.isEmpty {
-            return FleetConfigLocation(repoRoot: expanded(fromEnvironment))
+        if let saved = persistentSettings?[defaultsKey] as? String, !saved.isEmpty {
+            let expanded = (saved as NSString).expandingTildeInPath
+            return FleetConfigLocation(repoRoot: URL(fileURLWithPath: expanded, isDirectory: true))
         }
         return FleetConfigLocation(
             repoRoot: home.appendingPathComponent("Code/AI-Fleet-Coordinator", isDirectory: true)
         )
     }
-
-    func validate(fileManager: FileManager = .default) throws {
-        guard fileManager.fileExists(atPath: engineEntryPoint.path) else {
-            throw FleetConfigCLIError.engineNotFound(engineEntryPoint.path)
-        }
-    }
 }
 
-// MARK: - Runner
+// MARK: - Process
 
-protocol FleetConfigRunning: Sendable {
-    func run(_ invocation: FleetConfigInvocation) async throws -> FleetConfigCLIResult
-}
-
-struct FleetConfigCLI: FleetConfigRunning {
-    static let interpreter = "/usr/bin/python3"
+enum FleetConfigProcess {
     static let maximumOutputBytes = 8 * 1024 * 1024
 
-    var location: @Sendable () -> FleetConfigLocation
-
-    init(location: @escaping @Sendable () -> FleetConfigLocation = { FleetConfigLocation.resolve() }) {
-        self.location = location
-    }
-
-    /// The child environment.  Variables that could redirect the engine's helper or its module
-    /// search path are dropped, and bytecode is not written into the repository.
-    static func sanitizedEnvironment(_ environment: [String: String]) -> [String: String] {
-        var result = environment.filter { key, _ in
-            !key.hasPrefix("FLEET_CONFIG") && !key.hasPrefix("PYTHON")
-        }
-        result["PYTHONDONTWRITEBYTECODE"] = "1"
-        return result
-    }
-
-    static func processArguments(for invocation: FleetConfigInvocation) -> [String] {
-        ["-m", "fleet_config"] + invocation.arguments
-    }
-
-    func run(_ invocation: FleetConfigInvocation) async throws -> FleetConfigCLIResult {
-        let resolved = location()
-        try resolved.validate()
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    continuation.resume(returning: try Self.runBlocking(invocation, at: resolved))
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
-    private final class TimeoutFlag: @unchecked Sendable {
+    private final class Flag: @unchecked Sendable {
         private let lock = NSLock()
         private var value = false
         func set() { lock.lock(); value = true; lock.unlock() }
         var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
     }
 
-    private static func runBlocking(
-        _ invocation: FleetConfigInvocation,
-        at location: FleetConfigLocation
+    /// Runs one child to completion.  Output goes to files, not pipes:  nothing can deadlock on a
+    /// full pipe, and a child that outlives the app never takes a SIGPIPE.  On timeout the child
+    /// gets SIGTERM, then SIGKILL after a short grace.  Blocking:  call from a background queue.
+    static func run(
+        executable: String,
+        arguments: [String],
+        currentDirectory: URL,
+        environment: [String: String],
+        timeout: TimeInterval,
+        grace: TimeInterval = 3
     ) throws -> FleetConfigCLIResult {
         let fileManager = FileManager.default
-        // Output goes to files, not pipes:  nothing can deadlock on a full pipe, and a child
-        // that outlives the app never takes a SIGPIPE when it prints its last line.
         let scratch = fileManager.temporaryDirectory
             .appendingPathComponent("muster-cli-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(
@@ -242,10 +216,10 @@ struct FleetConfigCLI: FleetConfigRunning {
         let stderrHandle = try FileHandle(forWritingTo: stderrURL)
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: interpreter)
-        process.arguments = processArguments(for: invocation)
-        process.currentDirectoryURL = location.scriptsDirectory
-        process.environment = sanitizedEnvironment(ProcessInfo.processInfo.environment)
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.currentDirectoryURL = currentDirectory
+        process.environment = environment
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle
@@ -257,12 +231,17 @@ struct FleetConfigCLI: FleetConfigRunning {
             throw FleetConfigCLIError.launchFailed(error.localizedDescription)
         }
 
-        let flag = TimeoutFlag()
+        let timedOut = Flag()
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        timer.schedule(deadline: .now() + invocation.timeout)
+        timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler {
-            flag.set()
-            if process.isRunning { process.terminate() }
+            // Only a process that is still running was timed out;  one that just exited was not.
+            guard process.isRunning else { return }
+            timedOut.set()
+            process.terminate()
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + grace) {
+                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
         }
         timer.resume()
         process.waitUntilExit()
@@ -270,13 +249,12 @@ struct FleetConfigCLI: FleetConfigRunning {
         try? stdoutHandle.close()
         try? stderrHandle.close()
 
-        let stdout = try read(stdoutURL)
-        let stderr = try read(stderrURL)
         return FleetConfigCLIResult(
             exitCode: process.terminationStatus,
-            stdout: stdout,
-            stderr: stderr,
-            timedOut: flag.isSet
+            stdout: try read(stdoutURL),
+            stderr: try read(stderrURL),
+            timedOut: timedOut.isSet,
+            endedBySignal: process.terminationReason == .uncaughtSignal
         )
     }
 
@@ -286,5 +264,84 @@ struct FleetConfigCLI: FleetConfigRunning {
         let data = try handle.read(upToCount: maximumOutputBytes + 1) ?? Data()
         if data.count > maximumOutputBytes { throw FleetConfigCLIError.outputTooLarge }
         return String(decoding: data, as: UTF8.self)
+    }
+}
+
+// MARK: - Runner
+
+protocol FleetConfigRunning: Sendable {
+    func run(_ invocation: FleetConfigInvocation) async throws -> FleetConfigCLIResult
+    /// Validates the repository root and reports the commit the engine would run from.
+    func resolveRoot() async throws -> FleetConfigRootStatus
+}
+
+struct FleetConfigCLI: FleetConfigRunning {
+    static let interpreter = "/usr/bin/python3"
+
+    /// Runs the engine package from the validated root.  The root is `sys.argv[1]`;  it is removed
+    /// before the engine starts, so the engine sees exactly the arguments the caller passed.
+    static let bootstrap = """
+    import runpy, sys
+    root = sys.argv.pop(1)
+    sys.path.insert(0, root + "/scripts")
+    runpy.run_module("fleet_config", run_name="__main__", alter_sys=True)
+    """
+
+    var location: @Sendable () -> FleetConfigLocation
+    var rootCheck: @Sendable (FleetConfigLocation) throws -> FleetConfigRootStatus
+
+    init(
+        location: @escaping @Sendable () -> FleetConfigLocation = { FleetConfigLocation.resolve() },
+        rootCheck: @escaping @Sendable (FleetConfigLocation) throws -> FleetConfigRootStatus = {
+            try FleetConfigRootValidator.validate($0)
+        }
+    ) {
+        self.location = location
+        self.rootCheck = rootCheck
+    }
+
+    /// The child environment is an allow-list, not a filtered copy:  nothing else is passed.
+    static func childEnvironment(from environment: [String: String]) -> [String: String] {
+        var result = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
+        for key in ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL"] {
+            if let value = environment[key], !value.isEmpty { result[key] = value }
+        }
+        return result
+    }
+
+    static func processArguments(for invocation: FleetConfigInvocation, rootPath: String) -> [String] {
+        ["-I", "-B", "-c", bootstrap, rootPath] + invocation.arguments
+    }
+
+    func resolveRoot() async throws -> FleetConfigRootStatus {
+        let resolved = location()
+        let check = rootCheck
+        return try await Self.background { try check(resolved) }
+    }
+
+    func run(_ invocation: FleetConfigInvocation) async throws -> FleetConfigCLIResult {
+        let resolved = location()
+        let check = rootCheck
+        return try await Self.background {
+            // Validated again at every start:  a reset between plan and apply is caught here.
+            let root = try check(resolved)
+            return try FleetConfigProcess.run(
+                executable: interpreter,
+                arguments: processArguments(for: invocation, rootPath: root.path),
+                currentDirectory: URL(fileURLWithPath: root.path).appendingPathComponent("scripts"),
+                environment: childEnvironment(from: ProcessInfo.processInfo.environment),
+                timeout: invocation.timeout
+            )
+        }
+    }
+
+    private static func background<T: Sendable>(
+        _ work: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do { continuation.resume(returning: try work()) } catch { continuation.resume(throwing: error) }
+            }
+        }
     }
 }

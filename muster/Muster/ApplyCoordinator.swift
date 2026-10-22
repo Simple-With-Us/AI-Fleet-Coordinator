@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 import UserNotifications
@@ -87,31 +88,62 @@ final class ApplyCoordinator: ObservableObject {
     @Published private(set) var sessions: [ApplySession] = []
     /// The session shown in the sheet.  Dismissing the sheet never touches the apply.
     @Published var presentedSessionID: UUID?
-    /// The latest proof for each rule an apply has re-checked, keyed by `key(seat:ruleID:)`.
-    @Published private(set) var provenResults: [String: FleetConfigResult] = [:]
+    /// The latest re-proof for each rule an apply has re-checked, keyed by `key(seat:ruleID:)`.
+    @Published private(set) var proofs: [String: Proof] = [:]
+
+    struct Proof: Equatable {
+        var result: FleetConfigResult
+        var provenAt: Date
+    }
+
+    /// A stored proof older than this reads as unknown.  It mirrors the engine's 15 minute TTL.
+    static let proofMaxAge: TimeInterval = 15 * 60
 
     private let runner: FleetConfigRunning
     private let notifier: ApplyNotifying
+    private let now: () -> Date
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var activity: NSObjectProtocol?
 
     init(
         runner: FleetConfigRunning = FleetConfigCLI(),
-        notifier: ApplyNotifying = SystemApplyNotifier()
+        notifier: ApplyNotifying = SystemApplyNotifier(),
+        now: @escaping () -> Date = Date.init
     ) {
         self.runner = runner
         self.notifier = notifier
+        self.now = now
     }
 
     nonisolated static func key(seat: String, ruleID: String) -> String { "\(seat)/\(ruleID)" }
 
     func session(id: UUID) -> ApplySession? { sessions.first { $0.id == id } }
 
+    /// The latest re-proof, or an explicit unknown marker when it has expired.  Nil when no apply
+    /// has re-proved this rule in this run.
     func latestResult(seat: String, ruleID: String) -> FleetConfigResult? {
-        provenResults[Self.key(seat: seat, ruleID: ruleID)]
+        guard let proof = proofs[Self.key(seat: seat, ruleID: ruleID)] else { return nil }
+        guard now().timeIntervalSince(proof.provenAt) <= Self.proofMaxAge else {
+            return Self.unknownMarker(
+                for: proof.result,
+                reason: "The last proof is more than 15 minutes old, so the cell reads as unknown."
+            )
+        }
+        return proof.result
     }
 
-    var hasWorkInFlight: Bool { sessions.contains { $0.isInFlight } }
+    /// True while an engine run may be writing.  Planning is read-only and does not count.
+    var hasWorkInFlight: Bool { sessions.contains(where: \.isWriting) }
+
+    static func unknownMarker(for result: FleetConfigResult, reason: String) -> FleetConfigResult {
+        var marker = result
+        marker.state = .unknown
+        marker.reason = reason
+        marker.reasonCode = "reproof-unavailable"
+        marker.failing = true
+        marker.stale = true
+        return marker
+    }
 
     // MARK: Plan
 
@@ -165,15 +197,18 @@ final class ApplyCoordinator: ObservableObject {
     }
 
     private func readPlan(seat: String, kind: String?) async throws -> ApplyPlan {
+        let root = try await runner.resolveRoot()
         let invocation = try FleetConfigInvocation.planApply(seat: seat, kind: kind)
         let result = try await runner.run(invocation)
-        if result.timedOut { throw FleetConfigCLIError.timedOut(Int(invocation.timeout)) }
+        try result.requireCompleted(timeout: invocation.timeout)
         guard result.exitCode == 0 else {
             throw FleetConfigCLIError.engineRefused(
                 exitCode: result.exitCode, message: result.stderrTail
             )
         }
-        return try ApplyPlanParser.parse(result.stdout)
+        var plan = try ApplyPlanParser.parse(result.stdout)
+        plan.root = root
+        return plan
     }
 
     // MARK: Apply
@@ -186,6 +221,17 @@ final class ApplyCoordinator: ObservableObject {
               let target = reviewed.entry(ruleID: session.ruleID),
               target.autofix.isAllowed,
               tasks[sessionID] == nil else { return }
+        // One apply at a time across the whole app:  the engine has no lock, so two concurrent
+        // runs could write the same files.  A second confirm is refused, not queued.
+        if let running = sessions.first(where: { $0.isWriting && $0.id != sessionID }) {
+            update(sessionID) {
+                $0.notice = ApplyCopy.join(
+                    "Another apply is running (\(running.ruleID) on \(running.seat)).",
+                    "Wait for it to finish, then apply again."
+                )
+            }
+            return
+        }
         update(sessionID) { $0.phase = .applying(reviewed); $0.notice = nil }
         beginActivity()
         tasks[sessionID] = Task { [weak self] in

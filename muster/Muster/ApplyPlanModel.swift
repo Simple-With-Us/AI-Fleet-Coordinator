@@ -11,8 +11,16 @@ enum ApplyCopy {
     /// A real U+00A0 followed by a space:  the sentence gap for rendered product copy.
     static let sentenceGap = "\u{00A0} "
 
+    /// Joins sentences with the gap.  A fragment without final punctuation gets a period first,
+    /// so engine text such as "user canceled" never runs into the next sentence.
     static func join(_ sentences: String...) -> String {
-        sentences.joined(separator: sentenceGap)
+        sentences.enumerated().map { index, raw in
+            var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard index < sentences.count - 1, !text.isEmpty else { return text }
+            while let last = text.last, ":;,".contains(last) { text.removeLast() }
+            if let last = text.last, !".!?".contains(last) { text.append(".") }
+            return text
+        }.joined(separator: sentenceGap)
     }
 
     /// Engine text separates sentences and clauses with two ASCII spaces.  Show them with the
@@ -97,6 +105,8 @@ struct ApplyPlan: Equatable {
     var declaredAutofixCount: Int
     var entries: [ApplyPlanEntry]
     var notes: [String]
+    /// The validated engine checkout the plan was read from.  Set by the coordinator.
+    var root: FleetConfigRootStatus?
 
     var autofixable: [ApplyPlanEntry] { entries.filter { $0.autofix.isAllowed } }
     var needsTouchID: Bool { autofixable.contains { $0.isPersistenceClass } }
@@ -108,7 +118,8 @@ struct ApplyPlan: Equatable {
     /// Two plans with the same fingerprint would write the same files for the same reasons.
     /// Apply compares the fingerprint of a fresh plan with the one the owner reviewed.
     var fingerprint: String {
-        entries.map { entry in
+        let rootLine = root.map { "root|\($0.path)|\($0.head)" } ?? "root|none"
+        return ([rootLine] + entries.map { entry in
             [
                 entry.ruleID, entry.kind, entry.platform, entry.state.label,
                 entry.files.joined(separator: ","),
@@ -116,7 +127,7 @@ struct ApplyPlan: Equatable {
                 entry.autofix.isAllowed ? "auto" : "blocked",
                 entry.isPersistenceClass ? "persistent" : "plain",
             ].joined(separator: "|")
-        }.joined(separator: "\n")
+        }).joined(separator: "\n")
     }
 }
 
@@ -271,6 +282,10 @@ struct ApplyReportStep: Equatable {
     var kind: String
     var platform: String
     var detail: String
+    var files: [String] = []
+
+    var isApplied: Bool { outcome == "applied" }
+    var isNotWritten: Bool { outcome == "failed" || outcome == "refused" }
 }
 
 struct ApplyReport: Equatable {
@@ -291,20 +306,18 @@ struct ApplyReport: Equatable {
         let lines = text.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline).map(String.init)
         guard let first = lines.first, first.hasPrefix("Applied ") else { return nil }
         var steps: [ApplyReportStep] = []
-        var details: [String] = []
         var refusal: String?
         var verdict: String?
-
-        func closeStep() {
-            guard !steps.isEmpty else { return }
-            steps[steps.count - 1].detail = details.last ?? ""
-            details = []
-        }
 
         for line in lines.dropFirst() {
             if line.hasPrefix("      ") {
                 let body = line.trimmingCharacters(in: .whitespaces)
-                if !body.hasPrefix("command:"), !body.hasPrefix("file:") { details.append(body) }
+                guard !steps.isEmpty else { continue }
+                if body.hasPrefix("file:") {
+                    steps[steps.count - 1].files.append(ApplyPlanParser.value(of: body, after: "file:"))
+                } else if !body.hasPrefix("command:") {
+                    steps[steps.count - 1].detail = body
+                }
             } else if line.hasPrefix("  ") {
                 let body = line.trimmingCharacters(in: .whitespaces)
                 if body.hasPrefix("REFUSED:") {
@@ -314,7 +327,6 @@ struct ApplyReport: Equatable {
                 } else {
                     let tokens = body.split(whereSeparator: \.isWhitespace).map(String.init)
                     if tokens.count == 4, knownOutcomes.contains(tokens[0]) {
-                        closeStep()
                         steps.append(ApplyReportStep(
                             outcome: tokens[0], ruleID: tokens[1], kind: tokens[2],
                             platform: tokens[3], detail: ""
@@ -323,7 +335,6 @@ struct ApplyReport: Equatable {
                 }
             }
         }
-        closeStep()
         return ApplyReport(steps: steps, refusalReason: refusal, verdictAfter: verdict)
     }
 }
@@ -336,6 +347,8 @@ enum ApplyRefusalKind: Equatable {
     case touchIDHelperProblem
     case notAutoFixable
     case planChanged
+    case untrustedRepository
+    case anotherApplyRunning
     case engineRefused
     case usage
 
@@ -346,6 +359,8 @@ enum ApplyRefusalKind: Equatable {
         case .touchIDHelperProblem: return "Touch ID Helper Problem"
         case .notAutoFixable: return "Not Auto-Fixable"
         case .planChanged: return "The Plan Changed"
+        case .untrustedRepository: return "Repository Not Trusted"
+        case .anotherApplyRunning: return "Another Apply Is Running"
         case .engineRefused: return "Apply Was Refused"
         case .usage: return "Apply Request Was Rejected"
         }
@@ -357,16 +372,45 @@ enum ApplyRefusalKind: Equatable {
         let text = message.lowercased()
         if text.contains("touch id helper") { return .touchIDHelperProblem }
         if text.contains("touch id is not available") { return .touchIDUnavailable }
-        if text.contains("touch id confirmation") || text.contains("touch id") { return .touchIDDeclined }
+        if text.contains("touch id") { return .touchIDDeclined }
         return .engineRefused
     }
 }
 
+/// An apply where the engine wrote some entries and not others.  Every step is accounted for.
+struct ApplyPartialResult: Equatable {
+    var written: [ApplyReportStep]
+    var notWritten: [ApplyReportStep]
+    var reproved: FleetConfigResult?
+
+    /// Multi-line text for the sheet:  what was written and what was not.
+    var detail: String {
+        var lines: [String] = []
+        if written.isEmpty {
+            lines.append("Nothing was written.")
+        } else {
+            lines.append("Written:")
+            lines += written.map { step in
+                "  \(step.ruleID)" + (step.files.isEmpty ? "" : " (" + step.files.map { "~/" + $0 }.joined(separator: ", ") + ")")
+            }
+        }
+        if !notWritten.isEmpty {
+            lines.append("Not written:")
+            lines += notWritten.map { step in
+                "  \(step.ruleID): " + ApplyCopy.normalize(step.detail.isEmpty ? step.outcome : step.detail)
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
 enum ApplyOutcome: Equatable {
-    /// Apply ran and the re-proof of the rule is PASS.
+    /// Every step the engine took succeeded and the re-proof of the rule is PASS.
     case green(FleetConfigResult)
-    /// Apply ran but the re-proof is not PASS.
+    /// Apply ran cleanly but the re-proof is not PASS.
     case stillFailing(FleetConfigResult?)
+    /// The engine wrote some entries and refused or failed others.
+    case partlyApplied(ApplyPartialResult)
     /// The engine or the Touch ID gate refused.  The cell stays as it was.
     case refused(ApplyRefusalKind, String)
     /// An installer failed, the run timed out, or the output was not understood.
@@ -377,28 +421,36 @@ enum ApplyOutcome: Equatable {
         return false
     }
 
-    /// One short, sentence-case line for the in-app status and the notification body.
+    /// One short line for the in-app status and the notification body.
     var summary: String {
         switch self {
         case .green: return "The cell is green again with a fresh proof."
         case .stillFailing(let result):
             if let result { return "Apply finished but the cell is still \(result.state.label.lowercased())." }
             return "Apply finished but the cell could not be re-proved."
+        case .partlyApplied(let partial):
+            return ApplyCopy.join(
+                "Apply was partial:  \(partial.written.count) written, \(partial.notWritten.count) not written.",
+                "Nothing was retried."
+            )
         case .refused(let kind, _): return ApplyCopy.join("\(kind.title).", "Nothing was retried.")
         case .failed: return ApplyCopy.join("Apply failed.", "Nothing was retried.")
         }
     }
 
-    /// Maps what the engine said to an outcome.  Pure, so every refusal path is unit tested.
+    /// Maps what the engine said to an outcome from EVERY step of the report, not only the target.
+    /// Pure, so every path is unit tested.
     static func classify(
         applyResult: FleetConfigCLIResult,
         targetRuleID: String,
         reproved: FleetConfigResult?
     ) -> ApplyOutcome {
         if applyResult.timedOut {
-            return .failed("The apply did not finish in time and was stopped.")
+            return .failed(FleetConfigCLIError.timedOut(Int(FleetConfigInvocation.applyTimeout)).localizedDescription)
         }
-        let report = ApplyReport.parse(applyResult.stdout)
+        if applyResult.endedBySignal {
+            return .failed(FleetConfigCLIError.endedBySignal(applyResult.exitCode).localizedDescription)
+        }
         let tail = applyResult.stderrTail
 
         switch applyResult.exitCode {
@@ -410,7 +462,7 @@ enum ApplyOutcome: Equatable {
             return .failed(tail.isEmpty ? "The engine exited \(applyResult.exitCode)." : tail)
         }
 
-        guard let report else {
+        guard let report = ApplyReport.parse(applyResult.stdout) else {
             // No report means the engine stopped before applying (a bad manifest, or the CLI-level
             // refusal).  Exit 2 is the engine's refusal code.
             if applyResult.exitCode == 2 {
@@ -420,22 +472,36 @@ enum ApplyOutcome: Equatable {
             return .failed(tail.isEmpty ? "The engine output was not an apply report." : tail)
         }
 
-        let step = report.step(ruleID: targetRuleID)
-        if let step, step.outcome == "refused" || (report.refusalReason != nil && step.outcome != "applied") {
-            let message = report.refusalReason ?? step.detail
-            return .refused(ApplyRefusalKind.classify(message: message), message)
+        let written = report.steps.filter(\.isApplied)
+        let notWritten = report.steps.filter(\.isNotWritten)
+        let target = report.step(ruleID: targetRuleID)
+        let targetDone = target.map { $0.isApplied || $0.outcome == "already-current" } ?? false
+
+        if targetDone {
+            if !notWritten.isEmpty {
+                return .partlyApplied(ApplyPartialResult(written: written, notWritten: notWritten, reproved: reproved))
+            }
+        } else {
+            if !written.isEmpty {
+                var missing = notWritten
+                if let target, !target.isNotWritten { missing.append(target) }
+                return .partlyApplied(ApplyPartialResult(written: written, notWritten: missing, reproved: reproved))
+            }
+            if let target, target.outcome == "skipped" {
+                return .refused(.notAutoFixable, target.detail.isEmpty ? "The engine skipped this rule." : target.detail)
+            }
+            if let target, target.outcome == "failed", report.refusalReason == nil {
+                return .failed(target.detail.isEmpty ? "The installer failed." : target.detail)
+            }
+            if let message = report.refusalReason ?? (target?.isNotWritten == true ? target?.detail : nil) {
+                return .refused(ApplyRefusalKind.classify(message: message), message)
+            }
+            if applyResult.exitCode == 2 {
+                let message = "The engine refused the run."
+                return .refused(.engineRefused, message)
+            }
         }
-        if let reason = report.refusalReason, step == nil {
-            return .refused(ApplyRefusalKind.classify(message: reason), reason)
-        }
-        if let step, step.outcome == "skipped" {
-            return .refused(.notAutoFixable, step.detail.isEmpty ? "The engine skipped this rule." : step.detail)
-        }
-        if let step, step.outcome == "failed" {
-            return .failed(step.detail.isEmpty ? "The installer failed." : step.detail)
-        }
-        if applyResult.exitCode == 2 {
-            let message = report.refusalReason ?? "The engine refused the run."
+        if applyResult.exitCode == 2, let message = report.refusalReason {
             return .refused(ApplyRefusalKind.classify(message: message), message)
         }
         guard let reproved else { return .stillFailing(nil) }

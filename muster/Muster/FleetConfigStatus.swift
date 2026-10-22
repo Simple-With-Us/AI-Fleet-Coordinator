@@ -100,7 +100,7 @@ extension FleetConfigRunning {
             seat: seat, kind: kind, platform: platform, includeDoctors: includeDoctors
         )
         let result = try await run(invocation)
-        if result.timedOut { throw FleetConfigCLIError.timedOut(Int(invocation.timeout)) }
+        try result.requireCompleted(timeout: invocation.timeout)
         guard [0, 1, 3].contains(result.exitCode) else {
             throw FleetConfigCLIError.engineRefused(
                 exitCode: result.exitCode, message: result.stderrTail
