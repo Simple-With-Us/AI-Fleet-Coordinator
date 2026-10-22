@@ -216,13 +216,18 @@ class GitUpdateTests(unittest.TestCase):
         self.assertEqual(result["commit"], new)
         self.assertEqual(U.status(self.home)["commit"], new)
         self.assertIsNone(U.status(self.home)["bad"])
+        # The smoke really did read the target's own list, not the running updater's.
+        cases, _scripts, _timeout = U.smoke_settings(self.base() / "repo")
+        self.assertNotIn("simple_notes_version", [case[0] for case in cases])
 
-    def test_the_running_case_list_is_used_when_the_target_has_no_updater_to_read(self) -> None:
+    def test_the_running_settings_are_used_when_the_target_has_no_updater_to_read(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "checkout"
             repo.mkdir()
-            cases = U.smoke_cases(repo)
+            cases, scripts, timeout = U.smoke_settings(repo)
             self.assertEqual(cases, U.SMOKE_CASES)
+            self.assertEqual(scripts, U.BASH_SCRIPTS)
+            self.assertEqual(timeout, U.SMOKE_TIMEOUT)
 
     def test_rollback_returns_to_the_previous_commit_and_skips_the_current_one(self) -> None:
         U.setup(self.home)

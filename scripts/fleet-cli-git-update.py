@@ -19,6 +19,18 @@ Commands:
   status    the live commit, the previous one, and any skipped commit, as JSON.
 
 Never reads credentials.  Python 3.11+, standard library only.
+
+A host that is stuck on an old commit.  The smoke list is read from the commit being tested,
+so a CLI that a release removed cannot fail the smoke and lock a host that runs this
+updater.  A host that runs an updater from before that change can still be stuck, because
+its own list asks for the removed CLI:  recover it by running the target's updater once, so
+the smoke reads the target's own list.
+
+    cd ~/.local/share/fleet-cli/repo && git checkout --detach origin/main
+    python3 -I scripts/fleet-cli-git-update.py update
+
+If the state file still remembers the target as bad, clear it first:  the `bad`, `bad_reason`
+and `checked_at` keys in ~/.local/share/fleet-cli/git-state.json.
 """
 
 from __future__ import annotations
@@ -150,15 +162,15 @@ def save_state(path: Path, state: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def smoke_cases(repo: Path) -> tuple[tuple[str, str, list[str], int], ...]:
-    """The cases to smoke, taken from the checkout being tested.
+def smoke_settings(repo: Path) -> tuple[tuple[tuple[str, str, list[str], int], ...], frozenset[str], int]:
+    """The smoke's own settings, taken from the checkout being tested.
 
-    The running updater's own list is not the right one:  when a release removes a CLI, the
+    The running updater's settings are not the right ones:  when a release removes a CLI, the
     installed updater still asks for it, the target checkout no longer ships it, and the smoke
     fails on a file that is meant to be gone.  That deadlock held a host on an old commit for
-    hours (the Oct 22, 2026 cutover from agent-sync to simple-chat).  The target's own list is
-    what must work, so read it from the target;  fall back to the running list when the target
-    has no updater to read.
+    hours (the Oct 22, 2026 cutover from agent-sync to simple-chat).  The target's own settings
+    are what must work, so read them from the target;  fall back to the running ones when the
+    target has no updater to read.
     """
     target = repo / "scripts/fleet-cli-git-update.py"
     if target.exists():
@@ -168,28 +180,31 @@ def smoke_cases(repo: Path) -> tuple[tuple[str, str, list[str], int], ...]:
             spec.loader.exec_module(module)
             cases = tuple(getattr(module, "SMOKE_CASES", ()))
             if cases:
-                return cases
-        except Exception:  # a broken target falls back to the running list, which still smokes
+                scripts = frozenset(getattr(module, "BASH_SCRIPTS", BASH_SCRIPTS))
+                timeout = int(getattr(module, "SMOKE_TIMEOUT", SMOKE_TIMEOUT))
+                return cases, scripts, timeout
+        except Exception:  # a broken target falls back to the running settings, which still smoke
             pass
-    return SMOKE_CASES
+    return SMOKE_CASES, BASH_SCRIPTS, SMOKE_TIMEOUT
 
 
 def smoke(repo: Path) -> None:
     """Every fleet command starts from this checkout, with an empty HOME and a minimal environment."""
+    cases, bash_scripts, timeout = smoke_settings(repo)
     with tempfile.TemporaryDirectory(prefix="fleet-cli-smoke-") as home:
         env = {"HOME": home, "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "AGENT_SEAT": "CODEX"}
-        for case, script, args, expected in smoke_cases(repo):
+        for case, script, args, expected in cases:
             target = repo / script
             if not target.exists():
                 raise Failed("smoke_missing_" + case)
             argv = (
                 ["/bin/bash", str(target), *args]
-                if script in BASH_SCRIPTS
+                if script in bash_scripts
                 else [sys.executable, "-I", "-B", str(target), *args]
             )
             try:
                 result = subprocess.run(
-                    argv, env=env, cwd=home, capture_output=True, timeout=SMOKE_TIMEOUT, check=False
+                    argv, env=env, cwd=home, capture_output=True, timeout=timeout, check=False
                 )
             except subprocess.TimeoutExpired:
                 raise Failed("smoke_timeout_" + case) from None
