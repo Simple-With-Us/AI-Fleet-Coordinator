@@ -99,5 +99,56 @@ class AlerterTests(unittest.TestCase):
         self.assertTrue(req.full_url.endswith(path + "?" + WA.QUERY))
 
 
+class HookTests(unittest.TestCase):
+    """Hook mode: one configured command per new wake (headless seats)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.state = os.path.join(self.temp.name, "state.json")
+        self.calls = []
+
+    def poll(self, items, rc=0, hook="/opt/fleet/muse-wake.sh {seat} {wake_id} {channel} {topic}"):
+        def runner(argv, env=None, timeout=0):
+            self.calls.append((argv, dict(env or {})))
+            return rc
+
+        def opener(req, timeout=0):
+            return Resp(payload(items))
+
+        return WA.poll_once(BASE, SEAT, KEY, self.state, runner=runner, opener=opener, hook=hook)
+
+    def test_hook_runs_once_per_new_wake_with_metadata_only(self):
+        items = [{"wake_id": "w9", "state": "new", "channel": "agent-sync", "topic": "fleet"}]
+        self.assertEqual(self.poll(items), 1)
+        argv, env = self.calls[0]
+        self.assertEqual(argv, ["/opt/fleet/muse-wake.sh", "ECHO", "w9", "agent-sync", "fleet"])
+        self.assertEqual(env["AGENT_SYNC_WAKE_ID"], "w9")
+        self.assertEqual(env["AGENT_SYNC_WAKE_CHANNEL"], "agent-sync")
+        self.assertNotIn("body", " ".join(argv).lower())
+        self.assertEqual(self.poll(items), 0)
+
+    def test_failed_hook_retries_next_poll(self):
+        items = [{"wake_id": "w10", "state": "new", "channel": "ops"}]
+        self.assertEqual(self.poll(items, rc=1), 0)
+        self.assertEqual(self.poll(items, rc=1), 0)
+        self.assertEqual(self.poll(items, rc=0), 1)
+        self.assertEqual(self.poll(items, rc=0), 0)
+        self.assertEqual(len(self.calls), 3)
+
+    def test_values_with_spaces_stay_one_argument(self):
+        items = [{"wake_id": "w11", "state": "new", "channel": "fleet ops", "topic": "a b"}]
+        self.assertEqual(self.poll(items), 1)
+        argv, _ = self.calls[0]
+        self.assertEqual(argv[3:], ["fleet ops", "a b"])
+
+    def test_missing_fields_become_empty_strings(self):
+        items = [{"wake_id": "w12"}]
+        self.assertEqual(self.poll(items), 1)
+        argv, env = self.calls[0]
+        self.assertEqual(argv[3:], ["", ""])
+        self.assertEqual(env["AGENT_SYNC_WAKE_CHANNEL"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

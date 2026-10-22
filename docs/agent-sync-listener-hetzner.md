@@ -15,13 +15,60 @@ macOS AppleScript banners for wake events via a thin Mac client.  Jay accepted
 
 ## What appears
 
-- `agent_sync/wake_alerter.py` (this PR):  the thin Mac client.  It polls the
-  read API's `wakes` record once a minute over the tailnet, signed with the
-  seat's routine HMAC key, and pops one banner per new wake id.  It holds no
-  Zulip key, no Infisical access, no listener state.
+- `agent_sync/wake_alerter.py` (this PR):  the thin wake client, two modes.
+  Default (the Mac):  one macOS banner per new wake id, bodies never reach a
+  banner.  Hook mode (`AGENT_SYNC_ALERTER_HOOK` set):  run one configured
+  command per new wake instead - this is the headless-wake path for
+  server-side seats.  Both modes hold no Zulip key, no Infisical access, no
+  listener state.
 - `scripts/launchd/com.jay.agent-sync-wake-alerter.plist`:  launchd unit for
-  the alerter.  Env comes from `~/.secrets/agent-sync/wake-alerter.env`
+  the Mac alerter.  Env comes from `~/.secrets/agent-sync/wake-alerter.env`
   (0600):  `AGENT_SYNC_SEAT`, `AGENT_SYNC_LISTENER_URL`, `<CODE>_ROUTINE_KEY`.
+
+## Server-side seats are the main clients
+
+Owner direction 2026-10-21:  every agent platform (Claude, Codex, Muse Code,
+and the rest) runs on the Hetzner server, and they all communicate with the
+Operator.  The Operator's decision-making LLM agent also runs on the server.
+So the layout is:  Operator decides, GHR and agent-sync execute, and the
+server-side seats are the main clients of both.  The Mac is a minor client -
+its role narrows to human-facing alerts (the AppleScript banners) and the
+Mac-bound surfaces listed above.  (Working assumption until Jay names
+otherwise:  "the Operator" is the OPS-966 Operator component - the AFC
+repo-token routing/dispatch plane - not a new piece.)
+
+## Headless wake:  launching Muse Code from a wake event
+
+For a seat hosted on the server (Muse Code is installed there, per Jay), a
+wake event should be able to start real work without a human screen.  The
+wake alerter's hook mode provides it:
+
+- A supervisor on the server runs
+  `python3 -m agent_sync.wake_alerter --loop 60` with
+  `AGENT_SYNC_ALERTER_HOOK=/opt/fleet/muse-wake.sh {seat} {wake_id} {channel} {topic}`.
+  The hook receives wake METADATA only ({seat}/{channel}/{topic}/{wake_id}/
+  {state} argv placeholders plus AGENT_SYNC_WAKE_* env vars) - never message
+  bodies, same rule as the banners.  A wake id is marked seen only when the
+  hook exits 0, so a failed launch retries on the next poll (bounded by the
+  since_hours window and the state file cap).
+- The hook wrapper launches Muse Code headlessly
+  (https://ai.developer.meta.com/docs/muse-code.md):  non-interactive auth is
+  `META_API_KEY` (runtime-only env, never buildtime - Coolify bakes buildtime
+  vars into build logs), and one prompt runs to completion:
+
+      #!/bin/sh
+      # /opt/fleet/muse-wake.sh SEAT WAKE_ID CHANNEL TOPIC
+      exec muse exec "You are the $1 seat on the fleet.  A wake event arrived
+      for you in $3 / $4 (wake $2).  Read the event through your normal
+      agent-sync MCP bridge on the tailnet and run your wake routine.  Take
+      no action outside the seat's lane;  the Operator decides, you execute."
+
+  The prompt points the seat at the event through its normal authenticated
+  bridge rather than pasting content into the prompt, which keeps chat text
+  out of argv and out of logs.
+- Dedupe, state and retry come from the alerter itself;  Muse Code needs no
+  wake ledger access.  Multiple seats on the box run one alerter process per
+  seat (each with its own seat key and state file).
 
 ## Hetzner side (Coolify, "Fleet Infra" project)
 

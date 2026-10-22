@@ -7,12 +7,23 @@ signed read API (listener_api.py).  This client polls ONE record -
     GET /listener/v1/<SEAT>/wakes?since_hours=1&limit=50
 
 signed with the seat's routine HMAC key (the same key the daemon and the
-Worker already share), remembers the wake ids it has already bannered in a
-small state file, and pops one macOS notification per new wake event via the
-existing adapters.osascript_argv (bodies never reach a banner).  It holds no
-Zulip key, no Infisical access and no listener state:  if it is down, the
-events wait in the ledger and are bannered on its return;  if the server is
-down, the next poll retries.
+Worker already share), remembers the wake ids it has already handled in a
+small state file, and reacts to each new wake event one of two ways:
+
+* default:  pop one macOS notification via the existing
+  adapters.osascript_argv (bodies never reach a banner) - the Mac client.
+* hook mode (AGENT_SYNC_ALERTER_HOOK set):  run one configured command per
+  new wake instead - the headless client for seats hosted off the Mac (for
+  example launching Muse Code headlessly on the Hetzner box, see
+  docs/agent-sync-listener-hetzner.md).  The hook receives wake metadata
+  only ({seat} {channel} {topic} {wake_id} {state} placeholders in the
+  command plus AGENT_SYNC_WAKE_* env vars);  bodies never reach it.  A wake
+  id is marked seen only after the hook exits 0, so a failed hook retries
+  on the next poll.
+
+Either way it holds no Zulip key, no Infisical access and no listener state:
+if it is down, the events wait in the ledger and are handled on its return;
+if the server is down, the next poll retries.
 
 One-shot by default so launchd owns the cadence (StartInterval);  --loop N
 runs forever for a supervisor that prefers a resident process.
@@ -45,6 +56,29 @@ from .listener_api import sign
 QUERY = "since_hours=1&limit=50"
 MAX_SEEN_WAKE_IDS = 500
 REQUEST_TIMEOUT_SECONDS = 10
+HOOK_TIMEOUT_SECONDS = int(os.environ.get("AGENT_SYNC_ALERTER_HOOK_TIMEOUT") or "600")
+_HOOK_FIELDS = ("seat", "channel", "topic", "wake_id", "state")
+
+
+def _hook_argv(template: str, seat: str, item: dict) -> list[str]:
+    import shlex
+
+    values = {"seat": seat}
+    for field in _HOOK_FIELDS[1:]:
+        values[field] = item.get(field)
+        if not isinstance(values[field], str):
+            values[field] = ""
+    quoted = {k: shlex.quote(v) for k, v in values.items()}
+    return shlex.split(template.format(**quoted))
+
+
+def _hook_env(item: dict) -> dict:
+    env = dict(os.environ)
+    env["AGENT_SYNC_WAKE_ID"] = item.get("wake_id") or ""
+    env["AGENT_SYNC_WAKE_CHANNEL"] = item.get("channel") or ""
+    env["AGENT_SYNC_WAKE_TOPIC"] = item.get("topic") or ""
+    env["AGENT_SYNC_WAKE_STATE"] = item.get("state") or ""
+    return env
 
 
 def _default_state_path() -> str:
@@ -91,11 +125,15 @@ def poll_once(
     runner,
     clock=time.time,
     opener=urllib.request.urlopen,
+    hook: str = "",
 ) -> int:
-    """One poll:  banner every wake event not already in the state file.
+    """One poll:  handle every wake event not already in the state file.
 
-    Returns the number of new banners.  Raises nothing for transport or HTTP
-    failures - a failed poll simply banners nothing and the next one retries.
+    With no hook each new wake gets one macOS banner;  with a hook template
+    each new wake runs the hook command instead, and only a hook that exits 0
+    marks its wake seen (a failed hook retries on the next poll).  Returns the
+    number of new wakes handled.  Raises nothing for transport or HTTP
+    failures - a failed poll simply handles nothing and the next one retries.
     """
     path = "/listener/v1/" + seat + "/wakes"
     timestamp = str(int(clock()))
@@ -120,14 +158,23 @@ def poll_once(
         wake_id = item.get("wake_id")
         if isinstance(wake_id, str) and wake_id and wake_id not in seen:
             fresh.append((wake_id, item))
+    handled = 0
     for wake_id, item in fresh:
-        runner(
-            osascript_argv("/usr/bin/osascript", _banner_text(item), "agent-sync wake (%s)" % seat)
-        )
+        if hook:
+            argv = _hook_argv(hook, seat, item)
+            if runner(argv, env=_hook_env(item), timeout=HOOK_TIMEOUT_SECONDS) != 0:
+                continue
+        else:
+            runner(
+                osascript_argv(
+                    "/usr/bin/osascript", _banner_text(item), "agent-sync wake (%s)" % seat
+                )
+            )
         seen.append(wake_id)
-    if fresh:
+        handled += 1
+    if handled:
         _save_seen(state_path, seen)
-    return len(fresh)
+    return handled
 
 
 def _run(argv=None) -> int:
@@ -154,17 +201,28 @@ def _run(argv=None) -> int:
 
     import subprocess
 
-    def runner(argv_):
+    hook = (os.environ.get("AGENT_SYNC_ALERTER_HOOK") or "").strip()
+
+    def banner_runner(argv_, **_kw):
         try:
             subprocess.run(argv_, capture_output=True, timeout=10, check=False)
         except (OSError, subprocess.SubprocessError):
             pass
+        return 0
 
+    def hook_runner(argv_, env=None, timeout=HOOK_TIMEOUT_SECONDS):
+        try:
+            done = subprocess.run(argv_, capture_output=True, timeout=timeout, check=False, env=env)
+        except (OSError, subprocess.SubprocessError):
+            return 1
+        return done.returncode
+
+    runner = hook_runner if hook else banner_runner
     if args.loop <= 0:
-        poll_once(base_url, seat, key, state_path, runner=runner)
+        poll_once(base_url, seat, key, state_path, runner=runner, hook=hook)
         return 0
     while True:
-        poll_once(base_url, seat, key, state_path, runner=runner)
+        poll_once(base_url, seat, key, state_path, runner=runner, hook=hook)
         time.sleep(args.loop)
 
 
