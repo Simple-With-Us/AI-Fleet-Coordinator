@@ -53,10 +53,18 @@ class FakeCloudflare:
         # Zones that answer "not on this account".  The retired zone is not
         # guaranteed to be on the account, and that must not abort `dns`.
         self.absent_zones: set[str] = set()
+        # Zones whose lookup itself fails, the way `Cloudflare.ok` stops on a
+        # rejected key or a 5xx.  That is not absence and must not read as it.
+        self.failing_zones: set[str] = set()
 
     def ok(self, method, path, body=None, **params):
         if path == "/zones":
             zone = params["name"]
+            if zone in self.failing_zones:
+                raise SystemExit(
+                    f"error: {method} {path} failed: "
+                    + json.dumps([{"code": 10000, "message": "Authentication error"}])
+                )
             if zone in self.absent_zones:
                 return {"success": True, "result": []}
             return {
@@ -367,6 +375,22 @@ def main() -> None:
     absent_zone["deleted"] = cf_absent.deleted
     absent_zone["output"] = cf_absent_lines
 
+    # A lookup that fails is not a zone that is absent.  Swallowing the failure
+    # would print "nothing to clean there" for a rejected key and carry on.
+    failed_lookup = {"deleted": [], "raised": None, "error": None, "output": []}
+    cf_failing = FakeCloudflare()
+    cf_failing.failing_zones = {infra.RETIRED_ZONE_NAME}
+    cf_failing_lines: list[str] = []
+    infra.say = lambda text="": cf_failing_lines.append(text)
+    try:
+        infra.cmd_dns(cf_failing, True)
+    except BaseException as exc:  # noqa: BLE001 - the probe reports the kind
+        failed_lookup["raised"] = type(exc).__name__
+        failed_lookup["error"] = str(exc)
+    infra.say = fake_say
+    failed_lookup["deleted"] = cf_failing.deleted
+    failed_lookup["output"] = cf_failing_lines
+
     # A third-party answer that is not the documented shape must be a precise
     # refusal, not an incidental AttributeError - in `check` that crash would
     # read as "could not verify" instead of "the answer was not understood".
@@ -395,6 +419,7 @@ def main() -> None:
                 "malformed_errors": malformed_errors,
                 "tunnel_config_reads": tunnel_config_reads,
                 "absent_zone": absent_zone,
+                "failed_lookup": failed_lookup,
                 "secrets": secret_probes(),
             }
         )

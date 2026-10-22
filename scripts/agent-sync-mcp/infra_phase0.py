@@ -153,11 +153,10 @@ def plan(apply: bool, what: str) -> bool:
 
 
 def zone_id(cf: Cloudflare, zone: str = ZONE_NAME) -> str:
-    res = cf.ok("GET", "/zones", name=zone)
-    for z in res.get("result") or []:
-        if z["account"]["id"] == ACCOUNT_ID:
-            return z["id"]
-    raise SystemExit(f"error: zone {zone} not on account {ACCOUNT_ID}")
+    zid = zone_id_if_present(cf, zone)
+    if zid is None:
+        raise SystemExit(f"error: zone {zone} not on account {ACCOUNT_ID}")
+    return zid
 
 
 def zone_id_if_present(cf: Cloudflare, zone: str) -> str | None:
@@ -169,11 +168,19 @@ def zone_id_if_present(cf: Cloudflare, zone: str) -> str | None:
     `dns --apply` half way through - after the served zone's record is already
     deleted and the retired one is untouched - and makes `check` print no
     results at all.  "That zone is not ours" is a fact to report, not a crash.
+
+    Only that fact is None.  The lookup goes through `cf.ok`, so a request
+    that fails - a rejected key, a 5xx - still stops the run with the
+    provider's error.  Reading a failed lookup as "not on this account" would
+    let `dns --apply` skip a cleanup and `check` skip a verification while
+    reporting nothing wrong, which is why this does not catch `zone_id`'s
+    `SystemExit`:  that exception carries both meanings.
     """
-    try:
-        return zone_id(cf, zone)
-    except SystemExit:
-        return None
+    res = cf.ok("GET", "/zones", name=zone)
+    for z in res.get("result") or []:
+        if z["account"]["id"] == ACCOUNT_ID:
+            return z["id"]
+    return None
 
 
 def dns_records(cf: Cloudflare, zid: str, host: str = HOST) -> list[dict]:

@@ -32,6 +32,12 @@ const ProbeSchema = z.object({
     raised: z.string().nullable(),
     output: z.array(z.string()),
   }),
+  failed_lookup: z.object({
+    deleted: z.array(z.string()),
+    raised: z.string().nullable(),
+    error: z.string().nullable(),
+    output: z.array(z.string()),
+  }),
   secrets: z.object({
     diagnostic: SecretRunSchema,
     quiet_failure: SecretRunSchema,
@@ -93,6 +99,20 @@ test("a retired zone that is not on the account does not abort dns --apply", () 
     // name is already covered by the fixture's own constants.
     absent.output.some((line) => /is not on account/.test(line)),
     `the absent zone is reported, not swallowed: ${JSON.stringify(absent.output)}`,
+  );
+});
+
+test("a failed zone lookup stops dns --apply instead of reading as an absent zone", () => {
+  const { failed_lookup: failed } = readProbe();
+  // A rejected key or a 5xx on GET /zones is not "that zone is not ours".
+  // Treating it as absence would print "nothing to clean there" and carry on,
+  // so `dns --apply` would skip a cleanup and `check` a verification while
+  // reporting nothing wrong.
+  assert.equal(failed.raised, "SystemExit", "the failed lookup must stop the run");
+  assert.match(failed.error ?? "", /GET \/zones failed/);
+  assert.ok(
+    !failed.output.some((line) => /is not on account/.test(line)),
+    `a failed lookup was reported as an absent zone: ${JSON.stringify(failed.output)}`,
   );
 });
 
