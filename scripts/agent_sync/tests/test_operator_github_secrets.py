@@ -8,23 +8,29 @@ from agent_sync.github_token_router import RoutingError
 
 class Tests(unittest.TestCase):
     def setUp(self):
+        p = patch(
+            "agent_sync.operator_github_secrets.fleet_secrets_bin",
+            return_value="fleet-secrets",
+        )
+        p.start()
+        self.addCleanup(p.stop)
         self.calls = []
 
         def read(path, name):
             self.calls.append((path, name))
             return "mock"
 
-        self.loader = NamedSecrets(["CODEX"], ["swu-codex"], transport=read)
+        self.loader = NamedSecrets(["CODEX"], ["swu-example-app"], transport=read)
 
     def test_names_only(self):
         self.loader.caller_key("CODEX")
-        self.loader.app_credentials("swu-codex")
+        self.loader.app_credentials("swu-example-app")
         self.assertEqual(
             self.calls,
             [
                 ("/operator-github/callers", "OPERATOR_GITHUB_CALLER_CODEX_HMAC"),
-                ("/github-apps", "GH_APP_SWU_CODEX_ID"),
-                ("/github-apps", "GH_APP_SWU_CODEX_PRIVATE_KEY"),
+                ("/github-apps", "GH_APP_SWU_EXAMPLE_APP_ID"),
+                ("/github-apps", "GH_APP_SWU_EXAMPLE_APP_PRIVATE_KEY"),
             ],
         )
 
@@ -50,7 +56,15 @@ class Tests(unittest.TestCase):
             )
             args = run.call_args[0][0]
             self.assertEqual(
-                args, ["fleet-secrets", "get", "OPERATOR_GITHUB_CALLER_CODEX_HMAC"]
+                args, [
+                    "fleet-secrets",
+                    "get",
+                    "OPERATOR_GITHUB_CALLER_CODEX_HMAC",
+                    "--path",
+                    "/operator-github/callers",
+                    "--project",
+                    "fleet-ops",
+                ]
             )
 
     def test_default_transport_never_consults_environment(self):
@@ -87,3 +101,22 @@ class Tests(unittest.TestCase):
             with self.assertRaises(RoutingError) as c:
                 fleet_secrets_get("/operator-github/callers", "OPERATOR_GITHUB_CALLER_CODEX_HMAC")
         self.assertIn("not found", str(c.exception))
+
+
+class LocalFailureOutcomeTests(unittest.TestCase):
+    def test_local_lookup_failures_are_refused_so_the_nonce_is_released(self):
+        with patch(
+            "agent_sync.operator_github_secrets.fleet_secrets_bin",
+            return_value="fleet-secrets",
+        ):
+            for effect in (
+                subprocess.TimeoutExpired(["fleet-secrets"], 10),
+                FileNotFoundError("fleet-secrets"),
+                PermissionError("fleet-secrets"),
+            ):
+                with patch(
+                    "agent_sync.operator_github_secrets.subprocess.run", side_effect=effect
+                ):
+                    with self.assertRaises(RoutingError) as c:
+                        fleet_secrets_get("/github-apps", "GH_APP_SWU_EXAMPLE_ID")
+                self.assertEqual(c.exception.outcome, "refused")

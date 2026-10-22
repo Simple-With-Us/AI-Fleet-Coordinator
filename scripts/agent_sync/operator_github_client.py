@@ -19,9 +19,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 from .github_token_router import permission_set, target_parts
 from .operator_github import signature
+from .zulip import fleet_secrets_bin
 
 
 class ClientError(Exception):
@@ -50,7 +52,15 @@ def caller_key(seat):
     name = caller_key_name(seat)
     try:
         result = subprocess.run(
-            ["fleet-secrets", "get", name],
+            [
+                fleet_secrets_bin(os.environ, Path.home()) or "fleet-secrets",
+                "get",
+                name,
+                "--path",
+                "/operator-github/callers",
+                "--project",
+                "fleet-ops",
+            ],
             capture_output=True,
             timeout=10,
         )

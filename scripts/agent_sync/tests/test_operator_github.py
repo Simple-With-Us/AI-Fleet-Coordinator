@@ -20,7 +20,7 @@ class BrokerTests(unittest.TestCase):
         self.ledger=NonceLedger(Path(self.temp.name)/"replay")
         self.router=Router();self.key=KEY;self.allowed=True;self.audit=[]
         self.broker=Broker(lambda seat:self.key if seat=='CODEX' else None,
-            lambda seat:CallerPolicy('swu-codex',{'simple-with-us/ai-fleet-coordinator':{'contents':'read','pull_requests':'write','metadata':'read'}}) if self.allowed else None,
+            lambda seat:CallerPolicy('swu-example-app',{'simple-with-us/ai-fleet-coordinator':{'contents':'read','pull_requests':'write','metadata':'read'}}) if self.allowed else None,
             self.router,lambda slug:{'login':slug+'[bot]','id':123},clock=lambda:1000,audit=lambda **kw:self.audit.append(kw),enabled=True,nonce_ledger=self.ledger)
         self.path='/operator/v1/github/CODEX/token';self.body=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'contents':'read'}}).encode()
     def request(self,nonce='1'*64,body=None,stamp='1000',sig=None):
@@ -31,7 +31,7 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(Refused) as c:self.request()
         self.assertEqual(c.exception.status,404)
     def test_issue_bound_app(self):
-        r=self.request();self.assertEqual(r['app_slug'],'swu-codex');self.assertEqual(self.router.calls[0][0],'swu-codex')
+        r=self.request();self.assertEqual(r['app_slug'],'swu-example-app');self.assertEqual(self.router.calls[0][0],'swu-example-app')
         self.assertFalse(any('token' in x for x in self.audit))
     def test_bad_signature(self):
         with self.assertRaises(Refused) as c:self.request(sig='0'*64)
@@ -45,7 +45,7 @@ class BrokerTests(unittest.TestCase):
         import sqlite3
         con=sqlite3.connect(self.ledger.path)
         stored=con.execute("select response from nonces").fetchone()[0];con.close()
-        self.assertNotIn('MOCK-TOKEN',stored);self.assertIn('swu-codex',stored)
+        self.assertNotIn('MOCK-TOKEN',stored);self.assertIn('swu-example-app',stored)
     def test_stale(self):
         with self.assertRaises(Refused):self.request(stamp='939')
     def test_future(self):
@@ -136,7 +136,7 @@ class BrokerTests(unittest.TestCase):
         server=BrokerHttp(self.broker);server.start();self.addCleanup(server.close)
         url='http://%s:%s%s'%(*server.address,self.path)
         req=urllib.request.Request(url,data=self.body,headers={'Content-Type':'application/json','X-Operator-Timestamp':'1000','X-Operator-Nonce':'1'*64,'X-Operator-Signature':signature(KEY,self.path,'1000','1'*64,self.body)})
-        with urllib.request.urlopen(req) as r:self.assertEqual(json.load(r)['app_slug'],'swu-codex')
+        with urllib.request.urlopen(req) as r:self.assertEqual(json.load(r)['app_slug'],'swu-example-app')
 
 class ClientTests(unittest.TestCase):
     def test_bind_list(self):self.assertEqual(bound_command(['gh','pr','list'],'a/b'),['gh','pr','list','--repo','a/b'])
@@ -149,10 +149,10 @@ class ClientTests(unittest.TestCase):
     def test_write_command_rejected(self):
         with self.assertRaises(ClientError):bound_command(['gh','pr','merge','1'],'a/b')
     def test_identity_environment(self):
-        result={'token':'MOCK','git_author_name':'swu-codex[bot]','git_author_email':'123+swu-codex[bot]@users.noreply.github.com'}
+        result={'token':'MOCK','git_author_name':'swu-example-app[bot]','git_author_email':'123+swu-example-app[bot]@users.noreply.github.com'}
         env=child_environment({'GH_TOKEN':'old','GITHUB_TOKEN':'old','GIT_CONFIG_COUNT':'9','GIT_AUTHOR_NAME':'Jay','PATH':'/usr/bin'},result)
         self.assertNotIn('GITHUB_TOKEN',env);self.assertNotIn('GIT_CONFIG_COUNT',env)
-        self.assertEqual(env['GIT_AUTHOR_NAME'],'swu-codex[bot]')
+        self.assertEqual(env['GIT_AUTHOR_NAME'],'swu-example-app[bot]')
 
 if __name__=='__main__':unittest.main()
 
@@ -167,7 +167,7 @@ class ReviewFixTests(unittest.TestCase):
         # allowlist, so the broker can tell an unknown seat (401, no oracle)
         # from a policy-known seat whose secret cannot be resolved (503).
         self.broker=Broker(lambda seat:'a'*64 if seat=='CODEX' else None,
-            lambda seat:CallerPolicy('swu-codex',{'example-org/widget-repo':{'contents':'read','metadata':'read'}}) if seat=='CODEX' else None,
+            lambda seat:CallerPolicy('swu-example-app',{'example-org/widget-repo':{'contents':'read','metadata':'read'}}) if seat=='CODEX' else None,
             self.router,lambda slug:{'login':slug+'[bot]','id':123},clock=lambda:1000,audit=lambda **kw:self.audit.append(kw),enabled=True,nonce_ledger=self.ledger)
         self.path='/operator/v1/github/CODEX/token';self.body=json.dumps({'repo':'example-org/widget-repo','permissions':{'contents':'read'}}).encode()
     def request(self,nonce='1'*64):
@@ -246,10 +246,10 @@ class CallerKeyTests(unittest.TestCase):
             returncode=0
             stdout=b'f'*32+b'\n'
         with patch.dict(os.environ,{},clear=True):
-            with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()) as run:
+            with patch('agent_sync.operator_github_client.fleet_secrets_bin',return_value='fleet-secrets'),patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()) as run:
                 self.assertEqual(caller_key('ECHO'),'f'*32)
                 args=run.call_args[0][0]
-                self.assertEqual(args,['fleet-secrets','get','OPERATOR_GITHUB_CALLER_ECHO_HMAC'])
+                self.assertEqual(args,['fleet-secrets','get','OPERATOR_GITHUB_CALLER_ECHO_HMAC','--path','/operator-github/callers','--project','fleet-ops'])
     def test_missing_everywhere_names_variable_not_value(self):
         import os
         from unittest.mock import patch

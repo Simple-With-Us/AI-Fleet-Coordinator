@@ -6,36 +6,52 @@ independently scoped identity;  deployment must verify that identity is denied
 outside the approved secret paths (/operator-github/callers, /github-apps).
 """
 
+import os
 import re
 import subprocess
+from pathlib import Path
 
 from .github_token_router import RoutingError, secret_names
+from .zulip import fleet_secrets_bin
 
 LOOKUP_TIMEOUT_SECONDS = 10
 
 
 def fleet_secrets_get(path, name):
-    """Read one named secret via `fleet-secrets get`;  errors name the variable,
-    never a value or backend detail.  The path argument documents the intended
-    secret folder for reviewers and injected test transports;  the CLI resolves
-    it from its own configuration."""
+    """Read one named secret via `fleet-secrets get NAME --path PATH --project fleet-ops`;
+    errors name the variable, never a value or backend detail.  Every local failure
+    happens before any provider request, so each is a definite "refused" and the
+    broker releases the caller nonce."""
+    binary = fleet_secrets_bin(os.environ, Path.home())
+    if not binary:
+        raise RoutingError(
+            name + " unavailable: fleet-secrets executable not found", outcome="refused"
+        )
     try:
         result = subprocess.run(
-            ["fleet-secrets", "get", name],
+            [binary, "get", name, "--path", path, "--project", "fleet-ops"],
             capture_output=True,
             timeout=LOOKUP_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        raise RoutingError(name + " unavailable: fleet-secrets lookup timed out") from None
+        raise RoutingError(
+            name + " unavailable: fleet-secrets lookup timed out", outcome="refused"
+        ) from None
     except FileNotFoundError:
-        raise RoutingError(name + " unavailable: fleet-secrets executable not found") from None
+        raise RoutingError(
+            name + " unavailable: fleet-secrets executable not found", outcome="refused"
+        ) from None
     except OSError:
-        raise RoutingError(name + " unavailable: fleet-secrets lookup failed") from None
+        raise RoutingError(
+            name + " unavailable: fleet-secrets lookup failed", outcome="refused"
+        ) from None
     if result.returncode:
-        raise RoutingError(name + " unavailable: fleet-secrets lookup failed")
+        raise RoutingError(name + " unavailable: fleet-secrets lookup failed", outcome="refused")
     value = result.stdout.decode("utf-8", "replace").strip()
     if not value:
-        raise RoutingError(name + " unavailable: fleet-secrets returned an empty value")
+        raise RoutingError(
+            name + " unavailable: fleet-secrets returned an empty value", outcome="refused"
+        )
     return value
 
 
