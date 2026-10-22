@@ -27,6 +27,11 @@ const ProbeSchema = z.object({
   output: z.string(),
   malformed_errors: z.record(z.string(), z.string()),
   tunnel_config_reads: z.number(),
+  absent_zone: z.object({
+    deleted: z.array(z.string()),
+    raised: z.string().nullable(),
+    output: z.array(z.string()),
+  }),
   secrets: z.object({
     diagnostic: SecretRunSchema,
     quiet_failure: SecretRunSchema,
@@ -74,6 +79,18 @@ test("dns --apply finds the tunnel CNAME in both the new and the retired zone", 
     "simplewithus.com:agents.simplewithus.com",
   ]);
   assert.deepEqual(deleted, ["rec-new", "rec-old"]);
+});
+
+test("a retired zone that is not on the account does not abort dns --apply", () => {
+  const { absent_zone: absent } = readProbe();
+  // The served zone is walked first, so a fatal retired-zone lookup aborts
+  // after that deletion and leaves the stale CNAME behind with a bare error.
+  assert.equal(absent.raised, null, `dns --apply aborted: ${absent.raised}`);
+  assert.deepEqual(absent.deleted, ["rec-new"], "the served zone's record is still deleted");
+  assert.ok(
+    absent.output.some((line) => /jays\.services is not on account/.test(line)),
+    `the absent zone is reported, not swallowed: ${JSON.stringify(absent.output)}`,
+  );
 });
 
 test("a malformed tunnel answer is refused by name, not crashed on", () => {

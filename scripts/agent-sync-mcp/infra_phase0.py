@@ -160,6 +160,22 @@ def zone_id(cf: Cloudflare, zone: str = ZONE_NAME) -> str:
     raise SystemExit(f"error: zone {zone} not on account {ACCOUNT_ID}")
 
 
+def zone_id_if_present(cf: Cloudflare, zone: str) -> str | None:
+    """`zone_id`, but a zone that is not on this account is None, not fatal.
+
+    The retired zone is the reason this exists.  `dns` and `check` both walk
+    the served zone and the retired one, and the retired zone is not
+    guaranteed to be on this account.  Letting `zone_id` raise there aborts
+    `dns --apply` half way through - after the served zone's record is already
+    deleted and the retired one is untouched - and makes `check` print no
+    results at all.  "That zone is not ours" is a fact to report, not a crash.
+    """
+    try:
+        return zone_id(cf, zone)
+    except SystemExit:
+        return None
+
+
 def dns_records(cf: Cloudflare, zid: str, host: str = HOST) -> list[dict]:
     return cf.ok("GET", f"/zones/{zid}/dns_records", name=host).get("result") or []
 
@@ -198,13 +214,21 @@ def tunnel_ingress(cf: Cloudflare, tid: str) -> list[dict]:
     return tunnel_ingress_from_config(tunnel_config(cf, tid), tid)
 
 
-def tunnel_hosts(cf: Cloudflare, hosts=RETIRED_HOSTS) -> dict[str, list[str]]:
-    """Map each hostname to the tunnel services an ingress rule points it at."""
-    t = tunnel(cf)
-    if not t:
-        return {}
+def tunnel_hosts(cf: Cloudflare, hosts=RETIRED_HOSTS, tid: str | None = None) -> dict[str, list[str]]:
+    """Map each hostname to the tunnel services an ingress rule points it at.
+
+    `tid` reuses a tunnel id the caller already resolved, so a caller that
+    fetched the tunnel to report on it does not pay a second `cfd_tunnel`
+    round trip - and cannot verify ingress against a different tunnel than
+    the one it just named.
+    """
+    if tid is None:
+        t = tunnel(cf)
+        if not t:
+            return {}
+        tid = t["id"]
     found = {}
-    for rule in tunnel_ingress(cf, t["id"]):
+    for rule in tunnel_ingress(cf, tid):
         hostname = rule.get("hostname")
         if hostname in hosts:
             found.setdefault(hostname, []).append(rule.get("service"))
@@ -558,7 +582,10 @@ def _backup(name: str, payload: dict) -> pathlib.Path:
 
 def cmd_dns(cf: Cloudflare, apply: bool) -> None:
     for zone, host in ((ZONE_NAME, HOST), (RETIRED_ZONE_NAME, RETIRED_HOST)):
-        zid = zone_id(cf, zone)
+        zid = zone_id_if_present(cf, zone)
+        if zid is None:
+            say(f"zone {zone} is not on account {ACCOUNT_ID}; nothing to clean there")
+            continue
         recs = dns_records(cf, zid, host)
         if not recs:
             say(f"no DNS record for {host} in zone {zone}; nothing to delete")
@@ -794,7 +821,7 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
             json.dumps([d.get("service") for d in domains]),
         )
         t = tunnel(cf)
-        stale = tunnel_hosts(cf) if t else {}
+        stale = tunnel_hosts(cf, tid=t["id"]) if t else {}
         for host in RETIRED_HOSTS:
             expect(
                 f"no stale tunnel ingress rule for {host} (run 'tunnel --apply')",
@@ -802,11 +829,32 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
                 json.dumps(stale.get(host, [])),
             )
         for zone, host in ((ZONE_NAME, HOST), (RETIRED_ZONE_NAME, RETIRED_HOST)):
+            # One resolution per zone, reused for both sweeps below.
+            zid = zone_id_if_present(cf, zone)
+            if zid is None:
+                # Not a failure:  the retired zone being gone from the account
+                # is the end state this module is driving at.  Report it and
+                # keep checking, rather than aborting the whole verification.
+                say(f"zone {zone} is not on account {ACCOUNT_ID}; nothing to check there")
+                continue
             expect(
                 f"no leftover tunnel DNS record for {host} in zone {zone}",
                 not [
                     r
-                    for r in dns_records(cf, zone_id(cf, zone), host)
+                    for r in dns_records(cf, zid, host)
+                    if r["type"] == "CNAME" and r["content"].endswith(".cfargotunnel.com")
+                ],
+            )
+            # The per-host filter above only sees the two names this module
+            # knows about.  A tunnel CNAME under any other name in the same
+            # zone is the same exposure - a public hostname resolving to the
+            # Mac - so the zone is swept as a whole, which is also the only
+            # way a renamed or mistyped leftover can still be caught.
+            expect(
+                f"no tunnel CNAME at all in zone {zone}",
+                not [
+                    r
+                    for r in dns_records(cf, zid)
                     if r["type"] == "CNAME" and r["content"].endswith(".cfargotunnel.com")
                 ],
             )

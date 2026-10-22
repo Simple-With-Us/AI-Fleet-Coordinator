@@ -161,7 +161,19 @@ def _mint_functions(text: str) -> list[tuple[str, bool]]:
             continue
         if node.name == GUARD_CALL:
             continue
-        source = ast.get_source_segment(text, node) or ""
+        # Prose is prose:  a function that only documents the endpoint in its
+        # docstring does not call it, exactly as a module docstring does not
+        # make a module a mint site (see _module_level_mentions).  Search the
+        # statements, not the whole source segment.
+        stmts = node.body
+        if (
+            stmts
+            and isinstance(stmts[0], ast.Expr)
+            and isinstance(stmts[0].value, ast.Constant)
+            and isinstance(stmts[0].value.value, str)
+        ):
+            stmts = stmts[1:]
+        source = "\n".join(ast.get_source_segment(text, stmt) or "" for stmt in stmts)
         if MINT_ENDPOINT not in source:
             continue
         found.append((node.name, _has_direct_guard(node)))
@@ -179,8 +191,12 @@ def scan_mint_sites(root: Path) -> dict[str, bool]:
         if ".git" in path.parts or "node_modules" in path.parts:
             continue
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
+            # errors="replace" keeps the ASCII endpoint detectable inside a
+            # file that is not valid UTF-8, so a decoding problem can neither
+            # hide a mint site nor fail this whole gate for an unrelated file
+            # somewhere in the tree (.venv, a fixture, a vendored copy).
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
             raise MintScanError(
                 f"cannot read {path.relative_to(root).as_posix()}: {exc}"
             ) from exc
@@ -191,10 +207,14 @@ def scan_mint_sites(root: Path) -> dict[str, bool]:
         # A mention outside every function (module constant, module-level call)
         # runs at import time and no per-function guard can cover it, so it
         # makes the file unguarded on its own.
-        sites[path.relative_to(root).as_posix()] = (
-            not _module_level_mentions(tree)
-            and bool(functions)
-            and all(guarded for _name, guarded in functions)
+        module_level = _module_level_mentions(tree)
+        if not module_level and not functions:
+            # The endpoint appears only in prose - a module docstring, a
+            # function docstring or a comment.  Prose is not a mint site, so
+            # the file has nothing to guard and is not an inventory entry.
+            continue
+        sites[path.relative_to(root).as_posix()] = not module_level and all(
+            guarded for _name, guarded in functions
         )
     return sites
 
@@ -265,12 +285,37 @@ class MintScanItself(unittest.TestCase):
         )
         self.assertEqual(scan_mint_sites(self.root), {"closed.py": True})
 
-    def test_an_unreadable_source_file_fails_closed(self):
-        # A partial inventory must never look like a clean bill of health.
-        (self.root / "bad.py").write_bytes(b"\xff\xfe not utf-8 \x00")
+    def test_a_non_utf8_file_is_scanned_leniently_rather_than_failing_the_gate(self):
+        # A .venv copy, a fixture or a vendored file somewhere in the tree may
+        # not be valid UTF-8.  That must not turn four unrelated minting tests
+        # red - and it must not hide an ASCII endpoint either.
+        (self.root / "bad.py").write_bytes(
+            b"# caf\xe9 latin-1 comment\n"
+            b"def f():\n"
+            b"    return post('/app/installations/1/" + MINT_ENDPOINT.encode() + b"')\n"
+        )
+        self.assertEqual(scan_mint_sites(self.root), {"bad.py": False})
+
+    def test_a_genuine_io_error_still_fails_closed(self):
+        # Decoding is lenient;  a real I/O error is not.  A partial inventory
+        # must never look like a clean bill of health.  A directory named
+        # *.py is an unreadable path whatever the test runs as.
+        (self.root / "blocked.py").mkdir()
         with self.assertRaises(MintScanError) as caught:
             scan_mint_sites(self.root)
-        self.assertIn("bad.py", str(caught.exception))
+        self.assertIn("blocked.py", str(caught.exception))
+
+    def test_a_function_docstring_naming_the_endpoint_is_not_a_mint_site(self):
+        # Prose is prose.  This function never calls the endpoint, so it must
+        # not be reported as an unguarded mint site - the same rule the module
+        # already applies to a module-level docstring.
+        self._write(
+            "prose.py",
+            'def documented():\n'
+            '    """Never call /app/installations/1/' + MINT_ENDPOINT + ' here."""\n'
+            "    return 1\n",
+        )
+        self.assertEqual(scan_mint_sites(self.root), {})
 
     def test_a_module_level_mint_site_is_unguarded_despite_a_guarded_function(self):
         # Code that runs at import time cannot be covered by a guard living

@@ -3,7 +3,7 @@
 
 Driven by test/infra-phase0.test.mjs.  Stdlib only, no network:  the point is
 to prove that a rule or CNAME belonging to the RETIRED host is still found and
-removed after the hard cutover repointed HOST at agents.simplewithus.com.
+removed after the hard cutover repointed HOST at the current endpoint.
 Prints one JSON object; the node test asserts on it.
 """
 
@@ -50,10 +50,15 @@ class FakeCloudflare:
         # When set, the tunnel answers with a shape this script must refuse to
         # interpret rather than crash on.
         self.malformed = None
+        # Zones that answer "not on this account".  The retired zone is not
+        # guaranteed to be on the account, and that must not abort `dns`.
+        self.absent_zones: set[str] = set()
 
     def ok(self, method, path, body=None, **params):
         if path == "/zones":
             zone = params["name"]
+            if zone in self.absent_zones:
+                return {"success": True, "result": []}
             return {
                 "success": True,
                 "result": [{"id": ZONES[zone], "account": {"id": infra.ACCOUNT_ID}}],
@@ -84,7 +89,19 @@ class FakeCloudflare:
         if path.startswith("/zones/") and path.endswith("/dns_records"):
             zid = path.split("/")[2]
             zone = next(name for name, ident in ZONES.items() if ident == zid)
-            host = params["name"]
+            # `check` sweeps the whole zone (no name filter) as well as each
+            # host by name;  an absent filter returns every record in the zone.
+            host = params.get("name")
+            if host is None:
+                return {
+                    "success": True,
+                    "result": [
+                        r
+                        for (z, _h), recs in RECORDS.items()
+                        if z == zone
+                        for r in recs
+                    ],
+                }
             self.queried.append((zone, host))
             return {"success": True, "result": RECORDS.get((zone, host), [])}
         if path.startswith("/zones/") and "/dns_records/" in path:
@@ -339,6 +356,22 @@ def main() -> None:
 
     infra.cmd_dns(cf, True)
 
+    # The retired zone may not be on this account at all.  `dns --apply` runs
+    # the served zone first, so a fatal retired-zone lookup would abort after
+    # that deletion and leave the stale CNAME behind with a bare error.
+    absent_zone = {"deleted": [], "raised": None, "output": []}
+    cf_absent = FakeCloudflare()
+    cf_absent.absent_zones = {infra.RETIRED_ZONE_NAME}
+    cf_absent_lines: list[str] = []
+    infra.say = lambda text="": cf_absent_lines.append(text)
+    try:
+        infra.cmd_dns(cf_absent, True)
+    except BaseException as exc:  # noqa: BLE001 - the probe reports the kind
+        absent_zone["raised"] = type(exc).__name__
+    infra.say = fake_say
+    absent_zone["deleted"] = cf_absent.deleted
+    absent_zone["output"] = cf_absent_lines
+
     # A third-party answer that is not the documented shape must be a precise
     # refusal, not an incidental AttributeError - in `check` that crash would
     # read as "could not verify" instead of "the answer was not understood".
@@ -366,6 +399,7 @@ def main() -> None:
                 "output": "\n".join(lines),
                 "malformed_errors": malformed_errors,
                 "tunnel_config_reads": tunnel_config_reads,
+                "absent_zone": absent_zone,
                 "secrets": secret_probes(),
             }
         )
