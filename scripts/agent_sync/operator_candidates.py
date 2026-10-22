@@ -195,7 +195,7 @@ def resolve_recipient(
     if isinstance(recipient, int):
         for user in members:
             if user.get("user_id") == recipient:
-                return _usable(user, members)
+                return _usable(user)
         return None, "no user has the id %d" % recipient
     if isinstance(recipient, Mapping):
         user_id = recipient.get("user_id")
@@ -203,7 +203,7 @@ def resolve_recipient(
             return None, "the recipient record carries no user id"
         for user in members:
             if user.get("user_id") == user_id:
-                return _usable(user, members)
+                return _usable(user)
         return None, "no user has the id %d" % user_id
     if not isinstance(recipient, str):
         return None, "the recipient is not a user id or a name"
@@ -212,10 +212,10 @@ def resolve_recipient(
         return None, "no user is named %r" % recipient.strip()[:60]
     if len(found) > 1:
         return None, "%r matches %d users; name one by email" % (recipient.strip()[:60], len(found))
-    return _usable(found[0], members)
+    return _usable(found[0])
 
 
-def _usable(user: Mapping[str, Any], members: Sequence[Mapping[str, Any]]) -> tuple[int | None, str]:
+def _usable(user: Mapping[str, Any]) -> tuple[int | None, str]:
     """The id of a user that can actually take a direct message, or why not."""
     user_id = user.get("user_id")
     if not isinstance(user_id, int) or isinstance(user_id, bool):
