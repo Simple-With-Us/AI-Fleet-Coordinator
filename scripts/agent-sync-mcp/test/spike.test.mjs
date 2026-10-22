@@ -41,6 +41,8 @@ import { classifyPath } from "../src/policy.js";
 import { ChannelSet } from "../src/channels.js";
 import { testEnv } from "./helpers.mjs";
 
+// Synthetic test values, not credentials:  a whsec_ secret of 32 bytes of 7s, and HMAC keys of
+// repeated letters.  The golden run below must use exactly these to match origin/main.
 const SECRET = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
 const CALLBACK = "https://chatgpt.com/backend-api/mcp-events/callback_123";
 const SPIKE_CALLBACK = "https://chatgpt.com/backend-api/mcp-events/callback_spike";
@@ -183,7 +185,8 @@ test("flag on:  events/list offers zulip.mention then fleet.spike.ping, a conten
 
 test("flag on:  the spike takes no arguments", async () => {
   const ev = seatEvents(memoryGate(), configOn, { fetchFn: fakeCallback().fetchFn });
-  await assert.rejects(ev.subscribe(SUB(SPIKE_EVENT_NAME, CALLBACK, { arguments: { channel: "agent-sync" } })), (e) => e.code === INVALID_PARAMS && /Unknown argument/.test(e.message));
+  await assert.rejects(ev.subscribe(SUB(SPIKE_EVENT_NAME, CALLBACK, { arguments: { channel: "agent-sync" } })), (e) => e.code === INVALID_PARAMS && e.message === "fleet.spike.ping takes no arguments");
+  await assert.rejects(ev.subscribe(SUB(SPIKE_EVENT_NAME, CALLBACK, { arguments: { whsec_leak: 1 } })), (e) => !e.message.includes("whsec_leak"), "the refusal never echoes an argument name");
   await assert.rejects(ev.subscribe(SUB(SPIKE_EVENT_NAME, CALLBACK, { arguments: [] })), (e) => e.code === INVALID_PARAMS);
   assert.match((await ev.subscribe(SUB(SPIKE_EVENT_NAME, CALLBACK, { arguments: null }))).id, /^sub_/);
 });
