@@ -728,6 +728,70 @@ try:
         os.umask(saved_umask)
         mod.HOUSEKEEPER_LOCK = saved_lock
 
+    # 23. The acquire path READS the owner record.
+    #
+    #     The release removes the lock directory before it clears the owner
+    #     file, so a removal that FAILED leaves both behind.  Preserving the
+    #     record is only worth something if somebody consumes it:  without
+    #     this, the surviving lock still wedges every reclaimer for the full
+    #     stale window, and the two-hour wedge this PR targets would only be
+    #     removed for the external peer that reads the record.
+    #
+    #     An abandoned lock is reclaimed at once instead of waiting out the
+    #     window, and every case where the record cannot speak for the lock
+    #     falls back to the age rule so a live holder is never displaced.
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    host = mod.socket.gethostname()
+
+    assert mod._pid_alive(os.getpid()) is True, "this process must look alive"
+    assert mod._pid_alive(gone.pid) is False, "an exited pid must not look alive"
+
+    def fresh_lock(record, owner_older=False):
+        """A FRESH lock, well inside the stale window, plus an owner record."""
+        shutil.rmtree(lock, ignore_errors=True)
+        owner.unlink(missing_ok=True)
+        lock.mkdir(parents=True)
+        lock_mtime = time.time() - 5
+        os.utime(lock, (lock_mtime, lock_mtime))
+        if record is not None:
+            raw = (json.dumps(record) if isinstance(record, dict) else record)
+            owner.write_text(raw, encoding="utf-8")
+            offset = -60 if owner_older else 60
+            owner_mtime = lock_mtime + offset
+            os.utime(owner, (owner_mtime, owner_mtime))
+
+    # The abandoned lock is reclaimed at once, without the age rule.
+    fresh_lock(owner_record(gone.pid, host=host))
+    assert mod._acquire_housekeeper_lock() is True, (
+        "a fresh lock whose owner record names a dead pid must be taken over "
+        "at once; falling back to the age rule here is the two-hour wedge on "
+        "a lock nobody holds")
+    mod._release_housekeeper_lock()
+
+    # A live holder's lock is never displaced.
+    fresh_lock(owner_record(os.getpid(), host=host))
+    assert mod._acquire_housekeeper_lock() is False, (
+        "a live holder's owner record must keep its lock")
+
+    # The age rule decides whenever the record cannot speak for the lock.
+    fresh_lock(None)
+    assert mod._acquire_housekeeper_lock() is False, (
+        "no owner record means the age rule decides; the shell holder writes "
+        "none at all")
+    fresh_lock("{ this is not json")
+    assert mod._acquire_housekeeper_lock() is False, (
+        "a malformed owner record must fall back to the age rule")
+    fresh_lock(owner_record(gone.pid, host=host), owner_older=True)
+    assert mod._acquire_housekeeper_lock() is False, (
+        "an owner record older than the lock directory it sits beside "
+        "describes an earlier holder, so the age rule decides")
+    fresh_lock(owner_record(gone.pid, host="some-other-host"))
+    assert mod._acquire_housekeeper_lock() is False, (
+        "another host's pid says nothing about a lock on this one")
+    shutil.rmtree(lock, ignore_errors=True)
+    owner.unlink(missing_ok=True)
+
 finally:
     shutil.rmtree(scratch, ignore_errors=True)
 print("housekeeper lock behaviour ok")
