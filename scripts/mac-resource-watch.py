@@ -388,6 +388,58 @@ def _read_housekeeper_owner() -> dict | None:
         return None
 
 
+def _pid_alive(pid: int) -> bool:
+    """Whether a pid names a running process.
+
+    Every failure answers "alive" except a pid the kernel says does not
+    exist:  a permission error means the process is there and merely not
+    ours to signal, and treating that as dead would take over a lock that a
+    live holder still owns.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _housekeeper_owner_is_gone(lock_mtime: float) -> bool:
+    """Whether the owner file proves the holder of this lock has exited.
+
+    This is what makes a lock whose release failed recoverable in one run
+    instead of one stale window:  the owner file survives a failed removal,
+    so the next caller can see that the pid which held the lock is gone and
+    take the lock over at once, rather than waiting out the full two hours
+    for a lock nobody holds.
+
+    False means DO NOT TRUST THE OWNER FILE, and the caller falls back to
+    the age rule.  That covers every case where the file cannot speak for
+    the lock that is actually on disk:
+
+      * it is missing  --  the shell holder in scripts/mac-auto-cleanup.sh
+        writes none at all and recovers by the age rule (see the protocol
+        note there), so a missing file is an ordinary state, not a fault;
+      * it is malformed  --  it is shared state any process can write;
+      * it names another host  --  a pid is only meaningful where it ran;
+      * it is OLDER than the lock directory it sits beside  --  then it
+        describes an earlier holder, not the lock we are looking at.
+    """
+    owner = _read_housekeeper_owner()
+    if owner is None:
+        return False
+    if owner.get("host") != socket.gethostname():
+        return False
+    try:
+        owner_mtime = _housekeeper_owner_path().stat().st_mtime
+    except OSError:
+        return False
+    if owner_mtime <= lock_mtime:
+        return False
+    return not _pid_alive(owner["pid"])
+
+
 def _write_housekeeper_owner() -> None:
     """Record who holds the lock, in the shape the HogHunter lock reads.
 
@@ -540,11 +592,15 @@ def _acquire_housekeeper_lock() -> bool:
     and a third reclaimer can mkdir it and sweep at the same time -- the double
     sweep this lock exists to prevent.
 
-    The staleness decision reads NO owner file.  The shell holder writes none
-    and recovers by the age rule, so an owner-based rule here would be wrong
-    for that peer.  The owner file is therefore only ever touched by the
-    write, the read and the clear, and all three run under the shared guard,
-    so the file cannot be half-written or replaced under a reader.
+    The staleness decision consults the owner file only to REJECT an early
+    takeover:  an owner file that names a dead pid on this host, and is newer
+    than the lock directory it sits beside, proves the lock is abandoned and
+    is taken over at once.  Every other case -- no owner file, a malformed
+    one, another host's pid, or one older than the lock -- falls back to the
+    age rule, because the shell holder writes no owner file and recovers by
+    age (scripts/mac-auto-cleanup.sh).  The owner file is only ever touched
+    by the write, the read and the clear, and all three run under the shared
+    guard, so the file cannot be half-written or replaced under a reader.
 
     The whole section runs under the shared guard, so a takeover in another
     implementation of this protocol cannot slip between this one's check and
@@ -574,10 +630,17 @@ def _acquire_housekeeper_lock_locked() -> bool:
             _HOUSEKEEPER_LOCK_INODE = _lock_inode()
             return True
         try:
-            age = time.time() - HOUSEKEEPER_LOCK.stat().st_mtime
+            lock_mtime = HOUSEKEEPER_LOCK.stat().st_mtime
         except OSError:
+            lock_mtime = time.time()
             age = 0.0
-        if age < HOUSEKEEPER_LOCK_STALE_SEC:
+        else:
+            age = time.time() - lock_mtime
+        # A FRESH lock is a live peer's unless its owner file proves the
+        # holder is gone:  that is the case a failed removal leaves behind,
+        # and waiting out the whole window for it is the two-hour wedge this
+        # lock's owner file exists to remove.
+        if age < HOUSEKEEPER_LOCK_STALE_SEC and not _housekeeper_owner_is_gone(lock_mtime):
             log(f"housekeeper lock held by a peer ({int(age)}s old); skipping cleanup")
             return False
         # The lock must be EMPTY: it is a marker, not a workspace.  A lock
@@ -602,10 +665,15 @@ def _acquire_housekeeper_lock_locked() -> bool:
         # The moved object may have been replaced between the staleness check
         # and the rename; rename preserves mtime, so re-read its age.
         try:
-            moved_age = time.time() - aside.stat().st_mtime
+            moved_mtime = aside.stat().st_mtime
         except OSError:
-            moved_age = 0.0
-        if moved_age < HOUSEKEEPER_LOCK_STALE_SEC:
+            moved_mtime = time.time()
+        moved_age = time.time() - moved_mtime
+        # The owner file has to be consulted HERE as well as at the gate
+        # above:  this re-read would otherwise restore a lock we just proved
+        # the holder had released, because the age it re-reads is the same
+        # fresh age that the owner file has already explained.
+        if moved_age < HOUSEKEEPER_LOCK_STALE_SEC and not _housekeeper_owner_is_gone(moved_mtime):
             # Fresh after all: it belongs to a live peer.  Put it back.
             if not _restore_housekeeper_lock(aside):
                 # The copy stays where it is, so name it:  an orphaned copy

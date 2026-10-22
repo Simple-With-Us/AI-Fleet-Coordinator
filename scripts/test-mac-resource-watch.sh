@@ -66,7 +66,7 @@ assert mod.HOUSEKEEPER_LOCK_STALE_SEC == 7200, mod.HOUSEKEEPER_LOCK_STALE_SEC
 print("housekeeper lock ok")
 PY
 python3 - "$ROOT/mac-resource-watch.py" <<'PY' || fail "housekeeper lock behaviour"
-import importlib.util, json, os, pathlib, shutil, subprocess, sys, tempfile, time
+import importlib.util, json, os, pathlib, shutil, socket, subprocess, sys, tempfile, time
 from pathlib import Path
 spec = importlib.util.spec_from_file_location("watch", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
@@ -493,6 +493,65 @@ try:
         "strands the lock with no owner, and every implementation then waits "
         "the full stale window for a lock nobody holds")
     (lock / "leftover.txt").unlink()
+    shutil.rmtree(lock, ignore_errors=True)
+    owner.unlink(missing_ok=True)
+
+    # 21. The acquire path READS the owner file.  Preserving it on a failed
+    #     removal is only worth anything if somebody consumes it:  without
+    #     this the surviving lock still wedges every reclaimer in this repo
+    #     for the full stale window, and the two-hour wedge this PR targets
+    #     would only be removed for the external peer.
+    #
+    #     A pid that has definitely exited, so "the holder is gone" is a fact
+    #     here rather than a hope.
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    host = socket.gethostname()
+
+    def fresh_lock(owner_payload, owner_older=False):
+        """A FRESH lock (well inside the stale window) plus an owner file."""
+        shutil.rmtree(lock, ignore_errors=True)
+        owner.unlink(missing_ok=True)
+        lock.mkdir(parents=True)
+        lock_mtime = time.time() - 5
+        os.utime(lock, (lock_mtime, lock_mtime))
+        if owner_payload is not None:
+            raw = (json.dumps(owner_payload) if isinstance(owner_payload, dict)
+                   else owner_payload)
+            owner.write_text(raw, encoding="utf-8")
+            owner_mtime = lock_mtime - 60 if owner_older else lock_mtime + 60
+            os.utime(owner, (owner_mtime, owner_mtime))
+
+    assert mod._pid_alive(os.getpid()) is True, "this process must look alive"
+    assert mod._pid_alive(gone.pid) is False, "an exited pid must not look alive"
+
+    # The abandoned lock is reclaimed at once, without the age rule.
+    fresh_lock({"pid": gone.pid, "host": host})
+    assert mod._acquire_housekeeper_lock() is True, (
+        "a fresh lock whose owner file names a dead pid must be taken over at "
+        "once; falling back to the age rule here is the two-hour wedge on a "
+        "lock nobody holds")
+    mod._release_housekeeper_lock()
+
+    # Every case where the owner file cannot speak for the lock falls back to
+    # the age rule, so a live holder is never displaced.
+    fresh_lock({"pid": os.getpid(), "host": host})
+    assert mod._acquire_housekeeper_lock() is False, (
+        "a live holder's owner file must keep its lock")
+    fresh_lock(None)
+    assert mod._acquire_housekeeper_lock() is False, (
+        "no owner file means the age rule decides; the shell holder writes "
+        "none at all")
+    fresh_lock("{ this is not json")
+    assert mod._acquire_housekeeper_lock() is False, (
+        "a malformed owner file must fall back to the age rule")
+    fresh_lock({"pid": gone.pid, "host": host}, owner_older=True)
+    assert mod._acquire_housekeeper_lock() is False, (
+        "an owner file older than the lock directory it sits beside describes "
+        "an earlier holder, so the age rule decides")
+    fresh_lock({"pid": gone.pid, "host": "some-other-host"})
+    assert mod._acquire_housekeeper_lock() is False, (
+        "another host's pid says nothing about a lock on this one")
     shutil.rmtree(lock, ignore_errors=True)
     owner.unlink(missing_ok=True)
 
