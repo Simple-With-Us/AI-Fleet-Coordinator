@@ -60,7 +60,7 @@ export function buildServer(tools, events = null) {
   const toolList = router.toolList;
   const toolMap = router.toolsByName;
   const server = new Server(
-    { name: "agent-sync", version: SERVER_VERSION },
+    { name: "ST-MCP", version: SERVER_VERSION },
     { capabilities: events ? { tools: {}, events: {} } : { tools: {} }, instructions: hostedInstructions(router.seat) + router.instructions() },
   );
   if (events) {

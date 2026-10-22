@@ -46,3 +46,6 @@ a0df50e5843d698782688de322e01948d0710292:scripts/agent_sync/tests/test_mcp_extra
 5e308316d1e3be63b2b18be825e4aec246caf909:scripts/fleet_rag/tests/test_sources.py:generic-api-key:385
 # AFC-363 (#681), run-time fixture commit:  the first split still left a hex literal on one line (fixed in the next commit).
 533058ad64546eb2d3f6c0dee0335a494a39f7da:scripts/fleet_rag/tests/test_sources.py:generic-api-key:97
+# Cloudflare Access application audience tag (the public JWT aud claim, not a credential) for the
+# agents.simplewithus.com Access app, added by Echo in #844; main already carries the old host's tag.
+ef42f132ad746c13dbe89c058d9e895ef64790a8:scripts/agent-sync-mcp/wrangler.jsonc:generic-api-key:155
