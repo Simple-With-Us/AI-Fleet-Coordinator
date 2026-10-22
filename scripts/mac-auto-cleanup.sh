@@ -48,15 +48,13 @@ fi
 #
 # The peer in this repo is scripts/mac-resource-watch.py, which takes the same
 # lock with the same move-aside takeover and the same ownership-checked
-# release.  The other implementations of this protocol live in HogHunter: the
-# Python lock (scripts/vacuum/lock.py) and the Swift lock
-# (Sources/Storage/HousekeeperLock.swift).  They have to follow the same three
-# rules above, because all four share one lock directory: a takeover that
-# moves the lock aside rather than removing it, a release that only removes
-# the lock it created, and the same 120 minute stale window.  An
-# implementation that still removes the lock and recreates it can delete a
-# fresh lock between a peer's staleness check and its recreation, and then two
-# reclaimers sweep at once.
+# release.  An equivalent lock helper in a sibling repository implements the
+# same protocol.  They have to follow the same three rules above, because they
+# all share one lock directory: a takeover that moves the lock aside rather
+# than removing it, a release that only removes the lock it created, and the
+# same 120 minute stale window.  An implementation that still removes the
+# lock and recreates it can delete a fresh lock between a peer's staleness
+# check and its recreation, and then two reclaimers sweep at once.
 # The shell holder writes no owner file -- it recovers by the age rule -- so a peer
 # that reads an owner file must fall back to the age rule when the file is older
 # than the lock directory it sits beside.
@@ -73,9 +71,9 @@ HOUSEKEEPER_STATE_FILE=""
 # Run a section of this script with the shared housekeeper guard held.
 #
 # Every implementation of this protocol -- this script, the Python watcher in
-# this repo (scripts/mac-resource-watch.py), HogHunter's scripts/vacuum/lock.py
-# and HogHunter's Sources/Storage/HousekeeperLock.swift -- serializes the
-# critical sections of the lock with an exclusive flock on ONE file:
+# this repo (scripts/mac-resource-watch.py) and an equivalent lock helper in a
+# sibling repository -- serializes the critical sections of the lock with an
+# exclusive flock on ONE file:
 # ~/.claude-disk-janitor/.housekeeper.lock.guard.  It is a SIBLING of the
 # lock directory and never inside it, because the lock is released with a
 # plain rmdir and rmdir refuses a directory that has anything in it.  It is
@@ -166,10 +164,11 @@ PY
 # This is the same primitive the Python side of this repo uses
 # (scripts/mac-resource-watch.py, _rename_exclusive).  The shell cannot import
 # it, so this is a copy of the same syscall, and THE TWO HAVE TO STAY IN
-# AGREEMENT:  all four implementations of this lock share one lock directory.
+# AGREEMENT:  every implementation of this lock shares one lock directory.
 #
 # Exit status:  0 the move happened,  17 (EEXIST) the destination is held by a
-# peer, anything else a real failure.
+# peer,  2 (ENOENT) the source is gone because another caller won the race,
+# anything else a real failure (permissions, no space, a cross-device rename).
 housekeeper_rename_exclusive() {
     python3 - "$1" "$2" <<'PY'
 import ctypes, errno, os, sys
@@ -222,8 +221,17 @@ housekeeper_restore_lock() {
         return 0
     fi
     if [ "$rc" = "17" ]; then
+        # EEXIST:  a peer holds the canonical path, so the copy cannot go back.
         echo "failed to restore housekeeper lock; a peer holds the canonical path" >&2
+    elif [ "$rc" = "2" ]; then
+        # ENOENT:  the moved-aside copy is gone, so there is nothing to put
+        # back.  That is NOT peer contention on the canonical path -- the
+        # canonical path is free and the copy cannot be restored -- so it is a
+        # failure like any other, and the caller must not sweep on.
+        echo "failed to restore housekeeper lock; the moved-aside copy is gone" >&2
     else
+        # Any other errno is a real failure:  permissions, no space, a
+        # cross-device rename.
         echo "failed to restore housekeeper lock" >&2
     fi
     echo "the moved-aside copy is at $HOUSEKEEPER_STALE" >&2
@@ -247,6 +255,65 @@ housekeeper_record_state() {
         echo "STALE=$HOUSEKEEPER_STALE"
         echo "PEER=$HOUSEKEEPER_STALE_IS_PEER"
     } > "$HOUSEKEEPER_STATE_FILE"
+}
+
+# Whether the owner file proves the holder of a given lock directory is gone.
+#
+# This is what makes a lock whose release FAILED recoverable in one run
+# instead of one stale window.  The watcher removes the lock directory before
+# it clears the owner file (scripts/mac-resource-watch.py), so a removal that
+# failed leaves BOTH behind:  without this check the surviving lock wedges
+# every reclaimer for the full two hours, even though nobody holds it.
+#
+# It is the same rule the watcher applies, and it is deliberately
+# conservative -- exit 0 (the holder is gone) ONLY when the file names a dead
+# pid on THIS host and was written after the lock directory it sits beside.
+# Anything else exits 1 and the caller falls back to the age rule, which is
+# what this script relies on for its own holder:  it writes no owner file.
+#
+# The argument is the lock directory to judge, which is the canonical lock at
+# the first gate and the moved-aside copy at the second.  The owner file is a
+# SIBLING of the canonical lock, so the second gate reads the same file.
+housekeeper_owner_is_gone() {
+    python3 - "$1" <<'PY'
+import errno, json, os, socket, sys
+
+lock_path = sys.argv[1]
+# The moved-aside copy is named `<lock>.stale-<pid>.<uuid>`, so the owner file
+# is always found under the CANONICAL name beside it -- the same file for
+# both gates.
+canonical = os.path.join(
+    os.path.dirname(lock_path), os.path.basename(lock_path).split(".stale-")[0]
+)
+owner_path = canonical + ".owner"
+
+try:
+    lock_mtime = os.stat(lock_path).st_mtime
+    owner_mtime = os.stat(owner_path).st_mtime
+except OSError:
+    sys.exit(1)                      # no owner file, or no lock to weigh it against
+if owner_mtime <= lock_mtime:
+    sys.exit(1)                      # it describes an earlier holder, not this lock
+try:
+    with open(owner_path, encoding="utf-8") as handle:
+        owner = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)                      # unreadable or malformed: the age rule decides
+if not isinstance(owner, dict) or owner.get("host") != socket.gethostname():
+    sys.exit(1)                      # another host's pid says nothing about this one
+pid = owner.get("pid")
+if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+    sys.exit(1)
+try:
+    os.kill(pid, 0)
+except ProcessLookupError:
+    sys.exit(0)                      # the holder is gone:  take the lock over
+except OSError as exc:
+    # A permission error means the process exists and is merely not ours to
+    # signal; only ESRCH is proof that it is gone.
+    sys.exit(1 if exc.errno != errno.ESRCH else 0)
+sys.exit(1)                          # the pid is alive:  the age rule decides
+PY
 }
 
 # The acquire section.  It runs inside the helper process with the shared
@@ -277,7 +344,12 @@ housekeeper_acquire_section() {
     # moving a live peer's lock aside would leave the canonical path briefly
     # absent, and a third reclaimer could mkdir it and sweep at the same
     # time.
-    if [ -z "$(find "$HOUSEKEEPER_LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+    # A FRESH lock is still a live peer's unless its owner file proves the
+    # holder is gone:  that is exactly what a failed removal leaves behind,
+    # and waiting out the whole window for it is a two-hour wedge on a lock
+    # nobody holds.
+    if [ -z "$(find "$HOUSEKEEPER_LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ] &&
+        ! housekeeper_owner_is_gone "$HOUSEKEEPER_LOCK"; then
         echo "skipped, peer holds housekeeper lock"
         housekeeper_record_state
         return 17
@@ -299,15 +371,29 @@ housekeeper_acquire_section() {
             # The moved-aside name is taken:  the caller tries another one.
             return 75
         fi
-        # Nothing to move: another caller won the race, or the holder released
-        # the lock between the mkdir and the move.
-        echo "skipped, peer holds housekeeper lock"
+        if [ "$rc" = "2" ]; then
+            # ENOENT:  the source lock is gone, so another caller won the race
+            # and released it.  A lost race is a skip, not an error.
+            echo "skipped, peer holds housekeeper lock"
+            housekeeper_record_state
+            return 17
+        fi
+        # Every other errno is a real move failure -- permissions, no space, a
+        # cross-device rename.  Reporting it as peer contention would let the
+        # cleanup continue while the resource is still there, so it is a hard
+        # error.
+        echo "failed to move the stale housekeeper lock aside" >&2
         housekeeper_record_state
-        return 17
+        return 76
     fi
     # The moved object may have been replaced between the check and the
-    # rename; rename preserves mtime, so re-read its age.
-    if [ -z "$(find "$HOUSEKEEPER_STALE" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+    # rename; rename preserves mtime, so re-read its age.  The owner file has
+    # to be weighed HERE as well as at the first gate:  this re-read would
+    # otherwise put back a lock we already proved the holder had abandoned,
+    # because the age it re-reads is the same fresh age the owner file
+    # explained.
+    if [ -z "$(find "$HOUSEKEEPER_STALE" -maxdepth 0 -mmin +120 2>/dev/null)" ] &&
+        ! housekeeper_owner_is_gone "$HOUSEKEEPER_STALE"; then
         # Fresh after all: it belongs to a LIVE peer.  Put it back, and never
         # delete it:  this is the one path where the moved-aside copy holds a
         # live peer's lock, so this is where the peer flag is set.
@@ -399,7 +485,7 @@ trap 'housekeeper_with_guard "$HOUSEKEEPER_GUARD" "housekeeper_release_section" 
 # they read have to travel with them.
 export -f housekeeper_with_guard housekeeper_try_mkdir housekeeper_rename_exclusive \
     housekeeper_restore_lock housekeeper_record_state housekeeper_acquire_section \
-    housekeeper_release_section
+    housekeeper_release_section housekeeper_owner_is_gone
 export HOUSEKEEPER_LOCK HOUSEKEEPER_GUARD HOUSEKEEPER_STALE HOUSEKEEPER_LOCK_INODE \
     HOUSEKEEPER_STALE_IS_PEER HOUSEKEEPER_STATE_FILE
 
