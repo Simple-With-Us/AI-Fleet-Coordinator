@@ -215,6 +215,16 @@ class DefaultChannelTests(unittest.TestCase):
             "a live source still names the old channel:  %s" % ", ".join(offenders),
         )
 
+    def test_the_bot_provisioning_script_subscribes_to_the_live_channel(self) -> None:
+        # A newly provisioned bot that is subscribed to the old channel never sees fleet
+        # coordination traffic, and the seat that waits for it waits forever.  The script takes
+        # the channel from the runtime that owns it, so the check is that the runtime's own
+        # default is in the list and that the old name is not.
+        repo_root = AGENT_SYNC_DIR.parents[1]
+        text = (repo_root / "scripts" / "zulip_provision_bots.py").read_text()
+        self.assertIn("default_channel()", text)
+        self.assertNotIn('"agent-sync"', text)
+
 
 if __name__ == "__main__":
     unittest.main()
