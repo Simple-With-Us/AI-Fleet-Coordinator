@@ -94,7 +94,7 @@ Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`
 
 | Key | Kind | Used by |
 |---|---|---|
-| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #alerts, #trading, #agent-sync |
+| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #alerts, #trading, #Work-In-Progress |
 | `ZULIP_PAGERDUTY_EMAIL` / `ZULIP_PAGERDUTY_API_KEY` | env config / secret | PagerDuty v3 webhook to #incident-response |
 | `ZULIP_LINEAR_EMAIL` / `ZULIP_LINEAR_API_KEY` | env config / secret | Linear webhook to #issues |
 | `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #alerts (`slack_incoming`) |

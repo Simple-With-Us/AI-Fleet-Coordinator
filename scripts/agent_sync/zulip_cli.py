@@ -48,7 +48,7 @@ def _deliver_at(value: str) -> int:
     return int(parsed.timestamp())
 
 
-def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
+def add_parsers(sub: Any, common: argparse.ArgumentParser, channel_default: str = Z.DEFAULT_CHANNEL) -> None:
     cli = _cli()
 
     def add(name: str, summary: str, parent: Any = sub) -> argparse.ArgumentParser:
@@ -61,7 +61,7 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
         if required:
             p.add_argument("--channel", type=cli._channel, required=True, metavar="C", help="channel name")
         else:
-            p.add_argument("--channel", type=cli._channel, default=Z.DEFAULT_CHANNEL, metavar="C",
+            p.add_argument("--channel", type=cli._channel, default=channel_default, metavar="C",
                            help="channel name (default: %(default)s)")
 
     def body(p: argparse.ArgumentParser) -> None:
