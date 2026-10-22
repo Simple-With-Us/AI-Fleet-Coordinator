@@ -59,10 +59,11 @@ import {
   safeEqual,
 } from "./policy.js";
 import { verifyAccessJwt } from "./access.js";
-import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy } from "./pages.js";
+import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerRevealPage } from "./pages.js";
+import { gbBearerFromRequest, parseGbBearer, newGbBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
-import { IdentityRouter, loadDelegatedCredentials } from "./delegated-identities.js";
+import { IdentityRouter, loadDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
 import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
@@ -73,6 +74,7 @@ import { listenerClientFromEnv } from "./listener.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "./events.js";
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
+import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 
 export { SeatGate };
@@ -361,6 +363,67 @@ function safeHost(origin) {
   }
 }
 
+// ---------------------------------------------------------------- /mcp with a per-bot bearer
+
+/**
+ * A Grok Bot persona's own bearer (src/gb-bearer.js) in place of an OAuth token.  The token names its persona;
+ * that persona's SeatGate holds the hash.  The router is built with NO createIdentity, so the connection acts
+ * only as that persona (allowedIdentities for a non-shared seat is just itself).  Every refusal is the same
+ * generic 401.  Paused personas, an unset credential bundle and an expired bearer all refuse.
+ */
+async function serveGbBearerMcp(request, env, token) {
+  const config = loadConfig(env);
+  const refuse = () => invalidToken("This token is not valid.");
+  const parsed = parseGbBearer(token);
+  if (!parsed) return refuse();
+  const { identity } = parsed;
+  const credentials = loadDelegatedCredentials(env).roles.get(identity);
+  if (!credentials) return refuse();
+  const identityGate = gate(env, identity);
+  const checked = await identityGate.gbBearerCheck(await sha256Hex(parsed.token));
+  if (!checked.ok) {
+    // Only a token whose hash matched is logged (expired).  A wrong guess is not:  anyone can send one, and the
+    // audit log is capped, so guesses would push real mint and revoke rows out.
+    if (checked.reason === "expired") {
+      try { await identityGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
+    }
+    return refuse();
+  }
+  const state = await identityGate.getState();
+  if (state.paused) return invalidToken("This identity is paused.");
+  const scopes = ["zulip:read", "zulip:write"];
+  const grantRef = await sha256Ref(`gb-bearer:${identity}`);
+  const tools = new HostedTools({
+    seat: identity,
+    callerSeat: identity,
+    callerGate: identityGate,
+    verifySeat: true,
+    scopes,
+    clientId: "gb-bearer",
+    grantRef,
+    paused: false,
+    gate: identityGate,
+    cf: { asn: request.cf?.asn, country: request.cf?.country },
+    recall: recallClientFromEnv(env),
+    fleetlink: fleetlinkClientFromEnv(env),
+    linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
+    delegatedLinear: true,
+    config: { ...config, botEmails: { ...config.botEmails, [identity]: credentials.email } },
+    zulip: new ZulipClient({ email: credentials.email, key: credentials.zulipKey }),
+    key: credentials.zulipKey,
+    linear: new LinearClient({
+      seat: identity,
+      clientId: credentials.linearClientId,
+      clientSecret: credentials.linearClientSecret,
+      gate: identityGate,
+      fetch: globalThis.fetch.bind(globalThis),
+    }),
+  });
+  const routed = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
+  const authInfo = { token: grantRef, clientId: "gb-bearer", scopes, extra: { seat: identity } };
+  return serveMcpRequest(request, routed, authInfo, null);
+}
+
 // ---------------------------------------------------------------- /internal/wake/<SEAT>
 
 function jsonResponse(body, status, headers = {}) {
@@ -483,6 +546,54 @@ async function serveSpike(request, env, ctx, config) {
   console.log(JSON.stringify({ event: "spike", seat, verdict: claim.verdict, outcome: result.outcome ?? null, subscribers: result.subscribers ?? 0, delivered: result.delivered ?? 0 }));
   const reply = spikeReply(result);
   return jsonResponse(reply.body, reply.status, reply.retryAfterS ? { "Retry-After": String(reply.retryAfterS) } : {});
+}
+
+// ---------------------------------------------------------------- /internal/health/linear
+
+/**
+ * The Linear token health of every seat that has Linear credentials (the six
+ * LINEAR_SEATS and the twelve Grok Bot personas), for Muster's launchd reader.
+ * 404 when HEALTH_HMAC_KEY is unset or equals any seat's wake key, POST only,
+ * signed.  The body holds ages, counts and fixed codes:  no token or credential.
+ */
+async function serveLinearHealth(request, env, config) {
+  const key = healthKey(env.HEALTH_HMAC_KEY);
+  if (!key) return notFound();
+  const wakeKeys = Object.values(WAKE_SECRETS).map((name) => (typeof env[name] === "string" ? env[name].trim() : ""));
+  const spikeKeyRaw = typeof env.SPIKE_HMAC_KEY === "string" ? env.SPIKE_HMAC_KEY.trim() : "";
+  if (wakeKeys.includes(key) || (spikeKeyRaw && spikeKeyRaw === key)) {
+    console.log(JSON.stringify({ event: "health_refused", reason: "key_reused" }));
+    return notFound();
+  }
+  if (request.method !== "POST") return textResponse("Method Not Allowed", 405, { Allow: "POST" });
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > HEALTH_MAX_BODY) return textResponse("Payload Too Large", 413);
+  const bytes = await readBodyBytes(request, HEALTH_MAX_BODY);
+  if (bytes === null) return textResponse("Payload Too Large", 413);
+  const checked = await verifyHealth({ bytes, signature: request.headers.get(HEALTH_SIGNATURE_HEADER), key });
+  if (!checked.ok) {
+    console.log(JSON.stringify({ event: "health_refused", reason: checked.reason }));
+    return checked.status === 404 ? notFound() : textResponse(checked.status === 401 ? "Unauthorized" : checked.status === 413 ? "Payload Too Large" : "Bad Request", checked.status);
+  }
+  const identities = [];
+  const missing = [];
+  for (const seat of LINEAR_SEATS) {
+    const names = linearSecretNames(seat);
+    if (!names || !config.hostedSeats.includes(seat)) continue;
+    if ([names.clientId, names.clientSecret].every((n) => typeof env[n] === "string" && env[n].trim() !== "")) identities.push(seat);
+    else missing.push(seat);
+  }
+  const delegated = loadDelegatedCredentials(env);
+  for (const identity of delegated.roles.keys()) identities.push(identity);
+  const rows = await Promise.all(identities.map(async (seat) => {
+    try {
+      return { seat, row: await gate(env, seat).linearHealth() };
+    } catch {
+      return { seat, row: { unreadable: true } };
+    }
+  }));
+  for (const seat of missing) rows.push({ seat, row: { missing: true } });
+  return jsonResponse({ ...healthReport(rows, Math.floor(Date.now() / 1000)), bundle: delegated.valid ? "ok" : "invalid" }, 200);
 }
 
 /**
@@ -753,6 +864,7 @@ const DONE_NOTICES = {
   revoke: "Every grant for that seat is revoked and its epoch is bumped.",
   create_manual_client: "Manual client created.  Its client ID is in the table below.",
   sync_manual_client: "Manual client redirect URIs synced from SEATS.",
+  revoke_gb_bearer: "Bearer revoked.",
 };
 
 async function serveAdmin(request, env, config, oauth, email) {
@@ -809,8 +921,15 @@ async function serveAdmin(request, env, config, oauth, email) {
     const globalValue = (i) => globalReads[i].status === "fulfilled" ? globalReads[i].value : [];
     const [refusals, tokenRefusals, runtimeErrors] = [0, 1, 2].map(globalValue);
     const diagnosticsUnavailable = globalReads.some((r) => r.status === "rejected");
+    const delegatedRoles = loadDelegatedCredentials(env).roles;
+    const gbBearers = await Promise.all(GB_IDENTITIES.map(async (identity) => {
+      let status = null;
+      try { status = await gate(env, identity).gbBearerStatus(); } catch { /* Shown as unknown. */ }
+      return { identity, credentials: delegatedRoles.has(identity), status };
+    }));
     return adminPage(
       {
+        gbBearers,
         email,
         seats,
         clients: clients.filter((c) => !isUrlShapedClientId(c.clientId)).map((c) => ({ ...c, seat: manualClientSeat(c) })),
@@ -894,6 +1013,21 @@ async function serveAdmin(request, env, config, oauth, email) {
         const updated = await oauth.updateClient(clientId, { redirectUris: [...configured] });
         if (!updated) return errorPage("Request Refused", "Unknown client.", 400);
         await gate(env, bound).audit({ event: "client_redirects_synced", by: email, client_id: clientId });
+        break;
+      }
+      case "mint_gb_bearer": {
+        const identity = parsed.data.identity ?? "";
+        if (!GB_IDENTITIES.includes(identity) || !loadDelegatedCredentials(env).roles.has(identity)) return errorPage("Request Refused", "Unknown Grok Bot, or its credentials are not loaded.", 400);
+        const { token, hash } = await newGbBearer(identity);
+        const expiresAt = Date.now() + GB_BEARER_TTL_MS;
+        await gate(env, identity).gbBearerMint({ hash, by: email, expiresAt });
+        // The only response that ever carries the token:  no redirect, no log line, nothing stored.
+        return gbBearerRevealPage({ identity, token, expiresAt });
+      }
+      case "revoke_gb_bearer": {
+        const identity = parsed.data.identity ?? "";
+        if (!GB_IDENTITIES.includes(identity)) return errorPage("Request Refused", "Unknown Grok Bot.", 400);
+        await gate(env, identity).gbBearerRevoke({ by: email });
         break;
       }
       default:
@@ -1017,6 +1151,7 @@ export default {
     }
     if (route === "wake") return serveWake(request, env, ctx, config);
     if (route === "spike") return serveSpike(request, env, ctx, config);
+    if (route === "linear_health") return serveLinearHealth(request, env, config);
     if (route === "token") {
       const gated = await gateToken(request, env, config);
       if (gated instanceof Response) return gated;
@@ -1039,7 +1174,8 @@ export default {
       await pauseOnRefreshMismatch(env, config, gated.form, response);
       return response;
     }
-    const response = await fetchProvider(request, env, ctx);
+    const gbBearer = route === "mcp" ? gbBearerFromRequest(request) : null;
+    const response = gbBearer ? await serveGbBearerMcp(request, env, gbBearer) : await fetchProvider(request, env, ctx);
     // An unauthenticated MCP discovery 401 is normal OAuth negotiation.
     // Count only failed requests that actually supplied authorization.
     if (route === "mcp" && response.status >= 400 && request.headers.has("authorization") && response.headers.get("X-Agent-Sync-Diagnostic") !== "recorded") {
