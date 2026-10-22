@@ -62,10 +62,9 @@ fi
 # reclaimers can interleave them: both see the stale lock, one removes it and
 # creates a fresh one, and the other then removes that fresh, empty lock and
 # creates its own, so both believe they hold it.  The removal is therefore a
-# rename, which only one caller can win.  The Python lock
-# (HogHunter scripts/vacuum/lock.py) and the Swift lock
-# (HogHunter Sources/Storage/HousekeeperLock.swift) do it this way too, and
-# the three have to agree: they share one lock directory.
+# rename, which only one caller can win.  An equivalent lock helper in a
+# sibling repository does it this way too, and the implementations have to
+# agree: they share one lock directory.
 #
 # The guard has to cover EVERY spelling of a removal, not just `rmdir`.  An
 # `rm -rf "$HOUSEKEEPER_LOCK"` is the same racy takeover with a different
@@ -176,6 +175,58 @@ if ! grep -q 'failed to create housekeeper lock' "$SCRIPT"; then
   fail "mac-auto-cleanup.sh must report a lock it could not create, not skip as if a peer held it"
 fi
 
+# The committed scripts must not name a private sibling repository or its
+# internal source paths.  A test fixture is committed and indexed, so a
+# private project name and the layout of its source tree end up in a public
+# index.  The lock protocol only needs to say that an equivalent helper in a
+# sibling repository implements the same rules.
+#
+# The forbidden strings are NOT committed here:  they are read from the
+# environment, so this file carries neither the name nor the layout of a real
+# private project.  A developer who wants the real check sets
+# PRIVATE_REPO_GUARD, PRIVATE_TEST_PY_PATH and PRIVATE_TEST_SWIFT_PATH outside
+# the repository; CI sets nothing and gets a synthetic sentinel, which still
+# exercises both guards end to end instead of letting them silently pass.
+PRIVATE_REPO="${PRIVATE_REPO_GUARD:-Synthetic-Private-Sibling-Repo}"
+PRIVATE_PY_PATH="${PRIVATE_TEST_PY_PATH:-synthetic-private-repo/internal/module.py}"
+PRIVATE_SWIFT_PATH="${PRIVATE_TEST_SWIFT_PATH:-synthetic-private-repo/internal/Module.swift}"
+# The guard definitions are the one place these strings are named, so they are
+# left out of the check on the fixtures themselves.
+guard_lines() {
+  cat "$@" | grep -vE '^[[:space:]]*PRIVATE_(REPO|PY_PATH|SWIFT_PATH)='
+}
+if grep -nF -e "$PRIVATE_PY_PATH" -e "$PRIVATE_SWIFT_PATH" \
+    "$ROOT/mac-auto-cleanup.sh" "$ROOT/mac-resource-watch.py"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository's internal source paths"
+fi
+if grep -nF "$PRIVATE_REPO" "$ROOT/mac-resource-watch.py"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository"
+fi
+if guard_lines "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh" \
+    | grep -nF -e "$PRIVATE_PY_PATH" -e "$PRIVATE_SWIFT_PATH" -e "$PRIVATE_REPO"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository"
+fi
+# A name split across two lines, or written with a space or a hyphen instead
+# of run together, defeats a fixed-string grep -- and a committed script must
+# not carry it that way either.  Both the haystack and the needle are stripped
+# of whitespace, comment markers and the separators a name can be broken on,
+# so every spelling and every split is caught without the guard having to name
+# either half.
+PRIVATE_REPO_SPELLED="$(printf '%s' "$PRIVATE_REPO" | tr -d '[:space:]#_-')"
+# The reclaim-engine block below invokes a binary on this Mac, so its path
+# stays; the lock protocol's prose above it must not name the repository.
+if awk '/^# 2c\./{exit} {print}' "$ROOT/mac-auto-cleanup.sh" \
+    | tr -d '[:space:]#_-' | grep -qF "$PRIVATE_REPO_SPELLED"; then
+  fail "the housekeeper lock protocol's prose must not name a private sibling repository"
+fi
+if tr -d '[:space:]#_-' < "$ROOT/mac-resource-watch.py" | grep -qF "$PRIVATE_REPO_SPELLED"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository, split across lines"
+fi
+if guard_lines "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh" \
+    | tr -d '[:space:]#_-' | grep -qF "$PRIVATE_REPO_SPELLED"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository, split across lines"
+fi
+
 # Behavioural checks on the lock block itself.  The block is extracted from
 # the script and run against a temporary HOME, so nothing real is touched.
 LOCK_BLOCK="$(sed -n '/^HOUSEKEEPER_LOCK=/,/^fi$/p' "$SCRIPT")"
@@ -221,6 +272,43 @@ run_trap() {
   HOUSEKEEPER_STALE_IS_PEER="$2" HOUSEKEEPER_LOCK_INODE="$3" \
   bash -c "$GUARD_BLOCK"$'\n'"$RELEASE_BLOCK"$'\n''export -f housekeeper_release_section'$'\n''housekeeper_with_guard "$HOUSEKEEPER_GUARD" "housekeeper_release_section"' >/dev/null 2>&1 || true
 }
+
+# Splice a stub function into the lock block.
+#
+# The block exports its own functions into the guarded child process, so a
+# stub has to be defined AFTER the block's own definition of the function it
+# replaces and BEFORE that export.  Inserting the stub right in front of the
+# export line does both, so the child process runs the stub and not the real
+# helper.  $1 = the block, $2 = the stub source.
+block_with_stub() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+block, stub = sys.argv[1], sys.argv[2]
+out = []
+for line in block.split("\n"):
+    if line.startswith("export -f housekeeper_with_guard"):
+        out.append(stub)
+    out.append(line)
+sys.stdout.write("\n".join(out))
+PY
+}
+
+# The stubs themselves.  Each one reports the errno the real helper would
+# report at the syscall, so the caller's errno -> outcome mapping is what
+# the case exercises.
+# 17 = EEXIST:  the path is held by a peer.
+STUB_MKDIR_EEXIST='housekeeper_try_mkdir() {
+  return 17
+}'
+# 13 = EACCES:  a real move failure (permissions, no space, a cross-device
+# rename).  It is NOT a lost race.
+STUB_RENAME_EACCES='housekeeper_rename_exclusive() {
+  return 13
+}'
+# 2 = ENOENT:  the source is gone, so another caller won the race.
+STUB_RENAME_ENOENT='housekeeper_rename_exclusive() {
+  return 2
+}'
 
 
 # 1. No lock: the block takes it.
@@ -506,41 +594,37 @@ if printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
   fail "a lock that could not be created for another reason must not be reported as peer contention"
 fi
 
-# 15. A lost race for the lock is a skip, not a hard error.
+# 15. An EEXIST from the mkdir is a peer-held skip, and nothing is acquired.
 #
-# The shim makes the shell's mkdir report a failure for the lock path while
-# the path itself is free -- what a peer that took the lock and released it
-# again looks like.  A shell that re-inspects the path after a failed mkdir
-# reads that as "the mkdir failed for another reason" and dies with "failed to
-# create housekeeper lock", when the truth is that it lost a race with a peer
-# that has since gone away.  The decision has to be made at the syscall.
+# The lock is created by housekeeper_try_mkdir, a python3 os.mkdir helper, so
+# the `mkdir` COMMAND is not on the path the code takes at all:  a shim on
+# PATH for it never ran, and this case asserted nothing at all.  The errno has
+# to be produced where the production code produces it -- at the mkdir
+# syscall -- so the helper itself is stubbed to report EEXIST (17).
+#
+# The decision has to be made at the syscall:  a lock reported as held by a
+# peer is NOT held by this process, so nothing may be acquired afterwards
+# either.  Looking at the path again is the racy second step this protocol
+# forbids, and a test that REQUIRES the lock to be taken after a failed
+# mkdir would bless exactly that race.
 H15="$LOCK_TEST_ROOT/case15"
-mkdir -p "$H15/bin"
-cat > "$H15/bin/mkdir" <<'SH'
-#!/bin/bash
-last="${@: -1}"
-case "$last" in
-  */.housekeeper.lock)
-    if [ "${1:-}" != "-p" ]; then
-      exit 1
-    fi
-    ;;
-esac
-exec /bin/mkdir "$@"
-SH
-chmod +x "$H15/bin/mkdir"
-OUT="$(PATH="$H15/bin:$PATH" HOME="$H15" HOUSEKEEPER_LOCK_OWNER= bash -c "$LOCK_BLOCK"$'\n''[ -d "$HOUSEKEEPER_LOCK" ] && echo LOCK_HELD=yes' 2>&1 || true)"
-if printf '%s' "$OUT" | grep -q 'failed to create housekeeper lock'; then
-  fail "a lost race for the lock must be a skip, not a hard error"
+mkdir -p "$H15"
+BLOCK15="$(block_with_stub "$LOCK_BLOCK" "$STUB_MKDIR_EEXIST")"
+OUT="$(HOME="$H15" HOUSEKEEPER_LOCK_OWNER= bash -c "$BLOCK15"$'\n''[ -d "$HOUSEKEEPER_LOCK" ] && echo LOCK_HELD=yes' 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
+  fail "an EEXIST mkdir result must be treated as peer contention"
 fi
-if ! printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
-  fail "the lock must be taken by a syscall, so a failed mkdir cannot be second-guessed"
+if printf '%s' "$OUT" | grep -q 'failed to create housekeeper lock'; then
+  fail "an EEXIST mkdir result must not be reported as a lock that could not be created"
+fi
+if printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
+  fail "an EEXIST mkdir result must not be reacquired after re-inspecting the path"
 fi
 
 # 16. The shared guard over the housekeeper protocol.
 #
 # Every implementation of this protocol -- this script, the Python watcher in
-# this repo, HogHunter's scripts/vacuum/lock.py and HogHunter's Swift lock --
+# this repo and an equivalent lock helper in a sibling repository --
 # serializes the critical sections of the lock with an exclusive flock on ONE
 # file:  ~/.claude-disk-janitor/.housekeeper.lock.guard.  It is a SIBLING of
 # the lock directory, and it is never deleted, because deleting it would
@@ -702,6 +786,177 @@ fi
 if printf '%s' "$OUT" | grep -q 'failed to create housekeeper lock'; then
   fail "a stale dangling symlink at the canonical path must not be reported as a lock that could not be created"
 fi
+
+# 21. A move-aside that failed for a real reason is a hard error.
+#
+# The move reports WHY it failed:  17 (EEXIST) is a destination that is
+# already taken, 2 (ENOENT) is a source another caller already took, and
+# every other errno is a genuine failure -- permissions, no space, a
+# cross-device rename.  Only a lost race may be reported as peer contention:
+# a permissions failure reported as "a peer holds the lock" lets the cleanup
+# continue while the resource is still there, and the failure disappears.
+H21="$LOCK_TEST_ROOT/case21"
+mkdir -p "$H21"
+make_lock "$H21"
+touch -t 202001010000 "$H21/.claude-disk-janitor/.housekeeper.lock"
+BLOCK21="$(block_with_stub "$LOCK_BLOCK" "$STUB_RENAME_EACCES")"
+OUT="$(HOME="$H21" HOUSEKEEPER_LOCK_OWNER= bash -c "$BLOCK21"$'\n''[ -d "$HOUSEKEEPER_LOCK" ] && echo LOCK_HELD=yes' 2>&1 || true)"
+if printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
+  fail "a move-aside that failed with a real errno must not be reported as peer contention"
+fi
+if ! printf '%s' "$OUT" | grep -q 'failed to move the stale housekeeper lock aside'; then
+  fail "a move-aside that failed with a real errno must be a hard error"
+fi
+if printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
+  fail "a move-aside that failed must not leave the lock acquired"
+fi
+
+# 22. A move-aside whose source is gone is a lost race, not an error.
+#
+# ENOENT means the lock directory vanished between the staleness check and
+# the move:  another caller won the race and released it.  That is a skip,
+# and the lock must not be acquired afterwards either.
+H22="$LOCK_TEST_ROOT/case22"
+mkdir -p "$H22"
+make_lock "$H22"
+touch -t 202001010000 "$H22/.claude-disk-janitor/.housekeeper.lock"
+BLOCK22="$(block_with_stub "$LOCK_BLOCK" "$STUB_RENAME_ENOENT")"
+OUT="$(HOME="$H22" HOUSEKEEPER_LOCK_OWNER= bash -c "$BLOCK22"$'\n''[ -d "$HOUSEKEEPER_LOCK" ] && echo LOCK_HELD=yes' 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
+  fail "a move-aside that lost the race must be reported as peer contention"
+fi
+if printf '%s' "$OUT" | grep -q 'failed to move the stale housekeeper lock aside'; then
+  fail "a move-aside that lost the race must not be a hard error"
+fi
+if printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
+  fail "a move-aside that lost the race must not acquire the lock afterwards"
+fi
+if [ ! -d "$H22/.claude-disk-janitor/.housekeeper.lock" ]; then
+  fail "a refused takeover must leave the lock it did not create in place"
+fi
+
+# 23. A FRESH lock whose owner file names a dead pid is taken over at once.
+#
+# The watcher removes the lock directory before it clears the owner file, so a
+# removal that FAILED leaves both behind.  If nothing here reads the owner
+# file, that surviving lock wedges every reclaimer in this repo for the full
+# two-hour stale window even though nobody holds it -- which is the exact
+# wedge the preserved owner file exists to remove.
+OWNER_GONE_BLOCK="$(sed -n '/^housekeeper_owner_is_gone() {/,/^}/p' "$SCRIPT")"
+if [ -z "$OWNER_GONE_BLOCK" ]; then
+  fail "could not extract housekeeper_owner_is_gone from mac-auto-cleanup.sh"
+fi
+
+# A pid that has definitely exited, so "the holder is gone" is a fact here
+# rather than a hope.
+DEAD_PID="$(python3 -c 'import subprocess, sys
+p = subprocess.Popen([sys.executable, "-c", "pass"])
+p.wait()
+print(p.pid)')"
+if [ -z "$DEAD_PID" ]; then
+  fail "could not obtain an exited pid for the housekeeper owner check"
+fi
+
+# The owner file must be NEWER than the lock directory it sits beside, and the
+# lock itself has to stay FRESH -- a lock older than the stale window would be
+# taken over by the age rule and prove nothing about the owner file.  The
+# stamps are set explicitly rather than left to write order, and both land
+# seconds apart from now, so the lock is well inside the 120 minute window.
+stamp_owner_lock() {
+  python3 -c 'import os, sys, time
+lock, owner, owner_offset = sys.argv[1:4]
+now = time.time()
+os.utime(lock, (now - 5, now - 5))
+os.utime(owner, (now + float(owner_offset), now + float(owner_offset)))' \
+    "$1/.claude-disk-janitor/.housekeeper.lock" \
+    "$1/.claude-disk-janitor/.housekeeper.lock.owner" "$2"
+}
+
+make_owner_lock() {
+  # $1 = HOME, $2 = pid to record, $3 = host to record, $4 = owner mtime
+  # offset in seconds from the lock's, defaulting to newer than the lock.
+  #
+  # The record carries the schema this protocol publishes EXACTLY, because
+  # both implementations check the shape strictly and a partial record would
+  # be refused as malformed rather than consulted.
+  make_lock "$1"
+  python3 -c 'import json, os, sys
+home, pid, host = sys.argv[1:4]
+with open(os.path.join(home, ".claude-disk-janitor", ".housekeeper.lock.owner"), "w") as fh:
+    json.dump({
+        "pid": int(pid),
+        "host": host,
+        "acquired_at": 1700000000.0,
+        "lock": os.path.join(home, ".claude-disk-janitor", ".housekeeper.lock"),
+    }, fh)' "$1" "$2" "$3"
+  stamp_owner_lock "$1" "${4:-5}"
+}
+
+# The malformed-owner case needs the same mtime relationship, so what refuses
+# it is the age rule and not an owner file that is merely too old.
+make_bad_owner_lock() {
+  make_lock "$1"
+  echo '{ not json' > "$1/.claude-disk-janitor/.housekeeper.lock.owner"
+  stamp_owner_lock "$1" 5
+}
+
+check_owner_gone() {
+  # $1 = HOME, $2 = expected answer: yes means the holder is provably gone and
+  # the lock may be taken over.
+  local answer=no
+  if HOME="$1" bash -c "$OWNER_GONE_BLOCK"$'\n''housekeeper_owner_is_gone "$HOME/.claude-disk-janitor/.housekeeper.lock"'; then
+    answer=yes
+  fi
+  if [ "$answer" != "$2" ]; then
+    fail "the housekeeper owner check answered '$answer' where '$2' was expected ($1)"
+  fi
+}
+
+H23="$LOCK_TEST_ROOT/case23"
+mkdir -p "$H23"
+make_owner_lock "$H23" "$DEAD_PID" "$(hostname)"
+check_owner_gone "$H23" yes
+OUT="$(run_lock_block "$H23" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
+  fail "a fresh lock whose owner file names a dead pid must be taken over at once; falling back to the age rule is a two-hour wedge on a lock nobody holds"
+fi
+
+# Every case where the owner file cannot speak for the lock falls back to the
+# age rule, so a live holder is never displaced.
+H23A="$LOCK_TEST_ROOT/case23-live"
+mkdir -p "$H23A"
+make_owner_lock "$H23A" "$$" "$(hostname)"
+check_owner_gone "$H23A" no
+OUT="$(run_lock_block "$H23A" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
+  fail "a live holder's owner file must keep its lock"
+fi
+
+H23B="$LOCK_TEST_ROOT/case23-none"
+mkdir -p "$H23B"
+make_lock "$H23B"
+check_owner_gone "$H23B" no
+OUT="$(run_lock_block "$H23B" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
+  fail "with no owner file the age rule must decide, because this script's own holder writes none"
+fi
+
+H23C="$LOCK_TEST_ROOT/case23-bad"
+mkdir -p "$H23C"
+make_bad_owner_lock "$H23C"
+check_owner_gone "$H23C" no
+
+# An owner file OLDER than the lock directory it sits beside describes an
+# earlier holder, not this lock.
+H23D="$LOCK_TEST_ROOT/case23-older"
+mkdir -p "$H23D"
+make_owner_lock "$H23D" "$DEAD_PID" "$(hostname)" -10
+check_owner_gone "$H23D" no
+
+H23E="$LOCK_TEST_ROOT/case23-other-host"
+mkdir -p "$H23E"
+make_owner_lock "$H23E" "$DEAD_PID" "some-other-host"
+check_owner_gone "$H23E" no
 
 bash -n "$SCRIPT" || fail "bash -n failed"
 
