@@ -1286,6 +1286,59 @@ class AskOperatorTests(DaemonHarness):
         found = d.operator_candidates("", "A")
         self.assertEqual([row["seat"] for row in found], ["CODEX"])
 
+    def test_a_closed_session_with_a_live_alias_is_not_a_candidate(self) -> None:
+        """The `closed_at IS NULL` clause on its own:  `close()` also retires the alias, so the
+        test above passes on `retired_at` alone.  Here the session is closed and its alias is left
+        live, the state a writer that sets `closed_at` without retiring the alias would leave."""
+        d = self.daemon()
+        self.seed(d, self.AMBIGUOUS)
+        db = OR.registry_db_path(d.root, d.env)
+        conn = sqlite3.connect(str(db))
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE sessions SET closed_at = '2026-10-22T00:00:00Z', state = 'closed' "
+                    "WHERE native_session_id = 'mvs_mm'"
+                )
+            live = conn.execute(
+                "SELECT COUNT(*) FROM alias_assignments WHERE retired_at IS NULL"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(live, 2, "the alias stays live, so only closed_at can exclude the row")
+        found = d.operator_candidates("", "A")
+        self.assertEqual([row["seat"] for row in found], ["CODEX"])
+
+    def test_an_allow_listed_recipient_is_served(self) -> None:
+        """`[operator] dm_allow` is parsed into the config, so a listed user is a legal recipient."""
+        d = self.daemon()
+        self.seed(d, self.AMBIGUOUS)
+        self.with_stubbed_send(d)
+        d.config.operator_dm_allow = frozenset({4242})
+        d.ask_operator_for_candidates(d.seats["CLAUDE"], self.pending(4242), "A")
+        self.assertEqual([kw["recipient"] for kw in self.sent], [4242])
+
+    def test_a_handler_escape_is_logged_in_the_module_vocabulary(self) -> None:
+        """An exception out of the send is a possibly-sent outcome, logged with the module's own
+        `unknown` token so one filter finds every such row."""
+        d = self.daemon()
+        self.seed(d, self.AMBIGUOUS)
+        original = OC.send_candidate_list
+        self.addCleanup(setattr, OC, "send_candidate_list", original)
+
+        def boom(**kwargs):
+            raise RuntimeError("handler bug")
+
+        OC.send_candidate_list = boom
+        with mock.patch.object(d.log, "write") as write:
+            d.ask_operator_for_candidates(
+                d.seats["CLAUDE"], self.pending(d.config.owner_user_id), "A"
+            )
+        rows = [c.kwargs for c in write.call_args_list if c.args[:1] == ("operator-candidate-list",)]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "error")
+        self.assertEqual(rows[0]["delivery_status"], OC.DELIVERY_UNKNOWN)
+
 
 class PendingSenderTests(unittest.TestCase):
     """The first trigger's sender survives the ledger round trip."""

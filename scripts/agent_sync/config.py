@@ -342,6 +342,10 @@ class Config:
         self.instance = "mac"
         self.owner_user_id = 0
         self.eligible_user_ids: set[int] = set()
+        # `[operator] dm_allow`:  the user ids besides the pinned owner that the Operator may hand a
+        # tagged address's candidate list to (AFC-412).  The list carries internal session ids and
+        # titles, so it is empty by default and only the owner is served.
+        self.operator_dm_allow: frozenset[int] = frozenset()
         self.owner_clients: set[str] = set(DEFAULT_OWNER_CLIENTS)
         self.stale_after = float(L.STALE_AFTER_DEFAULT)
         self.coalesce_seconds = 20.0
@@ -761,6 +765,22 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("listener_api.port must differ from outgoing_webhook.port")
     else:
         cfg.listener_api_port = api_port
+    operator = raw.get("operator") or {}
+    if not isinstance(operator, dict):
+        errors.append("[operator] must be a table")
+        operator = {}
+    unknown_operator = set(operator) - {"dm_allow"}
+    if unknown_operator:
+        errors.append("[operator] has unknown setting(s): %s" % ", ".join(sorted(unknown_operator)))
+    dm_allow = operator.get("dm_allow", [])
+    if not isinstance(dm_allow, list) or not all(
+        isinstance(i, int) and not isinstance(i, bool) and i > 0 for i in dm_allow
+    ):
+        # A malformed entry is an error the owner sees, never a silent drop:  the allowlist then
+        # stays empty, so a bad section fails closed to the owner alone.
+        errors.append("operator.dm_allow must be a list of user ids")
+    else:
+        cfg.operator_dm_allow = frozenset(dm_allow)
     relay_errors_before = len(errors)
     relay = raw.get("notes_relay") or {}
     if not isinstance(relay, dict):

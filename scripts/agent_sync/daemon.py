@@ -3725,7 +3725,7 @@ class Daemon:
         owner = int(getattr(self.config, "owner_user_id", 0) or 0)
         if owner and int(user_id) == owner:
             return True
-        allowed = getattr(self.config, "operator_dm_allow", None) or ()
+        allowed = getattr(self.config, "operator_dm_allow", None) or ()  # config.py parses it
         return any(
             isinstance(allow, int) and not isinstance(allow, bool) and int(allow) == int(user_id)
             for allow in allowed
@@ -3802,7 +3802,8 @@ class Daemon:
                 seat=runner.seat,
                 letter=letter,
                 status="error",
-                delivery_status="outcome_unknown",
+                # The module's own token, so one filter on `unknown` finds every possibly-sent row.
+                delivery_status=OC.DELIVERY_UNKNOWN,
                 error=type(exc).__name__,
             )
             return
