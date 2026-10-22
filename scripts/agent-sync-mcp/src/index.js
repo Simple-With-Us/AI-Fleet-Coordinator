@@ -623,7 +623,20 @@ async function serveApp(request, env, _ctx) {
 
   const who = await verifyAccessJwt(request.headers.get("cf-access-jwt-assertion"), config.access);
   if (!who.ok) {
-    console.log(JSON.stringify({ event: "access_refused", route, reason: who.reason }));
+    // Name the variable, never its value:  an unprovisioned AUD or team domain
+    // is an operator fix, and saying which one turns a mystery 403 into a
+    // one-line deploy step.
+    const missing = config.access.missing;
+    console.log(
+      JSON.stringify({ event: "access_refused", route, reason: who.reason, missing }),
+    );
+    if (who.reason === "access_not_configured" && missing.length > 0) {
+      return errorPage(
+        "Server misconfigured",
+        `Access is not provisioned on this Worker. Missing: ${missing.join(", ")}.`,
+        500,
+      );
+    }
     return errorPage("Sign-In Required", "This page needs Cloudflare Access sign-in as the fleet owner.", 403);
   }
   const oauth = env.OAUTH_PROVIDER;

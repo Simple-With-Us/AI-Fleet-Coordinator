@@ -30,18 +30,46 @@ test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", (
   // a loopback redirect may be.
   assert.deepEqual([...cfg.redirectSeats.get("http://127.0.0.1:8737/callback")], ["ECHO", "WISE"]);
   assert.equal(cfg.redirectOwner.has("http://127.0.0.1:8737/callback"), false, "a shared redirect has no single owner");
-  // Before DEPLOY-PHASE0.md step 3 the file holds the placeholder;  after it, a real tag.
-  if (vars.ACCESS_AUD === "REPLACE_WITH_ACCESS_AUD") {
-    assert.equal(cfg.access.configured, false);
-  } else {
-    assert.match(vars.ACCESS_AUD, /^[0-9a-f]{64}$/);
-    assert.equal(cfg.access.configured, true);
-  }
+  // The Access aud is a private Cloudflare resource identifier and is NOT
+  // committed:  infra_phase0.py write-config --apply provisions it as an
+  // encrypted Worker secret.  The committed vars must therefore fail closed,
+  // and say which variable is missing.
+  assert.ok(!("ACCESS_AUD" in vars), "the Access aud must never be committed to the repo");
+  assert.equal(cfg.access.configured, false);
+  assert.deepEqual([...cfg.access.missing], ["ACCESS_AUD"]);
+  // Still the only valid shape once provisioned, and still fail closed on a
+  // placeholder or an empty value.
+  assert.match(testEnv().ACCESS_AUD, /^[0-9a-f]{64}$/);
+  assert.equal(loadConfig(testEnv()).access.configured, true);
   assert.equal(loadConfig(testEnv({ ACCESS_AUD: "REPLACE_WITH_ACCESS_AUD" })).access.configured, false, "placeholder AUD fails closed");
+  assert.deepEqual([...loadConfig(testEnv({ ACCESS_AUD: "REPLACE_WITH_ACCESS_AUD" })).access.missing], ["ACCESS_AUD"]);
   assert.equal(loadConfig(testEnv({ ACCESS_AUD: "" })).access.configured, false, "empty AUD fails closed");
   assert.equal(loadConfig(testEnv({ ACCESS_TEAM_DOMAIN: "" })).access.configured, false, "empty team domain fails closed");
   assert.equal(loadConfig(testEnv({ OWNER_EMAILS: "" })).access.configured, false, "no owner email fails closed");
-  assert.equal(loadConfig(testEnv()).access.configured, true);
+});
+
+test("the wrangler file carries no Access aud, and infra_phase0.py provisions one", () => {
+  const raw = readFileSync(path.join(ROOT, "wrangler.jsonc"), "utf8");
+  assert.ok(!/"ACCESS_AUD"\s*:\s*"[0-9a-f]{64}"/.test(raw), "no aud literal in wrangler.jsonc");
+  const infra = readFileSync(path.join(ROOT, "infra_phase0.py"), "utf8");
+  // write-config must write live values, not only the original placeholders.
+  assert.ok(!/REPLACE_WITH_ACCESS_AUD/.test(infra), "the dead placeholder substitution is gone");
+  // The aud is provisioned through put_worker_secret, which also hands wrangler
+  // the credentials it authenticates with - so the call carries the Cloudflare
+  // handle first, then the name.
+  assert.match(
+    infra,
+    /put_worker_secret\(\s*\w+\s*,\s*"ACCESS_AUD"/,
+    "the aud is provisioned as a Worker secret",
+  );
+  // A child that inherits the environment runs `wrangler secret put` with none
+  // of the credentials wrangler reads, which fails for a reason the operator
+  // cannot see.  Pin the env and the working directory.
+  assert.match(infra, /env=cf\.wrangler_env\(\)/, "wrangler gets the Cloudflare credentials");
+  assert.match(infra, /cwd=HERE/, "wrangler runs in the Worker directory");
+  // The retired host still has to be cleaned up and checked.
+  assert.match(infra, /^RETIRED_HOST = "agent-sync\.jays\.services"$/m);
+  assert.match(infra, /^RETIRED_ZONE_NAME = "jays\.services"$/m);
 });
 
 test("Access email list is mail@jays.services only, in the Worker and in the Access policy", () => {

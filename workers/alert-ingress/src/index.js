@@ -45,7 +45,13 @@ import {
   DEFAULT_MIN_OPEN_MS,
   PROD_DOWN_MIN_OPEN_MS,
 } from "./state.js";
-import { postEvent, writeStatus, renderStatus } from "./zulip.js";
+import {
+  postEvent,
+  writeStatus,
+  renderStatus,
+  fetchMessage,
+  STANDING_BLOCK_HEADER,
+} from "./zulip.js";
 
 const DEFAULT_CHANNEL = "alerts";
 
@@ -94,6 +100,17 @@ const legacyIndexPrefix = (c, t) => `idx:${c}:${t}:`;
 // new delivery and an unchanged one is not.
 const deliveryKey = (source, c, t, revision = "base") =>
   `delivery:${JSON.stringify([source, c, t, revision])}`;
+// The uncertainty barrier of one source in one topic.
+//
+// The delivery outcome above is scoped to the revision of the content, so an
+// unchanged standing block needs no new delivery and a changed one is a new
+// delivery.  That is not enough on its own: a POST whose acknowledgement was
+// lost may have landed, and a changed revision would then post a second
+// standing message for the same topic.  The barrier is scoped to the source,
+// channel and topic instead, so it holds across revisions until the write is
+// reconciled.
+const deliveryBarrierKey = (source, c, t) =>
+  `delivery-barrier:${source}:${c}:${t}`;
 // Which source pinned a standing message id.  A vendor never edits a message
 // another vendor pinned.
 const statusOwnerKey = (id) => `statusowner:${id}`;
@@ -233,6 +250,23 @@ function deliveryError(source, outcome, detail = {}) {
   return error;
 }
 
+/**
+ * A standing status that cannot be written safely yet.
+ *
+ * The standing message for this topic may already exist but be unclaimed, so
+ * neither adopting it nor posting a second one is safe.  The topic is held
+ * until an operator reconciles it, and the caller is told the standing block
+ * is not known to be current rather than reading a success.
+ */
+function statusHeldError(source, reason) {
+  const error = new Error("standing status held");
+  error.code = "status_held";
+  error.source = source;
+  error.status = 409;
+  error.reason = reason;
+  return error;
+}
+
 /** The source that owns a state key, from its recorded source or its prefix. */
 function sourceFromKey(key) {
   const head = String(key || "").split(":")[0] || "";
@@ -292,6 +326,19 @@ async function verify(request, raw, env, source) {
     if (!secret) return false;
     // Better Stack supports static custom headers, not body signatures.
     return safeEqual(request.headers.get("x-betterstack-token") || "", secret);
+  }
+  if (source === "sentry") {
+    const secret = env.SENTRY_WEBHOOK_SECRET;
+    if (!secret) return false;
+    // Sentry's integration platform signs the request body with the app's
+    // client secret and sends the lowercase hex HMAC-SHA256 digest in the
+    // Sentry-Hook-Signature header (docs.sentry.io, integration platform
+    // webhooks).  A Sentry route with no verifier of its own would fall
+    // through to the shared bearer token, which means any holder of that
+    // token could inject a Sentry alert, so the source is refused instead.
+    const sig = request.headers.get("sentry-hook-signature") || "";
+    if (!sig) return false;
+    return safeEqual(sig, await hmacHex(secret, raw));
   }
   return authorized(request, env);
 }
@@ -582,24 +629,71 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   if (!env.WRITER_STORAGE) throw new Error("durable writer required");
   const revision = await statusRevision(states);
   const outcomeKey = deliveryKey(source, channel, topic, revision);
+  const barrierKey = deliveryBarrierKey(source, channel, topic);
   const prior = await env.WRITER_STORAGE.get(outcomeKey);
-  // Only an unknown outcome blocks.  A refused outcome is definitive and was
-  // released, so a corrected credential or a later attempt may proceed.
-  if (prior?.outcome === "unknown") return content;
+  const barrier = await env.WRITER_STORAGE.get(barrierKey);
+  // The uncertainty barrier is scoped to the source, channel and topic, not
+  // to the revision of the content.  A POST whose acknowledgement was lost
+  // may have landed, so a changed standing block must not post a second
+  // standing message on top of it.  A write whose message id is known is
+  // safe to retry, because it edits the message it already owns instead of
+  // creating another one.
+  if (barrier?.outcome === "unknown" && !barrier.id) {
+    throw deliveryError(source, "unknown", { code: null, retryAfter: null });
+  }
+  // A message id the operator just adopted wins over anything else, so a reconcile
+  // edits the adopted message and not a stale one.
+  //
+  // After that, the CURRENT pin wins over an id left on an older outcome row.  The
+  // outcome row is history:  it records what a past delivery believed, and a reconcile
+  // that moved the standing message does not rewrite it.  Preferring the history would
+  // let a returning source edit a message it no longer owns and re-pin it, which is how
+  // a source that had been reconciled away came back and took the topic's pin again.
   let statusId =
-    prior?.id ||
+    options.adoptId ||
     Number(await env.ALERT_STATE.get(statusKey(source, channel, topic), "json")) ||
+    prior?.id ||
     null;
   // Pinned ownership: a standing message belongs to exactly one source.  A
   // message id another vendor pinned is never edited here, and never adopted
-  // as this source's own standing message.
+  // as this source's own standing message.  A message id no source has
+  // claimed is not adopted either: it may be this source's own standing
+  // message from a write whose acknowledgement was lost, and posting a
+  // second one would leave two standing messages in the topic.  The topic is
+  // held until an operator reconciles it.
   if (statusId) {
     const owner = await env.ALERT_STATE.get(statusOwnerKey(statusId), "json");
-    if (owner && owner !== source) statusId = null;
+    if (owner === source) {
+      // This source's own standing message: edit it in place.
+    } else if (owner) {
+      // Another source owns that message, so it is not ours to edit.  Each
+      // source has its own standing message per topic, so a new one of ours
+      // is correct.
+      statusId = null;
+    } else {
+      throw statusHeldError(source, "standing message owner unknown");
+    }
+  }
+  // A barrier that is still `unknown` means an earlier POST may have landed.
+  // Only a retry that edits the standing message we already own is safe,
+  // because it cannot create a second one.  If the id did not resolve to a
+  // message this source owns - the pin was cleared, or the outcome row that
+  // carried it is gone - the retry below would POST a fresh message on top of
+  // one that may already exist, so the topic stays held instead.
+  if (barrier?.outcome === "unknown" && !statusId) {
+    throw deliveryError(source, "unknown", { code: null, retryAfter: null });
   }
   // Commit uncertainty before crossing the network.  A crash or ambiguous reply
-  // cannot turn a possibly accepted create into another automatic POST.
+  // cannot turn a possibly accepted create into another automatic POST.  The
+  // barrier carries the message id as well: an id means the write can be
+  // retried, and no id means the write may have created a message nobody
+  // knows about, so no further POST may happen for this topic.
   await env.WRITER_STORAGE.put(outcomeKey, {
+    outcome: "unknown",
+    id: statusId,
+    revision,
+  });
+  await env.WRITER_STORAGE.put(barrierKey, {
     outcome: "unknown",
     id: statusId,
     revision,
@@ -613,14 +707,19 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
       content,
       statusId,
     });
-    if (id) {
-      await env.WRITER_STORAGE.put(outcomeKey, { outcome: "ok", id, revision });
-      await env.ALERT_STATE.put(
-        statusKey(source, channel, topic),
-        JSON.stringify(id),
-      );
-      await env.ALERT_STATE.put(statusOwnerKey(id), JSON.stringify(source));
+    if (!id) {
+      // The write was not confirmed.  Returning the intended content here
+      // would answer the caller as if the channel were current, so an
+      // unconfirmed write is reported as one.
+      throw new Error("status write was not confirmed");
     }
+    await env.WRITER_STORAGE.put(outcomeKey, { outcome: "ok", id, revision });
+    await env.WRITER_STORAGE.put(barrierKey, { outcome: "ok", id, revision });
+    await env.ALERT_STATE.put(
+      statusKey(source, channel, topic),
+      JSON.stringify(id),
+    );
+    await env.ALERT_STATE.put(statusOwnerKey(id), JSON.stringify(source));
   } catch (error) {
     const outcome = error?.outcome === "refused" ? "refused" : "unknown";
     const detail = {
@@ -637,6 +736,13 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
         id: statusId,
         revision,
         ...detail,
+      });
+      // The refusal was definitive, so nothing landed and the barrier is
+      // released with it.
+      await env.WRITER_STORAGE.put(barrierKey, {
+        outcome: "ok",
+        id: statusId,
+        revision,
       });
     }
     throw deliveryError(source, outcome, detail);
@@ -802,19 +908,34 @@ async function handleEvent(source, payload, env) {
       credential,
     });
   } catch (error) {
-    if (error?.code !== "status_delivery_failed") throw error;
-    statusDelivery = {
-      outcome: error.outcome,
-      code: error.detail?.code ?? null,
-      retryAfter: error.detail?.retryAfter ?? null,
-    };
-    console.error(
-      JSON.stringify({
-        event: "alert.status_delivery_failed",
-        source: sourceName,
+    if (error?.code === "status_held") {
+      // The standing block for this topic is held: a standing message exists
+      // that no source has claimed, so it is neither edited nor duplicated.
+      // The event was accepted and recorded, so the webhook must not fail
+      // over it; the caller is told the status is held instead.
+      statusDelivery = { outcome: "held", reason: error.reason };
+      console.error(
+        JSON.stringify({
+          event: "alert.status_held",
+          source: sourceName,
+          reason: error.reason,
+        }),
+      );
+    } else {
+      if (error?.code !== "status_delivery_failed") throw error;
+      statusDelivery = {
         outcome: error.outcome,
-      }),
-    );
+        code: error.detail?.code ?? null,
+        retryAfter: error.detail?.retryAfter ?? null,
+      };
+      console.error(
+        JSON.stringify({
+          event: "alert.status_delivery_failed",
+          source: sourceName,
+          outcome: error.outcome,
+        }),
+      );
+    }
   }
 
   return { action: result.action, posted: !!posted, status, statusDelivery };
@@ -916,7 +1037,7 @@ const handler = {
 
     // Liveness, so a monitor can watch the ingress itself.
     if (url.pathname === "/health") {
-      return json({ ok: true, sources: ["datadog", "betterstack", "generic"] });
+      return json({ ok: true, sources: ["datadog", "betterstack", "sentry", "generic"] });
     }
 
     if (url.pathname === "/sweep") {
@@ -987,7 +1108,10 @@ const handler = {
         if (!SOURCE_TOKEN.test(source)) {
           return json({ error: "unknown source", source }, 400);
         }
-        if (!resolveCredential(env, source)) {
+        // The source's own credential, bound because an adopted id is proved with it:
+        // the message has to be shown to have been sent by this source's bot.
+        const credential = resolveCredential(env, source);
+        if (!credential) {
           return json(
             {
               error: "credential unavailable",
@@ -997,18 +1121,106 @@ const handler = {
             503,
           );
         }
+        // Reconciliation.  A write whose acknowledgement was lost may have
+        // created a standing message nobody knows about, and the topic is
+        // held until it is named.  The operator supplies the message id from
+        // the Zulip channel; the worker adopts it, claims it for this source
+        // and releases the barrier, so the topic resumes on its own.
+        const reconcile = url.searchParams.get("reconcile");
+        let adoptId = null;
+        if (reconcile !== null) {
+          const id = Number(reconcile);
+          if (!Number.isSafeInteger(id) || id <= 0) {
+            return json({ error: "invalid reconcile id", reconcile }, 400);
+          }
+          if (!env.WRITER_STORAGE) {
+            return json({ error: "durable writer required" }, 503);
+          }
+          // A message another source pinned is never adopted: that would let
+          // this source edit, or duplicate, another vendor's standing message.
+          const pinned = await env.ALERT_STATE.get(statusOwnerKey(id), "json");
+          if (pinned && pinned !== source) {
+            return json(
+              { error: "message owned by another source", source, id },
+              409,
+            );
+          }
+          // An unpinned id is proved before it is adopted.  A bare id names any
+          // message in the realm, and a PATCH on it edits whatever it points at, so
+          // the id has to be shown to be this source's standing message in THIS
+          // topic before anything is adopted or mutated.  A message that cannot be
+          // read is not adopted either:  refusing costs one round trip, while a
+          // wrong adoption edits somebody else's message.
+          const message = await fetchMessage({
+            email: credential.email,
+            apiKey: credential.apiKey,
+            messageId: id,
+          });
+          if (!message) {
+            return json(
+              { error: "message could not be read", source, id },
+              503,
+            );
+          }
+          const channelName =
+            typeof message.display_recipient === "string"
+              ? message.display_recipient
+              : String(message.display_recipient?.name || "");
+          const sameTopic =
+            message.type === "stream" &&
+            channelName === String(DEFAULT_CHANNEL) &&
+            String(message.subject || "") === String(topic);
+          const sameSender = String(message.sender_email || "") === credential.email;
+          // Channel, topic and sender do not prove the message is the standing
+          // block.  This source's one-line alert messages are posted to the
+          // same channel and topic by the same bot, so an alert line satisfies
+          // every one of those checks.  Adopting one would point the pin at an
+          // event message that refreshStatus then PATCHes with the rendered
+          // status block, silently destroying that alert's content.  Only the
+          // standing block carries the rendered status header, so that header is
+          // required before anything is adopted or mutated.
+          const isStandingBlock = String(message.content || "").startsWith(
+            STANDING_BLOCK_HEADER,
+          );
+          if (!sameTopic || !sameSender || !isStandingBlock) {
+            return json(
+              { error: "message is not this source's standing message", source, id },
+              409,
+            );
+          }
+          await env.ALERT_STATE.put(
+            statusKey(source, DEFAULT_CHANNEL, topic),
+            JSON.stringify(id),
+          );
+          await env.ALERT_STATE.put(statusOwnerKey(id), JSON.stringify(source));
+          adoptId = id;
+          await env.WRITER_STORAGE.put(
+            deliveryBarrierKey(source, DEFAULT_CHANNEL, topic),
+            { outcome: "ok", id, reconciled: true },
+          );
+        }
         try {
           const content = await refreshStatus(
             env,
             source,
             DEFAULT_CHANNEL,
             topic,
+            { adoptId },
           );
           return json({ source, channel: DEFAULT_CHANNEL, topic, content });
         } catch (error) {
           // The standing block could not be written.  That is a bad gateway,
           // not a silent success: the caller must not read the route as
           // confirmation that the channel is current.
+          if (error?.code === "status_held") {
+            // The standing message for this topic exists but no source has
+            // claimed it, so it is neither edited nor duplicated.  The topic
+            // stays held until an operator reconciles it.
+            return json(
+              { error: "status held", source, reason: error.reason },
+              409,
+            );
+          }
           if (error?.code !== "status_delivery_failed") throw error;
           return json(
             { error: "status delivery failed", source, outcome: error.outcome },
@@ -1029,6 +1241,7 @@ const handler = {
       const rendered = Object.create(null);
       const unavailable = [];
       const failed = [];
+      const held = [];
       // The sources are refreshed in parallel.  A serial loop made the
       // response wait for every source's Zulip timeout in turn, so the route
       // could take N times the timeout of a single source.
@@ -1049,6 +1262,9 @@ const handler = {
               ),
             };
           } catch (error) {
+            if (error?.code === "status_held") {
+              return { source, held: true, reason: error.reason };
+            }
             if (error?.code !== "status_delivery_failed") throw error;
             return { source, failed: true, outcome: error.outcome };
           }
@@ -1070,6 +1286,14 @@ const handler = {
           });
           continue;
         }
+        if (result.held) {
+          held.push({
+            source: result.source,
+            error: "status held",
+            reason: result.reason,
+          });
+          continue;
+        }
         rendered[result.source] = result.content;
       }
       return json({
@@ -1078,6 +1302,7 @@ const handler = {
         sources: rendered,
         unavailable,
         failed,
+        held,
       });
     }
 
@@ -1087,6 +1312,15 @@ const handler = {
 
     const source = hookMatch[1].toLowerCase();
     const raw = await request.text();
+    // One limit rules, and it is applied BEFORE the body is verified or parsed.
+    // The bound is in ENCODED BYTES, the same unit as the documented limit, so
+    // "too large" means one thing:  a body of 64 KiB of multi-byte characters
+    // is over the limit, and a body of 256 KiB of characters is far over it.
+    // Checking it here means an oversized body costs no signature work and no
+    // parse, which is the whole point of bounding it.
+    if (new TextEncoder().encode(raw).length > MAX_BODY_BYTES) {
+      return json({ error: "payload too large" }, 413);
+    }
     if (!(await verify(request, raw, env, source))) {
       return json({ error: "bad signature" }, 401);
     }
@@ -1106,9 +1340,6 @@ const handler = {
       );
     }
 
-    // Bytes, not UTF-16 code units: a non-ASCII body can be far larger in
-    // UTF-8 than its .length suggests, and the documented limit is 64 KiB.
-    if (new TextEncoder().encode(raw).length > 65536) return json({ error: "payload too large" }, 413);
     let payload;
     try {
       payload = JSON.parse(raw);
@@ -1117,13 +1348,24 @@ const handler = {
     }
 
     try {
-      validatePayload(payload);
+      // A Sentry body carries the vendor's native shape, which the generic
+      // boundary rule refuses, so it has a rule of its own.  Every other
+      // source keeps the generic rule unchanged.
+      if (source === "sentry") validateSentryPayload(payload);
+      else validatePayload(payload);
     } catch {
       return json({ error: "invalid payload" }, 400);
     }
     try {
       return json(await handleEvent(source, payload, env));
     } catch (error) {
+      // A body whose identity looks like a credential is refused before it
+      // becomes a key.  That is the sender's bad request, so it answers 400
+      // naming the field, never the value, rather than escaping as a writer
+      // outage that a vendor would retry.
+      if (error?.code === "invalid_identity") {
+        return json({ error: "invalid payload", field: error.field }, 400);
+      }
       if (error?.code === "credential_unavailable") {
         return json(
           {
@@ -1169,6 +1411,8 @@ export const __testing = {
   svcKey,
   topicKey,
   deliveryKey,
+  deliveryBarrierKey,
+  statusHeldError,
   ctStamp,
   indexPrefix,
 };
@@ -1177,6 +1421,16 @@ const MAX_KEYS = 2000;
 // Object-envelope nesting bound.  A JSON:API vendor body reaches four levels
 // (data.relationships.monitor.data); anything deeper is rejected, not walked.
 const MAX_PAYLOAD_DEPTH = 6;
+
+/**
+ * The one body-size limit, in encoded UTF-8 bytes.
+ *
+ * Bytes, not UTF-16 code units:  a non-ASCII body can be far larger in UTF-8
+ * than its .length suggests, and the documented limit is 64 KiB.  One limit
+ * rules for every source, and it is checked before the body is verified or
+ * parsed, so an oversized body costs no signature work and no parse.
+ */
+const MAX_BODY_BYTES = 64 * 1024;
 async function listAll(kv, prefix) {
   const keys = [],
     cursors = new Set();
@@ -1274,6 +1528,195 @@ function validatePayload(payload, depth = 0) {
   }
 }
 
+/**
+ * Validate a Sentry payload.
+ *
+ * A native Sentry payload nests objects -- the issue, its project, its
+ * metadata, the metric alert and its rule -- and the generic boundary rule
+ * rejects every object it does not know, so a Sentry body failed validation
+ * as an invalid text field and the route could never accept one.
+ *
+ * This rule accepts the native shape and keeps the guarantee that matters:
+ * the body is bounded in depth, in breadth and in text length, and control
+ * characters are refused.  The parser reads only text, so a nested blob can
+ * never become a topic name, a label or a link.
+ *
+ * On top of the bound, every field the parser consumes is checked for the
+ * type the parser reads it as, and the field that names the alert is
+ * required.  Without that, a body carrying no identity was normalized under
+ * a constant key, so two different malformed alerts shared one incident and
+ * one alert's resolution closed the other's incident and standing message.
+ */
+const MAX_SENTRY_NODES = 2000;
+
+/**
+ * A consumed Sentry field, read the way the normalizer reads it.
+ *
+ * The normalizer reads a field as text only when it is a string or a finite
+ * number, so the boundary uses the same rule.  A field of any other type is
+ * refused rather than ignored, because the parser would then see a different
+ * payload from the one that was signed.
+ */
+function sentryText(value) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+/** The text of the first of these fields that carries one. */
+function sentryFirstText(source, fields) {
+  for (const field of fields) {
+    const text = sentryText(source?.[field]);
+    if (text !== null && text.trim() !== "") return text.trim();
+  }
+  return "";
+}
+
+/**
+ * Check the consumed fields of an issue.
+ *
+ * The identity names the incident, the title names the alert, the level
+ * decides the severity and the project names the service, so all four are
+ * required:  a body missing any of them is not an alert this worker can file,
+ * and a body missing the identity has no key to file it under.  Every other
+ * consumed field is checked for the type the parser reads it as, and may be
+ * absent, because the parser has a documented fallback for each.
+ */
+function validateSentryIssue(issue) {
+  if (!sentryFirstText(issue, ["shortId", "id"])) throw new Error("missing identity");
+  if (!sentryFirstText(issue, ["title"])) throw new Error("missing title");
+  if (!sentryFirstText(issue, ["level"])) throw new Error("missing level");
+  for (const field of ["level", "status", "url", "permalink", "culprit"]) {
+    const value = issue[field];
+    if (value === undefined || value === null) continue;
+    if (sentryText(value) === null) throw new Error("invalid text field");
+  }
+  const project = issue.project;
+  if (!project || typeof project !== "object" || Array.isArray(project)) {
+    throw new Error("invalid payload");
+  }
+  for (const field of ["slug", "name"]) {
+    const value = project[field];
+    if (value === undefined || value === null) continue;
+    if (sentryText(value) === null) throw new Error("invalid text field");
+  }
+  const metadata = issue.metadata;
+  if (metadata !== undefined && metadata !== null) {
+    if (typeof metadata !== "object" || Array.isArray(metadata)) {
+      throw new Error("invalid payload");
+    }
+    for (const field of ["type", "value"]) {
+      const value = metadata[field];
+      if (value === undefined || value === null) continue;
+      if (sentryText(value) === null) throw new Error("invalid text field");
+    }
+  }
+}
+
+/**
+ * Check the consumed fields of a metric alert.
+ *
+ * The identity names the incident and the title names the alert, so both are
+ * required:  the title may come from the rule, which is where Sentry puts it
+ * when the alert itself carries no title.  The rule is required, because the
+ * name, the status and the link the parser reads come from it.  Every other
+ * consumed field is checked for the type the parser reads it as.
+ */
+function validateSentryMetric(metric) {
+  const rule = metric.alert_rule;
+  if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
+    throw new Error("invalid payload");
+  }
+  for (const field of ["id", "name", "status", "url"]) {
+    const value = rule[field];
+    if (value === undefined || value === null) continue;
+    if (sentryText(value) === null) throw new Error("invalid text field");
+  }
+  if (!sentryFirstText(metric, ["id"]) && !sentryFirstText(rule, ["id"])) {
+    throw new Error("missing identity");
+  }
+  for (const field of ["title", "status", "url"]) {
+    const value = metric[field];
+    if (value === undefined || value === null) continue;
+    if (sentryText(value) === null) throw new Error("invalid text field");
+  }
+  const identifier = metric.metric_identifier;
+  if (identifier !== undefined && identifier !== null) {
+    if (typeof identifier !== "object" || Array.isArray(identifier)) {
+      throw new Error("invalid payload");
+    }
+    for (const field of ["name"]) {
+      const value = identifier[field];
+      if (value === undefined || value === null) continue;
+      if (sentryText(value) === null) throw new Error("invalid text field");
+    }
+  }
+  if (!sentryFirstText(metric, ["title"]) && !sentryFirstText(rule, ["name"])) {
+    throw new Error("missing title");
+  }
+}
+
+function validateSentryPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("invalid payload");
+  }
+  if (Object.keys(payload).length > 100) throw new Error("too many fields");
+  if (payload.action !== undefined && payload.action !== null) {
+    if (typeof payload.action !== "string") throw new Error("invalid text field");
+    if (payload.action.length > 4096) throw new Error("invalid text");
+  }
+  const data = payload.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("invalid payload");
+  }
+  if (Object.keys(data).length > 20) throw new Error("too many fields");
+  const issue = data.issue;
+  const metric = data.metric_alert;
+  // Sentry sends exactly one of the two shapes.  A body carrying both, or
+  // neither, is not a Sentry alert and is refused.  A null sibling counts as
+  // absent, because null is how a JSON encoder writes a field that is not
+  // there, so a body carrying one shape and an explicit null sibling is the
+  // one shape and not a contradiction.
+  const hasIssue = issue !== undefined && issue !== null;
+  const hasMetric = metric !== undefined && metric !== null;
+  if (hasIssue === hasMetric) {
+    throw new Error("invalid payload");
+  }
+  const body = hasIssue ? issue : metric;
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("invalid payload");
+  }
+  if (hasIssue) validateSentryIssue(body);
+  else validateSentryMetric(body);
+  let nodes = 0;
+  const walk = (value, depth) => {
+    if (++nodes > MAX_SENTRY_NODES) throw new Error("payload too large");
+    if (depth > MAX_PAYLOAD_DEPTH) throw new Error("payload nested too deep");
+    if (value === null || value === undefined) return;
+    if (typeof value === "string") {
+      if (value.length > 4096) throw new Error("invalid text");
+      if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value)) {
+        throw new Error("invalid text");
+      }
+      return;
+    }
+    if (typeof value === "number" || typeof value === "boolean") return;
+    if (Array.isArray(value)) {
+      if (value.length > 100) throw new Error("too many fields");
+      for (const item of value) walk(item, depth + 1);
+      return;
+    }
+    if (typeof value === "object") {
+      const entries = Object.entries(value);
+      if (entries.length > 100) throw new Error("too many fields");
+      for (const [, item] of entries) walk(item, depth + 1);
+      return;
+    }
+    throw new Error("invalid text field");
+  };
+  walk(payload, 0);
+}
+
 // One named object owns every read/render/write transaction.  Durable storage
 // overlays legacy KV without deleting historical records or trusting KV locks.
 export class AlertWriter {
@@ -1329,20 +1772,26 @@ export class AlertWriter {
     }
   }
 }
+// The one name the writer is reached by.  The webhook path and the cron sweep
+// must resolve to the same object, because the delivery barrier lives in that
+// object's storage:  two names would be two writers, each blind to the other's
+// barrier, and both could post a standing message for one topic.  So the name
+// is written once, here, and both call sites read it.
+const WRITER_OBJECT_NAME = "alerts-v1";
+const writerFor = (env) =>
+  env.ALERT_WRITER.get(env.ALERT_WRITER.idFromName(WRITER_OBJECT_NAME));
 export default {
   async fetch(request, env) {
     if (new URL(request.url).pathname === "/health")
       return handler.fetch(request, env, {});
     if (!env.ALERT_WRITER)
       return json({ error: "durable writer unavailable", stale: true }, 503);
-    return env.ALERT_WRITER.get(env.ALERT_WRITER.idFromName("alerts-v1")).fetch(
-      request,
-    );
+    return writerFor(env).fetch(request);
   },
   async scheduled(event, env, ctx) {
     if (!env.ALERT_WRITER || !env.INGRESS_SHARED_TOKEN) return;
     ctx.waitUntil(
-      env.ALERT_WRITER.get(env.ALERT_WRITER.idFromName("alerts-v1")).fetch(
+      writerFor(env).fetch(
         new Request("https://internal/sweep", {
           headers: { authorization: `Bearer ${env.INGRESS_SHARED_TOKEN}` },
         }),

@@ -205,7 +205,7 @@ printf on | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPI
 
 `wrangler secret put` deploys a new version at once.  Check:  `/health` answers `{"ok":true}`, an unsigned `POST /internal/spike/JET` answers 401 (404 means the flag, the key or JET's wake key is missing, or `SPIKE_HMAC_KEY` equals any seat's wake key, not only JET's), an unsigned `POST /internal/wake/JET` still answers 401, and a connected JET chat's `events/list` shows `zulip.mention` then `fleet.spike.ping`.  `server/discover` does not change (`events: {}`).
 
-**Fire one ping.**  Only after Jet says it subscribed.  The body is exactly four fields, and the signature is the lowercase hex HMAC-SHA256 of the raw bytes.  The key comes from an inherited `SPIKE_HMAC_KEY` first, else from `$KEYFILE` (the only other place it lives, because no Infisical writer takes it), and is never printed, not even in part.  The script exits non-zero on anything but a 2xx:
+**Fire one ping.**  Only after Jet says it subscribed.  The body is exactly four fields, and the signature is the lowercase hex HMAC-SHA256 of the raw bytes.  The key comes from an inherited `SPIKE_HMAC_KEY` first, else from `$KEYFILE` (the only other place it lives, because no Infisical writer takes it), and is never printed, not even in part.  The request sets its own `User-Agent`, because the edge blocks Python's default one with error 1010 before the Worker sees it.  The script exits non-zero on anything but a 2xx:
 
 ```bash
 SPIKE_HMAC_KEY="${SPIKE_HMAC_KEY:-$(cat "$KEYFILE")}" python3 -I - <<'PY'
@@ -216,7 +216,8 @@ spike_id = str(uuid.uuid4())
 body = json.dumps({"contract": "agent-sync-spike/1", "seat": "JET", "spike_id": spike_id, "sent_at": int(time.time())}).encode()
 sig = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
 req = urllib.request.Request("https://agents.simplewithus.com/internal/spike/JET", data=body, method="POST",
-                             headers={"Content-Type": "application/json", "X-Agent-Sync-Spike-Signature": sig})
+                             headers={"Content-Type": "application/json", "X-Agent-Sync-Spike-Signature": sig,
+                                      "User-Agent": "agent-sync-spike/1"})  # Cloudflare answers 1010 to Python's default UA
 try:
     with urllib.request.urlopen(req, timeout=25) as r: print(spike_id, r.status, r.read().decode()[:300])
 except urllib.error.HTTPError as e:

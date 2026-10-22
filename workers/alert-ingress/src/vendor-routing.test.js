@@ -491,10 +491,16 @@ test("an ambiguous write for one vendor never creates a message and never blocks
     const held = deliveryRow(storage, "datadog", "alerts", "Shared.Service");
     assert.equal(held.outcome, "unknown");
 
-    // A second refresh of that vendor creates no new message and sends nothing.
+    // A second refresh of that vendor creates no new message.  The standing
+    // message it already owns is edited again, because an edit cannot create
+    // a duplicate, and the caller is told the write is unconfirmed.
     const before = zulip.calls.length;
-    await refreshStatus(env, "datadog", "alerts", "Shared.Service");
-    assert.equal(zulip.calls.length, before);
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+    assert.equal(zulip.posts().length, postsBefore);
+    assert.ok(zulip.calls.length > before);
 
     // The other vendor is untouched by the held write.
     await refreshStatus(env, "betterstack", "alerts", "Shared.Service");

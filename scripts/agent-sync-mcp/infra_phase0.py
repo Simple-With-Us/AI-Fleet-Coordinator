@@ -24,6 +24,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import urllib.error
@@ -37,6 +38,17 @@ ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision
 # no fallback host and no alias:  this script provisions the one true host.
 ZONE_NAME = "simplewithus.com"
 HOST = "agents.simplewithus.com"
+# The retired host, kept as its own constants for one reason only:  cleanup and
+# verification.  The hard cutover stopped SERVING it - the Worker answers 404
+# for that Host and no alias exists - but a public hostname aimed at the Mac's
+# local dev port with no Access in front of it is a standing risk, not a
+# preference.  Dropping its tunnel ingress rule and its *.cfargotunnel.com CNAME
+# is how the retired name stops resolving to the Mac at all.  Nothing here may
+# serve, alias or redirect the retired host.
+RETIRED_ZONE_NAME = "jays.services"
+RETIRED_HOST = "agent-sync.jays.services"
+# Cleanup and post-deploy checks cover both names;  provisioning covers only HOST.
+RETIRED_HOSTS = (HOST, RETIRED_HOST)
 ISSUER = f"https://{HOST}"
 RESOURCE = f"{ISSUER}/mcp"
 TEAM_DOMAIN = "silent-frost-37e0.cloudflareaccess.com"
@@ -84,6 +96,25 @@ class Cloudflare:
         self._email = _load("CLOUDFLARE_JAY_ACCOUNT_EMAIL")
         self._key = _load("CLOUDFLARE_JAY_API_KEY")
 
+    def wrangler_env(self) -> dict:
+        """The environment a wrangler child needs to authenticate.
+
+        Wrangler reads CLOUDFLARE_EMAIL / CLOUDFLARE_API_KEY / CLOUDFLARE_ACCOUNT_ID,
+        while this script loads the first two under the fleet's own names and keeps
+        them inside this object.  Nothing here is printed or logged; the mapping is
+        the same one install_seat_key.py already uses.
+        """
+        env = dict(os.environ)
+        env.update(
+            {
+                "CLOUDFLARE_ACCOUNT_ID": ACCOUNT_ID,
+                "CLOUDFLARE_EMAIL": self._email,
+                "CLOUDFLARE_API_KEY": self._key,
+                "WRANGLER_SEND_METRICS": "false",
+            }
+        )
+        return env
+
     def call(self, method: str, path: str, body: dict | None = None, **params) -> dict:
         url = API + path + ("?" + urllib.parse.urlencode(params) if params else "")
         data = None if body is None else json.dumps(body).encode()
@@ -121,16 +152,96 @@ def plan(apply: bool, what: str) -> bool:
 # ---------------------------------------------------------------- lookups
 
 
-def zone_id(cf: Cloudflare) -> str:
-    res = cf.ok("GET", "/zones", name=ZONE_NAME)
+def zone_id(cf: Cloudflare, zone: str = ZONE_NAME) -> str:
+    zid = zone_id_if_present(cf, zone)
+    if zid is None:
+        raise SystemExit(f"error: zone {zone} not on account {ACCOUNT_ID}")
+    return zid
+
+
+def zone_id_if_present(cf: Cloudflare, zone: str) -> str | None:
+    """`zone_id`, but a zone that is not on this account is None, not fatal.
+
+    The retired zone is the reason this exists.  `dns` and `check` both walk
+    the served zone and the retired one, and the retired zone is not
+    guaranteed to be on this account.  Letting `zone_id` raise there aborts
+    `dns --apply` half way through - after the served zone's record is already
+    deleted and the retired one is untouched - and makes `check` print no
+    results at all.  "That zone is not ours" is a fact to report, not a crash.
+
+    Only that fact is None.  The lookup goes through `cf.ok`, so a request
+    that fails - a rejected key, a 5xx - still stops the run with the
+    provider's error.  Reading a failed lookup as "not on this account" would
+    let `dns --apply` skip a cleanup and `check` skip a verification while
+    reporting nothing wrong, which is why this does not catch `zone_id`'s
+    `SystemExit`:  that exception carries both meanings.
+    """
+    res = cf.ok("GET", "/zones", name=zone)
     for z in res.get("result") or []:
         if z["account"]["id"] == ACCOUNT_ID:
             return z["id"]
-    raise SystemExit(f"error: zone {ZONE_NAME} not on account {ACCOUNT_ID}")
+    return None
 
 
-def dns_records(cf: Cloudflare, zid: str) -> list[dict]:
-    return cf.ok("GET", f"/zones/{zid}/dns_records", name=HOST).get("result") or []
+def dns_records(cf: Cloudflare, zid: str, host: str = HOST) -> list[dict]:
+    return cf.ok("GET", f"/zones/{zid}/dns_records", name=host).get("result") or []
+
+
+def tunnel_ingress_from_config(config: dict, tid: str) -> list[dict]:
+    """The tunnel's ingress rules from one already-fetched configuration.
+
+    Shape-checked:  Cloudflare's response is a third party, and every caller
+    here reads `rule["hostname"]` and `rule["service"]`.  A malformed answer
+    should be a precise refusal rather than an incidental AttributeError that
+    looks like a bug in this script - especially in `check`, where a crash
+    would be read as "could not verify" rather than "the answer was not
+    understood".
+    """
+    if not isinstance(config, dict):
+        raise SystemExit(f"error: tunnel {tid} configuration is not an object")
+    ingress = config.get("ingress")
+    if ingress is None:
+        return []
+    if not isinstance(ingress, list):
+        raise SystemExit(f"error: tunnel {tid} ingress is not a list")
+    for rule in ingress:
+        if not isinstance(rule, dict):
+            raise SystemExit(f"error: tunnel {tid} ingress entry is not an object: {rule!r}")
+        hostname = rule.get("hostname")
+        service = rule.get("service")
+        if hostname is not None and not isinstance(hostname, str):
+            raise SystemExit(f"error: tunnel {tid} ingress hostname is not a string: {hostname!r}")
+        if not isinstance(service, str):
+            raise SystemExit(f"error: tunnel {tid} ingress service is not a string: {service!r}")
+    return ingress
+
+
+def tunnel_ingress(cf: Cloudflare, tid: str) -> list[dict]:
+    """The tunnel's ingress rules, shape-checked, in one fetch."""
+    return tunnel_ingress_from_config(tunnel_config(cf, tid), tid)
+
+
+def tunnel_hosts(
+    cf: Cloudflare, hosts=RETIRED_HOSTS, tid: str | None = None
+) -> dict[str, list[str]]:
+    """Map each hostname to the tunnel services an ingress rule points it at.
+
+    `tid` reuses a tunnel id the caller already resolved, so a caller that
+    fetched the tunnel to report on it does not pay a second `cfd_tunnel`
+    round trip - and cannot verify ingress against a different tunnel than
+    the one it just named.
+    """
+    if tid is None:
+        t = tunnel(cf)
+        if not t:
+            return {}
+        tid = t["id"]
+    found = {}
+    for rule in tunnel_ingress(cf, tid):
+        hostname = rule.get("hostname")
+        if hostname in hosts:
+            found.setdefault(hostname, []).append(rule.get("service"))
+    return found
 
 
 def tunnel(cf: Cloudflare) -> dict | None:
@@ -216,9 +327,7 @@ def cmd_status(cf: Cloudflare, _apply: bool) -> None:
         )
     t = tunnel(cf)
     if t:
-        rules = [
-            r for r in tunnel_config(cf, t["id"]).get("ingress") or [] if r.get("hostname") == HOST
-        ]
+        rules = [r for r in tunnel_ingress(cf, t["id"]) if r.get("hostname") == HOST]
         say(
             f"tunnel {TUNNEL_NAME} ({t['id']}, {t.get('status')}): {len(rules)} ingress rule(s) for {HOST}"
         )
@@ -302,22 +411,174 @@ def cmd_kv(cf: Cloudflare, apply: bool) -> None:
         say(f"created {KV_TITLE} id={res.get('id')}")
 
 
+# Wrangler prints its own failure text, and third-party output can carry a
+# Cloudflare response body, request data or authorization material, so none of
+# it is relayed:  only these two scalar fields are kept, and only in the shapes
+# wrangler documents.  Replacing known secrets is a denylist and cannot cover
+# what a response body happens to contain;  an allow-list can.
+_WRANGLER_CODE = re.compile(r"\bcode:\s*(\d{1,12})\b")
+# Cloudflare request ids are fixed 32-hex-character strings;  matching exactly
+# that shape keeps a longer or shorter lookalike (an API key, a token fragment)
+# from being captured as a request id.
+_WRANGLER_REQUEST_ID = re.compile(r"\brequest id:\s*([0-9a-f]{32})\b", re.IGNORECASE)
+
+
+def _wrangler_diagnostic(stdout: str, stderr: str, secret: str, api_key: str = "") -> str:
+    """The allow-listed facts from wrangler's output, or nothing."""
+    output = f"{stderr}\n{stdout}"
+    found = []
+    code = _WRANGLER_CODE.search(output)
+    if code:
+        found.append(f"cf code {code.group(1)}")
+    request_id = _WRANGLER_REQUEST_ID.search(output)
+    if request_id:
+        found.append(f"request id {request_id.group(1)}")
+    # A captured value would already be one of the two documented fields, but
+    # the check costs nothing and keeps the rule true by construction:  if
+    # wrangler ever labels the secret or the API key as a request id, the whole
+    # detail is withheld rather than relayed.
+    detail = ", ".join(found)
+    for sensitive in (secret, api_key):
+        if sensitive and sensitive in detail:
+            return ""
+    return detail
+
+
+def _terminate_group(pid: int, sig: int) -> None:
+    """Signal the child's whole process group.
+
+    The child is started in its own session, so a signal aimed at this process
+    never reaches it and a signal aimed at the group does:  `wrangler` is an
+    npx shim that spawns node underneath, so signalling the group ends the real
+    work rather than an orphan still holding the secret it was fed.  The caller
+    reaps the child;  a group that is already gone is not an error.
+    """
+    try:
+        os.killpg(pid, sig)
+    except OSError:
+        pass
+
+
+def put_worker_secret(cf: Cloudflare, name: str, value: str) -> None:
+    """Set an encrypted Worker secret.
+
+    The value is fed on stdin, never argv.  The child gets the credentials
+    wrangler actually reads plus cwd=HERE, because a bare inherited environment
+    runs `wrangler secret put` unauthenticated and fails with no usable reason.
+    A failing run reports only its exit code and the allow-listed fields of
+    wrangler's output:  a secret put that dies on a missing Worker or a wrong
+    account is otherwise just "exit 1", which is not enough to act on.
+    """
+    if shutil.which("wrangler"):
+        argv = ["wrangler"]
+    elif shutil.which("npx"):
+        # --no-install keeps the pinned devDependency (4.139.0, DEPLOY-PHASE0.md
+        # step 1) instead of whatever a global install happens to be.
+        argv = ["npx", "--no-install", "wrangler"]
+    else:
+        # 127, the shell's "command not found", so automation can tell a missing
+        # executable from a failed run.  A string argument would exit 1.
+        sys.stderr.write(f"error: wrangler is not on PATH; cannot provision {name}\n")
+        raise SystemExit(127)
+    try:
+        # Popen, not run:  `run` cannot end the child when this process is
+        # interrupted, and an interrupted provisioning run must not leave
+        # wrangler writing a secret with no owner.  start_new_session puts it in
+        # its own process group, so the group is what has to be signalled.
+        proc = subprocess.Popen(
+            argv + ["secret", "put", name, "--config", str(WRANGLER)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=HERE,
+            env=cf.wrangler_env(),
+            start_new_session=True,
+        )
+    except FileNotFoundError as exc:
+        sys.stderr.write(f"error: {argv[0]} is not on PATH; cannot provision {name}\n")
+        raise SystemExit(127) from exc
+    except OSError as exc:
+        raise SystemExit(f"error: could not run wrangler to set {name}: {exc}") from exc
+
+    def _on_sigterm(signum, frame):
+        # A SIGTERM to this runner must take the child with it.  Converting the
+        # signal into SystemExit runs the same cleanup path as any other
+        # interruption, then exits 128 + SIGTERM the way a killed process does.
+        _terminate_group(proc.pid, signal.SIGTERM)
+        raise SystemExit(143)
+
+    previous = None
+    try:
+        previous = signal.signal(signal.SIGTERM, _on_sigterm)
+    except ValueError:
+        # Not the main thread:  signal handlers cannot be installed here, so
+        # SIGTERM keeps its default disposition.  KeyboardInterrupt and any
+        # SystemExit raised by the caller still clean the group up below.
+        previous = None
+    try:
+        try:
+            stdout, stderr = proc.communicate(value + "\n", timeout=300)
+        except subprocess.TimeoutExpired as exc:
+            _terminate_group(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            raise SystemExit(124) from exc
+        except BaseException:
+            # KeyboardInterrupt, a SystemExit from _on_sigterm, or anything else
+            # unwinding this thread:  the child never outlives the run.
+            _terminate_group(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _terminate_group(proc.pid, signal.SIGKILL)
+                proc.communicate()
+            raise
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+    if proc.returncode != 0:
+        api_key = cf.wrangler_env().get("CLOUDFLARE_API_KEY", "") or ""
+        detail = _wrangler_diagnostic(stdout or "", stderr or "", value, api_key)
+        raise SystemExit(
+            f"error: wrangler secret put {name} failed (exit {proc.returncode})"
+            + (f": {detail}" if detail else "")
+        )
+
+
 def cmd_write_config(cf: Cloudflare, apply: bool) -> None:
     text = WRANGLER.read_text(encoding="utf-8")
     ns = kv_namespace(cf)
     app = access_app(cf)
     if not ns or not app:
         raise SystemExit("error: run 'kv --apply' and 'access --apply' first")
-    new = text.replace("REPLACE_WITH_OAUTH_KV_ID", ns["id"]).replace(
-        "REPLACE_WITH_ACCESS_AUD", app["aud"]
+    # The KV namespace id is not a credential, so it stays in the committed file.
+    # Replace whatever is there - the original placeholder or the id written by
+    # an earlier run - so a re-created namespace is picked up instead of being
+    # silently ignored as "already configured".
+    new, count = re.subn(
+        r'("binding"\s*:\s*"OAUTH_KV"\s*,\s*"id"\s*:\s*)"[^"]*"',
+        lambda m: f'{m.group(1)}"{ns["id"]}"',
+        text,
     )
-    if new == text:
-        say("wrangler.jsonc already has both ids")
-        return
-    say(f"OAUTH_KV id -> {ns['id']}")
-    say(f"ACCESS_AUD -> {app['aud']}")
-    if plan(apply, "write wrangler.jsonc"):
-        WRANGLER.write_text(new, encoding="utf-8")
+    if count == 0:
+        raise SystemExit("error: no OAUTH_KV binding id found in wrangler.jsonc; not touching it")
+    if count > 1:
+        raise SystemExit("error: OAUTH_KV binding is ambiguous in wrangler.jsonc; not touching it")
+    if new != text:
+        say(f"OAUTH_KV id -> {ns['id']}")
+        if plan(apply, "write wrangler.jsonc"):
+            WRANGLER.write_text(new, encoding="utf-8")
+    else:
+        say("wrangler.jsonc already has the live OAUTH_KV id")
+
+    # The Access aud is a private Cloudflare resource identifier, so it is not
+    # committed.  Provision it as an encrypted Worker secret, fed on stdin so
+    # the value never appears in argv or in this script's output.  The Worker's
+    # /authorize and /admin fail closed naming ACCESS_AUD until it is set.
+    say(f"ACCESS_AUD -> provisioned as a Worker secret from the {ACCESS_APP_NAME!r} app")
+    if plan(apply, "wrangler secret put ACCESS_AUD (deploys a new Worker version)"):
+        put_worker_secret(cf, "ACCESS_AUD", app["aud"])
+        say("ACCESS_AUD secret is set; redeploy is not required for it to take effect")
 
 
 def _backup(name: str, payload: dict) -> pathlib.Path:
@@ -329,63 +590,73 @@ def _backup(name: str, payload: dict) -> pathlib.Path:
 
 
 def cmd_dns(cf: Cloudflare, apply: bool) -> None:
-    zid = zone_id(cf)
-    recs = dns_records(cf, zid)
-    if not recs:
-        say(f"no DNS record for {HOST}; nothing to delete")
-        return
-    for r in recs:
-        if r["type"] != "CNAME" or not r["content"].endswith(".cfargotunnel.com"):
-            raise SystemExit(
-                f"error: unexpected record {r['type']} -> {r['content']}; not touching it"
-            )
-    for r in recs:
-        say(
-            f"record: {r['type']} {r['name']} -> {r['content']} proxied={r.get('proxied')} id={r['id']}"
-        )
-        if plan(
-            apply,
-            f"back up and delete DNS record {r['id']} (a Worker custom domain cannot bind while it exists)",
-        ):
-            path = _backup(f"dns-{r['id']}.json", r)
-            say(f"backup: {path}")
-            cf.ok("DELETE", f"/zones/{zid}/dns_records/{r['id']}")
-            say("deleted")
+    for zone, host in ((ZONE_NAME, HOST), (RETIRED_ZONE_NAME, RETIRED_HOST)):
+        zid = zone_id_if_present(cf, zone)
+        if zid is None:
+            say(f"zone {zone} is not on account {ACCOUNT_ID}; nothing to clean there")
+            continue
+        recs = dns_records(cf, zid, host)
+        if not recs:
+            say(f"no DNS record for {host} in zone {zone}; nothing to delete")
+            continue
+        for r in recs:
+            if r["type"] != "CNAME" or not r["content"].endswith(".cfargotunnel.com"):
+                raise SystemExit(
+                    f"error: unexpected record {r['type']} -> {r['content']}; not touching it"
+                )
+        for r in recs:
             say(
-                "The backup is a record of what existed, NOT a rollback:  recreating this CNAME would publish"
+                f"record: {r['type']} {r['name']} -> {r['content']} proxied={r.get('proxied')} id={r['id']}"
             )
-            say(
-                "the Mac's local port again with no Access.  To undo a bad deploy, roll back the Worker version."
-            )
-            say(
-                "Next:  deploy (step 5), then 'check', then 'tunnel --apply' (step 6) to drop the dead ingress rule."
-            )
+            if plan(
+                apply,
+                f"back up and delete DNS record {r['id']} (a Worker custom domain cannot bind while it exists)",
+            ):
+                path = _backup(f"dns-{r['id']}.json", r)
+                say(f"backup: {path}")
+                cf.ok("DELETE", f"/zones/{zid}/dns_records/{r['id']}")
+                say("deleted")
+                say(
+                    "The backup is a record of what existed, NOT a rollback:  recreating this CNAME would publish"
+                )
+                say(
+                    "the Mac's local port again with no Access.  To undo a bad deploy, roll back the Worker version."
+                )
+                say(
+                    "Next:  deploy (step 5), then 'check', then 'tunnel --apply' (step 6) to drop the dead ingress rules."
+                )
 
 
 def cmd_tunnel(cf: Cloudflare, apply: bool) -> None:
     t = tunnel(cf)
     if not t:
         raise SystemExit(f"error: tunnel {TUNNEL_NAME} not found")
+    # One read:  the PUT below writes {**config, "ingress": keep}, so the
+    # validated rules must come from the same object the backup keeps, not a
+    # second fetch that a concurrent change could slip between.
     config = tunnel_config(cf, t["id"])
-    ingress = config.get("ingress") or []
-    keep = [r for r in ingress if r.get("hostname") != HOST]
-    removed = [r for r in ingress if r.get("hostname") == HOST]
+    ingress = tunnel_ingress_from_config(config, t["id"])
+    # Drop a rule for the served host OR the retired one:  either keeps a public
+    # hostname aimed at the Mac alive.
+    keep = [r for r in ingress if r.get("hostname") not in RETIRED_HOSTS]
+    removed = [r for r in ingress if r.get("hostname") in RETIRED_HOSTS]
     if not removed:
-        say("no ingress rule for this host; nothing to do")
+        say(f"no ingress rule for {HOST} or {RETIRED_HOST}; nothing to do")
         return
-    if len(removed) != 1 or not keep or keep[-1].get("hostname"):
+    if not keep or keep[-1].get("hostname"):
         raise SystemExit(
-            "error: unexpected ingress shape (want exactly one rule removed and a catch-all last); not touching it"
+            "error: unexpected ingress shape (want only hostname rules removed and a catch-all last); not touching it"
         )
     say(f"tunnel {TUNNEL_NAME} ({t['id']}): {len(ingress)} rules -> {len(keep)}")
-    say(f"remove: {removed[0].get('hostname')} -> {removed[0].get('service')}")
+    for rule in removed:
+        say(f"remove: {rule.get('hostname')} -> {rule.get('service')}")
     say(
         "Do this right after the custom domain is verified:  a dead rule that points at a local dev port"
     )
-    say("comes back to life the moment anyone re-adds a CNAME for this host.")
+    say("comes back to life the moment anyone re-adds a CNAME for that host.")
     if plan(
         apply,
-        "PUT the tunnel configuration without that rule (whole-config write on a live tunnel)",
+        "PUT the tunnel configuration without those rules (whole-config write on a live tunnel)",
     ):
         path = _backup(f"tunnel-{t['id']}-config.json", config)
         say(f"backup: {path}")
@@ -559,28 +830,43 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
             json.dumps([d.get("service") for d in domains]),
         )
         t = tunnel(cf)
-        stale = (
-            [
-                r.get("service")
-                for r in (tunnel_config(cf, t["id"]).get("ingress") or [])
-                if r.get("hostname") == HOST
-            ]
-            if t
-            else []
-        )
-        expect(
-            "no stale tunnel ingress rule for this host (run 'tunnel --apply')",
-            not stale,
-            json.dumps(stale),
-        )
-        expect(
-            "no leftover tunnel DNS record",
-            not [
-                r
-                for r in dns_records(cf, zone_id(cf))
-                if r["type"] == "CNAME" and r["content"].endswith(".cfargotunnel.com")
-            ],
-        )
+        stale = tunnel_hosts(cf, tid=t["id"]) if t else {}
+        for host in RETIRED_HOSTS:
+            expect(
+                f"no stale tunnel ingress rule for {host} (run 'tunnel --apply')",
+                host not in stale,
+                json.dumps(stale.get(host, [])),
+            )
+        for zone, host in ((ZONE_NAME, HOST), (RETIRED_ZONE_NAME, RETIRED_HOST)):
+            # One resolution per zone, reused for both sweeps below.
+            zid = zone_id_if_present(cf, zone)
+            if zid is None:
+                # Not a failure:  the retired zone being gone from the account
+                # is the end state this module is driving at.  Report it and
+                # keep checking, rather than aborting the whole verification.
+                say(f"zone {zone} is not on account {ACCOUNT_ID}; nothing to check there")
+                continue
+            expect(
+                f"no leftover tunnel DNS record for {host} in zone {zone}",
+                not [
+                    r
+                    for r in dns_records(cf, zid, host)
+                    if r["type"] == "CNAME" and r["content"].endswith(".cfargotunnel.com")
+                ],
+            )
+            # The per-host filter above only sees the two names this module
+            # knows about.  A tunnel CNAME under any other name in the same
+            # zone is the same exposure - a public hostname resolving to the
+            # Mac - so the zone is swept as a whole, which is also the only
+            # way a renamed or mistyped leftover can still be caught.
+            expect(
+                f"no tunnel CNAME at all in zone {zone}",
+                not [
+                    r
+                    for r in dns_records(cf, zid)
+                    if r["type"] == "CNAME" and r["content"].endswith(".cfargotunnel.com")
+                ],
+            )
 
     say(f"{failures} failure(s)")
     if failures:

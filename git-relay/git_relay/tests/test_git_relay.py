@@ -6,10 +6,12 @@ tests bind an ephemeral port on 127.0.0.1 with a stubbed client.
 
 from __future__ import annotations
 
+import fcntl
 import io
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1577,3 +1579,201 @@ class CliEntryTests(unittest.TestCase):
         )
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("git-relay config", out.stderr)
+
+
+class LegacyStateAdoption(unittest.TestCase):
+    """The GHR -> git-relay rename must not abandon the write-idempotency ledger.
+
+    A pending/unknown outcome row exists to fail closed:  it is what refuses a
+    replay of a write whose GitHub outcome was never known.  Starting the
+    renamed relay on an empty store would let those writes run a second time.
+    """
+
+    KEY = "b" * 64
+
+    def _legacy_ledger(self, directory: pathlib.Path) -> pathlib.Path:
+        path = directory / "pr-relay-outcomes.json"
+        path.write_text(
+            json.dumps({self.KEY: {"state": "unknown", "ts": 1700000000.0}}),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_a_ledger_left_under_the_old_name_is_adopted(self):
+        from git_relay.outcomes import OutcomeStore
+        from git_relay.server import adopt_legacy_state
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        legacy = self._legacy_ledger(directory)
+
+        adopted = adopt_legacy_state(str(directory / "git-relay-outcomes.json"))
+
+        self.assertFalse(legacy.exists(), "the old file is moved, not copied")
+        self.assertTrue(pathlib.Path(adopted).exists())
+        # The held row survived the rename:  a replay still fails closed.
+        store = OutcomeStore(adopted)
+        self.assertEqual(store._rows[self.KEY]["state"], "unknown")
+
+    def test_an_existing_current_file_always_wins(self):
+        from git_relay.server import adopt_legacy_state
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        legacy = self._legacy_ledger(directory)
+        current = directory / "git-relay-outcomes.json"
+        current.write_text("{}", encoding="utf-8")
+
+        adopted = adopt_legacy_state(str(current))
+
+        self.assertEqual(adopted, str(current))
+        self.assertTrue(legacy.exists(), "a present current file means no adoption")
+
+    def test_nothing_to_adopt_returns_the_default(self):
+        from git_relay.server import adopt_legacy_state
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        adopted = adopt_legacy_state(str(directory / "git-relay-outcomes.json"))
+        self.assertEqual(adopted, str(directory / "git-relay-outcomes.json"))
+        self.assertFalse(pathlib.Path(adopted).exists())
+
+    def test_a_lost_race_keeps_the_winners_ledger_and_the_legacy_file(self):
+        # Another relay holds the adoption lock and has already produced the
+        # current file.  Clobbering it would orphan the live ledger, which is the
+        # one thing this migration must never do.
+        from git_relay.server import adopt_legacy_state
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        legacy = self._legacy_ledger(directory)
+        current = directory / "git-relay-outcomes.json"
+        current.write_text(json.dumps({"winner": {"state": "applied"}}), encoding="utf-8")
+        (directory / ".git-relay-outcomes.json.adopt.lock").write_text("", encoding="utf-8")
+
+        adopted = adopt_legacy_state(str(current))
+
+        self.assertEqual(adopted, str(current))
+        self.assertEqual(
+            json.loads(current.read_text(encoding="utf-8")),
+            {"winner": {"state": "applied"}},
+            "the current ledger must survive untouched",
+        )
+        self.assertTrue(legacy.exists())
+
+    def test_a_lock_with_no_result_fails_closed_instead_of_racing(self):
+        # The lock is held, nothing has been adopted yet and the deadline passed.
+        # Starting with an empty ledger would re-arm held writes, so refuse.
+        from git_relay import server
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        legacy = self._legacy_ledger(directory)
+        lock = directory / ".git-relay-outcomes.json.adopt.lock"
+        # A live holder:  an exclusive flock on its own open file description,
+        # exactly what another relay process would hold.
+        holder = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+        self.addCleanup(os.close, holder)
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        saved = server.ADOPT_LOCK_WAIT_SECONDS
+        server.ADOPT_LOCK_WAIT_SECONDS = 0.0
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                server.adopt_legacy_state(str(directory / "git-relay-outcomes.json"))
+        finally:
+            server.ADOPT_LOCK_WAIT_SECONDS = saved
+        self.assertIn("adopt.lock", str(caught.exception))
+        self.assertTrue(lock.exists(), "a live holder's lock is never deleted")
+        self.assertFalse((directory / "git-relay-outcomes.json").exists())
+        self.assertTrue(legacy.exists(), "a refused adoption leaves the old ledger alone")
+
+    def test_a_lock_file_left_by_a_dead_process_does_not_wedge_startup(self):
+        # A crash between creating the lock and finishing the adoption must not
+        # wedge every later startup.  The kernel released the dead owner's flock,
+        # so the leftover file (whatever PID or age it records) is simply locked
+        # again;  no PID or age guess decides it.
+        from git_relay import server
+
+        for label, pid_text, old_mtime in (
+            ("dead owner", "999999999", False),
+            ("old file naming this live pid", str(os.getpid()), True),
+        ):
+            with self.subTest(label):
+                directory = pathlib.Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, directory, True)
+                legacy = self._legacy_ledger(directory)
+                lock = directory / ".git-relay-outcomes.json.adopt.lock"
+                lock.write_text(f"{pid_text}\n", encoding="utf-8")
+                if old_mtime:
+                    old = time.time() - 3600.0
+                    os.utime(lock, (old, old))
+
+                adopted = server.adopt_legacy_state(str(directory / "git-relay-outcomes.json"))
+
+                self.assertTrue(pathlib.Path(adopted).exists())
+                self.assertFalse(legacy.exists(), "the leftover lock must not stop the move")
+                self.assertFalse(lock.exists(), "the lock is cleaned up after the adoption")
+
+    def test_adoption_stages_through_a_temporary_file_and_leaves_none_behind(self):
+        from git_relay.server import adopt_legacy_state
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        self._legacy_ledger(directory)
+
+        adopt_legacy_state(str(directory / "git-relay-outcomes.json"))
+
+        leftovers = [
+            p.name
+            for p in directory.iterdir()
+            if p.name.endswith(".adopt") or p.name.endswith(".adopt.lock")
+        ]
+        self.assertEqual(leftovers, [], "the staged copy and its lock are both cleaned up")
+
+    def test_from_env_adopts_the_default_but_never_an_explicit_path(self):
+        from git_relay import server
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        self._legacy_ledger(directory)
+        explicit = directory / "operator-chosen.json"
+        policy = json.dumps(
+            {
+                "swu-echo": {
+                    "token": "e" * 32,
+                    "actions": ["open_pr"],
+                    "repos": ["acme-org/acme-repo"],
+                }
+            }
+        )
+
+        origin = pathlib.Path.cwd()
+
+        def build(**overrides):
+            env = dict(os.environ)
+            env["GIT_RELAY_SEATS_JSON"] = policy
+            env["GIT_RELAY_APP_MINT"] = "0"
+            env["GITHUB_TOKEN"] = "t" * 40
+            env.update(overrides)
+            return unittest.mock.patch.dict(os.environ, env, clear=True)
+
+        with build():
+            os.chdir(directory)
+            try:
+                relay = server.from_env()
+            finally:
+                os.chdir(origin)
+        self.assertTrue((directory / "git-relay-outcomes.json").exists())
+        self.assertEqual(relay.outcomes._rows[self.KEY]["state"], "unknown")
+
+        # An explicit path is the operator's decision:  no file is moved.
+        (directory / "git-relay-outcomes.json").unlink()
+        self._legacy_ledger(directory)
+        with build(GIT_RELAY_OUTCOMES_PATH=str(explicit)):
+            os.chdir(directory)
+            try:
+                server.from_env()
+            finally:
+                os.chdir(origin)
+        self.assertTrue((directory / "pr-relay-outcomes.json").exists())
+        self.assertFalse(explicit.exists())

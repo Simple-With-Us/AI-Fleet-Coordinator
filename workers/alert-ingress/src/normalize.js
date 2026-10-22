@@ -5,7 +5,7 @@
 //
 // Normalized event:
 //   {
-//     source:    "datadog" | "betterstack" | "generic",
+//     source:    "datadog" | "betterstack" | "sentry" | "generic",
 //     key:       stable identity of the alertable thing (dedupe key),
 //     service:   what to name it in the topic / status line,
 //     firing:    true | false,
@@ -30,6 +30,22 @@ function first(...vals) {
 function oneLine(s) {
   return strip(s).replace(/\s+/g, " ");
 }
+
+/**
+ * Sentry's own level names, mapped onto the fleet's three severities.
+ *
+ * An unknown level is SEVERE while firing: over-severing a new alert is
+ * recoverable, and under-severing one is not.
+ */
+const SENTRY_SEVERITY = {
+  fatal: "SEVERE",
+  critical: "SEVERE",
+  error: "SEVERE",
+  warning: "MODERATE",
+  warn: "MODERATE",
+  info: "INFO",
+  debug: "INFO",
+};
 
 /**
  * Datadog monitor notification.
@@ -155,6 +171,190 @@ export function fromBetterStack(payload) {
 }
 
 /**
+ * A Sentry field as text.
+ *
+ * Only a string, or a number rendered as one, is text.  An object, an array
+ * or a boolean never is, so a nested blob cannot be stringified into a topic
+ * name, a label or a link by the parser.  The generic helper stringifies
+ * objects, which is right for the vendors it was written for and wrong for a
+ * vendor whose payload nests objects all the way down.
+ */
+const sentryText = (value) =>
+  typeof value === "string"
+    ? value
+    : typeof value === "number" && Number.isFinite(value)
+      ? String(value)
+      : "";
+
+/** The first non-empty Sentry field, as text. */
+function sentryFirst(...vals) {
+  for (const value of vals) {
+    const text = sentryText(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+/**
+ * Credential shapes worth refusing in a vendor-supplied identity.
+ *
+ * These are the high-confidence vendor prefixes this fleet actually holds, plus
+ * the two generic forms that carry no legitimate identity.  They are anchored
+ * and deliberately narrow: a Sentry identity is a short id such as `PROJ-1ABC`
+ * or a numeric metric-alert id, so nothing ordinary matches, and an over-broad
+ * pattern would refuse real alerts.  The patterns mirror the ones in
+ * `scripts/agent-sync-mcp/src/contract.js`, which scans the same fleet's
+ * credentials for the same reason.
+ */
+const CREDENTIAL_SHAPES = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,
+  /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/,
+  /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b/,
+  /\b(?:xox[abposr]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,})\b/,
+  /\bAIza[0-9A-Za-z_-]{35}\b/,
+  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/,
+  /\blin_(?:api|oauth|wh)_[A-Za-z0-9]{20,}/,
+  /\bsntry[su]_[A-Za-z0-9+/=_-]{20,}/,
+  /\bst\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}/,
+  /\bcf(?:ut|at|k)_[A-Za-z0-9]{30,}/,
+  /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
+];
+
+/** True when `value` carries a credential shape rather than an identity. */
+function credentialShape(value) {
+  const text = String(value || "");
+  return CREDENTIAL_SHAPES.some((shape) => shape.test(text));
+}
+
+/**
+ * Sentry webhook.
+ *
+ * Sentry sends two shapes, and both carry the alert under `data`: an issue
+ * alert with the issue in `data.issue`, and a metric alert with the alert in
+ * `data.metric_alert`.  The envelope's `action` says whether the delivery is
+ * a new alert or a resolution, so the action, not the presence of a payload,
+ * says whether it is firing.
+ *
+ * A native Sentry payload used to fall through to the generic parser, where
+ * `data.issue` read as an object and failed boundary validation as an invalid
+ * text field, so a Sentry route could not deliver at all.
+ */
+export function fromSentry(payload) {
+  const data =
+    payload && typeof payload.data === "object" && payload.data ? payload.data : {};
+  const issue =
+    data.issue && typeof data.issue === "object" && data.issue ? data.issue : null;
+  const metric =
+    data.metric_alert && typeof data.metric_alert === "object" && data.metric_alert
+      ? data.metric_alert
+      : null;
+  const action = sentryFirst(payload.action).toLowerCase();
+  const level = sentryFirst(
+    issue?.level,
+    metric?.status,
+    metric?.alert_rule?.status,
+    payload.level,
+  ).toLowerCase();
+
+  // A resolution says so in the action; a metric alert says it in its status.
+  // An unrecognized status stays firing, which is the safe direction: a
+  // status-less delivery must never close a live incident.
+  // Only the actions that mean "alert is live" fire.  Housekeeping actions
+  // (assigned, archived, ignored, ...) say nothing about the alert itself, so
+  // they fall back to the level or status signal instead of reopening a
+  // resolved incident.
+  const FIRING_ACTIONS = /^(created|triggered|reopened|unresolved|escalated|critical|warning)$/;
+  const CLOSING_ACTIONS = /^(resolved|closed|complete|completed|ok|archived|ignored)$/;
+  const closedByLevel = /^(ok|resolved|recovered|closed)$/.test(level);
+  // The issue's own status closes it, whatever the action was.  A housekeeping
+  // event on an issue that is already resolved - "assigned" on a resolved issue -
+  // carries the issue's level, which still reads "error", so the level alone would
+  // reopen an incident that is closed.  A missing status stays firing, which is the
+  // safe direction:  a status-less delivery must never close a live incident.
+  // The issue's own status closes it whatever the action said, so it is read
+  // before the action tests.  Sentry reports a resolved issue as resolved; a
+  // delivery whose action happens to be a firing one must not reopen it and
+  // raise a fresh SEVERE line for an issue the vendor has already closed.
+  const issueStatus = sentryFirst(issue?.status).toLowerCase();
+  const closedByStatus = /^(ok|resolved|recovered|closed|complete|completed|ignored|archived)$/.test(
+    issueStatus,
+  );
+  const firing = closedByStatus
+    ? false
+    : FIRING_ACTIONS.test(action)
+      ? true
+      : CLOSING_ACTIONS.test(action)
+        ? false
+        : !closedByLevel;
+
+  const severity =
+    (Object.hasOwn(SENTRY_SEVERITY, level) && SENTRY_SEVERITY[level]) ||
+    (firing ? "SEVERE" : "INFO");
+
+  const project = issue?.project && typeof issue.project === "object" ? issue.project : {};
+  const service = issue
+    ? oneLine(sentryFirst(project.slug, project.name, issue.metadata?.type, "sentry"))
+    : oneLine(
+        sentryFirst(
+          metric?.alert_rule?.name,
+          metric?.metric_identifier?.name,
+          metric?.title,
+          "sentry",
+        ),
+      );
+
+  // The issue key names the issue, so a metric alert and an issue can never
+  // share one identity.  A body with no identity has no key to file the
+  // incident under, so it is refused instead of falling back to a constant:
+  // two different malformed bodies on one constant key would share an
+  // incident, and one alert's resolution would close the other's incident and
+  // standing message.
+  const issueIdentity = sentryFirst(issue?.shortId, issue?.id);
+  const metricIdentity = sentryFirst(metric?.id, metric?.alert_rule?.id);
+  if (!issue && !metric) throw new Error("sentry payload carries no alert");
+  if (issue && !issueIdentity) throw new Error("sentry issue has no identity");
+  if (metric && !metricIdentity) throw new Error("sentry metric alert has no identity");
+  // The identity is vendor-supplied text that becomes a durable storage key and
+  // is relayed into the standing block, so it is scanned for a credential
+  // before it is used as one.  A body that puts a token where an identity
+  // belongs is refused rather than filed:  persisting or relaying it would copy
+  // secret material out of the payload and into this worker's own storage.
+  // The message names the field and never the value or a prefix of it.
+  const identityField = issue ? "sentry issue identity" : "sentry metric identity";
+  if (credentialShape(issue ? issueIdentity : metricIdentity)) {
+    // The code lets the webhook route answer a bad request that names the
+    // field, instead of the refusal escaping as a writer outage.
+    const error = new Error(`${identityField} looks like a credential`);
+    error.code = "invalid_identity";
+    error.field = identityField;
+    throw error;
+  }
+  const key = issue
+    ? `sentry:${issueIdentity.toLowerCase()}`
+    : `sentry:metric:${metricIdentity.toLowerCase()}`;
+
+  const text = issue
+    ? oneLine(sentryFirst(issue.title, issue.metadata?.value, "Sentry issue"))
+    : oneLine(sentryFirst(metric?.title, metric?.alert_rule?.name, "Sentry metric alert"));
+
+  const link = issue
+    ? sentryFirst(issue.url, issue.permalink)
+    : sentryFirst(metric?.url, metric?.alert_rule?.url);
+
+  return {
+    source: "sentry",
+    key,
+    service,
+    firing,
+    severity: firing ? severity : "INFO",
+    text,
+    link,
+    prodDown: false,
+  };
+}
+
+/**
  * Generic fallback for a webhook we have no bespoke parser for.
  * Reads the conventional keys rather than guessing at vendor internals.
  */
@@ -192,7 +392,11 @@ export function fromGeneric(payload) {
   };
 }
 
-const PARSERS = { datadog: fromDatadog, betterstack: fromBetterStack };
+const PARSERS = {
+  datadog: fromDatadog,
+  betterstack: fromBetterStack,
+  sentry: fromSentry,
+};
 
 /**
  * Dispatch on the source named by the ingress route (`/webhook/<source>`).
@@ -216,4 +420,4 @@ export function normalize(source, payload) {
   return event;
 }
 
-export const __testing = { oneLine, first };
+export const __testing = { oneLine, first, credentialShape };

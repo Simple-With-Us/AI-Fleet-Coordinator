@@ -21,10 +21,12 @@ or returned.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import shutil
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -509,6 +511,154 @@ def make_handler(relay: Relay):
     return Handler
 
 
+DEFAULT_AUDIT_PATH = "git-relay-audit.jsonl"
+DEFAULT_OUTCOMES_PATH = "git-relay-outcomes.json"
+# The state files were renamed along with the CLI (GHR -> git-relay).  The
+# outcome store is a write-idempotency ledger:  its pending/unknown rows are
+# the only thing that stops a replay of a write whose GitHub outcome was never
+# known.  A renamed relay that ignored the ledger left behind under the old
+# name would start empty and re-arm those side effects, so the old file is
+# adopted rather than abandoned.  This moves a file once, on first start;  it
+# adds no alias, no fallback name, and no second accepted configuration.
+LEGACY_STATE_FILES = {
+    DEFAULT_AUDIT_PATH: "pr-relay-audit.jsonl",
+    DEFAULT_OUTCOMES_PATH: "pr-relay-outcomes.json",
+}
+# How long a starting relay waits for another one to finish adopting the same
+# legacy file before it refuses.  Adoption is a copy of one small jsonl file, so
+# this is generous; it exists to fail loudly rather than silently start with an
+# empty ledger.
+ADOPT_LOCK_WAIT_SECONDS = 5.0
+
+
+def _fsync_dir(directory: str) -> None:
+    """Make a rename or unlink durable, not just visible to this process."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _acquire_adopt_lock(lock_path: str) -> int | None:
+    """Try once to hold the adoption lock;  return its fd, or None if it is held.
+
+    The lock is an exclusive ``flock`` on the lock file, not the file's mere
+    existence.  The kernel drops it when its owner exits, however it exits, so a
+    crash mid-adoption cannot wedge later startups and no staleness guess (an
+    age bound, a PID that may be reused) is ever needed.  Nothing ever deletes a
+    lock another process holds.  The holder unlinks the file before it lets go,
+    so after taking the lock the path must still name the file this fd has
+    open;  if it does not, a previous holder finished in between and the caller
+    tries again on the fresh file.  Only "held by someone else" counts as
+    contention:  every other OSError propagates.
+    """
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return None
+        try:
+            on_path = os.stat(lock_path)
+        except FileNotFoundError:
+            os.close(fd)
+            return -1
+        held = os.fstat(fd)
+        if (on_path.st_dev, on_path.st_ino) != (held.st_dev, held.st_ino):
+            os.close(fd)
+            return -1
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        os.fsync(fd)
+        return fd
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
+def adopt_legacy_state(default_path: str) -> str:
+    """Adopt a pre-rename state file when the new default does not exist yet."""
+    default_name = os.path.basename(default_path)
+    legacy_name = LEGACY_STATE_FILES.get(default_name)
+    if legacy_name is None:
+        return default_path
+    directory = os.path.dirname(default_path) or "."
+    legacy_path = os.path.join(directory, legacy_name)
+    current_path = os.path.join(directory, default_name)
+    # An existing current file always wins:  it is the live ledger.
+    if os.path.exists(current_path) or not os.path.exists(legacy_path):
+        return default_path
+    # A check-then-act is not enough here.  Two relays starting in one directory
+    # both see "no current file", and the loser of the race would either crash in
+    # os.replace or overwrite a live ledger that appeared in between - exactly the
+    # orphaning this migration exists to prevent.  The lock makes the adoption
+    # exclusive and the re-check under it makes the winner's file authoritative.
+    lock_path = os.path.join(directory, f".{default_name}.adopt.lock")
+    deadline = time.monotonic() + ADOPT_LOCK_WAIT_SECONDS
+    while True:
+        lock_fd = _acquire_adopt_lock(lock_path)
+        if lock_fd is not None and lock_fd >= 0:
+            break
+        if lock_fd == -1:
+            # The previous holder finished and removed the file we locked;  the
+            # next attempt locks the current one.
+            continue
+        # Someone else is adopting, or already did.  Either way the answer is
+        # the same once their file is in place.
+        if os.path.exists(current_path) or not os.path.exists(legacy_path):
+            return default_path
+        if time.monotonic() > deadline:
+            raise SystemExit(
+                f"error: {lock_path} is held; another git-relay is adopting "
+                f"{legacy_name} into {default_name}.  Retry once it finishes."
+            )
+        time.sleep(0.05)
+    try:
+        # Re-check under the lock:  the current file always wins.
+        if os.path.exists(current_path) or not os.path.exists(legacy_path):
+            return default_path
+        # Stage the contents in the same directory, fsync them, then replace the
+        # final path, so a crash cannot leave the ledger half-written or lose the
+        # rename that gives it its new name.
+        fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=f".{default_name}.", suffix=".adopt")
+        try:
+            with os.fdopen(fd, "wb") as target, open(legacy_path, "rb") as source:
+                shutil.copyfileobj(source, target)
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(tmp_path, current_path)
+            _fsync_dir(directory)
+            os.unlink(legacy_path)
+            _fsync_dir(directory)
+        except Exception:
+            # The legacy file is untouched unless the unlink was reached, so a
+            # retry is safe; only the staged copy goes.
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+    finally:
+        # Unlink while still holding the lock, then release it by closing.  A
+        # waiter that locks the unlinked file sees the path no longer names it
+        # and retries, so two adopters never run at once.
+        try:
+            os.unlink(lock_path)
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(lock_fd)
+    print(
+        f"git-relay: adopted the pre-rename {legacy_name} as {default_name}; "
+        "its held write outcomes still apply",
+        flush=True,
+    )
+    return default_path
+
+
 def from_env() -> Relay:
     try:
         policy = SeatPolicy(
@@ -518,8 +668,20 @@ def from_env() -> Relay:
     except PolicyError as exc:
         raise SystemExit(f"git-relay config: {exc}") from exc
     client = GitHubClient(os.environ.get("GITHUB_TOKEN", ""))
-    audit = AuditLog(os.environ.get("GIT_RELAY_AUDIT_PATH", "git-relay-audit.jsonl"))
-    outcomes = OutcomeStore(os.environ.get("GIT_RELAY_OUTCOMES_PATH", "git-relay-outcomes.json"))
+    # An explicitly configured path is the operator's business:  adoption only
+    # covers the built-in defaults.
+    audit_path = (
+        os.environ["GIT_RELAY_AUDIT_PATH"]
+        if "GIT_RELAY_AUDIT_PATH" in os.environ
+        else adopt_legacy_state(DEFAULT_AUDIT_PATH)
+    )
+    outcomes_path = (
+        os.environ["GIT_RELAY_OUTCOMES_PATH"]
+        if "GIT_RELAY_OUTCOMES_PATH" in os.environ
+        else adopt_legacy_state(DEFAULT_OUTCOMES_PATH)
+    )
+    audit = AuditLog(audit_path)
+    outcomes = OutcomeStore(outcomes_path)
     app_minter = None
     if os.environ.get("GIT_RELAY_APP_MINT", "1") != "0":
         # App-credential reads go through the fleet-secrets CLI only (owner
