@@ -38,6 +38,30 @@ LETTERS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 MUTABLE_ATTRS = ("title", "project", "thread_link", "apple_note_link", "state", "wake_capability")
 IDENTITY_FIELDS = ("platform", "verified_host", "profile_scope", "native_session_id")
 
+# One platform namespace per platform, not per adapter.
+#
+# The chat catalog discovers sessions through adapters, and several adapters can
+# feed one platform:  "cursor-cloud" and "cursor-local" are both Cursor, and
+# "grok-leader" and "grok-live" are both Grok.  A letter is issued per
+# platform, so the namespace has to be the platform.  Keyed on the adapter name
+# the catalog emits, folding to the namespace the letters live in.  An adapter
+# that is not listed folds to itself, so a new adapter gets its own namespace
+# rather than colliding with another platform's.
+PLATFORM_NAMESPACES = {
+    "antigravity": "antigravity",
+    "claude": "claude",
+    "codex": "codex",
+    "cursor": "cursor",
+    "cursor-cloud": "cursor",
+    "cursor-local": "cursor",
+    "fx": "fx",
+    "grok": "grok",
+    "grok-leader": "grok",
+    "grok-live": "grok",
+    "minimax": "minimax",
+    "muse": "muse",
+}
+
 SESSIONS_HEADERS = (
     "Record ID",
     "Label",
@@ -112,6 +136,15 @@ def cross_seat_ref(seat: str, letter: str, generation: int) -> str:
 
 
 ENV_REGISTRY_PATH = "AGENT_SYNC_OPERATOR_REGISTRY"
+
+#: The seat that may issue a letter.
+#:
+#: The owner ruled (Oct 21 2026) that no agent issues its own letter:  the
+#: Operator does.  A seat that could call the register path would be choosing
+#: its own handle, and the handle is the thing that decides who a reply
+#: reaches.  The Operator is a service seat, so it is named here rather than
+#: inferred, and the register path refuses any other issuer.
+ISSUER_OPERATOR = "OPERATOR"
 
 
 def registry_db_path(root: str, env: Mapping[str, str] | None = None) -> str:
@@ -253,8 +286,14 @@ class SessionRegistry:
         This never writes, never mints a letter and never opens a transaction, so it is
         safe to call on the wake path for every catalog row.  A missing registration is
         simply "no letter yet";  it is not an error and it is not a reason to allocate one.
+
+        The platform is folded to its namespace on the way in, because the caller may
+        name the adapter it discovered through ("cursor-cloud") while the registry keys
+        on the platform ("cursor").  Both sides fold, so the join finds the record.
         """
-        row = self._get_by_identity(platform, verified_host, profile_scope, native_session_id)
+        row = self._get_by_identity(
+            normalize_platform(platform), verified_host, profile_scope, native_session_id
+        )
         if row is None:
             return None
         letter, generation = self._active_alias(self._conn, row["record_id"])
@@ -330,11 +369,19 @@ class SessionRegistry:
 
     def resolve_or_register(self, identity: Mapping[str, Any]) -> dict[str, Any]:
         """Resume an existing registration or create a new one, atomically with its label,
-        events row and outbox rows.  Never rebinds identity on a seat change."""
+        events row and outbox rows.  Never rebinds identity on a seat change.
+
+        The platform is folded to its namespace before anything is read or written, so
+        the record is keyed on the platform ("cursor") and not on the adapter the caller
+        discovered it through ("cursor-cloud").  One Cursor session under each adapter
+        would otherwise be two records with the same letter.
+        """
         required = IDENTITY_FIELDS + ("seat", "source")
         missing = [k for k in required if not identity.get(k)]
         if missing:
             raise ValueError(f"missing identity fields: {', '.join(missing)}")
+        identity = dict(identity)
+        identity["platform"] = normalize_platform(str(identity["platform"]))
         with self._write_txn() as conn:
             now = _utcnow()
             row = self._get_by_identity(*(identity[k] for k in IDENTITY_FIELDS))
@@ -499,14 +546,21 @@ class SessionRegistry:
 
 
 def normalize_platform(platform: str) -> str:
-    """The platform namespace, folded to lower case.
+    """The platform namespace, folded.
 
     A platform's display form ("MiniMax") and its namespace ("minimax") name the same
     registry namespace, so the namespace is folded on the way in and on the way out.  A
     letter is only ever issued under the folded name, and the index still serves the
     lookup because the comparison stays on the column.
+
+    The fold also maps an adapter name onto its platform:  the catalog discovers
+    Cursor through "cursor-cloud" and "cursor-local", and both are the one Cursor
+    namespace, so both draw from the same letters.  Without that, one Cursor session
+    under each adapter would be issued the same letter twice, and both would read as
+    "CURSOR A".
     """
-    return str(platform or "").strip().lower()
+    text = str(platform or "").strip().lower()
+    return PLATFORM_NAMESPACES.get(text, text)
 
 
 def register_session(
@@ -523,6 +577,7 @@ def register_session(
     thread_link: str = "",
     apple_note_link: str = "",
     wake_capability: str = "unknown",
+    issuer: str = "",
 ) -> dict[str, Any]:
     """Register one session and hand back its letter.
 
@@ -533,7 +588,17 @@ def register_session(
     A seat never chooses its own letter.  The lowest free letter on the platform goes to
     the session, a recycled letter takes the next generation, and the title comes back in
     the display form the platform expects:  "H: Title".
+
+    Only the Operator issues a letter (owner ruling, Oct 21 2026):  a seat that could
+    call this would be choosing its own handle, and the handle is what decides who a
+    reply reaches.  The issuer is named rather than defaulted, so a caller cannot
+    issue a letter by omitting it, and any issuer other than the Operator is refused
+    before anything is written.
     """
+    if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
+        raise ValueError(
+            "only the Operator may issue a letter (issuer %r)" % (issuer or "")
+        )
     native = SI.check(native_session_id, "the native session id")
     platform = normalize_platform(platform)
     for name, value in (
@@ -673,17 +738,26 @@ def resolve_ref(db_path: str, platform: str, ref: str) -> dict[str, Any] | None:
     """The session a reference form names, or None when it names none.
 
     The reference form is what a reply carries:  "MM A", or "MM A (gen 2)" for a letter
-    that has been recycled.  A bare "MM A" names the live holder of the letter, and a
-    suffix names that exact generation, so the address is never read as the wrong
-    session after a recycle.
+    that has been recycled.  This is the inverse of the form the registry hands out, and
+    the inverse is exact:  a bare form names generation 1 of the letter, and a suffix
+    names that generation.  So "MM A" always names the same session, whether or not the
+    letter has been recycled since.
 
-    This is the inverse of the form the registry hands out, so a ref can be carried
-    through a message and resolved back to one session.
+    A bare form that resolved to the live holder would not be an inverse.  After a
+    recycle it would name a different session than the one it was handed out for, so a
+    reply to an old message would reach the wrong session.  The live holder is what
+    `resolve_label` answers, and the two questions are different on purpose.
+
+    The seat in the form is checked against the session it names.  A ref is
+    "SEAT LETTER", so "CODEX A" is a claim about Codex holding A;  without the check it
+    resolved to whichever session held A on the platform, and the seat in the form was
+    decoration.  A ref whose seat does not hold the letter names no session, and a miss
+    is None rather than an error.
     """
     if not isinstance(ref, str) or not ref.strip():
         raise ValueError("the reference form is required")
     text = ref.strip()
-    generation = None
+    generation = 1
     match = re.search(r"\s*\(gen\s+(\d+)\)\s*$", text)
     if match:
         generation = int(match.group(1))
@@ -691,8 +765,15 @@ def resolve_ref(db_path: str, platform: str, ref: str) -> dict[str, Any] | None:
     parts = text.split()
     if len(parts) < 2:
         raise ValueError("the reference form is SEAT LETTER or SEAT LETTER (gen N)")
-    letter = parts[-1]
-    return resolve_label(db_path, platform, letter, generation)
+    seat = parts[0].strip().upper()
+    letter = parts[-1].strip().upper()
+    found = resolve_label(db_path, platform, letter, generation)
+    if found is None:
+        return None
+    if str(found.get("seat") or "").strip().upper() != seat:
+        # The letter is held, but by another seat:  this ref names no session.
+        return None
+    return found
 
 
 def candidates_for(
@@ -1023,6 +1104,7 @@ def main(argv: list[str] | None = None) -> int:
                 thread_link=args.thread_link,
                 apple_note_link=args.apple_note_link,
                 wake_capability=args.wake_capability,
+                issuer=ISSUER_OPERATOR,
             )
         except ValueError as exc:
             print(json.dumps({"error": str(exc)}))

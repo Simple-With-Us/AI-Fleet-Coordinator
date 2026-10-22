@@ -3151,8 +3151,8 @@ class Daemon:
             exclude=pending.trigger_ids,
             limit=int(runner.cfg.held_back["items_in_wake"]),
         )
-        chat_context = self.chat_context(runner, pending, history)
         letter = self.tagged_letter(runner, history)
+        chat_context = self.chat_context(runner, pending, history, letter)
         if letter:
             # The letter is the seat's own platform, because the letter namespace is per
             # platform and the mention named this seat.
@@ -3565,15 +3565,25 @@ class Daemon:
                 continue
             if not location:
                 continue
-            identity = (platform, location, scope, native)
+            # The catalog names the adapter it discovered through ("cursor-cloud"), and
+            # the registry keys on the platform ("cursor").  Both sides fold to the
+            # same namespace, so the join finds the session the register path stored.
+            identity = (OR.normalize_platform(platform), location, scope, native)
             if identity not in owners:
                 identities.append(identity)
             owners.setdefault(identity, []).append(row_id)
         failed: list[tuple[str, str, str, str]] = []
+        db_path = OR.registry_db_path(self.root, self.env)
+        # An override points at the shared store the Operator runs.  If that store
+        # is not there, the override is pointing at a path that is not mounted, and
+        # every row reads as unlettered.  A missing file is worth saying out loud
+        # there, because it is a deployment fault rather than an empty registry.
+        override = str(self.env.get(OR.ENV_REGISTRY_PATH, "") or "").strip()
+        if override and not os.path.isfile(db_path):
+            self.log.write("session-registry-missing", path=db_path)
+            return {}
         try:
-            found = OR.lookup_many(
-                OR.registry_db_path(self.root, self.env), identities, failures=failed
-            )
+            found = OR.lookup_many(db_path, identities, failures=failed)
         except OR.RegistryUnavailable as exc:
             # The registry could not be read at all:  a hot journal, a locked file.  Every
             # row reads as unlettered, and the reason goes to the listener log, so a
@@ -3693,8 +3703,57 @@ class Daemon:
             candidates=len(candidates),
         )
 
+    def addressed_row(
+        self, rows: list[dict[str, Any]], letter: str
+    ) -> dict[str, Any] | None:
+        """The catalog row that holds the session letter the trigger addressed.
+
+        A tagged address is "@**MiniMax** Z", so the letter is the seat's own platform
+        and the row that holds it is the session the sender meant.  The rows are ranked
+        and cut before the letters join, so without this the addressed session could be
+        cut out of the list and the address would name a session the wake never saw.
+
+        The lookup is the registry's own:  the letter names a session, and the session
+        names the catalog row.  The letter space is per platform, so the platform is
+        taken from the rows rather than assumed:  each namespace the rows carry is
+        asked, and the one whose holder matches a row is the answer.  A letter nobody
+        holds names no row, and a registry that cannot be read names no row either;
+        neither breaks the wake.
+        """
+        want = str(letter or "").strip().upper()
+        if not want or not rows:
+            return None
+        db_path = OR.registry_db_path(self.root, self.env)
+        namespaces = []
+        for row in rows:
+            namespace = OR.normalize_platform(str(row.get("platform") or ""))
+            if namespace and namespace not in namespaces:
+                namespaces.append(namespace)
+        for namespace in namespaces:
+            try:
+                found = OR.resolve_label(db_path, namespace, want)
+            except Exception:
+                continue
+            if not found:
+                continue
+            native = str(found.get("native_session_id") or "")
+            seat = str(found.get("seat") or "").upper()
+            if not native:
+                continue
+            for row in rows:
+                if str(row.get("session_id") or "") != native:
+                    continue
+                if seat and str(row.get("seat") or "").upper() != seat:
+                    continue
+                return row
+        return None
+
     def chat_context(
-        self, runner: SeatRunner, pending: W.Pending, history: list[dict[str, Any]] | None = None
+        self,
+        runner: SeatRunner,
+        pending: W.Pending,
+        history: list[dict[str, Any]] | None = None,
+        letter: str = "",
     ) -> list[dict[str, Any]]:
         """Bounded metadata for an addressed Muse wake; transcript reads require one exact request."""
         if runner.cfg.wake != "muse" or not pending.trigger_ids or pending.route_tagged:
@@ -3720,6 +3779,9 @@ class Daemon:
                 "wake",
                 "read",
             }
+            # A direct message is owner-only plain replies (owner ruling, Oct 21 2026):  the
+            # session letter is for a tagged address, so a DM context carries no letter.
+            private = pending.type == "private"
 
             def relevance(row):
                 metadata = " ".join(
@@ -3750,7 +3812,16 @@ class Daemon:
                         for capability in ("wake", "read")
                     )
                 ]
-            rows = sorted(rows, key=relevance, reverse=True)[:24]
+            # A tagged address names one session, so the row that holds the letter
+            # has to be in the list or the address names nothing.  The rows are
+            # ranked and cut before the letters join, so the letter is resolved
+            # here and the holder is pulled in ahead of the cut and kept in it.
+            addressed = self.addressed_row(rows, letter)
+            if addressed is not None:
+                rows = [addressed] + [row for row in rows if row is not addressed]
+                rows = rows[:24]
+            else:
+                rows = sorted(rows, key=relevance, reverse=True)[:24]
             labels = self.session_labels(rows)
             context = []
             remaining = 24000
@@ -3774,9 +3845,16 @@ class Daemon:
                 # platform, the seat and the location, because a letter alone never
                 # resolves a session across surfaces, and a recycled letter carries its
                 # generation.
-                letter, letter_ref = labels.get(str(row.get("id") or ""), ("", ""))
-                public["label"] = letter
-                public["label_ref"] = letter_ref
+                #
+                # A direct message carries no letter (owner ruling, Oct 21 2026):  the letter
+                # is for a tagged address, and a DM is owner-only plain replies.  So a DM
+                # context carries no label at all, rather than a letter the owner has to be
+                # told to ignore.
+                row_letter, row_letter_ref = labels.get(str(row.get("id") or ""), ("", ""))
+                if private:
+                    row_letter, row_letter_ref = "", ""
+                public["label"] = row_letter
+                public["label_ref"] = row_letter_ref
                 public["location"] = str(getattr(self.config, "instance", "") or "")
                 encoded = self.scrub(json.dumps(public, ensure_ascii=True))
                 if len(encoded) > remaining:

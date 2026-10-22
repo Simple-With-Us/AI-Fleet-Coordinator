@@ -310,12 +310,26 @@ class RegisterPathTests(unittest.TestCase):
                 source="test",
                 title="Next",
             )
-            # A bare letter names the live holder, and the suffix names the older one.
+            # A reference form is an exact inverse of the form the registry hands
+            # out, so a bare "MM A" names the generation it was handed out for.  It
+            # was handed out for the first holder, so it still names that session
+            # after the letter is recycled;  a reply to an old message reaches the
+            # session it was written to, not the one that holds A now.
             self.assertEqual(
-                OR.resolve_ref(db, "minimax", "MM A")["native_session_id"], "mvs_def"
+                OR.resolve_ref(db, "minimax", "MM A")["native_session_id"], "mvs_abc"
+            )
+            # The generation form names the other one, and the suffix on the older
+            # one names the older one too.
+            self.assertEqual(
+                OR.resolve_ref(db, "minimax", "MM A (gen 2)")["native_session_id"], "mvs_def"
             )
             self.assertEqual(
                 OR.resolve_ref(db, "minimax", "MM A (gen 1)")["native_session_id"], "mvs_abc"
+            )
+            # The letter itself still answers "who holds A now", which is the other
+            # question.
+            self.assertEqual(
+                OR.resolve_label(db, "minimax", "A")["native_session_id"], "mvs_def"
             )
 
     def test_a_recycled_letter_names_the_right_generation(self) -> None:
@@ -749,6 +763,158 @@ class WakeLetterTests(DaemonHarness):
         self.assertEqual(d2.chat_context(r2, p2)[0]["label"], "")
 
 
+class DirectMessageLetterTests(DaemonHarness):
+    """A direct message carries no letter (owner ruling, Oct 21 2026).
+
+    The letter is for a tagged address, and a DM is owner-only plain replies.  So a DM
+    context carries no label at all, rather than a letter the owner has to be told to
+    ignore.
+    """
+
+    def setup_rows(self, rows, private=False):
+        d = self.daemon()
+        r = d.seats["CLAUDE"]
+        r.cfg.wake = "muse"
+        d._chat_catalog = SimpleNamespace(
+            discover=mock.Mock(return_value=rows),
+            resolve=mock.Mock(return_value=rows[0] if rows else None),
+            excerpt=mock.Mock(return_value=[]),
+        )
+        p = W.Pending(
+            "wake",
+            "CLAUDE",
+            {"type": "private" if private else "stream", "channel": "agent-sync", "topic": "work"},
+            owner=True,
+            now=self.clock.time(),
+            due=self.clock.time(),
+        )
+        p.add({"id": 42}, True)
+        return d, r, p
+
+    def row(self, **over):
+        base = {
+            "id": "a" * 64,
+            "seat": "MM",
+            "platform": "minimax",
+            "host": "mac",
+            "profile_scope": "default",
+            "session_id": "mvs_abc",
+            "cwd": "/repo",
+            "title": "Work",
+            "updated_at": 100.0,
+            "status": "available",
+            "stale": False,
+            "capabilities": {"read": True, "wake": True},
+        }
+        base.update(over)
+        return base
+
+    def register(self, d, **over):
+        db = OR.registry_db_path(d.root)
+        registry = OR.SessionRegistry(db)
+        self.addCleanup(registry.close_db)
+        identity = dict(IDENTITY, **over)
+        return registry.resolve_or_register(identity)
+
+    def test_a_direct_message_carries_no_letter(self) -> None:
+        d, r, p = self.setup_rows([self.row()], private=True)
+        self.register(d)
+        context = d.chat_context(r, p)
+        self.assertEqual(len(context), 1)
+        self.assertEqual(context[0]["label"], "")
+        self.assertEqual(context[0]["label_ref"], "")
+
+    def test_a_channel_message_still_carries_the_letter(self) -> None:
+        d, r, p = self.setup_rows([self.row()], private=False)
+        self.register(d)
+        context = d.chat_context(r, p)
+        self.assertEqual(context[0]["label"], "A")
+        self.assertEqual(context[0]["label_ref"], "MM A")
+
+
+class AddressedRowTests(DaemonHarness):
+    """A tagged address names one session, so that session has to be in the wake.
+
+    The rows are ranked and cut before the letters join, so without this the addressed
+    session could be cut out of the list and the address would name a session the wake
+    never saw.
+    """
+
+    def setup_rows(self, rows):
+        d = self.daemon()
+        r = d.seats["CLAUDE"]
+        r.cfg.wake = "muse"
+        d._chat_catalog = SimpleNamespace(
+            discover=mock.Mock(return_value=rows),
+            resolve=mock.Mock(return_value=rows[0] if rows else None),
+            excerpt=mock.Mock(return_value=[]),
+        )
+        p = W.Pending(
+            "wake",
+            "CLAUDE",
+            {"channel": "agent-sync", "topic": "work"},
+            owner=True,
+            now=self.clock.time(),
+            due=self.clock.time(),
+        )
+        p.add({"id": 42}, True)
+        return d, r, p
+
+    def row(self, **over):
+        base = {
+            "id": "a" * 64,
+            "seat": "MM",
+            "platform": "minimax",
+            "host": "mac",
+            "profile_scope": "default",
+            "session_id": "mvs_abc",
+            "cwd": "/repo",
+            "title": "Work",
+            "updated_at": 100.0,
+            "status": "available",
+            "stale": False,
+            "capabilities": {"read": True, "wake": True},
+        }
+        base.update(over)
+        return base
+
+    def register(self, d, **over):
+        db = OR.registry_db_path(d.root)
+        registry = OR.SessionRegistry(db)
+        self.addCleanup(registry.close_db)
+        identity = dict(IDENTITY, **over)
+        return registry.resolve_or_register(identity)
+
+    def test_the_addressed_session_is_in_the_wake_even_when_it_is_cut(self) -> None:
+        # Forty rows, none of them the addressed one:  the addressed session is
+        # last by rank, so the cut would drop it.
+        rows = [
+            self.row(id="%064d" % i, session_id="mvs_%03d" % i, title="Session %d" % i)
+            for i in range(40)
+        ]
+        d, r, p = self.setup_rows(rows)
+        self.register(d, native_session_id="mvs_039")
+        context = d.chat_context(r, p, None, "A")
+        titles = [str(row.get("title")) for row in context]
+        self.assertIn("Session 39", titles)
+
+    def test_no_letter_leaves_the_rows_alone(self) -> None:
+        rows = [self.row(id="%064d" % i, session_id="mvs_%03d" % i) for i in range(40)]
+        d, r, p = self.setup_rows(rows)
+        self.register(d, native_session_id="mvs_039")
+        context = d.chat_context(r, p, None, "")
+        titles = [str(row.get("title")) for row in context]
+        self.assertNotIn("Session 39", titles)
+
+    def test_a_letter_nobody_holds_names_no_row(self) -> None:
+        rows = [self.row()]
+        d, r, p = self.setup_rows(rows)
+        self.register(d)
+        context = d.chat_context(r, p, None, "Z")
+        self.assertEqual(len(context), 1)
+        self.assertEqual(context[0]["label"], "A")
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -823,3 +989,139 @@ class TaggedLetterTests(DaemonHarness):
         self.assertEqual(found[0]["ref"], "MM A")
         # A letter nobody holds has no candidates, and the query never mints one.
         self.assertEqual(d.operator_candidates("minimax", "Z"), [])
+
+
+class OperatorIssuesLettersTests(unittest.TestCase):
+    """The owner ruled (Oct 21 2026) that no agent issues its own letter:  the Operator does.
+
+    A seat that could register itself would be choosing its own handle, and the handle
+    is what decides who a reply reaches.  So the register path refuses every issuer but
+    the Operator, and it refuses before anything is written.
+    """
+
+    def test_a_seat_cannot_issue_its_own_letter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            with self.assertRaises(ValueError) as caught:
+                OR.register_session(
+                    db,
+                    platform="minimax",
+                    verified_host="mac",
+                    profile_scope="default",
+                    native_session_id="mvs_abc",
+                    seat="MM",
+                    source="test",
+                    title="Work",
+                    issuer="MM",
+                )
+            self.assertIn("Operator", str(caught.exception))
+            # Nothing was written:  a refused issue leaves no letter behind.
+            self.assertFalse(os.path.exists(db))
+
+    def test_the_operator_issues_the_letter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            out = OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_abc",
+                seat="MM",
+                source="test",
+                title="Work",
+                issuer=OR.ISSUER_OPERATOR,
+            )
+            self.assertEqual(out["label"], "A")
+
+
+class PlatformNamespaceTests(unittest.TestCase):
+    """One letter space per platform, not per adapter.
+
+    The catalog discovers Cursor through "cursor-cloud" and "cursor-local", and both are
+    Cursor.  Keyed on the adapter, one Cursor session under each would be issued the
+    same letter twice, and both would read as "CURSOR A".
+    """
+
+    def test_two_adapters_of_one_platform_share_the_letter_space(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            first = OR.register_session(
+                db,
+                platform="cursor-cloud",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_aaa",
+                seat="CURSOR",
+                source="test",
+                title="Cloud",
+            )
+            second = OR.register_session(
+                db,
+                platform="cursor-local",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_bbb",
+                seat="CURSOR",
+                source="test",
+                title="Local",
+            )
+            self.assertEqual(first["label"], "A")
+            self.assertNotEqual(second["label"], first["label"])
+            # The second session is found under either adapter name, because the
+            # record is keyed on the platform.
+            found = OR.resolve_label(db, "cursor", second["label"])
+            self.assertEqual(found["native_session_id"], "mvs_bbb")
+
+    def test_an_unknown_adapter_gets_its_own_namespace(self) -> None:
+        self.assertEqual(OR.normalize_platform("cursor-cloud"), "cursor")
+        self.assertEqual(OR.normalize_platform("grok-leader"), "grok")
+        self.assertEqual(OR.normalize_platform("minimax"), "minimax")
+        # An adapter nobody has heard of folds to itself rather than to another
+        # platform's namespace.
+        self.assertEqual(OR.normalize_platform("brand-new"), "brand-new")
+
+
+class ReferenceFormTests(unittest.TestCase):
+    """The reference form is an exact inverse of the form the registry hands out."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = OR.registry_db_path(self.tmp.name)
+
+    def register(self, native: str, seat: str = "MM", title: str = "Work"):
+        return OR.register_session(
+            self.db,
+            platform="minimax",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=native,
+            seat=seat,
+            source="test",
+            title=title,
+        )
+
+    def recycle_a(self) -> None:
+        first = self.register("mvs_abc")
+        registry = OR.SessionRegistry(self.db)
+        self.addCleanup(registry.close_db)
+        registry.close(first["record_id"])
+        self.register("mvs_def")
+
+    def test_a_bare_ref_names_generation_one_after_a_recycle(self) -> None:
+        self.recycle_a()
+        # "MM A" was handed out for the first holder, so it names that session and
+        # not the one that holds A now.
+        found = OR.resolve_ref(self.db, "minimax", "MM A")
+        self.assertEqual(found["native_session_id"], "mvs_abc")
+        self.assertEqual(found["generation"], 1)
+        # The generation form names the other one.
+        live = OR.resolve_ref(self.db, "minimax", "MM A (gen 2)")
+        self.assertEqual(live["native_session_id"], "mvs_def")
+
+    def test_a_ref_names_the_seat_that_holds_the_letter(self) -> None:
+        self.register("mvs_abc", seat="MM")
+        # "CODEX A" claims Codex holds A.  It does not, so the ref names no session.
+        self.assertIsNone(OR.resolve_ref(self.db, "minimax", "CODEX A"))
+        self.assertIsNotNone(OR.resolve_ref(self.db, "minimax", "MM A"))
