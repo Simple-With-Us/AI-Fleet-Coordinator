@@ -328,9 +328,7 @@ def _housekeeper_guard():
                 # the flock would then be taken on a file somewhere else
                 # entirely, and two implementations would not be sharing one
                 # guard.  Refuse it.
-                raise OSError(
-                    f"refusing a symlinked housekeeper state directory: {parent}"
-                )
+                raise OSError(f"refusing a symlinked housekeeper state directory: {parent}")
             if not parent.is_dir():
                 # The state directory is PRIVATE:  the guard and the owner
                 # record are shared state that must not be world readable.
@@ -481,9 +479,7 @@ def _write_housekeeper_owner() -> None:
     try:
         with _housekeeper_guard():
             owner_path = _housekeeper_owner_path()
-            tmp_path = owner_path.with_name(
-                f".{owner_path.name}.{uuid.uuid4().hex}.tmp"
-            )
+            tmp_path = owner_path.with_name(f".{owner_path.name}.{uuid.uuid4().hex}.tmp")
             try:
                 # The temp file is PRIVATE (0600):  the owner record names a
                 # pid and a host and sits in a shared directory.
