@@ -49,15 +49,17 @@ Record the printed app id and `aud`.  The app can exist before the Worker does.
 python3 -I infra_phase0.py kv --apply      # creates agent-sync-mcp-OAUTH_KV, or reports the existing one
 ```
 
-## Step 3:  Fill the two ids in wrangler.jsonc
+## Step 3:  Write the KV id, provision the Access AUD as a Worker secret
 
 ```bash
-python3 -I infra_phase0.py write-config    # shows the KV id and Access AUD it will write
+python3 -I infra_phase0.py write-config    # shows the KV id it will write and the secret it will set
 python3 -I infra_phase0.py write-config --apply
-git diff wrangler.jsonc                    # exactly two lines change
+git diff wrangler.jsonc                    # exactly one line changes:  the OAUTH_KV id
 ```
 
-Neither value is a secret (the AUD rides in every Access JWT;  the KV id is an identifier).  Commit them in a follow-up PR so the next deploy is reproducible.  Until `ACCESS_AUD` holds a real 64-hex tag, the Worker answers 403 on `/authorize` and `/admin`.
+The KV namespace id is not a credential, so it stays in the committed file and belongs in a follow-up PR so the next deploy is reproducible.
+
+The Access AUD is a private Cloudflare resource identifier and is **not** committed.  `write-config --apply` sets it as an encrypted Worker secret (`wrangler secret put ACCESS_AUD`, value on stdin, never argv) from the Access app `access --apply` created.  Run it again whenever that app is recreated — it replaces the live value rather than only a placeholder.  Until `ACCESS_AUD` is provisioned, the Worker fails closed:  `/authorize` and `/admin` answer 500 and name `ACCESS_AUD` as the missing variable.
 
 ## Step 4:  Remove the tunnel CNAME
 
