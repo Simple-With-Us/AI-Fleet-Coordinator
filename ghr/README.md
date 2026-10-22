@@ -9,6 +9,14 @@ to the audit log, allowed or denied.
 This is deliberately separate from the OPS-966 operator broker: that stays disabled and
 unwired; this package is its own service with its own token and its own (much smaller) surface.
 
+## Status
+
+Undeployed and unwired:  this PR adds code, policy, and tests only - no hosting, no daemon, no
+seat is pointed at it, and nothing in the fleet calls it yet.  The credential custody described
+here (App keys in Infisical, the relay minting per-seat tokens) is the TARGET state.  Seats keep
+using the interim AFC-460 shell/cache path until a separate, owner-decided cutover;  this PR does
+not perform or schedule that cutover.
+
 ## Actions
 
 | Action | Endpoint | Body | GitHub call |
