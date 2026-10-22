@@ -190,6 +190,11 @@ jobs:
     - name: Sentence gap program tests
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_program -v
+    # AFC-478 follow-up:  the Muster reader of the Worker's Linear token health
+    # (signature scheme, document shape, atomic 0600 write).
+    - name: Worker health reader tests
+      run: |
+        cd scripts && python3 -m unittest test_fleet_worker_health -v
     # The MiniMax model id the autofix bots dispatch: the trusted policy, every
     # reusable workflow default, and the reference doc all name one id, and a
     # retired spelling may appear in a comment but never as a value.

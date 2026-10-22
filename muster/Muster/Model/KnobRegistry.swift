@@ -42,26 +42,20 @@ struct KnobRegistry {
 
         /// The text the panel shows in the "Now" column.
         ///
-        /// A knob that holds its default says which value that is,  because a column
-        /// that says only "default" does not tell the operator what the knob is
-        /// holding.  A secret's default is not shown:  the secret's own presence is
-        /// the thing that is unknown.
-        var nowText: String {
-            switch current {
-            case .current(let value): return value
-            case .defaultValue:
-                return defaultValue.isEmpty ? "default" : "default (\(defaultValue))"
-            case .secretUnconfirmed: return "not known (secret)"
-            case .unknown(let reason): return reason
-            }
-        }
+        /// It is the one renderer,  so the panel and the model cannot say two
+        /// different things about the same knob.
+        var nowText: String { current.displayText }
 
         /// The value a knob holds now.
         enum CurrentValue: Equatable {
             /// The last-known-good copy has a value for it.
             case current(String)
             /// It has never been set,  so it holds its default.
-            case defaultValue
+            ///
+            /// The value the registry declares rides along here,  because a column
+            /// that says only "default" does not tell the operator what the knob is
+            /// holding.
+            case defaultValue(String)
             /// It is a secret,  and the copy never carries one,  so whether it is set
             /// is not something this reader can say.
             case secretUnconfirmed
@@ -69,10 +63,16 @@ struct KnobRegistry {
             case unknown(String)
 
             /// The text the panel shows.
+            ///
+            /// A knob that holds its default says which value that is,  because a
+            /// column that says only "default" does not tell the operator what the
+            /// knob is holding.  A secret's default is not shown:  the secret's own
+            /// presence is the thing that is unknown.
             var displayText: String {
                 switch self {
                 case .current(let value): return value
-                case .defaultValue: return "default"
+                case .defaultValue(let value):
+                    return value.isEmpty ? "default" : "default (\(value))"
                 case .secretUnconfirmed: return "not known (secret)"
                 case .unknown(let reason): return reason
                 }
@@ -167,6 +167,7 @@ enum KnobReader {
         let copy = readCopy(in: home, identity: identity)
         let knobs = table.rows.map { row -> KnobRegistry.Knob in
             let name = row.value(at: 0)
+            let defaultValue = row.value(at: 3)
             // The secret column fails closed.  A column that says anything other
             // than "no" is treated as a secret,  so a wording the app does not know
             // cannot have a secret's value shown in plain text.
@@ -186,7 +187,7 @@ enum KnobReader {
                 // writes the copy after a good fetch and leaves out every knob that
                 // is unset,  so a knob missing from a copy the engine wrote holds
                 // whatever the registry says it holds.
-                current = .defaultValue
+                current = .defaultValue(defaultValue)
             } else {
                 // There is no copy to read,  so the value is not known.  Saying
                 // "default" here would claim the knob equals its default,  which
@@ -198,7 +199,7 @@ enum KnobReader {
                 name: name,
                 owner: row.value(at: 1),
                 kind: row.value(at: 2),
-                defaultValue: row.value(at: 3),
+                defaultValue: defaultValue,
                 isSecret: secret,
                 secretColumn: row.value(at: 4),
                 localMay: row.value(at: 5),
