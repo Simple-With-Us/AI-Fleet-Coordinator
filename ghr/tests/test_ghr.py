@@ -16,10 +16,10 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
-from pr_relay.audit import AuditLog
-from pr_relay.github_client import GitHubClient, RelayGitHubError
-from pr_relay.policy import PolicyError, SeatPolicy
-from pr_relay.server import MAX_REQUEST_BYTES, Relay, make_handler
+from ghr.audit import AuditLog
+from ghr.github_client import GitHubClient, RelayGitHubError
+from ghr.policy import PolicyError, SeatPolicy
+from ghr.server import MAX_REQUEST_BYTES, Relay, make_handler
 
 SEAT_TOKEN = "s" * 32
 OTHER_TOKEN = "o" * 32
@@ -306,7 +306,7 @@ class TestNonPrActionsRejected(unittest.TestCase):
 
 class TestMcpWrapper(unittest.TestCase):
     def _server(self, payload=None, opener=None):
-        from pr_relay.mcp_server import RelayMcp
+        from ghr.mcp_server import RelayMcp
 
         if opener is None:
             opener = FakeOpener(payload or {"number": 9})
@@ -499,7 +499,7 @@ class TestAppActions(unittest.TestCase):
 
 class TestMinter(unittest.TestCase):
     def test_mints_and_caches_and_refreshes(self):
-        from pr_relay.app_tokens import AppTokenMinter
+        from ghr.app_tokens import AppTokenMinter
 
         class Source:
             def secret(self, name):
@@ -531,7 +531,7 @@ class TestMinter(unittest.TestCase):
         self.assertEqual(len(mints), 1)
 
     def test_permission_outside_mint_ceiling_refused(self):
-        from pr_relay.app_tokens import AppTokenError, AppTokenMinter
+        from ghr.app_tokens import AppTokenError, AppTokenMinter
 
         minter = AppTokenMinter(None, None, clock=lambda: 0)
         with self.assertRaises(AppTokenError):

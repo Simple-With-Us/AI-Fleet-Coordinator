@@ -246,7 +246,7 @@ def from_env() -> Relay:
             rate_per_hour=int(os.environ.get("PR_RELAY_RATE_PER_HOUR", "120")),
         )
     except PolicyError as exc:
-        raise SystemExit(f"pr-relay config: {exc}") from exc
+        raise SystemExit(f"ghr config: {exc}") from exc
     client = GitHubClient(os.environ.get("GITHUB_TOKEN", ""))
     audit = AuditLog(os.environ.get("PR_RELAY_AUDIT_PATH", "pr-relay-audit.jsonl"))
     app_minter = None
@@ -272,7 +272,7 @@ def main() -> None:
     host = os.environ.get("PR_RELAY_HOST", DEFAULT_HOST)
     port = int(os.environ.get("PR_RELAY_PORT", str(DEFAULT_PORT)))
     server = ThreadingHTTPServer((host, port), make_handler(relay))
-    print(f"pr-relay listening on {host}:{port}")
+    print(f"ghr listening on {host}:{port}")
     server.serve_forever()
 
 

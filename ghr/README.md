@@ -1,4 +1,4 @@
-# pr_relay
+# GHR - the GitHub relay (ghr/)
 
 One scoped GitHub token, narrow audited PR actions for fleet seats. Seats never hold the token:
 they authenticate to this service with their own bearer tokens and call four actions; the service
@@ -54,7 +54,7 @@ Nothing secret is written to disk, logged, or audited;  audit rows hash token va
 
 ## MCP wrapper
 
-`scripts/pr_relay/mcp_server.py` is a stdio MCP server (initialize, tools/list, tools/call) that
+`ghr/mcp_server.py` is a stdio MCP server (initialize, tools/list, tools/call) that
 exposes the relay actions as MCP tools. A seat runs it with only its own bearer token
 (PR_RELAY_SEAT_TOKEN, PR_RELAY_URL); the wrapper forwards over HTTP, so policy, caps and audit
 stay server-side. Refusals come back as tool errors, never protocol errors.
@@ -113,7 +113,7 @@ GitHub call has a 30 s timeout. Errors: 401 unauthenticated, 403 policy denial, 
 | PR_RELAY_RATE_PER_HOUR | 120 | Per-seat hourly call cap |
 
 ```
-cd scripts && python3 -m pr_relay.server
+python3 -m ghr.server
 ```
 
 Stdlib only; no dependencies to install.
@@ -127,7 +127,7 @@ separate decision; nothing here installs daemons or touches the operator broker.
 ## Tests
 
 ```
-cd scripts && python3 -m unittest discover -s pr_relay/tests -t . -v
+python3 -m unittest discover -s ghr/tests -t . -v
 ```
 
 Fakes only: no network, no real token.

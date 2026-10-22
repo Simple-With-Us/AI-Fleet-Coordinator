@@ -93,11 +93,11 @@ jobs:
     - name: pr-sweep tests
       run: |
         cd scripts && python3 -m unittest discover -s pr_sweep/tests -t . -v
-    # pr_relay:  seat-policy allowlists, constant-time auth, fsynced audit rows (bodies hashed,
+    # ghr:  seat-policy allowlists, constant-time auth, fsynced audit rows (bodies hashed,
     # never logged), the bounded GitHub client and the HTTP surface.  Fakes only;  no network.
-    - name: pr_relay tests
+    - name: ghr tests
       run: |
-        cd scripts && python3 -m unittest discover -s pr_relay/tests -t . -v
+        python3 -m unittest discover -s ghr/tests -t . -v
     - name: Code-only Coolify fleet CLI sync tests
       run: |
         python3 scripts/test_fleet_cli_release.py

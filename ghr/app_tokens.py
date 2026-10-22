@@ -43,7 +43,7 @@ def sign_jwt(app_id: int, pem: str, now: int) -> str:
             ),
         ]
     )
-    fd, name = tempfile.mkstemp(prefix="pr-relay-sign-", suffix=".pem")
+    fd, name = tempfile.mkstemp(prefix="ghr-sign-", suffix=".pem")
     try:
         with open(fd, "w") as f:
             f.write(pem)
