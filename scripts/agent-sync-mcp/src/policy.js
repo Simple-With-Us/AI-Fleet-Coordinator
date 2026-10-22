@@ -239,6 +239,9 @@ export function classifyPath(pathname) {
       return "admin";
     default:
       if (pathname.startsWith("/admin/")) return "admin";
+      // AFC-478 follow-up:  the Linear token health (src/health.js), signed with
+      // its own HEALTH_HMAC_KEY, outside Access like the wake.
+      if (pathname === "/internal/health/linear") return "linear_health";
       // The listener's wake (src/wake.js).  Outside Cloudflare Access, which
       // covers /authorize and /admin only;  its own HMAC is the gate.
       if (/^\/internal\/wake\/[A-Z][A-Z0-9-]{0,31}$/.test(pathname)) return "wake";

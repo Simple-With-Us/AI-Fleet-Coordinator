@@ -238,10 +238,11 @@ export class HostedTools {
    * @param {object|null} [o.fleetlink]    a FleetLinkClient, or null when FleetLink is not configured
    * @param {object|null} [o.listener]     a ListenerClient for this seat (src/listener.js), or null
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, callerSeat = seat, callerGate = gate, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
+    this.verifySeat = verifySeat;
     this.delegatedLinear = delegatedLinear === true;
     this.linearCredentialNames = linearCredentialNames;
     this.scopes = new Set(scopes ?? []);
@@ -319,7 +320,7 @@ export class HostedTools {
       if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in Agent-Sync Admin.");
       // Every delegated service call first verifies the selected role's own
       // Zulip bot is present, matches its email and is a member (role 400).
-      if (this.callerGate !== this.gate) await this.ensureSeat();
+      if (this.callerGate !== this.gate || this.verifySeat) await this.ensureSeat();
       const preparedArgs = withDefaults(spec.inputSchema, args);
       result = Object.hasOwn(FLEETLINK_BY_NAME, publicName)
         ? await this.fleetlinkTool(publicName, preparedArgs, audit)

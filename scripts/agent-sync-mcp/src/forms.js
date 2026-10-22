@@ -29,13 +29,14 @@ export const ConsentForm = z.strictObject({
   scope: z.array(scope).max(SCOPES.length).optional(),
 });
 
-export const ADMIN_ACTIONS = Object.freeze(["arm", "disarm", "pause", "unpause", "revoke", "create_manual_client", "sync_manual_client"]);
+export const ADMIN_ACTIONS = Object.freeze(["arm", "disarm", "pause", "unpause", "revoke", "create_manual_client", "sync_manual_client", "mint_gb_bearer", "revoke_gb_bearer"]);
 
 export const AdminForm = z.strictObject({
   csrf: z.string().regex(/^[0-9a-f]{64}$/),
   action: z.enum([...ADMIN_ACTIONS]),
   seat: seat.optional(),
   client_id: z.string().regex(HAND_CLIENT_ID).optional(),
+  identity: z.string().regex(/^GB-[A-Z][A-Z0-9]{1,19}$/).optional(),
 });
 
 /**

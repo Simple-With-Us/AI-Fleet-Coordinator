@@ -67,8 +67,8 @@ struct SystemApplyNotifier: ApplyNotifying {
     /// The question is asked when the app starts,  and never on an apply's path:
     /// a permission prompt is the owner's to answer,  and an apply that waits for
     /// the answer holds its own result hostage  (Kody review 2026-10-21).  The
-    /// apply still waits for the notification itself,  so a session that reads
-    /// as finished is one the owner has been told about.
+    /// apply publishes its result before the notification goes out,  so the
+    /// notification can never hold the result.
     static func requestPermissionOnce() {
         _ = Task {
             // A process without an app bundle (a test host) cannot use the
@@ -98,6 +98,34 @@ struct SystemApplyNotifier: ApplyNotifying {
     }
 }
 
+// MARK: - Activity
+
+/// Keeps the app awake while work is in flight.
+///
+/// The system's own hold cannot be seen from outside the process,  so the tests
+/// substitute a holder of their own  and can tell that the app is held while a
+/// notification is still waiting.
+protocol ApplyActivityHolding: Sendable {
+    /// Hold the app awake.  The token ends the hold.
+    func begin(reason: String) -> NSObjectProtocol?
+    /// Release the hold a token carries.
+    func end(_ token: NSObjectProtocol)
+}
+
+/// The system's own hold,  which keeps automatic and sudden termination off.
+struct SystemApplyActivity: ApplyActivityHolding {
+    func begin(reason: String) -> NSObjectProtocol? {
+        ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .suddenTerminationDisabled, .automaticTerminationDisabled],
+            reason: reason
+        )
+    }
+
+    func end(_ token: NSObjectProtocol) {
+        ProcessInfo.processInfo.endActivity(token)
+    }
+}
+
 // MARK: - Coordinator
 
 @MainActor
@@ -112,15 +140,18 @@ final class ApplyCoordinator: ObservableObject {
 
     private let runner: FleetConfigRunning
     private let notifier: ApplyNotifying
+    private let activityHolder: ApplyActivityHolding
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var activity: NSObjectProtocol?
 
     init(
         runner: FleetConfigRunning = FleetConfigCLI(),
-        notifier: ApplyNotifying = SystemApplyNotifier()
+        notifier: ApplyNotifying = SystemApplyNotifier(),
+        activityHolder: ApplyActivityHolding = SystemApplyActivity()
     ) {
         self.runner = runner
         self.notifier = notifier
+        self.activityHolder = activityHolder
     }
 
     nonisolated static func key(seat: String, ruleID: String) -> String { "\(seat)/\(ruleID)" }
@@ -247,22 +278,46 @@ final class ApplyCoordinator: ObservableObject {
             let outcome = ApplyOutcome.classify(
                 applyResult: applyResult, targetRuleID: session.ruleID, reproved: reproved
             )
-            // The notification goes out before the phase flips,  so a session that
-            // reads as finished is a session the owner has already been told about.
-            // The other order leaves a window where the apply is over and the owner
-            // has not been told yet.
-            await announce(session: session, outcome: outcome)
+            // The result is published before the notification goes out.  A notification
+            // can wait on the system,  and a session that is still open in .reproving
+            // blocks dismiss,  holds the app awake and stops a new plan,  so the owner
+            // would never see the green or the red.  The notification is posted off the
+            // session's completion path,  so it can never hold the result hostage.
             update(sessionID) { $0.phase = .finished(outcome) }
+            announceInBackground(session: session, outcome: outcome)
         } catch {
             let outcome = ApplyOutcome.failed(error.localizedDescription)
-            if let session = self.session(id: sessionID) {
-                await announce(session: session, outcome: outcome)
-            }
             update(sessionID) { $0.phase = .finished(outcome) }
+            if let session = self.session(id: sessionID) {
+                announceInBackground(session: session, outcome: outcome)
+            }
         }
     }
 
-    private func announce(session: ApplySession, outcome: ApplyOutcome) async {
+    /// Posts the result without letting the notification hold the result.
+    ///
+    /// The post is off the session's completion path,  so a notification that waits
+    /// on the system cannot keep the session open in .reproving,  where it would
+    /// block dismiss and stop a new plan.
+    ///
+    /// The hold is taken here,  before the task is handed to the actor,  because the
+    /// apply's own hold is released when the apply ends,  which happens before the
+    /// task can run:  a hold taken inside the task would leave a window where the
+    /// system can terminate the app between the apply ending and the post starting,
+    /// and the notification is the only thing that tells the owner the apply ended.
+    private func announceInBackground(session: ApplySession, outcome: ApplyOutcome) {
+        let token = activityHolder.begin(reason: "Announcing the result of an apply")
+        Task {
+            await announce(session: session, outcome: outcome, token: token)
+        }
+    }
+
+    private func announce(
+        session: ApplySession, outcome: ApplyOutcome, token: NSObjectProtocol?
+    ) async {
+        defer {
+            if let token = token { activityHolder.end(token) }
+        }
         let title = outcome.isGreen ? "Apply Finished" : "Apply Needs Attention"
         let body = "\(session.ruleID) on \(session.seat): \(outcome.summary)"
         await notifier.post(title: title, body: body)
@@ -295,15 +350,12 @@ final class ApplyCoordinator: ObservableObject {
     // automatic and sudden termination off until the last apply ends.
     private func beginActivity() {
         guard activity == nil else { return }
-        activity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiated, .suddenTerminationDisabled, .automaticTerminationDisabled],
-            reason: "Applying a fleet config fix"
-        )
+        activity = activityHolder.begin(reason: "Applying a fleet config fix")
     }
 
     private func endActivityIfIdle() {
         guard !sessions.contains(where: \.isWriting), let token = activity else { return }
-        ProcessInfo.processInfo.endActivity(token)
+        activityHolder.end(token)
         activity = nil
     }
 }
