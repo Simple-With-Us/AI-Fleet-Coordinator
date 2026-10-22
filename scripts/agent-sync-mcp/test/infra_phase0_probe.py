@@ -47,7 +47,10 @@ class FakeCloudflare:
     def ok(self, method, path, body=None, **params):
         if path == "/zones":
             zone = params["name"]
-            return {"success": True, "result": [{"id": ZONES[zone], "account": {"id": infra.ACCOUNT_ID}}]}
+            return {
+                "success": True,
+                "result": [{"id": ZONES[zone], "account": {"id": infra.ACCOUNT_ID}}],
+            }
         if path == f"/accounts/{infra.ACCOUNT_ID}/cfd_tunnel":
             return {"success": True, "result": [{"id": TUNNEL_ID, "name": infra.TUNNEL_NAME}]}
         if path.endswith("/configurations"):
@@ -80,9 +83,7 @@ class FakeCloudflare:
         if path == f"/accounts/{infra.ACCOUNT_ID}/access/apps":
             return {
                 "success": True,
-                "result": [
-                    {"name": infra.ACCESS_APP_NAME, "aud": "a" * 64, "destinations": []}
-                ],
+                "result": [{"name": infra.ACCESS_APP_NAME, "aud": "a" * 64, "destinations": []}],
             }
         if path == f"/accounts/{infra.ACCOUNT_ID}/storage/kv/namespaces":
             return {"success": True, "result": [{"id": "kv-live", "title": infra.KV_TITLE}]}
