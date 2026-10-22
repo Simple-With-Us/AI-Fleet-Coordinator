@@ -50,127 +50,55 @@ if __name__ == "__main__":
     sys.exit(main())
 '''
 
-# The names of the permission prompts the harness sends.  The harness and this list have to
-# agree,  so the test compares them.
-MALFORMED_PROMPTS = (
-    "the session id is not a string",
-    "the call id is not a string",
-    "the session id is empty",
-    "the call id is empty",
-    "the pattern is not a string",
-    "the pattern holds a number",
-    "the title is not a string",
-    "the title is empty",
-    "the prompt is not an object",
-    "the prompt is null",
-)
-UNBOUNDED_PROMPTS = (
-    "the prompt is oversized",
-    "the prompt is cyclic",
-    "the prompt is too deep",
-    "the prompt is too wide",
-)
-WELL_FORMED_PROMPT = "the prompt is well formed"
+# The harness runs the plugin the way OpenCode V2 does:  it imports the default definition,
+# calls setup with a context that records hooks, then fires execute.before.  A throw is a deny.
+EXECUTE_HARNESS = '''import definition from "PLUGIN_URL";
 
-# The harness runs the plugin the way OpenCode does:  it imports the generated file and calls
-# the permission hook with each prompt in turn.  The answer is read back as JSON,  so a deny
-# and a throw are told apart:  a throw is the bug these tests exist for.
-PERMISSION_HARNESS = '''import { server } from "PLUGIN_URL";
+const registrations: Array<[string, (event: unknown) => Promise<void> | void]> = [];
+const ctx = {
+  location: { directory: process.cwd() },
+  tool: {
+    hook: async (name: string, callback: (event: unknown) => Promise<void> | void) => {
+      registrations.push([name, callback]);
+      return {};
+    },
+  },
+};
 
-const plugin = await server({ directory: process.cwd() });
-const ask = plugin["permission.ask"] as unknown as (
-  input: unknown,
-  output: { status: string },
-) => Promise<void>;
-
-const cyclic: Record<string, unknown> = { sessionID: "session-1", callID: "call-1" };
-cyclic.metadata = cyclic;
-
-const deep: Record<string, unknown> = { sessionID: "session-1", callID: "call-1" };
-let cursor = deep;
-for (let i = 0; i < 40; i += 1) {
-  const next: Record<string, unknown> = {};
-  cursor.metadata = next;
-  cursor = next;
+await definition.setup(ctx);
+const entry = registrations.find(([name]) => name === "execute.before");
+if (!entry) {
+  console.log(JSON.stringify([{ name: "no execute.before hook registered", threw: true }]));
+  process.exit(0);
 }
-
-const cases: Array<[string, unknown]> = [
-  ["the session id is not a string", { sessionID: 5, callID: "call-1" }],
-  ["the call id is not a string", { sessionID: "session-1", callID: 7 }],
-  ["the session id is empty", { sessionID: "", callID: "call-1" }],
-  ["the call id is empty", { sessionID: "session-1", callID: "" }],
-  ["the pattern is not a string", { sessionID: "session-1", pattern: 5 }],
-  ["the pattern holds a number", { sessionID: "session-1", pattern: ["git clone", 5] }],
-  ["the title is not a string", { sessionID: "session-1", title: 5 }],
-  ["the title is empty", { sessionID: "session-1", title: "" }],
-  ["the prompt is not an object", "not an object"],
-  ["the prompt is null", null],
-  [
-    "the prompt is oversized",
-    { sessionID: "session-1", callID: "call-1", metadata: { blob: "x".repeat(200000) } },
-  ],
-  ["the prompt is cyclic", cyclic],
-  ["the prompt is too deep", deep],
-  [
-    "the prompt is too wide",
-    { sessionID: "session-1", callID: "call-1", metadata: { command: new Array(2000).fill("x") } },
-  ],
-  ["the prompt is well formed", { sessionID: "session-1", callID: "call-1" }],
-];
-
-const results: unknown[] = [];
-for (const [name, input] of cases) {
-  const output = { status: "ask" };
-  try {
-    await ask(input, output);
-    results.push({ name, threw: false, status: output.status });
-  } catch (error) {
-    results.push({ name, threw: true, status: output.status, message: String(error) });
-  }
-}
-console.log(JSON.stringify(results));
-'''
-
-EXECUTE_HARNESS = '''import { server } from "PLUGIN_URL";
-
-const plugin = await server({ directory: process.cwd() });
-const before = plugin["tool.execute.before"] as unknown as (
-  input: unknown,
-  output: { args: unknown },
-) => Promise<void>;
+const before = entry[1];
 
 const cyclic: Record<string, unknown> = {};
 cyclic.self = cyclic;
 let deep: unknown = "x";
-for (let i = 0; i < 20; i += 1) deep = { next: deep };
+for (let i = 0; i < 40; i += 1) deep = { next: deep };
 
-const cases: Array<[string, unknown, unknown]> = [
-  // sentry #757:  a non-shell payload over the command byte ceiling must not be denied.
+const cases: Array<[string, unknown]> = [
+  // a file write can carry 200 KB of content:  it has no command,  so the guard never sees it.
   [
-    "a non-shell payload over the byte ceiling is not guarded",
-    { tool: "write", sessionID: "session-1", callID: "call-1" },
-    { filePath: "/repo/src/a.ts", content: "x".repeat(200000) },
+    "a non-command payload over the byte ceiling is not guarded",
+    { tool: "write", input: { filePath: "/repo/src/a.ts", content: "x".repeat(200000) } },
   ],
-  // The byte ceiling moved to the extracted command:  an oversized command still denies.
+  ["an allowed command is not denied", { tool: "bash", input: { command: "echo hello" } }],
   [
-    "an oversized command still fails closed",
-    { tool: "bash", sessionID: "session-1", callID: "call-1" },
-    { command: "x".repeat(200000) },
+    "a command delivered under args is still guarded",
+    { tool: "bash", args: { command: "DENYTARGET" } },
   ],
-  [
-    "a missing tool name falls through and fails closed",
-    { sessionID: "session-1", callID: "call-1" },
-    { command: "x".repeat(200000) },
-  ],
-  // Structural bounds (depth, width, cycles) still cover every payload,  command-shaped or not.
-  ["a cyclic payload still fails closed", { tool: "edit", sessionID: "session-1", callID: "call-1" }, cyclic],
-  ["a too-deep payload still fails closed", { tool: "edit", sessionID: "session-1", callID: "call-1" }, deep],
+  ["a denied command throws with the guard reason", { tool: "bash", input: { command: "DENYTARGET" } }],
+  ["an oversized command fails closed", { tool: "bash", input: { command: "x".repeat(200000) } }],
+  ["a cyclic payload fails closed", { tool: "edit", input: cyclic }],
+  ["a too-deep payload fails closed", { tool: "edit", input: deep }],
 ];
 
 const results: unknown[] = [];
-for (const [name, input, args] of cases) {
+for (const [name, event] of cases) {
   try {
-    await before(input, { args });
+    await before(event);
     results.push({ name, threw: false });
   } catch (error) {
     results.push({ name, threw: true, message: String(error) });
@@ -179,7 +107,53 @@ for (const [name, input, args] of cases) {
 console.log(JSON.stringify(results));
 '''
 
-# node's own type stripper,  used to turn the plugin into the JavaScript node --check parses.
+# The same registration, fired against the REAL fleet-guard-hook the installer writes:  the payload
+# the plugin sends and the reply it parses are what a user depends on, and a stub cannot prove them.
+REAL_GUARD_HARNESS = '''import definition from "PLUGIN_URL";
+
+const registrations: Array<[string, (event: unknown) => Promise<void> | void]> = [];
+const ctx = {
+  location: { directory: process.cwd() },
+  tool: {
+    hook: async (name: string, callback: (event: unknown) => Promise<void> | void) => {
+      registrations.push([name, callback]);
+      return {};
+    },
+  },
+};
+await definition.setup(ctx);
+const entry = registrations.find(([name]) => name === "execute.before");
+if (!entry) {
+  console.log(JSON.stringify([{ name: "no execute.before hook registered", threw: true }]));
+  process.exit(0);
+}
+const before = entry[1];
+const cases: Array<[string, unknown]> = [
+  ["the real guard allows a harmless command", { tool: "bash", input: { command: "echo hello" } }],
+  [
+    "the real guard denies a temp clone",
+    {
+      tool: "bash",
+      input: {
+        command:
+          "git clone https://github.com/Simple-With-Us/HogHunter /tmp/hh-real-guard",
+      },
+    },
+  ],
+  ["the real guard denies a process listing", { tool: "bash", input: { command: "ps aux" } }],
+];
+const results: unknown[] = [];
+for (const [name, event] of cases) {
+  try {
+    await before(event);
+    results.push({ name, threw: false });
+  } catch (error) {
+    results.push({ name, threw: true, message: String(error) });
+  }
+}
+console.log(JSON.stringify(results));
+'''
+
 STRIP_SCRIPT = """const fs = require("node:fs");
 const { stripTypeScriptTypes } = require("node:module");
 const [source, target] = process.argv.slice(1);
@@ -397,19 +371,15 @@ class CopilotTests(World):
 
 
 class OpenCodePluginShapeTests(World):
-    """The plugin probes only command-shaped values, and validates the permission input."""
+    """The generated plugin is a V2 module:  it registers execute.before,  throws to deny,  and
+    reads the guard's empty allow reply as an allow."""
 
     def setUp(self) -> None:
         super().setUp()
         (self.home / ".config" / "opencode").mkdir(parents=True)
 
     def plugin_text(self) -> str:
-        """The plugin source the installer writes, as text.
-
-        ``build_files`` returns the bytes it would write,  so they are written into the
-        fake stable directory here and the plugin is read back from it,  which is what
-        the plugin that ships actually contains.
-        """
+        """The plugin source the installer writes, as text."""
         files = T.build_files(self.source, self.paths)
         self.assertIn(T.OPENCODE_PLUGIN_FILE, files)
         stable = Path(self.paths.stable)
@@ -420,170 +390,153 @@ class OpenCodePluginShapeTests(World):
         return Path(self.paths.opencode_plugin).read_text(encoding="utf-8")
 
     def node(self) -> str:
-        """The node binary,  or a skip:  the plugin is TypeScript,  so node parses it."""
         found = shutil.which("node")
         if found is None:
             self.skipTest("no node on PATH to parse the plugin with")
         return found
 
     def run_node(self, args: list, cwd: str) -> subprocess.CompletedProcess:
-        """node,  with a skip when this node is too old for the type stripping."""
         run = subprocess.run(
-            [self.node(), *args],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=cwd,
+            [self.node(), *args], capture_output=True, text=True, timeout=120, cwd=cwd
         )
         if run.returncode != 0 and "bad option" in run.stderr:
             self.skipTest("this node has no --experimental-strip-types")
         return run
 
-    def permission_results(self) -> dict:
-        """The plugin's answer to each prompt the harness sends,  read back from node."""
-        with tempfile.TemporaryDirectory(prefix="muster-plugin-") as tmp:
-            plugin = Path(tmp) / "fleet-lane-guard.ts"
-            plugin.write_text(self.plugin_text(), encoding="utf-8")
-            harness = Path(tmp) / "harness.ts"
-            harness.write_text(
-                PERMISSION_HARNESS.replace("PLUGIN_URL", plugin.as_uri()), encoding="utf-8"
-            )
-            run = self.run_node(["--experimental-strip-types", str(harness)], cwd=tmp)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            lines = [line for line in run.stdout.splitlines() if line.strip()]
-            self.assertTrue(lines, run.stdout + run.stderr)
-            results = json.loads(lines[-1])
-        by_name = {r["name"]: r for r in results}
-        self.assertEqual(
-            sorted(by_name),
-            sorted(MALFORMED_PROMPTS + UNBOUNDED_PROMPTS + (WELL_FORMED_PROMPT,)),
+    def prepare(self, source: str, *, stub_guard: bool = True) -> tuple[Path, Path]:
+        """Write the generated plugin, a stub SDK and the harness; return (stable dir, harness)."""
+        self.plugin_text()
+        stable = Path(self.paths.stable)
+        sdk = stable / "node_modules" / "@opencode" / "plugin"
+        sdk.mkdir(parents=True, exist_ok=True)
+        (sdk / "package.json").write_text(
+            json.dumps({"name": "@opencode/plugin", "type": "module", "main": "index.js"}),
+            encoding="utf-8",
         )
-        return by_name
+        (sdk / "index.js").write_text(
+            "export const Plugin = { define: (definition) => definition };\n", encoding="utf-8"
+        )
+        guard = stable / "fleet-guard-hook"
+        if stub_guard:
+            guard.write_text(
+                "#!/bin/sh\n"
+                "input=$(cat)\n"
+                'case "$input" in\n'
+                "  *DENYTARGET*) printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
+                "\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"blocked by the test guard\"}}' ;;\n"
+                "esac\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            os.chmod(guard, 0o755)
+        harness = stable / "harness.ts"
+        harness.write_text(
+            source.replace("PLUGIN_URL", Path(self.paths.opencode_plugin).as_uri()),
+            encoding="utf-8",
+        )
+        return stable, harness
 
-    def test_only_command_shaped_values_are_probed(self) -> None:
-        # A permission pattern is a glob that names WHAT may be called,  and a title is
-        # prose.  Neither is a shell command,  so neither is sent to the guard:  that
-        # would cost one child process per string and could deny a call that is not a
-        # fleet clone at all.
+    def run_harness(self, stable: Path, harness: Path) -> list:
+        run = self.run_node(["--experimental-strip-types", str(harness)], cwd=str(stable))
+        self.assertEqual(run.returncode, 0, run.stderr)
+        lines = [line for line in run.stdout.splitlines() if line.strip()]
+        self.assertTrue(lines, run.stdout + run.stderr)
+        return json.loads(lines[-1])
+
+    def harness(self, source: str) -> list:
+        """Run a V2 harness against the generated plugin and return its result rows.
+
+        The plugin imports `@opencode/plugin` and spawns `../fleet-guard-hook`; a stub SDK
+        and a fake guard are written beside it, so the harness exercises the same entry
+        OpenCode loads without needing OpenCode itself.
+        """
+        stable, harness = self.prepare(source)
+        return self.run_harness(stable, harness)
+
+    def test_the_plugin_registers_execute_before_and_has_no_permission_channel(self) -> None:
         text = self.plugin_text()
-        self.assertIn("isCommandShaped", text)
-        self.assertIn("COMMAND_SHAPE", text)
-        # The filter must be applied to every source of candidates,  each one on its own:
-        # a count of the call sites would still pass with one of them left unfiltered.
-        body = text.split("function guardCandidates(", 1)[1].split("\n}", 1)[0]
         for needle in (
-            "isCommandShaped(pattern)",  # the pattern string
-            "isCommandShaped(item)",  # the entries of a pattern array
-            "isCommandShaped(value)",  # the command keys in the metadata
+            "Plugin.define",
+            'ctx.tool.hook("execute.before"',
+            "throw new Error(reason)",
+            "fleet-guard-hook",
+            'out.trim() === ""',
         ):
-            self.assertIn(needle, body)
-        # The definition is not a call site,  so the calls are counted on their own.
-        calls = text.count("isCommandShaped(") - text.count("function isCommandShaped(")
-        self.assertEqual(calls, 3)
+            self.assertIn(needle, text)
+        # V2 has no permission.ask:  keeping it would be dead code pretending to guard.
+        self.assertNotIn('"permission.ask"', text)
+        self.assertNotIn('"tool.execute.before"', text)
+        self.assertNotIn("Authorization", text)
+        self.assertNotIn("Bearer", text)
+        self.assertNotIn(DUMMY_TOKEN, text)
 
-    def test_the_permission_input_is_validated_at_runtime(self) -> None:
-        # A TypeScript annotation is not a runtime check,  so a malformed hookInput
-        # would be read as if it were well formed.
-        text = self.plugin_text()
-        self.assertIn("permissionInput", text)
-        self.assertIn("must be an object", text)
-        self.assertIn("must be a string or an array of strings", text)
-        self.assertIn("must not be empty", text)
-        # The identifiers are the correlation key,  so they are checked as well:  a null
-        # key would let the call through.
-        self.assertIn("a permission sessionID must be a non-empty string", text)
-        self.assertIn("a permission callID must be a non-empty string", text)
+    def test_an_allowed_command_is_not_denied_and_a_deny_throws_the_reason(self) -> None:
+        results = {r["name"]: r for r in self.harness(EXECUTE_HARNESS)}
+        self.assertFalse(results["an allowed command is not denied"]["threw"], results)
+        denied = results["a denied command throws with the guard reason"]
+        self.assertTrue(denied["threw"], results)
+        self.assertIn("blocked by the test guard", denied["message"])
+        # The SDK has delivered tool arguments under both names;  a command is never missed.
+        self.assertTrue(results["a command delivered under args is still guarded"]["threw"], results)
 
-    def test_the_command_shape_class_needs_no_backslash_escape(self) -> None:
-        # The COMMAND_SHAPE class is spelled with plain characters,  because the plugin
-        # lives in a Python string,  where a backslash is an escape and would arrive as
-        # the character it names.
-        text = self.plugin_text()
-        self.assertNotIn("\\s", text.split("const COMMAND_SHAPE")[1].split("\n")[0])
+    def test_the_real_guard_denies_and_allows_through_the_same_plugin(self) -> None:
+        """The real fleet-guard-hook the installer writes, not a stub: the payload the plugin
+        sends and the reply it parses are part of what a user gets."""
+        stable, harness = self.prepare(REAL_GUARD_HARNESS, stub_guard=False)
+        os.chmod(stable / "fleet-guard-hook", 0o755)
+        results = {r["name"]: r for r in self.run_harness(stable, harness)}
+        self.assertFalse(results["the real guard allows a harmless command"]["threw"], results)
+        clone = results["the real guard denies a temp clone"]
+        self.assertTrue(clone["threw"], clone)
+        self.assertIn("temp", clone["message"].lower())
+        listing = results["the real guard denies a process listing"]
+        self.assertTrue(listing["threw"], listing)
+
+    def test_non_command_payloads_are_not_sent_to_the_guard(self) -> None:
+        results = {r["name"]: r for r in self.harness(EXECUTE_HARNESS)}
+        self.assertFalse(
+            results["a non-command payload over the byte ceiling is not guarded"]["threw"], results
+        )
+
+    def test_malformed_or_oversized_input_fails_closed(self) -> None:
+        results = {r["name"]: r for r in self.harness(EXECUTE_HARNESS)}
+        for name in (
+            "an oversized command fails closed",
+            "a cyclic payload fails closed",
+            "a too-deep payload fails closed",
+        ):
+            self.assertTrue(results[name]["threw"], results[name])
 
     def test_the_plugin_source_parses_as_typescript(self) -> None:
-        # The plugin is TypeScript that OpenCode loads,  so it has to parse.  A syntax
-        # error in it would break every OpenCode session,  not just the guard.
-        # node --check does not strip the types,  so node's own TypeScript loader parses
-        # the file here.
         with tempfile.TemporaryDirectory(prefix="muster-plugin-parse-") as tmp:
-            plugin = Path(tmp) / "fleet-lane-guard.ts"
+            plugin = Path(tmp) / "index.ts"
             plugin.write_text(self.plugin_text(), encoding="utf-8")
+            sdk = Path(tmp) / "node_modules" / "@opencode" / "plugin"
+            sdk.mkdir(parents=True)
+            (sdk / "package.json").write_text(
+                json.dumps({"name": "@opencode/plugin", "type": "module", "main": "index.js"}),
+                encoding="utf-8",
+            )
+            (sdk / "index.js").write_text(
+                "export const Plugin = { define: (definition) => definition };\n", encoding="utf-8"
+            )
             run = self.run_node(["--experimental-strip-types", str(plugin)], cwd=tmp)
             self.assertEqual(run.returncode, 0, run.stderr)
 
     def test_the_javascript_the_plugin_becomes_passes_node_check(self) -> None:
-        # The JavaScript the plugin becomes is what OpenCode runs,  so node --check
-        # parses that too.
         with tempfile.TemporaryDirectory(prefix="muster-plugin-check-") as tmp:
-            plugin = Path(tmp) / "fleet-lane-guard.ts"
+            plugin = Path(tmp) / "index.ts"
             plugin.write_text(self.plugin_text(), encoding="utf-8")
-            stripped = Path(tmp) / "fleet-lane-guard.mjs"
+            stripped = Path(tmp) / "index.mjs"
             probe = self.run_node(
-                ["--eval", "console.log(typeof require('node:module').stripTypeScriptTypes)"],
-                cwd=tmp,
+                ["--eval", "console.log(typeof require('node:module').stripTypeScriptTypes)"], cwd=tmp
             )
             if probe.returncode != 0 or "function" not in probe.stdout:
                 self.skipTest("this node cannot strip the types itself")
-            strip = self.run_node(
-                [
-                    "--eval",
-                    STRIP_SCRIPT,
-                    str(plugin),
-                    str(stripped),
-                ],
-                cwd=tmp,
-            )
+            strip = self.run_node(["--eval", STRIP_SCRIPT, str(plugin), str(stripped)], cwd=tmp)
             self.assertEqual(strip.returncode, 0, strip.stderr)
             check = self.run_node(["--check", str(stripped)], cwd=tmp)
             self.assertEqual(check.returncode, 0, check.stderr)
-
-    def test_a_malformed_permission_prompt_is_denied_and_never_thrown(self) -> None:
-        # A prompt the plugin cannot rule on is a denial,  not an error the caller sees:
-        # a throw would leave the answer to OpenCode's default handling,  which is to
-        # allow.
-        results = self.permission_results()
-        for name in MALFORMED_PROMPTS:
-            self.assertFalse(results[name]["threw"], results[name])
-            self.assertEqual(results[name]["status"], "deny", results[name])
-        # A prompt the plugin can rule on is left alone:  the deny is specific.
-        self.assertFalse(results[WELL_FORMED_PROMPT]["threw"], results[WELL_FORMED_PROMPT])
-        self.assertEqual(results[WELL_FORMED_PROMPT]["status"], "ask")
-
-    def test_the_byte_ceiling_bounds_the_command_not_the_payload(self) -> None:
-        # sentry #757:  the whole-payload byte ceiling ran for every tool,  so a file write
-        # over 64 KiB was denied.  The ceiling now bounds the extracted command;  structural
-        # bounds (depth, width, cycles) still cover every payload.
-        with tempfile.TemporaryDirectory(prefix="muster-plugin-") as tmp:
-            plugin = Path(tmp) / "fleet-lane-guard.ts"
-            plugin.write_text(self.plugin_text(), encoding="utf-8")
-            harness = Path(tmp) / "harness.ts"
-            harness.write_text(
-                EXECUTE_HARNESS.replace("PLUGIN_URL", plugin.as_uri()), encoding="utf-8"
-            )
-            run = self.run_node(["--experimental-strip-types", str(harness)], cwd=tmp)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            results = {r["name"]: r for r in json.loads(run.stdout.splitlines()[-1])}
-        self.assertFalse(
-            results["a non-shell payload over the byte ceiling is not guarded"]["threw"],
-            results["a non-shell payload over the byte ceiling is not guarded"],
-        )
-        for name in (
-            "an oversized command still fails closed",
-            "a missing tool name falls through and fails closed",
-            "a cyclic payload still fails closed",
-            "a too-deep payload still fails closed",
-        ):
-            self.assertTrue(results[name]["threw"], results[name])
-
-    def test_an_oversized_or_cyclic_permission_prompt_is_denied(self) -> None:
-        # The bounds the command boundary already carries apply to the permission
-        # prompt too,  and they are checked before any field is read:  a payload that is
-        # too large,  too deep,  too wide or cyclic is refused,  not walked.
-        results = self.permission_results()
-        for name in UNBOUNDED_PROMPTS:
-            self.assertFalse(results[name]["threw"], results[name])
-            self.assertEqual(results[name]["status"], "deny", results[name])
 
 
 class OpenCodeTests(World):
@@ -598,7 +551,7 @@ class OpenCodeTests(World):
                     "headers": {"Authorization": "Bearer " + DUMMY_TOKEN},
                 }
             },
-            "plugin": ["opencode-mobile@latest"],
+            "plugins": ["opencode-mobile@latest"],
         }
         self.config.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
         os.chmod(self.config, 0o600)
@@ -611,16 +564,13 @@ class OpenCodeTests(World):
         self.assertTrue(plugin.is_file())
         text = plugin.read_text(encoding="utf-8")
         for needle in (
-            '"tool.execute.before"',
-            '"permission.ask"',
-            'output.status = "deny"',
+            "Plugin.define",
+            'ctx.tool.hook("execute.before"',
+            "throw new Error(reason)",
             "fleet-guard-hook",
-            "args.command",
         ):
-            if needle == "args.command":
-                continue  # keyed on args, not on a tool name; see the next assertion
             self.assertIn(needle, text)
-        self.assertIn("commandFrom(output.args)", text)
+        self.assertIn("commandFrom(payload)", text)
         self.assertNotIn("Authorization", text)
         self.assertNotIn("Bearer", text)
         self.assertNotIn(DUMMY_TOKEN, text)
@@ -631,8 +581,8 @@ class OpenCodeTests(World):
         self.assertEqual(r.status, "updated", r)
         doc = json.loads(self.config.read_text(encoding="utf-8"))
         self.assertEqual(doc["mcp"], before["mcp"])
-        self.assertEqual(doc["plugin"], ["opencode-mobile@latest", self.paths.opencode_plugin])
-        self.assertTrue(os.path.isabs(doc["plugin"][-1]))
+        self.assertEqual(doc["plugins"], ["opencode-mobile@latest", self.paths.opencode_plugin_dir])
+        self.assertTrue(os.path.isabs(doc["plugins"][-1]))
         self.assertEqual(stat.S_IMODE(os.stat(self.config).st_mode), 0o600)
         self.assertTrue(r.backup and os.path.exists(r.backup), r)
         self.assertEqual(stat.S_IMODE(os.stat(r.backup).st_mode), 0o600)
@@ -645,9 +595,9 @@ class OpenCodeTests(World):
         rc, out, err = run_main("plan", *self.base(), "opencode")
         self.assertEqual((rc, err), (0, ""), out)
         self.assertEqual(snapshot(self.tmp), before)
-        self.assertIn(self.paths.opencode_plugin, out)
+        self.assertIn(self.paths.opencode_plugin_dir, out)
+        self.assertIn("opencode-plugin/index.ts", out)
         self.assertIn("UNVERIFIED", out)
-        self.assertIn("permission.ask", out)
         self.assertNotIn(DUMMY_TOKEN, out)
         self.assertNotIn("Bearer", out)
 
@@ -671,7 +621,7 @@ class OpenCodeTests(World):
     def test_verify_fails_when_the_entry_is_gone(self) -> None:
         self.apply("opencode")
         doc = json.loads(self.config.read_text(encoding="utf-8"))
-        doc["plugin"] = ["opencode-mobile@latest"]
+        doc["plugins"] = ["opencode-mobile@latest"]
         self.config.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
         checks = T.verify_opencode(self.paths, timeout=TIMEOUT, minimal_path=False)
         self.assertTrue(any(c.name == "plugin entry" and c.status == "FAIL" for c in checks))
@@ -694,28 +644,58 @@ class OpenCodeTests(World):
 
     def test_a_stale_plugin_path_is_updated_in_place(self) -> None:
         doc = json.loads(self.config.read_text(encoding="utf-8"))
-        doc["plugin"] = [
-            "/old/stable/opencode-plugin/fleet-lane-guard.ts",
+        legacy_file = os.path.join(
+            self.paths.stable, "opencode-plugin", "fleet-lane-guard.ts"
+        )
+        doc["plugins"] = [
+            legacy_file,
             "opencode-mobile@latest",
         ]
         self.config.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
         new, action = T.opencode_merge(doc, self.paths)
         self.assertEqual(action, "updated")
-        self.assertEqual(new["plugin"], [self.paths.opencode_plugin, "opencode-mobile@latest"])
+        self.assertEqual(new["plugins"], [self.paths.opencode_plugin_dir, "opencode-mobile@latest"])
         again, action = T.opencode_merge(new, self.paths)
         self.assertEqual((action, again), ("unchanged", new))
+
+    def test_another_tools_opencode_plugin_directory_is_not_hijacked(self) -> None:
+        doc = {"plugins": ["/opt/their-tool/opencode-plugin", "opencode-mobile@latest"]}
+        new, action = T.opencode_merge(doc, self.paths)
+        self.assertEqual(action, "added")
+        self.assertEqual(
+            new["plugins"],
+            ["/opt/their-tool/opencode-plugin", "opencode-mobile@latest", self.paths.opencode_plugin_dir],
+        )
+
+    def test_a_legacy_plugin_key_is_migrated_into_plugins(self) -> None:
+        legacy_file = os.path.join(
+            self.paths.stable, "opencode-plugin", "fleet-lane-guard.ts"
+        )
+        doc = {"plugin": [legacy_file, "someone-elses-plugin"], "plugins": ["opencode-mobile@latest"]}
+        new, _ = T.opencode_merge(doc, self.paths)
+        self.assertEqual(new["plugin"], ["someone-elses-plugin"])
+        self.assertEqual(new["plugins"], ["opencode-mobile@latest", self.paths.opencode_plugin_dir])
+        only_ours, _ = T.opencode_merge({"plugin": [legacy_file]}, self.paths)
+        self.assertNotIn("plugin", only_ours)
+        self.assertEqual(only_ours["plugins"], [self.paths.opencode_plugin_dir])
+
+    def test_a_plugin_key_that_is_not_a_list_is_refused(self) -> None:
+        before = snapshot(self.home)
+        with self.assertRaises(T.ShapeError):
+            T.opencode_merge({"plugin": {"path": "x"}}, self.paths)
+        self.assertEqual(snapshot(self.home), before)
 
     def test_a_missing_config_file_is_created_with_the_plugin_and_an_owner_only_mode(self) -> None:
         self.config.unlink()
         r = self.apply("opencode")
         self.assertEqual(r.status, "added", r)
         doc = json.loads(self.config.read_text(encoding="utf-8"))
-        self.assertEqual(doc["plugin"], [self.paths.opencode_plugin])
+        self.assertEqual(doc["plugins"], [self.paths.opencode_plugin_dir])
         self.assertEqual(stat.S_IMODE(os.stat(self.config).st_mode), 0o600)
 
     def test_a_plugin_key_that_is_not_a_list_is_refused_and_left_alone(self) -> None:
         self.config.write_text(
-            json.dumps({"plugin": "not-a-list"}, indent=2) + "\n", encoding="utf-8"
+            json.dumps({"plugins": "not-a-list"}, indent=2) + "\n", encoding="utf-8"
         )
         before = snapshot(self.home)
         r = self.apply("opencode")
@@ -733,7 +713,7 @@ class CliRoundTripTests(World):
         (self.home / ".copilot" / "hooks").mkdir(parents=True)
         (self.home / ".config" / "opencode").mkdir(parents=True)
         (self.home / ".config" / "opencode" / "opencode.json").write_text(
-            json.dumps({"plugin": ["opencode-mobile@latest"]}, indent=2) + "\n", encoding="utf-8"
+            json.dumps({"plugins": ["opencode-mobile@latest"]}, indent=2) + "\n", encoding="utf-8"
         )
         self.install_tools()
 
