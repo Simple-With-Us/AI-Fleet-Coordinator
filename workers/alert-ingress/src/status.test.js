@@ -2,7 +2,7 @@
 // (today: the Usage Monitor /ops page).  If this shape changes, that page
 // changes with it -- one writer, many readers.
 //
-// Run: node --test workers/alert-ingress/src/
+// Run: node --test workers/alert-ingress/src/*.test.js
 
 import test from "node:test";
 import assert from "node:assert/strict";

@@ -2,7 +2,7 @@
 // message per source, so two vendors that share a service name can never
 // edit each other's message.
 //
-// Run: node --test workers/alert-ingress/src/
+// Run: node --test workers/alert-ingress/src/*.test.js
 
 import test from "node:test";
 import assert from "node:assert/strict";

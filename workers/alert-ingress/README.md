@@ -156,16 +156,12 @@ The durable delivery outcome of a standing status is keyed per source as well: `
 ## Tests
 
 ```bash
-cd workers/alert-ingress && node --test src/
+cd workers/alert-ingress && node --test src/*.test.js
 ```
 
 Pure functions, no Workers runtime needed.  The suite includes the real Oct 18 flap replayed: ten events, zero messages until it genuinely stays open.
 
-On Node 24 the directory form above resolves `src/index.js` as a single module and runs none of the test files, so run the files explicitly to see the real count:
-
-```bash
-cd workers/alert-ingress && node --test src/*.test.js
-```
+The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 84 tests.
 
 `vendor-routing.test.js` covers the vendor routing: same-topic isolation between two vendors, message ids that are never reused across vendors, the sweep and the resolve path using the right vendor credential, a missing or refused credential failing closed, an ambiguous write that never creates a second message, and a refresh that is refused outside the alerts channel.
 
