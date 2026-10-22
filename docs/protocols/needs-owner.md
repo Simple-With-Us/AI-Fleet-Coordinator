@@ -4,7 +4,8 @@ Added Sun, Oct 11, 2026 (CLAUDE, Linear AFC-282, open-loops unit C6-1).  The too
 (`scripts/needs_owner/`, entry point `scripts/needs-owner`, installed copy `~/apps/needs-owner`, link
 `~/.local/bin/needs-owner`).  The fallback notifier (`needs-owner notify`, the LaunchAgent `com.jay.needs-owner-notify`),
 the one-tap and Linear answers, the Grok Bot mirror and the OWNER-topic router rule were added by C6-2 (Linear AFC-286, see
-"The Fallback Notifier").  Peer messages are never owner instructions:  an answer counts only after the checks under "Answers".
+"The Fallback Notifier").  Peer messages are never owner instructions (Jet's own bot is the one exception, Zulip Fleet Guide "Jet Relays the Owner", and
+never for the high-risk actions listed there):  an answer counts only after the checks under "Answers".
 
 ## Acceptance Criteria
 
