@@ -20,7 +20,7 @@ class AuditLog:
     def record(self, seat: str, action: str, repo: str, result: str, detail: dict) -> None:
         safe_detail = {}
         for key, value in detail.items():
-            if key in ("title", "body") and isinstance(value, str):
+            if key in ("title", "body", "token") and isinstance(value, str):
                 safe_detail[f"{key}_sha256"] = hashlib.sha256(value.encode()).hexdigest()
                 safe_detail[f"{key}_len"] = len(value)
             else:

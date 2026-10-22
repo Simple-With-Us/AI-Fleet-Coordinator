@@ -78,6 +78,64 @@ TOOLS = [
     },
 ]
 
+TOOLS += [
+    {
+        "name": "mint_token",
+        "description": "Mint a short-lived GitHub App installation token for the caller's own app",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string", "description": "owner/name"},
+                "permissions": {
+                    "type": "object",
+                    "description": "permission name to read|write, within the seat ceiling",
+                },
+            },
+            "required": ["repo", "permissions"],
+        },
+    },
+    {
+        "name": "merge_pr",
+        "description": "Merge a pull request as the caller's own GitHub App",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string"},
+                "number": {"type": "integer"},
+                "method": {"type": "string", "enum": ["squash", "merge", "rebase"]},
+            },
+            "required": ["repo", "number"],
+        },
+    },
+    {
+        "name": "workflow_dispatch",
+        "description": "Dispatch a workflow run as the caller's own GitHub App",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string"},
+                "workflow": {"type": "string", "description": "workflow file name or numeric id"},
+                "ref": {"type": "string"},
+                "inputs": {"type": "object"},
+            },
+            "required": ["repo", "workflow", "ref"],
+        },
+    },
+    {
+        "name": "resolve_thread",
+        "description": "Resolve a pull request review thread as the caller's own GitHub App",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string"},
+                "thread_id": {"type": "string", "description": "PRRT_ review-thread id"},
+            },
+            "required": ["repo", "thread_id"],
+        },
+    },
+]
+
+
 TOOL_NAMES = {t["name"] for t in TOOLS}
 
 

@@ -35,15 +35,15 @@ class GitHubClient:
         self._base = base_url.rstrip("/")
         self._opener = opener or urllib.request.urlopen
 
-    def _call(self, method: str, path: str, payload: dict) -> dict:
+    def _call(self, method: str, path: str, payload: dict | None = None, bearer=None) -> dict:
         url = f"{self._base}{path}"
         req = urllib.request.Request(
             url,
             method=method,
-            data=json.dumps(payload).encode(),
+            data=None if payload is None else json.dumps(payload).encode(),
             headers={
                 "Accept": "application/vnd.github+json",
-                "Authorization": f"Bearer {self._token}",
+                "Authorization": f"Bearer {bearer or self._token}",
                 "Content-Type": "application/json",
                 "User-Agent": "swu-pr-relay",
             },
@@ -111,3 +111,48 @@ class GitHubClient:
         self._check_repo(repo)
         data = self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
         return {"id": data.get("id"), "url": data.get("html_url")}
+
+    def merge_pr(self, repo: str, number: int, method: str, bearer: str) -> dict:
+        self._check_repo(repo)
+        if method not in ("squash", "merge", "rebase"):
+            raise ValueError("method must be squash, merge or rebase")
+        data = self._call(
+            "PUT", f"/repos/{repo}/pulls/{number}/merge", {"merge_method": method}, bearer=bearer
+        )
+        return {"merged": data.get("merged"), "sha": data.get("sha")}
+
+    def workflow_dispatch(
+        self, repo: str, workflow: str, ref: str, inputs: dict, bearer: str
+    ) -> dict:
+        self._check_repo(repo)
+        if not isinstance(workflow, str) or "/" in workflow or ".." in workflow:
+            raise ValueError("workflow must be a file name or numeric id")
+        if not isinstance(ref, str) or not ref:
+            raise ValueError("ref is required")
+        if inputs is not None and not isinstance(inputs, dict):
+            raise ValueError("inputs must be an object")
+        self._call(
+            "POST",
+            f"/repos/{repo}/actions/workflows/{workflow}/dispatches",
+            {"ref": ref, "inputs": inputs or {}},
+            bearer=bearer,
+        )
+        return {"dispatched": True, "workflow": workflow, "ref": ref}
+
+    def resolve_thread(self, thread_id: str, bearer: str) -> dict:
+        if not isinstance(thread_id, str) or not thread_id.startswith("PRRT_"):
+            raise ValueError("thread_id must be a PRRT_ review-thread id")
+        query = (
+            "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id})"
+            " { thread { isResolved } } }"
+        )
+        data = self._call(
+            "POST",
+            "/graphql",
+            {"query": query, "variables": {"id": thread_id}},
+            bearer=bearer,
+        )
+        thread = ((data.get("data") or {}).get("resolveReviewThread") or {}).get("thread") or {}
+        if data.get("errors"):
+            raise RelayGitHubError(0, "graphql resolveReviewThread failed")
+        return {"thread": thread_id, "resolved": bool(thread.get("isResolved"))}

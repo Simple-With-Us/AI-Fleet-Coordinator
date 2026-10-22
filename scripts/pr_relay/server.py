@@ -52,13 +52,27 @@ class PolicyDenied(Exception):
     """The seat authenticated but its policy refused the call."""
 
 
+class ServerUnavailable(Exception):
+    """A configured-on-paper backend (app-token minting) is not wired."""
+
+
+# Minimum installation permissions each App action needs;  a seat whose
+# mint_permissions ceiling does not cover these gets a policy denial.
+ACTION_REQUIRED_PERMISSIONS = {
+    "merge_pr": {"contents": "write", "pull_requests": "write"},
+    "workflow_dispatch": {"actions": "write"},
+    "resolve_thread": {"pull_requests": "write"},
+}
+
+
 class Relay:
     """Wires policy, client and audit together; easy to drive without HTTP."""
 
-    def __init__(self, policy: SeatPolicy, client: GitHubClient, audit: AuditLog):
+    def __init__(self, policy: SeatPolicy, client: GitHubClient, audit: AuditLog, app_minter=None):
         self.policy = policy
         self.client = client
         self.audit = audit
+        self.app_minter = app_minter
 
     def handle(self, token: str, action: str, args: dict) -> tuple[int, dict]:
         seat = self.policy.authenticate(token)
@@ -70,6 +84,9 @@ class Relay:
         except PolicyDenied as exc:
             self.audit.record(seat, action, repo, "denied", {"reason": str(exc)})
             return 403, {"error": str(exc)}
+        except ServerUnavailable as exc:
+            self.audit.record(seat, action, repo, "unavailable", {"reason": str(exc)})
+            return 503, {"error": str(exc)}
         except ValueError as exc:
             self.audit.record(seat, action, repo, "bad_request", {"reason": str(exc)})
             return 400, {"error": str(exc)}
@@ -82,12 +99,16 @@ class Relay:
         return 200, result
 
     def _dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
-        if action not in SeatPolicy.VALID_ACTIONS:
+        if action not in SeatPolicy.ALL_ACTIONS:
             raise ValueError(f"unknown action {action!r}")
         repo = _text(repo, "repo")
         denial = self.policy.authorize(seat, action, repo)
         if denial:
             raise PolicyDenied(denial)
+        if action in SeatPolicy.REGISTERED_ACTIONS:
+            raise ValueError(f"action {action!r} is registered but not implemented yet")
+        if action in SeatPolicy.APP_ACTIONS:
+            return self._dispatch_app(seat, action, args, repo)
         number = args.get("number")
         if action == "open_pr":
             return self.client.open_pr(
@@ -114,6 +135,56 @@ class Relay:
         return self.client.comment_pr(
             repo, _number(number, "number"), _text(args.get("body"), "body")
         )
+
+
+def _perm_within_ceiling(requested: dict, ceiling: dict) -> str | None:
+    ranks = {"read": 1, "write": 2}
+    for name, level in requested.items():
+        allowed = ceiling.get(name)
+        if allowed is None or ranks.get(allowed, 0) < ranks.get(level, 99):
+            return name
+    return None
+
+
+def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
+    if self.app_minter is None:
+        raise ServerUnavailable("app-token minting is not configured on this relay")
+    app_slug, ceiling = self.policy.app_identity(seat)
+    if action == "mint_token":
+        requested = args.get("permissions")
+        if not isinstance(requested, dict) or not requested:
+            raise ValueError("permissions must be a non-empty object")
+        if any(not isinstance(k, str) or v not in ("read", "write") for k, v in requested.items()):
+            raise ValueError("permissions values must be read or write")
+        missing = _perm_within_ceiling(requested, ceiling)
+        if missing:
+            raise PolicyDenied(f"seat ceiling does not cover permission {missing!r}")
+        token = self.app_minter.token_for(app_slug, repo, dict(requested))
+        return {"token": token, "app_slug": app_slug, "expires_in_seconds": 3600}
+    required = ACTION_REQUIRED_PERMISSIONS[action]
+    missing = _perm_within_ceiling(required, ceiling)
+    if missing:
+        raise PolicyDenied(f"seat ceiling does not cover permission {missing!r}")
+    token = self.app_minter.token_for(app_slug, repo, dict(required))
+    if action == "merge_pr":
+        return self.client.merge_pr(
+            repo,
+            _number(args.get("number"), "number"),
+            str(args.get("method") or "squash"),
+            bearer=token,
+        )
+    if action == "workflow_dispatch":
+        return self.client.workflow_dispatch(
+            repo,
+            _text(args.get("workflow"), "workflow"),
+            _text(args.get("ref"), "ref"),
+            args.get("inputs"),
+            bearer=token,
+        )
+    return self.client.resolve_thread(_text(args.get("thread_id"), "thread_id"), bearer=token)
+
+
+Relay._dispatch_app = _app_dispatch
 
 
 def make_handler(relay: Relay):
@@ -178,7 +249,22 @@ def from_env() -> Relay:
         raise SystemExit(f"pr-relay config: {exc}") from exc
     client = GitHubClient(os.environ.get("GITHUB_TOKEN", ""))
     audit = AuditLog(os.environ.get("PR_RELAY_AUDIT_PATH", "pr-relay-audit.jsonl"))
-    return Relay(policy, client, audit)
+    app_minter = None
+    if os.environ.get("INFISICAL_CLIENT_ID"):
+        from .app_tokens import AppTokenMinter, InfisicalSource
+
+        source = InfisicalSource(
+            os.environ["INFISICAL_CLIENT_ID"],
+            os.environ.get("INFISICAL_CLIENT_SECRET", ""),
+            os.environ.get("INFISICAL_WORKSPACE_ID", ""),
+        )
+        app_minter = AppTokenMinter(
+            source,
+            lambda method, path, bearer, payload=None: client._call(
+                method, path, payload, bearer=bearer
+            ),
+        )
+    return Relay(policy, client, audit, app_minter=app_minter)
 
 
 def main() -> None:

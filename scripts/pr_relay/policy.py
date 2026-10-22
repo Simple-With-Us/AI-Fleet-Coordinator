@@ -31,7 +31,23 @@ class SeatPolicy:
         }
     """
 
+    # PR-write actions are authored as the owner (PR-only token);  everything
+    # else runs as the seat's own GitHub App via a relay-minted token.
     VALID_ACTIONS = ("open_pr", "edit_pr", "reply_thread", "comment_pr")
+    APP_ACTIONS = ("mint_token", "merge_pr", "workflow_dispatch", "resolve_thread")
+    # Known but not implemented:  accepted in seat config, refused at dispatch
+    # until their implementation and per-action policy land.
+    REGISTERED_ACTIONS = (
+        "create_release",
+        "rerun_workflow",
+        "cancel_workflow",
+        "set_labels",
+        "create_issue_comment",
+        "request_reviewers",
+        "set_branch_protection",
+        "create_repo",
+    )
+    ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS
 
     def __init__(self, seats_json: str, rate_per_hour: int = 120):
         if not seats_json:
@@ -51,15 +67,30 @@ class SeatPolicy:
                 raise PolicyError(f"seat {seat!r}: token missing or shorter than 16 characters")
             actions = cfg.get("actions") or []
             repos = cfg.get("repos") or []
-            unknown = [a for a in actions if a not in self.VALID_ACTIONS]
+            unknown = [a for a in actions if a not in self.ALL_ACTIONS]
             if unknown:
                 raise PolicyError(f"seat {seat!r}: unknown actions {unknown}")
             if not actions or not repos:
                 raise PolicyError(f"seat {seat!r}: actions and repos must both be non-empty")
+            app_slug = cfg.get("app_slug")
+            mint_perms = cfg.get("mint_permissions") or {}
+            wants_app = any(a in self.APP_ACTIONS for a in actions)
+            if wants_app and not app_slug:
+                raise PolicyError(f"seat {seat!r}: app actions need an app_slug")
+            if app_slug is not None:
+                if not isinstance(app_slug, str) or not app_slug.startswith("swu-"):
+                    raise PolicyError(f"seat {seat!r}: app_slug must be a swu- app slug")
+                if not mint_perms or any(
+                    not isinstance(k, str) or v not in ("read", "write")
+                    for k, v in mint_perms.items()
+                ):
+                    raise PolicyError(f"seat {seat!r}: mint_permissions must be name: read|write")
             self._seats[seat] = {
                 "token_hash": hashlib.sha256(token.encode()).hexdigest(),
                 "actions": set(actions),
                 "repos": [str(r) for r in repos],
+                "app_slug": app_slug,
+                "mint_permissions": dict(mint_perms),
             }
         if rate_per_hour < 1:
             raise PolicyError("rate_per_hour must be at least 1")
@@ -107,3 +138,8 @@ class SeatPolicy:
         if not self._rate_ok(seat, now if now is not None else time.time()):
             return "hourly rate limit reached for this seat"
         return None
+
+    def app_identity(self, seat: str) -> tuple[str, dict]:
+        """(app_slug, mintable permission ceiling) for a seat's App actions."""
+        cfg = self._seats[seat]
+        return cfg["app_slug"], dict(cfg["mint_permissions"])

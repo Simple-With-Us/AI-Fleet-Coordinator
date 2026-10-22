@@ -318,7 +318,19 @@ class TestMcpWrapper(unittest.TestCase):
         self.assertEqual(reply["result"]["serverInfo"]["name"], "swu-pr-relay")
         reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in reply["result"]["tools"]]
-        self.assertEqual(names, ["open_pr", "edit_pr", "reply_thread", "comment_pr"])
+        self.assertEqual(
+            names,
+            [
+                "open_pr",
+                "edit_pr",
+                "reply_thread",
+                "comment_pr",
+                "mint_token",
+                "merge_pr",
+                "workflow_dispatch",
+                "resolve_thread",
+            ],
+        )
 
     def test_tools_call_forwards_to_relay_with_seat_token(self):
         opener = FakeOpener({"number": 9, "url": "u"})
@@ -379,3 +391,179 @@ class TestMcpWrapper(unittest.TestCase):
         )
         self.assertTrue(reply["result"]["isError"])
         self.assertIn("403", reply["result"]["content"][0]["text"])
+
+
+APP_SEATS_JSON = json.dumps(
+    {
+        "swu-echo": {
+            "token": SEAT_TOKEN,
+            "actions": [
+                "open_pr",
+                "mint_token",
+                "merge_pr",
+                "workflow_dispatch",
+                "resolve_thread",
+                "create_release",
+            ],
+            "repos": ["Simple-With-Us/*"],
+            "app_slug": "swu-echo",
+            "mint_permissions": {
+                "contents": "write",
+                "pull_requests": "write",
+                "actions": "write",
+                "metadata": "read",
+            },
+        }
+    }
+)
+
+
+class FakeMinter:
+    def __init__(self):
+        self.calls = []
+
+    def token_for(self, slug, repo, permissions):
+        self.calls.append((slug, repo, permissions))
+        return "MINTED-FAKE-TOKEN"
+
+
+class TestAppActions(unittest.TestCase):
+    def _relay(self, tmp):
+        return Relay(
+            SeatPolicy(APP_SEATS_JSON),
+            StubClient(),
+            AuditLog(os.path.join(tmp, "a.jsonl")),
+            app_minter=FakeMinter(),
+        )
+
+    def test_policy_requires_app_slug_for_app_actions(self):
+        with self.assertRaises(PolicyError):
+            SeatPolicy(
+                json.dumps(
+                    {
+                        "seat": {
+                            "token": "x" * 16,
+                            "actions": ["mint_token"],
+                            "repos": ["a/b"],
+                        }
+                    }
+                )
+            )
+
+    def test_registered_action_refuses_at_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, body = relay.handle(SEAT_TOKEN, "create_release", {"repo": "Simple-With-Us/x"})
+            self.assertEqual(status, 400)
+            self.assertIn("not implemented", body["error"])
+
+    def test_mint_token_mints_within_ceiling_and_audits_no_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, body = relay.handle(
+                SEAT_TOKEN,
+                "mint_token",
+                {"repo": "Simple-With-Us/x", "permissions": {"contents": "read"}},
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(body["app_slug"], "swu-echo")
+            self.assertEqual(
+                relay.app_minter.calls, [("swu-echo", "Simple-With-Us/x", {"contents": "read"})]
+            )
+            with open(os.path.join(tmp, "a.jsonl")) as fh:
+                logged = fh.read()
+            self.assertNotIn("MINTED-FAKE-TOKEN", logged)
+            self.assertIn("token_sha256", logged)
+
+    def test_mint_token_beyond_ceiling_is_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, _ = relay.handle(
+                SEAT_TOKEN,
+                "mint_token",
+                {"repo": "Simple-With-Us/x", "permissions": {"administration": "write"}},
+            )
+            self.assertEqual(status, 403)
+
+    def test_app_actions_without_minter_get_503(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = Relay(
+                SeatPolicy(APP_SEATS_JSON), StubClient(), AuditLog(os.path.join(tmp, "a.jsonl"))
+            )
+            status, body = relay.handle(
+                SEAT_TOKEN, "merge_pr", {"repo": "Simple-With-Us/x", "number": 1}
+            )
+            self.assertEqual(status, 503)
+            self.assertIn("not configured", body["error"])
+
+
+class TestMinter(unittest.TestCase):
+    def test_mints_and_caches_and_refreshes(self):
+        from pr_relay.app_tokens import AppTokenMinter
+
+        class Source:
+            def secret(self, name):
+                return {"GH_APP_SWU_ECHO_ID": "100", "GH_APP_SWU_ECHO_PRIVATE_KEY": "PEM"}[name]
+
+        api_calls = []
+
+        def api(method, path, bearer, payload=None):
+            api_calls.append((method, path))
+            if path == "/app":
+                return {"id": 100}
+            if method == "GET":
+                return {
+                    "id": 55,
+                    "app_id": 100,
+                    "account": {"login": "Simple-With-Us"},
+                    "suspended_at": None,
+                }
+            return {
+                "token": "tok-" + str(len(api_calls)),
+                "expires_at": "2027-01-01T00:00:00Z",
+            }
+
+        minter = AppTokenMinter(Source(), api, signer=lambda *a: "JWT", clock=lambda: 1_700_000_000)
+        t1 = minter.token_for("swu-echo", "Simple-With-Us/x", {"contents": "write"})
+        t2 = minter.token_for("swu-echo", "Simple-With-Us/x", {"contents": "write"})
+        self.assertEqual(t1, t2)
+        mints = [c for c in api_calls if c[0] == "POST"]
+        self.assertEqual(len(mints), 1)
+
+    def test_permission_outside_mint_ceiling_refused(self):
+        from pr_relay.app_tokens import AppTokenError, AppTokenMinter
+
+        minter = AppTokenMinter(None, None, clock=lambda: 0)
+        with self.assertRaises(AppTokenError):
+            minter.token_for("swu-echo", "a/b", {"administration": "write"})
+
+
+class TestAppClientShapes(unittest.TestCase):
+    def test_merge_pr_uses_minted_bearer(self):
+        opener = FakeOpener({"merged": True, "sha": "abc"})
+        client = GitHubClient("PAT", base_url="https://api.test", opener=opener)
+        result = client.merge_pr("o/r", 3, "squash", bearer="MINTED")
+        req = opener.requests[0]
+        self.assertEqual(req.get_method(), "PUT")
+        self.assertEqual(req.get_header("Authorization"), "Bearer MINTED")
+        self.assertIn("/repos/o/r/pulls/3/merge", req.full_url)
+        self.assertTrue(result["merged"])
+
+    def test_workflow_dispatch_shape(self):
+        opener = FakeOpener({})
+        client = GitHubClient("PAT", base_url="https://api.test", opener=opener)
+        client.workflow_dispatch("o/r", "ci.yml", "main", {"force": True}, bearer="MINTED")
+        req = opener.requests[0]
+        self.assertIn("/actions/workflows/ci.yml/dispatches", req.full_url)
+        self.assertEqual(json.loads(req.data), {"ref": "main", "inputs": {"force": True}})
+
+    def test_resolve_thread_posts_graphql(self):
+        opener = FakeOpener({"data": {"resolveReviewThread": {"thread": {"isResolved": True}}}})
+        client = GitHubClient("PAT", base_url="https://api.test", opener=opener)
+        result = client.resolve_thread("PRRT_abc", bearer="MINTED")
+        req = opener.requests[0]
+        self.assertTrue(req.full_url.endswith("/graphql"))
+        self.assertEqual(json.loads(req.data)["variables"], {"id": "PRRT_abc"})
+        self.assertTrue(result["resolved"])
+        with self.assertRaises(ValueError):
+            client.resolve_thread("bogus", bearer="MINTED")

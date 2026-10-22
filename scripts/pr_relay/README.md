@@ -23,9 +23,34 @@ PRs and comments are authored as whoever the GitHub token belongs to (a scoped f
 on the owner's account, PR write only). Seats cannot push, merge, or resolve threads through this
 service; those stay with the swu-echo app.
 
-## Scope (owner direction 2026-10-21)
+## Scope and action catalog (owner direction 2026-10-21)
 
-The relay covers only what seat bot tokens cannot do since the PR:read change:  open_pr, edit_pr, inline review-thread replies and PR comments - actions that must be authored as the owner so Kody reviews them.  Every other GitHub task (push, merge, workflows, admin) stays on each bot's own App token;  the relay never holds App keys or wider tokens.
+The relay covers every GitHub task seats need.  It knows the seat from its bearer token and picks
+the credential BY TASK:  PR-write authoring (which must be the owner's identity so Kody reviews it,
+and which bot Apps can no longer do since the PR:read change) uses the owner's scoped PR-only token;
+everything else uses the seat's OWN GitHub App token, which the relay mints and refreshes itself
+from App keys in Infisical - seats never handle an App id, private key, or the 1-hour token expiry.
+GITHUB_UNIVERSAL_PAT is not used by anyone.  Default deny:  an action is callable only by seats
+explicitly allowlisted for it, and App actions only within the seat's mint_permissions ceiling.
+Actions are catalogued even where no seat is allowlisted yet;  granting a seat later (Echo included)
+is only a policy entry.
+
+| Action | Credential | Status |
+| --- | --- | --- |
+| open_pr | owner PR-only token | implemented |
+| edit_pr (title/body only) | owner PR-only token | implemented |
+| reply_thread (inline review reply) | owner PR-only token | implemented |
+| comment_pr | owner PR-only token | implemented |
+| mint_token (per-repo, per-permission) | seat's App, relay-minted | implemented |
+| merge_pr (squash/merge/rebase) | seat's App (contents+pull_requests write) | implemented |
+| workflow_dispatch | seat's App (actions write) | implemented |
+| resolve_thread | seat's App (pull_requests write) | implemented |
+| create_release, rerun_workflow, cancel_workflow, set_labels, create_issue_comment, request_reviewers, set_branch_protection, create_repo | seat's App | registered, refused until implemented |
+
+App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read one named key at a time from
+Infisical (INFISICAL_CLIENT_ID / _SECRET / _WORKSPACE_ID env, prod /github-apps), JWT signed with
+the local openssl binary, installation tokens cached in memory and refreshed 5 minutes early.
+Nothing secret is written to disk, logged, or audited;  audit rows hash token values.
 
 ## MCP wrapper
 
@@ -33,6 +58,16 @@ The relay covers only what seat bot tokens cannot do since the PR:read change:  
 exposes the relay actions as MCP tools. A seat runs it with only its own bearer token
 (PR_RELAY_SEAT_TOKEN, PR_RELAY_URL); the wrapper forwards over HTTP, so policy, caps and audit
 stay server-side. Refusals come back as tool errors, never protocol errors.
+
+## Relay as a permission layer (owner direction 2026-10-21)
+
+Per-seat policy (actions, repos, mint_permission ceilings, rate caps) is a first-class permission
+layer of its own:  it can narrow what a credential allows, never exceed it.  A seat's effective
+power is the INTERSECTION of the relay policy and the underlying GitHub credential - tightening
+either side restricts the seat, and no policy entry can grant what GitHub already denies.  Policy
+lives in reviewed config (PR_RELAY_SEATS_JSON sourced from a reviewed file or Infisical), so
+permission changes ship without touching GitHub App settings;  every change is a reviewed PR (or an
+audited Infisical write), and every call - allowed or denied - is in the audit log.
 
 ## Policy
 
