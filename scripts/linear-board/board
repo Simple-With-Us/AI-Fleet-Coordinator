@@ -333,13 +333,19 @@ HEX_RE = re.compile(r"^[0-9a-f]+$")
 
 # ----------------------------------------------------------------- small helpers
 
+def prog_name() -> str:
+    """The name this CLI was invoked as (simple-board), so every error line names it."""
+    name = os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else ""
+    return name or "simple-board"
+
+
 def die(msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
-    print(f"board: {msg}", file=sys.stderr)
+    print(f"{prog_name()}: {msg}", file=sys.stderr)
     raise SystemExit(code)
 
 
 def warn(msg: str) -> None:
-    print(f"board: warning: {msg}", file=sys.stderr)
+    print(f"{prog_name()}: warning: {msg}", file=sys.stderr)
 
 
 def env(name: str, default: str | None = None) -> str | None:
@@ -2504,7 +2510,7 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     if org.get("urlKey") != WORKSPACE_URL_KEY:
         problems.append(f"the workspace is {org.get('urlKey')!r}, not {WORKSPACE_URL_KEY!r}")
     for p in problems:
-        print(f"board: {p}", file=sys.stderr)
+        print(f"{prog_name()}: {p}", file=sys.stderr)
     return EXIT_AUTH if problems else 0
 
 
@@ -4110,7 +4116,9 @@ def cmd_mcp(L: "Linear", auth: "Auth", a, seat: str) -> int:
 # ----------------------------------------------------------------- main
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="board", description="Fleet work board (Linear backend).")
+    p = argparse.ArgumentParser(
+        prog=prog_name(), description="Fleet work board (Linear backend)."
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     lp = sub.add_parser("list", help="list/filter items")

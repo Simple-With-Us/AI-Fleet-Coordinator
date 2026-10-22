@@ -1,29 +1,32 @@
 #!/usr/bin/env python3
 """Offline source/transport tests.  No SSH, credentials, installed configs, or models."""
+
 from __future__ import annotations
 
 import base64
-from contextlib import redirect_stdout
 import fcntl
 import importlib.util
 import io
 import json
 import os
-from pathlib import Path
 import shlex
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
-SPEC = importlib.util.spec_from_file_location("fleet_cli_sync", Path(__file__).with_name("fleet-cli-sync.py"))
+SPEC = importlib.util.spec_from_file_location(
+    "fleet_cli_sync", Path(__file__).with_name("fleet-cli-sync.py")
+)
 S = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(S)
 
-POLICY = '''import hashlib,json
+POLICY = """import hashlib,json
 MAX_BUNDLE_BYTES=8*1024*1024
 def allowed_path(path):
-    if path in {"scripts/agent-sync","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/agent-sync-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
+    if path in {"scripts/simple-chat","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/agent-sync-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
     parts=path.split("/")
     if len(parts)==3 and parts[:2]==["scripts","agent_sync"] and parts[2].endswith(".py"): return True
     if len(parts)==4 and parts[:3]==["scripts","agent_sync","mcp"] and (parts[3].endswith(".py") or parts[3] in {"tools.json","fixtures.jsonl"}): return True
@@ -31,7 +34,7 @@ def allowed_path(path):
 def manifest_digest(files):
     value={path:{"mode":entry["mode"],"sha256":entry["sha256"]} for path,entry in files.items()}
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":")).encode()).hexdigest()
-'''
+"""
 
 
 class Transport(S.Runner):
@@ -49,8 +52,11 @@ class Transport(S.Runner):
         if self.mode == "failure":
             return subprocess.CompletedProcess(argv, 1, b"", b"NEVER_PRINT_THIS_CREDENTIAL")
         bundle = json.loads(kwargs["data"])
-        reply = {"status": "unchanged" if self.mode == "unchanged" else "activated",
-                 "source_commit": bundle["source_commit"], "bundle_sha256": bundle["bundle_sha256"]}
+        reply = {
+            "status": "unchanged" if self.mode == "unchanged" else "activated",
+            "source_commit": bundle["source_commit"],
+            "bundle_sha256": bundle["bundle_sha256"],
+        }
         if self.mode == "paused":
             reply["status"] = "paused"
         if self.mode == "wrong_digest":
@@ -71,18 +77,35 @@ class Fixture(unittest.TestCase):
         self.repo.mkdir()
         self.state = self.root / "state"
         self.git("init", "-q")
-        self.git("remote", "add", "origin", "git@github.com:Simple-With-Us/AI-Fleet-Coordinator.git")
+        self.git(
+            "remote", "add", "origin", "git@github.com:Simple-With-Us/AI-Fleet-Coordinator.git"
+        )
         self.put("scripts/fleet-cli-release.py", POLICY)
-        self.put("scripts/agent-sync", "#!/usr/bin/env python3\nprint('fixture')\n", executable=True)
+        self.put(
+            "scripts/simple-chat", "#!/usr/bin/env python3\nprint('fixture')\n", executable=True
+        )
         self.put("scripts/agent_sync/core.py", "VALUE = 1\n")
         self.put("fleet-apps.json", "{}\n")
         self.put("docs/private-fixture.md", "PRIVATE_FIXTURE_MUST_NOT_SHIP\n")
         self.commit()
 
     def git(self, *argv):
-        result = subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                                 "-C", str(self.repo), *argv], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                timeout=10, env=S.git_env())
+        result = subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-C",
+                str(self.repo),
+                *argv,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            env=S.git_env(),
+        )
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
         return result.stdout.decode().strip()
 
@@ -119,9 +142,16 @@ class SourceTests(Fixture):
 
     def test_only_published_allowlisted_blobs_and_regular_modes_ship(self):
         bundle, raw, receiver = S.build_bundle(self.repo)
-        self.assertEqual(set(bundle["files"]), {"scripts/fleet-cli-release.py", "scripts/agent-sync",
-                                                "scripts/agent_sync/core.py", "fleet-apps.json"})
-        self.assertEqual(bundle["files"]["scripts/agent-sync"]["mode"], 0o755)
+        self.assertEqual(
+            set(bundle["files"]),
+            {
+                "scripts/fleet-cli-release.py",
+                "scripts/simple-chat",
+                "scripts/agent_sync/core.py",
+                "fleet-apps.json",
+            },
+        )
+        self.assertEqual(bundle["files"]["scripts/simple-chat"]["mode"], 0o755)
         self.assertEqual(bundle["files"]["fleet-apps.json"]["mode"], 0o644)
         self.assertEqual(bundle["source_commit"], self.git("rev-parse", "HEAD"))
         self.assertNotIn(b"PRIVATE_FIXTURE_MUST_NOT_SHIP", raw)
@@ -160,17 +190,31 @@ class SourceTests(Fixture):
     def test_export_attributes_cannot_hide_or_rewrite_payload(self):
         original = "$Format:%H$\n"
         self.put("scripts/agent_sync/substitute.py", original)
-        self.put(".gitattributes", "scripts/agent_sync/core.py export-ignore\nscripts/agent_sync/substitute.py export-subst\n")
+        self.put(
+            ".gitattributes",
+            "scripts/agent_sync/core.py export-ignore\nscripts/agent_sync/substitute.py export-subst\n",
+        )
         self.commit()
         files = S.build_bundle(self.repo)[0]["files"]
         self.assertIn("scripts/agent_sync/core.py", files)
-        self.assertEqual(base64.b64decode(files["scripts/agent_sync/substitute.py"]["data"]), original.encode())
+        self.assertEqual(
+            base64.b64decode(files["scripts/agent_sync/substitute.py"]["data"]), original.encode()
+        )
 
     def test_git_environment_cannot_redirect_source_or_replace_objects(self):
-        with patch.dict(os.environ, {"GIT_DIR": "/missing-fixture", "GIT_WORK_TREE": "/missing-fixture",
-                                     "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.worktree",
-                                     "GIT_CONFIG_VALUE_0": "/missing-fixture"}):
-            self.assertEqual(S.build_bundle(self.repo)[0]["source_commit"], self.git("rev-parse", "HEAD"))
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_DIR": "/missing-fixture",
+                "GIT_WORK_TREE": "/missing-fixture",
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "core.worktree",
+                "GIT_CONFIG_VALUE_0": "/missing-fixture",
+            },
+        ):
+            self.assertEqual(
+                S.build_bundle(self.repo)[0]["source_commit"], self.git("rev-parse", "HEAD")
+            )
 
     def test_file_count_and_encoded_bundle_size_are_bounded(self):
         for number in range(S.MAX_FILES):
@@ -199,7 +243,9 @@ class TransportTests(Fixture):
         self.assertEqual(checked["last_check_status"], "skipped")
         self.assertEqual(checked["last_success_at"], before["last_success_at"])
         forced = Transport("unchanged")
-        self.assertEqual(S.sync(self.repo, self.state, force=True, runner=forced)["status"], "unchanged")
+        self.assertEqual(
+            S.sync(self.repo, self.state, force=True, runner=forced)["status"], "unchanged"
+        )
         installer = Transport()
         S.sync(self.repo, self.state, install=True, runner=installer)
         self.assertEqual(shlex.split(installer.calls[0][0][-1])[-1], "--install")
@@ -230,9 +276,13 @@ class TransportTests(Fixture):
         self.assertEqual(len(retried.calls), 1)
 
     def test_paused_bad_receipts_and_failed_ssh_are_not_success(self):
-        for mode, code in (("paused", "receiver_paused"), ("wrong_digest", "receipt_invalid"),
-                           ("wrong_commit", "receipt_invalid"), ("malformed", "receipt_invalid"),
-                           ("failure", "ssh_failed")):
+        for mode, code in (
+            ("paused", "receiver_paused"),
+            ("wrong_digest", "receipt_invalid"),
+            ("wrong_commit", "receipt_invalid"),
+            ("malformed", "receipt_invalid"),
+            ("failure", "ssh_failed"),
+        ):
             with self.subTest(mode=mode):
                 state_dir = self.state / mode
                 self.assert_code(code, S.sync, self.repo, state_dir, runner=Transport(mode))
@@ -244,10 +294,17 @@ class TransportTests(Fixture):
         text = "print('shell $(touch should-not-exist) `anything`')\n"
         argv = S.ssh_argv(text)
         self.assertEqual(argv[-2], "root@coolify")
-        self.assertEqual(shlex.split(argv[-1]), ["/usr/bin/python3", "-I", "-B", "-c", text, "receive"])
+        self.assertEqual(
+            shlex.split(argv[-1]), ["/usr/bin/python3", "-I", "-B", "-c", text, "receive"]
+        )
         self.assertIn("-T", argv)
-        for option in ("BatchMode=yes", "StrictHostKeyChecking=yes", "UpdateHostKeys=no",
-                       "ControlMaster=no", "ConnectTimeout=10"):
+        for option in (
+            "BatchMode=yes",
+            "StrictHostKeyChecking=yes",
+            "UpdateHostKeys=no",
+            "ControlMaster=no",
+            "ConnectTimeout=10",
+        ):
             self.assertIn(option, argv)
 
     def test_timeouts_and_deadline_are_fixed_safe_errors(self):
@@ -282,10 +339,10 @@ class HookTests(unittest.TestCase):
         self.assertLess(start, hook.index("if ! rgit fetch"))
         self.assertLess(start, hook.index('[ "$old" = "$new" ]'))
         self.assertLess(hook.index('[ -e "$PAUSE_FILE" ]'), start)
-        self.assertIn('coolify-cli-sync.enabled', hook)
-        self.assertIn('alarm 95', hook)
-        self.assertIn('COOLIFY-CLI-SYNC-FAILED', hook)
-        self.assertNotIn('--install', hook[start:hook.index('if ! git -C', start)])
+        self.assertIn("coolify-cli-sync.enabled", hook)
+        self.assertIn("alarm 95", hook)
+        self.assertIn("COOLIFY-CLI-SYNC-FAILED", hook)
+        self.assertNotIn("--install", hook[start : hook.index("if ! git -C", start)])
 
 
 if __name__ == "__main__":

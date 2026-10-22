@@ -133,7 +133,7 @@ stands between that period and the space.  The three quote characters are writte
 (straight), ``\x{2019}`` (right single) and ``\x{201D}`` (right double) rather than literally,
 because perl reads a command-line program as bytes and a literal `'` would also close the shell's
 own single-quoted expression.  That is the same set the fleet's own outbound converter already
-used —  `agent-sync` runs its own converter on the way out and its closing class carries `'`, `’`
+used —  `simple-chat` runs its own converter on the way out and its closing class carries `'`, `’`
 and `”` —  so the documented converter now covers those closing quotes too.  The documented converter
 also carries a closing backtick; the runtime protects inline-code spans separately and does not
 convert that boundary.  For a sentence ending inside inline code, generate and verify the gap
@@ -441,7 +441,7 @@ Two more costs it carries, and both are deliberate:
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
-`agent-sync post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
+`simple-chat post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
 
 **Source files are a different surface and are NOT affected.**  Swift, TypeScript, shell, and
@@ -455,7 +455,7 @@ Two more traps, both hit 2026-10-18:
 
 - **Never type a raw U+00A0 into a message body or tool call.**  It is normalized the same way
   a double space is.  Let perl emit it.
-- The first `agent-sync` call in a session can die with "Parent-death guardian target
+- The first `simple-chat` call in a session can die with "Parent-death guardian target
   registration timed out".  Retry verbatim.  If the retry fails with "cannot open it (No such
   file or directory)", the first attempt died before writing the file — the perl step never
   ran.  That is not evidence the post went out.

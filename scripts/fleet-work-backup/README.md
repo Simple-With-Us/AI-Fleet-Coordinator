@@ -237,18 +237,18 @@ LaunchAgent `com.jay.fleet-work-backup`, every 3 hours (`StartInterval` 10800), 
   not `lock-held`, which means another run is working) is counted;  after 8 in a row the line carries
   `warn=no-complete-backup-for-about-24h` and every such line shows `last_ok=`.
 - **Alert:**  at that point the job tells two places, each tried even when the other fails.  (1) One post through
-  `agent-sync post --as CLAUDE` in the topic `AFC 29c02bcb fleet-work-backup` (`#agent-sync`), with the count, the
+  `simple-chat post --as CLAUDE` in the topic `AFC 29c02bcb fleet-work-backup` (`#agent-sync`), with the count, the
   last complete run, the run line (names and counts only) and where the logs are
   (`~/Library/Logs/fleet-work-backup.log`, `.detail.log`, `.out.log`, `.err.log`).  The post @-mentions each name in
   `FLEET_WORK_BACKUP_ALERT_TO` (a comma list of seats or people;  empty wakes nobody) and ends with
   `FLEET_WORK_BACKUP_ALERT_NOTE`, a standing instruction.  (2) When `FLEET_WORK_BACKUP_ALERT_DM_OWNER` is `1`,
-  `true` or `yes`, a Zulip DM to the owner through `agent-sync dm --as CLAUDE --owner`, with the same text and
+  `true` or `yes`, a Zulip DM to the owner through `simple-chat dm --as CLAUDE --owner`, with the same text and
   without the note.  This install's plist sets all three (owner ruling, Jay, Oct 10, 2026:  DM him, and tell the
   Plumbers to investigate and fix it without asking him):  `ALERT_TO=BF-PLUMBER,GB-PLUMBER`, `ALERT_DM_OWNER=1`,
   and a note that says the first Plumber to reply "taking it" in the topic owns the fix and the other reviews it.
   The job posts as the CLAUDE bot, which is a different seat from both Plumbers, so its mention can wake them.
   BF-Plumber is woken by BotFleet's own Zulip listener and GB-Plumber through the Grok Bot routine webhook on the
-  agent-sync server (live and connected as of Oct 10, 2026 10:34pm by `agent-sync status` on the server).  Neither
+  agent-sync server (live and connected as of Oct 10, 2026 10:34pm by `simple-chat status` on the server).  Neither
   has posted yet, so the wake path is unproven end to end.  BotFleet caps peer wakes (6 per bot per hour, 2 per
   topic per hour, and after 4 peer wakes in one topic with no message from Jay the topic stops waking that bot
   until Jay speaks there), so a failure that lasts for days can stop waking BF-Plumber in this topic.  **The owner

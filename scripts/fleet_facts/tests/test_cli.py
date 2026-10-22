@@ -89,7 +89,7 @@ class Sandbox(unittest.TestCase):
 
     def github_and_linear(self, title="Example change"):
         self.install("gh", "gh")
-        self.install("board", "board")
+        self.install("simple-board", "board")
         self.scenario["gh"] = {
             "pages": {
                 "": gql_page(
@@ -140,7 +140,7 @@ class NoMac(Sandbox):
         calls = read_log(self.log)
         self.assertEqual([c for c in calls if c[0] == "lane"], [])
         self.assertTrue(
-            [c for c in calls if c[0] == "gh"] and [c for c in calls if c[0] == "board"]
+            [c for c in calls if c[0] == "gh"] and [c for c in calls if c[0] == "simple-board"]
         )
 
     def test_gh_is_called_with_the_cursor_variable_and_board_only_reads(self):
@@ -150,7 +150,7 @@ class NoMac(Sandbox):
         gh = [c for c in calls if c[0] == "gh"]
         self.assertEqual(len(gh), 2)
         self.assertIn("endCursor=c1", gh[1])
-        board = [c for c in calls if c[0] == "board"]
+        board = [c for c in calls if c[0] == "simple-board"]
         self.assertEqual({c[2] for c in board}, {"list", "show"})
         self.assertEqual(
             {c[1] for c in board}, {"0"}

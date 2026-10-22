@@ -1,4 +1,4 @@
-"""`open-loops` end to end:  a real python3 -I subprocess, fake gh, board, lane, C1, C6, agent-sync and fleet-facts
+"""`open-loops` end to end:  a real python3 -I subprocess, fake gh, simple-board, lane, C1, C6, simple-chat and fleet-facts
 programs on PATH, and a temp HOME."""
 import json
 import stat
@@ -21,12 +21,12 @@ class Cli(Sandbox):
         self.now = datetime.now(timezone.utc)
         self.world = standard_world(self.home, self.bin, programs=False, now=self.now, unknown_pr=False)
         ff_shim(self.bin, "gh", "gh")
-        ff_shim(self.bin, "board", "board")
+        ff_shim(self.bin, "simple-board", "board")
         (self.home / "apps").mkdir()
         ff_shim(self.home / "apps", "lane", "lane")
         ff_shim(self.bin, "fleet-autopush", "jsoncmd")
         ff_shim(self.bin, "needs-owner", "jsoncmd")
-        install_shim(self.bin, "agent-sync", "agent-sync")
+        install_shim(self.bin, "simple-chat", "simple-chat")
         install_shim(self.bin, "fleet-facts", "fleet-facts")
         w = self.world
         self.scenario = {
@@ -34,7 +34,7 @@ class Cli(Sandbox):
             "board": {"list": {"in_progress": w.in_progress, "needs-owner": w.needs_owner}, "show": w.show, "show_fail": sorted(w.show_fail)},
             "lane": w.lane_report,
             "cmds": {"fleet-autopush": w.docs["fleet-autopush"], "needs-owner": w.docs["needs-owner"]},
-            "agent-sync": {"whoami": {"seat": "BF-DEPLOYER", "bot_seat": "BF-DEPLOYER", "verified": True, "user_id": 77},
+            "simple-chat": {"whoami": {"seat": "BF-DEPLOYER", "bot_seat": "BF-DEPLOYER", "verified": True, "user_id": 77},
                            "topics": [], "read": {}, "dm_read": []},
             "fleet-facts": {"verify_rc": 0},
         }
@@ -79,7 +79,7 @@ class Gather(Cli):
         self.assertEqual(facts["sources"]["lanes"]["status"], "absent")
         self.assertEqual({m["source"] for m in facts["missing"]}, {"lanes", "autopush"})
         programs = {c[0] for c in self.commands()}
-        self.assertTrue({"gh", "board"} <= programs)
+        self.assertTrue({"gh", "simple-board"} <= programs)
         self.assertFalse(programs & {"lane", "fleet-autopush", "needs-owner"})
         self.assertIn("Missing:  lanes", proc.stderr)
 
@@ -186,9 +186,9 @@ class Lint(Cli):
         self.facts_file = self.write("facts.json", json.dumps(facts))
         return facts
 
-    def test_lint_runs_for_any_seat_and_touches_neither_agent_sync_nor_the_c2_id(self):
+    def test_lint_runs_for_any_seat_and_touches_neither_simple_chat_nor_the_c2_id(self):
         facts = self.prepare()
-        self.scenario["agent-sync"]["whoami"]["seat"] = "CLAUDE"             # not BF-Deployer:  send would refuse, lint does not care
+        self.scenario["simple-chat"]["whoami"]["seat"] = "CLAUDE"             # not BF-Deployer:  send would refuse, lint does not care
         dm = self.write("dm.md", make_dm(facts))
         before = len(self.calls())
         proc = self.run_cli("lint", "--dm-file", str(dm), "--facts", str(self.facts_file))
@@ -225,7 +225,7 @@ class Send(Cli):
 
     def test_the_wrong_seat_is_refused_through_the_entry_script(self):
         self.prepare()
-        self.scenario["agent-sync"]["whoami"]["seat"] = "CLAUDE"
+        self.scenario["simple-chat"]["whoami"]["seat"] = "CLAUDE"
         proc = self.run_cli("send", "--dm-file", str(self.dm_file), "--facts", str(self.facts_file), "--c2-id", "FFX-100")
         self.assertEqual(proc.returncode, 3)
         self.assertIn("only BF-Deployer", proc.stderr)

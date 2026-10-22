@@ -79,7 +79,7 @@ class Facts(Sandbox):
 
         def broken(argv):
             from fleet_facts.runner import Result
-            return Result(5, "", "board: unreachable") if argv[0].endswith("board") else original(argv)
+            return Result(5, "", "simple-board: unreachable") if argv[0].endswith("simple-board") else original(argv)
         world.handle = broken
         f = self.facts(world)
         self.assertEqual(f["sources"]["linear"]["status"], "failed")
@@ -302,7 +302,7 @@ class Zulip(Sandbox):
     def world_with_topics(self):
         world = standard_world(self.home, self.bin)
         world.pages = {"": world.pages[""]}
-        world.agent_sync["topics"] = [{"name": "FFX-2 forty hours", "max_id": 9}, {"name": "FFX-5 old signals", "max_id": 8},
+        world.simple_chat["topics"] = [{"name": "FFX-2 forty hours", "max_id": 9}, {"name": "FFX-5 old signals", "max_id": 8},
                                        {"name": "FFX-20 not this one", "max_id": 7}]
         return world
 
@@ -319,26 +319,26 @@ class Zulip(Sandbox):
 
     def test_the_claimants_own_post_in_its_topic_counts(self):
         world = self.world_with_topics()
-        world.agent_sync["read"] = {"FFX-2 forty hours": [self.posts("MM", 3)]}
+        world.simple_chat["read"] = {"FFX-2 forty hours": [self.posts("MM", 3)]}
         f = self.facts(world)
         self.assertIsNone(self.band(f, "FFX-2"))                         # moved out of the 36 hour band
         self.assertEqual(f["sources"]["zulip"]["status"], "ok")
 
     def test_another_seats_post_does_not_count(self):
         world = self.world_with_topics()
-        world.agent_sync["read"] = {"FFX-2 forty hours": [self.posts("CODEX", 3)]}
+        world.simple_chat["read"] = {"FFX-2 forty hours": [self.posts("CODEX", 3)]}
         f = self.facts(world)
         self.assertEqual(self.band(f, "FFX-2")["band"], "36h")
 
     def test_a_topic_read_that_fails_makes_the_claim_unknown(self):
         world = self.world_with_topics()
-        world.agent_sync["read_rc"] = {"FFX-2 forty hours": 5}
+        world.simple_chat["read_rc"] = {"FFX-2 forty hours": 5}
         f = self.facts(world)
         self.assertEqual(self.band(f, "FFX-2")["band"], "unknown")
 
     def breaking_topics(self, world, result):
         original = world.handle
-        world.handle = lambda argv: result if len(argv) > 1 and argv[0].endswith("agent-sync") and argv[1] == "topics" else original(argv)
+        world.handle = lambda argv: result if len(argv) > 1 and argv[0].endswith("simple-chat") and argv[1] == "topics" else original(argv)
 
     def idle_or_unknown(self, f):
         return {c["identifier"]: c["band"] for key in ("idle_36h", "idle_48h", "unknown") for c in f["claims"][key]}
@@ -384,9 +384,9 @@ class Zulip(Sandbox):
         self.assertEqual(self.band(f, "FFX-5")["band"], "48h")
         self.assertIn("zulip_topic", self.band(f, "FFX-5")["checked"])
 
-    def test_no_agent_sync_means_the_source_is_unchecked_not_failed(self):
+    def test_no_simple_chat_means_the_source_is_unchecked_not_failed(self):
         world = self.world_with_topics()
-        (self.bin / "agent-sync").unlink()
+        (self.bin / "simple-chat").unlink()
         f = self.facts(world)
         self.assertEqual(f["sources"]["zulip"]["status"], "absent")
         self.assertIn("zulip_topic", self.band(f, "FFX-2")["unchecked"])

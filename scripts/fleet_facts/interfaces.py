@@ -1,7 +1,7 @@
 """Tolerant readers for the other open-loops components' status output.
 
   C1  `fleet-autopush status --json`          part `autopush`
-  C3  `agent-sync asks status --json`         part `asks`
+  C3  `simple-chat asks status --json`         part `asks`
   C4  `~/apps/claim-expiry/state/report-latest.json`   part `report`  (a file, schema 1)
   C6  `needs-owner list --all --json`         part `needs_owner`   (--all:  the default lists only the open
                                                                    rows, and the digest needs the answered ones)
@@ -15,6 +15,7 @@ module does not interpret the documents:  the component that consumes one knows 
 
 All five are local state of one Mac, so with `no_mac` each one is absent.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,7 +28,7 @@ MAX_DOCUMENT_BYTES = 1_000_000
 
 COMMANDS: dict[str, list[str]] = {
     "autopush": ["fleet-autopush", "status", "--json"],
-    "asks": ["agent-sync", "asks", "status", "--json"],
+    "asks": ["simple-chat", "asks", "status", "--json"],
     "needs_owner": ["needs-owner", "list", "--all", "--json"],
     "consult": ["consult", "status", "--all", "--json"],
 }

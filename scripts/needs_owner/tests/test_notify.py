@@ -72,7 +72,7 @@ class ReferenceLineTests(unittest.TestCase):
         world = World(self)
         question = "Keep ``` and ~~~ and > quotes in a question?"
         self.assertEqual(world.file(question, "Yes", "No").code, 0)
-        (filed,) = [c for c in world.calls("board") if c["argv"][0] == "file"]
+        (filed,) = [c for c in world.calls("simple-board") if c["argv"][0] == "file"]
         uid = filed["argv"][filed["argv"].index("--uid") + 1]
         (message,) = world.zulip()["messages"]
         self.assertTrue(notifymod.carries_ref(message["content"], uid), message["content"])
@@ -171,7 +171,7 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual(self.w.run("list", "--json").json()[0]["notified_msg_id"], None)
 
     def test_no_agent_sync_is_pending(self) -> None:
-        self.w.remove_tool("agent-sync")
+        self.w.remove_tool("simple-chat")
         got = self.w.file(Q, "Yes", "No").json()
         self.assertEqual((got["state"], got["reason"]), ("notify_pending", "no_agent_sync"))
         self.assertEqual(len(self.w.board_state()["issues"]), 1)
@@ -184,10 +184,10 @@ class NoticeTests(unittest.TestCase):
             got = self.w.file(q, "Yes", "No").json()
             self.assertEqual(got["state"], "notified", mode)
             self.assertIsInstance(got["notified_msg_id"], int)
-        posts = [c for c in self.w.calls("agent-sync") if c["argv"][0] == "post"]
+        posts = [c for c in self.w.calls("simple-chat") if c["argv"][0] == "post"]
         self.assertEqual(len(posts), 2, "one post per item:  nothing was retried")
         self.assertEqual(len(self.w.zulip()["messages"]), 2)
-        reads = [c for c in self.w.calls("agent-sync") if c["argv"][0] == "read"]
+        reads = [c for c in self.w.calls("simple-chat") if c["argv"][0] == "read"]
         self.assertEqual(len(reads), 2)
         self.assertIn("--include-self", reads[0]["argv"])
 
@@ -231,11 +231,11 @@ class NoticeTests(unittest.TestCase):
 
     # ---- who may be taken for the notice ------------------------------------------------------
     def _uid(self) -> str:
-        (filed,) = [c for c in self.w.calls("board") if c["argv"][0] == "file"]
+        (filed,) = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"]
         return filed["argv"][filed["argv"].index("--uid") + 1]
 
     def _posts(self) -> list:
-        return [c for c in self.w.calls("agent-sync") if c["argv"][0] in ("post", "reply")]
+        return [c for c in self.w.calls("simple-chat") if c["argv"][0] in ("post", "reply")]
 
     def test_a_quote_or_a_copied_reference_is_never_taken_for_the_notice(self) -> None:
         """The post landed, both attempts to record it failed, and the topic then fills with look-alikes.  The
@@ -300,7 +300,7 @@ class NoticeTests(unittest.TestCase):
         topic = self.w.zulip()["messages"][0]["topic"]
 
         def read() -> list:
-            ran = subprocess.run([str(self.w.bin / "agent-sync"), "read", "--as", "CLAUDE", "--json", "--channel", "agent-sync",
+            ran = subprocess.run([str(self.w.bin / "simple-chat"), "read", "--as", "CLAUDE", "--json", "--channel", "agent-sync",
                                   "--topic", topic, "--include-self"], capture_output=True, text=True, env=self.w.env(), timeout=60)
             self.assertEqual(ran.returncode, 0, ran.stderr)
             return [json.loads(line) for line in ran.stdout.splitlines()]
@@ -332,7 +332,7 @@ class NoticeTests(unittest.TestCase):
         got = r.json()
         self.assertEqual((got["state"], got["notified_msg_id"], got["linkback"]), ("notified", 777, "ok"))
         self.assertEqual(got["topic"], "OWNER AFC-9 Plumber needs a key")
-        sends = self.w.calls("agent-sync")
+        sends = self.w.calls("simple-chat")
         self.assertEqual([c["argv"][0] for c in sends], ["reply"], "no post:  the persona's topic is the notice")
         self.assertEqual(sends[0]["argv"], ["reply", "--as", "CLAUDE", "--session", "needsown", "--json", "--id", "777", "--", "-"])
         self.assertIn("Filed in Linear as AFC-300", sends[0]["stdin"])
@@ -340,7 +340,7 @@ class NoticeTests(unittest.TestCase):
         record = self._records()[0]
         self.assertIn("[needs-owner] notified msg 777", record)
         self.assertIn("topic: OWNER AFC-9 Plumber needs a key", record)
-        (filed,) = [c for c in self.w.calls("board") if c["argv"][0] == "file"]
+        (filed,) = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"]
         text = filed["files"]["--desc-file"]["text"]
         self.assertIn("Context: for GB-PLUMBER", text)
         self.assertIn("Mirror of: " + REALM_LINK % ("OWNER.20AFC-9.20Plumber.20needs.20a.20key", 777), text)
@@ -349,7 +349,7 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual(again.code, 0, again.err)
         self.assertTrue(again.json()["already_filed"])
         self.assertEqual(len(self.w.board_state()["issues"]), 1)
-        self.assertEqual(len([c for c in self.w.calls("agent-sync")]), 1)
+        self.assertEqual(len([c for c in self.w.calls("simple-chat")]), 1)
         listed = self.w.run("list", "--json").json()
         self.assertEqual((listed[0]["seat"], listed[0]["for_seat"], listed[0]["notified_msg_id"]), ("CLAUDE", "GB-PLUMBER", 777))
         self.assertEqual(listed[0]["topic"], "OWNER AFC-9 Plumber needs a key")
