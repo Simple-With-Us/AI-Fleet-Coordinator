@@ -1,10 +1,10 @@
 """The thin Mac wake alerter:  AppleScript banners for wake events, with the
-listener daemon hosted away (Hetzner) instead of on this Mac.
+listener daemon hosted away from this Mac.
 
 The hosted listener records every wake in its ledger and serves it through the
 signed read API (listener_api.py).  This client polls ONE record -
 
-    GET /listener/v1/<SEAT>/wakes?since_hours=1&limit=50
+    GET /listener/v1/<SEAT>/wakes?since_hours=24&limit=100
 
 signed with the seat's routine HMAC key (the same key the daemon and the
 Worker already share), remembers the wake ids it has already handled in a
@@ -12,12 +12,12 @@ small state file, and reacts to each new wake event one of two ways:
 
 * default:  pop one macOS notification via the existing
   adapters.osascript_argv (bodies never reach a banner) - the Mac client.
-* hook mode (AGENT_SYNC_ALERTER_HOOK set):  run one configured command per
+* hook mode (OPERATOR_ALERTER_HOOK set):  run one configured command per
   new wake instead - the headless client for seats hosted off the Mac (for
-  example launching Muse Code headlessly on the Hetzner box, see
-  docs/agent-sync-listener-hetzner.md).  The hook receives wake metadata
+  example launching Muse Code headlessly on the hosting box, see
+  docs/operator-listener-hosting.md).  The hook receives wake metadata
   only ({seat} {channel} {topic} {wake_id} {state} placeholders in the
-  command plus AGENT_SYNC_WAKE_* env vars);  bodies never reach it.  A wake
+  command plus OPERATOR_WAKE_* env vars);  bodies never reach it.  A wake
   id is marked seen only after the hook exits 0, so a failed hook retries
   on the next poll.
 
@@ -29,13 +29,13 @@ One-shot by default so launchd owns the cadence (StartInterval);  --loop N
 runs forever for a supervisor that prefers a resident process.
 
 Env:
-    AGENT_SYNC_SEAT            seat name (for example ECHO)
-    AGENT_SYNC_LISTENER_URL    tailnet base URL, for example
-                               http://server.boa-roygbiv.ts.net:8788
+    OPERATOR_SEAT            seat name (for example ECHO)
+    OPERATOR_LISTENER_URL    tailnet base URL, for example
+                               http://listener.example.ts.net:8788
     <CODE>_ROUTINE_KEY         the seat's routine HMAC key (name overridable
-                               with AGENT_SYNC_ROUTINE_KEY_ENV)
-    AGENT_SYNC_ALERTER_STATE   state file path (default
-                               ~/.local/state/agent-sync/wake-alerter.json)
+                               with OPERATOR_ROUTINE_KEY_ENV)
+    OPERATOR_ALERTER_STATE   state file path (default
+                               ~/.local/state/operator/wake-alerter.json)
 
 Python 3.9+ (the Mac's /usr/bin/python3), standard library only.
 """
@@ -65,7 +65,7 @@ _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def sign(key: str, path: str, query: str, timestamp: str) -> str:
-    body = ("%s\nGET\n%s\n%s\n%s" % (READ_CONTRACT, path, query, timestamp)).encode("utf-8")
+    body = (f"{READ_CONTRACT}\nGET\n{path}\n{query}\n{timestamp}").encode("utf-8")
     return hmac.new(key.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
@@ -90,36 +90,64 @@ def osascript_argv(osascript: str, text: str, title: str) -> list[str]:
     ]
 
 
-QUERY = "since_hours=1&limit=50"
+QUERY = "since_hours=24&limit=100"
+# Wakes that ran or are about to run.  held_back, dropped, skipped, surfaced, expired and
+# evicted never ran, so they neither banner nor run a hook.
+ALERT_STATES = frozenset({"queued", "accepted", "started", "done", "failed"})
 MAX_SEEN_WAKE_IDS = 500
 REQUEST_TIMEOUT_SECONDS = 10
-HOOK_TIMEOUT_SECONDS = int(os.environ.get("AGENT_SYNC_ALERTER_HOOK_TIMEOUT") or "600")
+
+
+def _hook_timeout(raw: str | None) -> int:
+    try:
+        value = int((raw or "").strip() or "600")
+    except ValueError:
+        return 600
+    return value if value > 0 else 600
+
+
+HOOK_TIMEOUT_SECONDS = _hook_timeout(os.environ.get("OPERATOR_ALERTER_HOOK_TIMEOUT"))
 _HOOK_FIELDS = ("seat", "channel", "topic", "wake_id", "state")
 
 
+def _str(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
 def _hook_argv(template: str, seat: str, item: dict) -> list[str]:
+    """Split the template first, then fill the five placeholders inside each token.
+
+    Values are never re-tokenized or interpreted as format fields, so braces,
+    quotes and spaces in a topic stay inside one argument.  Raises ValueError for
+    a template that cannot be split."""
     import shlex
 
-    values = {"seat": seat}
+    values = {"{seat}": seat}
     for field in _HOOK_FIELDS[1:]:
-        values[field] = item.get(field)
-        if not isinstance(values[field], str):
-            values[field] = ""
-    quoted = {k: shlex.quote(v) for k, v in values.items()}
-    return shlex.split(template.format(**quoted))
+        values["{" + field + "}"] = _str(item.get(field))
+    argv = []
+    for token in shlex.split(template):
+        for placeholder, value in values.items():
+            token = token.replace(placeholder, value)
+        argv.append(token)
+    return argv
 
 
 def _hook_env(item: dict) -> dict:
-    env = dict(os.environ)
-    env["AGENT_SYNC_WAKE_ID"] = item.get("wake_id") or ""
-    env["AGENT_SYNC_WAKE_CHANNEL"] = item.get("channel") or ""
-    env["AGENT_SYNC_WAKE_TOPIC"] = item.get("topic") or ""
-    env["AGENT_SYNC_WAKE_STATE"] = item.get("state") or ""
+    # The seat's routine HMAC key authorizes the read API;  the hook never needs it.
+    env = {k: v for k, v in os.environ.items() if not k.endswith("_ROUTINE_KEY")}
+    key_env = os.environ.get("OPERATOR_ROUTINE_KEY_ENV")
+    if key_env:
+        env.pop(key_env, None)
+    env["OPERATOR_WAKE_ID"] = _str(item.get("wake_id"))
+    env["OPERATOR_WAKE_CHANNEL"] = _str(item.get("channel"))
+    env["OPERATOR_WAKE_TOPIC"] = _str(item.get("topic"))
+    env["OPERATOR_WAKE_STATE"] = _str(item.get("state"))
     return env
 
 
 def _default_state_path() -> str:
-    return os.path.expanduser("~/.local/state/agent-sync/wake-alerter.json")
+    return os.path.expanduser("~/.local/state/operator/wake-alerter.json")
 
 
 def _load_seen(path: str) -> list[str]:
@@ -137,20 +165,44 @@ def _load_seen(path: str) -> list[str]:
 
 
 def _save_seen(path: str, seen: list[str]) -> None:
+    directory = os.path.dirname(os.path.abspath(path))
+    if os.path.islink(directory):
+        raise OSError("state directory is a symlink")
+    os.makedirs(directory, mode=0o700, exist_ok=True)
     tmp = path + ".tmp"
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump({"seen": seen[-MAX_SEEN_WAKE_IDS:]}, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, path)
 
 
+_SECRETISH_RE = re.compile(
+    r"(?:gh[pousr]_|github_pat_|xox[abprs]-|sk-|AKIA)[A-Za-z0-9_\-]{8,}|[A-Za-z0-9+/_\-]{40,}"
+)
+
+
+def _redact(text: object) -> str:
+    return _SECRETISH_RE.sub("[redacted]", _str(text))
+
+
 def _banner_text(item: dict) -> str:
-    where = item.get("channel") or ("DM" if item.get("dm") else "unknown")
-    topic = item.get("topic")
+    where = _redact(item.get("channel")) or ("DM" if item.get("dm") else "unknown")
+    topic = _redact(item.get("topic"))
     if where and topic:
-        return "wake in %s / %s" % (where, topic)
-    return "wake in %s" % (where or "unknown")
+        return f"wake in {where} / {topic}"
+    return f"wake in {where or 'unknown'}"
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would replay the signature headers to another host."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_default_opener = urllib.request.build_opener(_NoRedirect).open
 
 
 def poll_once(
@@ -161,7 +213,7 @@ def poll_once(
     *,
     runner,
     clock=time.time,
-    opener=urllib.request.urlopen,
+    opener=_default_opener,
     hook: str = "",
 ) -> int:
     """One poll:  handle every wake event not already in the state file.
@@ -184,29 +236,56 @@ def poll_once(
     try:
         with opener(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
             payload = json.loads(resp.read(1024 * 1024))
-    except (urllib.error.URLError, OSError, ValueError):
+    except urllib.error.HTTPError as exc:
+        print(f"wake_alerter: read API answered HTTP {exc.code}", file=sys.stderr)
         return 0
-    items = ((payload.get("view") or {}).get("items")) or []
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        print(f"wake_alerter: read failed ({type(exc).__name__})", file=sys.stderr)
+        return 0
+    # The signature covers the request only, so check the answer is for this seat.
+    if (
+        not isinstance(payload, dict)
+        or payload.get("contract") != READ_CONTRACT
+        or payload.get("seat") != seat
+    ):
+        print("wake_alerter: unexpected read response; ignored", file=sys.stderr)
+        return 0
+    view = payload.get("view")
+    items = view.get("items") if isinstance(view, dict) else None
+    if not isinstance(items, list):
+        return 0
     seen = _load_seen(state_path)
     fresh = []
+    queued_ids = set()
     for item in items:
         if not isinstance(item, dict):
             continue
         wake_id = item.get("wake_id")
-        if isinstance(wake_id, str) and wake_id and wake_id not in seen:
+        if (
+            isinstance(wake_id, str)
+            and wake_id
+            and wake_id not in seen
+            and wake_id not in queued_ids
+            and item.get("state") in ALERT_STATES
+        ):
+            queued_ids.add(wake_id)
             fresh.append((wake_id, item))
     handled = 0
     for wake_id, item in fresh:
         if hook:
-            argv = _hook_argv(hook, seat, item)
+            try:
+                argv = _hook_argv(hook, seat, item)
+            except ValueError:
+                print("wake_alerter: the hook template cannot be parsed", file=sys.stderr)
+                continue
             if runner(argv, env=_hook_env(item), timeout=HOOK_TIMEOUT_SECONDS) != 0:
                 continue
         else:
-            runner(
-                osascript_argv(
-                    "/usr/bin/osascript", _banner_text(item), "agent-sync wake (%s)" % seat
-                )
+            rc = runner(
+                osascript_argv("/usr/bin/osascript", _banner_text(item), f"Operator wake ({seat})")
             )
+            if rc:
+                continue
         seen.append(wake_id)
         handled += 1
     if handled:
@@ -214,7 +293,7 @@ def poll_once(
             _save_seen(state_path, seen)
         except OSError as exc:
             print(
-                "wake_alerter: state write failed (%s); will retry next poll" % exc, file=sys.stderr
+                f"wake_alerter: state write failed ({exc}); will retry next poll", file=sys.stderr
             )
     return handled
 
@@ -226,31 +305,33 @@ def _run(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
-    seat = (os.environ.get("AGENT_SYNC_SEAT") or "").strip().upper()
-    base_url = (os.environ.get("AGENT_SYNC_LISTENER_URL") or "").strip()
-    key_env = os.environ.get("AGENT_SYNC_ROUTINE_KEY_ENV") or (
+    seat = (os.environ.get("OPERATOR_SEAT") or "").strip().upper()
+    base_url = (os.environ.get("OPERATOR_LISTENER_URL") or "").strip()
+    key_env = os.environ.get("OPERATOR_ROUTINE_KEY_ENV") or (
         seat.replace("-", "_") + "_ROUTINE_KEY" if seat else ""
     )
     key = os.environ.get(key_env) if key_env else None
     if not seat or not base_url or not key:
         print(
-            "wake_alerter: AGENT_SYNC_SEAT, AGENT_SYNC_LISTENER_URL and "
+            "wake_alerter: OPERATOR_SEAT, OPERATOR_LISTENER_URL and "
             "<CODE>_ROUTINE_KEY are required",
             file=sys.stderr,
         )
         return 2
-    state_path = os.environ.get("AGENT_SYNC_ALERTER_STATE") or _default_state_path()
+    state_path = os.environ.get("OPERATOR_ALERTER_STATE") or _default_state_path()
 
     import subprocess
 
-    hook = (os.environ.get("AGENT_SYNC_ALERTER_HOOK") or "").strip()
+    hook = (os.environ.get("OPERATOR_ALERTER_HOOK") or "").strip()
 
     def banner_runner(argv_, **_kw):
         try:
-            subprocess.run(argv_, capture_output=True, timeout=10, check=False)
+            done = subprocess.run(argv_, capture_output=True, timeout=10, check=False)
         except (OSError, subprocess.SubprocessError):
-            pass
-        return 0
+            return 1
+        if done.returncode:
+            print(f"wake_alerter: banner command exited {done.returncode}", file=sys.stderr)
+        return done.returncode
 
     def hook_runner(argv_, env=None, timeout=HOOK_TIMEOUT_SECONDS):
         try:

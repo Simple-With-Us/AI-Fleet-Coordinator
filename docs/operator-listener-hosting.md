@@ -1,7 +1,7 @@
-# agent-sync listener on Hetzner (cutover plan)
+# Operator listener (eavesdropper) hosted on the server (cutover plan)
 
 Owner direction 2026-10-21: move the Zulip listener/poller off the Mac onto the
-Hetzner box (`host.jays.services`, tailnet `server.boa-roygbiv.ts.net`), keep the
+hosted server (tailnet `listener.example.ts.net`, set as OPERATOR_LISTENER_URL), keep the
 Cloudflare MCP bridge as the service plane, keep Mac-bound surfaces (Apple
 Notes, iMessage boundary, launchd helpers, Muster) on the Mac, and keep Jay's
 macOS AppleScript banners for wake events via a thin Mac client.  Jay accepted
@@ -9,7 +9,7 @@ macOS AppleScript banners for wake events via a thin Mac client.  Jay accepted
 
 ## What moves
 
-- The listener daemon (`agent_sync` daemon: live inbox, wake ledger, held-back
+- The Operator's eavesdropper, the Zulip listener daemon (`agent_sync` package, not yet renamed: live inbox, wake ledger, held-back
   queue, leases) and its signed read API (`listener_api.py`, port 8788).
 - Nothing about the bridge changes; seats keep using the Worker MCP as today.
 
@@ -17,20 +17,20 @@ macOS AppleScript banners for wake events via a thin Mac client.  Jay accepted
 
 - `agent_sync/wake_alerter.py` (this PR):  the thin wake client, two modes.
   Default (the Mac):  one macOS banner per new wake id, bodies never reach a
-  banner.  Hook mode (`AGENT_SYNC_ALERTER_HOOK` set):  run one configured
+  banner.  Hook mode (`OPERATOR_ALERTER_HOOK` set):  run one configured
   command per new wake instead - this is the headless-wake path for
   server-side seats.  Both modes hold no Zulip key, no Infisical access, no
   listener state.
-- `scripts/launchd/com.jay.agent-sync-wake-alerter.plist`:  launchd unit for
-  the Mac alerter.  Env comes from `~/.secrets/agent-sync/wake-alerter.env`
-  (0600):  `AGENT_SYNC_SEAT`, `AGENT_SYNC_LISTENER_URL`, `<CODE>_ROUTINE_KEY`.
+- `scripts/launchd/com.jay.operator-wake-alerter.plist`:  launchd unit for
+  the Mac alerter.  Env comes from `~/.secrets/operator/wake-alerter.env`
+  (0600):  `OPERATOR_SEAT`, `OPERATOR_LISTENER_URL`, `<CODE>_ROUTINE_KEY`.
 
 ## Server-side seats are the main clients
 
 Owner direction 2026-10-21:  every agent platform (Claude, Codex, Muse Code,
-and the rest) runs on the Hetzner server, and they all communicate with the
+and the rest) runs on the hosted server, and they all communicate with the
 Operator.  The Operator's decision-making LLM agent also runs on the server.
-So the layout is:  Operator decides, GHR and agent-sync execute, and the
+So the layout is:  Operator decides, git-relay and the simple-tools CLIs execute, and the
 server-side seats are the main clients of both.  The Mac is a minor client -
 its role narrows to human-facing alerts (the AppleScript banners) and the
 Mac-bound surfaces listed above.  (Working assumption until Jay names
@@ -62,9 +62,9 @@ wake alerter's hook mode provides it:
 
 - A supervisor on the server runs
   `python3 -m agent_sync.wake_alerter --loop 60` with
-  `AGENT_SYNC_ALERTER_HOOK=/opt/fleet/muse-wake.sh {seat} {wake_id} {channel} {topic}`.
+  `OPERATOR_ALERTER_HOOK=/opt/fleet/muse-wake.sh {seat} {wake_id} {channel} {topic}`.
   The hook receives wake METADATA only ({seat}/{channel}/{topic}/{wake_id}/
-  {state} argv placeholders plus AGENT_SYNC_WAKE_* env vars) - never message
+  {state} argv placeholders plus OPERATOR_WAKE_* env vars) - never message
   bodies, same rule as the banners.  A wake id is marked seen only when the
   hook exits 0, so a failed launch retries on the next poll (bounded by the
   since_hours window and the state file cap).
@@ -77,7 +77,7 @@ wake alerter's hook mode provides it:
       # /opt/fleet/muse-wake.sh SEAT WAKE_ID CHANNEL TOPIC
       exec muse exec "You are the $1 seat on the fleet.  A wake event arrived
       for you in $3 / $4 (wake $2).  Read the event through your normal
-      agent-sync MCP bridge on the tailnet and run your wake routine.  Take
+      ST-MCP bridge on the tailnet and run your wake routine.  Take
       no action outside the seat's lane;  the Operator decides, you execute."
 
   The prompt points the seat at the event through its normal authenticated
@@ -87,14 +87,14 @@ wake alerter's hook mode provides it:
   wake ledger access.  Multiple seats on the box run one alerter process per
   seat (each with its own seat key and state file).
 
-## Hetzner side (Coolify, "Fleet Infra" project)
+## Server side (Coolify, "Fleet Infra" project)
 
 - New Coolify app from this repo (main branch, webhook deploy like the other
   Fleet Infra apps):  base directory `scripts/`, start
   `python3 -m agent_sync.listener_cli daemon run` (the daemon's normal entry),
   Python 3.11+ image.
 - Bind the read API to the TAILSCALE interface only (no Traefik, no public
-  port, no DNS):  `server.boa-roygbiv.ts.net:8788`.
+  port, no DNS):  `listener.example.ts.net:8788`.
 - Runtime env (runtime-only - Coolify bakes "buildtime" vars into build logs;
   secrets must never be buildtime):  the spare Infisical machine identity
   (`INFISICAL_CLIENT_ID` / `INFISICAL_CLIENT_SECRET`, scoped read on `/zulip`
@@ -107,7 +107,7 @@ wake alerter's hook mode provides it:
 
 1. Server:  Coolify app deployed, daemon green (`listener_cli status --probe`),
    read API answering on the tailnet address for one seat key.
-2. Mac:  install the alerter plist + `~/.secrets/agent-sync/wake-alerter.env`;
+2. Mac:  install the alerter plist + `~/.secrets/operator/wake-alerter.env`;
    `launchctl bootstrap`, verify one banner arrives from a test wake.
 3. Verify the hosted listener's cursors are at or past the Mac listener's
    cursors (or accept a bounded catch-up replay - held-back/dedup keeps it
