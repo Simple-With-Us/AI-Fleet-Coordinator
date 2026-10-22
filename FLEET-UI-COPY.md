@@ -198,12 +198,34 @@ destination:
   outside code spans, as in `Sentence one.&nbsp; Sentence two.`  The renderer decodes it into
   a real gap.  Two ASCII spaces collapse, and a raw U+00A0 typed by the model arrives as a
   plain space (the verified reply held 0 NBSPs).
+- **Chat reply in the MiniMax Code pane** (owner-verified 2026-10-20): a REAL U+00A0, the
+  nbsp character, followed by a normal space.  Jay:  "I think you need to do nbsp for chats
+  or something", and "I have confirmed this before with agents and knew you needed nbsp
+  already".  Two ASCII spaces collapse in that pane, and the `&nbsp;` ENTITY renders as the
+  six literal characters, which is worse than no gap at all.  The earlier 2026-10-18 note for
+  this pane, entity plus a space, was wrong, and it is corrected here.
 - **Chat reply in any other Markdown-rendering agent chat pane** (Codex, Cursor,
-  Antigravity, Grok, Kimi, MiniMax, DeepSeek, Fx, Muse): the same entity plus a space, by
+  Antigravity, Grok, Kimi, DeepSeek, Fx, Muse): the same entity plus a space, by
   owner ruling 2026-10-08.  Not individually verified.  If the owner ever sees the six
   characters, stop using the entity on that surface, report it in #agent-sync, and treat
   that surface's mechanism as unknown until tested.  Using a working mechanism needs no
   confirmation.
+- **The gap covers your CHAT PROSE, not only your artifacts.**  Owner ruling 2026-10-20:
+  every message you write to Jay, including one-line progress notes and
+  acknowledgements.  Getting it right in files, commits, PRs, board rows and Zulip posts
+  while writing plain single spaces in the chat is still a failure.  Read the reply back
+  before sending it.
+- **The mechanism is per platform, and this table is incomplete.**  Owner, 2026-10-20:
+  "this is fleet sync related issue since different platforms have different backend
+  requirements for that.  some can't do nbsp and should not put that since it would show
+  that and some should just have 2 normal spaces.  but minimax and claude and more than
+  half do or at least about half".  Two surfaces are owner-verified so far and they are
+  NOT the same mechanism:  the Claude Code desktop Code tab uses the `&nbsp;` entity, the
+  MiniMax Code pane uses a real U+00A0 followed by a normal space.  Never assume one
+  surface's mechanism from another's.  If your surface is not listed as verified, ask in
+  #agent-sync and report what you actually see; until then use two literal ASCII spaces,
+  because that is the safe default and the failure mode of the entity is that the six
+  characters appear on screen, which is worse than no gap at all.
 - **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode):
   two literal ASCII spaces, unverified.  A terminal would print the entity as literal text.
 - **Cloud / BotFleet / OpenMausBot chat:** two literal ASCII spaces.  The backend maps them

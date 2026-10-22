@@ -1540,7 +1540,7 @@ The installer renders the shared `~/.claude/skills` as CLAUDE with the pin-or-fa
 | `session-start` | Startup: chat catch-up, Linear (the `board` CLI), a lane from `lane new`, then the claim.  The shared `~/.claude` copy renders as CLAUDE with the pin-or-fail seat block (#384, #405). |
 | `board-ops` | The `board` CLI on Linear (`board stats`, `board list`, `board claim`, `board file`) and its rules. |
 | `secret-handoff` | Secret safety, the handoff-file grep-trap ban, and Infisical as the runtime source of truth. |
-| `sentence-gap` | Two spaces between sentences, with the mechanism per surface.  Current as of 2026-10-08: the Claude Code Code tab and other Markdown chat panes use `&nbsp;` plus a space, GitHub and Zulip use U+00A0 plus a space, and files, commits and terminals use two ASCII spaces. |
+| `sentence-gap` | Two spaces between sentences, with the mechanism per surface.  Current as of 2026-10-20: the MiniMax Code pane uses a real U+00A0 plus a space, the Claude Code Code tab and other Markdown chat panes use `&nbsp;` plus a space, GitHub and Zulip use U+00A0 plus a space, and files, commits and terminals use two ASCII spaces.  The gap covers chat prose too, not only artifacts. |
 | `owner-copy` | User-facing copy, Title Case headings, and no agent names in App Store Connect release notes. |
 | `apple-notes` | Authoring, styling and pinning owner-facing docs in the `Coding` folder, local on this Mac. |
 | `land-lane` | App-specific verification gates, PR creation, arming auto-merge, and production deploy triggers. |
