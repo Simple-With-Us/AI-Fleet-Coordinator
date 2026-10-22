@@ -24,6 +24,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import urllib.error
@@ -372,15 +373,57 @@ def cmd_kv(cf: Cloudflare, apply: bool) -> None:
         say(f"created {KV_TITLE} id={res.get('id')}")
 
 
+# Wrangler prints its own failure text, and third-party output can carry a
+# Cloudflare response body, request data or authorization material, so none of
+# it is relayed:  only these two scalar fields are kept, and only in the shapes
+# wrangler documents.  Replacing known secrets is a denylist and cannot cover
+# what a response body happens to contain;  an allow-list can.
+_WRANGLER_CODE = re.compile(r"\bcode:\s*(\d{1,12})\b")
+_WRANGLER_REQUEST_ID = re.compile(r"\brequest id:\s*([0-9a-f]{8,64})\b", re.IGNORECASE)
+
+
+def _wrangler_diagnostic(stdout: str, stderr: str, secret: str) -> str:
+    """The allow-listed facts from wrangler's output, or nothing."""
+    output = f"{stderr}\n{stdout}"
+    found = []
+    code = _WRANGLER_CODE.search(output)
+    if code:
+        found.append(f"cf code {code.group(1)}")
+    request_id = _WRANGLER_REQUEST_ID.search(output)
+    if request_id:
+        found.append(f"request id {request_id.group(1)}")
+    # A captured value would already be one of the two documented fields, but
+    # the check costs nothing and keeps the rule true by construction.
+    detail = ", ".join(found)
+    if secret and secret in detail:
+        return ""
+    return detail
+
+
+def _terminate_group(pid: int, sig: int) -> None:
+    """Signal the child's whole process group.
+
+    The child is started in its own session, so a signal aimed at this process
+    never reaches it and a signal aimed at the group does:  `wrangler` is an
+    npx shim that spawns node underneath, so signalling the group ends the real
+    work rather than an orphan still holding the secret it was fed.  The caller
+    reaps the child;  a group that is already gone is not an error.
+    """
+    try:
+        os.killpg(pid, sig)
+    except OSError:
+        pass
+
+
 def put_worker_secret(cf: Cloudflare, name: str, value: str) -> None:
     """Set an encrypted Worker secret.
 
     The value is fed on stdin, never argv.  The child gets the credentials
     wrangler actually reads plus cwd=HERE, because a bare inherited environment
     runs `wrangler secret put` unauthenticated and fails with no usable reason.
-    Wrangler's own output is relayed on failure with the value and the API key
-    replaced:  a secret put that dies on a missing Worker or a wrong account is
-    otherwise just "exit 1", which is not enough to act on.
+    A failing run reports only its exit code and the allow-listed fields of
+    wrangler's output:  a secret put that dies on a missing Worker or a wrong
+    account is otherwise just "exit 1", which is not enough to act on.
     """
     if shutil.which("wrangler"):
         argv = ["wrangler"]
@@ -389,28 +432,68 @@ def put_worker_secret(cf: Cloudflare, name: str, value: str) -> None:
         # step 1) instead of whatever a global install happens to be.
         argv = ["npx", "--no-install", "wrangler"]
     else:
-        raise SystemExit(f"error: wrangler is not on PATH; cannot provision {name}")
+        # 127, the shell's "command not found", so automation can tell a missing
+        # executable from a failed run.  A string argument would exit 1.
+        sys.stderr.write(f"error: wrangler is not on PATH; cannot provision {name}\n")
+        raise SystemExit(127)
     try:
-        proc = subprocess.run(
+        # Popen, not run:  `run` cannot end the child when this process is
+        # interrupted, and an interrupted provisioning run must not leave
+        # wrangler writing a secret with no owner.  start_new_session puts it in
+        # its own process group, so the group is what has to be signalled.
+        proc = subprocess.Popen(
             argv + ["secret", "put", name, "--config", str(WRANGLER)],
-            input=value + "\n",
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=300,
             cwd=HERE,
             env=cf.wrangler_env(),
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise SystemExit(124) from exc
     except FileNotFoundError as exc:
-        raise SystemExit(f"error: {argv[0]} is not on PATH; cannot provision {name}") from exc
-    except (OSError, subprocess.SubprocessError) as exc:
+        sys.stderr.write(f"error: {argv[0]} is not on PATH; cannot provision {name}\n")
+        raise SystemExit(127) from exc
+    except OSError as exc:
         raise SystemExit(f"error: could not run wrangler to set {name}: {exc}") from exc
+
+    def _on_sigterm(signum, frame):
+        # A SIGTERM to this runner must take the child with it.  Converting the
+        # signal into SystemExit runs the same cleanup path as any other
+        # interruption, then exits 128 + SIGTERM the way a killed process does.
+        _terminate_group(proc.pid, signal.SIGTERM)
+        raise SystemExit(143)
+
+    previous = None
+    try:
+        previous = signal.signal(signal.SIGTERM, _on_sigterm)
+    except ValueError:
+        # Not the main thread:  signal handlers cannot be installed here, so
+        # SIGTERM keeps its default disposition.  KeyboardInterrupt and any
+        # SystemExit raised by the caller still clean the group up below.
+        previous = None
+    try:
+        try:
+            stdout, stderr = proc.communicate(value + "\n", timeout=300)
+        except subprocess.TimeoutExpired as exc:
+            _terminate_group(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            raise SystemExit(124) from exc
+        except BaseException:
+            # KeyboardInterrupt, a SystemExit from _on_sigterm, or anything else
+            # unwinding this thread:  the child never outlives the run.
+            _terminate_group(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                _terminate_group(proc.pid, signal.SIGKILL)
+                proc.communicate()
+            raise
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
     if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip()
-        for secret in (value, cf._key):
-            if secret:
-                detail = detail.replace(secret, "***")
+        detail = _wrangler_diagnostic(stdout or "", stderr or "", value)
         raise SystemExit(
             f"error: wrangler secret put {name} failed (exit {proc.returncode})"
             + (f": {detail}" if detail else "")

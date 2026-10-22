@@ -12,7 +12,10 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import pathlib
+import signal
+import subprocess
 import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -95,6 +98,182 @@ class FakeCloudflare:
         raise AssertionError(f"unexpected API call: {method} {path} {params}")
 
 
+class FakeSecretCloudflare:
+    """Just the two things put_worker_secret reads off the Cloudflare handle."""
+
+    _key = "cf-api-key-value-0123456789"
+    _email = "mail@jays.services"
+
+    def wrangler_env(self):
+        return {"CLOUDFLARE_API_KEY": self._key, "CLOUDFLARE_EMAIL": self._email}
+
+
+class FakeChild:
+    """A wrangler child that never exists, so the probe stays offline.
+
+    Records how it was started and what it was signalled with, which is the
+    whole of what these three checks are about:  the parent has to own the
+    child's process group, and the child must not outlive an interrupted run.
+    """
+
+    def __init__(self, state, returncode=1, stdout="", stderr="", raise_on_communicate=None):
+        self.state = state
+        self.pid = 424242
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.raise_on_communicate = raise_on_communicate
+        self.kwargs = None
+        self.signals: list[int] = []
+        self.sigterm_during_run = None
+        self.handler_after = None
+
+    def __call__(self, argv, **kwargs):
+        self.argv = argv
+        self.kwargs = kwargs
+        return self
+
+    def communicate(self, *args, **kwargs):
+        if self.raise_on_communicate is not None:
+            # What the parent sees while a signal handler is installed:  a
+            # SIGTERM must reach the handler, and the handler must be undone
+            # once the run is over.
+            self.sigterm_during_run = signal.getsignal(signal.SIGTERM)
+            raise self.raise_on_communicate
+        return self.stdout, self.stderr
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+
+def run_with_fake_child(child, secret=("a" * 64), which="wrangler"):
+    """Drive put_worker_secret against a fake child and report what happened."""
+    state: dict = {}
+    real_popen, real_which, real_killpg = (
+        subprocess.Popen,
+        infra.shutil.which,
+        os.killpg,
+    )
+    signals: list[tuple[int, int]] = []
+
+    def fake_killpg(pid, sig):
+        signals.append((pid, sig))
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            child.argv = argv
+            child.kwargs = kwargs
+
+    def fake_popen(argv, **kwargs):
+        FakePopen(argv, **kwargs)
+        return child
+
+    infra.subprocess.Popen = fake_popen
+    infra.shutil.which = lambda name: name if which else None
+    os.killpg = fake_killpg
+    try:
+        cf = FakeSecretCloudflare()
+        error = None
+        raised = None
+        try:
+            infra.put_worker_secret(cf, "ACCESS_AUD", secret)
+        except SystemExit as exc:
+            raised = "SystemExit"
+            error = str(exc)
+            state["exit_code"] = exc.code
+        except BaseException as exc:  # an interrupt is a pass-through, not a crash
+            raised = type(exc).__name__
+    finally:
+        subprocess.Popen = real_popen
+        infra.shutil.which = real_which
+        os.killpg = real_killpg
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    state.update(
+        {
+            "raised": raised,
+            "error": error,
+            "signals": signals,
+            "child_returncode": child.returncode,
+            "start_new_session": (child.kwargs or {}).get("start_new_session"),
+            "child_cwd": str((child.kwargs or {}).get("cwd")),
+            "child_env_has_key": "CLOUDFLARE_API_KEY" in ((child.kwargs or {}).get("env") or {}),
+            "sigterm_handler_installed": child.sigterm_during_run not in (None, signal.SIG_DFL),
+        }
+    )
+    return state
+
+
+def secret_probes() -> dict:
+    secret = "b" * 64
+    key = FakeSecretCloudflare._key
+    # A failing wrangler answer with everything sensitive in it:  the secret it
+    # was fed, the API key that authenticated, and a response body echoing an
+    # Authorization header.  Only the two documented scalars may survive.
+    noisy = (
+        "[ERROR] A request to the Cloudflare API failed.\n"
+        f"  code: 10000\n"
+        f"  request id: 8f14e45fceea167a5a36dedd4bea2543\n"
+        f"  authorization: Bearer {key}\n"
+        f"  echoed secret: {secret}\n"
+        '{"result":null,"errors":[{"code":10000,"message":"Authentication error [10000]"}]}\n'
+    )
+    diagnostic = run_with_fake_child(
+        FakeChild(None, returncode=1, stdout=noisy, stderr=noisy), secret=secret
+    )
+    quiet = run_with_fake_child(
+        FakeChild(None, returncode=1, stdout="", stderr=""), secret=secret
+    )
+
+    def missing_executable():
+        def boom(argv, **kwargs):
+            raise FileNotFoundError(2, "No such file or directory", "wrangler")
+
+        state: dict = {
+            "raised": None,
+            "error": None,
+            "exit_code": None,
+            "signals": [],
+            "child_returncode": None,
+            "start_new_session": None,
+            "child_cwd": "none",
+            "child_env_has_key": False,
+            "sigterm_handler_installed": False,
+        }
+        real_popen, real_which = subprocess.Popen, infra.shutil.which
+        infra.subprocess.Popen = boom
+        infra.shutil.which = lambda name: name
+        try:
+            try:
+                infra.put_worker_secret(FakeSecretCloudflare(), "ACCESS_AUD", secret)
+            except SystemExit as exc:
+                state["raised"] = "SystemExit"
+                state["error"] = str(exc)
+                state["exit_code"] = exc.code
+        finally:
+            subprocess.Popen = real_popen
+            infra.shutil.which = real_which
+        return state
+
+    # Nothing on PATH at all:  the same "command not found" status.
+    no_wrangler = run_with_fake_child(FakeChild(None), secret=secret, which=None)
+    child_missing = missing_executable()
+
+    interrupted = run_with_fake_child(
+        FakeChild(None, raise_on_communicate=KeyboardInterrupt()), secret=secret
+    )
+
+    return {
+        "diagnostic": diagnostic,
+        "quiet_failure": quiet,
+        "no_wrangler_on_path": no_wrangler,
+        "popen_missing": child_missing,
+        "interrupted": interrupted,
+    }
+
+
 def main() -> None:
     cf = FakeCloudflare()
     # Keep the real backup directory out of the way.
@@ -144,6 +323,7 @@ def main() -> None:
                 "queried": sorted(f"{zone}:{host}" for zone, host in cf.queried),
                 "output": "\n".join(lines),
                 "malformed_errors": malformed_errors,
+                "secrets": secret_probes(),
             }
         )
     )
