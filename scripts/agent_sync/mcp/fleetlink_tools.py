@@ -2,9 +2,9 @@
 
 Same names, input schemas and annotations as the hosted Worker (scripts/agent_sync/mcp/fleetlink-tools.json is
 generated from scripts/agent-sync-mcp/src/fleetlink.js, and a hosted test fails when the two differ).  Execution is
-FleetLink's own CLI, `fleet-share tool <name> --args-json @<file>`, run as a child:  the arguments go through a
+FleetLink's own CLI, `fleetlink tool <name> --args-json @<file>`, run as a child:  the arguments go through a
 mode-0600 file in a private temporary directory (deleted afterwards), never on the command line.  The CLI is
-AGENT_SYNC_FLEETLINK_CLI, else `fleet-share` on PATH.
+AGENT_SYNC_FLEETLINK_CLI, else `fleetlink` on PATH.
 
 The child signs in as the seat's own FleetLink bot, never with a server credential.  Where the token comes from,
 in order:
@@ -19,7 +19,7 @@ in order:
      FLEETLINK_TOKEN.
 
 The child always gets FLEETLINK_SEAT, a minimal environment (no FLEET_ADMIN_SECRET or any other variable of this
-process), and FLEETLINK_CREDENTIALS pointing at a file that does not exist, so a saved `fleet-share login` of
+process), and FLEETLINK_CREDENTIALS pointing at a file that does not exist, so a saved `fleetlink login` of
 whoever runs the server is never used instead.  No credential, or no CLI, is a `not_configured` tool error naming
 what to set (key names only);  every other tool keeps working.
 
@@ -51,7 +51,7 @@ from .. import identity as IDENT
 HERE = Path(__file__).resolve().parent
 SPECS_PATH = HERE / "fleetlink-tools.json"
 ENV_CLI = "AGENT_SYNC_FLEETLINK_CLI"
-CLI_NAME = "fleet-share"
+CLI_NAME = "fleetlink"
 ENV_TOKEN = "FLEETLINK_TOKEN"
 TOKEN_PREFIX = "FLEETLINK_TOKEN_"
 INFISICAL_PATH = "/fleetlink"  # folder of the per-seat FLEETLINK_TOKEN_<SEAT> names (AFC-359)
@@ -142,14 +142,14 @@ def find_cli(env: Mapping[str, str]) -> str:
             return str(path)
         raise FleetLinkFailure(
             "not_configured",
-            "%s names no executable file.  Point it at FleetLink's CLI (fleet-share), or unset it to use "
-            "fleet-share on PATH.  Every other tool still works." % ENV_CLI,
+            "%s names no executable file.  Point it at FleetLink's CLI (fleetlink), or unset it to use "
+            "fleetlink on PATH.  Every other tool still works." % ENV_CLI,
         )
     found = shutil.which(CLI_NAME, path=env.get("PATH") or os.defpath)
     if not found:
         raise FleetLinkFailure(
             "not_configured",
-            "FleetLink's CLI (fleet-share) is not on PATH here.  Install it from the FleetLink repo (cli/fleet-share) "
+            "FleetLink's CLI (fleetlink) is not on PATH here.  Install it from the FleetLink repo (cli/fleetlink) "
             "or set %s.  Every other tool still works." % ENV_CLI,
         )
     return found
@@ -247,7 +247,7 @@ def child_env(
 ) -> dict[str, str]:
     out = {key: env[key] for key in CHILD_ENV_KEYS if env.get(key)}
     out["FLEETLINK_SEAT"] = seat
-    # A saved `fleet-share login` of whoever runs this server is never a fallback for the seat's own bot.
+    # A saved `fleetlink login` of whoever runs this server is never a fallback for the seat's own bot.
     out["FLEETLINK_CREDENTIALS"] = os.path.join(private, "no-saved-login")
     kind, _, value = credential
     out[ENV_TOKEN] = value
@@ -326,7 +326,7 @@ def failure_from(
                 "unavailable", "FleetLink failed:  %s" % message, retryable=not write
             )
         return FleetLinkFailure("fleetlink_refused", "FleetLink:  %s" % message)
-    return FleetLinkFailure("upstream_error", "fleet-share failed (exit %d)" % code)
+    return FleetLinkFailure("upstream_error", "fleetlink failed (exit %d)" % code)
 
 
 def run(

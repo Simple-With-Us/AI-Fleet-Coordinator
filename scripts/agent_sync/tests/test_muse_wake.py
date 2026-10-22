@@ -403,7 +403,7 @@ class MusePinTest(unittest.TestCase):
         }
         line = A.muse_pin_red_entry(stale, seat)
         self.assertIn("wake pin is stale: muse moved", line)
-        self.assertIn("; run `agent-sync daemon test-wake --seat MM --run`", line)
+        self.assertIn("; run `simple-chat daemon test-wake --seat MM --run`", line)
         self.assertNotIn("unverifiable", line)
         unreadable = {
             "why": "pin_unreadable",
@@ -727,7 +727,7 @@ class McodeFallbackTest(unittest.TestCase):
         line = A.mcode_pin_red_entry(stale, seat)
         self.assertIn("fallback pin is stale: mcode moved", line)
         self.assertIn(
-            "; run `agent-sync daemon test-wake --seat MM --runtime fallback --run`", line
+            "; run `simple-chat daemon test-wake --seat MM --runtime fallback --run`", line
         )
         self.assertNotIn("unverifiable", line)
         unreadable = {

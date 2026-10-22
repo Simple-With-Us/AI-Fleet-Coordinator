@@ -1,4 +1,4 @@
-# agent-sync listener seat partition.  Owner decision, Thu, Oct 8 (2026-10-08).
+# simple-chat listener seat partition.  Owner decision, Thu, Oct 8 (2026-10-08).
 #
 # The listener runs as two instances of the same package (scripts/agent_sync):
 #   mac     the owner's Mac (LaunchAgent com.jay.agent-sync-listener):  every seat that runs on

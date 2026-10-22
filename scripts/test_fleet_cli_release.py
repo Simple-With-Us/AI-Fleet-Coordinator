@@ -26,7 +26,7 @@ def make_bundle(version="one"):
         data = ("# " + version + "\n").encode()
         if path.endswith(".json"):
             data = b"{}"
-        if path == "scripts/linear-board/board":
+        if path in ("scripts/linear-board/board", "scripts/simple-board"):
             data = b'import sys\nsys.exit(4 if "whoami" in sys.argv else 0)\n# ' + version.encode()
         files[path] = {
             "mode": 0o644,
@@ -63,7 +63,7 @@ class ReleaseTests(unittest.TestCase):
             "AGENT-SYNC.md",
             "../../escape",
             "/tmp/escape",
-            "scripts//agent-sync",
+            "scripts//simple-chat",
             "scripts/agent_sync/../bad.py",
             "scripts/agent_sync/.env",
             "scripts/agent_sync/cache.sqlite",
@@ -218,7 +218,7 @@ class ReleaseTests(unittest.TestCase):
         # Python tools stay isolated (-I -B);  the bash tools get the caller's environment untouched.
         self.assertIn("'-I', '-B'", (bin_dir / "recall").read_text())
         self.assertNotIn("-I", (bin_dir / "lane").read_text().split("argv =")[1])
-        for name in ("board", "agent-sync"):
+        for name in ("simple-board", "simple-chat", "simple-notes"):
             self.assertIn(
                 "'/usr/bin/python3', '-I', '-B', str(release", (bin_dir / name).read_text()
             )
@@ -230,7 +230,7 @@ class ReleaseTests(unittest.TestCase):
         for name in ("recall", "lane", "fleet-mode"):
             (bin_dir / name).unlink()
         custom = b"#!/bin/sh\n# my own board, not managed\n"
-        (bin_dir / "board").write_bytes(custom)
+        (bin_dir / "simple-board").write_bytes(custom)
         config = self.home / ".codex/config.toml"
         before = config.read_bytes() if config.exists() else None
         result = self.receive(make_bundle("two"), install=False)
@@ -238,7 +238,9 @@ class ReleaseTests(unittest.TestCase):
         for name in ("recall", "lane", "fleet-mode"):
             self.assertIn(release.MARKER, (bin_dir / name).read_text(), name)
         self.assertEqual(
-            (bin_dir / "board").read_bytes(), custom, "an existing wrapper is never overwritten"
+            (bin_dir / "simple-board").read_bytes(),
+            custom,
+            "an existing wrapper is never overwritten",
         )
         self.assertEqual(
             config.read_bytes() if config.exists() else None,
@@ -309,10 +311,22 @@ class ReleaseTests(unittest.TestCase):
         self.receive(make_bundle("new"))
         current = release.release_at(self.base, "current")
         meta = json.loads((current / "release.json").read_text())
-        del meta["files"]["scripts/agent-sync"]
+        del meta["files"]["scripts/agent_sync/cli.py"]
         (current / "release.json").write_text(json.dumps(meta))
         with self.assertRaisesRegex(release.Refused, "invalid_release_metadata"):
             release.control(self.home, "status")
+
+    def test_renamed_entry_points_are_new_bundle_only(self):
+        # #860 r4:  a retained pre-rename release carries scripts/agent-sync, not the three cutover
+        # entry points, so they must live in TOOL_REQUIRED (new bundles carry them) rather than
+        # BASE_REQUIRED (which would make status and rollback refuse the rollback target itself).
+        for path in ("scripts/simple-chat", "scripts/simple-notes", "scripts/simple-board"):
+            self.assertIn(path, release.TOOL_REQUIRED, path)
+            self.assertNotIn(
+                path,
+                release.BASE_REQUIRED,
+                "a retained pre-rename release stays a valid rollback target: " + path,
+            )
 
     def test_smoke_runs_the_new_tools(self):
         # The smoke cases for recall, lane and fleet-mode fail a release whose tool exits wrongly.
@@ -334,12 +348,14 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(self.base.exists())
 
     def test_rejects_corrupt_content(self):
-        self.bundle["files"]["scripts/agent-sync"]["data"] = base64.b64encode(b"different").decode()
+        self.bundle["files"]["scripts/simple-chat"]["data"] = base64.b64encode(
+            b"different"
+        ).decode()
         with self.assertRaisesRegex(release.Refused, "bad_file_digest"):
             self.receive()
 
     def test_rejects_mode_and_size(self):
-        self.bundle["files"]["scripts/agent-sync"]["mode"] = 0o777
+        self.bundle["files"]["scripts/simple-chat"]["mode"] = 0o777
         with self.assertRaisesRegex(release.Refused, "bad_mode"):
             self.receive()
         with self.assertRaisesRegex(release.Refused, "bundle_too_large"):
@@ -358,23 +374,74 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(parsed["model"], "existing-worker")
         self.assertEqual(parsed["features"], {"foo": True})
         self.assertTrue(
-            parsed["mcp_servers"]["agent-sync"]["command"].endswith("agent-sync-codex-mcp")
+            parsed["mcp_servers"]["agent-sync"]["command"].endswith("simple-chat-codex-mcp")
         )
         self.assertNotIn("env", parsed["mcp_servers"]["agent-sync"])
-        wrapper = (self.home / ".local/bin/agent-sync-codex-mcp").read_text()
+        wrapper = (self.home / ".local/bin/simple-chat-codex-mcp").read_text()
         self.assertIn("--codex-thread-meta", wrapper)
-        self.assertNotIn("--codex-thread-meta", (self.home / ".local/bin/agent-sync").read_text())
+        self.assertNotIn("--codex-thread-meta", (self.home / ".local/bin/simple-chat").read_text())
         self.assertEqual(config.stat().st_mode & 0o777, 0o600)
         self.assertEqual(
             release.release_at(self.base, "current").name, self.bundle["bundle_sha256"]
         )
+
+    def test_install_migrates_a_prerenamed_codex_registration_instead_of_refusing(self):
+        # A host installed before the CLI rename carries the legacy wrapper path;  the release must
+        # rewrite it (the old wrapper execs scripts/agent-sync, which this release no longer ships).
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        legacy = str(self.home / ".local/bin/agent-sync-codex-mcp")
+        config.write_bytes(
+            (
+                'model = "existing-worker"\n'
+                "# Local CODEX-only fleet MCP; no credentials or pinned seat.\n"
+                "[mcp_servers.agent-sync]\n"
+                'command = "%s"\n'
+                'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
+                ' "AGENT_SESSION"]\n' % legacy
+            ).encode()
+        )
+        config.chmod(0o600)
+        result = self.receive()
+        self.assertEqual(result["status"], "activated")
+        parsed = tomllib.loads(config.read_text())
+        self.assertEqual(parsed["model"], "existing-worker")
+        self.assertEqual(
+            parsed["mcp_servers"]["agent-sync"]["command"],
+            str(self.home / ".local/bin/simple-chat-codex-mcp"),
+        )
+        self.assertNotIn("agent-sync-codex-mcp", config.read_text())
+
+    def test_update_path_migrates_the_prerenamed_codex_registration_too(self):
+        self.receive()
+        config = self.home / ".codex/config.toml"
+        legacy = str(self.home / ".local/bin/agent-sync-codex-mcp")
+        config.write_bytes(
+            (
+                '[mcp_servers.agent-sync]\ncommand = "%s"\n'
+                'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
+                ' "AGENT_SESSION"]\n' % legacy
+            ).encode()
+        )
+        self.receive(make_bundle("two"), install=False)
+        self.assertEqual(
+            tomllib.loads(config.read_text())["mcp_servers"]["agent-sync"]["command"],
+            str(self.home / ".local/bin/simple-chat-codex-mcp"),
+        )
+
+    def test_a_hand_edited_codex_registration_is_still_refused(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b'[mcp_servers.agent-sync]\ncommand = "/owner/custom"\n')
+        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
+            self.receive()
 
     def test_update_keeps_configuration_and_wrappers_untouched(self):
         self.receive()
         config = self.home / ".codex/config.toml"
         config.write_bytes(config.read_bytes() + b"\n# owner edit\n")
         before = config.read_bytes()
-        wrapper = self.home / ".local/bin/board"
+        wrapper = self.home / ".local/bin/simple-board"
         wrapper_before = wrapper.stat().st_mtime_ns
         result = self.receive(make_bundle("two"), install=False)
         self.assertEqual(result["status"], "activated")
@@ -397,14 +464,19 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(list(self.base.glob(".stage-*")), [])
 
     def test_smoke_distinguishes_timeout_from_launch_failure_without_output(self):
+        # The first smoke case is a TOOL_REQUIRED script, which smoke skips when the release has no
+        # such file (a retained pre-tool release);  materialize it so the error-code mapping runs.
+        script = self.home / "scripts" / "simple-chat"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("# test double\n")
         for failure, code in (
             (
                 subprocess.TimeoutExpired("private command", 12, output=b"private output"),
-                "smoke_timeout_agent_sync_version",
+                "smoke_timeout_simple_chat_version",
             ),
             (
                 FileNotFoundError(2, "private executable path"),
-                "smoke_start_failed_agent_sync_version_errno_2",
+                "smoke_start_failed_simple_chat_version_errno_2",
             ),
         ):
             with (
@@ -439,7 +511,7 @@ class ReleaseTests(unittest.TestCase):
         self.receive()
         second = self.receive(make_bundle("two"), install=False)
         previous = release.release_at(self.base, "previous")
-        (previous / "scripts/agent-sync").write_text("# syntax valid but altered\n")
+        (previous / "scripts/simple-chat").write_text("# syntax valid but altered\n")
         with self.assertRaisesRegex(release.Refused, "existing_release_changed"):
             release.control(self.home, "rollback")
         self.assertEqual(release.release_at(self.base, "current").name, second["bundle_sha256"])
@@ -459,7 +531,7 @@ class ReleaseTests(unittest.TestCase):
         current = release.release_at(self.base, "current")
         path = current / "release.json"
         record = json.loads(path.read_text())
-        record["files"]["scripts/agent-sync"]["sha256"] = "0" * 64
+        record["files"]["scripts/simple-chat"]["sha256"] = "0" * 64
         path.write_text(json.dumps(record))
         with self.assertRaisesRegex(release.Refused, "invalid_release_metadata"):
             release.control(self.home, "status")
@@ -477,14 +549,14 @@ class ReleaseTests(unittest.TestCase):
     def test_unmanaged_wrapper_and_symlink_are_refused(self):
         bin_dir = self.home / ".local/bin"
         bin_dir.mkdir(parents=True)
-        (bin_dir / "board").symlink_to("/bin/echo")
+        (bin_dir / "simple-board").symlink_to("/bin/echo")
         with self.assertRaisesRegex(release.Refused, "unmanaged_wrapper"):
             self.receive()
 
     def test_changed_existing_release_is_refused(self):
         self.receive()
         current = release.release_at(self.base, "current")
-        (current / "scripts/agent-sync").write_text("# changed")
+        (current / "scripts/simple-chat").write_text("# changed")
         with self.assertRaisesRegex(release.Refused, "existing_release_changed"):
             self.receive()
 
@@ -499,12 +571,12 @@ class ReleaseTests(unittest.TestCase):
         with mock.patch.object(release, "atomic_write", side_effect=fail_config):
             with self.assertRaises(OSError):
                 self.receive()
-        self.assertFalse((self.home / ".local/bin/board").exists())
+        self.assertFalse((self.home / ".local/bin/simple-board").exists())
         self.assertFalse((self.base / "current").exists())
 
     def test_mcp_wrapper_refuses_other_seats_and_unassigned_launchers(self):
         code = release.wrapper(
-            self.home, "scripts/agent-sync", ["mcp", "--default-seat", "CODEX"], True
+            self.home, "scripts/simple-chat", ["mcp", "--default-seat", "CODEX"], True
         )
         compile(code, "wrapper", "exec")
         for env in [

@@ -36,8 +36,8 @@ cannot reach it keep using the copies; `mac-collab-sync` brings those edits back
 ## Agent action
 
 ```bash
-board claim <id>  --by GROK --env Mac --where "~/apps/<lane> @ grok/<slug>"
-board status <id> completed --resolution "Landed in PR #48."
+simple-board claim <id>  --by GROK --env Mac --where "~/apps/<lane> @ grok/<slug>"
+simple-board status <id> completed --resolution "Landed in PR #48."
 ```
 
 Live file + GitHub Issue catch up within one 10-minute cycle.  Immediate:

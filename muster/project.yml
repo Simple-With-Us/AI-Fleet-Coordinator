@@ -63,6 +63,14 @@ targets:
       - path: Muster/Model/KnobRegistry.swift
       - path: Muster/Model/MiniMaxSurface.swift
       - path: Muster/Model/SeatManifest.swift
+      - path: Muster/Model/ListenerConfigFile.swift
+      - path: Muster/Model/ListenerStatus.swift
+      - path: Muster/Model/OperatorOptions.swift
+      - path: Muster/Model/WakeLedger.swift
+      - path: Muster/Model/WakeSettings.swift
+      - path: Muster/Model/WakeSettingsReader.swift
+      - path: Muster/Model/WakeSettingsStore.swift
+      - path: Muster/Model/WakeSettingsWriter.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests

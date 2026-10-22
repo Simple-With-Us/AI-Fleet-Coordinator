@@ -61,7 +61,7 @@ class NotifierCase(unittest.TestCase):
 
     # ---- looking ---------------------------------------------------------------------------
     def posts(self, seat: str | None = None, *, went_out: bool = False) -> list[dict]:
-        return [c for c in self.w.calls("agent-sync") if c["argv"][0] in ("post", "reply") and (seat is None or c["seat"] == seat)
+        return [c for c in self.w.calls("simple-chat") if c["argv"][0] in ("post", "reply") and (seat is None or c["seat"] == seat)
                 and (not went_out or c.get("code") == 0)]
 
     def sent_by_notifier(self) -> list[dict]:
@@ -306,7 +306,7 @@ class PauseTests(NotifierCase):
         old_item = self.file("Settled long ago?", seat="CODEX")
         self.w.close(old_item["identifier"])
         self.run_notify()
-        reads = lambda: len([c for c in self.w.calls("agent-sync") if c["argv"][0] == "read" and old_item["topic"] in c["argv"]])  # noqa: E731
+        reads = lambda: len([c for c in self.w.calls("simple-chat") if c["argv"][0] == "read" and old_item["topic"] in c["argv"]])  # noqa: E731
         before = reads()
         self.run_notify()
         self.assertEqual(reads(), before)
@@ -361,8 +361,8 @@ class PauseTests(NotifierCase):
         request = "```needs-owner-request\n%s\n```" % json.dumps({"question": "Rotate it?", "options": ["Yes", "No"], "seat": "GB-PLUMBER"})
         self.w.add_message("OWNER GB-PLUMBER needs a key", request, seat="GB-PLUMBER")
         self.run_notify()
-        self.assertEqual([c for c in self.w.calls("board") if c["argv"][0] == "file"], [])
-        self.assertEqual([c for c in self.w.calls("agent-sync") if c["argv"][0] == "reply"], [])
+        self.assertEqual([c for c in self.w.calls("simple-board") if c["argv"][0] == "file"], [])
+        self.assertEqual([c for c in self.w.calls("simple-chat") if c["argv"][0] == "reply"], [])
         self.w.knobs.values["NEEDS_OWNER_NOTIFY_PAUSED"] = False
         self.assertEqual(len(self.events(self.run_notify(), "mirrored")), 1)
 
@@ -377,7 +377,7 @@ class RunTests(NotifierCase):
         self.assertEqual(self.sent_by_notifier(), [])
 
     def test_a_missing_board_is_a_failed_read_too(self) -> None:
-        self.w.remove_tool("board")
+        self.w.remove_tool("simple-board")
         ran = self.w.notify()
         self.assertEqual(ran.code, 0, ran.err)
         self.assertIn("board-read-failed", [e["event"] for e in ran.json()["events"]])
@@ -402,11 +402,11 @@ class RunTests(NotifierCase):
 
     def test_dry_run_changes_nothing_anywhere(self) -> None:
         record = self.pending()
-        before_board = len(self.w.calls("board"))
+        before_board = len(self.w.calls("simple-board"))
         result = self.run_notify("--dry-run")
         self.assertEqual([e["id"] for e in self.events(result, "would-notify")], [record["identifier"]])
         self.assertEqual(self.sent_by_notifier(), [])
-        self.assertEqual([c for c in self.w.calls("board")[before_board:] if c["argv"][0] in ("comment", "file", "label", "status")], [])
+        self.assertEqual([c for c in self.w.calls("simple-board")[before_board:] if c["argv"][0] in ("comment", "file", "label", "status")], [])
         self.assertFalse(self.w.notifier_dir.exists(), "no state, no lock")
 
     def test_the_state_files_are_private_and_hold_no_words(self) -> None:

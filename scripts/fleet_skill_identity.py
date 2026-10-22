@@ -77,7 +77,7 @@ def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
         'elif [ -n "${AGENT_LAUNCHER:-}" ]; then echo "no seat assigned by $AGENT_LAUNCHER" >&2; exit 3\n'
         f"else SEAT={default_arm}; fi\n"
         'export AGENT_SEAT="${AGENT_SEAT:-$SEAT}"\n'
-        'agent-sync whoami --as "$SEAT"\n'
+        'simple-chat whoami --as "$SEAT"\n'
         "```\n\n"
         "Your seat is the first of these that applies (AGENT-SYNC § Identity Rules):  "
         "a seat Jay names to you in this conversation; a seat your launcher assigned "
@@ -89,7 +89,7 @@ def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
         "Stop if `whoami` shows another seat's bot or the credential is missing "
         "(the CLI also refuses on its own).  Never use another seat's credential or "
         "Jay's account.  Your shell may not keep exports between commands, so pass "
-        '`--as <SEAT>` on every agent-sync call, and read `"$AGENT_SEAT"` in the '
+        '`--as <SEAT>` on every simple-chat call, and read `"$AGENT_SEAT"` in the '
         f"commands below as the seat you verified.{extra}  {LAUNCHER_CLAUSE}"
     )
 

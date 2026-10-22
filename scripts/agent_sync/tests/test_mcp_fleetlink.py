@@ -1,6 +1,6 @@
 """The fleetlink_* tools on the stdio server (fleetlink_tools.py).
 
-FleetLink's CLI is never run for real:  a fake `fleet-share` on PATH records its argument list, its environment,
+FleetLink's CLI is never run for real:  a fake `fleetlink` on PATH records its argument list, its environment,
 its working folder and the arguments file it was handed (text and mode), then answers from a control file.  The
 child gets a minimal environment, so the control and record paths are written into the fake itself.
 """
@@ -81,7 +81,7 @@ class FleetLinkHarness(IdentityHarness):
         self.bin.mkdir()
         self.control = self.tmp / "fl-control.json"
         self.calls_path = self.tmp / "fl-calls.jsonl"
-        fake = self.bin / "fleet-share"
+        fake = self.bin / "fleetlink"
         fake.write_text(
             FAKE_FLEET_SHARE.format(
                 python=sys.executable, control=str(self.control), calls=str(self.calls_path)
@@ -154,7 +154,7 @@ class ContractTests(FleetLinkHarness):
             self.assertEqual(
                 tool["name"] in T.WRITE_TOOLS, not tool["annotations"]["readOnlyHint"], tool["name"]
             )
-            self.assertTrue(T.EXTERNAL_CLI[tool["name"]].startswith("fleet-share "), tool["name"])
+            self.assertTrue(T.EXTERNAL_CLI[tool["name"]].startswith("fleetlink "), tool["name"])
 
     def test_writes_need_an_identity_like_every_other_write(self):
         self.token_file()
@@ -414,7 +414,7 @@ class CredentialTests(FleetLinkHarness):
         self.token_file()
         session = self.session(self.mcp_env(PATH="/nonexistent"))
         error = self.assert_tool_error(session.call("fleetlink_whoami"), "not_configured")
-        self.assertIn("fleet-share", error["message"])
+        self.assertIn("fleetlink", error["message"])
         self.assertIn("AGENT_SYNC_FLEETLINK_CLI", error["message"])
         self.assertEqual(self.assert_structured("whoami", session.call("whoami"))["seat"], "CLAUDE")
         missing = self.session(self.env(AGENT_SYNC_FLEETLINK_CLI=str(self.tmp / "nope")))
@@ -425,7 +425,7 @@ class CredentialTests(FleetLinkHarness):
         # The override wins over PATH.
         override = self.session(
             self.mcp_env(
-                PATH="/nonexistent", AGENT_SYNC_FLEETLINK_CLI=str(self.bin / "fleet-share")
+                PATH="/nonexistent", AGENT_SYNC_FLEETLINK_CLI=str(self.bin / "fleetlink")
             )
         )
         self.assertNotIn("isError", override.call("fleetlink_whoami"))
@@ -617,7 +617,7 @@ class ErrorTests(FleetLinkHarness):
             self.error_for(stderr="Traceback ...\nKeyError: 'secret-ish'\n", exit=2),
             "upstream_error",
         )
-        self.assertEqual(crash["message"], "fleet-share failed (exit 2)")
+        self.assertEqual(crash["message"], "fleetlink failed (exit 2)")
         self.assert_tool_error(self.error_for(stdout="not json"), "upstream_error")
         self.assert_tool_error(self.error_for(stdout="[1, 2]"), "upstream_error")
         self.assert_tool_error(self.error_for(stdout='{"n": NaN}'), "upstream_error")

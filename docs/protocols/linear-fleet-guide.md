@@ -51,7 +51,7 @@ The cost of a duplicate issue is higher than the cost of a search.  In order:
 
 Only then decide: **claim it**, **close it with evidence**, **mark it duplicate**, or **file a new one**.
 
-When you close or duplicate something, the evidence goes in the comment.  "Already fixed in PR #N, merged Tue, Oct 13" is a closeout; "seems stale" is not.  Duplicate needs the canonical issue named:  `board status <id> duplicate --of <canonical>`, because Linear only makes a Duplicate through a relation.
+When you close or duplicate something, the evidence goes in the comment.  "Already fixed in PR #N, merged Tue, Oct 13" is a closeout; "seems stale" is not.  Duplicate needs the canonical issue named:  `simple-board status <id> duplicate --of <canonical>`, because Linear only makes a Duplicate through a relation.
 
 ## Tools, in order of preference
 
@@ -63,17 +63,17 @@ Use the highest one that does the job.  Dropping a level is allowed; silently us
 | 2 | Your seat's Linear app token (`~/.secrets/Linear/<SEAT>.env`) through the API | search, edits, assignees, labels, priority, projects, cycles, sub-issues, blocking links, attachments, unclaiming | Your seat's own app |
 | 3 | Jay's Linear connector | **reads only**, and only when 1 and 2 cannot do the read | Jay, so reads only |
 
-On the Mac the `board` CLI wraps level 2 and is the same contract, with the seat stamped by `--by`/`AGENT_SEAT`:
+On the Mac the `simple-board` CLI wraps level 2 and is the same contract, with the seat stamped by `--by`/`AGENT_SEAT`:
 
 ```bash
-AGENT_SEAT=MM board whoami
-AGENT_SEAT=MM board list --search "linkifier" --limit 10
-AGENT_SEAT=MM board file --title "..." --app AFC --severity P1 --desc-file /tmp/desc.md --by MM
-AGENT_SEAT=MM board claim AFC-313 --by MM --where "Mac" --env Mac
-AGENT_SEAT=MM board status AFC-313 completed --resolution "..."
+AGENT_SEAT=MM simple-board whoami
+AGENT_SEAT=MM simple-board list --search "linkifier" --limit 10
+AGENT_SEAT=MM simple-board file --title "..." --app AFC --severity P1 --desc-file /tmp/desc.md --by MM
+AGENT_SEAT=MM simple-board claim AFC-313 --by MM --where "Mac" --env Mac
+AGENT_SEAT=MM simple-board status AFC-313 completed --resolution "..."
 ```
 
-`board` takes descriptions and fixes from files, and the files must be mode 600 or 400.  That is deliberate:  it keeps free text out of `argv` and out of shell history.
+`simple-board` takes descriptions and fixes from files, and the files must be mode 600 or 400.  That is deliberate:  it keeps free text out of `argv` and out of shell history.
 
 Read `board --help` and `board <verb> --help` before assuming a flag.  Two breaks from the pre-Linear CLI catch people:
 
@@ -97,8 +97,8 @@ One exception exists and it is not a connector:  GROK-WEB (Grok on the web and i
 
 Linear's API lets a write hide its author, which is exactly why the fleet forbids it.  On every write:
 
-- The **seat tag line** goes first, `[SEAT·session8]`, on its own line, in an issue body or a comment.  The `agent-sync` tooling writes it for you when you pass `session`.
-- The **`claimed:<SEAT>` label** marks an issue you hold, so `board list --mine MM` finds it without a scan of every comment.
+- The **seat tag line** goes first, `[SEAT·session8]`, on its own line, in an issue body or a comment.  The `simple-chat` tooling writes it for you when you pass `session`.
+- The **`claimed:<SEAT>` label** marks an issue you hold, so `simple-board list --mine MM` finds it without a scan of every comment.
 - The **`--by` flag** or the MCP tool's seat context names the author.  `--by` that does not match `AGENT_SEAT` is refused.
 
 Two spaces between sentences, in every body and comment, without exception ([FLEET-UI-COPY.md](/Users/jay/apps/FLEET-UI-COPY.md)).
@@ -110,25 +110,25 @@ A seat never edits or deletes a peer's issue or comment.  Correct a record by ad
 Claim before you write code, not after.  The claim is what stops two seats from solving the same problem in parallel.
 
 1. **File or find** the issue.
-2. **Claim it:**  `board claim <id> --by <SEAT>` or `linear_claim`.  This sets In Progress, adds `claimed:<SEAT>`, and posts a `CLAIMED` comment.  An issue another seat holds is refused; stealing needs `--steal --reason "..."`.
+2. **Claim it:**  `simple-board claim <id> --by <SEAT>` or `linear_claim`.  This sets In Progress, adds `claimed:<SEAT>`, and posts a `CLAIMED` comment.  An issue another seat holds is refused; stealing needs `--steal --reason "..."`.
 3. **Branch:**  `<seat-prefix>/<id>-<slug>`, in a lane (never the human's integration tree).  For MM that is `minimax/<id>-<slug>` under `~/apps/lanes/<Repo>/`.
 4. **Post the claim in Zulip** in the work topic, named `<ID> <subject>`.  The Linear claim and the chat post go together; the PR links the issue.
 5. **Work, keeping the issue accurate.**  If the scope changes, comment on the issue.  A stale issue is worse than no issue.
 6. **Land it:**  the PR says `Fixes <ID>` when it finishes the work, or `Refs <ID>` when it is partial.
-7. **Close out:**  `board status <id> completed --resolution "..."`, then a `DONE` post in the work topic, then resolve the topic.
+7. **Close out:**  `simple-board status <id> completed --resolution "..."`, then a `DONE` post in the work topic, then resolve the topic.
 
 **Completed** means merged.  **Deployed** means verified in production.  They are different states, and conflating them is how a fleet convinces itself something shipped that did not.
 
-Release the claim when you stop:  `board status <id> open` removes `claimed:<SEAT>`.  Park work rather than abandoning it, so the next seat can see it exists.
+Release the claim when you stop:  `simple-board status <id> open` removes `claimed:<SEAT>`.  Park work rather than abandoning it, so the next seat can see it exists.
 
 ## Status Vocabulary
 
-`board status <id> <value>`:
+`simple-board status <id> <value>`:
 
 | Board value | Linear state | Use it for |
 | --- | --- | --- |
 | `open` | Todo | Released, unclaimed, or ready to pick up |
-| `in_progress` | In Progress | Claimed via `board claim` (use `claim`, not `status`, to record ownership) |
+| `in_progress` | In Progress | Claimed via `simple-board claim` (use `claim`, not `status`, to record ownership) |
 | `addressed` | In Review | Work done, awaiting merge or review |
 | `completed` | Done | Merged |
 | `deployed` | Deployed | Verified running in production |
@@ -144,15 +144,15 @@ Release the claim when you stop:  `board status <id> open` removes `claimed:<SEA
 Four flat workspace labels carry meaning across the fleet:  `needs-owner`, `ask-capture`, `fleet-report`, `stale-claim`.  Two others are per-seat:  `claimed:<SEAT>` (the claim) and `seat:<SEAT>` (attribution, never removed).
 
 ```bash
-AGENT_SEAT=MM board label add AFC-313 needs-owner --by MM
-AGENT_SEAT=MM board list --label stale-claim
+AGENT_SEAT=MM simple-board label add AFC-313 needs-owner --by MM
+AGENT_SEAT=MM simple-board list --label stale-claim
 ```
 
 Adding or removing a flat label posts no comment, so it is safe to automate.  Always set `AGENT_SEAT` on the command.
 
 ## Ids
 
-Three forms are accepted everywhere an id is expected, by `board`, by `linear_show`, and by the MCP tools:
+Three forms are accepted everywhere an id is expected, by `simple-board`, by `linear_show`, and by the MCP tools:
 
 - **`AFC-123`**, the Linear identifier.  Use this;  it names the app and survives every migration.
 - **32 hex characters**, with or without hyphens.  An imported issue reuses its old board id as its Linear UUID, so pre-cutover references still resolve.
@@ -172,12 +172,12 @@ Each seat has its own Linear app, named for the seat bot's display name.  Its cr
 
 Lookup order:  the `LINEAR_CLIENT_ID`/`LINEAR_CLIENT_SECRET` environment pair (a cloud runtime), then the seat's pair from Infisical, then `<SEAT>.env` beside `Fleet.env`, then `LINEAR_<SEAT>_CLIENT_*` in the environment, then the shared app's pair from Infisical, then `Fleet.env` for a seat that has no app yet.  Infisical is read through the `INFISICAL_AUTOMATION` machine identity:  from the environment (`INFISICAL_AUTOMATION_CLIENT_ID` / `_SECRET`), else an `INFISICAL_TOKEN` in the environment, else `fleet-secrets get` (OPS-818).  Without any of them, or when Infisical is unreachable, the CLI says so once and uses the local files.  A session where `fleet-secrets` cannot sign in falls back the same way unless the identity is exported.
 
-Each app has one minted token, shared through Infisical `/linear` as `LINEAR_<SEAT>_CACHE_TOKEN` (`LINEAR_FLEET_CACHE_TOKEN` for the shared app), so every host that runs `board` uses the same token instead of minting their own against Linear's one-mint-a-day limit.  The local copy stays in `~/.secrets/Linear/cache/<SEAT>.token`, mode 600, each under its own lock:  a normal run reads only that, Infisical is asked only when the local token is missing, refused, near expiry or due for its day-28 re-mint, and a new mint is written to both.  `board whoami` prints both places.  The hosted Agent-Sync Worker still keeps its own token per seat in that seat's Durable Object.
+Each app has one minted token, shared through Infisical `/linear` as `LINEAR_<SEAT>_CACHE_TOKEN` (`LINEAR_FLEET_CACHE_TOKEN` for the shared app), so every host that runs `simple-board` uses the same token instead of minting their own against Linear's one-mint-a-day limit.  The local copy stays in `~/.secrets/Linear/cache/<SEAT>.token`, mode 600, each under its own lock:  a normal run reads only that, Infisical is asked only when the local token is missing, refused, near expiry or due for its day-28 re-mint, and a new mint is written to both.  `simple-board whoami` prints both places.  The hosted Agent-Sync Worker still keeps its own token per seat in that seat's Durable Object.
 
-`board whoami` prints the identity line, the viewer, the workspace, and the credentials path.  Check it before your first write:
+`simple-board whoami` prints the identity line, the viewer, the workspace, and the credentials path.  Check it before your first write:
 
 ```bash
-AGENT_SEAT=MM board whoami
+AGENT_SEAT=MM simple-board whoami
 ```
 
 - The viewer must be your seat's own app (`MiniMax (MM) (app user)` for MM) or Fleet with a `fallback for <SEAT>` notice.
@@ -195,6 +195,6 @@ AGENT_SEAT=MM board whoami
 
 | Version | When | Who | What |
 | --- | --- | --- | --- |
-| v1 | 2026-10-15 | MiniMax (MM) | First standalone guide, written for Jay alongside the Zulip guide v4 update.  Carries the fleet's Linear-and-Zulip identity rule as its opening section, the search-before-you-start check, the three-level tool order with Jay's connector reads-only, the seat-tag and label requirements on every write, the claim lifecycle, the status vocabulary, ids, teams, credentials, and the failure playbook.  Facts read live Thu, Oct 15, 2026 from `board whoami`, `board --help`, and `scripts/linear-board/README.md`. |
+| v1 | 2026-10-15 | MiniMax (MM) | First standalone guide, written for Jay alongside the Zulip guide v4 update.  Carries the fleet's Linear-and-Zulip identity rule as its opening section, the search-before-you-start check, the three-level tool order with Jay's connector reads-only, the seat-tag and label requirements on every write, the claim lifecycle, the status vocabulary, ids, teams, credentials, and the failure playbook.  Facts read live Thu, Oct 15, 2026 from `simple-board whoami`, `board --help`, and `scripts/linear-board/README.md`. |
 
 CLUTCH is the canonical app name. Its verified live Linear team key is `C`. `C`, `CLUTCH`, legacy `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Prior `CK-n` and `CLUTCH-n` identifiers remain resolvable after the rename.

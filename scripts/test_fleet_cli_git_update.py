@@ -132,10 +132,11 @@ class GitUpdateTests(unittest.TestCase):
         U.REMOTE = self.remote
         self.tmp.cleanup()
 
-    def commit(self, agent_sync: str) -> str:
+    def commit(self, agent_sync: str = PY_OK) -> str:
         files = {
-            "scripts/agent-sync": agent_sync,
-            "scripts/linear-board/board": BOARD,
+            "scripts/simple-chat": agent_sync,
+            "scripts/simple-notes": PY_OK,
+            "scripts/simple-board": BOARD,
             "scripts/recall": PY_OK,
             "scripts/fleet_lanes/bin/lane": BASH_OK,
             "scripts/fleet-mode": BASH_OK,
@@ -183,7 +184,7 @@ class GitUpdateTests(unittest.TestCase):
         bad = self.commit(agent_sync=PY_BROKEN)
         result = U.update(self.home)
         self.assertEqual(result["status"], "smoke_failed")
-        self.assertEqual(result["reason"], "smoke_exit_mismatch_agent_sync_version")
+        self.assertEqual(result["reason"], "smoke_exit_mismatch_simple_chat_version")
         self.assertEqual(U.status(self.home)["commit"], good)
         self.assertEqual(U.status(self.home)["bad"], bad)
         self.assertEqual(U.update(self.home)["status"], "skipped_bad")

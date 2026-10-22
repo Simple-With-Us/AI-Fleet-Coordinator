@@ -401,7 +401,7 @@ file before assuming it finished.
 
 ## Rules that apply to whoever picks these up
 
-- Claim on THE BOARD before substantial work (`board list` → `board claim <id> --by <SEAT>
+- Claim on THE BOARD before substantial work (`simple-board list` → `simple-board claim <id> --by <SEAT>
   --env Mac --where "..."`), land the `docs/EFFORT-LOG.md` row, post start and closeout to
   `#agent-sync`.
 - Branch under your own seat prefix and work in `~/apps/*`, never a top-level `~/Code/*`

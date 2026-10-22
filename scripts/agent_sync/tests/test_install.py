@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 
 INSTALL = Path(__file__).resolve().parents[1] / "install.sh"
-ENTRY = Path(__file__).resolve().parents[2] / "agent-sync"
+ENTRY = Path(__file__).resolve().parents[2] / "simple-chat"
 
 
 class InstallTests(unittest.TestCase):
@@ -25,8 +25,11 @@ class InstallTests(unittest.TestCase):
         self.home.mkdir()
         self.checkout = self.tmp / "checkout"
         (self.checkout / "scripts").mkdir(parents=True)
-        shutil.copy(ENTRY, self.checkout / "scripts" / "agent-sync")
-        os.chmod(self.checkout / "scripts" / "agent-sync", 0o755)
+        shutil.copy(ENTRY, self.checkout / "scripts" / "simple-chat")
+        shutil.copy(ENTRY, self.checkout / "scripts" / "simple-notes")
+        shutil.copy(ENTRY, self.checkout / "scripts" / "simple-board")
+        for _cmd in ("simple-chat", "simple-notes", "simple-board"):
+            os.chmod(self.checkout / "scripts" / _cmd, 0o755)
 
     def run_install(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         env = {"HOME": str(self.home), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
@@ -75,17 +78,17 @@ class InstallTests(unittest.TestCase):
     def test_real_run_links_and_creates_a_private_state_dir(self) -> None:
         result = self.run_install(str(self.checkout))
         self.assertEqual(result.returncode, 0, result.stderr)
-        link = self.home / ".local" / "bin" / "agent-sync"
+        link = self.home / ".local" / "bin" / "simple-chat"
         self.assertTrue(link.is_symlink())
-        self.assertEqual(os.readlink(link), str(self.checkout / "scripts" / "agent-sync"))
+        self.assertEqual(os.readlink(link), str(self.checkout / "scripts" / "simple-chat"))
         self.assertEqual(stat.S_IMODE(os.stat(self.home / ".agent-sync").st_mode), 0o700)
         self.assertEqual(
-            self.home_listing(), [".agent-sync", ".local", ".local/bin", ".local/bin/agent-sync"]
+            self.home_listing(), [".agent-sync", ".local", ".local/bin", ".local/bin/simple-board", ".local/bin/simple-chat", ".local/bin/simple-notes"]
         )
 
     def test_a_relative_checkout_path_still_makes_an_absolute_link_that_works(self) -> None:
-        link = self.home / ".local" / "bin" / "agent-sync"
-        wanted = os.path.realpath(self.checkout / "scripts" / "agent-sync")
+        link = self.home / ".local" / "bin" / "simple-chat"
+        wanted = os.path.realpath(self.checkout / "scripts" / "simple-chat")
         for argument, cwd in (
             ("checkout", self.tmp),
             (".", self.checkout),
@@ -116,7 +119,7 @@ class InstallTests(unittest.TestCase):
         self.run_install(
             str(Path(__file__).resolve().parents[3])
         )  # the real checkout this file lives in
-        link = self.home / ".local" / "bin" / "agent-sync"
+        link = self.home / ".local" / "bin" / "simple-chat"
         done = subprocess.run(
             [str(link), "--version"],
             capture_output=True,
@@ -125,7 +128,7 @@ class InstallTests(unittest.TestCase):
             env={"HOME": str(self.home), "PATH": os.environ.get("PATH", "")},
         )
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("agent-sync", done.stdout)
+        self.assertIn("simple-chat", done.stdout)
 
     def test_second_run_is_idempotent_and_repairs_modes(self) -> None:
         self.run_install(str(self.checkout))
@@ -138,16 +141,16 @@ class InstallTests(unittest.TestCase):
     def test_a_stale_link_is_repointed_but_a_regular_file_is_never_overwritten(self) -> None:
         bin_dir = self.home / ".local" / "bin"
         bin_dir.mkdir(parents=True)
-        (bin_dir / "agent-sync").symlink_to(self.tmp / "old-place")
+        (bin_dir / "simple-chat").symlink_to(self.tmp / "old-place")
         self.assertEqual(self.run_install(str(self.checkout)).returncode, 0)
         self.assertEqual(
-            os.readlink(bin_dir / "agent-sync"), str(self.checkout / "scripts" / "agent-sync")
+            os.readlink(bin_dir / "simple-chat"), str(self.checkout / "scripts" / "simple-chat")
         )
-        (bin_dir / "agent-sync").unlink()
-        (bin_dir / "agent-sync").write_text("mine")
+        (bin_dir / "simple-chat").unlink()
+        (bin_dir / "simple-chat").write_text("mine")
         refused = self.run_install(str(self.checkout))
         self.assertEqual(refused.returncode, 1)
-        self.assertEqual((bin_dir / "agent-sync").read_text(), "mine")
+        self.assertEqual((bin_dir / "simple-chat").read_text(), "mine")
 
     def test_missing_checkout_file_fails_without_touching_home(self) -> None:
         result = self.run_install(str(self.tmp / "nowhere"))

@@ -70,7 +70,7 @@ DEFAULT_TIMEOUT = 1200
 REPLY_TIMEOUT = 300
 # The owner watches Zulip, so every Lark exchange is mirrored there with the
 # MiniMax session id, which is the thread the answer came from.
-AGENT_SYNC = os.path.expanduser("~/.local/bin/agent-sync")
+AGENT_SYNC = os.path.expanduser("~/.local/bin/simple-chat")
 AGENT_SYNC_ROOT = os.path.expanduser("~/.agent-sync")
 ZULIP_TOPIC_PREFIX = "Lark"
 MAX_REPLY_CHARS = 4000

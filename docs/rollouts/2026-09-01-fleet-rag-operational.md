@@ -11,7 +11,7 @@ Claude's 2026-09-01 write-up below treated several pieces as landed while they w
 uncommitted in this worktree (no `recall` on PATH, MCP configs unregistered, `~/apps/fleet-rag`
 had only a notes cache + a stale ingest lock, Oracle fleet-RAG routines not created).  GROK
 verified the files, restored `AGENT-SYNC.md` to the repo copy (the dirty tree had mixed in the
-live `~/apps/AGENT-SYNC.md` drift and dropped Cloud → Mac), put `recall` on PATH like `board`,
+live `~/apps/AGENT-SYNC.md` drift and dropped Cloud → Mac), put `recall` on PATH like `simple-board`,
 and is landing the branch.  Treat any "landed" row as code-present until the verify section
 below is green.
 

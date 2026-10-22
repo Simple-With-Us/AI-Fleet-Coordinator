@@ -169,7 +169,7 @@ hand-registered entry is left alone).  Clutch is not in the list: it carries `fl
 - `recall_contribute(text, category, app="fleet", seat, title?, url?)`
 - `recall_stats()`
 
-The CLI is `recall`, on PATH through `~/.local/bin/recall` like `board` (the old `~/apps/mac-collab/recall` symlink was retired on 2026-10-19):
+The CLI is `recall`, on PATH through `~/.local/bin/recall` like `simple-board` (the old `~/apps/mac-collab/recall` symlink was retired on 2026-10-19):
 
 ```bash
 recall "pm2 orphan holds port"                       # ranked hits with source, date, board id / url
@@ -390,7 +390,7 @@ and `FLEET_RAG_HANDOFF_FILE` override the defaults this repo ships for its owner
 
 | Routine | Schedule | What it does |
 |---|---|---|
-| Fleet RAG nightly ingest | daily 02:30 local | `recall ingest --all --prune`, reads `~/apps/fleet-rag/state/last-run.json`, retries once, files a P1 in Linear (`board file`) on repeated failure |
+| Fleet RAG nightly ingest | daily 02:30 local | `recall ingest --all --prune`, reads `~/apps/fleet-rag/state/last-run.json`, retries once, files a P1 in Linear (`simple-board file`) on repeated failure |
 | Fleet RAG weekly health + recall eval | Sundays 06:30 local | `recall doctor --platforms --box` / `stats` / `eval` / `digest --days 7`, checks `recall.jays.services/health` and yesterday's snapshot, writes the owner note "[FLEET, Oracle] Weekly recall digest", files a P1 on regressions |
 
 Both routines start with a preflight (added Tue, Sep 8, 2026): `recall doctor --platforms`, and when the `ingest:sentinel` (or `tei:rerank`) row says the direct path is skipped because Tailscale is logged out, `recall-tunnel up` plus the three tunnel URLs on every recall command, then `recall-tunnel down`.  Without it the nightly failed every night from Sep 3 to Sep 8 while the corpus itself stayed green.

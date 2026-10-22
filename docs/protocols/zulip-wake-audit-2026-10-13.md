@@ -41,7 +41,7 @@ AFC-305 tracks registry implementation and dormant-chat resume coverage.  This a
 
 ## Existing-Chat Nudge Delivery
 
-`agent-sync daemon chats` manages explicit per-seat topic bindings and the durable nudge queue.  A binding identifies a host, platform, session ID and workspace; titles are never routing keys.  Only an eligible wake on the exact topic enters this queue.  A bound nudge replaces the headless response for that message; unbound messages keep their existing routing.
+`simple-chat daemon chats` manages explicit per-seat topic bindings and the durable nudge queue.  A binding identifies a host, platform, session ID and workspace; titles are never routing keys.  Only an eligible wake on the exact topic enters this queue.  A bound nudge replaces the headless response for that message; unbound messages keep their existing routing.
 
 The first transport is `grok-leader`, through the shared Grok leader's existing `session/resume` and `session/prompt` methods.  It requires a live Grok process, the exact workspace, and idle session state.  Busy, permission-waiting, disconnected and unknown sessions remain pending.  It never invokes session creation, cancellation, a model change, or an additional agent owner.  A correlated prompt response or the exact nudge in the chat's saved real-user history confirms transport acceptance.  A timeout without either receipt remains uncertain and is never retried automatically.  The worker checks uncertain deliveries for later saved receipts.  Acceptance does not prove that the agent subsequently read or answered Zulip.
 
@@ -52,13 +52,13 @@ Shellular's installed CLI has no supported local prompt API.  Its private `AI_PR
 Local administration (keep the caller's own seat in `--as`; `--target-seat` selects the delivery identity):
 
 ```sh
-agent-sync --as CODEX daemon chats list --target-seat GROK
-agent-sync --as CODEX daemon chats bind --target-seat GROK \
+simple-chat --as CODEX daemon chats list --target-seat GROK
+simple-chat --as CODEX daemon chats bind --target-seat GROK \
   --channel agent-sync --topic 'ISSUE-123 Work Topic' \
   --session-id '<discovered-session-id>' --cwd '<discovered-workspace>'
-agent-sync --as CODEX daemon chats status --target-seat GROK
-agent-sync --as CODEX daemon chats cancel --target-seat GROK --item-id '<held-item-id>'
-agent-sync --as CODEX daemon chats unbind --target-seat GROK \
+simple-chat --as CODEX daemon chats status --target-seat GROK
+simple-chat --as CODEX daemon chats cancel --target-seat GROK --item-id '<held-item-id>'
+simple-chat --as CODEX daemon chats unbind --target-seat GROK \
   --channel agent-sync --topic 'ISSUE-123 Work Topic'
 ```
 
@@ -74,6 +74,6 @@ The output field `chat_target` selects one opaque ID from that exact snapshot.  
 
 Supported stores and transports are distinct.  Claude and Codex native logs provide bounded text, Cursor local provides metadata, and verified native Muse/MiniMax/Fx stores provide the capabilities advertised by each reader.  Grok shared-leader and Cursor Cloud existing-agent runs are the callable wake transports.  Other records are read-only until an existing-owner delivery API is verified.  Missing adapters remain visible as unavailable instead of disappearing or being recreated.
 
-`agent-sync --as CODEX daemon chats catalog --limit 120` lists the bounded catalog.  `agent-sync --as CODEX daemon chats peek --chat-id <opaque-id>` reads up to four recent messages from an exact discovered record.  Catalog and excerpts stay local/in memory; no transcript is added to public source or the durable wake queue.  Cursor Cloud queue status/cancellation use `--target-seat CURSOR`; Grok uses `--target-seat GROK`.
+`simple-chat --as CODEX daemon chats catalog --limit 120` lists the bounded catalog.  `simple-chat --as CODEX daemon chats peek --chat-id <opaque-id>` reads up to four recent messages from an exact discovered record.  Catalog and excerpts stay local/in memory; no transcript is added to public source or the durable wake queue.  Cursor Cloud queue status/cancellation use `--target-seat CURSOR`; Grok uses `--target-seat GROK`.
 
 The changed wake schema and contract invalidate the previous Muse pin.  Run the standard hostile-message contract test and review its result before pinning the new contract.  A synthetic positive-selection canary should also verify that the model returns a known wake-capable ID despite hostile transcript text, without dispatching that test selection.

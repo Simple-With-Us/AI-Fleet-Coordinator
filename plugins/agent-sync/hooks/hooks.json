@@ -4,31 +4,31 @@
     "SessionStart": [
       {
         "hooks": [
-          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --hook session-start", "timeout": 5},
-          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --rewake", "asyncRewake": true, "timeout": 86400}
+          {"type": "command", "command": "\"$HOME/.local/bin/simple-chat\" attach --hook session-start", "timeout": 5},
+          {"type": "command", "command": "\"$HOME/.local/bin/simple-chat\" attach --rewake", "asyncRewake": true, "timeout": 86400}
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --hook prompt", "timeout": 5},
-          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --rewake", "asyncRewake": true, "timeout": 86400}
+          {"type": "command", "command": "\"$HOME/.local/bin/simple-chat\" attach --hook prompt", "timeout": 5},
+          {"type": "command", "command": "\"$HOME/.local/bin/simple-chat\" attach --rewake", "asyncRewake": true, "timeout": 86400}
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --hook stop", "timeout": 5},
-          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --rewake", "asyncRewake": true, "timeout": 86400}
+          {"type": "command", "command": "\"$HOME/.local/bin/simple-chat\" attach --hook stop", "timeout": 5},
+          {"type": "command", "command": "\"$HOME/.local/bin/simple-chat\" attach --rewake", "asyncRewake": true, "timeout": 86400}
         ]
       }
     ],
     "SessionEnd": [
       {
         "hooks": [
-          {"type": "command", "command": "\"$HOME/.local/bin/agent-sync\" attach --hook session-end", "timeout": 5}
+          {"type": "command", "command": "\"$HOME/.local/bin/simple-chat\" attach --hook session-end", "timeout": 5}
         ]
       }
     ]

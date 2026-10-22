@@ -8,7 +8,7 @@ Reporting rail: Linear issue **`OPS-372`** (old board id `02512901`, "Fleet RAG 
 per platform, in this shape (writes need `AGENT_SEAT`):
 
 ```bash
-board comment OPS-372 --by <YOUR-SEAT> --env <Mac|cloud> \
+simple-board comment OPS-372 --by <YOUR-SEAT> --env <Mac|cloud> \
   --text "surface: <cli|stdio-mcp|remote-mcp|rest> | search: ok|FAIL <detail> | contribute: ok|FAIL <detail> | stats points: <n>"
 ```
 

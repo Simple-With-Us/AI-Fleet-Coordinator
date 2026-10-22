@@ -2,7 +2,7 @@
 
     world = World(self)
     code, out, err = world.run("file", "--by", "CLAUDE", ...)
-    world.calls("board")            # every call a fake received, with argv, seat and file contents
+    world.calls("simple-board")            # every call a fake received, with argv, seat and file contents
     world.zulip()["messages"]       # what was posted
 
 `run` calls `needs_owner.cli.main` in process with a synthetic environment (the test's own, never the
@@ -75,8 +75,8 @@ class World:
             d.mkdir()
         self.knobs = FakeKnobs()
         self.now = dt.datetime(2026, 10, 11, 18, 0, 0, tzinfo=dt.timezone.utc)  # well after every issue the fake board stamps
-        self._launcher("board", HERE / "fake_board.py")
-        self._launcher("agent-sync", HERE / "fake_agent_sync.py")
+        self._launcher("simple-board", HERE / "fake_board.py")
+        self._launcher("simple-chat", HERE / "fake_agent_sync.py")
 
     def _launcher(self, name: str, script: Path) -> None:
         path = self.bin / name

@@ -114,7 +114,7 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertFalse(doctor.post_changes(report, runner))
         self.assertEqual(
             calls[0][:6],
-            ["agent-sync", "post", "--channel", "agent-sync", "--topic", "fleet tools doctor"],
+            ["simple-chat", "post", "--channel", "agent-sync", "--topic", "fleet tools doctor"],
         )
         self.assertIn("seat:CLAUDE: missing fleetlink token", calls[0][6])
         self.assertTrue(doctor.post_changes(doctor.Report(), runner))
@@ -226,9 +226,10 @@ class SeatAndMcpTests(unittest.TestCase):
         ):
             self.assertFalse(doctor.is_shipped(path), path)
 
-    def test_the_same_five_tools_on_both_hosts(self):
+    def test_the_same_six_tools_on_both_hosts(self):
         self.assertEqual(
-            doctor.FLEET_TOOLS, ("agent-sync", "board", "recall", "lane", "fleet-mode")
+            doctor.FLEET_TOOLS,
+            ("simple-chat", "simple-notes", "simple-board", "recall", "lane", "fleet-mode"),
         )
         self.assertTrue(set(doctor.FLEET_TOOLS) <= set(doctor.COMMANDS))
 
@@ -303,7 +304,7 @@ class SeatAndMcpTests(unittest.TestCase):
 
     def test_post_survives_a_missing_agent_sync(self):
         def runner(argv, **kw):
-            raise FileNotFoundError("agent-sync")
+            raise FileNotFoundError("simple-chat")
 
         report = doctor.Report()
         report.add("seat:CLAUDE", "FAIL", "x")
@@ -335,7 +336,7 @@ class McpStartupTests(unittest.TestCase):
                 argv,
                 1,
                 b"",
-                b"agent-sync: internal error: FileNotFoundError: listener-tools.json\n",
+                b"simple-chat: internal error: FileNotFoundError: listener-tools.json\n",
             )
 
         def working(argv, **kw):
@@ -346,7 +347,7 @@ class McpStartupTests(unittest.TestCase):
             }
             return subprocess.CompletedProcess(argv, 0, json.dumps(reply).encode() + b"\n", b"")
 
-        with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/agent-sync"):
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/simple-chat"):
             report = doctor.Report()
             doctor.check_mcp_startup(report, "CLAUDE", broken)
             self.assertEqual(report.rows[0]["status"], "FAIL")
@@ -355,7 +356,7 @@ class McpStartupTests(unittest.TestCase):
             doctor.check_mcp_startup(report, "CLAUDE", working)
             self.assertEqual(
                 (report.rows[0]["status"], report.rows[0]["detail"]),
-                ("OK", "agent-sync mcp serves 2 tools"),
+                ("OK", "simple-chat mcp serves 2 tools"),
             )
 
 
@@ -434,7 +435,7 @@ class RegisteredEnvTests(unittest.TestCase):
                 "registered_env",
                 side_effect=doctor.ClientConfigError("Claude client JSON unavailable or malformed"),
             ),
-            mock.patch.object(doctor.shutil, "which", return_value="agent-sync"),
+            mock.patch.object(doctor.shutil, "which", return_value="simple-chat"),
         ):
             report = doctor.Report()
             doctor.check_mcp_startup(report, "CLAUDE", runner)
@@ -451,7 +452,7 @@ class RegisteredEnvTests(unittest.TestCase):
 
         with (
             mock.patch.object(doctor, "registered_env", return_value={"LANG": "file-locale"}),
-            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/agent-sync"),
+            mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/simple-chat"),
             mock.patch.dict(
                 os.environ, {"LANG": "process-locale", "INFISICAL_TOKEN": "synthetic-process-token"}
             ),
@@ -847,7 +848,7 @@ class MacRuntimeTests(HomeCase):
         self.assertEqual(row["status"], "WARN")  # amber:  the updater waits for main to move
         self.assertIn("smoke test", row["reason"])
         (self.home / ".agent-sync/runtime-sync.bad-sha").unlink()
-        _, row = self.runtime(tracked=" M scripts/agent-sync\n")
+        _, row = self.runtime(tracked=" M scripts/simple-chat\n")
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("tracked changes", row["reason"])
         _, row = self.runtime(updater=dict(self.HEALTHY, advanced=False))
@@ -1116,20 +1117,20 @@ class ServerTests(HomeCase):
     def test_wrappers_and_the_fleet_secrets_link(self):
         current = str(self.fleet_cli / "current")
         self.touch(
-            ".local/bin/agent-sync",
-            f"release = Path({current!r})\nargv = [str(release / 'scripts/agent-sync')]\n",
+            ".local/bin/simple-chat",
+            f"release = Path({current!r})\nargv = [str(release / 'scripts/simple-chat')]\n",
         )
-        self.touch(".local/bin/board", "exec /usr/bin/python3 /somewhere/else/board\n")
+        self.touch(".local/bin/simple-board", "exec /usr/bin/python3 /somewhere/else/board\n")
         self.touch("elsewhere/fleet-secrets", "#!/bin/sh\n")
         (self.home / ".local/bin/fleet-secrets").symlink_to(self.home / "elsewhere/fleet-secrets")
         report = doctor.Report()
         rt = {"state": "current", "status": "OK", "head": TIP, "tip": TIP}
         doctor.check_server_tools(report, rt, {"FleetLink": "current"}, fake_runner([]))
-        self.assertEqual(report.row("tool:agent-sync")["state"], "current")
-        self.assertEqual(report.row("tool:board")["state"], "missing")  # points elsewhere
+        self.assertEqual(report.row("tool:simple-chat")["state"], "current")
+        self.assertEqual(report.row("tool:simple-board")["state"], "missing")  # points elsewhere
         self.assertEqual(report.row("tool:recall")["state"], "missing")  # absent
         self.assertEqual(report.row("tool:fleet-secrets")["state"], "stale")  # wrong link
-        self.assertEqual(report.row("tool:fleet-share")["state"], "missing")
+        self.assertEqual(report.row("tool:fleetlink")["state"], "missing")
 
 
 class RemoteTests(unittest.TestCase):
@@ -1148,7 +1149,9 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse(doc["reachable"])
         self.assertIn(doctor.NO_ROUTE, doc["error"])
         rows = {r["check"]: r for r in doc["checks"]}
-        self.assertTrue({"runtime", "tool:agent-sync", "tool:gitleaks", "tool:claude"} <= set(rows))
+        self.assertTrue(
+            {"runtime", "tool:simple-chat", "tool:gitleaks", "tool:claude"} <= set(rows)
+        )
         self.assertTrue(all(r["state"] == "unknown" for r in rows.values()))
         self.assertTrue(rows["tool:gitleaks"]["required"])
         for key in ("path", "version", "latest", "latestSource", "basis"):
@@ -1253,9 +1256,9 @@ class ReportAndRunTests(HomeCase):
     def test_no_network_never_calls_a_fleet_tool_current(self):
         (self.rt_dir).mkdir(parents=True)
         (self.rt_dir / ".git").write_text("gitdir: x\n")
-        self.touch("apps/lanes/_managed/fleet/agent-sync-runtime/scripts/agent-sync", "x")
+        self.touch("apps/lanes/_managed/fleet/agent-sync-runtime/scripts/simple-chat", "x")
         (self.home / ".local/bin").mkdir(parents=True)
-        (self.home / ".local/bin/agent-sync").symlink_to(self.rt_dir / "scripts/agent-sync")
+        (self.home / ".local/bin/simple-chat").symlink_to(self.rt_dir / "scripts/simple-chat")
         rules = [
             (("rev-parse", "HEAD"), (0, TIP + "\n")),
             (
@@ -1267,7 +1270,7 @@ class ReportAndRunTests(HomeCase):
         text, _ = self.run_doctor(["--json", "--no-network"], rules, host="mac")
         rows = {r["check"]: r for r in json.loads(text)["checks"]}
         self.assertEqual(rows["runtime"]["state"], "unknown")
-        self.assertEqual(rows["tool:agent-sync"]["state"], "unknown")
+        self.assertEqual(rows["tool:simple-chat"]["state"], "unknown")
         current = [
             r["check"]
             for r in rows.values()
@@ -1320,7 +1323,7 @@ class ReportAndRunTests(HomeCase):
     def test_presence_rows_are_their_own_category_and_an_absent_checkout_is_unknown(self):
         text, _ = self.run_doctor(["--json", "--no-network"])
         rows = {r["check"]: r for r in json.loads(text)["checks"]}
-        self.assertEqual(rows["command:agent-sync"]["category"], "presence")
+        self.assertEqual(rows["command:simple-chat"]["category"], "presence")
         self.assertEqual(rows["tool-file:scripts/recall"]["category"], "presence")
         self.assertIn("presence", doctor.VERDICT_EXCLUDED)
         self.assertEqual(rows["checkout:FleetLink"]["state"], "unknown")  # find_repo finds none

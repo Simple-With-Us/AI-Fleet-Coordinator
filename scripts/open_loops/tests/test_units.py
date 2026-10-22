@@ -157,7 +157,7 @@ class ZulipSignals(Sandbox):
     def setUp(self):
         super().setUp()
         self.world = World()
-        self.world.programs(self.bin, ["agent-sync"])
+        self.world.programs(self.bin, ["simple-chat"])
 
     def read(self, wanted, **kw):
         return zulip_topics.read_signals(self.world.runner(), wanted, **kw)
@@ -166,30 +166,30 @@ class ZulipSignals(Sandbox):
         return dict({"timestamp": int((NOW - timedelta(hours=hours)).timestamp()), "seat": seat}, **extra)
 
     def test_only_messages_that_name_a_seat_count(self):
-        self.world.agent_sync["topics"] = [{"name": "FFX-1 thing", "max_id": 3}]
-        self.world.agent_sync["read"] = {"FFX-1 thing": [self.message("CLAUDE", 2), self.message(None, 1), {"seat": "CODEX"}, self.message("", 1)]}
+        self.world.simple_chat["topics"] = [{"name": "FFX-1 thing", "max_id": 3}]
+        self.world.simple_chat["read"] = {"FFX-1 thing": [self.message("CLAUDE", 2), self.message(None, 1), {"seat": "CODEX"}, self.message("", 1)]}
         got = self.read([{"identifier": "FFX-1", "seat": "CLAUDE"}])
         self.assertEqual(got["by_ident"]["FFX-1"], {"ok": True, "events": [{"at": ago(2), "by": "CLAUDE"}]})
 
     def test_the_topic_must_start_with_the_identifier_and_a_space(self):
-        self.world.agent_sync["topics"] = [{"name": "FFX-10 other", "max_id": 3}, {"name": "FFX-1", "max_id": 2}, {"name": "FFX-1 thing", "max_id": 1},
+        self.world.simple_chat["topics"] = [{"name": "FFX-10 other", "max_id": 3}, {"name": "FFX-1", "max_id": 2}, {"name": "FFX-1 thing", "max_id": 1},
                                            {"name": "xFFX-1 thing", "max_id": 9}]
-        self.world.agent_sync["read"] = {"FFX-1": [self.message("CLAUDE", 5)], "FFX-1 thing": [self.message("CLAUDE", 4)]}
+        self.world.simple_chat["read"] = {"FFX-1": [self.message("CLAUDE", 5)], "FFX-1 thing": [self.message("CLAUDE", 4)]}
         got = self.read([{"identifier": "FFX-1", "seat": "CLAUDE"}])
         self.assertEqual(len(got["by_ident"]["FFX-1"]["events"]), 2)
         self.assertEqual(got["reads"], 2)
 
     def test_a_failed_read_is_ok_false(self):
-        self.world.agent_sync["topics"] = [{"name": "FFX-1 thing", "max_id": 3}]
-        self.world.agent_sync["read_rc"] = {"FFX-1 thing": 6}
+        self.world.simple_chat["topics"] = [{"name": "FFX-1 thing", "max_id": 3}]
+        self.world.simple_chat["read_rc"] = {"FFX-1 thing": 6}
         self.assertEqual(self.read([{"identifier": "FFX-1", "seat": "X"}])["by_ident"]["FFX-1"], {"ok": False})
 
     def test_a_topic_list_that_may_be_cut_off_makes_a_missing_topic_unknown(self):
-        self.world.agent_sync["topics"] = [{"name": "T%d" % i, "max_id": i} for i in range(zulip_topics.TOPICS_LIMIT)]
+        self.world.simple_chat["topics"] = [{"name": "T%d" % i, "max_id": i} for i in range(zulip_topics.TOPICS_LIMIT)]
         self.assertEqual(self.read([{"identifier": "FFX-1", "seat": "X"}])["by_ident"]["FFX-1"], {"ok": False})
 
     def test_the_read_budget_skips_the_rest_without_failing(self):
-        self.world.agent_sync["topics"] = [{"name": "FFX-%d t" % i, "max_id": i} for i in range(1, 200)]
+        self.world.simple_chat["topics"] = [{"name": "FFX-%d t" % i, "max_id": i} for i in range(1, 200)]
         wanted = [{"identifier": "FFX-%d" % i, "seat": "X"} for i in range(1, 150)]
         got = self.read(wanted)
         self.assertEqual(got["reads"], zulip_topics.MAX_READS)
@@ -198,7 +198,7 @@ class ZulipSignals(Sandbox):
         self.assertEqual(got["status"], "ok")
 
     def test_the_time_budget_stops_the_reads(self):
-        self.world.agent_sync["topics"] = [{"name": "FFX-%d t" % i, "max_id": i} for i in range(1, 5)]
+        self.world.simple_chat["topics"] = [{"name": "FFX-%d t" % i, "max_id": i} for i in range(1, 5)]
         clock = iter([0, 0, 1000, 1000, 1000, 1000, 1000])
         got = self.read([{"identifier": "FFX-%d" % i, "seat": "X"} for i in range(1, 5)], monotonic=lambda: next(clock))
         self.assertGreaterEqual(got["skipped"], 1)

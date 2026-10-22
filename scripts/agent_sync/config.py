@@ -1098,11 +1098,11 @@ def load(root: str, path: str | None = None) -> Config:
     if error:
         cfg.errors.insert(0, error)
     elif not raw:
-        cfg.errors.insert(0, "no %s; run agent-sync daemon install (it writes a sample)" % path)
+        cfg.errors.insert(0, "no %s; run simple-chat daemon install (it writes a sample)" % path)
     if cfg.owner_user_id == 0 and raw:
         cfg.errors.append(
             "daemon.owner_user_id is 0 (not pinned): nothing is treated as the owner and nothing wakes; "
-            "run agent-sync daemon init"
+            "run simple-chat daemon init"
         )
     return cfg
 

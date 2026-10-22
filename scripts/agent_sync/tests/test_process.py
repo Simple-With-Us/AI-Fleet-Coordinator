@@ -11,7 +11,7 @@ from pathlib import Path
 
 from agent_sync.tests.harness import Harness
 
-ENTRY = Path(__file__).resolve().parents[2] / "agent-sync"
+ENTRY = Path(__file__).resolve().parents[2] / "simple-chat"
 
 
 class ProcessTests(Harness):

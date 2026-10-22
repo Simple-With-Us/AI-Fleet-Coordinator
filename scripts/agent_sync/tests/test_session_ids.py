@@ -372,9 +372,7 @@ class CliTests(Harness):
             mock.patch.object(N, "direct_available", return_value=self.script),
             mock.patch.object(N, "_run_helper", run),
         ):
-            return run, self.run_cli(
-                "notes", "create", "[AFC, Claude] cli t", *argv, stdin="body\n", env=environ
-            )
+            return run, self.run_cli("create", "[AFC, Claude] cli t", *argv, stdin="body\n", env=environ, prog="simple-notes")
 
     def test_the_cli_reads_the_environment_and_a_flag_beats_it(self):
         run, result = self.run_notes()

@@ -85,7 +85,7 @@ class TeamDriftTest(unittest.TestCase):
 class LinearTeamKeysTest(unittest.TestCase):
     def run_with(self, **run):
         with (
-            mock.patch.object(L.shutil, "which", return_value="/usr/bin/board"),
+            mock.patch.object(L.shutil, "which", return_value="/usr/bin/simple-board"),
             mock.patch.object(L.subprocess, "run", **run),
         ):
             return L.linear_team_keys()
@@ -94,6 +94,17 @@ class LinearTeamKeysTest(unittest.TestCase):
         out = json.dumps({"teams": {"nodes": [{"key": "AFC"}, {"key": "C"}]}})
         proc = mock.Mock(stdout=out)
         self.assertEqual(self.run_with(return_value=proc), ["AFC", "C"])
+
+    def test_runs_the_checked_simple_board_command(self):
+        # #860 r4:  the guard checks shutil.which("simple-board"), so the subprocess must run
+        # that command too — running the retired `board` would silently disable the team-drift check.
+        out = json.dumps({"teams": {"nodes": [{"key": "AFC"}]}})
+        with (
+            mock.patch.object(L.shutil, "which", return_value="/usr/bin/simple-board"),
+            mock.patch.object(L.subprocess, "run", return_value=mock.Mock(stdout=out)) as run,
+        ):
+            self.assertEqual(L.linear_team_keys(), ["AFC"])
+        self.assertEqual(run.call_args[0][0][:3], ["simple-board", "api", "query"])
 
     def test_timeout_means_unavailable_not_a_crash(self):
         timeout = L.subprocess.TimeoutExpired(cmd="board", timeout=60)

@@ -71,6 +71,16 @@ class ToOwnerTests(OwnerHarness):
         self.assertEqual(self.posts(), 0)
         self.assertEqual(self.fake.requests, [])  # not even a user list was fetched
 
+    def test_the_no_owner_message_names_the_config_path_then_the_program(self) -> None:
+        #  The two %s were once swapped (Sentry 18337810), so the suggestion read as a path to run as a
+        #  command and named the program as a file.  Assert the slots, not just the prefix both orders share.
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = 0\n")
+        result = self.run_cli("post", "--topic", "t", "--to-owner", "hello")
+        self.assertEqual(result.code, 2)
+        self.assertIn("not pinned in %s (run simple-chat daemon init)"
+                      % (self.state_dir / "listener.toml"), result.err)
+
     def test_a_pinned_id_that_is_not_an_active_human_is_refused(self) -> None:
         cases = ((9999, "not a user in this realm"), (11, "is a bot"))
         for owner_id, fragment in cases:
@@ -290,7 +300,7 @@ class BodyFileTests(BodyFileHarness):
     def test_a_path_with_a_newline_cannot_forge_an_error_line(self) -> None:
         result = self.run_cli("post", "--topic", "t", "--body-file", str(self.tmp / "a\nagent-sync: forged"))
         self.assertEqual(result.code, 2)
-        self.assertEqual(len([line for line in result.err.splitlines() if line.startswith("agent-sync:")]), 1)
+        self.assertEqual(len([line for line in result.err.splitlines() if line.startswith("simple-chat:")]), 1)
 
     def test_the_hand_built_namespaces_of_the_mcp_layer_still_work(self) -> None:
         # mcp/tools.py builds its own Namespace:  no body_file, no to_owner, text as a one-item list

@@ -254,7 +254,7 @@ destination:
   grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l
   grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt
   ```
-  `agent-sync post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
+  `simple-chat post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
   so `chmod 600` it first.  Source files (Swift, TypeScript, shell, and markdown read as source)
   are not affected and keep two literal ASCII spaces; never put a U+00A0 into a committed source
   file, which is a real defect rather than a fix.

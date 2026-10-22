@@ -4,8 +4,8 @@
 
 Current rules live in `AGENT-SYNC.md` § Linear and the Claim Lifecycle:
 
-- Work is a Linear issue, one public team per app, ids like `BF-123`.  Agents use the `board` CLI (same verbs and flags as before, Linear-backed).
-- Claim with `board claim`, close out with `board status <id> completed|deployed`, and post in the work's Zulip topic `<ID> <subject>`.
+- Work is a Linear issue, one public team per app, ids like `BF-123`.  Agents use the `simple-board` CLI (same verbs and flags as before, Linear-backed).
+- Claim with `simple-board claim`, close out with `simple-board status <id> completed|deployed`, and post in the work's Zulip topic `<ID> <subject>`.
 - Branch `<seat>/<id>-<slug>`.  The PR body says `Fixes <ID>` when it finishes the issue and `Refs <ID>` for partial work.
 - Writes need `AGENT_SEAT`; reads do not.
 
@@ -31,8 +31,8 @@ Every item in the logs was imported into Linear (items that neither a board row 
 
 ## Reading history
 
-- Linear:  `board list --app <app> --search "<words>"` or the app's team in the browser.
-- The old board's database is archived at `~/apps/mac-collab/findings.db` (read-only, replicated by litestream), and the old board id of an imported row is still a valid `board show` id.
+- Linear:  `simple-board list --app <app> --search "<words>"` or the app's team in the browser.
+- The old board's database is archived at `~/apps/mac-collab/findings.db` (read-only, replicated by litestream), and the old board id of an imported row is still a valid `simple-board show` id.
 - Git history of `docs/EFFORT-LOG.md` and the archived files under `~/apps/` are the original text.
 
 ## Registry

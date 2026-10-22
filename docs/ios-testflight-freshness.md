@@ -119,7 +119,7 @@ runs an App Store GM workflow.  Every one of these must hold, or the app is repo
 ## Alerts (`--alert`)
 
 The check posts to Zulip `#agent-sync`, topic `AFC testflight-freshness`, with
-`agent-sync post --as CLAUDE --session tfresh` (override the seat with `IOS_TF_FRESHNESS_SEAT`):
+`simple-chat post --as CLAUDE --session tfresh` (override the seat with `IOS_TF_FRESHNESS_SEAT`):
 
 - an app the check has seen behind, without a break, for **more than 6 hours**:  by then the
   catch-up ship has had its chance, or the line says why it could not run (pipeline disabled,
@@ -137,7 +137,7 @@ atomically), and a lock directory beside it keeps two mutating runs apart.
 A Mac LaunchAgent, `com.jay.ios-testflight-freshness`, every two hours at :20 (scheduled, not
 always-on;  registered in `MAC-LOCAL-PROCESSES.md`).  It needs **no new secret**:  App Store
 Connect credentials are already in Infisical (`/asc`, read with `fleet-secrets get`) for `asc-api.mjs`, `gh` is signed in with the
-`workflow` scope that `workflow_dispatch` needs, and `agent-sync` has the CLAUDE bot's Zulip
+`workflow` scope that `workflow_dispatch` needs, and `simple-chat` has the CLAUDE bot's Zulip
 credential, all verified under a launchd-style clean environment.  A GitHub Actions cron in
 AI-Fleet-Coordinator could read the App Store Connect key through the org's Fleet-OPS Infisical
 identity (ContactLogo's workflows already do), but it would still need a token proven to run

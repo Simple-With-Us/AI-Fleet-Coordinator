@@ -1,7 +1,7 @@
-"""Every agent-sync command line open-loops builds is accepted by the REAL agent-sync argument parser.
+"""Every simple-chat command line open-loops builds is accepted by the REAL simple-chat argument parser.
 
 The plan's trap:  `dm-read` has `--with NAME` and no `--owner`.  These tests import `agent_sync.cli.build_parser()`
-and parse each line, so a flag agent-sync does not have fails here and not at 7:00am."""
+and parse each line, so a flag simple-chat does not have fails here and not at 7:00am."""
 import contextlib
 import io
 import unittest
@@ -10,7 +10,7 @@ from agent_sync import cli as agent_cli
 
 from open_loops import send
 
-EXE = "/x/agent-sync"
+EXE = "/x/simple-chat"
 
 
 def parse(argv):
@@ -47,7 +47,7 @@ class Parity(unittest.TestCase):
         args = parse(send.argv_read_topic(EXE, "FFX-100 open-loops heartbeat"))
         self.assertEqual((args.command, args.topic, args.limit, args.include_self), ("read", "FFX-100 open-loops heartbeat", 10, True))
 
-    def test_the_session_label_fits_agent_syncs_eight_character_cut(self):
+    def test_the_session_label_fits_simple_chats_eight_character_cut(self):
         self.assertLessEqual(len(send.SESSION), 8)
 
     def test_the_gatherers_reads_parse_too(self):

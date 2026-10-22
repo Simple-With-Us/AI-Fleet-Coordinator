@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""simple-board: the fleet work board CLI, backed by Linear.
+
+The implementation is scripts/linear-board/board.  This entry point runs it under the name it is
+installed as, so every help line, usage error and catalog reference says `simple-board`.
+
+This part must stay valid Python 3.9."""
+import os
+import sys
+
+if sys.version_info < (3, 11):
+    for candidate in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3"):
+        if os.access(candidate, os.X_OK) and os.path.realpath(candidate) != os.path.realpath(sys.executable):
+            os.execv(candidate, [candidate, os.path.realpath(__file__)] + sys.argv[1:])
+    sys.stderr.write("simple-board: Python 3.11 or newer is required (found %d.%d)\n" % sys.version_info[:2])
+    sys.exit(1)
+
+# argv[0] decides every prog string the board prints, so hand it the name we were invoked as.
+BOARD = os.path.join(os.path.dirname(os.path.realpath(__file__)), "linear-board", "board")
+if not os.path.isfile(BOARD):
+    sys.stderr.write("simple-board: %s is missing\n" % BOARD)
+    sys.exit(1)
+
+sys.argv[0] = os.path.abspath(__file__)
+with open(BOARD, "rb") as handle:
+    code = compile(handle.read(), BOARD, "exec")
+exec(code, {"__name__": "__main__", "__file__": BOARD})

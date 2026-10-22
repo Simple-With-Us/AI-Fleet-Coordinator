@@ -1,5 +1,5 @@
-"""send:  the seat check, the lint, the duplicate check, the DM and the heartbeat, against a fake agent-sync that
-runs every command line through the real agent-sync argument parser."""
+"""send:  the seat check, the lint, the duplicate check, the DM and the heartbeat, against a fake simple-chat that
+runs every command line through the real simple-chat argument parser."""
 import json
 import os
 import unittest
@@ -24,12 +24,12 @@ class SendTest(Sandbox):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.facts = build_facts(run=standard_world(self.home, self.bin).runner(), now=NOW, sleep=lambda s: None)
-        install_shim(self.bin, "agent-sync", "agent-sync")                  # after the scripted world's placeholder programs
+        install_shim(self.bin, "simple-chat", "simple-chat")                  # after the scripted world's placeholder programs
         self.facts_file = self.write("facts.json", json.dumps(self.facts))
         self.dm_text = make_dm(self.facts)
         self.dm_file = self.write("dm.md", self.dm_text)
         self.agent = {"whoami": dict(WHOAMI), "dm_read": [], "read": {}, "post_rc": 0}
-        self.scenario = {"agent-sync": self.agent}
+        self.scenario = {"simple-chat": self.agent}
 
     def send(self, **kw):
         write_scenario(self.root / "scenario.json", self.scenario)
@@ -111,11 +111,11 @@ class Refuses(SendTest):
         self.assertEqual(code, send.EXIT_REFUSED)
         self.assertEqual(self.verbs(), ["whoami"])
 
-    def test_no_agent_sync_is_a_refusal(self):
-        (self.bin / "agent-sync").unlink()
+    def test_no_simple_chat_is_a_refusal(self):
+        (self.bin / "simple-chat").unlink()
         code, _, err = self.send()
         self.assertEqual(code, send.EXIT_REFUSED)
-        self.assertIn("agent-sync is not installed", err)
+        self.assertIn("simple-chat is not installed", err)
 
     def test_a_dm_that_fails_the_lint_is_not_sent(self):
         self.dm_file = self.write("bad.md", make_dm(self.facts, extra="go to https://evil.test/login"))
@@ -229,7 +229,7 @@ class Duplicates(SendTest):
 
 class Failures(SendTest):
     def test_a_failed_send_is_exit_5_and_no_heartbeat(self):
-        self.agent.update(dm_rc=5, dm_stderr="agent-sync: Zulip said no\n")
+        self.agent.update(dm_rc=5, dm_stderr="simple-chat: Zulip said no\n")
         code, _, err = self.send()
         self.assertEqual(code, send.EXIT_SEND)
         self.assertIn("was not sent", err)
@@ -237,14 +237,14 @@ class Failures(SendTest):
         self.assertEqual(self.verbs(), ["whoami", "dm-read", "dm"])
 
     def test_a_network_failure_after_the_request_left_is_not_retried(self):
-        self.agent.update(dm_rc=6, dm_stderr="agent-sync: network error\n")
+        self.agent.update(dm_rc=6, dm_stderr="simple-chat: network error\n")
         code, _, err = self.send()
         self.assertEqual(code, send.EXIT_SEND)
         self.assertIn("may have been delivered", err)
         self.assertEqual(self.verbs().count("dm"), 1)
 
     def test_the_dm_out_but_no_heartbeat_is_exit_6(self):
-        self.agent.update(post_rc=5, post_stderr="agent-sync: topic refused\n")
+        self.agent.update(post_rc=5, post_stderr="simple-chat: topic refused\n")
         code, out, err = self.send()
         self.assertEqual(code, send.EXIT_HEARTBEAT)
         self.assertIn("the DM is out but the heartbeat was not posted", err)

@@ -21,7 +21,7 @@ One targeted `recall_search` before you act costs seconds; re-deriving a lesson 
 At the start of every turn or task kickoff, evaluate these 4 triggers.  If ANY trigger matches, running `recall_search` is **mandatory** before inspecting code or executing trial-and-error diagnostic commands:
 1. **Error / Blocker Encounter**: Any 4xx/5xx HTTP error, test/build failure, timeout, crash trace, or Sentry issue.
 2. **Infrastructure & Platform**: Touching Coolify, LaunchAgents, pm2, Cloudflare Access/tunnels, Tailscale, Sentry, Qdrant, TEI, Redis, or secrets/auth.
-3. **Cross-Repo & Architectural Patterns**: Modifying shared protocols (AGENT-SYNC, the Linear and `board` integration) or touching unfamiliar sibling repositories.
+3. **Cross-Repo & Architectural Patterns**: Modifying shared protocols (AGENT-SYNC, the Linear and `simple-board` integration) or touching unfamiliar sibling repositories.
 4. **Pre-Owner Query**: Before asking the owner a question regarding preferred conventions, architectural decisions, or environment history.
 
 ### Permitted Bypass:
@@ -43,7 +43,7 @@ registered, so call the tools directly:
 - `recall_contribute(text, category, app, seat, title, url)`
 - `recall_stats()`
 
-The same tools are on the CLI (on PATH via `~/.local/bin/recall`, like `board`;  the old `~/apps/mac-collab/recall` symlink was retired 2026-10-19):
+The same tools are on the CLI (on PATH via `~/.local/bin/recall`, like `simple-board`;  the old `~/apps/mac-collab/recall` symlink was retired 2026-10-19):
 
 ```bash
 recall "pm2 orphan holds port"
@@ -101,7 +101,7 @@ corpus; both services bind to the Tailscale mesh only.
 ## Rules
 
 - **Search first, then act.**  A hit with a board id or a note title is a lead, not a verdict:
-  open the source (board show, the note, the doc) before relying on it.
+  open the source (simple-board show, the note, the doc) before relying on it.
 - **Rank 1 is resemblance, not correctness.**  For a ruling, preference, or infra-fact question, read the top 5 and never act on rank 1 alone.  Open the source for its date — a hit's `created_at` is the file's, not the section's.  Found a hit that supersedes another?  Contribute the correction with `force: true` (CLI `--force`); a one-detail fix often reads as a near-duplicate and is refused otherwise.
 - **Contribute lessons, not logs.**  40 to 4,000 characters, one idea, with `category` one of
   `lesson | preference | infrastructure | decision | runbook` and the app slug.  Do not paste
