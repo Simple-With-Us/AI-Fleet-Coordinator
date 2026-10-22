@@ -231,5 +231,39 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(self.poll([], opener=opener), 0)
 
 
+class KeyLookupTests(unittest.TestCase):
+    def test_key_comes_from_fleet_secrets_get_by_name_only(self):
+        seen = []
+
+        class Done:
+            returncode = 0
+            stdout = b" the-key\n"
+
+        def run(argv, **kw):
+            seen.append(argv)
+            return Done()
+
+        os.environ["FLEET_SECRETS_BIN"] = "/opt/fs"
+        os.environ["OPERATOR_SECRET_PATH"] = "/zulip"
+        self.addCleanup(os.environ.pop, "FLEET_SECRETS_BIN", None)
+        self.addCleanup(os.environ.pop, "OPERATOR_SECRET_PATH", None)
+        self.assertEqual(WA._fleet_secrets_get("ECHO_ROUTINE_KEY", run=run), "the-key")
+        self.assertEqual(seen, [["/opt/fs", "get", "ECHO_ROUTINE_KEY", "--path", "/zulip"]])
+
+    def test_a_failing_or_missing_lookup_is_empty(self):
+        class Bad:
+            returncode = 3
+            stdout = b"x"
+
+        os.environ["FLEET_SECRETS_BIN"] = "/opt/fs"
+        self.addCleanup(os.environ.pop, "FLEET_SECRETS_BIN", None)
+        self.assertEqual(WA._fleet_secrets_get("N", run=lambda *a, **k: Bad()), "")
+
+        def boom(*a, **k):
+            raise OSError("x")
+
+        self.assertEqual(WA._fleet_secrets_get("N", run=boom), "")
+
+
 if __name__ == "__main__":
     unittest.main()

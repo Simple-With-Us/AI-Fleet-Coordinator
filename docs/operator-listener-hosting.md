@@ -22,8 +22,7 @@ macOS AppleScript banners for wake events via a thin Mac client.  Jay accepted
   server-side seats.  Both modes hold no Zulip key, no Infisical access, no
   listener state.
 - `scripts/launchd/com.jay.operator-wake-alerter.plist`:  launchd unit for
-  the Mac alerter.  Env comes from `~/.secrets/operator/wake-alerter.env`
-  (0600):  `OPERATOR_SEAT`, `OPERATOR_LISTENER_URL`, `<CODE>_ROUTINE_KEY`.
+  the Mac alerter.  Config is `OPERATOR_SEAT` and `OPERATOR_LISTENER_URL` in the plist's EnvironmentVariables (no secrets);  the seat's `<CODE>_ROUTINE_KEY` is read with `fleet-secrets get` (Infisical), never from an env file.
 
 ## Server-side seats are the main clients
 
@@ -107,7 +106,7 @@ wake alerter's hook mode provides it:
 
 1. Server:  Coolify app deployed, daemon green (`listener_cli status --probe`),
    read API answering on the tailnet address for one seat key.
-2. Mac:  install the alerter plist + `~/.secrets/operator/wake-alerter.env`;
+2. Mac:  install the alerter plist with OPERATOR_SEAT and OPERATOR_LISTENER_URL filled in (the key comes from `fleet-secrets get`, no env file);
    `launchctl bootstrap`, verify one banner arrives from a test wake.
 3. Verify the hosted listener's cursors are at or past the Mac listener's
    cursors (or accept a bounded catch-up replay - held-back/dedup keeps it

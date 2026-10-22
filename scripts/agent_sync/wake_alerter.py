@@ -28,14 +28,19 @@ if the server is down, the next poll retries.
 One-shot by default so launchd owns the cadence (StartInterval);  --loop N
 runs forever for a supervisor that prefers a resident process.
 
-Env:
-    OPERATOR_SEAT            seat name (for example ECHO)
-    OPERATOR_LISTENER_URL    tailnet base URL, for example
+Config (no secrets in the environment or in any file):
+    OPERATOR_SEAT              seat name (for example ECHO)
+    OPERATOR_LISTENER_URL      tailnet base URL, for example
                                http://listener.example.ts.net:8788
-    <CODE>_ROUTINE_KEY         the seat's routine HMAC key (name overridable
-                               with OPERATOR_ROUTINE_KEY_ENV)
-    OPERATOR_ALERTER_STATE   state file path (default
+    OPERATOR_STATE             state file path (default
                                ~/.local/state/operator/wake-alerter.json)
+    OPERATOR_SECRET_PATH, OPERATOR_SECRET_PROJECT
+                               optional `fleet-secrets get --path / --project`
+                               values when the key does not live at the default
+
+The seat's routine HMAC key (<CODE>_ROUTINE_KEY, the name overridable with
+OPERATOR_ROUTINE_KEY_NAME) is read with `fleet-secrets get` on every poll and
+never lands in the environment, a file or a log.
 
 Python 3.9+ (the Mac's /usr/bin/python3), standard library only.
 """
@@ -136,9 +141,9 @@ def _hook_argv(template: str, seat: str, item: dict) -> list[str]:
 def _hook_env(item: dict) -> dict:
     # The seat's routine HMAC key authorizes the read API;  the hook never needs it.
     env = {k: v for k, v in os.environ.items() if not k.endswith("_ROUTINE_KEY")}
-    key_env = os.environ.get("OPERATOR_ROUTINE_KEY_ENV")
-    if key_env:
-        env.pop(key_env, None)
+    key_name = os.environ.get("OPERATOR_ROUTINE_KEY_NAME")
+    if key_name:
+        env.pop(key_name, None)
     env["OPERATOR_WAKE_ID"] = _str(item.get("wake_id"))
     env["OPERATOR_WAKE_CHANNEL"] = _str(item.get("channel"))
     env["OPERATOR_WAKE_TOPIC"] = _str(item.get("topic"))
@@ -298,6 +303,36 @@ def poll_once(
     return handled
 
 
+def _fleet_secrets_get(name: str, run=None) -> str:
+    """The named secret via `fleet-secrets get`, or "" when it cannot be read.
+
+    Only the name goes on the command line;  the value is read from the child's
+    stdout and never printed.  Errors name the variable, never a value."""
+    import shutil
+    import subprocess
+
+    binary = (os.environ.get("FLEET_SECRETS_BIN") or "").strip()
+    if binary:
+        binary = os.path.expanduser(binary)
+    else:
+        home = os.path.expanduser("~/.local/bin/fleet-secrets")
+        binary = home if os.access(home, os.X_OK) else (shutil.which("fleet-secrets") or "")
+    if not binary:
+        return ""
+    argv = [binary, "get", name]
+    for flag, var in (("--path", "OPERATOR_SECRET_PATH"), ("--project", "OPERATOR_SECRET_PROJECT")):
+        value = (os.environ.get(var) or "").strip()
+        if value:
+            argv += [flag, value]
+    try:
+        done = (run or subprocess.run)(argv, capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if done.returncode:
+        return ""
+    return done.stdout.decode("utf-8", "replace").strip()
+
+
 def _run(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="wake_alerter")
     parser.add_argument(
@@ -307,18 +342,17 @@ def _run(argv=None) -> int:
 
     seat = (os.environ.get("OPERATOR_SEAT") or "").strip().upper()
     base_url = (os.environ.get("OPERATOR_LISTENER_URL") or "").strip()
-    key_env = os.environ.get("OPERATOR_ROUTINE_KEY_ENV") or (
+    key_name = os.environ.get("OPERATOR_ROUTINE_KEY_NAME") or (
         seat.replace("-", "_") + "_ROUTINE_KEY" if seat else ""
     )
-    key = os.environ.get(key_env) if key_env else None
-    if not seat or not base_url or not key:
-        print(
-            "wake_alerter: OPERATOR_SEAT, OPERATOR_LISTENER_URL and "
-            "<CODE>_ROUTINE_KEY are required",
-            file=sys.stderr,
-        )
+    if not seat or not base_url or "SET_ME" in (seat, base_url) or not key_name:
+        print("wake_alerter: OPERATOR_SEAT and OPERATOR_LISTENER_URL are required", file=sys.stderr)
         return 2
-    state_path = os.environ.get("OPERATOR_ALERTER_STATE") or _default_state_path()
+    key = _fleet_secrets_get(key_name)
+    if not key:
+        print(f"wake_alerter: {key_name} unavailable from fleet-secrets", file=sys.stderr)
+        return 2
+    state_path = os.environ.get("OPERATOR_STATE") or _default_state_path()
 
     import subprocess
 
