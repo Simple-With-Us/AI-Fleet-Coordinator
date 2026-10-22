@@ -1799,10 +1799,14 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
     the caller sees with the same guidance the MCP tool gives."""
     env = getattr(getattr(agent, "rt", None), "env", None) or os.environ
     bots = {int(u["user_id"]): bool(u.get("is_bot")) for u in agent.users()}
-    recipients = [{"user_id": u["user_id"], "is_bot": bots.get(int(u["user_id"]), False)} for u in to.users]
+    recipients = [
+        {"user_id": u["user_id"], "is_bot": bots.get(int(u["user_id"]), False)} for u in to.users
+    ]
     existing: list[Mapping[str, Any]] = []
     try:
-        existing = agent.fetch([{"operator": "dm", "operand": to.ids}], anchor="newest", num_before=200)
+        existing = agent.fetch(
+            [{"operator": "dm", "operand": to.ids}], anchor="newest", num_before=200
+        )
     except (NetworkError, ApiError):
         existing = []  # an unreadable conversation is not an Operator-opened one
     try:
@@ -1818,8 +1822,13 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
         )
     except DMP.DmRefused as refused:
         DMP.audit_refusal(
-            env, None, transport="cli", identity=agent.tag,
-            recipients=recipients, reason=refused.reason, message=str(refused),
+            env,
+            None,
+            transport="cli",
+            identity=agent.tag,
+            recipients=recipients,
+            reason=refused.reason,
+            message=str(refused),
         )
         raise UsageError(str(refused)) from None
 

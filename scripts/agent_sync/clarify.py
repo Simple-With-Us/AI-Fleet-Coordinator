@@ -139,9 +139,7 @@ def answer(root: str, *, message_id: int, seat: str, now: float) -> str:
 
 def pending_entries(root: str) -> list[dict[str, Any]]:
     return [
-        dict(entry)
-        for entry in load(root)["entries"].values()
-        if entry.get("state") == PENDING
+        dict(entry) for entry in load(root)["entries"].values() if entry.get("state") == PENDING
     ]
 
 

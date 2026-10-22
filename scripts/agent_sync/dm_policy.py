@@ -139,8 +139,7 @@ def check_new_dm(
         )
     kind = classify(recipients, owner_user_id=owner_user_id)
     raise DmRefused(
-        "this seat may not open a new direct message (%s).  %s"
-        % (kind, guidance_for(kind)),
+        "this seat may not open a new direct message (%s).  %s" % (kind, guidance_for(kind)),
         reason=kind,
     )
 
@@ -159,7 +158,10 @@ def clarifying_question(addressees: Sequence[str]) -> str:
     return (
         "Operator could not tell which seat this is for (candidates: %s).  Reply with the seat tag, or "
         "nothing happens and the wake is dropped when the timeout passes.  One question per message."
-        % (", ".join(sorted({(a or "").strip().upper() for a in addressees if (a or "").strip()})) or "none")
+        % (
+            ", ".join(sorted({(a or "").strip().upper() for a in addressees if (a or "").strip()}))
+            or "none"
+        )
     )
 
 
