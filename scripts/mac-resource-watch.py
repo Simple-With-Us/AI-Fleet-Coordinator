@@ -411,7 +411,13 @@ def _parse_housekeeper_owner(raw: str) -> dict | None:
     acquired_at = owner["acquired_at"]
     if isinstance(acquired_at, bool) or not isinstance(acquired_at, (int, float)):
         return None
-    if not math.isfinite(acquired_at):
+    try:
+        finite = math.isfinite(acquired_at)
+    except OverflowError:
+        # A hundreds-of-digits int is too large to convert to a float:  it
+        # is not a timestamp this protocol publishes.
+        return None
+    if not finite:
         # json accepts NaN and Infinity as literals, so a finite bound is a
         # real check and not a formality.
         return None
@@ -650,8 +656,15 @@ def _acquire_housekeeper_lock() -> bool:
     """
     if os.environ.get("HOUSEKEEPER_LOCK_OWNER") == "1":
         return True
-    with _housekeeper_guard():
-        return _acquire_housekeeper_lock_locked()
+    try:
+        with _housekeeper_guard():
+            return _acquire_housekeeper_lock_locked()
+    except OSError as exc:
+        # A symlinked state directory is refused by the guard:  without the
+        # shared guard there is no mutual exclusion, so the cleanup is
+        # skipped rather than run unguarded.
+        log(f"housekeeper lock unavailable ({exc}); skipping cleanup")
+        return False
 
 
 def _acquire_housekeeper_lock_locked() -> bool:
@@ -761,8 +774,13 @@ def _release_housekeeper_lock() -> None:
     """
     if os.environ.get("HOUSEKEEPER_LOCK_OWNER") == "1":
         return
-    with _housekeeper_guard():
-        _release_housekeeper_lock_locked()
+    try:
+        with _housekeeper_guard():
+            _release_housekeeper_lock_locked()
+    except OSError as exc:
+        # The release runs in run_cleanup's finally:  a refusal must not
+        # mask the cleanup's own outcome.
+        log(f"housekeeper lock release failed ({exc})")
 
 
 def _release_housekeeper_lock_locked() -> None:

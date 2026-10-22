@@ -39,8 +39,8 @@ fi
 #
 # The names are ASSEMBLED here, so that this file does not carry them itself.
 PRIVATE_REPO='Hog'"Hunter"
-PRIVATE_PY_PATH='vacuum/lock'\''.py'
-PRIVATE_SWIFT_PATH='Sources/Storage/HousekeeperLock'\''.swift'
+PRIVATE_PY_PATH='vacuum/lock''.py'
+PRIVATE_SWIFT_PATH='Sources/Storage/HousekeeperLock''.swift'
 if grep -nF -e "$PRIVATE_PY_PATH" -e "$PRIVATE_SWIFT_PATH" \
     "$ROOT/mac-auto-cleanup.sh" "$ROOT/mac-resource-watch.py" \
     "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh"; then
