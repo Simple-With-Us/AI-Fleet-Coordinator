@@ -3656,8 +3656,13 @@ class Daemon:
             return
         recipient = getattr(pending, "sender_id", None)
         if not recipient:
-            self.log.write("operator-candidate-list", seat=runner.seat, letter=letter,
-                           status="skipped", reason="no sender")
+            self.log.write(
+                "operator-candidate-list",
+                seat=runner.seat,
+                letter=letter,
+                status="skipped",
+                reason="no sender",
+            )
             return
         try:
             outcome = OC.send_candidate_list(
@@ -3671,8 +3676,13 @@ class Daemon:
                 owner_user_id=self.config.owner_user_id,
             )
         except Exception as exc:
-            self.log.write("operator-candidate-list", seat=runner.seat, letter=letter,
-                           status="failed", error=type(exc).__name__)
+            self.log.write(
+                "operator-candidate-list",
+                seat=runner.seat,
+                letter=letter,
+                status="failed",
+                error=type(exc).__name__,
+            )
             return
         self.log.write(
             "operator-candidate-list",

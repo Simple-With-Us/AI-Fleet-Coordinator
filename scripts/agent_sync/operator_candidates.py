@@ -26,12 +26,14 @@ sender's user id, and it calls `send_candidate_list` once per ask.
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import hashlib
 import os
 import time
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from . import identity as I
 from . import live as L
@@ -128,7 +130,8 @@ def render_body(
             )
         else:
             sentences.append(
-                "The address used the letter%s %s." % ("" if len(used) == 1 else "s", ", ".join(used))
+                "The address used the letter%s %s."
+                % ("" if len(used) == 1 else "s", ", ".join(used))
             )
     else:
         sentences.append("The address carried no letter.")
@@ -166,7 +169,10 @@ def _members_match(members: Sequence[Mapping[str, Any]], needle: str) -> list[Ma
         for user in members
         if str(user.get("full_name") or "").casefold() == text
         or text
-        in (str(user.get("email") or "").casefold(), str(user.get("delivery_email") or "").casefold())
+        in (
+            str(user.get("email") or "").casefold(),
+            str(user.get("delivery_email") or "").casefold(),
+        )
     ]
     if not found:
         seat_needle = I.canonical_seat(needle).casefold()
@@ -256,7 +262,9 @@ def _fingerprint(recipient_id: int, body: str) -> str:
     return hashlib.sha256(("%d\n%s" % (recipient_id, body)).encode("utf-8")).hexdigest()
 
 
-def _reserve(path: str, key: str, at: float, window: float, recipient_id: int) -> tuple[bool, float]:
+def _reserve(
+    path: str, key: str, at: float, window: float, recipient_id: int
+) -> tuple[bool, float]:
     """(False, seconds since the last identical send) when the list already went to this
     recipient inside the window; (True, 0) when the send may go out.  The reservation is written
     before the message, so two asks at once cannot both send."""
@@ -272,8 +280,15 @@ def _reserve(path: str, key: str, at: float, window: float, recipient_id: int) -
     return True, 0.0
 
 
-def _record(path: str, key: str, at: float, window: float, recipient_id: int, message_id: int | None,
-            state: str) -> None:
+def _record(
+    path: str,
+    key: str,
+    at: float,
+    window: float,
+    recipient_id: int,
+    message_id: int | None,
+    state: str,
+) -> None:
     with L.locked(path):
         sends = _prune(_sends(path), at, window)
         sends[key] = {
@@ -459,9 +474,7 @@ def _send_candidate_list(
     except Z.AgentSyncError as exc:
         return _outcome("refused", "the recipient could not be looked up: %s" % exc)
     except Exception as exc:
-        return _outcome(
-            "refused", "the recipient could not be looked up: %s" % type(exc).__name__
-        )
+        return _outcome("refused", "the recipient could not be looked up: %s" % type(exc).__name__)
     recipient_id, why = resolve_recipient(members, recipient)
     if recipient_id is None:
         return _outcome("refused", "the recipient is not resolvable: %s" % why)
@@ -496,11 +509,13 @@ def _send_candidate_list(
         return _outcome("refused", "the candidate list could not be sent: %s" % exc)
     except Exception as exc:
         _release(path, key, at, window)
-        return _outcome(
-            "refused", "the candidate list could not be sent: %s" % type(exc).__name__
-        )
+        return _outcome("refused", "the candidate list could not be sent: %s" % type(exc).__name__)
     message_id = result.get("id") if isinstance(result, Mapping) else None
-    message_id = int(message_id) if isinstance(message_id, int) and not isinstance(message_id, bool) else None
+    message_id = (
+        int(message_id)
+        if isinstance(message_id, int) and not isinstance(message_id, bool)
+        else None
+    )
     _record(path, key, at, window, recipient_id, message_id, "sent")
     return _outcome(
         "sent",
