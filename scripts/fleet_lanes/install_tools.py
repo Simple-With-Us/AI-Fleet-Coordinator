@@ -1225,22 +1225,6 @@ function checkInputStructure(value: unknown, label: string): void {
   walk(value, 0);
 }
 
-// checkInputBounds adds the byte ceiling on the whole payload for callers whose input is a
-// bounded document (the permission prompt).  Every walk of untrusted input goes through one
-// of the two, so a second caller cannot forget the bounds.
-function checkInputBounds(value: unknown, label: string): void {
-  checkInputStructure(value, label);
-  let serialized: string | undefined;
-  try {
-    serialized = JSON.stringify(value);
-  } catch {
-    throw new TypeError(`${label} is not serializable`);
-  }
-  if (serialized !== undefined && Buffer.byteLength(serialized, "utf8") > MAX_COMMAND_INPUT_BYTES) {
-    throw new TypeError(`${label} exceeds 64 KiB`);
-  }
-}
-
 function commandFrom(value: unknown): string | null {
   // Structural bounds guard the walk below;  the byte ceiling is applied to the extracted
   // command, not the whole payload.  The hook keys on the presence of a command rather
@@ -1371,15 +1355,29 @@ function runGuard(command: string, cwd: string): Promise<string | null> {
       child.stdin.on("error", (error: Error) => {
         fail(new GuardFailure(`fleet guard at ${guardCommand} input failed: ${error.message}`, 1));
       });
-      child.on("close", () => {
+      child.on("close", (code, signal) => {
         if (settled) return;
         try {
           // The guard answers an ALLOW with nothing at all:  it prints a decision only
           // when it denies.  Empty output is therefore an allow,  not a broken answer,
           // and parsing it as JSON turned every allowed call into a denial with
-          // "Unexpected EOF" (the plugin was registered but unusable).
+          // "Unexpected EOF" (the plugin was registered but unusable).  It is an allow
+          // ONLY when the guard exited cleanly:  a crashed, signalled or killed guard
+          // printed nothing because it never answered, and reading that as an allow would
+          // skip every lane and secret check.
           if (out.trim() === "") {
-            succeed(null);
+            if (code === 0 && signal === null) {
+              succeed(null);
+              return;
+            }
+            fail(
+              new GuardFailure(
+                `fleet guard at ${guardCommand} exited without an answer (code ${
+                  code === null ? "none" : code
+                }, signal ${signal === null ? "none" : signal})`,
+                code || 1,
+              ),
+            );
             return;
           }
           const body = JSON.parse(out) as AnyRecord;
@@ -1424,18 +1422,30 @@ function runGuard(command: string, cwd: string): Promise<string | null> {
 export default Plugin.define({
   id: "fleet-lane-guard",
   async setup(ctx) {
-    const fallbackCwd = ctx.location.directory;
+    // The V2 setup context carries the session directory under `location`; other shapes expose
+    // it directly or not at all.  Reading it unguarded would throw inside setup and leave the
+    // guard registered nowhere, so every shape is tolerated and "" is the last resort.
+    const context = ctx as unknown as AnyRecord;
+    const location = context.location as AnyRecord | undefined;
+    const fallbackCwd =
+      (typeof location?.directory === "string" && location.directory) ||
+      (typeof context.directory === "string" && context.directory) ||
+      "";
     await ctx.tool.hook("execute.before", async (event) => {
+      // The live V2 build delivers the tool arguments under `input`;  `args` is the other name
+      // the SDK has used, so both are read and the command is never missed because of the key.
+      const payload =
+        (event as unknown as AnyRecord).input ?? (event as unknown as AnyRecord).args;
       let command: string | null;
       try {
-        command = commandFrom(event.input);
+        command = commandFrom(payload);
       } catch {
         throw new Error("OpenCode command input could not be read");
       }
       if (!command) return;
       let reason: string | null;
       try {
-        reason = await runGuard(command, cwdFrom(event.input, fallbackCwd));
+        reason = await runGuard(command, cwdFrom(payload, fallbackCwd));
       } catch (error) {
         throw new Error(error instanceof Error ? error.message : String(error));
       }
@@ -6113,29 +6123,42 @@ def opencode_entry(paths: Paths) -> str:
 
 
 def _is_opencode_ours(entry: object, paths: Paths) -> bool:
+    """Whether `entry` is this tool's own plugin entry:  the directory itself, or the exact file
+    forms earlier releases listed inside the stable dir.  Never a suffix test:  a user's plugin
+    that happens to sit in a directory called `opencode-plugin` is not ours."""
     want = opencode_entry(paths)
+    ours = {
+        want,
+        os.path.join(paths.stable, "opencode-plugin", "index.ts"),
+        os.path.join(paths.stable, "opencode-plugin", "fleet-lane-guard.ts"),
+    }
     if isinstance(entry, str):
-        # the directory form, plus the file forms earlier releases wrote (cleaned up on apply)
-        return (
-            entry == want
-            or entry.endswith("/opencode-plugin")
-            or entry.endswith("/opencode-plugin/index.ts")
-            or entry.endswith("/opencode-plugin/fleet-lane-guard.ts")
-        )
+        return entry in ours
     if isinstance(entry, (list, tuple)) and entry and isinstance(entry[0], str):
-        return (
-            entry[0] == want
-            or entry[0].endswith("/opencode-plugin")
-            or entry[0].endswith("/opencode-plugin/index.ts")
-            or entry[0].endswith("/opencode-plugin/fleet-lane-guard.ts")
-        )
+        return entry[0] in ours
     return False
 
 
 def opencode_merge(doc: dict, paths: Paths) -> tuple[dict, str]:
-    """(new document, action): the plugin array holds our absolute path exactly once.  Every other key and entry
-    is preserved as it is; a `plugin` value that is not a list raises ShapeError."""
+    """(new document, action): the plugins array holds our absolute path exactly once.  Every other key and entry
+    is preserved as it is.  A `plugins` or legacy `plugin` value that is not a list (or a string, for the legacy
+    key) raises ShapeError.  A config written by the previous release keeps the old `plugin` key:  our entry is
+    moved out of it into `plugins` and the key is dropped once it holds nothing, so a stale entry cannot make
+    verify pass while OpenCode ignores it."""
     new = copy.deepcopy(doc)
+    legacy = new.get("plugin")
+    if legacy is not None:
+        if isinstance(legacy, str):
+            if _is_opencode_ours(legacy, paths):
+                new.pop("plugin", None)
+        elif isinstance(legacy, list):
+            kept = [e for e in legacy if not _is_opencode_ours(e, paths)]
+            if kept:
+                new["plugin"] = kept
+            else:
+                new.pop("plugin", None)
+        else:
+            raise ShapeError("'plugin' in opencode.json is not a list")
     plugins = new.get("plugins")
     if plugins is None:
         plugins = new["plugins"] = []

@@ -85,6 +85,10 @@ const cases: Array<[string, unknown]> = [
     { tool: "write", input: { filePath: "/repo/src/a.ts", content: "x".repeat(200000) } },
   ],
   ["an allowed command is not denied", { tool: "bash", input: { command: "echo hello" } }],
+  [
+    "a command delivered under args is still guarded",
+    { tool: "bash", args: { command: "DENYTARGET" } },
+  ],
   ["a denied command throws with the guard reason", { tool: "bash", input: { command: "DENYTARGET" } }],
   ["an oversized command fails closed", { tool: "bash", input: { command: "x".repeat(200000) } }],
   ["a cyclic payload fails closed", { tool: "edit", input: cyclic }],
@@ -103,7 +107,53 @@ for (const [name, event] of cases) {
 console.log(JSON.stringify(results));
 '''
 
-# node's own type stripper,  used to turn the plugin into the JavaScript node --check parses.
+# The same registration, fired against the REAL fleet-guard-hook the installer writes:  the payload
+# the plugin sends and the reply it parses are what a user depends on, and a stub cannot prove them.
+REAL_GUARD_HARNESS = '''import definition from "PLUGIN_URL";
+
+const registrations: Array<[string, (event: unknown) => Promise<void> | void]> = [];
+const ctx = {
+  location: { directory: process.cwd() },
+  tool: {
+    hook: async (name: string, callback: (event: unknown) => Promise<void> | void) => {
+      registrations.push([name, callback]);
+      return {};
+    },
+  },
+};
+await definition.setup(ctx);
+const entry = registrations.find(([name]) => name === "execute.before");
+if (!entry) {
+  console.log(JSON.stringify([{ name: "no execute.before hook registered", threw: true }]));
+  process.exit(0);
+}
+const before = entry[1];
+const cases: Array<[string, unknown]> = [
+  ["the real guard allows a harmless command", { tool: "bash", input: { command: "echo hello" } }],
+  [
+    "the real guard denies a temp clone",
+    {
+      tool: "bash",
+      input: {
+        command:
+          "git clone https://github.com/Simple-With-Us/HogHunter /tmp/hh-real-guard",
+      },
+    },
+  ],
+  ["the real guard denies a process listing", { tool: "bash", input: { command: "ps aux" } }],
+];
+const results: unknown[] = [];
+for (const [name, event] of cases) {
+  try {
+    await before(event);
+    results.push({ name, threw: false });
+  } catch (error) {
+    results.push({ name, threw: true, message: String(error) });
+  }
+}
+console.log(JSON.stringify(results));
+'''
+
 STRIP_SCRIPT = """const fs = require("node:fs");
 const { stripTypeScriptTypes } = require("node:module");
 const [source, target] = process.argv.slice(1);
@@ -353,13 +403,8 @@ class OpenCodePluginShapeTests(World):
             self.skipTest("this node has no --experimental-strip-types")
         return run
 
-    def harness(self, source: str) -> list:
-        """Run a V2 harness against the generated plugin and return its result rows.
-
-        The plugin imports `@opencode/plugin` and spawns `../fleet-guard-hook`; a stub SDK
-        and a fake guard are written beside it, so the harness exercises the same entry
-        OpenCode loads without needing OpenCode itself.
-        """
+    def prepare(self, source: str, *, stub_guard: bool = True) -> tuple[Path, Path]:
+        """Write the generated plugin, a stub SDK and the harness; return (stable dir, harness)."""
         self.plugin_text()
         stable = Path(self.paths.stable)
         sdk = stable / "node_modules" / "@opencode" / "plugin"
@@ -372,27 +417,41 @@ class OpenCodePluginShapeTests(World):
             "export const Plugin = { define: (definition) => definition };\n", encoding="utf-8"
         )
         guard = stable / "fleet-guard-hook"
-        guard.write_text(
-            "#!/bin/sh\n"
-            "input=$(cat)\n"
-            'case "$input" in\n'
-            "  *DENYTARGET*) printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
-            "\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"blocked by the test guard\"}}' ;;\n"
-            "esac\n"
-            "exit 0\n",
-            encoding="utf-8",
-        )
-        os.chmod(guard, 0o755)
+        if stub_guard:
+            guard.write_text(
+                "#!/bin/sh\n"
+                "input=$(cat)\n"
+                'case "$input" in\n'
+                "  *DENYTARGET*) printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\","
+                "\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"blocked by the test guard\"}}' ;;\n"
+                "esac\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            os.chmod(guard, 0o755)
         harness = stable / "harness.ts"
         harness.write_text(
             source.replace("PLUGIN_URL", Path(self.paths.opencode_plugin).as_uri()),
             encoding="utf-8",
         )
+        return stable, harness
+
+    def run_harness(self, stable: Path, harness: Path) -> list:
         run = self.run_node(["--experimental-strip-types", str(harness)], cwd=str(stable))
         self.assertEqual(run.returncode, 0, run.stderr)
         lines = [line for line in run.stdout.splitlines() if line.strip()]
         self.assertTrue(lines, run.stdout + run.stderr)
         return json.loads(lines[-1])
+
+    def harness(self, source: str) -> list:
+        """Run a V2 harness against the generated plugin and return its result rows.
+
+        The plugin imports `@opencode/plugin` and spawns `../fleet-guard-hook`; a stub SDK
+        and a fake guard are written beside it, so the harness exercises the same entry
+        OpenCode loads without needing OpenCode itself.
+        """
+        stable, harness = self.prepare(source)
+        return self.run_harness(stable, harness)
 
     def test_the_plugin_registers_execute_before_and_has_no_permission_channel(self) -> None:
         text = self.plugin_text()
@@ -417,6 +476,21 @@ class OpenCodePluginShapeTests(World):
         denied = results["a denied command throws with the guard reason"]
         self.assertTrue(denied["threw"], results)
         self.assertIn("blocked by the test guard", denied["message"])
+        # The SDK has delivered tool arguments under both names;  a command is never missed.
+        self.assertTrue(results["a command delivered under args is still guarded"]["threw"], results)
+
+    def test_the_real_guard_denies_and_allows_through_the_same_plugin(self) -> None:
+        """The real fleet-guard-hook the installer writes, not a stub: the payload the plugin
+        sends and the reply it parses are part of what a user gets."""
+        stable, harness = self.prepare(REAL_GUARD_HARNESS, stub_guard=False)
+        os.chmod(stable / "fleet-guard-hook", 0o755)
+        results = {r["name"]: r for r in self.run_harness(stable, harness)}
+        self.assertFalse(results["the real guard allows a harmless command"]["threw"], results)
+        clone = results["the real guard denies a temp clone"]
+        self.assertTrue(clone["threw"], clone)
+        self.assertIn("temp", clone["message"].lower())
+        listing = results["the real guard denies a process listing"]
+        self.assertTrue(listing["threw"], listing)
 
     def test_non_command_payloads_are_not_sent_to_the_guard(self) -> None:
         results = {r["name"]: r for r in self.harness(EXECUTE_HARNESS)}
@@ -496,7 +570,7 @@ class OpenCodeTests(World):
             "fleet-guard-hook",
         ):
             self.assertIn(needle, text)
-        self.assertIn("commandFrom(event.input)", text)
+        self.assertIn("commandFrom(payload)", text)
         self.assertNotIn("Authorization", text)
         self.assertNotIn("Bearer", text)
         self.assertNotIn(DUMMY_TOKEN, text)
@@ -570,8 +644,11 @@ class OpenCodeTests(World):
 
     def test_a_stale_plugin_path_is_updated_in_place(self) -> None:
         doc = json.loads(self.config.read_text(encoding="utf-8"))
+        legacy_file = os.path.join(
+            self.paths.stable, "opencode-plugin", "fleet-lane-guard.ts"
+        )
         doc["plugins"] = [
-            "/old/stable/opencode-plugin/fleet-lane-guard.ts",
+            legacy_file,
             "opencode-mobile@latest",
         ]
         self.config.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
@@ -580,6 +657,33 @@ class OpenCodeTests(World):
         self.assertEqual(new["plugins"], [self.paths.opencode_plugin_dir, "opencode-mobile@latest"])
         again, action = T.opencode_merge(new, self.paths)
         self.assertEqual((action, again), ("unchanged", new))
+
+    def test_another_tools_opencode_plugin_directory_is_not_hijacked(self) -> None:
+        doc = {"plugins": ["/opt/their-tool/opencode-plugin", "opencode-mobile@latest"]}
+        new, action = T.opencode_merge(doc, self.paths)
+        self.assertEqual(action, "added")
+        self.assertEqual(
+            new["plugins"],
+            ["/opt/their-tool/opencode-plugin", "opencode-mobile@latest", self.paths.opencode_plugin_dir],
+        )
+
+    def test_a_legacy_plugin_key_is_migrated_into_plugins(self) -> None:
+        legacy_file = os.path.join(
+            self.paths.stable, "opencode-plugin", "fleet-lane-guard.ts"
+        )
+        doc = {"plugin": [legacy_file, "someone-elses-plugin"], "plugins": ["opencode-mobile@latest"]}
+        new, _ = T.opencode_merge(doc, self.paths)
+        self.assertEqual(new["plugin"], ["someone-elses-plugin"])
+        self.assertEqual(new["plugins"], ["opencode-mobile@latest", self.paths.opencode_plugin_dir])
+        only_ours, _ = T.opencode_merge({"plugin": [legacy_file]}, self.paths)
+        self.assertNotIn("plugin", only_ours)
+        self.assertEqual(only_ours["plugins"], [self.paths.opencode_plugin_dir])
+
+    def test_a_plugin_key_that_is_not_a_list_is_refused(self) -> None:
+        before = snapshot(self.home)
+        with self.assertRaises(T.ShapeError):
+            T.opencode_merge({"plugin": {"path": "x"}}, self.paths)
+        self.assertEqual(snapshot(self.home), before)
 
     def test_a_missing_config_file_is_created_with_the_plugin_and_an_owner_only_mode(self) -> None:
         self.config.unlink()
