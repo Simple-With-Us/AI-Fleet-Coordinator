@@ -775,22 +775,22 @@ class _NullParser(argparse.ArgumentParser):
     def __init__(self) -> None:
         super().__init__(prog="", add_help=False)
 
-    def add_parser(self, name: str, **kwargs: Any) -> argparse.ArgumentParser:  # noqa: D102
+    def add_parser(self, name: str, **kwargs: Any) -> argparse.ArgumentParser:
         return _NullParser()
 
-    def add_subparsers(self, **kwargs: Any) -> argparse.ArgumentParser:  # noqa: D102
+    def add_subparsers(self, **kwargs: Any) -> argparse.ArgumentParser:
         return self
 
-    def add_argument(self, *args: Any, **kwargs: Any) -> None:  # noqa: D102
+    def add_argument(self, *args: Any, **kwargs: Any) -> None:
         return None
 
-    def add_argument_group(self, *args: Any, **kwargs: Any) -> Any:  # noqa: D102
+    def add_argument_group(self, *args: Any, **kwargs: Any) -> Any:
         return self
 
-    def add_mutually_exclusive_group(self, *args: Any, **kwargs: Any) -> Any:  # noqa: D102
+    def add_mutually_exclusive_group(self, *args: Any, **kwargs: Any) -> Any:
         return self
 
-    def set_defaults(self, **kwargs: Any) -> None:  # noqa: D102
+    def set_defaults(self, **kwargs: Any) -> None:
         return None
 
 

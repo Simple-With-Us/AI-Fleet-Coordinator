@@ -374,7 +374,14 @@ class ActualRuntime(unittest.TestCase):
         self.assertEqual(listed[len(served) + len(linear) :], fleetlink)
 
     def test_generated_wrapper_isolation_flags(self):
-        for name in ("simple-chat", "simple-notes", "simple-board", "fleet-cli-release", "simple-chat-codex-mcp", "recall"):
+        for name in (
+            "simple-chat",
+            "simple-notes",
+            "simple-board",
+            "fleet-cli-release",
+            "simple-chat-codex-mcp",
+            "recall",
+        ):
             with self.subTest(wrapper=name):
                 content = (self.home / ".local/bin" / name).read_text()
                 self.assertTrue(content.startswith("#!/usr/bin/python3 -I\n"))

@@ -32,7 +32,9 @@ from .secretscan import scan as scan_text
 from .state import state_root
 
 
-def add_parsers(sub: Any, common: argparse.ArgumentParser, verbs: frozenset[str] | None = None) -> None:
+def add_parsers(
+    sub: Any, common: argparse.ArgumentParser, verbs: frozenset[str] | None = None
+) -> None:
     """Register the `simple-notes` verbs, and the `guide` reader, on `sub`.
 
     The notes actions are top-level verbs of `simple-notes` (`simple-notes create ...`), not a

@@ -1371,7 +1371,9 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------------------------
 
 
-def add_parsers(sub: Any, common: argparse.ArgumentParser, verbs: frozenset[str] | None = None) -> None:
+def add_parsers(
+    sub: Any, common: argparse.ArgumentParser, verbs: frozenset[str] | None = None
+) -> None:
     """Register the listener/daemon verbs.  `verbs` keeps them out of a command that does not own
     them (today only `simple-chat` does); a verb outside it is registered into a null parser."""
 

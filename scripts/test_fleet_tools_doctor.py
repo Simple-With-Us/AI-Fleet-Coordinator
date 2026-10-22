@@ -1149,7 +1149,9 @@ class RemoteTests(unittest.TestCase):
         self.assertFalse(doc["reachable"])
         self.assertIn(doctor.NO_ROUTE, doc["error"])
         rows = {r["check"]: r for r in doc["checks"]}
-        self.assertTrue({"runtime", "tool:simple-chat", "tool:gitleaks", "tool:claude"} <= set(rows))
+        self.assertTrue(
+            {"runtime", "tool:simple-chat", "tool:gitleaks", "tool:claude"} <= set(rows)
+        )
         self.assertTrue(all(r["state"] == "unknown" for r in rows.values()))
         self.assertTrue(rows["tool:gitleaks"]["required"])
         for key in ("path", "version", "latest", "latestSource", "basis"):

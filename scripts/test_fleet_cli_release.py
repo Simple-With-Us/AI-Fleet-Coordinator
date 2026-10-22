@@ -238,7 +238,9 @@ class ReleaseTests(unittest.TestCase):
         for name in ("recall", "lane", "fleet-mode"):
             self.assertIn(release.MARKER, (bin_dir / name).read_text(), name)
         self.assertEqual(
-            (bin_dir / "simple-board").read_bytes(), custom, "an existing wrapper is never overwritten"
+            (bin_dir / "simple-board").read_bytes(),
+            custom,
+            "an existing wrapper is never overwritten",
         )
         self.assertEqual(
             config.read_bytes() if config.exists() else None,
@@ -334,7 +336,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(self.base.exists())
 
     def test_rejects_corrupt_content(self):
-        self.bundle["files"]["scripts/simple-chat"]["data"] = base64.b64encode(b"different").decode()
+        self.bundle["files"]["scripts/simple-chat"]["data"] = base64.b64encode(
+            b"different"
+        ).decode()
         with self.assertRaisesRegex(release.Refused, "bad_file_digest"):
             self.receive()
 

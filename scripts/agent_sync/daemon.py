@@ -625,7 +625,9 @@ class Daemon:
         self.wake_path = wake_path or A.default_wake_path(self.home)
         self.agents_runner = agents_runner or self._run_agents
         self.board_runner = board_runner
-        self.board_bin = board_bin or shutil.which("simple-board", path=self.wake_path) or "simple-board"
+        self.board_bin = (
+            board_bin or shutil.which("simple-board", path=self.wake_path) or "simple-board"
+        )
         self.start_time = start_time or _process_start
         self.http_timeout = http_timeout
         self.events_timeout = events_timeout

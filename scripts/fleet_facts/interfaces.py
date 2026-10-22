@@ -15,6 +15,7 @@ module does not interpret the documents:  the component that consumes one knows 
 
 All five are local state of one Mac, so with `no_mac` each one is absent.
 """
+
 from __future__ import annotations
 
 import json

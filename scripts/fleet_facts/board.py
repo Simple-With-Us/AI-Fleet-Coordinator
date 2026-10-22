@@ -22,14 +22,16 @@ Claim time:  the newest `CLAIMED` comment, else the import footer's `claimed <Ce
 in America/Chicago), else None with basis "unknown".  Comments keep only `{at, author, sweeper, claimed}`:
 their text is dropped here.  `sweeper` comes from `activity.is_sweeper_text`, the one definition.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import re
 import time
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from . import safety
 from .activity import is_sweeper_text, parse_time
@@ -48,8 +50,15 @@ _LINEAR_URL = re.compile(r"^https://linear\.app/[A-Za-z0-9._-]+/issue/[A-Za-z0-9
 _SEVERITY = re.compile(r"^P[0-4]$")
 _BRANCH_IN_LOCATION = re.compile(r"\s@\s+([^\s()]+)")
 _FOOTER_CLAIMED = re.compile(
-    r"\bclaimed\s+[A-Za-z]{3},\s+([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4}),\s+(\d{1,2}):(\d{2})\s?([ap]m)\b", re.IGNORECASE)
-_MONTHS = {m: i + 1 for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"))}
+    r"\bclaimed\s+[A-Za-z]{3},\s+([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4}),\s+(\d{1,2}):(\d{2})\s?([ap]m)\b",
+    re.IGNORECASE,
+)
+_MONTHS = {
+    m: i + 1
+    for i, m in enumerate(
+        ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+    )
+}
 
 
 def board_command() -> str | None:
@@ -100,14 +109,22 @@ def parse_footer_claimed(footer: Any) -> datetime | None:
         hour = 0
     try:
         from zoneinfo import ZoneInfo
-        local = datetime(int(match.group(3)), month, int(match.group(2)), hour, int(match.group(5)), tzinfo=ZoneInfo(CENTRAL))
+
+        local = datetime(
+            int(match.group(3)),
+            month,
+            int(match.group(2)),
+            hour,
+            int(match.group(5)),
+            tzinfo=ZoneInfo(CENTRAL),
+        )
     except Exception:  # no tz database, or a date that does not exist
         return None
-    return local.astimezone(timezone.utc)
+    return local.astimezone(UTC)
 
 
 def _iso(when: datetime) -> str:
-    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _labels(row: dict) -> list[str]:
@@ -166,8 +183,14 @@ def read_detail(shown: Any) -> dict:
             continue
         text = comment.get("text") if isinstance(comment.get("text"), str) else ""
         is_claim = text.lstrip().startswith(CLAIMED_COMMENT_PREFIX)
-        events.append({"at": _iso(when), "author": safety.clean(comment.get("author"), 60) or "unknown",
-                       "sweeper": is_sweeper_text(text), "claimed": is_claim})
+        events.append(
+            {
+                "at": _iso(when),
+                "author": safety.clean(comment.get("author"), 60) or "unknown",
+                "sweeper": is_sweeper_text(text),
+                "claimed": is_claim,
+            }
+        )
         if is_claim and (claimed_comment is None or when > claimed_comment):
             claimed_comment = when
     location = shown.get("location") if isinstance(shown.get("location"), str) else ""
@@ -178,7 +201,14 @@ def read_detail(shown: Any) -> dict:
     else:
         footer = parse_footer_claimed(shown.get("provenance"))
         claimed_at, basis = (_iso(footer), "import_footer") if footer else (None, "unknown")
-    holders = [h for h in (safety.safe_token(x.strip(), 40) for x in str(shown.get("addressed_by") or "").split(",")) if h]
+    holders = [
+        h
+        for h in (
+            safety.safe_token(x.strip(), 40)
+            for x in str(shown.get("addressed_by") or "").split(",")
+        )
+        if h
+    ]
     return {
         "detail_ok": True,
         "holders": holders,
@@ -192,24 +222,54 @@ def read_detail(shown: Any) -> dict:
 
 
 def _unreadable(reason: str) -> dict:
-    return {"detail_ok": False, "holders": [], "location": None, "branch": None, "branch_exact": True, "claimed_at": None,
-            "claimed_basis": "unknown", "linear_comments": {"ok": False, "events": [], "reason": reason}}
+    return {
+        "detail_ok": False,
+        "holders": [],
+        "location": None,
+        "branch": None,
+        "branch_exact": True,
+        "claimed_at": None,
+        "claimed_basis": "unknown",
+        "linear_comments": {"ok": False, "events": [], "reason": reason},
+    }
 
 
-def gather(run: Runner, *, monotonic: Callable[[], float] = time.monotonic,
-           detail_budget_s: float = DETAIL_BUDGET_S) -> dict:
+def gather(
+    run: Runner,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+    detail_budget_s: float = DETAIL_BUDGET_S,
+) -> dict:
     """The `linear` source."""
     board = board_command()
     if board is None:
         return failed("the board CLI is not installed")
     try:
-        in_progress = _json(_board(run, board, "list", ["--status", "in_progress", "--json", "--limit", str(LIST_LIMIT)], LIST_TIMEOUT_S))
-        needs_owner = _json(_board(run, board, "list", ["--label", "needs-owner", "--json", "--limit", str(LIST_LIMIT)], LIST_TIMEOUT_S))
+        in_progress = _json(
+            _board(
+                run,
+                board,
+                "list",
+                ["--status", "in_progress", "--json", "--limit", str(LIST_LIMIT)],
+                LIST_TIMEOUT_S,
+            )
+        )
+        needs_owner = _json(
+            _board(
+                run,
+                board,
+                "list",
+                ["--label", "needs-owner", "--json", "--limit", str(LIST_LIMIT)],
+                LIST_TIMEOUT_S,
+            )
+        )
     except ValueError as exc:
         return failed(str(exc))
     if not isinstance(in_progress, list) or not isinstance(needs_owner, list):
         return failed("board list did not return a list")
-    if not all(isinstance(r, dict) for r in in_progress) or not all(isinstance(r, dict) for r in needs_owner):
+    if not all(isinstance(r, dict) for r in in_progress) or not all(
+        isinstance(r, dict) for r in needs_owner
+    ):
         return failed("board list returned a row that is not an object")
     rows = in_progress
     started = monotonic()
@@ -229,7 +289,9 @@ def gather(run: Runner, *, monotonic: Callable[[], float] = time.monotonic,
             detail = _unreadable("the detail time budget ran out")
         else:
             try:
-                detail = read_detail(_json(_board(run, board, "show", [ident, "--json"], SHOW_TIMEOUT_S)))
+                detail = read_detail(
+                    _json(_board(run, board, "show", [ident, "--json"], SHOW_TIMEOUT_S))
+                )
             except ValueError as exc:
                 detail = _unreadable(str(exc))
         holders = detail.pop("holders")
@@ -248,9 +310,9 @@ def gather(run: Runner, *, monotonic: Callable[[], float] = time.monotonic,
         if record["seats"]:
             claims.append(record)
         elif labelled and detail["detail_ok"]:
-            orphans.append(record)        # the board itself says nobody holds it
+            orphans.append(record)  # the board itself says nobody holds it
         else:
-            unreadable.append(record)     # not knowing the holder is not the same as no holder
+            unreadable.append(record)  # not knowing the holder is not the same as no holder
     owner_items = []
     for row in needs_owner:
         item = _base(row)
@@ -266,5 +328,7 @@ def gather(run: Runner, *, monotonic: Callable[[], float] = time.monotonic,
         "truncated": len(in_progress) >= LIST_LIMIT or len(needs_owner) >= LIST_LIMIT,
     }
     if data["truncated"]:
-        return failed("a board list hit the %d row limit, so it may be missing items" % LIST_LIMIT, data)
+        return failed(
+            "a board list hit the %d row limit, so it may be missing items" % LIST_LIMIT, data
+        )
     return ok(data)
