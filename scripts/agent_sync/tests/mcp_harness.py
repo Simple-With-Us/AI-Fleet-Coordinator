@@ -1,5 +1,5 @@
-"""Harness for the `agent-sync mcp` tests:  the server driven over real pipes, in-process (with a fake
-clock) or as a subprocess of scripts/agent-sync, against the fake Zulip server.
+"""Harness for the `simple-chat mcp` tests:  the server driven over real pipes, in-process (with a fake
+clock) or as a subprocess of scripts/simple-chat, against the fake Zulip server.
 
 Every environment is an explicit dict:  HOME is a temp dir, the test bot's keys sit in the fake Infisical
 /zulip (in-process:  the patched zulip fetch;  a subprocess:  FLEET_SECRETS_BIN points at
@@ -31,7 +31,7 @@ from agent_sync.mcp import tools as T
 from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH
 from agent_sync.tests.harness import SESSION, Harness, write_rc
 
-SCRIPT = Path(__file__).resolve().parents[2] / "agent-sync"
+SCRIPT = Path(__file__).resolve().parents[2] / "simple-chat"
 FAKE_FLEET_SECRETS = Path(__file__).resolve().parent / "fixtures" / "fake-fleet-secrets"
 # the real binary resolves its Infisical project from this env or the home file and fails closed
 # without one, so the fake is always driven with a project named.
@@ -321,7 +321,7 @@ class McpHarness(Harness):
         argv: tuple[str, ...] = (),
         timeout: float = 60.0,
     ) -> tuple[int, list[dict[str, Any]], str]:
-        """Run scripts/agent-sync mcp as a real process, write every request, close stdin, and
+        """Run scripts/simple-chat mcp as a real process, write every request, close stdin, and
         return (exit code, the parsed stdout lines, stderr)."""
         self.write_fake_secrets()
         data = b"".join(

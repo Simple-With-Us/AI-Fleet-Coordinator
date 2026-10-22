@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent-sync-runtime-sync.sh  --  keep the agent-sync runtime checkout on AFC origin/main.
 #
-# The always-on Zulip listener (com.jay.operator) and the `agent-sync` CLI run from a
+# The always-on Zulip listener (com.jay.operator) and the `simple-chat` CLI run from a
 # dedicated managed checkout, never from the human integration tree ~/Code/AI-Fleet-Coordinator:
 #
 #   /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime     (detached worktree, locked)
@@ -10,9 +10,9 @@
 #   1. fetches origin (60 second cap);
 #   2. if origin/main differs from the runtime HEAD AND the worktree has no tracked changes, checks out
 #      origin/main detached;
-#   3. smoke-tests the new code (`agent-sync --version`); on failure it goes back to the old commit and
+#   3. smoke-tests the new code (`simple-chat --version`); on failure it goes back to the old commit and
 #      remembers the bad commit so it is not retried until origin/main moves again;
-#   4. if the change touched scripts/agent_sync/, scripts/agent-sync, plugins/agent-sync/, .claude-plugin/
+#   4. if the change touched scripts/agent_sync/, scripts/simple-chat, plugins/agent-sync/, .claude-plugin/
 #      or docs/protocols/agent-sync-partition.toml, kickstarts the listener so it loads the new code.
 # A dirty runtime worktree is logged and skipped.  It is never reset, cleaned or stashed.
 #
@@ -32,7 +32,7 @@ PAUSE_FILE="$STATE_DIR/runtime-sync.pause"
 BAD_FILE="$STATE_DIR/runtime-sync.bad-sha"
 LOG="${AGENT_SYNC_RUNTIME_SYNC_LOG:-$HOME/apps/logs/agent-sync-runtime-sync.log}"
 GIT_TIMEOUT=60
-RESTART_RE='^(scripts/agent_sync/|scripts/agent-sync$|plugins/agent-sync/|\.claude-plugin/|docs/protocols/agent-sync-partition\.toml$)'
+RESTART_RE='^(scripts/agent_sync/|scripts/simple-chat$|plugins/agent-sync/|\.claude-plugin/|docs/protocols/agent-sync-partition\.toml$)'
 PLUGIN_RE='^(plugins/agent-sync/|\.claude-plugin/)'
 
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
@@ -104,8 +104,8 @@ main() {
   fi
 
   # Smoke test the new code before any restart can take the listener down with it.
-  if ! perl -e 'alarm 60; exec @ARGV' /opt/homebrew/bin/python3 "$RUNTIME/scripts/agent-sync" --version >/dev/null 2>&1; then
-    log "SMOKE-FAILED  agent-sync --version failed at ${new:0:7}; rolled back to ${old:0:7} and will not retry it"
+  if ! perl -e 'alarm 60; exec @ARGV' /opt/homebrew/bin/python3 "$RUNTIME/scripts/simple-chat" --version >/dev/null 2>&1; then
+    log "SMOKE-FAILED  simple-chat --version failed at ${new:0:7}; rolled back to ${old:0:7} and will not retry it"
     rgit checkout -q --detach "$old" || log "ROLLBACK-FAILED  could not return to ${old:0:7}"
     printf '%s\n' "$new" > "$BAD_FILE"
     exit 1

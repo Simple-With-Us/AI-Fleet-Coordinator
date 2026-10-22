@@ -92,7 +92,7 @@ class Lint(Sandbox):
         self.assertIn("1 sentence ends in one space", found[0])
         self.assertIn("(line 6)", found[0])
 
-    def test_two_ascii_spaces_are_a_gap_agent_sync_will_convert(self):
+    def test_two_ascii_spaces_are_a_gap_simple_chat_will_convert(self):
         self.assertEqual(self.problems(self.dm("Two spaces.  Then more.")), [])
         self.assertEqual(prepare("Two spaces.  Then more."), "Two spaces." + GAP + "Then more.")
         self.assertEqual(prepare(prepare("A.  B.")), prepare("A.  B."))                 # idempotent

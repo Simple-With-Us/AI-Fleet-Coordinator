@@ -267,5 +267,23 @@ class ItemTests(unittest.TestCase):
         self.assertIsNone(I.age_hours("not a time", at))
 
 
+class BoardWriteOptInTests(unittest.TestCase):
+    def test_board_calls_export_the_write_opt_in(self):
+        import os
+        import stat
+        import tempfile
+        from needs_owner.proc import Runner
+
+        with tempfile.TemporaryDirectory() as d:
+            tool = os.path.join(d, "simple-board")
+            with open(tool, "w") as fh:
+                fh.write('#!/bin/sh\nprintf "%s" "$LINEAR_BOARD_WRITES"\n')
+            os.chmod(tool, stat.S_IRWXU)
+            runner = Runner(None, {"PATH": d, "HOME": d})
+            result = runner.board("comment", "AFC-1", "x")
+            self.assertEqual(result.out, "1")
+            self.assertNotIn("LINEAR_BOARD_WRITES", runner.env)
+
+
 if __name__ == "__main__":
     unittest.main()

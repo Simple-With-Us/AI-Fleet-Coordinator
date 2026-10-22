@@ -247,8 +247,8 @@ class ActualRuntime(unittest.TestCase):
 
     def test_actual_cli_commands(self):
         cases = [
-            ("scripts/agent-sync", ["--version"], 0, b"agent-sync"),
-            ("scripts/agent-sync", ["mcp", "--help"], 0, b"--default-seat"),
+            ("scripts/simple-chat", ["--version"], 0, b"simple-chat"),
+            ("scripts/simple-chat", ["mcp", "--help"], 0, b"--default-seat"),
             ("scripts/linear-board/board", ["--help"], 0, b"whoami"),
             ("scripts/linear-board/board", ["whoami"], 4, b""),
         ]
@@ -299,7 +299,7 @@ class ActualRuntime(unittest.TestCase):
 
     def test_actual_mcp_startup_refuses_missing_credentials(self):
         result = self.command(
-            "scripts/agent-sync", ["mcp", "--default-seat", "CODEX"], data=self.requests()
+            "scripts/simple-chat", ["mcp", "--default-seat", "CODEX"], data=self.requests()
         )
         self.assert_exit(result, 3)
         self.assertFalse(result.stdout, "unauthenticated MCP emitted protocol output")
@@ -379,7 +379,14 @@ class ActualRuntime(unittest.TestCase):
         self.assertEqual(listed[len(served) + len(linear) :], fleetlink)
 
     def test_generated_wrapper_isolation_flags(self):
-        for name in ("agent-sync", "board", "fleet-cli-release", "agent-sync-codex-mcp", "recall"):
+        for name in (
+            "simple-chat",
+            "simple-notes",
+            "simple-board",
+            "fleet-cli-release",
+            "simple-chat-codex-mcp",
+            "recall",
+        ):
             with self.subTest(wrapper=name):
                 content = (self.home / ".local/bin" / name).read_text()
                 self.assertTrue(content.startswith("#!/usr/bin/python3 -I\n"))
@@ -419,13 +426,14 @@ class ActualRuntime(unittest.TestCase):
                 "deployment interpreter requires Python 3.11+; host /usr/bin/python3 is older"
             )
         for name, args, expected in [
-            ("agent-sync", ["--version"], 0),
-            ("board", ["--help"], 0),
-            ("board", ["whoami"], 4),
-            ("board", ["commands", "--kind", "read"], 0),
-            ("board", ["mcp", "list"], 0),
+            ("simple-chat", ["--version"], 0),
+            ("simple-notes", ["--version"], 0),
+            ("simple-board", ["--help"], 0),
+            ("simple-board", ["whoami"], 4),
+            ("simple-board", ["commands", "--kind", "read"], 0),
+            ("simple-board", ["mcp", "list"], 0),
             ("fleet-cli-release", ["status"], 0),
-            ("agent-sync-codex-mcp", [], 3),
+            ("simple-chat-codex-mcp", [], 3),
             ("recall", ["--help"], 0),
             ("lane", ["--help"], 0),
             ("fleet-mode", [], 0),
@@ -442,7 +450,7 @@ class ActualRuntime(unittest.TestCase):
                 )
                 self.assert_exit(result, expected)
         result = RUN(
-            [str(self.home / ".local/bin/agent-sync-codex-mcp")],
+            [str(self.home / ".local/bin/simple-chat-codex-mcp")],
             env={**self.env, "AGENT_SEAT": "ASTRA"},
             cwd=self.home,
             input=self.requests(),

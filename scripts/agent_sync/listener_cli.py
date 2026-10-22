@@ -1371,21 +1371,32 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------------------------
 
 
-def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
+def add_parsers(
+    sub: Any, common: argparse.ArgumentParser, verbs: frozenset[str] | None = None
+) -> None:
+    """Register the listener/daemon verbs.  `verbs` keeps them out of a command that does not own
+    them (today only `simple-chat` does); a verb outside it is registered into a null parser."""
+
     def add(name: str, summary: str, parent: Any = sub) -> argparse.ArgumentParser:
+        if verbs is not None and parent is sub and name not in verbs:
+            from . import cli  # local: cli imports this module
+
+            return cli._NullParser()
         return parent.add_parser(name, parents=[common], help=summary, description=summary)
 
-    sub.add_parser(
-        "attach",
-        add_help=False,
-        help="lease topics for this session; hooks, rewake, --drain and --wait "
-        "(see agent-sync attach --help)",
-    )
-    sub.add_parser(
-        "detach",
-        add_help=False,
-        help="remove topics or this session's lease (see agent-sync detach --help)",
-    )
+    if verbs is None or "attach" in verbs:
+        sub.add_parser(
+            "attach",
+            add_help=False,
+            help="lease topics for this session; hooks, rewake, --drain and --wait "
+            "(see simple-chat attach --help)",
+        )
+    if verbs is None or "detach" in verbs:
+        sub.add_parser(
+            "detach",
+            add_help=False,
+            help="remove topics or this session's lease (see simple-chat detach --help)",
+        )
 
     p = add("daemon", "the always-on listener: run, install, status, pause and resume")
     dsub = p.add_subparsers(dest="daemon_command", metavar="ACTION", required=True)

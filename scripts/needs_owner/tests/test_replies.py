@@ -175,7 +175,7 @@ class TypedReplyTests(RepliesCase):
         (note,) = self.notes()
         self.assertIn("message %d in this topic" % reply, note["stdin"])
         self.assertNotIn("Option 2", note["stdin"])
-        verifies = [c for c in self.w.calls("agent-sync") if c["argv"][0] == "verify-owner-msg"]
+        verifies = [c for c in self.w.calls("simple-chat") if c["argv"][0] == "verify-owner-msg"]
         self.assertEqual(len(verifies), 1)
         self.assertEqual(verifies[0]["argv"][verifies[0]["argv"].index("--after") + 1], str(record["notified_msg_id"]))
         self.assertEqual(verifies[0]["argv"][verifies[0]["argv"].index("--topic") + 1], record["topic"])
@@ -188,10 +188,10 @@ class TypedReplyTests(RepliesCase):
         result = self.run_notify()
         self.assertEqual(self.events(result, "replied"), [])
         self.assertEqual(self.sent_by_notifier(), [])
-        verifies = [c for c in self.w.calls("agent-sync") if c["argv"][0] == "verify-owner-msg"]
+        verifies = [c for c in self.w.calls("simple-chat") if c["argv"][0] == "verify-owner-msg"]
         self.assertEqual(len(verifies), 1, "only the owner's own id is asked about, and a bot or another person is not")
         self.run_notify()
-        self.assertEqual(len([c for c in self.w.calls("agent-sync") if c["argv"][0] == "verify-owner-msg"]), 1, "a rejection is remembered")
+        self.assertEqual(len([c for c in self.w.calls("simple-chat") if c["argv"][0] == "verify-owner-msg"]), 1, "a rejection is remembered")
         # a real message after them still counts
         good = self.w.add_message(record["topic"], "Option 1")
         self.assertEqual([e["ref"] for e in self.events(self.run_notify(), "replied")], [good])
@@ -203,7 +203,7 @@ class TypedReplyTests(RepliesCase):
         good = self.w.add_message(record["topic"], "Option 1")
         first = self.run_notify()
         self.assertEqual(self.events(first, "replied"), [], "ten calls a run at the most")
-        asked = len([c for c in self.w.calls("agent-sync") if c["argv"][0] == "verify-owner-msg"])
+        asked = len([c for c in self.w.calls("simple-chat") if c["argv"][0] == "verify-owner-msg"])
         self.assertEqual(asked, notifier.VERIFY_PER_TOPIC)
         second = self.run_notify()
         self.assertEqual([e["ref"] for e in self.events(second, "replied")], [good], "the rejected ten are remembered:  three more, then the answer")

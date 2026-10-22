@@ -107,7 +107,7 @@ def server_argv(name: str, home: str, seat: Optional[str], env: Optional[Dict[st
     if name == AGENT_SYNC:
         if not seat:
             raise ValueError("agent-sync needs a seat")
-        return [os.path.join(home, ".local", "bin", "agent-sync"), "mcp", "--default-seat", seat]
+        return [os.path.join(home, ".local", "bin", "simple-chat"), "mcp", "--default-seat", seat]
     raise ValueError("unknown server %r" % name)
 
 
@@ -471,8 +471,8 @@ def plan_target(key: str, home: str, action: str, with_agent_sync: bool,
     if not os.path.isfile(os.path.join(fleet_rag_home(home, env), "fleet-recall-mcp.py")) and FLEET_RECALL in names:
         plan.notes.append("%s does not exist yet (scripts/install-fleet-rag.sh creates it)" %
                           os.path.join(fleet_rag_home(home, env), "fleet-recall-mcp.py"))
-    if with_agent_sync and AGENT_SYNC in names and not os.path.exists(os.path.join(home, ".local", "bin", "agent-sync")):
-        plan.notes.append("~/.local/bin/agent-sync does not exist; the registration would start nothing")
+    if with_agent_sync and AGENT_SYNC in names and not os.path.exists(os.path.join(home, ".local", "bin", "simple-chat")):
+        plan.notes.append("~/.local/bin/simple-chat does not exist; the registration would start nothing")
     return plan
 
 

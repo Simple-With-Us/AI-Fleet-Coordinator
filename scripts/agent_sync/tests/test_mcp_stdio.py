@@ -812,7 +812,7 @@ class ProtocolTests(McpHarness):
     def test_every_tool_maps_to_a_cli_command_that_parses(self):
         """tools.json is the contract:  every MCP tool (and every eavesdropper tool) names the CLI command
         that does the same job, and that command exists in the CLI's parser."""
-        external = ("recall_", "fleetlink_")  # the recall CLI and FleetLink's own CLI, fleet-share
+        external = ("recall_", "fleetlink_")  # the recall CLI and FleetLink's own CLI, fleetlink
         served = [
             t["name"]
             for t in T.load_served_tools()["tools"]
@@ -824,23 +824,36 @@ class ProtocolTests(McpHarness):
             set(T.EXTERNAL_CLI),
         )
         for name, command in T.EXTERNAL_CLI.items():
-            program = "fleet-share" if name.startswith("fleetlink_") else "recall"
+            program = "fleetlink" if name.startswith("fleetlink_") else "recall"
             self.assertEqual(command.split()[0], program, name)
-        parser = cli.build_parser()
-        actions = {a.dest: a for a in parser._actions if isinstance(a, argparse._SubParsersAction)}
-        top = actions["command"].choices
+        # Each verb must exist in the parser of the command that owns it:  the chat verbs on
+        # simple-chat, the notes verbs on simple-notes.
+        tops = {}
+        for command in cli.COMMAND_SPECS:
+            parser = cli.build_parser_for(command)
+            actions = {
+                a.dest: a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+            }
+            tops[command] = actions["command"].choices
         for name, verbs in T.CLI_VERBS.items():
             for verb in verbs:
                 with self.subTest(tool=name, verb=verb):
                     words = verb.split()
-                    self.assertIn(words[0], sorted(top))
-                    if len(words) > 1:
-                        sub = next(
-                            a
-                            for a in top[words[0]]._actions
-                            if isinstance(a, argparse._SubParsersAction)
-                        )
-                        self.assertIn(words[1], sorted(sub.choices))
+                    owners = [c for c, top in tops.items() if words[0] in top]
+                    self.assertTrue(owners, "%s is not a verb of any command" % words[0])
+                    # #860 r4:  "status" is a top-level verb of both commands, so without this the
+                    # test stays green when simple-notes drops it and the tool silently points at
+                    # the listener's status instead of the notes request status.
+                    if name.startswith("notes_"):
+                        self.assertIn("simple-notes", owners, "%s is not a simple-notes verb" % verb)
+                    for command in owners:
+                        if len(words) > 1:
+                            sub = next(
+                                a
+                                for a in tops[command][words[0]]._actions
+                                if isinstance(a, argparse._SubParsersAction)
+                            )
+                            self.assertIn(words[1], sorted(sub.choices), "%s %s" % (command, verb))
 
     def test_fleet_roles_match_the_listener(self):
         self.assertEqual(T.FLEET_ROLES, daemon.FLEET_ROLES)

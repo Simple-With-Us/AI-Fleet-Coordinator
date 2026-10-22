@@ -73,7 +73,7 @@ def issue_by_ref(world, ref):
 
 
 def record_call(argv, files):
-    entry = {"tool": "board", "argv": argv, "seat": os.environ.get("AGENT_SEAT"),
+    entry = {"tool": "simple-board", "argv": argv, "seat": os.environ.get("AGENT_SEAT"),
              "launch_seat": os.environ.get("AGENT_LAUNCH_SEAT"), "launcher": os.environ.get("AGENT_LAUNCHER"),
              "files": files}
     with open(CALLS, "a", encoding="utf-8") as fh:

@@ -65,7 +65,7 @@ class HomeCase(unittest.TestCase):
 
     @property
     def agent_sync(self) -> str:
-        return os.path.join(self.home, ".local", "bin", "agent-sync")
+        return os.path.join(self.home, ".local", "bin", "simple-chat")
 
 
 TOOL_DIRS = {"opencode": ".config/opencode", "kimi": ".kimi-code", "copilot": ".copilot", "muse": ".config/muse",
@@ -632,8 +632,8 @@ class ProbeSeatTests(HomeCase):
         super().setUp()
         self.log = self.path("probe.log")
         body = textwrap.dedent(self.SERVER % self.log)
-        # agent-sync is a script that ignores its arguments; fleet-recall-mcp.py is the same server under python3
-        self.write(".local/bin/agent-sync", "#!%s\n%s" % (sys.executable, body), mode=0o755)
+        # simple-chat is a script that ignores its arguments; fleet-recall-mcp.py is the same server under python3
+        self.write(".local/bin/simple-chat", "#!%s\n%s" % (sys.executable, body), mode=0o755)
         self.write("apps/fleet-rag/fleet-recall-mcp.py", body)
         self.mkdir(".minimax")
         code, out, _ = self.run_cli("apply", "minimax", "--with-agent-sync")

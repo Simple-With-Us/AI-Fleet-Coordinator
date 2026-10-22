@@ -58,7 +58,7 @@ def plist_path(home: str) -> str:
 
 
 def program_path(home: str) -> str:
-    return os.path.join(home, ".local", "bin", "agent-sync")
+    return os.path.join(home, ".local", "bin", "simple-chat")
 
 
 def choose_python(explicit: str | None) -> str:
@@ -115,7 +115,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
     lines = [
         "# agent-sync listener config.  Local to this Mac; it holds no secrets.",
         "# Design: docs/protocols/agent-sync-listener.md in AI-Fleet-Coordinator.",
-        "# Changes take effect on `agent-sync daemon reload` (SIGHUP) or a restart.",
+        "# Changes take effect on `simple-chat daemon reload` (SIGHUP) or a restart.",
         "",
         "[daemon]",
         "# The Mac instance holds the Mac seats (owner decision, Thu, Oct 8); the cloud seats (Grok Bots, MA, Jet,",
@@ -125,7 +125,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         "# Sender eligibility for migrated BotFleet outgoing bots.  This does not hold a queue:",
         "# the partition gives BF-DIRECTOR to the server and the other ten BF seats to none.",
         'outgoing_webhook_seats = ["BF-BUILDER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-FIXER", "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER"]',
-        "owner_user_id = 0                 # pinned by `agent-sync daemon init`, never derived at runtime",
+        "owner_user_id = 0                 # pinned by `simple-chat daemon init`, never derived at runtime",
         "eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)",
         "# Owner priority needs the owner's user id AND one of these clients (human Zulip apps).  A post",
         "# made with the owner's key from any other client is treated as not the owner and flagged.",
@@ -149,7 +149,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
             where("CLAUDE"),
             "" if present("CLAUDE") else "; NOT FOUND",
         ),
-        'wake = "claude"                   # runs only after `agent-sync daemon test-wake --seat CLAUDE --run`, then --pin',
+        'wake = "claude"                   # runs only after `simple-chat daemon test-wake --seat CLAUDE --run`, then --pin',
         'model = "sonnet"',
         "budget = { wakes_per_hour = 6, wakes_per_day = 40, per_topic_per_hour = 2, owner_per_day = 20, "
         "owner_per_topic_per_hour = 6, usd_per_day = 2.0, board_per_day = 0 }",

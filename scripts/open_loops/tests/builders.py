@@ -59,7 +59,7 @@ class World:
         self.show_fail: set = set()
         self.lane_report = None
         self.docs: dict = {}          # program name -> JSON document
-        self.agent_sync: dict = {"topics": [], "read": {}, "read_rc": {}}
+        self.simple_chat: dict = {"topics": [], "read": {}, "read_rc": {}}
         self.github_fail = False
         self.verify_rc = 0
         self.calls: list = []
@@ -74,26 +74,26 @@ class World:
                 if a.startswith("endCursor="):
                     cursor = a.split("=", 1)[1]
             return Result(0, json.dumps(self.pages[cursor]), "")
-        if name == "board":
+        if name == "simple-board":
             if argv[1] == "list":
                 key = argv[argv.index("--status") + 1] if "--status" in argv else argv[argv.index("--label") + 1]
                 return Result(0, json.dumps({"in_progress": self.in_progress, "needs-owner": self.needs_owner}[key]), "")
             if argv[1] == "show":
                 if argv[2] in self.show_fail:
-                    return Result(5, "", "board: unreachable")
+                    return Result(5, "", "simple-board: unreachable")
                 return Result(0, json.dumps(self.show[argv[2]]), "")
         if name == "lane":
             return Result(0, json.dumps(self.lane_report), "") if self.lane_report is not None else Result(1, "", "lane failed")
-        if name == "agent-sync":
+        if name == "simple-chat":
             if argv[1] == "asks":
                 return Result(2, "", "invalid choice: 'asks'")
             if argv[1] == "topics":
-                return Result(0, json.dumps(self.agent_sync["topics"]), "")
+                return Result(0, json.dumps(self.simple_chat["topics"]), "")
             if argv[1] == "read":
                 topic = argv[argv.index("--topic") + 1]
-                if self.agent_sync["read_rc"].get(topic, 0):
-                    return Result(self.agent_sync["read_rc"][topic], "", "read failed")
-                return Result(0, "".join(json.dumps(m) + "\n" for m in self.agent_sync["read"].get(topic, [])), "")
+                if self.simple_chat["read_rc"].get(topic, 0):
+                    return Result(self.simple_chat["read_rc"][topic], "", "read failed")
+                return Result(0, "".join(json.dumps(m) + "\n" for m in self.simple_chat["read"].get(topic, [])), "")
         if name == "fleet-facts" and argv[1] == "verify":
             return Result(self.verify_rc, "", "")
         if name in self.docs:

@@ -24,7 +24,7 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 
 ## Docs before the PR
 
-1. Linear issue → In Progress with honest status (`board claim <id> ...`, branch `<seat>/<id>-<slug>`).  The effort logs are archived, so there is no `docs/EFFORT-LOG.md` row to mirror.  The PR body says `Fixes <ID>` if it finishes the issue, `Refs <ID>` if not.
+1. Linear issue → In Progress with honest status (`simple-board claim <id> ...`, branch `<seat>/<id>-<slug>`).  The effort logs are archived, so there is no `docs/EFFORT-LOG.md` row to mirror.  The PR body says `Fixes <ID>` if it finishes the issue, `Refs <ID>` if not.
 2. `STATUS.md` stanza: what landed, next action.
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[TEAM_KEY, Agent] …`.
@@ -87,11 +87,11 @@ gh pr merge <N> --squash --auto
 
 Not `--admin`.  Branch protection is `enforce_admins: true` plus conversation resolution.  Unresolved review threads block forever.  Use `codex-triage` / `unstick-pr`.
 
-If the box is gating several lanes, announce the full gate in #builds topic `gates`:  `agent-sync post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.  The CLI writes the tag.  Wait on a peer's open `gating now` with `agent-sync wait --channel builds --topic gates --timeout 900`.  Use the fleet wake (`@**all**` in #agent-sync topic `fleet`) only when every listening seat on every platform must spend time.  `AFC` and `OPS` are repo acronyms, never a sender or a signature.
+If the box is gating several lanes, announce the full gate in #builds topic `gates`:  `simple-chat post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.  The CLI writes the tag.  Wait on a peer's open `gating now` with `simple-chat wait --channel builds --topic gates --timeout 900`.  Use the fleet wake (`@**all**` in #agent-sync topic `fleet`) only when every listening seat on every platform must spend time.  `AFC` and `OPS` are repo acronyms, never a sender or a signature.
 
 ## After merge
 
-- Linear issue: **Completed** (Done) means merged to `main`, not "PR opened."  A `Fixes <ID>` PR moves it on merge once Linear's GitHub automation is on;  otherwise run `board status <id> completed`.
+- Linear issue: **Completed** (Done) means merged to `main`, not "PR opened."  A `Fixes <ID>` PR moves it on merge once Linear's GitHub automation is on;  otherwise run `simple-board status <id> completed`.
 - **Deployed** only after the app's production target is verified (`deploy-verify`).
 - Merge to `main` auto-deploys ST / CT / UM on Coolify and DealDex on Vercel.  Do not double-trigger.  Personal-Site live origin is Vercel behind Cloudflare and is **not** "merge = live" — do not mint a second Vercel project.
 - Retire the lane once the PR is merged:  `cd ~ && ~/apps/lane retire <slug>` (from outside the lane; it refuses a dirty, unpushed, open-PR or in-use lane and says why).  `~/apps/lane prune` lists all your lanes and `--apply` removes the merged ones.

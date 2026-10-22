@@ -137,7 +137,7 @@ Rules the shape depends on:
 
 - Move `workers/pr-conflict-watch` from Slack to Zulip.
 - Remove UM `ALERT_SLACK_WEBHOOK_URL` delivery and the Slack and UptimeRobot platform probes (UM-1327).
-- Move `cloud-runner-director --notify` and `provider-knob-sync` to `agent-sync post`.
+- Move `cloud-runner-director --notify` and `provider-knob-sync` to `simple-chat post`.
 - Delete the stale `codex-coordination.sh` and `slack-sync.sh` copies (ST is ST-4531).
 - Fix the comments that still claim UptimeRobot coverage in ST, UM and CT.
 - Investigate the `botfleet-mcp` pm2 crash loop.

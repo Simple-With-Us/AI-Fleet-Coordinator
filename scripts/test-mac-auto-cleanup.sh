@@ -835,6 +835,129 @@ if [ ! -d "$H22/.claude-disk-janitor/.housekeeper.lock" ]; then
   fail "a refused takeover must leave the lock it did not create in place"
 fi
 
+# 23. A FRESH lock whose owner file names a dead pid is taken over at once.
+#
+# The watcher removes the lock directory before it clears the owner file, so a
+# removal that FAILED leaves both behind.  If nothing here reads the owner
+# file, that surviving lock wedges every reclaimer in this repo for the full
+# two-hour stale window even though nobody holds it -- which is the exact
+# wedge the preserved owner file exists to remove.
+OWNER_GONE_BLOCK="$(sed -n '/^housekeeper_owner_is_gone() {/,/^}/p' "$SCRIPT")"
+if [ -z "$OWNER_GONE_BLOCK" ]; then
+  fail "could not extract housekeeper_owner_is_gone from mac-auto-cleanup.sh"
+fi
+
+# A pid that has definitely exited, so "the holder is gone" is a fact here
+# rather than a hope.
+DEAD_PID="$(python3 -c 'import subprocess, sys
+p = subprocess.Popen([sys.executable, "-c", "pass"])
+p.wait()
+print(p.pid)')"
+if [ -z "$DEAD_PID" ]; then
+  fail "could not obtain an exited pid for the housekeeper owner check"
+fi
+
+# The owner file must be NEWER than the lock directory it sits beside, and the
+# lock itself has to stay FRESH -- a lock older than the stale window would be
+# taken over by the age rule and prove nothing about the owner file.  The
+# stamps are set explicitly rather than left to write order, and both land
+# seconds apart from now, so the lock is well inside the 120 minute window.
+stamp_owner_lock() {
+  python3 -c 'import os, sys, time
+lock, owner, owner_offset = sys.argv[1:4]
+now = time.time()
+os.utime(lock, (now - 5, now - 5))
+os.utime(owner, (now + float(owner_offset), now + float(owner_offset)))' \
+    "$1/.claude-disk-janitor/.housekeeper.lock" \
+    "$1/.claude-disk-janitor/.housekeeper.lock.owner" "$2"
+}
+
+make_owner_lock() {
+  # $1 = HOME, $2 = pid to record, $3 = host to record, $4 = owner mtime
+  # offset in seconds from the lock's, defaulting to newer than the lock.
+  #
+  # The record carries the schema this protocol publishes EXACTLY, because
+  # both implementations check the shape strictly and a partial record would
+  # be refused as malformed rather than consulted.
+  make_lock "$1"
+  python3 -c 'import json, os, sys
+home, pid, host = sys.argv[1:4]
+with open(os.path.join(home, ".claude-disk-janitor", ".housekeeper.lock.owner"), "w") as fh:
+    json.dump({
+        "pid": int(pid),
+        "host": host,
+        "acquired_at": 1700000000.0,
+        "lock": os.path.join(home, ".claude-disk-janitor", ".housekeeper.lock"),
+    }, fh)' "$1" "$2" "$3"
+  stamp_owner_lock "$1" "${4:-5}"
+}
+
+# The malformed-owner case needs the same mtime relationship, so what refuses
+# it is the age rule and not an owner file that is merely too old.
+make_bad_owner_lock() {
+  make_lock "$1"
+  echo '{ not json' > "$1/.claude-disk-janitor/.housekeeper.lock.owner"
+  stamp_owner_lock "$1" 5
+}
+
+check_owner_gone() {
+  # $1 = HOME, $2 = expected answer: yes means the holder is provably gone and
+  # the lock may be taken over.
+  local answer=no
+  if HOME="$1" bash -c "$OWNER_GONE_BLOCK"$'\n''housekeeper_owner_is_gone "$HOME/.claude-disk-janitor/.housekeeper.lock"'; then
+    answer=yes
+  fi
+  if [ "$answer" != "$2" ]; then
+    fail "the housekeeper owner check answered '$answer' where '$2' was expected ($1)"
+  fi
+}
+
+H23="$LOCK_TEST_ROOT/case23"
+mkdir -p "$H23"
+make_owner_lock "$H23" "$DEAD_PID" "$(hostname)"
+check_owner_gone "$H23" yes
+OUT="$(run_lock_block "$H23" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
+  fail "a fresh lock whose owner file names a dead pid must be taken over at once; falling back to the age rule is a two-hour wedge on a lock nobody holds"
+fi
+
+# Every case where the owner file cannot speak for the lock falls back to the
+# age rule, so a live holder is never displaced.
+H23A="$LOCK_TEST_ROOT/case23-live"
+mkdir -p "$H23A"
+make_owner_lock "$H23A" "$$" "$(hostname)"
+check_owner_gone "$H23A" no
+OUT="$(run_lock_block "$H23A" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
+  fail "a live holder's owner file must keep its lock"
+fi
+
+H23B="$LOCK_TEST_ROOT/case23-none"
+mkdir -p "$H23B"
+make_lock "$H23B"
+check_owner_gone "$H23B" no
+OUT="$(run_lock_block "$H23B" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
+  fail "with no owner file the age rule must decide, because this script's own holder writes none"
+fi
+
+H23C="$LOCK_TEST_ROOT/case23-bad"
+mkdir -p "$H23C"
+make_bad_owner_lock "$H23C"
+check_owner_gone "$H23C" no
+
+# An owner file OLDER than the lock directory it sits beside describes an
+# earlier holder, not this lock.
+H23D="$LOCK_TEST_ROOT/case23-older"
+mkdir -p "$H23D"
+make_owner_lock "$H23D" "$DEAD_PID" "$(hostname)" -10
+check_owner_gone "$H23D" no
+
+H23E="$LOCK_TEST_ROOT/case23-other-host"
+mkdir -p "$H23E"
+make_owner_lock "$H23E" "$DEAD_PID" "some-other-host"
+check_owner_gone "$H23E" no
+
 bash -n "$SCRIPT" || fail "bash -n failed"
 
 echo OK
