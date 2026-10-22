@@ -163,8 +163,11 @@ class ReviewFixTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.ledger=NonceLedger(Path(self.temp.name)/"replay")
         self.router=Router();self.audit=[]
+        # The policy stub mirrors load_policy:  None for seats outside the
+        # allowlist, so the broker can tell an unknown seat (401, no oracle)
+        # from a policy-known seat whose secret cannot be resolved (503).
         self.broker=Broker(lambda seat:'a'*64 if seat=='CODEX' else None,
-            lambda seat:CallerPolicy('swu-codex',{'example-org/widget-repo':{'contents':'read','metadata':'read'}}),
+            lambda seat:CallerPolicy('swu-codex',{'example-org/widget-repo':{'contents':'read','metadata':'read'}}) if seat=='CODEX' else None,
             self.router,lambda slug:{'login':slug+'[bot]','id':123},clock=lambda:1000,audit=lambda **kw:self.audit.append(kw),enabled=True,nonce_ledger=self.ledger)
         self.path='/operator/v1/github/CODEX/token';self.body=json.dumps({'repo':'example-org/widget-repo','permissions':{'contents':'read'}}).encode()
     def request(self,nonce='1'*64):
@@ -176,6 +179,14 @@ class ReviewFixTests(unittest.TestCase):
             self.broker.issue(self.path,'1000','9'*64,signature('a'*64,self.path,'1000','9'*64,body),body)
         self.assertEqual(c.exception.status,401)
         self.assertEqual(c.exception.reason,'authentication failed')
+    def test_unresolvable_key_for_policy_seat_is_503_naming_variable(self):
+        # A policy-known seat whose caller secret the adapter cannot resolve
+        # is a provisioning outage, not an authentication failure.
+        self.broker.key_for=lambda seat:None
+        with self.assertRaises(Refused) as c:
+            self.request()
+        self.assertEqual(c.exception.status,503)
+        self.assertIn('OPERATOR_GITHUB_CALLER_CODEX_HMAC',c.exception.reason)
     def test_malformed_key_is_503_naming_per_seat_variable(self):
         self.broker.key_for=lambda seat:'tooshort'
         with self.assertRaises(Refused) as c:

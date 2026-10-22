@@ -55,7 +55,15 @@ def caller_key(seat):
                 capture_output=True,
                 timeout=10,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
+            # Distinct infrastructure signals:  a hung lookup is 124, a missing
+            # executable is 127, so operators can tell both from a refused lookup.
+            print(name + " unavailable: fleet-secrets lookup timed out", file=sys.stderr)
+            raise SystemExit(124) from None
+        except FileNotFoundError:
+            print(name + " unavailable: fleet-secrets executable not found", file=sys.stderr)
+            raise SystemExit(127) from None
+        except OSError:
             raise ClientError(name + " unavailable: fleet-secrets lookup failed") from None
         if result.returncode:
             raise ClientError(name + " unavailable: fleet-secrets lookup failed")

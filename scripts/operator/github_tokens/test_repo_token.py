@@ -93,7 +93,9 @@ class Tests(unittest.TestCase):
             preview = getattr(exc, "credential_preview", None)
         else:
             self.fail("expected RoutingError")
-        self.assertIsNotNone(preview)
+        # The mask is exactly first-eight/last-four of the armor-stripped body:
+        # a malformed or missing preview fails this, not just a leaking one.
+        self.assertEqual(preview, "A" * 8 + "…" + "A" * 4)
         self.assertNotIn("PRIVATE KEY", preview)
         self.assertNotIn("A" * 20, preview)
 

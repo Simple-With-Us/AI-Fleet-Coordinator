@@ -160,11 +160,11 @@ class Broker:
             if exc_outcome == "outcome_unknown":
                 # A dropped or timed-out mint may already have reached
                 # GitHub:  stay explicitly unknown, forbid automatic retry.
+                # github_call classifies every POST 408/5xx here, so a separate
+                # status branch below would be unreachable dead code.
                 raise Refused(
                     503, "token issuance outcome_unknown; do not retry automatically"
                 ) from None
-            if status == 408 or (isinstance(status, int) and status >= 500):
-                raise Refused(503, "token issuance uncertain; retry with a fresh nonce") from None
             raise Refused(502, "token issuance failed") from None
 
     def issue(self, path: str, stamp: str, nonce: str, sig: str, body: bytes):
@@ -197,11 +197,19 @@ class Broker:
                 self.rates[seat] = bucket + [now]
             key = self.key_for(seat)
             if key is None:
-                # Unknown seat:  an authentication failure, never a
-                # provisioning outage, and the same answer as a bad
-                # signature - a distinct status here would be a
-                # pre-authentication allowlist oracle.
-                raise Refused(401, "authentication failed")
+                if self.policy_for(seat) is None:
+                    # Unknown seat:  an authentication failure, never a
+                    # provisioning outage, and the same answer as a bad
+                    # signature - a distinct status here would be a
+                    # pre-authentication allowlist oracle.
+                    raise Refused(401, "authentication failed")
+                # A policy-known seat whose caller secret cannot be resolved
+                # is a server-side provisioning outage:  name the variable
+                # operators must provision, never the value seen.
+                raise Refused(
+                    503,
+                    "OPERATOR_GITHUB_CALLER_" + seat + "_HMAC is not provisioned",
+                )
             if not isinstance(key, str) or len(key) < 32:
                 # A present but malformed caller secret is a provisioning
                 # problem:  name the per-seat variable operators must

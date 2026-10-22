@@ -123,9 +123,13 @@ def jwt(app_id, pem, clock=time.time):
         except subprocess.TimeoutExpired:
             raise RoutingError("App signing timed out", outcome="retryable") from None
         except FileNotFoundError:
-            raise RoutingError("App signer unavailable: openssl not found") from None
+            # A local failure before any GitHub request:  a definite refusal,
+            # never an unknown outcome that would burn the caller's nonce.
+            raise RoutingError(
+                "App signer unavailable: openssl not found", outcome="refused"
+            ) from None
         if result.returncode:
-            raise RoutingError("App signing failed")
+            raise RoutingError("App signing failed", outcome="refused")
         return (unsigned + b"." + b64(result.stdout)).decode()
     finally:
         os.unlink(name)
@@ -201,7 +205,9 @@ def _github_call(method, path, bearer, body=None):
         )
         err.code = e.code
         retry_after = e.headers.get("Retry-After") if e.headers else None
-        if isinstance(retry_after, str) and retry_after.isdigit():
+        # isdigit() also passes non-decimal digits int() rejects (e.g. "²");
+        # isdecimal() keeps the parse safe inside this error handler.
+        if isinstance(retry_after, str) and retry_after.isdecimal():
             err.retry_after = int(retry_after)
         raise err from None
     except (OSError, ValueError):
