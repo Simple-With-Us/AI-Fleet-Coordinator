@@ -10,6 +10,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1577,3 +1578,109 @@ class CliEntryTests(unittest.TestCase):
         )
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("git-relay config", out.stderr)
+
+
+class LegacyStateAdoption(unittest.TestCase):
+    """The GHR -> git-relay rename must not abandon the write-idempotency ledger.
+
+    A pending/unknown outcome row exists to fail closed:  it is what refuses a
+    replay of a write whose GitHub outcome was never known.  Starting the
+    renamed relay on an empty store would let those writes run a second time.
+    """
+
+    KEY = "b" * 64
+
+    def _legacy_ledger(self, directory: pathlib.Path) -> pathlib.Path:
+        path = directory / "pr-relay-outcomes.json"
+        path.write_text(
+            json.dumps({self.KEY: {"state": "unknown", "ts": 1700000000.0}}),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_a_ledger_left_under_the_old_name_is_adopted(self):
+        from git_relay.outcomes import OutcomeStore
+        from git_relay.server import adopt_legacy_state
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        legacy = self._legacy_ledger(directory)
+
+        adopted = adopt_legacy_state(str(directory / "git-relay-outcomes.json"))
+
+        self.assertFalse(legacy.exists(), "the old file is moved, not copied")
+        self.assertTrue(pathlib.Path(adopted).exists())
+        # The held row survived the rename:  a replay still fails closed.
+        store = OutcomeStore(adopted)
+        self.assertEqual(store._rows[self.KEY]["state"], "unknown")
+
+    def test_an_existing_current_file_always_wins(self):
+        from git_relay.server import adopt_legacy_state
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        legacy = self._legacy_ledger(directory)
+        current = directory / "git-relay-outcomes.json"
+        current.write_text("{}", encoding="utf-8")
+
+        adopted = adopt_legacy_state(str(current))
+
+        self.assertEqual(adopted, str(current))
+        self.assertTrue(legacy.exists(), "a present current file means no adoption")
+
+    def test_nothing_to_adopt_returns_the_default(self):
+        from git_relay.server import adopt_legacy_state
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        adopted = adopt_legacy_state(str(directory / "git-relay-outcomes.json"))
+        self.assertEqual(adopted, str(directory / "git-relay-outcomes.json"))
+        self.assertFalse(pathlib.Path(adopted).exists())
+
+    def test_from_env_adopts_the_default_but_never_an_explicit_path(self):
+        from git_relay import server
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        self._legacy_ledger(directory)
+        explicit = directory / "operator-chosen.json"
+        policy = json.dumps(
+            {
+                "swu-echo": {
+                    "token": "e" * 32,
+                    "actions": ["open_pr"],
+                    "repos": ["acme-org/acme-repo"],
+                }
+            }
+        )
+
+        origin = pathlib.Path.cwd()
+
+        def build(**overrides):
+            env = dict(os.environ)
+            env["GIT_RELAY_SEATS_JSON"] = policy
+            env["GIT_RELAY_APP_MINT"] = "0"
+            env["GITHUB_TOKEN"] = "t" * 40
+            env.update(overrides)
+            return unittest.mock.patch.dict(os.environ, env, clear=True)
+
+        with build():
+            os.chdir(directory)
+            try:
+                relay = server.from_env()
+            finally:
+                os.chdir(origin)
+        self.assertTrue((directory / "git-relay-outcomes.json").exists())
+        self.assertEqual(relay.outcomes._rows[self.KEY]["state"], "unknown")
+
+        # An explicit path is the operator's decision:  no file is moved.
+        (directory / "git-relay-outcomes.json").unlink()
+        self._legacy_ledger(directory)
+        with build(GIT_RELAY_OUTCOMES_PATH=str(explicit)):
+            os.chdir(directory)
+            try:
+                server.from_env()
+            finally:
+                os.chdir(origin)
+        self.assertTrue((directory / "pr-relay-outcomes.json").exists())
+        self.assertFalse(explicit.exists())

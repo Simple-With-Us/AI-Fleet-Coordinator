@@ -509,6 +509,41 @@ def make_handler(relay: Relay):
     return Handler
 
 
+DEFAULT_AUDIT_PATH = "git-relay-audit.jsonl"
+DEFAULT_OUTCOMES_PATH = "git-relay-outcomes.json"
+# The state files were renamed along with the CLI (GHR -> git-relay).  The
+# outcome store is a write-idempotency ledger:  its pending/unknown rows are
+# the only thing that stops a replay of a write whose GitHub outcome was never
+# known.  A renamed relay that ignored the ledger left behind under the old
+# name would start empty and re-arm those side effects, so the old file is
+# adopted rather than abandoned.  This moves a file once, on first start;  it
+# adds no alias, no fallback name, and no second accepted configuration.
+LEGACY_STATE_FILES = {
+    DEFAULT_AUDIT_PATH: "pr-relay-audit.jsonl",
+    DEFAULT_OUTCOMES_PATH: "pr-relay-outcomes.json",
+}
+
+
+def adopt_legacy_state(default_path: str) -> str:
+    """Adopt a pre-rename state file when the new default does not exist yet."""
+    default_name = os.path.basename(default_path)
+    legacy_name = LEGACY_STATE_FILES.get(default_name)
+    if legacy_name is None:
+        return default_path
+    directory = os.path.dirname(default_path) or "."
+    legacy_path = os.path.join(directory, legacy_name)
+    # An existing current file always wins:  it is the live ledger.
+    if os.path.exists(os.path.join(directory, default_name)) or not os.path.exists(legacy_path):
+        return default_path
+    os.replace(legacy_path, os.path.join(directory, default_name))
+    print(
+        f"git-relay: adopted the pre-rename {legacy_name} as {default_name}; "
+        "its held write outcomes still apply",
+        flush=True,
+    )
+    return default_path
+
+
 def from_env() -> Relay:
     try:
         policy = SeatPolicy(
@@ -518,8 +553,20 @@ def from_env() -> Relay:
     except PolicyError as exc:
         raise SystemExit(f"git-relay config: {exc}") from exc
     client = GitHubClient(os.environ.get("GITHUB_TOKEN", ""))
-    audit = AuditLog(os.environ.get("GIT_RELAY_AUDIT_PATH", "git-relay-audit.jsonl"))
-    outcomes = OutcomeStore(os.environ.get("GIT_RELAY_OUTCOMES_PATH", "git-relay-outcomes.json"))
+    # An explicitly configured path is the operator's business:  adoption only
+    # covers the built-in defaults.
+    audit_path = (
+        os.environ["GIT_RELAY_AUDIT_PATH"]
+        if "GIT_RELAY_AUDIT_PATH" in os.environ
+        else adopt_legacy_state(DEFAULT_AUDIT_PATH)
+    )
+    outcomes_path = (
+        os.environ["GIT_RELAY_OUTCOMES_PATH"]
+        if "GIT_RELAY_OUTCOMES_PATH" in os.environ
+        else adopt_legacy_state(DEFAULT_OUTCOMES_PATH)
+    )
+    audit = AuditLog(audit_path)
+    outcomes = OutcomeStore(outcomes_path)
     app_minter = None
     if os.environ.get("GIT_RELAY_APP_MINT", "1") != "0":
         # App-credential reads go through the fleet-secrets CLI only (owner
