@@ -32,13 +32,15 @@ import urllib.request
 
 ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision D1)
 ZONE_NAME = "jays.services"
-HOST = "agents.simplewithus.com"
+# Phase 0 provisioning for the RETIRED host agent-sync.jays.services.  The public host moved to
+# agents.simplewithus.com on 2026-10-22 (DEPLOY.md, Host move);  its Access app was created by hand.
+HOST = "agent-sync.jays.services"
 ISSUER = f"https://{HOST}"
 RESOURCE = f"{ISSUER}/mcp"
 TEAM_DOMAIN = "silent-frost-37e0.cloudflareaccess.com"
 TUNNEL_NAME = "Jay's Tunnel"
 MIRROR_APP_UUID = "1e1a5fc4-0f7d-44ac-bb0d-5fa6d5d73ddf"  # agents.jays.services
-ACCESS_APP_NAME = "agents.simplewithus.com consent and admin"
+ACCESS_APP_NAME = "agent-sync.jays.services consent and admin"
 ACCESS_PATHS = [f"{HOST}/authorize", f"{HOST}/admin"]
 # Spec 3.3:  mail@jays.services only.  The identity provider is One-time PIN, so every
 # address on this list is an admin credential for the server;  keep it to one.
