@@ -89,6 +89,7 @@ def osascript_argv(osascript: str, text: str, title: str) -> list[str]:
         _clean_banner(title),
     ]
 
+
 QUERY = "since_hours=1&limit=50"
 MAX_SEEN_WAKE_IDS = 500
 REQUEST_TIMEOUT_SECONDS = 10
@@ -212,8 +213,9 @@ def poll_once(
         try:
             _save_seen(state_path, seen)
         except OSError as exc:
-            print("wake_alerter: state write failed (%s); will retry next poll" % exc,
-                  file=sys.stderr)
+            print(
+                "wake_alerter: state write failed (%s); will retry next poll" % exc, file=sys.stderr
+            )
     return handled
 
 
