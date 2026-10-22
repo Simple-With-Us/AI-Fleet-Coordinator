@@ -161,7 +161,10 @@ test("the contract carries everything a consumer needs and nothing secret", asyn
 
 test("an empty ingress returns a well-formed empty payload, not an error", async () => {
   const { topics, firing, total } = await collectTopics(asEnv(fakeKV()));
-  assert.deepEqual(topics, {});
+  // The inventory maps are null-prototype (vendor labels like "constructor"
+  // must not resolve to Object members); spread back to a plain object so
+  // this asserts the payload shape, not the map internals.
+  assert.deepEqual({ ...topics }, {});
   assert.equal(firing, 0);
   assert.equal(total, 0);
 });

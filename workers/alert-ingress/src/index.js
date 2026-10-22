@@ -303,8 +303,12 @@ async function collectTopics(env) {
     if (!parsed) continue;
     pairs.set(`${parsed.source}\u0000${parsed.topic}`, parsed);
   }
-  const topics = {};
-  const sources = {};
+  // Null-prototype maps: topic names come from vendor service labels, so a
+  // topic literally named "constructor" or "__proto__" must not resolve to an
+  // inherited Object member (a truthy read here used to crash /status with a
+  // TypeError, and a "__proto__" write silently reparented the bucket).
+  const topics = Object.create(null);
+  const sources = Object.create(null);
   let firing = 0;
   let total = 0;
   // Parallel across topics: serial collectStates made /status cost ~1 + T*(1+2A) KV calls.
@@ -332,7 +336,7 @@ async function collectTopics(env) {
       sources[pair.source] ||
       (sources[pair.source] = {
         summary: { topics: 0, alerts: 0, firing: 0 },
-        topics: {},
+        topics: Object.create(null),
       });
     bucket.topics[pair.topic] = { firing: tf, total: states.length, alerts };
     bucket.summary.topics++;
@@ -590,6 +594,22 @@ async function runSweep(env) {
   for (const { name } of all.keys) {
     const key = name.slice("state:".length);
     const prev = await env.ALERT_STATE.get(name, "json");
+    // Records written before vendor routing have no per-source indices, so
+    // the new readers cannot see them.  Recreate the indices here -- before
+    // the promotion below refreshes the standing status from them -- so a
+    // legacy incident is never announced while the dashboard still reports
+    // zero monitored incidents.  New incidents always carry their markers,
+    // so after one pass this is a single cheap existence check per state.
+    if (prev) {
+      const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
+      const topic = boundedTopic(service);
+      const source = await resolveStateSource(env, key);
+      const marker = indexPrefix(source, DEFAULT_CHANNEL, topic) + key;
+      if ((await env.ALERT_STATE.get(marker)) === null) {
+        await env.ALERT_STATE.put(marker, "1");
+        await env.ALERT_STATE.put(topicKey(source, DEFAULT_CHANNEL, topic), "1");
+      }
+    }
     const s = sweep(prev, now, { minOpenMs });
     if (!s) continue;
     const source = await resolveStateSource(env, key);

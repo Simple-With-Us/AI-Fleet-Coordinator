@@ -657,3 +657,96 @@ test("the machine-readable status keeps its shape and adds a per-source breakdow
   for (const row of collected.topics["Shared.Service"].alerts)
     assert.ok(["datadog", "betterstack"].includes(row.source));
 });
+
+test("topics named like Object members do not crash the status inventory", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  // Service labels are vendor-controlled, so a topic can literally be
+  // "constructor" or "__proto__".  With a plain-object inventory the
+  // "constructor" read resolved to the Object constructor (a truthy
+  // non-entry) and the status read crashed with a TypeError.
+  for (const hostile of ["constructor", "__proto__", "toString"]) {
+    const key = `generic:${hostile}`;
+    kv.store.set(
+      stateKey(key),
+      JSON.stringify({
+        phase: "alerting",
+        severity: "MODERATE",
+        since: 1,
+        updated: 2,
+        text: "odd name",
+        link: "",
+      }),
+    );
+    kv.store.set(svcKey(key), JSON.stringify(hostile));
+    kv.store.set(srcKey(key), JSON.stringify("generic"));
+    kv.store.set(indexPrefix("generic", "alerts", hostile) + key, "1");
+    kv.store.set(topicKey("generic", "alerts", hostile), "1");
+  }
+  const collected = await collectTopics(env);
+  assert.deepEqual(Object.keys(collected.topics).sort(), [
+    "__proto__",
+    "constructor",
+    "toString",
+  ]);
+  assert.equal(collected.topics["constructor"].firing, 1);
+  assert.equal(collected.firing, 3);
+  // /status serializes this shape, so the hostile names must survive JSON.
+  const roundTripped = JSON.parse(JSON.stringify(collected));
+  assert.deepEqual(Object.keys(roundTripped.topics).sort(), [
+    "__proto__",
+    "constructor",
+    "toString",
+  ]);
+});
+
+test("the sweep backfills per-source indices for pre-routing records", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const old = Date.now() - 60 * 60 * 1000;
+  // Pre-routing layout: state plus service pin plus channel-scoped markers,
+  // and no src: record.  The new readers skip all of these keys.
+  for (const [key, phase] of [["datadog:9", "pending"], ["datadog:10", "alerting"]]) {
+    kv.store.set(
+      stateKey(key),
+      JSON.stringify({
+        phase,
+        severity: "MODERATE",
+        since: old,
+        updated: old,
+        text: "load high",
+        link: "",
+      }),
+    );
+    kv.store.set(svcKey(key), JSON.stringify("Legacy.Service"));
+    kv.store.set(`idx:alerts:Legacy.Service:${key}`, "1");
+  }
+  kv.store.set("topic:alerts:Legacy.Service", "1");
+
+  const zulip = stubZulip();
+  try {
+    const result = await runSweep(env);
+    // The pending incident promotes through the vendor credential...
+    assert.equal(result.promoted, 1);
+    const events = zulip.posts().filter((call) => !isStatusWrite(call));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].email, "datadog-bot@example.invalid");
+  } finally {
+    zulip.restore();
+  }
+  // ...and both incidents -- promoted and steady -- gain new-format indices,
+  // so the dashboard sees them instead of reporting zero monitored incidents.
+  for (const key of ["datadog:9", "datadog:10"]) {
+    assert.equal(
+      kv.store.get(indexPrefix("datadog", "alerts", "Legacy.Service") + key),
+      "1",
+    );
+  }
+  assert.equal(kv.store.get(topicKey("datadog", "alerts", "Legacy.Service")), "1");
+  // Historical keys are never deleted or rewritten.
+  assert.equal(kv.store.get("topic:alerts:Legacy.Service"), "1");
+  const collected = await collectTopics(env);
+  assert.deepEqual(Object.keys(collected.topics), ["Legacy.Service"]);
+  assert.equal(collected.topics["Legacy.Service"].total, 2);
+  assert.equal(collected.firing, 2);
+});
