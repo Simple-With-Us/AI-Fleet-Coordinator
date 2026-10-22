@@ -1674,7 +1674,7 @@ def _owner_config(agent: Agent) -> Any:
     if cfg.owner_user_id <= 0:
         raise UsageError(
             "no owner to message:  daemon.owner_user_id is not pinned in %s "
-            "(run %s daemon init)" % (agent.rt.prog, listener_cli._config_path(agent.rt))
+            "(run %s daemon init)" % (listener_cli._config_path(agent.rt), agent.rt.prog)
         )
     return cfg
 
