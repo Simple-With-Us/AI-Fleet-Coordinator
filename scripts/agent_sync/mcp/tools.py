@@ -1568,19 +1568,15 @@ class Tools:
             "dm_read", [("with", ",".join(str(i) for i in ids))], shown, next_since_id
         )
 
-    def _tool_zulip_dm_send(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        self._scan(text=args["text"])
-        text = self._text(args["text"])
-        self._need_people(args)
-        people = self._people(args.get("user_ids") or [], args.get("emails") or [], active=True)
-        if not people:
-            raise ToolError(
-                "invalid_argument", "that is only this bot:  name at least one other person"
-            )
+    def _check_dm_rule(self, people: Sequence[Mapping[str, Any]], args: Mapping[str, Any]) -> None:
+        """The DM rule (owner decision, Oct 22 2026) for one direct-message target:  a seat may not
+        open a new direct message, and a reply inside a conversation Operator already opened is
+        allowed.
+
+        Every path that builds a `direct` target goes through here, so the rule cannot be stepped
+        around by delivering the same message later:  a scheduled or draft direct message is the same
+        act as sending it now.  A refusal is audited (ids and the reason only) before it is raised."""
         ids = [int(p["user_id"]) for p in people]
-        # The DM rule (owner decision, Oct 22 2026):  a seat may not open a new direct message.  A
-        # reply inside a conversation Operator already opened is allowed, so the existing messages
-        # are read first and only the refusal is audited.
         existing = self._dm_exists(ids)
         env = getattr(getattr(self.agent, "rt", None), "env", None) or os.environ
         try:
@@ -1589,7 +1585,10 @@ class Tools:
                 identity=self.agent.tag,
                 recipients=people,
                 operator_opened=DMP.operator_opened_dm(
-                    people, existing, operator_user_id=DMP.operator_user_id(env)
+                    people,
+                    existing,
+                    operator_user_id=DMP.operator_user_id(env),
+                    self_id=_int(self.me.get("user_id")),
                 ),
                 clarifying=bool(args.get("clarifying_question")),
                 owner_user_id=self.owner_user_id or None,
@@ -1604,9 +1603,29 @@ class Tools:
                 reason=refused.reason,
                 message=str(refused),
             )
+            # The seat that was authenticated and the identity it acted as ride along, so an admin
+            # reading the refusal knows which grant and which claimed bot it came from.
             raise ToolError(
-                DMP.DmRefused.code, str(refused), extra={"replacement": "side_chats"}
+                DMP.DmRefused.code,
+                str(refused),
+                extra={
+                    "replacement": "side_chats",
+                    "authenticated_seat": self.seat,
+                    "acting_identity": self.agent.tag,
+                },
             ) from None
+
+    def _tool_zulip_dm_send(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        self._scan(text=args["text"])
+        text = self._text(args["text"])
+        self._need_people(args)
+        people = self._people(args.get("user_ids") or [], args.get("emails") or [], active=True)
+        if not people:
+            raise ToolError(
+                "invalid_argument", "that is only this bot:  name at least one other person"
+            )
+        ids = [int(p["user_id"]) for p in people]
+        self._check_dm_rule(people, args)
         self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
         explicit = args.get("idempotency_key")
         key = self._key(
@@ -2049,6 +2068,9 @@ class Tools:
                 raise ToolError(
                     "invalid_argument", "that is only this bot:  name at least one other person"
                 )
+            # The DM rule runs here, where every `direct` target is built, so a scheduled or draft
+            # message cannot deliver a DM that `zulip_dm_send` would have refused.
+            self._check_dm_rule(people, args)
             return {"type": "direct", "to": [int(p["user_id"]) for p in people]}
         if args.get("topic") is None:
             raise ToolError(

@@ -126,6 +126,7 @@ import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
 import { NOTES_TOOLS, NOTES_READ_TOOLS, NOTES_WRITE_TOOLS, NOTES_METHODS } from "./notes.js";
 import { REALM } from "./zulip.js";
+import { PINNED_OPERATOR_USER_ID } from "./config.js";
 
 // Jay spells the channel Side-Chats and the live stream shows a different display name,  so the
 // code keys on the id (owner decision (d), Oct 22 2026).  Mirrors dm_policy.SIDE_CHATS_STREAM_ID.
@@ -1045,9 +1046,12 @@ export class HostedTools {
   async dmRuleCheck(args, { userIds, users }) {
     if (this.config?.dmRule === false) return;
     const selfId = this.me.user_id;
-    const operatorId = this.config?.operatorUserId ?? 1217148;
+    const operatorId = this.config?.operatorUserId ?? PINNED_OPERATOR_USER_ID;
     let opener = null;
     if (userIds.length) {
+      // Metered like every other read path:  without the reserve the seat's hourly read budget is
+      // never charged for this Zulip call, so a seat at its cap still spends one.
+      await this.reserve("read");
       const expected = [...new Set([selfId, ...userIds])].sort((a, b) => a - b).join(",");
       opener = await this.dmOpener(userIds, expected);
     }
@@ -1083,13 +1087,15 @@ export class HostedTools {
     const { userIds, users } = await this.resolveDm(args, { active: true });
     if (!userIds.length) throw new ToolError("invalid_argument", "that is only this bot:  name at least one other person");
     audit.recipient_ids = userIds;
-    await this.dmRuleCheck(args, { userIds, users });
-    audit.outcome_detail = "dm_rule";
     // An explicit key is namespaced, so a post and a DM never share a row.
     const idem = await this.idemKey(args.idempotency_key ? `dm:${args.idempotency_key}` : undefined, ["dm_send", tag, userIds, text]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
+    // The cached answer comes before the rule check:  a retry of a send that already landed sends
+    // nothing, so it must not pay for the DM-rule read again.
     const prior = await this.gate.idemPeek({ key: idem.key });
     if (prior) return this.dmResult({ id: prior.id, userIds, duplicate: true });
+    await this.dmRuleCheck(args, { userIds, users });
+    audit.outcome_detail = "dm_rule";
     let content, reformatted;
     try {
       [content, reformatted] = fixOutbound(composeBody(tagPrefix(this.seat, tag), text, { labels: users.map(seatTagFor) }), { limit: MAX_CONTENT_LENGTH });

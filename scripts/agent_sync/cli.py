@@ -1799,12 +1799,17 @@ def _dm_recipients(agent: Agent, args: argparse.Namespace) -> DmRecipients:
     return DmRecipients(users, labels)
 
 
+def _int_or_none(value: Any) -> int | None:
+    """The value as an int, or None when it is missing or not one (never a guess)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
     """The DM rule (owner decision, Oct 22 2026):  `agent-sync dm` may not open a new direct message.
 
     A reply inside a conversation Operator already opened is still allowed, so the existing messages
-    are read first.  A refusal is audited (ids and the reason only) and then raised as a UsageError
-    the caller sees with the same guidance the MCP tool gives."""
+    are read first.  A refusal is audited (ids and the reason only) and then raised as the policy's own
+    DmRefused, which exits 3 (a refusal) rather than 2 (a malformed command)."""
     env = getattr(getattr(agent, "rt", None), "env", None) or os.environ
     bots = {int(u["user_id"]): bool(u.get("is_bot")) for u in agent.users()}
     recipients = [
@@ -1823,7 +1828,10 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
             identity=agent.tag,
             recipients=recipients,
             operator_opened=DMP.operator_opened_dm(
-                recipients, existing, operator_user_id=DMP.operator_user_id(env)
+                recipients,
+                existing,
+                operator_user_id=DMP.operator_user_id(env),
+                self_id=_int_or_none(agent.me().get("user_id")),
             ),
             clarifying=bool(getattr(args, "clarifying_question", None)),
             owner_user_id=_owner_id_pinned(agent) or None,
@@ -1838,7 +1846,7 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
             reason=refused.reason,
             message=str(refused),
         )
-        raise UsageError(str(refused)) from None
+        raise
 
 
 def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:

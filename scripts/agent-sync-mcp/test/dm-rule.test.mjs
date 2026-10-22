@@ -139,6 +139,28 @@ test("no hosted seat can act as Operator to reach the clarifying-question allowa
   assert.match(error.message, /may not open a new direct message/);
 });
 
+test("the DM-rule check is metered as a read, and a cached send does not pay for it twice", async () => {
+  const { tools, fake, operator } = harness();
+  fake.addDm(operator, [], "which seat is this for?");
+  const kinds = [];
+  const reserve = tools.gate.reserve;
+  tools.gate.reserve = (options) => { kinds.push(options.kind); return reserve(options); };
+  const openerReads = () => fake.requestsTo("GET", "/messages").length;
+
+  const first = await tools.call("zulip_dm_send", { user_ids: [operator.user_id], text: "CODEX", idempotency_key: "cached-key-1" });
+  assert.notEqual(first.isError, true, JSON.stringify(first));
+  assert.ok(kinds.includes("read"), `the rule's Zulip read must be charged to the budget, saw ${JSON.stringify(kinds)}`);
+  const readsAfterFirst = openerReads();
+
+  // The retry sends nothing, so it must not repeat the DM-rule lookup either.
+  kinds.length = 0;
+  const again = await tools.call("zulip_dm_send", { user_ids: [operator.user_id], text: "CODEX", idempotency_key: "cached-key-1" });
+  assert.notEqual(again.isError, true, JSON.stringify(again));
+  assert.equal(again.structuredContent.duplicate, true, "the cached row answers the retry");
+  assert.deepEqual(kinds, [], "a cached send reserves nothing");
+  assert.equal(openerReads(), readsAfterFirst, "a cached send issues no further Zulip read");
+});
+
 test("AGENT_SYNC_DM_RULE=off restores today's behaviour", async () => {
   const fake = new FakeZulip();
   const clock = { now: Date.parse("2026-10-22T10:00:00Z") };

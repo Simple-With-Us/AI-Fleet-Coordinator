@@ -63,8 +63,11 @@ GUIDANCE_PEOPLE = (
 )
 
 
-class DmRefused(Exception):
-    """A seat tried to open a direct message on its own.  Carries the audit `reason`."""
+class DmRefused(Z.AgentSyncError):
+    """A seat tried to open a direct message on its own.  Carries the audit `reason`.
+
+    An AgentSyncError, so the CLI exits 3 (a refusal) and not 2 (a malformed command):  a caller can
+    tell "the rule said no" from "you typed it wrong"."""
 
     code = "dm_not_allowed"
     exit_code = 3
@@ -224,14 +227,21 @@ def operator_opened_dm(
     messages: Sequence[Mapping[str, Any]],
     *,
     operator_user_id: int | None = None,
+    self_id: int | None = None,
 ) -> bool:
     """True when this exact conversation already exists and Operator opened it.
 
     A conversation is Operator's when its oldest message came from the Operator bot, so a seat may
-    answer inside it.  An empty conversation (no messages yet) is not: that would be a new DM."""
+    answer inside it.  An empty conversation (no messages yet) is not: that would be a new DM.
+
+    The match is the **exact** 1:1 pair, never a superset:  a group conversation that merely contains
+    the same people is not the conversation this call would open, and answering in it is not the
+    reply-inside-an-Operator-DM the rule allows.  `self_id` is this seat's own bot id when the caller
+    knows it;  it is the other half of the pair and is never treated as an extra participant."""
     wanted = {int(p["user_id"]) for p in people if isinstance(p.get("user_id"), int)}
     if not wanted:
         return False
+    pair = wanted | ({int(self_id)} if isinstance(self_id, int) else set())
     oldest: Mapping[str, Any] | None = None
     for message in messages:
         if message.get("type") != "private":
@@ -241,7 +251,7 @@ def operator_opened_dm(
             for p in message.get("display_recipient") or []
             if isinstance(p, Mapping) and isinstance(p.get("id"), int)
         }
-        if not wanted.issubset(ids):
+        if ids != pair:
             continue
         if oldest is None or int(message.get("id") or 0) < int(oldest.get("id") or 0):
             oldest = message

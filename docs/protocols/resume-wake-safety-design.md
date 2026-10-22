@@ -341,7 +341,7 @@ and at the end `[CLAUDE·resume] re=<trigger id> done:  <turns> turns, <minutes>
 | An owner DM saying `agent-sync pause` | Pauses every seat, resumes included (existing) | Immediate |
 | `~/.agent-sync/listener/resume.STOP` | The fleet-knobs STOP file:  every resume knob reads its narrowest value | Next check |
 | `RESUME_WAKE_SEATS` minus a seat, or `RESUME_WAKE_MODE=off` | Per-seat or global off from Infisical | Within 5 minutes |
-| `launchctl bootout gui/$(id -u)/com.jay.agent-sync-listener` | Hard stop of the whole listener | Immediate |
+| `launchctl bootout gui/$(id -u)/com.jay.operator` | Hard stop of the whole listener | Immediate |
 
 **Alerting.**  Every failure class sends a notify-owner banner and owner-queue note, and one `[SEAT·note]` owner DM per seat per hour.  The daemon's Sentry heartbeat already covers the listener;  a `resume-wake` Sentry cron check-in per run and an issue on `failed` or `killed` make a silent failure visible off the Mac.  Three consecutive failures for a seat trip a circuit breaker that pauses that seat's resumes for an hour and says so.
 

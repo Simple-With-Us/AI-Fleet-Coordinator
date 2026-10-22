@@ -54,7 +54,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Where:
 |---|---|---|---|
 | (none) `whoami`, `identities`, `guide` | 3 | both | Identity and this guide (above) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
-| `listener_*` | 6 stdio, 5 hosted | both | This seat's listener records |
+| `eavesdropper_*` | 6 stdio, 5 hosted | both | This seat's listener records |
 | `notes_*` | 5 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
@@ -109,7 +109,7 @@ Same names and arguments on both servers.  Content that comes back from Zulip is
 | `zulip_draft_delete` | W | `agent-sync drafts delete` | Delete a draft. |
 | `zulip_typing` | W | `agent-sync typing` | Send a typing notification. |
 
-### listener
+### eavesdropper
 
 The local listener's records for the identity.  Stdio reads them from this host's listener state;  hosted reads them through the listener's signed read API.  Content is fenced as untrusted, like Zulip.
 

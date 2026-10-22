@@ -18,6 +18,13 @@ import { DEFAULT_CALLBACK_HOSTS, isHostPattern } from "./events.js";
 // host without a new owner decision.
 export const PUBLIC_HOST = "agents.simplewithus.com";
 export const ISSUER = `https://${PUBLIC_HOST}`;
+
+// The Operator bot's Zulip user id, pinned (owner decision, Oct 22 2026) and the same value as
+// scripts/agent_sync/zulip.py OPERATOR_USER_ID.  It is an identity, not a credential, and it is only
+// ever compared against the opener of a conversation.  OPERATOR_ZULIP_USER_ID overrides it where the
+// deployment pins a different one;  when it is absent this pinned value is the whole truth, so there
+// is nothing to fail closed on.  Exported so the Worker and the tests never carry a second copy.
+export const PINNED_OPERATOR_USER_ID = 1217148;
 export const RESOURCE = `${ISSUER}/mcp`;
 export const RESOURCE_METADATA_URL = `${ISSUER}/.well-known/oauth-protected-resource/mcp`;
 
@@ -241,8 +248,11 @@ export function loadConfig(env) {
     })(),
     operatorUserId: (() => {
       const raw = String(env.OPERATOR_ZULIP_USER_ID ?? "").trim();
-      const id = Number(raw);
-      return Number.isInteger(id) && id > 0 ? id : 1217148;
+      const id = raw === "" ? PINNED_OPERATOR_USER_ID : Number(raw);
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new Error(`config: OPERATOR_ZULIP_USER_ID must be a positive Zulip user id, not ${raw}`);
+      }
+      return id;
     })(),
     cursorToolBudgets: Object.freeze(cursorToolBudgets),
     issuer: ISSUER,

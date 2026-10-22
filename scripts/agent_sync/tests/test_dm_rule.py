@@ -16,8 +16,11 @@ tests live in test_mcp_stdio.py.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import types
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -209,13 +212,153 @@ class OperatorOpenedDmTests(unittest.TestCase):
         people = [bot(DMP.Z.OPERATOR_USER_ID)]
         opened = [{"type": "private", "id": 5, "sender_id": DMP.Z.OPERATOR_USER_ID,
                    "display_recipient": [{"id": DMP.Z.OPERATOR_USER_ID}, {"id": 7}]}]
-        self.assertTrue(DMP.operator_opened_dm(people, opened))
+        self.assertTrue(DMP.operator_opened_dm(people, opened, self_id=7))
         # A seat opened it:  that is a new DM the rule refuses.
         seat_opened = [{"type": "private", "id": 5, "sender_id": 7,
                         "display_recipient": [{"id": DMP.Z.OPERATOR_USER_ID}, {"id": 7}]}]
-        self.assertFalse(DMP.operator_opened_dm(people, seat_opened))
+        self.assertFalse(DMP.operator_opened_dm(people, seat_opened, self_id=7))
         # No messages yet:  nothing exists to reply inside.
-        self.assertFalse(DMP.operator_opened_dm(people, []))
+        self.assertFalse(DMP.operator_opened_dm(people, [], self_id=7))
+
+    def test_a_group_conversation_is_not_the_one_to_one_dm(self) -> None:
+        # A conversation that merely contains the same people is a different conversation:  answering
+        # in it is not the reply-inside-an-Operator-DM the rule allows, so it must not open the door.
+        people = [bot(DMP.Z.OPERATOR_USER_ID)]
+        group = [{"type": "private", "id": 5, "sender_id": DMP.Z.OPERATOR_USER_ID,
+                  "display_recipient": [{"id": DMP.Z.OPERATOR_USER_ID}, {"id": 7}, {"id": 11}]}]
+        self.assertFalse(DMP.operator_opened_dm(people, group, self_id=7))
+
+
+class RefusalExitCodeTests(unittest.TestCase):
+    """A refusal is not a malformed command:  the CLI must exit 3 so a caller can tell them apart."""
+
+    def test_the_refusal_is_an_agentsync_error_with_exit_code_three(self) -> None:
+        self.assertTrue(issubclass(DMP.DmRefused, Z.AgentSyncError))
+        self.assertEqual(DMP.DmRefused.exit_code, 3)
+        self.assertEqual(DMP.DmRefused("no", reason="seat").exit_code, 3)
+
+
+class ToolRefusalContextTests(unittest.TestCase):
+    """A refusal carries which seat was authenticated and which identity it claimed."""
+
+    def _tools(self, home: str) -> Any:
+        class StubAgent:
+            seat = "CODEX"
+            tag = "CODEX"
+            rt = types.SimpleNamespace(env={"HOME": home})
+
+            def users(self) -> list[dict[str, Any]]:
+                return [{"user_id": 9, "is_bot": True}]
+
+            def fetch(self, operands: Any, **kw: Any) -> list[dict[str, Any]]:
+                return []
+
+        tools = T.Tools.__new__(T.Tools)
+        tools.agent = StubAgent()
+        tools.me = {"user_id": 7}
+        tools.seat = "CODEX"
+        tools.owner_user_id = None
+        return tools
+
+    def test_a_refusal_names_the_seat_and_the_claimed_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._tools(tmp)
+            with self.assertRaises(T.ToolError) as caught:
+                tools._check_dm_rule([{"user_id": 9, "is_bot": True}], {})
+            self.assertEqual(caught.exception.code, "dm_not_allowed")
+            self.assertEqual(caught.exception.extra["authenticated_seat"], "CODEX")
+            self.assertEqual(caught.exception.extra["acting_identity"], "CODEX")
+            self.assertEqual(caught.exception.extra["replacement"], "side_chats")
+
+    def test_a_scheduled_direct_message_cannot_step_around_the_rule(self) -> None:
+        # The rule runs where every `direct` target is built, so scheduling the same message for
+        # later is refused exactly as sending it now would be.
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._tools(tmp)
+            checked: list[Any] = []
+            tools._people = lambda ids, emails, active=True: [{"user_id": int(i)} for i in ids]
+            tools._check_dm_rule = lambda people, args: checked.append(people)
+            self.assertEqual(tools._target({"user_ids": [9]}), {"type": "direct", "to": [9]})
+            self.assertEqual(len(checked), 1, "building a direct target must run the DM rule")
+
+    def test_a_scheduled_direct_message_is_refused_when_the_rule_is_on(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._tools(tmp)
+            tools._people = lambda ids, emails, active=True: [{"user_id": int(i)} for i in ids]
+            with self.assertRaises(T.ToolError) as caught:
+                tools._target({"user_ids": [9]})
+            self.assertEqual(caught.exception.code, "dm_not_allowed")
+
+
+class ClarifyQueueHardeningTests(unittest.TestCase):
+    """The queue is durable, validated, scanned and written under one lock."""
+
+    def test_a_sender_carrying_a_secret_is_never_stored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(tmp)
+            with self.assertRaises(clarify.ClarifyRefused) as caught:
+                clarify.ask(root, message_id=5, sender_user_id=7,
+                            sender="Jay token=abcdefghijklmnopqrstuvwx", now=0.0, timeout_seconds=60.0)
+            self.assertEqual(caught.exception.field, "sender")
+            self.assertEqual(clarify.pending_entries(root), [], "nothing may reach the file")
+            with self.assertRaises(clarify.ClarifyRefused) as caught:
+                clarify.ask(root, message_id=5, sender_user_id=7, sender="Jay", now=0.0,
+                            timeout_seconds=60.0, question="which seat?  token=abcdefghijklmnopqrstuvwx")
+            self.assertEqual(caught.exception.field, "question")
+            self.assertEqual(clarify.pending_entries(root), [])
+
+    def test_a_malformed_entry_is_refused_by_name(self) -> None:
+        import json
+
+        for bad, expected in (
+            ({"message_id": 5, "sender_user_id": 7, "sender": "Jay", "state": "pending",
+              "asked_at": 0.0}, "deadline"),
+            ({"message_id": 5, "sender_user_id": 7, "sender": "Jay", "state": "wat",
+              "asked_at": 0.0, "deadline": 60.0}, "state"),
+            ({"message_id": 5, "sender_user_id": 7, "sender": "Jay", "state": "pending",
+              "asked_at": 0.0, "deadline": 60.0, "extra": 1}, "extra"),
+            ({"message_id": 5, "sender_user_id": 7, "sender": "Jay", "state": "dropped",
+              "asked_at": 0.0, "deadline": 60.0, "reason": "because", "dropped_at": 1.0}, "because"),
+        ):
+            with self.subTest(expected=expected):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = clarify.state_path(str(tmp))
+                    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump({"entries": {"5": bad}}, fh)
+                    with self.assertRaises(ValueError) as caught:
+                        clarify.load(str(tmp))
+                    self.assertIn(expected, str(caught.exception))
+
+    def test_the_queue_file_is_private_and_leaves_no_temporary_behind(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(tmp)
+            clarify.ask(root, message_id=5, sender_user_id=7, sender="Jay", now=0.0, timeout_seconds=60.0)
+            path = clarify.state_path(root)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertEqual([n for n in os.listdir(os.path.dirname(path)) if ".tmp" in n], [])
+
+    def test_an_expiry_racing_a_reply_does_not_both_win(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(tmp)
+            clarify.ask(root, message_id=7, sender_user_id=7, sender="Jay", now=0.0, timeout_seconds=60.0)
+
+            def drop() -> list[Any]:
+                return clarify.expire(root, now=120.0)
+
+            def reply() -> str:
+                return clarify.answer(root, message_id=7, seat="CODEX", now=120.0)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                dropped, routed = pool.submit(drop), pool.submit(reply)
+                dropped_rows, outcome = dropped.result(), routed.result()
+            self.assertLessEqual(len(dropped_rows), 1)
+            self.assertIn(outcome, ("routed", "ignored"))
+            entries = clarify.load(root)["entries"]["7"]
+            if outcome == "routed":
+                self.assertEqual(entries["state"], clarify.ROUTED)
+            elif dropped_rows:
+                self.assertEqual(entries["state"], clarify.DROPPED)
 
 
 class DmExistsFetchFailureTests(unittest.TestCase):
