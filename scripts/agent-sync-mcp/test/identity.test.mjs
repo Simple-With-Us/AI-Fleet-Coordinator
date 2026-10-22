@@ -216,7 +216,7 @@ test("a removed name is refused with unknown_tool naming its replacement;  an un
   const { r, caller } = router("JET");
   const names = new Set(toolListFor("JET").list.map((t) => t.name));
   // The replacement must name a real tool.  The hosted server serves only the read-only
-  // eavesdropper_* tools, so eavesdropper_ack (stdio-only, like listener_ack before the rename)
+  // eavesdropper_* tools, so eavesdropper_ack (stdio-only, like eavesdropper_ack before the rename)
   // is a real name that this transport never served;  the old name is still refused here.
   const contract = new Set(
     JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/eavesdropper-tools.json"), "utf8"))

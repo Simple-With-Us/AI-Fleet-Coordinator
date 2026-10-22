@@ -1,0 +1,220 @@
+"""The DM rule and the Side-Chats route (owner decision, Oct 22 2026).
+
+Covers the plan's five cases:
+
+  (f)   an ambiguous wake opens exactly one clarifying DM;  a clean wake opens none
+  (f2)  a seat-initiated DM is refused and audited
+  (f3)  a seat-to-seat message lands in Side-Chats and no DM is created
+  (f4)  a seat's ping to Jay goes to Pending-for-Jay in Side-Chats, and no DM is created
+  (f5)  an unanswered clarifying DM drops the wake, logs it, and a late reply does not revive it
+
+The rule is one module (dm_policy.py) so the stdio tools, the CLI and the hosted Worker all enforce
+the same thing;  these tests exercise the rule itself plus the clarifying queue, and the transport
+tests live in test_mcp_stdio.py.
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+from agent_sync import clarify
+from agent_sync import dm_policy as DMP
+
+
+class FakeZulip:
+    """Just enough client to see what a post became."""
+
+    def __init__(self) -> None:
+        self.posts: list[dict[str, Any]] = []
+
+    def post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        self.posts.append({"path": path, **body})
+        return {"id": 1000 + len(self.posts)}
+
+
+def bot(user_id: int, name: str = "Bot") -> dict[str, Any]:
+    return {"user_id": user_id, "full_name": name, "is_bot": True}
+
+
+def human(user_id: int, name: str = "Human") -> dict[str, Any]:
+    return {"user_id": user_id, "full_name": name, "is_bot": False}
+
+
+class ClarifyingWakeTests(unittest.TestCase):
+    """(f)  an ambiguous wake asks exactly one question;  a clean one asks nothing."""
+
+    def test_a_clean_wake_opens_no_dm(self) -> None:
+        self.assertFalse(DMP.needs_clarification(["CODEX"]))
+        self.assertFalse(DMP.needs_clarification(["codex"]))  # one seat, any spelling
+
+    def test_an_ambiguous_wake_needs_one_question(self) -> None:
+        for candidates in (["CLAUDE", "MM"], [], ["CLAUDE", "MM", "CODEX"]):
+            with self.subTest(candidates=candidates):
+                self.assertTrue(DMP.needs_clarification(candidates))
+        self.assertIn("CODEX", DMP.clarifying_question(["CLAUDE", "CODEX"]))
+
+    def test_one_question_per_message_even_when_asked_again(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(tmp)
+            clarify.ask(root, message_id=42, sender_user_id=7, sender="Jay", now=100.0,
+                        timeout_seconds=1800.0, question=DMP.clarifying_question(["CLAUDE", "MM"]))
+            clarify.ask(root, message_id=42, sender_user_id=7, sender="Jay", now=110.0,
+                        timeout_seconds=1800.0, question=DMP.clarifying_question(["CLAUDE", "MM"]))
+            entries = clarify.pending_entries(root)
+            self.assertEqual(len(entries), 1, "one entry, so at most one DM was opened")
+            self.assertEqual(entries[0]["message_id"], 42)
+            self.assertEqual(entries[0]["deadline"], 1910.0, "the second ask replaces the entry, not adds one")
+
+
+class SeatDmRefusedTests(unittest.TestCase):
+    """(f2)  a seat-initiated DM is refused and audited."""
+
+    def test_a_seat_may_not_open_a_dm_to_a_seat(self) -> None:
+        with self.assertRaises(DMP.DmRefused) as caught:
+            DMP.check_new_dm({}, identity="CLAUDE", recipients=[bot(7)])
+        self.assertEqual(caught.exception.reason, "seat")
+        self.assertIn("Side-Chats", str(caught.exception))
+        self.assertIn(str(DMP.SIDE_CHATS_STREAM_ID), str(caught.exception))
+
+    def test_a_seat_may_not_open_a_dm_to_jay(self) -> None:
+        with self.assertRaises(DMP.DmRefused) as caught:
+            DMP.check_new_dm({}, identity="CODEX", recipients=[human(12)], owner_user_id=12)
+        self.assertEqual(caught.exception.reason, "owner")
+        self.assertIn(DMP.PENDING_FOR_JAY_TOPIC, str(caught.exception))
+
+    def test_the_refusal_is_audited_with_ids_and_no_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            written = DMP.audit_refusal(
+                {"AGENT_SYNC_STATE_DIR": tmp}, None, transport="stdio", identity="CLAUDE",
+                recipients=[bot(7)], reason="seat", message="this seat may not open a new direct message",
+            )
+            self.assertTrue(written)
+            row = json.loads((Path(tmp) / "logs" / "identity.jsonl").read_text().strip())
+            self.assertEqual(row["tool"], "zulip_dm_send")
+            self.assertEqual(row["outcome"], "dm_refused:seat")
+            self.assertEqual(row["identity"], "CLAUDE")
+            self.assertEqual(row["transport"], "stdio")
+
+    def test_a_reply_inside_a_dm_operator_opened_is_allowed(self) -> None:
+        # Nothing to refuse:  the conversation is Operator's and the seat is answering in it.
+        DMP.check_new_dm({}, identity="CLAUDE", recipients=[bot(DMP.Z.OPERATOR_USER_ID)],
+                         operator_opened=True)
+
+    def test_operator_may_open_only_a_clarifying_question(self) -> None:
+        DMP.check_new_dm({}, identity=DMP.OPERATOR_SEAT, recipients=[human(12)],
+                         clarifying=True, owner_user_id=12)
+        with self.assertRaises(DMP.DmRefused) as caught:
+            DMP.check_new_dm({}, identity=DMP.OPERATOR_SEAT, recipients=[human(12)], owner_user_id=12)
+        self.assertEqual(caught.exception.reason, "operator_not_clarifying")
+
+    def test_the_block_defaults_on_and_one_flag_turns_it_off(self) -> None:
+        self.assertTrue(DMP.rule_enabled({}))
+        self.assertTrue(DMP.rule_enabled({"AGENT_SYNC_DM_RULE": "on"}))
+        for off in ("off", "0", "false", "no", "NONE", " disabled "):
+            with self.subTest(off=off):
+                self.assertFalse(DMP.rule_enabled({"AGENT_SYNC_DM_RULE": off}))
+        # And with the block off, an ordinary seat DM is allowed again.
+        DMP.check_new_dm({"AGENT_SYNC_DM_RULE": "off"}, identity="CLAUDE", recipients=[human(12)])
+
+
+class SideChatsTests(unittest.TestCase):
+    """(f3) and (f4):  bot-to-seat and seat-to-Jay land in Side-Chats, never in a DM."""
+
+    def test_a_seat_to_seat_message_lands_in_side_chats_and_no_dm(self) -> None:
+        client = FakeZulip()
+        participants = ["CLAUDE", "CODEX"]
+        topic = DMP.side_chats_topic(participants)
+        message_id = DMP.side_chats_post(client, topic=topic, content="[CLAUDE] handing this to CODEX")
+        self.assertEqual(message_id, 1001)
+        self.assertEqual(len(client.posts), 1, "exactly one post, and it is not a DM")
+        post = client.posts[0]
+        self.assertEqual(post["type"], "stream", "never type=direct")
+        self.assertEqual(post["to"], str(DMP.SIDE_CHATS_STREAM_ID), "keyed on the stream id")
+        self.assertEqual(post["topic"], "CLAUDE <-> CODEX")
+        # The topic names only the participants:  nobody else is in it.
+        for name in ("MM", "Jay", "ECHO"):
+            self.assertNotIn(name, post["topic"])
+
+    def test_a_seat_ping_to_jay_goes_to_pending_for_jay_in_side_chats(self) -> None:
+        client = FakeZulip()
+        DMP.side_chats_post(client, topic=DMP.pending_for_jay_topic(),
+                            content="[CLAUDE] AFC-1 needs Jay")
+        post = client.posts[0]
+        self.assertEqual(post["type"], "stream")
+        self.assertEqual(post["to"], str(DMP.SIDE_CHATS_STREAM_ID))
+        self.assertEqual(post["topic"], DMP.PENDING_FOR_JAY_TOPIC)
+        self.assertEqual(len(client.posts), 1, "no DM was created alongside the post")
+
+    def test_the_topic_is_built_from_seat_tags_only(self) -> None:
+        self.assertEqual(DMP.side_chats_topic(["coDEX", "CLAUDE", "CODEX"]), "CLAUDE <-> CODEX")
+        self.assertEqual(DMP.side_chats_topic([]), DMP.SIDE_CHATS_NAME)
+
+
+class TimeoutDropTests(unittest.TestCase):
+    """(f5)  an unanswered clarifying DM drops the wake;  a late reply does not revive it."""
+
+    def test_the_timeout_defaults_to_thirty_minutes_and_is_configurable(self) -> None:
+        self.assertEqual(DMP.clarify_timeout_seconds({}), 30 * 60.0)
+        self.assertEqual(DMP.clarify_timeout_seconds({"AGENT_SYNC_DM_CLARIFY_TIMEOUT_MINUTES": "5"}), 300.0)
+        self.assertEqual(DMP.clarify_timeout_seconds({"AGENT_SYNC_DM_CLARIFY_TIMEOUT_MINUTES": "junk"}), 1800.0)
+
+    def test_an_unanswered_question_drops_the_wake_and_logs_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(tmp)
+            clarify.ask(root, message_id=4242, sender_user_id=7, sender="Jay", now=1000.0,
+                        timeout_seconds=1800.0, question=DMP.clarifying_question(["CLAUDE", "MM"]))
+            self.assertEqual(clarify.expire(root, now=2000.0), [], "not due yet")
+            dropped = clarify.expire(root, now=3000.0)
+            self.assertEqual(len(dropped), 1)
+            row = dropped[0]
+            self.assertEqual(row["message_id"], 4242)
+            self.assertEqual(row["sender"], "Jay")
+            self.assertEqual(row["reason"], clarify.REASON_NO_REPLY)
+
+            logged: list[tuple[str, dict[str, Any]]] = []
+            clarify.log_dropped(lambda event, **fields: logged.append((event, fields)), row)
+            self.assertEqual(logged[0][0], "wake_dropped")
+            fields = logged[0][1]
+            self.assertEqual(fields["message_id"], 4242)
+            self.assertEqual(fields["sender"], "Jay")
+            self.assertEqual(fields["reason"], "no_reply")
+            self.assertEqual(clarify.pending_entries(root), [], "nothing is still pending")
+
+    def test_a_late_reply_does_not_revive_a_dropped_wake(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(tmp)
+            clarify.ask(root, message_id=9, sender_user_id=7, sender="Jay", now=0.0, timeout_seconds=60.0)
+            clarify.expire(root, now=120.0)
+            self.assertEqual(clarify.answer(root, message_id=9, seat="CODEX", now=130.0), "ignored")
+            self.assertEqual(clarify.pending_entries(root), [])
+            self.assertEqual(clarify.due(root, now=10_000.0), [], "a dropped entry is never due again")
+
+    def test_a_reply_inside_the_timeout_routes_the_wake(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(tmp)
+            clarify.ask(root, message_id=11, sender_user_id=7, sender="Jay", now=0.0, timeout_seconds=1800.0)
+            self.assertEqual(clarify.answer(root, message_id=11, seat="CODEX", now=60.0), "routed")
+            self.assertEqual(clarify.expire(root, now=10_000.0), [], "an answered question is never dropped")
+            self.assertEqual(clarify.answer(root, message_id=11, seat="MM", now=70.0), "ignored")
+
+
+class OperatorOpenedDmTests(unittest.TestCase):
+    def test_only_a_conversation_operator_opened_counts(self) -> None:
+        people = [bot(DMP.Z.OPERATOR_USER_ID)]
+        opened = [{"type": "private", "id": 5, "sender_id": DMP.Z.OPERATOR_USER_ID,
+                   "display_recipient": [{"id": DMP.Z.OPERATOR_USER_ID}, {"id": 7}]}]
+        self.assertTrue(DMP.operator_opened_dm(people, opened))
+        # A seat opened it:  that is a new DM the rule refuses.
+        seat_opened = [{"type": "private", "id": 5, "sender_id": 7,
+                        "display_recipient": [{"id": DMP.Z.OPERATOR_USER_ID}, {"id": 7}]}]
+        self.assertFalse(DMP.operator_opened_dm(people, seat_opened))
+        # No messages yet:  nothing exists to reply inside.
+        self.assertFalse(DMP.operator_opened_dm(people, []))
+
+
+if __name__ == "__main__":
+    unittest.main()

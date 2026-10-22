@@ -47,6 +47,7 @@ from typing import Any
 
 from .. import cli as CLI
 from .. import identity as IDENT
+from .. import dm_policy as DMP
 from .. import listener_records as LR
 from .. import live as LIVE
 from .. import notes as NOTES
@@ -1509,6 +1510,24 @@ class Tools:
             },
         )
 
+    def _dm_exists(self, ids: Sequence[int]) -> list[Mapping[str, Any]]:
+        """The messages already in this conversation, oldest included, so a seat can tell an
+        Operator-opened DM (which it may answer) from one it would be opening itself."""
+        me = _int(self.me.get("user_id"))
+        everyone = ids or ([me] if me else [])
+        if not everyone:
+            return []
+        try:
+            return [
+                m
+                for m in self.agent.fetch(
+                    [{"operator": "dm", "operand": everyone}], anchor="newest", num_before=200
+                )
+                if m.get("type") == "private"
+            ]
+        except Z.APIError:
+            return []
+
     @staticmethod
     def _need_people(args: Mapping[str, Any]) -> None:
         if not args.get("user_ids") and not args.get("emails"):
@@ -1559,6 +1578,28 @@ class Tools:
                 "invalid_argument", "that is only this bot:  name at least one other person"
             )
         ids = [int(p["user_id"]) for p in people]
+        # The DM rule (owner decision, Oct 22 2026):  a seat may not open a new direct message.  A
+        # reply inside a conversation Operator already opened is allowed, so the existing messages
+        # are read first and only the refusal is audited.
+        existing = self._dm_exists(ids)
+        env = getattr(getattr(self.agent, "rt", None), "env", None) or os.environ
+        try:
+            DMP.check_new_dm(
+                env,
+                identity=self.agent.tag,
+                recipients=people,
+                operator_opened=DMP.operator_opened_dm(
+                    people, existing, operator_user_id=DMP.operator_user_id(env)
+                ),
+                clarifying=bool(args.get("clarifying_question")),
+                owner_user_id=self.owner_user_id or None,
+            )
+        except DMP.DmRefused as refused:
+            DMP.audit_refusal(
+                env, None, transport=TRANSPORT, identity=self.agent.tag,
+                recipients=people, reason=refused.reason, message=str(refused),
+            )
+            raise ToolError(DMP.DmRefused.code, str(refused), extra={"replacement": "side_chats"}) from None
         self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
         explicit = args.get("idempotency_key")
         key = self._key(
@@ -2743,7 +2784,7 @@ class Tools:
         except Z.UsageError as exc:
             raise ToolError("invalid_argument", str(exc)) from None
 
-    def _listener_items(self, items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    def _eavesdropper_items(self, items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
         out = []
         for item in items:
             out.append(
@@ -2758,7 +2799,7 @@ class Tools:
             )
         return out
 
-    def _tool_listener_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("status", args)
         structured = {
             k: view[k]
@@ -2773,9 +2814,9 @@ class Tools:
         }
         return self.ok(json.dumps(dict(view, seat=self.seat), ensure_ascii=False), structured)
 
-    def _tool_listener_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("inbox", args)
-        items = self._listener_items(view["items"])
+        items = self._eavesdropper_items(view["items"])
         summary = "%s, %d pending after cursor %d, next_seq %s" % (
             self._plural(len(items), "item"),
             view["pending"],
@@ -2795,9 +2836,9 @@ class Tools:
             },
         )
 
-    def _tool_listener_owner_queue(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_owner_queue(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("owner-queue", args)
-        items = self._listener_items(view["items"])
+        items = self._eavesdropper_items(view["items"])
         return self._list_result(
             "eavesdropper_owner_queue",
             [],
@@ -2806,9 +2847,9 @@ class Tools:
             {"count": len(items), "seqs": [i["seq"] for i in items]},
         )
 
-    def _tool_listener_wakes(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_wakes(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("wakes", args)
-        items = self._listener_items(view["items"])
+        items = self._eavesdropper_items(view["items"])
         return self._list_result(
             "eavesdropper_wakes",
             [],
@@ -2817,9 +2858,9 @@ class Tools:
             {"count": len(items), "ids": [i for w in items for i in w.get("trigger_ids") or []]},
         )
 
-    def _tool_listener_held_back(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_held_back(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("held-back", args)
-        items = self._listener_items(view["items"])
+        items = self._eavesdropper_items(view["items"])
         return self._list_result(
             "eavesdropper_held_back",
             [],
@@ -2828,7 +2869,7 @@ class Tools:
             {"count": len(items), "ids": [i["message_id"] for i in items], "lost": view["lost"]},
         )
 
-    def _tool_listener_ack(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_ack(self, args: Mapping[str, Any]) -> dict[str, Any]:
         if all(
             args.get(k) is None for k in ("inbox_seq", "owner_queue_seq", "held_back_message_id")
         ):

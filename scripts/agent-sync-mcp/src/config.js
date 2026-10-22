@@ -223,6 +223,21 @@ export function loadConfig(env) {
 
   return Object.freeze({
     host: PUBLIC_HOST,
+    // The DM rule (owner decision, Oct 22 2026, hard cutover):  a seat may not open a new direct
+    // message.  Mirrors scripts/agent_sync/dm_policy.py rule_enabled();  default on.
+    dmRule: !["off", "0", "false", "no", "none", "disabled"].includes(
+      String(env.AGENT_SYNC_DM_RULE ?? "").trim().toLowerCase(),
+    ),
+    dmClarifyTimeoutMinutes: (() => {
+      const raw = String(env.AGENT_SYNC_DM_CLARIFY_TIMEOUT_MINUTES ?? "").trim();
+      const minutes = raw === "" ? 30 : Number(raw);
+      return Number.isFinite(minutes) && minutes >= 0 ? minutes : 30;
+    })(),
+    operatorUserId: (() => {
+      const raw = String(env.OPERATOR_ZULIP_USER_ID ?? "").trim();
+      const id = Number(raw);
+      return Number.isInteger(id) && id > 0 ? id : 1217148;
+    })(),
     cursorToolBudgets: Object.freeze(cursorToolBudgets),
     issuer: ISSUER,
     resource: RESOURCE,

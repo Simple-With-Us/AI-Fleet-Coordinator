@@ -1,6 +1,6 @@
 """The server listener's read API (AFC-330 part B):  signed GET endpoints for one seat's records, so the
-hosted MCP Worker can answer listener_status, listener_inbox, listener_owner_queue, listener_wakes and
-listener_held_back for a hosted seat.
+hosted MCP Worker can answer eavesdropper_status, eavesdropper_inbox, eavesdropper_owner_queue, eavesdropper_wakes and
+eavesdropper_held_back for a hosted seat.
 
     GET /listener/v1/<SEAT>/<record>?<query>      record:  status, inbox, owner-queue, wakes, held-back
 

@@ -139,6 +139,11 @@ class Harness(unittest.TestCase):
             "AGENT_SYNC_STATE_DIR": str(self.state_dir),
             "AGENT_SEAT": "CLAUDE",
             "CLAUDE_CODE_SESSION_ID": SESSION,
+            # The DM rule defaults ON (owner decision, Oct 22 2026):  a seat may not open a new
+            # direct message.  The many mechanical `dm` tests below are about tagging, grouping,
+            # the secret scan and idempotency, not the rule, so they run with it off.  The rule's
+            # own tests are agent_sync/tests/test_dm_rule.py.
+            "AGENT_SYNC_DM_RULE": "off",
         }
         base.update({k: v for k, v in overrides.items() if v is not None})
         for name, value in overrides.items():

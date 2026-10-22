@@ -50,6 +50,7 @@ from . import (
     zulip_cli,
     zulip_ops,
 )
+from . import dm_policy as DMP
 from . import identity as I
 from . import live as LIVE
 from . import router as ROUTER
@@ -1790,6 +1791,39 @@ def _dm_recipients(agent: Agent, args: argparse.Namespace) -> DmRecipients:
     return DmRecipients(users, labels)
 
 
+def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
+    """The DM rule (owner decision, Oct 22 2026):  `agent-sync dm` may not open a new direct message.
+
+    A reply inside a conversation Operator already opened is still allowed, so the existing messages
+    are read first.  A refusal is audited (ids and the reason only) and then raised as a UsageError
+    the caller sees with the same guidance the MCP tool gives."""
+    env = getattr(getattr(agent, "rt", None), "env", None) or os.environ
+    bots = {int(u["user_id"]): bool(u.get("is_bot")) for u in agent.users()}
+    recipients = [{"user_id": u["user_id"], "is_bot": bots.get(int(u["user_id"]), False)} for u in to.users]
+    existing: list[Mapping[str, Any]] = []
+    try:
+        existing = agent.fetch([{"operator": "dm", "operand": to.ids}], anchor="newest", num_before=200)
+    except (NetworkError, ApiError):
+        existing = []  # an unreadable conversation is not an Operator-opened one
+    try:
+        DMP.check_new_dm(
+            env,
+            identity=agent.tag,
+            recipients=recipients,
+            operator_opened=DMP.operator_opened_dm(
+                recipients, existing, operator_user_id=DMP.operator_user_id(env)
+            ),
+            clarifying=bool(getattr(args, "clarifying_question", None)),
+            owner_user_id=_owner_id_pinned(agent) or None,
+        )
+    except DMP.DmRefused as refused:
+        DMP.audit_refusal(
+            env, None, transport="cli", identity=agent.tag,
+            recipients=recipients, reason=refused.reason, message=str(refused),
+        )
+        raise UsageError(str(refused)) from None
+
+
 def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
     """A private message from this seat's own bot to the owner (the default), to named fleet peers or
     people, or to a group of up to 8.  The same path as `post`:  the secret scanner, the seat tag
@@ -1798,6 +1832,7 @@ def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
     integration bots, deactivated users and this bot itself are refused before anything is sent."""
     text = _read_text(agent, args.text, getattr(args, "body_file", None))
     to = _dm_recipients(agent, args)
+    _dm_rule(agent, args, to)
     body = _compose(agent, text, labels=to.labels, mentions=[], no_tag=args.no_tag)
     where = to.describe()
     check = (

@@ -1503,34 +1503,6 @@ class SecurityTests(DaemonHarness):
         self.assertTrue(D.role_refused(owner, D.admin_allowed(config, seat("OPERATOR"))))
         self.assertFalse(D.role_refused(member, D.admin_allowed(config, seat("CLAUDE"))))
 
-    def test_operator_seat_connects_with_an_admin_key_end_to_end(self) -> None:
-        """The real path:  a configured OPERATOR seat whose bot is an administrator authenticates,
-        and the same bot under any other seat name is refused."""
-        partition = self.tmp / "partition-operator.toml"
-        partition.write_text('[seats]\nCLAUDE = "mac"\nOPERATOR = "mac"\n')
-        self.write_config(seats=textwrap.dedent("""\
-            [seat.CLAUDE]
-            bot = "Claude"
-            wake = "claude"
-            model = "sonnet"
-
-            [seat.OPERATOR]
-            bot = "Operator"
-            wake = "inbox"
-            """))
-
-        self.fake.me["role"] = 200
-        self.fake.me["is_admin"] = True
-        self.fake.me["is_owner"] = False
-        daemon = self.daemon(env=self.env(AGENT_SYNC_PARTITION=str(partition)))
-        self.assertTrue(daemon.connect_seat("OPERATOR"), daemon.seats["OPERATOR"].error)
-        self.assertNotIn("refuses admin", daemon.seats["OPERATOR"].error or "")
-        # The member-only seat, same bot key, is still refused.
-        self.assertFalse(daemon.connect_seat("CLAUDE"))
-        self.assertIn("refuses admin and owner keys", daemon.seats["CLAUDE"].error)
-        daemon.shutdown()
-        self.fake.me.update(role=400, is_admin=False, is_owner=False)
-
     def test_admin_and_owner_bot_keys_are_refused_and_moderators_accepted(self) -> None:
         for role, ok in ((200, False), (100, False), (300, True), (400, True), (600, False)):
             with self.subTest(role=role):

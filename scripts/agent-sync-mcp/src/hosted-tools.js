@@ -126,6 +126,10 @@ import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
 import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
 import { NOTES_TOOLS, NOTES_READ_TOOLS, NOTES_WRITE_TOOLS, NOTES_METHODS } from "./notes.js";
 import { REALM } from "./zulip.js";
+
+// Jay spells the channel Side-Chats and the live stream shows a different display name,  so the
+// code keys on the id (owner decision (d), Oct 22 2026).  Mirrors dm_policy.SIDE_CHATS_STREAM_ID.
+const SIDE_CHATS_STREAM_ID = 646987;
 import { CHANNEL_CACHE, lookupChannel, loadChannelSet } from "./channels.js";
 
 export const TRANSPORT = "hosted";
@@ -1005,6 +1009,45 @@ export class HostedTools {
     return this.messagesResult("dm_read", [["with", userIds.join(",")]], shown, next);
   }
 
+  // The DM rule (owner decision, Oct 22 2026, hard cutover).  Mirrors scripts/agent_sync/dm_policy.py
+  // so both transports refuse the same calls with the same guidance.  A seat may not open a new
+  // direct message;  a reply inside a conversation Operator already opened is allowed, because that
+  // conversation is Operator's and the seat is answering rather than opening.  Operator itself may
+  // open one DM per ambiguous wake, to ask the sender a clarifying question.
+  async dmRuleCheck(args, { userIds, users }) {
+    if (this.config?.dmRule === false) return;
+    const selfId = this.me.user_id;
+    const operatorId = this.config?.operatorUserId ?? 1217148;
+    let messages = [];
+    if (userIds.length) {
+      const expected = [...new Set([selfId, ...userIds])].sort((a, b) => a - b).join(",");
+      messages = (await this.page([{ operator: "dm", operand: userIds }], undefined, 50)).filter(
+        (m) => m.type === "private" && dmPeople(m).map((p) => p.id).sort((a, b) => a - b).join(",") === expected,
+      );
+    }
+    // Oldest message in this exact conversation:  if Operator sent it, this seat may reply inside.
+    const oldest = messages.reduce((best, m) => (!best || Number(m.id) < Number(best.id) ? m : best), null);
+    if (oldest && Number(oldest.sender_id) === Number(operatorId)) return;
+    if (this.seat === "OPERATOR" && args.clarifying_question) return;
+
+    const bots = users.filter((u) => u.is_bot);
+    const ownerId = this.config?.ownerUserId ?? null;
+    const isOwner = ownerId !== null && users.some((u) => Number(u.user_id) === Number(ownerId));
+    const kind = bots.length ? "seat" : isOwner ? "owner" : "people";
+    const guidance = kind === "seat"
+      ? `Seat-to-seat work happens in a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}):  one topic per discussion, mentioning only the participants, never a direct message.`
+      : kind === "owner"
+        ? `Jay is reached through the Pending-for-Jay post in #Side-Chats (stream ${SIDE_CHATS_STREAM_ID}) or a topic there, not a new direct message.`
+        : `Direct messages are Operator's to open.  Put this in a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}) instead, or let Operator ask one clarifying question if a wake could not be routed.`;
+    if (this.seat === "OPERATOR") {
+      throw new ToolError(
+        "dm_not_allowed",
+        `OPERATOR may open a direct message only to ask the sender one clarifying question when a wake could not be routed.  Bot-to-bot work goes to a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}).`,
+      );
+    }
+    throw new ToolError("dm_not_allowed", `this seat may not open a new direct message (${kind}).  ${guidance}`);
+  }
+
   async tool_dm_send(args, audit) {
     // The scan runs on everything the caller wrote, before any request (spec 1).
     this.scan({ text: args.text });
@@ -1015,6 +1058,8 @@ export class HostedTools {
     const { userIds, users } = await this.resolveDm(args, { active: true });
     if (!userIds.length) throw new ToolError("invalid_argument", "that is only this bot:  name at least one other person");
     audit.recipient_ids = userIds;
+    await this.dmRuleCheck(args, { userIds, users });
+    audit.outcome_detail = "dm_rule";
     // An explicit key is namespaced, so a post and a DM never share a row.
     const idem = await this.idemKey(args.idempotency_key ? `dm:${args.idempotency_key}` : undefined, ["dm_send", tag, userIds, text]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);

@@ -170,7 +170,7 @@ Owner, Thu, Oct 15:  "I'd like Agent-Sync and whatever local agents use to be ab
 
 ## Listener read API (AFC-330)
 
-The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes` and `listener_held_back` tools (spec section 1.7) read the server listener's signed read API with the seat's `WAKE_HMAC_KEY_<SEAT>`.  Until both halves are set up they answer `not_configured` and nothing else changes.
+The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes` and `eavesdropper_held_back` tools (spec section 1.7) read the server listener's signed read API with the seat's `WAKE_HMAC_KEY_<SEAT>`.  Until both halves are set up they answer `not_configured` and nothing else changes.
 
 1. The listener half first:  `docs/protocols/agent-sync-server.md`, "The Read API", steps 1 to 5 (redeploy, keys, `[listener_api]`, the proxy route, the checks).
 2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://listener.jays.services"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
@@ -178,7 +178,7 @@ The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes
    ```bash
    fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
    ```
-4. Deploy (step 1).  From a connected JET chat, `listener_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
+4. Deploy (step 1).  From a connected JET chat, `eavesdropper_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
 
 ## Notes, recall and the guide (AFC-331)
 
