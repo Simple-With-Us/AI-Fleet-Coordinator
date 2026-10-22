@@ -5,7 +5,7 @@
 //
 // Normalized event:
 //   {
-//     source:    "datadog" | "betterstack" | "generic",
+//     source:    "datadog" | "betterstack" | "sentry" | "generic",
 //     key:       stable identity of the alertable thing (dedupe key),
 //     service:   what to name it in the topic / status line,
 //     firing:    true | false,
@@ -30,6 +30,22 @@ function first(...vals) {
 function oneLine(s) {
   return strip(s).replace(/\s+/g, " ");
 }
+
+/**
+ * Sentry's own level names, mapped onto the fleet's three severities.
+ *
+ * An unknown level is SEVERE while firing: over-severing a new alert is
+ * recoverable, and under-severing one is not.
+ */
+const SENTRY_SEVERITY = {
+  fatal: "SEVERE",
+  critical: "SEVERE",
+  error: "SEVERE",
+  warning: "MODERATE",
+  warn: "MODERATE",
+  info: "INFO",
+  debug: "INFO",
+};
 
 /**
  * Datadog monitor notification.
@@ -155,6 +171,108 @@ export function fromBetterStack(payload) {
 }
 
 /**
+ * A Sentry field as text.
+ *
+ * Only a string, or a number rendered as one, is text.  An object, an array
+ * or a boolean never is, so a nested blob cannot be stringified into a topic
+ * name, a label or a link by the parser.  The generic helper stringifies
+ * objects, which is right for the vendors it was written for and wrong for a
+ * vendor whose payload nests objects all the way down.
+ */
+const sentryText = (value) =>
+  typeof value === "string"
+    ? value
+    : typeof value === "number" && Number.isFinite(value)
+      ? String(value)
+      : "";
+
+/** The first non-empty Sentry field, as text. */
+function sentryFirst(...vals) {
+  for (const value of vals) {
+    const text = sentryText(value).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+/**
+ * Sentry webhook.
+ *
+ * Sentry sends two shapes, and both carry the alert under `data`: an issue
+ * alert with the issue in `data.issue`, and a metric alert with the alert in
+ * `data.metric_alert`.  The envelope's `action` says whether the delivery is
+ * a new alert or a resolution, so the action, not the presence of a payload,
+ * says whether it is firing.
+ *
+ * A native Sentry payload used to fall through to the generic parser, where
+ * `data.issue` read as an object and failed boundary validation as an invalid
+ * text field, so a Sentry route could not deliver at all.
+ */
+export function fromSentry(payload) {
+  const data =
+    payload && typeof payload.data === "object" && payload.data ? payload.data : {};
+  const issue =
+    data.issue && typeof data.issue === "object" && data.issue ? data.issue : null;
+  const metric =
+    data.metric_alert && typeof data.metric_alert === "object" && data.metric_alert
+      ? data.metric_alert
+      : null;
+  const action = sentryFirst(payload.action).toLowerCase();
+  const level = sentryFirst(
+    issue?.level,
+    metric?.status,
+    metric?.alert_rule?.status,
+    payload.level,
+  ).toLowerCase();
+
+  // A resolution says so in the action; a metric alert says it in its status.
+  // An unrecognized status stays firing, which is the safe direction: a
+  // status-less delivery must never close a live incident.
+  const firing = action
+    ? !/^(resolved|closed|complete|completed|ok)$/.test(action)
+    : !/^(ok|resolved|recovered|closed)$/.test(level);
+
+  const severity = SENTRY_SEVERITY[level] || (firing ? "SEVERE" : "INFO");
+
+  const project = issue?.project && typeof issue.project === "object" ? issue.project : {};
+  const service = issue
+    ? oneLine(sentryFirst(project.slug, project.name, issue.metadata?.type, "sentry"))
+    : oneLine(
+        sentryFirst(
+          metric?.alert_rule?.name,
+          metric?.metric_identifier?.name,
+          metric?.title,
+          "sentry",
+        ),
+      );
+
+  // The issue key names the issue, so a metric alert and an issue can never
+  // share one identity.
+  const key = issue
+    ? `sentry:${sentryFirst(issue.shortId, issue.id).toLowerCase() || "issue"}`
+    : `sentry:metric:${sentryFirst(metric?.id, metric?.alert_rule?.id).toLowerCase() || "alert"}`;
+
+  const text = issue
+    ? oneLine(sentryFirst(issue.title, issue.metadata?.value, "Sentry issue"))
+    : oneLine(sentryFirst(metric?.title, metric?.alert_rule?.name, "Sentry metric alert"));
+
+  const link = issue
+    ? sentryFirst(issue.url, issue.permalink)
+    : sentryFirst(metric?.url, metric?.alert_rule?.url);
+
+  return {
+    source: "sentry",
+    key,
+    service,
+    firing,
+    severity: firing ? severity : "INFO",
+    text,
+    link,
+    prodDown: false,
+  };
+}
+
+/**
  * Generic fallback for a webhook we have no bespoke parser for.
  * Reads the conventional keys rather than guessing at vendor internals.
  */
@@ -192,7 +310,11 @@ export function fromGeneric(payload) {
   };
 }
 
-const PARSERS = { datadog: fromDatadog, betterstack: fromBetterStack };
+const PARSERS = {
+  datadog: fromDatadog,
+  betterstack: fromBetterStack,
+  sentry: fromSentry,
+};
 
 /**
  * Dispatch on the source named by the ingress route (`/webhook/<source>`).

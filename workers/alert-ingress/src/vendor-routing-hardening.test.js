@@ -10,6 +10,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing } from "./index.js";
+import { fromSentry } from "./normalize.js";
 
 const {
   handleEvent,
@@ -26,7 +27,9 @@ const {
   topicKey,
   indexPrefix,
   statusKey,
+  statusOwnerKey,
   deliveryKey,
+  deliveryBarrierKey,
   handler,
 } = __testing;
 
@@ -84,6 +87,8 @@ const CREDENTIALS = {
   ZULIP_BOT_API_KEY_DATADOG: "datadog-key",
   ZULIP_BOT_EMAIL_BETTERSTACK: "betterstack-bot@example.invalid",
   ZULIP_BOT_API_KEY_BETTERSTACK: "betterstack-key",
+  ZULIP_BOT_EMAIL_SENTRY: "sentry-bot@example.invalid",
+  ZULIP_BOT_API_KEY_SENTRY: "sentry-key",
 };
 
 function envFor(kv, extra = {}) {
@@ -92,6 +97,7 @@ function envFor(kv, extra = {}) {
     WRITER_STORAGE: fakeStorage(),
     INGRESS_SHARED_TOKEN: "fixture",
     DATADOG_WEBHOOK_SECRET: "fixture",
+    SENTRY_WEBHOOK_SECRET: "fixture",
     ...CREDENTIALS,
     ...extra,
   };
@@ -130,8 +136,14 @@ function stubZulip(behaviour = {}) {
         : undefined;
       return { ok: false, status: behaviour.refuseStatus || 403, headers };
     }
-    if (opts.method === "POST")
+    if (opts.method === "POST") {
+      // A POST that answers without an id is the lost-acknowledgement case:
+      // the message may have landed and nobody knows its id.
+      if (behaviour.noIdOnPost?.(call)) {
+        return { ok: true, json: async () => ({ result: "success" }) };
+      }
       return { ok: true, json: async () => ({ result: "success", id: nextId++ }) };
+    }
     return { ok: true, json: async () => ({ result: "success" }) };
   };
   return {
@@ -491,11 +503,16 @@ test("F3 an unknown status delivery holds the next attempt, because it may have 
   assert.equal(held.outcome, "unknown");
   assert.equal(held.released, undefined);
 
-  // The write may have landed, so it is not repeated blindly.
+  // The write may have landed, so it is not repeated blindly, and the caller
+  // is told the standing block is not known to be current instead of
+  // reading a successful refresh.
   const working = stubZulip();
   try {
     const before = working.calls.length;
-    await refreshStatus(env, "datadog", "alerts", "Shared.Service");
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
     assert.equal(working.calls.length, before);
   } finally {
     working.restore();
@@ -528,7 +545,7 @@ test("F4 the revision digest is stable for the same rows and changes with them",
   );
 });
 
-test("F4 a held delivery at one revision does not block a changed revision", async () => {
+test("F4 a held delivery holds the whole topic, across revisions", async () => {
   const kv = fakeKV();
   seedSignal(kv, {
     source: "datadog",
@@ -551,7 +568,9 @@ test("F4 a held delivery at one revision does not block a changed revision", asy
   assert.equal(held.outcome, "unknown");
 
   // The standing block changes, so it is a new revision and a new delivery
-  // identity.  The hold on the old revision must not silence it.
+  // identity.  The hold is scoped to the source, channel and topic, not to
+  // the revision, so the new revision must not post a second standing
+  // message on top of the one that may already exist.
   const state = JSON.parse(kv.store.get(stateKey("datadog:1")));
   kv.store.set(
     stateKey("datadog:1"),
@@ -560,17 +579,74 @@ test("F4 a held delivery at one revision does not block a changed revision", asy
 
   const working = stubZulip();
   try {
-    await refreshStatus(env, "datadog", "alerts", "Shared.Service");
-    assert.equal(working.statusWrites().length, 1);
-    // The source now carries two rows: the held one and the one for the
-    // changed standing block.
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+    assert.equal(working.statusWrites().length, 0);
+    // The source still carries one row, the held revision.  A second row
+    // would mean a second delivery had been started.
     const rows = deliveryRows(storage, "datadog", "alerts", "Shared.Service");
-    assert.equal(rows.length, 2);
-    const fresh = rows.find((row) => row.revision !== held.revision);
-    assert.equal(fresh.outcome, "ok");
-    // The held row is untouched: it still holds the revision it held.
-    const stale = rows.find((row) => row.revision === held.revision);
-    assert.equal(stale.outcome, "unknown");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].outcome, "unknown");
+  } finally {
+    working.restore();
+  }
+});
+
+test("F4 an operator reconciliation releases a held topic", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  const losing = stubZulip({ throwOn: (call) => isStatusWrite(call) });
+  try {
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+  } finally {
+    losing.restore();
+  }
+
+  // The operator names the message the lost write created, and the worker
+  // adopts it, claims it for this source and releases the barrier.
+  const working = stubZulip();
+  try {
+    const response = await handler.fetch(
+      new Request(
+        "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+        { headers: { authorization: "Bearer fixture" } },
+      ),
+      env,
+      {},
+    );
+    assert.equal(response.status, 200);
+    // The standing message was adopted and edited in place, not reposted.
+    assert.equal(working.posts().length, 0);
+    assert.equal(working.patches().length, 1);
+    const id = Number(kv.store.get(statusKey("datadog", "alerts", "Shared.Service")));
+    assert.equal(id, 4242);
+    assert.equal(
+      kv.store.get(statusOwnerKey(4242)),
+      JSON.stringify("datadog"),
+    );
+
+    // The topic is live again: a later refresh writes and reports ok.
+    const content = await refreshStatus(
+      env,
+      "datadog",
+      "alerts",
+      "Shared.Service",
+    );
+    assert.match(content, /Status: Shared\.Service/);
+    const row = deliveryRow(storage, "datadog", "alerts", "Shared.Service");
+    assert.equal(row.outcome, "ok");
   } finally {
     working.restore();
   }
@@ -970,6 +1046,289 @@ test("a generic route's payload cannot claim another source's namespace", async 
     // The route name is the only authority for the state namespace.
     assert.equal(kv.store.has(stateKey("datadog:22024797")), false);
     assert.equal(kv.store.has(stateKey("other:22024797")), true);
+  } finally {
+    zulip.restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AFC-471: the Sentry source, the topic-scoped uncertainty barrier, the
+// positive owner match, and an unconfirmed write that is reported as one.
+// ---------------------------------------------------------------------------
+
+const SENTRY_ISSUE_PAYLOAD = {
+  action: "created",
+  data: {
+    issue: {
+      id: "1234567",
+      shortId: "PROJ-1",
+      title: "TypeError: cannot read properties of undefined",
+      level: "error",
+      url: "https://sentry.io/organizations/example/issues/1234567/",
+      culprit: "app/orders.js",
+      project: { id: 42, slug: "orders", name: "Orders" },
+      metadata: { type: "TypeError", value: "cannot read properties" },
+      tags: [{ key: "environment", value: "production" }],
+    },
+  },
+  actor: { id: 1, name: "someone", type: "user" },
+  installation: { id: 9, uuid: "abc" },
+};
+
+const SENTRY_METRIC_PAYLOAD = {
+  action: "created",
+  data: {
+    metric_alert: {
+      id: "5678",
+      title: "Error rate above five percent",
+      status: "critical",
+      url: "https://sentry.io/organizations/example/alerts/5678/",
+      alert_rule: { id: "12", name: "Error rate", status: "critical" },
+      metric_identifier: { name: "error_rate", namespace: "custom" },
+    },
+  },
+};
+
+test("S1 a Sentry issue payload becomes one incident with the fleet severities", () => {
+  const event = fromSentry(SENTRY_ISSUE_PAYLOAD);
+  assert.equal(event.source, "sentry");
+  assert.equal(event.key, "sentry:proj-1");
+  assert.equal(event.service, "orders");
+  assert.equal(event.severity, "SEVERE");
+  assert.equal(event.firing, true);
+  assert.match(event.link, /sentry\.io/);
+});
+
+test("S1 a Sentry metric alert has its own incident identity", () => {
+  const event = fromSentry(SENTRY_METRIC_PAYLOAD);
+  assert.equal(event.key, "sentry:metric:5678");
+  assert.equal(event.service, "Error rate");
+  assert.equal(event.severity, "SEVERE");
+  assert.equal(event.firing, true);
+});
+
+test("S1 a Sentry resolution closes its incident", () => {
+  const event = fromSentry({ ...SENTRY_ISSUE_PAYLOAD, action: "resolved" });
+  assert.equal(event.firing, false);
+  assert.equal(event.severity, "INFO");
+});
+
+test("S1 a Sentry issue webhook is accepted and posts under the Sentry identity", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: { "sentry-hook-secret": "fixture" },
+        body: JSON.stringify(SENTRY_ISSUE_PAYLOAD),
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 200);
+    // The incident lives in the Sentry namespace, under the project slug.
+    const state = JSON.parse(kv.store.get(stateKey("sentry:proj-1")));
+    assert.equal(state.phase, "pending");
+    assert.equal(state.severity, "SEVERE");
+    assert.equal(
+      JSON.parse(kv.store.get(svcKey("sentry:proj-1"))),
+      "orders",
+    );
+    // The standing status was written with the Sentry identity and no other.
+    const standing = zulip.statusWrites();
+    assert.equal(standing.length, 1);
+    assert.equal(standing[0].email, "sentry-bot@example.invalid");
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("S1 a Sentry webhook without its own secret is refused", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: { "sentry-hook-secret": "wrong" },
+        body: JSON.stringify(SENTRY_ISSUE_PAYLOAD),
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 401);
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("S1 a Sentry route with no secret of its own does not fall back to the shared token", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv, { SENTRY_WEBHOOK_SECRET: undefined });
+  const zulip = stubZulip();
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: { authorization: "Bearer fixture" },
+        body: JSON.stringify(SENTRY_ISSUE_PAYLOAD),
+      }),
+      env,
+      {},
+    );
+    // The shared bearer token is not a Sentry credential.
+    assert.equal(response.status, 401);
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("S1 a generic route still refuses a native Sentry body", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/webhook/generic", {
+        method: "POST",
+        headers: { authorization: "Bearer fixture" },
+        body: JSON.stringify(SENTRY_ISSUE_PAYLOAD),
+      }),
+      env,
+      {},
+    );
+    // The generic boundary rule is unchanged for every other source.
+    assert.equal(response.status, 400);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("B1 a held topic does not block another source in the same topic", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  seedSignal(kv, {
+    source: "betterstack",
+    key: "betterstack:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  const losing = stubZulip({
+    throwOn: (call) => call.email === "datadog-bot@example.invalid" && isStatusWrite(call),
+  });
+  try {
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+  } finally {
+    losing.restore();
+  }
+
+  // The barrier belongs to the source that lost the write, so the other
+  // source writes its own standing message in the same topic.
+  const working = stubZulip();
+  try {
+    await refreshStatus(env, "betterstack", "alerts", "Shared.Service");
+    const other = deliveryRow(storage, "betterstack", "alerts", "Shared.Service");
+    assert.equal(other.outcome, "ok");
+  } finally {
+    working.restore();
+  }
+});
+
+test("B2 a standing message no source has claimed is neither adopted nor duplicated", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  // The standing message id is recorded, but no source has claimed it, which
+  // is what a write that landed and lost its acknowledgement leaves behind.
+  kv.store.set(
+    statusKey("datadog", "alerts", "Shared.Service"),
+    JSON.stringify(999),
+  );
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /standing status held/,
+    );
+    // Neither edited nor posted over it.
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("B3 a standing message another source owns is not edited", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  kv.store.set(
+    statusKey("datadog", "alerts", "Shared.Service"),
+    JSON.stringify(999),
+  );
+  kv.store.set(statusOwnerKey(999), JSON.stringify("betterstack"));
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    await refreshStatus(env, "datadog", "alerts", "Shared.Service");
+    // It posted a standing message of its own rather than editing the other
+    // source's, and it edited nothing.
+    assert.equal(zulip.patches().length, 0);
+    const standing = zulip.statusWrites();
+    assert.equal(standing.length, 1);
+    assert.equal(standing[0].method, "POST");
+    assert.equal(standing[0].email, "datadog-bot@example.invalid");
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("O1 a write that cannot be confirmed answers as a failure, not a refresh", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const env = envFor(kv);
+  // The POST answers without an id, so the message may have landed and
+  // nobody knows which one.
+  const zulip = stubZulip({ noIdOnPost: () => true });
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/status/datadog/alerts/Shared.Service", {
+        headers: { authorization: "Bearer fixture" },
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.equal(body.outcome, "unknown");
   } finally {
     zulip.restore();
   }
