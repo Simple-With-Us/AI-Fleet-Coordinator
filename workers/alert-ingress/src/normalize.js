@@ -267,10 +267,19 @@ export function fromSentry(payload) {
       );
 
   // The issue key names the issue, so a metric alert and an issue can never
-  // share one identity.
+  // share one identity.  A body with no identity has no key to file the
+  // incident under, so it is refused instead of falling back to a constant:
+  // two different malformed bodies on one constant key would share an
+  // incident, and one alert's resolution would close the other's incident and
+  // standing message.
+  const issueIdentity = sentryFirst(issue?.shortId, issue?.id);
+  const metricIdentity = sentryFirst(metric?.id, metric?.alert_rule?.id);
+  if (!issue && !metric) throw new Error("sentry payload carries no alert");
+  if (issue && !issueIdentity) throw new Error("sentry issue has no identity");
+  if (metric && !metricIdentity) throw new Error("sentry metric alert has no identity");
   const key = issue
-    ? `sentry:${sentryFirst(issue.shortId, issue.id).toLowerCase() || "issue"}`
-    : `sentry:metric:${sentryFirst(metric?.id, metric?.alert_rule?.id).toLowerCase() || "alert"}`;
+    ? `sentry:${issueIdentity.toLowerCase()}`
+    : `sentry:metric:${metricIdentity.toLowerCase()}`;
 
   const text = issue
     ? oneLine(sentryFirst(issue.title, issue.metadata?.value, "Sentry issue"))

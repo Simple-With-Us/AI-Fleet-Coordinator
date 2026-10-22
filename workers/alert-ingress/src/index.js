@@ -1286,11 +1286,13 @@ const handler = {
 
     const source = hookMatch[1].toLowerCase();
     const raw = await request.text();
-    // Bound the work a Sentry body can cause before it is verified or parsed.
-    // The bound is in ENCODED BYTES, the same unit as the general limit below, so
-    // "too large" means one thing:  a body of 64 KiB of multi-byte characters is
-    // over the limit, and a body of 256 KiB of characters is far over it.
-    if (source === "sentry" && new TextEncoder().encode(raw).length > MAX_SENTRY_BODY_BYTES) {
+    // One limit rules, and it is applied BEFORE the body is verified or parsed.
+    // The bound is in ENCODED BYTES, the same unit as the documented limit, so
+    // "too large" means one thing:  a body of 64 KiB of multi-byte characters
+    // is over the limit, and a body of 256 KiB of characters is far over it.
+    // Checking it here means an oversized body costs no signature work and no
+    // parse, which is the whole point of bounding it.
+    if (new TextEncoder().encode(raw).length > MAX_BODY_BYTES) {
       return json({ error: "payload too large" }, 413);
     }
     if (!(await verify(request, raw, env, source))) {
@@ -1312,9 +1314,6 @@ const handler = {
       );
     }
 
-    // Bytes, not UTF-16 code units: a non-ASCII body can be far larger in
-    // UTF-8 than its .length suggests, and the documented limit is 64 KiB.
-    if (new TextEncoder().encode(raw).length > 65536) return json({ error: "payload too large" }, 413);
     let payload;
     try {
       payload = JSON.parse(raw);
@@ -1389,6 +1388,16 @@ const MAX_KEYS = 2000;
 // Object-envelope nesting bound.  A JSON:API vendor body reaches four levels
 // (data.relationships.monitor.data); anything deeper is rejected, not walked.
 const MAX_PAYLOAD_DEPTH = 6;
+
+/**
+ * The one body-size limit, in encoded UTF-8 bytes.
+ *
+ * Bytes, not UTF-16 code units:  a non-ASCII body can be far larger in UTF-8
+ * than its .length suggests, and the documented limit is 64 KiB.  One limit
+ * rules for every source, and it is checked before the body is verified or
+ * parsed, so an oversized body costs no signature work and no parse.
+ */
+const MAX_BODY_BYTES = 64 * 1024;
 async function listAll(kv, prefix) {
   const keys = [],
     cursors = new Set();
@@ -1498,9 +1507,121 @@ function validatePayload(payload, depth = 0) {
  * the body is bounded in depth, in breadth and in text length, and control
  * characters are refused.  The parser reads only text, so a nested blob can
  * never become a topic name, a label or a link.
+ *
+ * On top of the bound, every field the parser consumes is checked for the
+ * type the parser reads it as, and the field that names the alert is
+ * required.  Without that, a body carrying no identity was normalized under
+ * a constant key, so two different malformed alerts shared one incident and
+ * one alert's resolution closed the other's incident and standing message.
  */
-const MAX_SENTRY_BODY_BYTES = 256 * 1024;
 const MAX_SENTRY_NODES = 2000;
+
+/**
+ * A consumed Sentry field, read the way the normalizer reads it.
+ *
+ * The normalizer reads a field as text only when it is a string or a finite
+ * number, so the boundary uses the same rule.  A field of any other type is
+ * refused rather than ignored, because the parser would then see a different
+ * payload from the one that was signed.
+ */
+function sentryText(value) {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+/** The text of the first of these fields that carries one. */
+function sentryFirstText(source, fields) {
+  for (const field of fields) {
+    const text = sentryText(source?.[field]);
+    if (text !== null && text.trim() !== "") return text.trim();
+  }
+  return "";
+}
+
+/**
+ * Check the consumed fields of an issue.
+ *
+ * The identity names the incident, the title names the alert, the level
+ * decides the severity and the project names the service, so all four are
+ * required:  a body missing any of them is not an alert this worker can file,
+ * and a body missing the identity has no key to file it under.  Every other
+ * consumed field is checked for the type the parser reads it as, and may be
+ * absent, because the parser has a documented fallback for each.
+ */
+function validateSentryIssue(issue) {
+  if (!sentryFirstText(issue, ["shortId", "id"])) throw new Error("missing identity");
+  if (!sentryFirstText(issue, ["title"])) throw new Error("missing title");
+  if (!sentryFirstText(issue, ["level"])) throw new Error("missing level");
+  for (const field of ["level", "status", "url", "permalink", "culprit"]) {
+    const value = issue[field];
+    if (value === undefined || value === null) continue;
+    if (sentryText(value) === null) throw new Error("invalid text field");
+  }
+  const project = issue.project;
+  if (!project || typeof project !== "object" || Array.isArray(project)) {
+    throw new Error("invalid payload");
+  }
+  for (const field of ["slug", "name"]) {
+    const value = project[field];
+    if (value === undefined || value === null) continue;
+    if (sentryText(value) === null) throw new Error("invalid text field");
+  }
+  const metadata = issue.metadata;
+  if (metadata !== undefined && metadata !== null) {
+    if (typeof metadata !== "object" || Array.isArray(metadata)) {
+      throw new Error("invalid payload");
+    }
+    for (const field of ["type", "value"]) {
+      const value = metadata[field];
+      if (value === undefined || value === null) continue;
+      if (sentryText(value) === null) throw new Error("invalid text field");
+    }
+  }
+}
+
+/**
+ * Check the consumed fields of a metric alert.
+ *
+ * The identity names the incident and the title names the alert, so both are
+ * required:  the title may come from the rule, which is where Sentry puts it
+ * when the alert itself carries no title.  The rule is required, because the
+ * name, the status and the link the parser reads come from it.  Every other
+ * consumed field is checked for the type the parser reads it as.
+ */
+function validateSentryMetric(metric) {
+  const rule = metric.alert_rule;
+  if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
+    throw new Error("invalid payload");
+  }
+  for (const field of ["id", "name", "status", "url"]) {
+    const value = rule[field];
+    if (value === undefined || value === null) continue;
+    if (sentryText(value) === null) throw new Error("invalid text field");
+  }
+  if (!sentryFirstText(metric, ["id"]) && !sentryFirstText(rule, ["id"])) {
+    throw new Error("missing identity");
+  }
+  for (const field of ["title", "status", "url"]) {
+    const value = metric[field];
+    if (value === undefined || value === null) continue;
+    if (sentryText(value) === null) throw new Error("invalid text field");
+  }
+  const identifier = metric.metric_identifier;
+  if (identifier !== undefined && identifier !== null) {
+    if (typeof identifier !== "object" || Array.isArray(identifier)) {
+      throw new Error("invalid payload");
+    }
+    for (const field of ["name"]) {
+      const value = identifier[field];
+      if (value === undefined || value === null) continue;
+      if (sentryText(value) === null) throw new Error("invalid text field");
+    }
+  }
+  if (!sentryFirstText(metric, ["title"]) && !sentryFirstText(rule, ["name"])) {
+    throw new Error("missing title");
+  }
+}
 
 function validateSentryPayload(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -1519,14 +1640,21 @@ function validateSentryPayload(payload) {
   const issue = data.issue;
   const metric = data.metric_alert;
   // Sentry sends exactly one of the two shapes.  A body carrying both, or
-  // neither, is not a Sentry alert and is refused.
-  if ((issue === undefined) === (metric === undefined)) {
+  // neither, is not a Sentry alert and is refused.  A null sibling counts as
+  // absent, because null is how a JSON encoder writes a field that is not
+  // there, so a body carrying one shape and an explicit null sibling is the
+  // one shape and not a contradiction.
+  const hasIssue = issue !== undefined && issue !== null;
+  const hasMetric = metric !== undefined && metric !== null;
+  if (hasIssue === hasMetric) {
     throw new Error("invalid payload");
   }
-  const body = issue !== undefined ? issue : metric;
+  const body = hasIssue ? issue : metric;
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("invalid payload");
   }
+  if (hasIssue) validateSentryIssue(body);
+  else validateSentryMetric(body);
   let nodes = 0;
   const walk = (value, depth) => {
     if (++nodes > MAX_SENTRY_NODES) throw new Error("payload too large");
@@ -1553,7 +1681,7 @@ function validateSentryPayload(payload) {
     }
     throw new Error("invalid text field");
   };
-  walk(body, 0);
+  walk(payload, 0);
 }
 
 // One named object owns every read/render/write transaction.  Durable storage

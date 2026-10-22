@@ -1542,6 +1542,141 @@ test("S1 an oversized or too-wide Sentry body is refused before it is parsed", a
   }
 });
 
+// ---------------------------------------------------------------------------
+// The Sentry shape finding:  the validator checked the size and the depth of
+// a Sentry body but never that the variant carried the fields the parser
+// reads, so a malformed body normalized onto a constant identity.  Two
+// different malformed issues then shared one incident, and one alert's
+// resolution closed the other's incident and standing message.
+// ---------------------------------------------------------------------------
+
+test("S1 a Sentry issue with no identity is a 400, not a shared constant key", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    const body = JSON.stringify({
+      action: "created",
+      data: { issue: { title: "no identity at all", level: "error" } },
+    });
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: { "sentry-hook-signature": sentrySig(body) },
+        body,
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 400);
+    assert.equal(zulip.calls.length, 0);
+    // No incident was written, so two such bodies cannot share one.
+    assert.equal(kv.store.size, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("S1 two malformed Sentry issues cannot collapse onto one incident key", () => {
+  // The normalizer is the last line of defense:  even called directly, it
+  // refuses a body with no identity rather than minting a constant key.
+  assert.throws(
+    () => fromSentry({ action: "created", data: { issue: { title: "t", level: "error" } } }),
+    /identity/,
+  );
+  assert.throws(
+    () => fromSentry({ action: "created", data: { metric_alert: { title: "t" } } }),
+    /identity/,
+  );
+});
+
+test("S1 a Sentry body with a wrongly typed consumed field is a 400", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    // The title is read as text.  An object there is not a title, and the
+    // parser would have rendered it as the fallback text.
+    const body = JSON.stringify({
+      action: "created",
+      data: {
+        issue: {
+          shortId: "PROJ-1",
+          title: { nested: "not a title" },
+          level: "error",
+          project: { slug: "orders", name: "Orders" },
+        },
+      },
+    });
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: { "sentry-hook-signature": sentrySig(body) },
+        body,
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 400);
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("S1 a null sibling variant counts as absent, not as a second variant", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    // null is how a JSON encoder writes a field that is not there, so one
+    // shape plus an explicit null sibling is the one shape.
+    const payload = {
+      action: "created",
+      data: { ...SENTRY_ISSUE_PAYLOAD.data, metric_alert: null },
+    };
+    const body = JSON.stringify(payload);
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: { "sentry-hook-signature": sentrySig(body) },
+        body,
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 200);
+    assert.equal(zulip.calls.length, 1);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("S1 the body limit is one limit, and it applies before the signature is checked", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    // An oversized body with a wrong signature is refused for its size, not
+    // for its signature:  the point of the limit is to bound the work before
+    // the body is verified or parsed.
+    const body = "x".repeat(300 * 1024);
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: { "sentry-hook-signature": sentrySig(body, "wrong") },
+        body,
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 413);
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
 test("F4 a reconciliation cannot adopt a message another source owns", async () => {
   const kv = fakeKV();
   seedSignal(kv, {
