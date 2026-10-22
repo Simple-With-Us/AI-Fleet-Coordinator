@@ -46,21 +46,49 @@ fi
 #     created, by inode, and only removes that one, so a holder whose lock was
 #     taken over as stale does not delete the new holder's lock on its way out.
 #
-# The peer in this repo is scripts/mac-resource-watch.py, which takes the same lock.
-# The other implementations of the same protocol live in HogHunter: the Python lock
-# (scripts/vacuum/lock.py) and the Swift lock (Sources/Storage/HousekeeperLock.swift).
+# The peer in this repo is scripts/mac-resource-watch.py, which takes the same
+# lock with the same move-aside takeover and the same ownership-checked
+# release.  The other implementations of this protocol live in HogHunter: the
+# Python lock (scripts/vacuum/lock.py) and the Swift lock
+# (Sources/Storage/HousekeeperLock.swift).  They have to follow the same three
+# rules above, because all four share one lock directory: a takeover that
+# moves the lock aside rather than removing it, a release that only removes
+# the lock it created, and the same 120 minute stale window.  An
+# implementation that still removes the lock and recreates it can delete a
+# fresh lock between a peer's staleness check and its recreation, and then two
+# reclaimers sweep at once.
 # The shell holder writes no owner file -- it recovers by the age rule -- so a peer
 # that reads an owner file must fall back to the age rule when the file is older
 # than the lock directory it sits beside.
 HOUSEKEEPER_LOCK="$HOME/.claude-disk-janitor/.housekeeper.lock"
 HOUSEKEEPER_STALE=""
 HOUSEKEEPER_LOCK_INODE=""
+# 1 means the moved-aside copy holds a PEER's lock, so it must never be deleted.
+HOUSEKEEPER_STALE_IS_PEER=0
 
 # Put a moved-aside lock back, atomically and without replacing anybody else's
-# lock.  mv -n never clobbers, so it exits 0 even when it declines to move; the
-# leftover path is what tells us the restore did not happen.
+# lock.
+#
+# mv -n is NOT that primitive on macOS.  When the destination already exists
+# as a directory, mv moves the source INSIDE it -- and -n does not stop that --
+# so "mv -n stale canonical" against an occupied canonical path nests the
+# peer's lock inside the new holder's lock directory instead of refusing.
+# The result is a lock directory with contents in it, which rmdir refuses to
+# remove, so the lock leaks for the whole stale window and every later
+# reclaimer refuses to take it over because it is no longer empty.
+#
+# So the restore only runs when the canonical path is FREE, and then it is a
+# plain rename onto a free path, which is atomic.  When the canonical path is
+# occupied there is nothing safe to do: the moved-aside copy stays where it
+# is and the caller is told, because the alternative is clobbering a holder.
 housekeeper_restore_lock() {
-    mv -n "$HOUSEKEEPER_STALE" "$HOUSEKEEPER_LOCK" 2>/dev/null || {
+    HOUSEKEEPER_STALE_IS_PEER=1
+    if [ -e "$HOUSEKEEPER_LOCK" ] || [ -L "$HOUSEKEEPER_LOCK" ]; then
+        echo "failed to restore housekeeper lock; a peer holds the canonical path" >&2
+        echo "the moved-aside copy is at $HOUSEKEEPER_STALE" >&2
+        exit 1
+    fi
+    mv "$HOUSEKEEPER_STALE" "$HOUSEKEEPER_LOCK" 2>/dev/null || {
         echo "failed to restore housekeeper lock" >&2
         exit 1
     }
@@ -75,7 +103,14 @@ mkdir -p "$(dirname "$HOUSEKEEPER_LOCK")" 2>/dev/null || true
 # The trap is installed BEFORE the lock is taken, so an interrupted takeover
 # cannot leave a moved-aside copy behind, and it only ever removes the lock
 # this process created.
-trap 'if [ -n "$HOUSEKEEPER_STALE" ] && [ -e "$HOUSEKEEPER_STALE" ]; then rmdir "$HOUSEKEEPER_STALE" 2>/dev/null || true; fi; if [ -n "$HOUSEKEEPER_LOCK_INODE" ] && [ "$(stat -f %i "$HOUSEKEEPER_LOCK" 2>/dev/null || echo "")" = "$HOUSEKEEPER_LOCK_INODE" ]; then rmdir "$HOUSEKEEPER_LOCK" 2>/dev/null || true; fi' EXIT
+#
+# It must not remove a moved-aside copy that holds a PEER's lock.  The copy is
+# only ours when this process emptied it and took it over; in every other
+# case it is a live peer's lock that we displaced for a moment, and deleting
+# it frees the canonical path for a third reclaimer while that peer is still
+# running -- the double sweep this lock exists to prevent.  The flag is set
+# before every restore attempt for exactly that reason.
+trap 'if [ "${HOUSEKEEPER_STALE_IS_PEER:-0}" != "1" ] && [ -n "$HOUSEKEEPER_STALE" ] && [ -e "$HOUSEKEEPER_STALE" ]; then rmdir "$HOUSEKEEPER_STALE" 2>/dev/null || true; fi; if [ -n "$HOUSEKEEPER_LOCK_INODE" ] && [ "$(stat -f %i "$HOUSEKEEPER_LOCK" 2>/dev/null || echo "")" = "$HOUSEKEEPER_LOCK_INODE" ]; then rmdir "$HOUSEKEEPER_LOCK" 2>/dev/null || true; fi' EXIT
 
 if [ "${HOUSEKEEPER_LOCK_OWNER:-0}" != "1" ]; then
     if ! mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null; then
@@ -105,6 +140,12 @@ if [ "${HOUSEKEEPER_LOCK_OWNER:-0}" != "1" ]; then
         while [ -e "$HOUSEKEEPER_STALE" ]; do
             HOUSEKEEPER_STALE="$HOUSEKEEPER_LOCK.stale-$$.$RANDOM"
         done
+        # From here on the moved-aside copy holds whatever was at the canonical
+        # path, which is a PEER's lock and never ours.  The EXIT trap must not
+        # remove it, whether the restore succeeds, fails, or never happens
+        # because this process was interrupted between the move and the
+        # re-check.
+        HOUSEKEEPER_STALE_IS_PEER=1
         if mv "$HOUSEKEEPER_LOCK" "$HOUSEKEEPER_STALE" 2>/dev/null; then
             # The moved object may have been replaced between the check and the
             # rename; rename preserves mtime, so re-read its age.
@@ -126,7 +167,12 @@ if [ "${HOUSEKEEPER_LOCK_OWNER:-0}" != "1" ]; then
                 echo "skipped, peer holds housekeeper lock"; exit 0
             fi
             if ! mkdir "$HOUSEKEEPER_LOCK" 2>/dev/null; then
-                if [ -e "$HOUSEKEEPER_LOCK" ]; then
+                # A dangling symlink at the canonical path is still a path that
+                # is taken: mkdir fails with EEXIST for it, but [ -e ] follows
+                # the link and reports false, so the check has to name the
+                # symlink as well.  Otherwise a lost reclaim race reads as a
+                # hard error and crashes the run instead of backing off.
+                if [ -e "$HOUSEKEEPER_LOCK" ] || [ -L "$HOUSEKEEPER_LOCK" ]; then
                     echo "skipped, peer holds housekeeper lock"; exit 0
                 fi
                 echo "failed to create housekeeper lock" >&2

@@ -127,6 +127,41 @@ try:
     os.utime(lock, (stale, stale))
     assert mod._acquire_housekeeper_lock() is False, "a non-empty lock must not be taken"
     assert (lock / "leftover.txt").is_file(), "a non-empty lock must be put back"
+
+    # 8. A restore onto an occupied canonical path is refused, not clobbered.
+    #    os.rename onto an existing EMPTY directory succeeds on POSIX, and the
+    #    lock marker is an empty directory, so a restore that renamed straight
+    #    onto the canonical path would replace a third reclaimer's fresh lock
+    #    while that reclaimer still believes it holds the lock.
+    shutil.rmtree(lock)
+    lock.mkdir(parents=True)
+    aside = state / ".housekeeper.lock.stale-9.9"
+    aside.mkdir(parents=True)
+    assert mod._restore_housekeeper_lock(aside) is False, "a restore onto an occupied lock must be refused"
+    assert lock.is_dir(), "a refused restore must leave the canonical lock alone"
+    assert aside.is_dir(), "a refused restore must leave the moved-aside copy where it is"
+
+    # 9. A restore onto a free canonical path puts the copy back.
+    shutil.rmtree(lock)
+    assert mod._restore_housekeeper_lock(aside) is True, "a restore onto a free lock must succeed"
+    assert lock.is_dir(), "the lock must be back at the canonical path"
+    assert not aside.exists(), "the moved-aside copy must be gone after a restore"
+
+    # 10. A malformed owner file is neither read as ours nor deleted.
+    #     The file is shared state, so a shape it cannot be read into is left
+    #     alone: a holder that cannot read it cannot know whose it is, and
+    #     deleting it would let a peer fall back to the age rule and take over
+    #     a lock that is still held.
+    owner = mod._housekeeper_owner_path()
+    owner.write_text("{not json", encoding="utf-8")
+    mod._clear_housekeeper_owner(only_pid=os.getpid())
+    assert owner.is_file(), "a malformed owner file must not be deleted"
+    owner.write_text('{"pid": "not a number"}', encoding="utf-8")
+    mod._clear_housekeeper_owner(only_pid=os.getpid())
+    assert owner.is_file(), "an owner file with an unusable pid must not be deleted"
+    owner.write_text('{"pid": %d}' % os.getpid(), encoding="utf-8")
+    mod._clear_housekeeper_owner(only_pid=os.getpid())
+    assert not owner.exists(), "an owner file that names us must be removed"
 finally:
     shutil.rmtree(scratch, ignore_errors=True)
 print("housekeeper lock behaviour ok")

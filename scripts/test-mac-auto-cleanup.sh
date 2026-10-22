@@ -93,12 +93,35 @@ if [ "$STALE_CHECK_LINE" -ge "$MOVE_LINE" ]; then
   fail "mac-auto-cleanup.sh must check the lock's age at the canonical path BEFORE moving it aside"
 fi
 
-# A restore must be one atomic no-replace move.  A separate existence check
-# and a plain `mv` let another owner create the lock path in between, after
-# which the restore moves the peer's lock inside the new owner's lock and
-# breaks its release.
-if ! grep -q 'mv -n "\$HOUSEKEEPER_STALE" "\$HOUSEKEEPER_LOCK"' "$SCRIPT"; then
-  fail "mac-auto-cleanup.sh must restore a moved-aside lock with one atomic no-replace move"
+# A restore must not use mv -n.
+#
+# mv -n is NOT a no-replace primitive for directories on macOS.  When the
+# destination already exists as a directory, mv moves the source INSIDE it, and
+# -n does not stop that.  A restore that used it would nest the peer's lock
+# inside the new holder's lock directory, and a lock directory with contents
+# in it is one that rmdir refuses to release and that every later reclaimer
+# refuses to take over.  The lock then leaks for the whole stale window.
+#
+# So the restore is a plain rename, and it only runs when the canonical path is
+# free, where a plain rename is an atomic move onto a free path.  When the
+# canonical path is occupied the restore refuses and leaves the moved-aside
+# copy where it is, because the alternative is clobbering a live holder.
+if grep -q 'mv -n "\$HOUSEKEEPER_STALE"' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must not restore the lock with mv -n; on macOS it nests a directory inside an existing one"
+fi
+
+RESTORE_BLOCK="$(sed -n '/^housekeeper_restore_lock() {/,/^}/p' "$SCRIPT")"
+if [ -z "$RESTORE_BLOCK" ]; then
+  fail "could not extract housekeeper_restore_lock from mac-auto-cleanup.sh"
+fi
+
+# The EXIT trap must not remove a moved-aside copy that holds a PEER's lock.
+# The copy is only ever the peer's lock: this process moved the peer's lock
+# aside and never owned it.  Deleting it in the trap frees the canonical path
+# for a third reclaimer while that peer is still running, which is the double
+# sweep this lock exists to prevent.
+if ! grep -q 'HOUSEKEEPER_STALE_IS_PEER' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must mark a moved-aside copy as a peer's lock so the EXIT trap leaves it alone"
 fi
 
 # Only an EXISTING lock is peer contention.  A mkdir that fails for any other
@@ -231,6 +254,67 @@ fi
 AFTER_INODE="$(stat -f %i "$H6/.claude-disk-janitor/.housekeeper.lock" 2>/dev/null || echo '')"
 if [ "$BEFORE_INODE" != "$AFTER_INODE" ]; then
   fail "a refused takeover must leave the peer's lock in place, not replace it"
+fi
+
+# 7. The restore refuses an occupied canonical path, and does not nest.
+#
+# This is the mv -n hazard, exercised rather than asserted.  The canonical path
+# is occupied by another holder and the moved-aside copy holds a peer's lock.
+# The restore must refuse, must not place the copy inside the canonical
+# directory, and must leave the copy where it is.
+H7="$LOCK_TEST_ROOT/case7"
+mkdir -p "$H7/.claude-disk-janitor"
+mkdir -p "$H7/.claude-disk-janitor/.housekeeper.lock"
+mkdir -p "$H7/.claude-disk-janitor/.housekeeper.lock.stale-1.2"
+OUT="$(HOME="$H7" \
+  HOUSEKEEPER_LOCK="$H7/.claude-disk-janitor/.housekeeper.lock" \
+  HOUSEKEEPER_STALE="$H7/.claude-disk-janitor/.housekeeper.lock.stale-1.2" \
+  bash -c "$RESTORE_BLOCK"$'\n''housekeeper_restore_lock' 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'failed to restore housekeeper lock'; then
+  fail "a restore onto an occupied canonical path must report the failure"
+fi
+if [ -n "$(find "$H7/.claude-disk-janitor/.housekeeper.lock" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
+  fail "a refused restore must not nest the moved-aside copy inside the canonical lock"
+fi
+if [ ! -d "$H7/.claude-disk-janitor/.housekeeper.lock.stale-1.2" ]; then
+  fail "a refused restore must leave the moved-aside copy where it is"
+fi
+
+# 8. The EXIT trap leaves a moved-aside copy alone when it holds a peer's lock.
+#
+# The trap runs after a failed restore, and the copy at that point is a live
+# peer's lock that this process displaced for a moment.  Removing it frees the
+# canonical path for a third reclaimer while that peer is still running.
+TRAP_CMD="$(grep -oE "trap '.*' EXIT" "$SCRIPT" | head -1 | sed "s/^trap '//; s/' EXIT$//")"
+if [ -z "$TRAP_CMD" ]; then
+  fail "could not extract the EXIT trap from mac-auto-cleanup.sh"
+fi
+
+H8="$LOCK_TEST_ROOT/case8"
+mkdir -p "$H8/.claude-disk-janitor/.housekeeper.lock.stale-1.2"
+HOME="$H8" \
+  HOUSEKEEPER_LOCK="$H8/.claude-disk-janitor/.housekeeper.lock" \
+  HOUSEKEEPER_STALE="$H8/.claude-disk-janitor/.housekeeper.lock.stale-1.2" \
+  HOUSEKEEPER_STALE_IS_PEER=1 HOUSEKEEPER_LOCK_INODE='' \
+  bash -c "$TRAP_CMD" >/dev/null 2>&1 || true
+if [ ! -d "$H8/.claude-disk-janitor/.housekeeper.lock.stale-1.2" ]; then
+  fail "the EXIT trap must not remove a moved-aside copy that holds a peer's lock"
+fi
+
+# 9. A dangling symlink at the canonical path is peer contention, not an error.
+#
+# mkdir fails with EEXIST for a dangling symlink, but [ -e ] follows the link
+# and reports false.  A check that only asks [ -e ] therefore reads a lost
+# reclaim race as a hard error and crashes the run instead of backing off.
+H9="$LOCK_TEST_ROOT/case9"
+mkdir -p "$H9/.claude-disk-janitor"
+ln -s "$H9/.claude-disk-janitor/not-there" "$H9/.claude-disk-janitor/.housekeeper.lock"
+OUT="$(run_lock_block "$H9" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'skipped, peer holds housekeeper lock'; then
+  fail "a dangling symlink at the canonical path must be treated as peer contention"
+fi
+if printf '%s' "$OUT" | grep -q 'failed to create housekeeper lock'; then
+  fail "a dangling symlink at the canonical path must not be reported as a lock that could not be created"
 fi
 
 bash -n "$SCRIPT" || fail "bash -n failed"

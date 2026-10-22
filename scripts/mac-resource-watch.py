@@ -299,11 +299,31 @@ def _clear_housekeeper_owner(only_pid: int | None = None) -> None:
     owner_path = _housekeeper_owner_path()
     if only_pid is not None:
         try:
-            owner = json.loads(owner_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            owner = None
-        if isinstance(owner, dict) and int(owner.get("pid", -1)) != only_pid:
+            raw = owner_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raw = None
+        except OSError:
             return
+        if raw is not None:
+            # The owner file is shared state that any process can write, so its
+            # shape is checked rather than coerced.  int() on a pid that is not
+            # a number raises, and a raise here would escape the release path
+            # and leak the lock.  Malformed state is also not proof that the
+            # file describes us, so it is left alone rather than deleted: a
+            # holder that cannot read the file cannot know whose it is, and
+            # deleting it would let a peer fall back to the age rule and take
+            # over a lock that is still held.
+            try:
+                owner = json.loads(raw)
+            except ValueError:
+                return
+            if not isinstance(owner, dict):
+                return
+            pid = owner.get("pid")
+            if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+                return
+            if pid != only_pid:
+                return
     try:
         owner_path.unlink()
     except OSError:
@@ -313,12 +333,24 @@ def _clear_housekeeper_owner(only_pid: int | None = None) -> None:
 def _restore_housekeeper_lock(aside: Path) -> bool:
     """Put a moved-aside lock back without replacing anybody else's lock.
 
-    os.rename onto an existing directory fails, so the restore can never
-    clobber a lock a third reclaimer took in the meantime.  It can still fail
-    for other reasons, and then the peer's lock stays at the aside path where
-    nobody will look for it -- so the caller reports the failure rather than
-    sweeping on a lock it does not hold.
+    os.rename onto an existing directory does NOT always fail.  It fails when
+    the destination is a non-empty directory, but it SUCCEEDS when the
+    destination is an empty one, and the lock marker is an empty directory.
+    So a rename straight onto the canonical path replaces a third reclaimer's
+    fresh lock, and that reclaimer goes on believing it holds the lock while
+    this one sweeps at the same time.
+
+    The restore therefore only runs when the canonical path is free, where a
+    plain rename is an atomic move onto a free path.  When the canonical path
+    is occupied there is nothing safe to do: the moved-aside copy stays where
+    it is and the caller reports the failure, because the alternative is
+    clobbering a live holder.
     """
+    try:
+        if HOUSEKEEPER_LOCK.exists() or HOUSEKEEPER_LOCK.is_symlink():
+            return False
+    except OSError:
+        return False
     try:
         os.rename(aside, HOUSEKEEPER_LOCK)
     except OSError:
