@@ -135,7 +135,7 @@ class MintingOwnershipTests(unittest.TestCase):
     def test_refusal_holds_for_any_slug_target_and_permissions(self):
         for slug, target, perms in (
             ("swu-echo", "example-user/example-repo", {"contents": "read"}),
-            ("swu-wise", "Simple-With-Us/Test", {"contents": "write"}),
+            ("swu-wise", "acme-org/acme-repo", {"contents": "write"}),
             ("swu-echo", "a/b", {"metadata": "read"}),
         ):
             exc = self._refused(slug, target, perms)
