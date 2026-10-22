@@ -106,9 +106,15 @@ test("row 3:  every other grant acts as exactly its own seat;  a persona or a pe
   }
 });
 
-test("row 4:  GB-ENGINEER is in no set while GB_IDENTITIES leaves it out", () => {
-  assert.ok(!GB_IDENTITIES.includes("GB-ENGINEER"));
-  for (const seat of KNOWN_SEATS) assert.ok(!allowedIdentities(seat).includes("GB-ENGINEER"), seat);
+test("row 4:  a persona that GB_IDENTITIES leaves out is in no set", () => {
+  assert.ok(GB_IDENTITIES.includes("GB-ENGINEER"));
+  assert.ok(!GB_IDENTITIES.includes("GB-RETIRED"));
+  for (const seat of KNOWN_SEATS) {
+    const expected = SHARED_IDENTITY_SEATS.includes(seat)
+      ? [seat, ...SHARED_IDENTITY_SEATS.filter((other) => other !== seat), ...GB_IDENTITIES]
+      : [seat];
+    assert.deepEqual([...allowedIdentities(seat)], expected, seat);
+  }
 });
 
 // ---------------------------------------------------------------- the call rule (row 5)
@@ -141,7 +147,7 @@ test("a named identity runs on that identity's own tools, with identity removed 
 
 test("an identity that is not a name, or is outside the set, is refused without echoing it", async () => {
   const { r } = router("CURSOR");
-  for (const claimed of ["SENTRY", "JAY", "GB-ENGINEER", "", 7, null, "x".repeat(80), "GB FIXER"]) {
+  for (const claimed of ["SENTRY", "JAY", "GB-RETIRED", "", 7, null, "x".repeat(80), "GB FIXER"]) {
     const error = errorOf(await r.call("zulip_topics", { identity: claimed }));
     assert.equal(error.code, "identity_not_allowed", String(claimed));
     if (typeof claimed === "string" && claimed.length > 3) assert.ok(!error.message.includes(claimed), "the claim is not echoed");
@@ -267,9 +273,9 @@ test("gate() opens a gate for every seat, every enabled persona and the refusal 
   const env = { SEAT_GATE: { idFromName: (name) => name, get: (id) => { opened.push(id); return { id }; } } };
   for (const name of [...KNOWN_SEATS, ...GB_IDENTITIES, GATE_LOG_NAME]) assert.deepEqual(gate(env, name), { id: name }, name);
   assert.deepEqual(opened, [...KNOWN_SEATS, ...GB_IDENTITIES, GATE_LOG_NAME]);
-  for (const name of ["SENTRY", "JAY", "GB-ENGINEER", "gb-fixer", "GB-", "", "__proto__", undefined, null, 5]) {
+  for (const name of ["SENTRY", "JAY", "GB-RETIRED", "gb-fixer", "GB-", "", "__proto__", undefined, null, 5]) {
     assert.throws(() => gate(env, name), /not a seat/, String(name));
   }
-  assert.ok(!GB_IDENTITIES.includes("GB-ENGINEER"), "a persona that is not enabled never gets a gate");
+  assert.ok(!GB_IDENTITIES.includes("GB-RETIRED"), "a persona that is not enabled never gets a gate");
   assert.equal(opened.length, KNOWN_SEATS.length + GB_IDENTITIES.length + 1, "the refused names opened nothing");
 });
