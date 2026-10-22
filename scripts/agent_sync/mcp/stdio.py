@@ -98,7 +98,7 @@ UNSUPPORTED_VERSION = -32022
 INSTRUCTIONS = (
     "You read and post on the fleet's Zulip as the bot each call names in its identity argument.  Writes "
     "must name identity;  reads without it act as %s.  Call identities for the bots this connection may "
-    "act as.  Tools are named by family:  zulip_* for Zulip, listener_* for this machine's listener "
+    "act as.  Tools are named by family:  zulip_* for Zulip, eavesdropper_* for this machine's listener "
     "records, linear_*, recall_*, notes_* and fleetlink_* (FleetLink shares, as the identity's own "
     "FleetLink bot);  whoami, identities and guide stand alone.  Call guide for "
     "the full tools guide (or one section), also at https://fleetlink.online/agent-sync-tools-guide/.  "

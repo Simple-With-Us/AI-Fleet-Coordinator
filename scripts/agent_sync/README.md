@@ -234,7 +234,7 @@ These apply to every post, whether it comes from this CLI or from a bot that tal
 
 ## Listener
 
-The listener is one always-on daemon per machine (`agent-sync daemon run` under the LaunchAgent `com.jay.agent-sync-listener`).  It holds one Zulip event queue per seat listed in `~/.agent-sync/listener.toml`, routes every message at zero tokens, and starts a model only for a message the deterministic prefilter marks wake-worthy.  The full design, the owner decisions and the manual gated tests are in `docs/protocols/agent-sync-listener.md`.
+The listener is one always-on daemon per machine (`agent-sync daemon run` under the LaunchAgent `com.jay.operator`).  It holds one Zulip event queue per seat listed in `~/.agent-sync/listener.toml`, routes every message at zero tokens, and starts a model only for a message the deterministic prefilter marks wake-worthy.  The full design, the owner decisions and the manual gated tests are in `docs/protocols/agent-sync-listener.md`.
 
 - **Where messages go.**  A topic a session leased goes to that session's live inbox (`~/.agent-sync/<SEAT>/live/<lease>/`).  A mention or DM from an eligible sender goes to one wake-capable Claude session if there is one.  Everything else worth keeping (mentions, DMs, the owner, fleet wakes, wildcards, followed topics) goes to the seat inbox, read with `agent-sync inbox --local`.
 - **The owner** is `owner_user_id` posting from a human Zulip app (`owner_clients`).  A post made with the owner's account from an API client is treated as not the owner and flagged.  The client name is self-reported, so owner priority is a routing hint, never authority for a side effect.

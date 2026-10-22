@@ -286,7 +286,7 @@ def load_tools() -> dict[str, Any]:
 
 
 def load_eavesdropper_tools() -> dict[str, Any]:
-    """eavesdropper-tools.json:  the listener_* tools (AFC-330 part B).  Not in tools.json, because the
+    """eavesdropper-tools.json:  the eavesdropper_* tools (AFC-330 part B).  Not in tools.json, because the
     hosted Worker serves only the read-only ones (it has no write path into the server listener)."""
     with open(EAVESDROPPER_TOOLS_PATH, encoding="utf-8") as fh:
         return json.load(fh)
@@ -1532,10 +1532,14 @@ class Tools:
         if not everyone:
             return []
         try:
+            # Anchored at the head of the conversation, like the hosted dmOpener:  the rule asks whether
+            # the OLDEST message came from Operator, so the window has to contain the opener.  A newest
+            # window cannot see the opener of a long-running Operator-opened DM and would refuse a seat's
+            # legitimate reply inside it.
             return [
                 m
                 for m in self.agent.fetch(
-                    [{"operator": "dm", "operand": everyone}], anchor="newest", num_before=200
+                    [{"operator": "dm", "operand": everyone}], anchor="oldest", num_after=200
                 )
                 if m.get("type") == "private"
             ]
@@ -1675,8 +1679,10 @@ class Tools:
                 "invalid_argument", "that is only this bot:  name at least one other person"
             )
         ids = [int(p["user_id"]) for p in people]
-        self._check_dm_rule(people, args)
+        # The acting identity is resolved BEFORE the rule, so the decision, the audit row and the error
+        # context all name the seat this call acts as and not the previous actor's tag.
         self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
+        self._check_dm_rule(people, args)
         explicit = args.get("idempotency_key")
         key = self._key(
             "dm:" + explicit if explicit else None, ["dm_send", self.agent.tag, ids, text]
@@ -2105,7 +2111,7 @@ class Tools:
         )
 
     # ---- scheduled messages and drafts ----------------------------------------------------
-    def _target(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _target(self, args: Mapping[str, Any], *, dm_rule: bool = True) -> dict[str, Any]:
         user_ids = list(args.get("user_ids") or [])
         if user_ids:
             if args.get("topic") is not None:
@@ -2119,8 +2125,11 @@ class Tools:
                     "invalid_argument", "that is only this bot:  name at least one other person"
                 )
             # The DM rule runs here, where every `direct` target is built, so a scheduled or draft
-            # message cannot deliver a DM that `zulip_dm_send` would have refused.
-            self._check_dm_rule(people, args)
+            # message cannot deliver a DM that `zulip_dm_send` would have refused.  A caller that opens
+            # no conversation (the typing notice) opts out:  it sends no message, so it is not the act
+            # the rule governs, and the hosted twin applies no rule to it either.
+            if dm_rule:
+                self._check_dm_rule(people, args)
             return {"type": "direct", "to": [int(p["user_id"]) for p in people]}
         if args.get("topic") is None:
             raise ToolError(
@@ -2256,7 +2265,7 @@ class Tools:
         )
 
     def _tool_zulip_typing(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        target = self._zulip_target(self._target(args))
+        target = self._zulip_target(self._target(args, dm_rule=False))
         return self._write_result(self._write(lambda: OPS.typing(self.agent, args["op"], target)))
 
     # ---- the guide (connection-level;  the router answers it without an identity) ----------

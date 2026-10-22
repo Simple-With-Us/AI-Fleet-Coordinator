@@ -1817,15 +1817,34 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
     ]
     existing: list[Mapping[str, Any]] = []
     try:
+        # Anchored at the head of the conversation, like the hosted dmOpener:  the rule asks whether
+        # the OLDEST message came from Operator, so a conversation older than the window must be read
+        # from its first message.  The newest window cannot see that opener and would refuse a seat's
+        # legitimate reply inside a long-running Operator-opened DM.
         existing = agent.fetch(
-            [{"operator": "dm", "operand": to.ids}], anchor="newest", num_before=200
+            [{"operator": "dm", "operand": to.ids}], anchor="oldest", num_after=200
         )
-    except (NetworkError, ApiError):
-        existing = []  # an unreadable conversation is not an Operator-opened one
+    except Z.ApiError as exc:
+        # Same discrimination as tools.py _dm_exists, so both transports decide alike.  A rejected
+        # credential (401/403) and a rate limit (429) are definitive answers from Zulip and propagate,
+        # because treating them as "no such conversation" would make the CLI refuse the message with a
+        # terminal dm_not_allowed instead of the credential or retryable error the caller can act on.
+        # A transient failure (408, any 5xx) becomes a NetworkError for the same reason; only an
+        # ordinary "no messages" answer falls through to the empty list.
+        status = exc.status
+        if exc.code == "RATE_LIMIT_HIT" or status == 429:
+            raise
+        if status == 408 or (isinstance(status, int) and status >= 500):
+            raise NetworkError(
+                "Zulip answered HTTP %s for the direct message narrow" % status
+            ) from exc
+        if status in (401, 403):
+            raise
+        existing = []
     try:
         DMP.check_new_dm(
             env,
-            identity=agent.tag,
+            identity=agent.seat,
             recipients=recipients,
             operator_opened=DMP.operator_opened_dm(
                 recipients,

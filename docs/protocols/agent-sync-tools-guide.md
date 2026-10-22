@@ -239,6 +239,12 @@ Removed names are not aliased.  Calling one returns `unknown_tool` with the repl
 | `draft_delete` | `zulip_draft_delete` |
 | `typing` | `zulip_typing` |
 | `agent_sync_identities` | `identities` |
+| `listener_status` | `eavesdropper_status` |
+| `listener_inbox` | `eavesdropper_inbox` |
+| `listener_owner_queue` | `eavesdropper_owner_queue` |
+| `listener_wakes` | `eavesdropper_wakes` |
+| `listener_held_back` | `eavesdropper_held_back` |
+| `listener_ack` | `eavesdropper_ack` |
 
 A name that was never served is a protocol error (`Unknown tool`), not a tool error.
 
