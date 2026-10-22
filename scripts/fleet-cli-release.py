@@ -39,6 +39,11 @@ MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_FILES = 148
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MARKER = "# fleet-cli managed wrapper v1"
+# Retention:  a receive keeps the newest KEEP_RELEASES releases and deletes older ones, but never `current`,
+# `previous`, or a release a live process still runs from.  RELEASE_LIMIT is the backstop when everything is protected.
+KEEP_RELEASES = 10
+RELEASE_LIMIT = 32
+RELEASE_NAME = re.compile(r"[0-9a-f]{64}")
 # The Agent-Sync Linear catalogs `board commands`, `board run` and `board mcp` read from beside board
 # (exported from scripts/agent-sync-mcp by scripts/export-linear-catalog.mjs).
 LINEAR_CATALOG = ("named-commands.json", "official-mcp-tools.json", "public-inputs.json")
@@ -283,6 +288,71 @@ def point(base: Path, name: str, release: Path) -> None:
         os.replace(temporary, base / name)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def releases_in_use(releases: Path, proc: Path = Path("/proc")) -> set[str]:
+    """Names of the releases a live process runs from:  its cwd, executable, command line (the wrappers exec the
+    resolved release path), mapped files and open files.  Linux /proc only;  elsewhere it finds none, and
+    `current` and `previous` stay protected anyway."""
+    prefixes = {str(releases) + os.sep, str(releases.resolve()) + os.sep}
+    found: set[str] = set()
+
+    def note(text: str) -> None:
+        for prefix in prefixes:
+            start = 0
+            while (at := text.find(prefix, start)) >= 0:
+                start = at + len(prefix)
+                name = text[start : start + 64]
+                if RELEASE_NAME.fullmatch(name):
+                    found.add(name)
+
+    try:
+        pids = [entry for entry in proc.iterdir() if entry.name.isdigit()]
+    except OSError:
+        return found
+    for pid in pids:
+        for link in ("cwd", "exe"):
+            try:
+                note(os.readlink(pid / link))
+            except OSError:
+                pass
+        for name in ("cmdline", "maps"):
+            try:
+                note((pid / name).read_bytes().replace(b"\0", b" ").decode("utf-8", "replace"))
+            except OSError:
+                pass
+        try:
+            fds = list((pid / "fd").iterdir())
+        except OSError:
+            fds = []
+        for fd in fds:
+            try:
+                note(os.readlink(fd))
+            except OSError:
+                pass
+    return found
+
+
+def prune(base: Path, keep: int, proc: Path = Path("/proc")) -> list[str]:
+    """Delete all but the newest `keep` releases, oldest first.  `current`, `previous` and any release a live
+    process runs from are never deleted (they still count toward `keep`).  Only real directories with a release
+    name are touched;  anything else in releases/ is left alone.  Returns the names deleted.  Call under the lock."""
+    releases = base / "releases"
+    protected = {path.name for path in (release_at(base, "current"), release_at(base, "previous")) if path}
+    protected |= releases_in_use(releases, proc)
+    rows = []
+    for entry in releases.iterdir():
+        if RELEASE_NAME.fullmatch(entry.name) and entry.is_dir() and not entry.is_symlink():
+            rows.append((entry.stat().st_mtime, entry.name, entry))
+    rows.sort(reverse=True)
+    removed = []
+    for index, (_mtime, name, entry) in enumerate(rows):
+        if index < keep or name in protected:
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+        if not entry.exists():
+            removed.append(name)
+    return removed
 
 
 def smoke(release: Path, home: Path) -> None:
@@ -748,7 +818,9 @@ def receive(raw: bytes, home: Path, install: bool = False) -> dict:
             verify_retained(new)
             verify_existing(new, bundle["files"])
         else:
-            if len(list((base / "releases").iterdir())) >= 32:
+            # Room for the new one:  keep the newest KEEP_RELEASES - 1, so at most KEEP_RELEASES after activation.
+            prune(base, KEEP_RELEASES - 1)
+            if len(list((base / "releases").iterdir())) >= RELEASE_LIMIT:
                 raise Refused("release_retention_limit")
             stage = Path(tempfile.mkdtemp(prefix=".stage-", dir=base))
             try:
@@ -846,6 +918,9 @@ def control(home: Path, command: str) -> dict:
             atomic_write(base / "paused", b"paused by operator\n")
         elif command == "resume":
             (base / "paused").unlink(missing_ok=True)
+        elif command == "prune":
+            removed = prune(base, KEEP_RELEASES)
+            return {**control(home, "status"), "removed": len(removed)}
         elif command == "rollback":
             previous, current = release_at(base, "previous"), release_at(base, "current")
             if not previous or not current:
@@ -861,7 +936,7 @@ def control(home: Path, command: str) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["receive", "status", "pause", "resume", "rollback"])
+    parser.add_argument("command", choices=["receive", "status", "pause", "resume", "rollback", "prune"])
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--install", action="store_true")
     args = parser.parse_args(argv)
