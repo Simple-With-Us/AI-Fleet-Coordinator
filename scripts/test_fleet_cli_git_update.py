@@ -195,6 +195,35 @@ class GitUpdateTests(unittest.TestCase):
         self.assertEqual(U.status(self.home)["commit"], fixed)
         self.assertIsNone(U.status(self.home)["bad"])
 
+    def test_a_target_that_dropped_a_cli_is_smoked_with_the_targets_own_case_list(self) -> None:
+        # The Oct 22, 2026 cutover removed a CLI while the installed updater still smoked it:
+        # the host then sat on an old commit for hours, refusing to move.  The case list has to
+        # come from the checkout being tested, so a CLI that is gone cannot fail the smoke.
+        U.setup(self.home)
+        (self.work / "scripts/simple-notes").unlink()
+        updater = (HERE / "fleet-cli-git-update.py").read_text()
+        trimmed = updater.replace(
+            '    ("simple_notes_version", "scripts/simple-notes", ["--version"], 0),\n', ""
+        )
+        self.assertNotEqual(trimmed, updater)
+        (self.work / "scripts/fleet-cli-git-update.py").write_text(trimmed)
+        run(self.work, "add", "-A")
+        run(self.work, "commit", "-q", "-m", "drop simple-notes")
+        run(self.work, "push", "-q", "origin", "HEAD:main")
+        new = run(self.work, "rev-parse", "HEAD")
+        result = U.update(self.home)
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["commit"], new)
+        self.assertEqual(U.status(self.home)["commit"], new)
+        self.assertIsNone(U.status(self.home)["bad"])
+
+    def test_the_running_case_list_is_used_when_the_target_has_no_updater_to_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "checkout"
+            repo.mkdir()
+            cases = U.smoke_cases(repo)
+            self.assertEqual(cases, U.SMOKE_CASES)
+
     def test_rollback_returns_to_the_previous_commit_and_skips_the_current_one(self) -> None:
         U.setup(self.home)
         first = run(self.work, "rev-parse", "HEAD")

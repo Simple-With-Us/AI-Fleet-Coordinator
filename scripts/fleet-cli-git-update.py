@@ -150,11 +150,35 @@ def save_state(path: Path, state: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
+def smoke_cases(repo: Path) -> tuple[tuple[str, str, list[str], int], ...]:
+    """The cases to smoke, taken from the checkout being tested.
+
+    The running updater's own list is not the right one:  when a release removes a CLI, the
+    installed updater still asks for it, the target checkout no longer ships it, and the smoke
+    fails on a file that is meant to be gone.  That deadlock held a host on an old commit for
+    hours (the Oct 22, 2026 cutover from agent-sync to simple-chat).  The target's own list is
+    what must work, so read it from the target;  fall back to the running list when the target
+    has no updater to read.
+    """
+    target = repo / "scripts/fleet-cli-git-update.py"
+    if target.exists():
+        try:
+            spec = importlib.util.spec_from_file_location("_fleet_cli_smoke_cases", target)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            cases = tuple(getattr(module, "SMOKE_CASES", ()))
+            if cases:
+                return cases
+        except Exception:  # a broken target falls back to the running list, which still smokes
+            pass
+    return SMOKE_CASES
+
+
 def smoke(repo: Path) -> None:
     """Every fleet command starts from this checkout, with an empty HOME and a minimal environment."""
     with tempfile.TemporaryDirectory(prefix="fleet-cli-smoke-") as home:
         env = {"HOME": home, "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "AGENT_SEAT": "CODEX"}
-        for case, script, args, expected in SMOKE_CASES:
+        for case, script, args, expected in smoke_cases(repo):
             target = repo / script
             if not target.exists():
                 raise Failed("smoke_missing_" + case)
