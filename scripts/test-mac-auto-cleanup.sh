@@ -317,6 +317,31 @@ if printf '%s' "$OUT" | grep -q 'failed to create housekeeper lock'; then
   fail "a dangling symlink at the canonical path must not be reported as a lock that could not be created"
 fi
 
+# 10. The restore detects a mkdir that lands between its check and its rename.
+#
+# A third reclaimer can mkdir the canonical path after the restore's
+# existence check and before its rename.  mv then nests the moved-aside copy
+# inside the new lock instead of refusing, leaving a non-empty lock that
+# rmdir cannot release and no later reclaimer will take over.  The restore
+# must detect that nesting, move the copy back out, and refuse.
+H10="$LOCK_TEST_ROOT/case10"
+mkdir -p "$H10/.claude-disk-janitor"
+mkdir -p "$H10/.claude-disk-janitor/.housekeeper.lock.stale-1.2"
+OUT="$(HOME="$H10" \
+  HOUSEKEEPER_LOCK="$H10/.claude-disk-janitor/.housekeeper.lock" \
+  HOUSEKEEPER_STALE="$H10/.claude-disk-janitor/.housekeeper.lock.stale-1.2" \
+  bash -c 'mv() { mkdir -p "$HOUSEKEEPER_LOCK"; command mv "$@"; }
+'"$RESTORE_BLOCK"$'\n''housekeeper_restore_lock' 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'failed to restore housekeeper lock'; then
+  fail "a restore that loses the check-then-rename race must report the failure"
+fi
+if [ -n "$(find "$H10/.claude-disk-janitor/.housekeeper.lock" -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
+  fail "a raced restore must move the nested copy back out, leaving an empty canonical lock"
+fi
+if [ ! -d "$H10/.claude-disk-janitor/.housekeeper.lock.stale-1.2" ]; then
+  fail "a raced restore must put the moved-aside copy back where it was"
+fi
+
 bash -n "$SCRIPT" || fail "bash -n failed"
 
 echo OK

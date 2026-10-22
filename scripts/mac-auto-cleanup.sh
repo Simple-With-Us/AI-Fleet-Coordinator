@@ -81,6 +81,12 @@ HOUSEKEEPER_STALE_IS_PEER=0
 # plain rename onto a free path, which is atomic.  When the canonical path is
 # occupied there is nothing safe to do: the moved-aside copy stays where it
 # is and the caller is told, because the alternative is clobbering a holder.
+#
+# The check and the rename are still two steps: a third reclaimer can mkdir
+# the canonical path in between, and mv then nests the copy INSIDE the new
+# lock instead of refusing.  That leaves a non-empty lock that rmdir cannot
+# release and no later reclaimer will take over, so the restore detects that
+# nesting, moves the copy back out, and refuses the same way.
 housekeeper_restore_lock() {
     HOUSEKEEPER_STALE_IS_PEER=1
     if [ -e "$HOUSEKEEPER_LOCK" ] || [ -L "$HOUSEKEEPER_LOCK" ]; then
@@ -92,6 +98,16 @@ housekeeper_restore_lock() {
         echo "failed to restore housekeeper lock" >&2
         exit 1
     }
+    HOUSEKEEPER_NESTED="$HOUSEKEEPER_LOCK/$(basename "$HOUSEKEEPER_STALE")"
+    if [ -e "$HOUSEKEEPER_NESTED" ] || [ -L "$HOUSEKEEPER_NESTED" ]; then
+        if mv "$HOUSEKEEPER_NESTED" "$HOUSEKEEPER_STALE" 2>/dev/null; then
+            echo "failed to restore housekeeper lock; a peer holds the canonical path" >&2
+            echo "the moved-aside copy is at $HOUSEKEEPER_STALE" >&2
+        else
+            echo "failed to restore housekeeper lock; manual cleanup needed at $HOUSEKEEPER_LOCK" >&2
+        fi
+        exit 1
+    fi
     if [ -e "$HOUSEKEEPER_STALE" ]; then
         echo "failed to restore housekeeper lock" >&2
         exit 1
