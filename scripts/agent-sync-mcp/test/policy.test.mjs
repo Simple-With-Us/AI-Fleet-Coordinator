@@ -54,22 +54,27 @@ test("strict redirect refuses every bypass shape", () => {
   }
 });
 
-test("host check:  only agent-sync.jays.services on https and the default port", () => {
-  const ok = new Request("https://agent-sync.jays.services/mcp");
+test("host check keeps answering the legacy host", () => {
+  assert.equal(hostAllowed(new Request("https://agent-sync.jays.services/mcp"), ["agents.simplewithus.com", "agent-sync.jays.services"]), true);
+  assert.equal(hostAllowed(new Request("https://agent-sync.jays.services/mcp"), "agents.simplewithus.com"), false);
+});
+
+test("host check:  only agents.simplewithus.com on https and the default port", () => {
+  const ok = new Request("https://agents.simplewithus.com/mcp");
   assert.equal(hostAllowed(ok, config.host), true);
   for (const url of [
     "https://agent-sync-mcp.example.workers.dev/mcp",
     "https://evil.example/mcp",
-    "https://agent-sync.jays.services:8443/mcp",
-    "http://agent-sync.jays.services/mcp",
-    "https://agent-sync.jays.services.evil.example/mcp",
+    "https://agents.simplewithus.com:8443/mcp",
+    "http://agents.simplewithus.com/mcp",
+    "https://agents.simplewithus.com.evil.example/mcp",
   ]) {
     assert.equal(hostAllowed(new Request(url), config.host), false, url);
   }
-  const spoofed = new Request("https://agent-sync.jays.services/mcp", { headers: { Host: "evil.example" } });
+  const spoofed = new Request("https://agents.simplewithus.com/mcp", { headers: { Host: "evil.example" } });
   // Node's Request drops a forbidden Host header;  the URL is what the runtime routes on.
   assert.equal(hostAllowed(spoofed, config.host), spoofed.headers.get("host") === null || spoofed.headers.get("host") === config.host);
-  const fake = { url: "https://agent-sync.jays.services/mcp", headers: new Headers({ host: "evil.example" }) };
+  const fake = { url: "https://agents.simplewithus.com/mcp", headers: new Headers({ host: "evil.example" }) };
   assert.equal(hostAllowed(fake, config.host), false);
 });
 
@@ -156,7 +161,7 @@ test("pre-gate refuses before any fetch", () => {
     [{ code_challenge_method: undefined }, "pkce_method_not_s256"],
     [{ code_challenge: undefined }, "pkce_challenge_missing"],
     [{ code_challenge: "short" }, "pkce_challenge_missing"],
-    [{ resource: "https://agent-sync.jays.services/" }, "resource_mismatch"],
+    [{ resource: "https://agents.simplewithus.com/" }, "resource_mismatch"],
     [{ resource: `${RESOURCE}?mode=x` }, "resource_mismatch"],
     [{ resource: undefined }, "resource_mismatch"],
     [{ scope: "zulip:read zulip:admin" }, "scope_not_supported"],
@@ -204,7 +209,7 @@ test("a hand-registered client may use a seat's configured redirect", () => {
 });
 
 test("a resource_mismatch refusal carries the resource the client sent, capped for the log", () => {
-  const sent = "https://agent-sync.jays.services/";
+  const sent = "https://agents.simplewithus.com/";
   const got = preGateAuthorize(authorizeParams({ resource: sent }), config);
   assert.equal(got.reason, "resource_mismatch");
   assert.equal(got.resource, sent);
@@ -309,16 +314,16 @@ test("Basic header client id", () => {
 });
 
 test("bounded body read stops a large chunked upload", async () => {
-  const mk = (body) => new Request("https://agent-sync.jays.services/oauth/token", { method: "POST", body });
+  const mk = (body) => new Request("https://agents.simplewithus.com/oauth/token", { method: "POST", body });
   assert.equal(await readLimited(mk("a=b&c=d"), 100), "a=b&c=d");
-  assert.equal(await readLimited(new Request("https://agent-sync.jays.services/oauth/token"), 100), "");
+  assert.equal(await readLimited(new Request("https://agents.simplewithus.com/oauth/token"), 100), "");
   assert.equal(await readLimited(mk("x".repeat(101)), 100), null);
   const stream = new ReadableStream({
     pull(controller) {
       controller.enqueue(new TextEncoder().encode("y".repeat(1000)));
     },
   });
-  const chunked = new Request("https://agent-sync.jays.services/oauth/token", { method: "POST", body: stream, duplex: "half" });
+  const chunked = new Request("https://agents.simplewithus.com/oauth/token", { method: "POST", body: stream, duplex: "half" });
   assert.equal(await readLimited(chunked, 4096), null, "an endless stream is cut off");
   // A BOM is kept (the form parser keeps it), so the key the gate sees is the key the library sees.
   const bom = await readLimited(mk(new Uint8Array([0xef, 0xbb, 0xbf, 0x61, 0x3d, 0x62])), 100);
@@ -326,8 +331,8 @@ test("bounded body read stops a large chunked upload", async () => {
 });
 
 test("same-origin POST and CSRF compare", () => {
-  const mk = (h, method = "POST") => new Request("https://agent-sync.jays.services/admin/action", { method, headers: h });
-  const issuer = "https://agent-sync.jays.services";
+  const mk = (h, method = "POST") => new Request("https://agents.simplewithus.com/admin/action", { method, headers: h });
+  const issuer = "https://agents.simplewithus.com";
   assert.equal(sameOriginPost(mk({ Origin: issuer, "Sec-Fetch-Site": "same-origin" }), issuer, { requireFetchSite: true }), true);
   assert.equal(sameOriginPost(mk({ Origin: issuer }), issuer, { requireFetchSite: true }), false);
   assert.equal(sameOriginPost(mk({ Origin: issuer }), issuer), true);

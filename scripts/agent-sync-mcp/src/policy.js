@@ -148,16 +148,17 @@ export function clientBoundToSeat(client, seat, redirectUri, config) {
  * Host check (spec 3.2):  only the D1 hostname, on the default port.  Both the
  * URL the runtime built and the raw Host header must name it.
  */
-export function hostAllowed(request, host) {
+export function hostAllowed(request, hosts) {
+  const allowed = Array.isArray(hosts) ? hosts : [hosts];
   let url;
   try {
     url = new URL(request.url);
   } catch {
     return false;
   }
-  if (url.hostname !== host || url.port !== "" || url.protocol !== "https:") return false;
+  if (!allowed.includes(url.hostname) || url.port !== "" || url.protocol !== "https:") return false;
   const header = request.headers.get("host");
-  if (header !== null && header.toLowerCase() !== host) return false;
+  if (header !== null && header.toLowerCase() !== url.hostname) return false;
   return true;
 }
 

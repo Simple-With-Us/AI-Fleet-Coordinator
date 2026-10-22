@@ -76,7 +76,7 @@ linear.graphqlResponse = (entry) => {
   return linearGraphqlResponse(entry);
 };
 
-const HOST = "https://agent-sync.jays.services";
+const HOST = "https://agents.simplewithus.com";
 const TEAM = "silent-frost-37e0.cloudflareaccess.com";
 const AUD = "d".repeat(64);
 const CHATGPT_CIMD = {

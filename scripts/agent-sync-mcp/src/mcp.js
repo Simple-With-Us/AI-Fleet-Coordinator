@@ -17,7 +17,7 @@ import { createMcpHandler } from "agents/mcp/server";
 import { Server, ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 import { UnknownTool, hostedInstructions } from "./hosted-tools.js";
 import { IdentityRouter } from "./delegated-identities.js";
-import { PUBLIC_HOST } from "./config.js";
+import { ACCEPTED_HOSTS } from "./config.js";
 import { EventError } from "./events.js";
 import { z } from "zod";
 
@@ -87,7 +87,7 @@ export function buildServer(tools, events = null) {
 export function serveMcpRequest(request, tools, authInfo, events = null) {
   const handler = createMcpHandler(() => buildServer(tools, events), {
     route: "/mcp",
-    allowedHostnames: [PUBLIC_HOST],
+    allowedHostnames: [...ACCEPTED_HOSTS],
     onerror: (error) => console.log(JSON.stringify({ event: "mcp_error", name: error?.name ?? "Error" })),
   });
   return handler.fetch(request, { authInfo });

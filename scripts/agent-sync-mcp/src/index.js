@@ -6,7 +6,7 @@
 // tools from tools.json, each seat posting as its own Zulip bot (Phase 2).
 //
 // Request order, outermost first:
-//   1. Host check (404 for anything but agent-sync.jays.services) and a path
+//   1. Host check (404 for anything but agents.simplewithus.com or the legacy agent-sync.jays.services) and a path
 //      allowlist (404 for everything else).  GET /health is a static 200.
 //   2. /oauth/token:  rate limit, Content-Type and Authorization checked the
 //      way the library reads them, client_id allowlist before any fetch, blank
@@ -936,7 +936,7 @@ export default {
       console.log(JSON.stringify({ event: "config_error", message: logSafe(error?.message, 200) }));
       return textResponse("Server misconfigured", 500);
     }
-    if (!hostAllowed(request, config.host)) return notFound();
+    if (!hostAllowed(request, config.acceptedHosts)) return notFound();
     const route = classifyPath(new URL(request.url).pathname);
     if (!route) return notFound();
     if (route === "health") {

@@ -26,6 +26,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "routes": [
+    { "pattern": "agents.simplewithus.com", "custom_domain": true },
     { "pattern": "agent-sync.jays.services", "custom_domain": true }
   ],
 
@@ -59,7 +60,7 @@
 
   "vars": {
     // Must equal the compiled hostname;  the Worker refuses to start otherwise.
-    "PUBLIC_HOST": "agent-sync.jays.services",
+    "PUBLIC_HOST": "agents.simplewithus.com",
     // Seats this deploy serves (owner decisions D1, D2).  JET was left out while
     // openai-dot-bot was a realm administrator, because hosted seats accept
     // member (400) only (spec 3.6).  Jay demoted every bot to member on Fri,
