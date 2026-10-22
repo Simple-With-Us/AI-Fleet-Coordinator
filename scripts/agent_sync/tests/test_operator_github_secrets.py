@@ -109,14 +109,14 @@ class LocalFailureOutcomeTests(unittest.TestCase):
             "agent_sync.operator_github_secrets.fleet_secrets_bin",
             return_value="fleet-secrets",
         ):
-            for effect in (
-                subprocess.TimeoutExpired(["fleet-secrets"], 10),
-                FileNotFoundError("fleet-secrets"),
-                PermissionError("fleet-secrets"),
+            for effect, outcome in (
+                (subprocess.TimeoutExpired(["fleet-secrets"], 10), "retryable"),
+                (FileNotFoundError("fleet-secrets"), "refused"),
+                (PermissionError("fleet-secrets"), "refused"),
             ):
                 with patch(
                     "agent_sync.operator_github_secrets.subprocess.run", side_effect=effect
                 ):
                     with self.assertRaises(RoutingError) as c:
                         fleet_secrets_get("/github-apps", "GH_APP_SWU_EXAMPLE_ID")
-                self.assertEqual(c.exception.outcome, "refused")
+                self.assertEqual(c.exception.outcome, outcome)

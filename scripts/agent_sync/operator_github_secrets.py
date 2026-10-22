@@ -20,9 +20,12 @@ LOOKUP_TIMEOUT_SECONDS = 10
 def fleet_secrets_get(path, name):
     """Read one named secret via `fleet-secrets get NAME --path PATH --project fleet-ops`;
     errors name the variable, never a value or backend detail.  Every local failure
-    happens before any provider request, so each is a definite "refused" and the
-    broker releases the caller nonce."""
-    binary = fleet_secrets_bin(os.environ, Path.home())
+    happens before any provider request, so the broker releases the caller nonce:
+    "refused" for a missing or rejecting store, "retryable" for a timeout."""
+    try:
+        binary = fleet_secrets_bin(os.environ, Path.home())
+    except (OSError, RuntimeError):
+        binary = None
     if not binary:
         raise RoutingError(
             name + " unavailable: fleet-secrets executable not found", outcome="refused"
@@ -35,7 +38,7 @@ def fleet_secrets_get(path, name):
         )
     except subprocess.TimeoutExpired:
         raise RoutingError(
-            name + " unavailable: fleet-secrets lookup timed out", outcome="refused"
+            name + " unavailable: fleet-secrets lookup timed out", outcome="retryable"
         ) from None
     except FileNotFoundError:
         raise RoutingError(

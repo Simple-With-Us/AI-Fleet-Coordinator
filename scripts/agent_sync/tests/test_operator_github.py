@@ -20,9 +20,9 @@ class BrokerTests(unittest.TestCase):
         self.ledger=NonceLedger(Path(self.temp.name)/"replay")
         self.router=Router();self.key=KEY;self.allowed=True;self.audit=[]
         self.broker=Broker(lambda seat:self.key if seat=='CODEX' else None,
-            lambda seat:CallerPolicy('swu-example-app',{'simple-with-us/ai-fleet-coordinator':{'contents':'read','pull_requests':'write','metadata':'read'}}) if self.allowed else None,
+            lambda seat:CallerPolicy('swu-example-app',{'example-org/widget-repo':{'contents':'read','pull_requests':'write','metadata':'read'}}) if self.allowed else None,
             self.router,lambda slug:{'login':slug+'[bot]','id':123},clock=lambda:1000,audit=lambda **kw:self.audit.append(kw),enabled=True,nonce_ledger=self.ledger)
-        self.path='/operator/v1/github/CODEX/token';self.body=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'contents':'read'}}).encode()
+        self.path='/operator/v1/github/CODEX/token';self.body=json.dumps({'repo':'example-org/widget-repo','permissions':{'contents':'read'}}).encode()
     def request(self,nonce='1'*64,body=None,stamp='1000',sig=None):
         b=self.body if body is None else body
         return self.broker.issue(self.path,stamp,nonce,sig or signature(KEY,self.path,stamp,nonce,b),b)
@@ -75,12 +75,12 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(c.exception.status,400)
         self.assertEqual(self.router.calls,[])
     def test_pull_requests_read_issues(self):
-        b=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'pull_requests':'read'}}).encode()
+        b=json.dumps({'repo':'example-org/widget-repo','permissions':{'pull_requests':'read'}}).encode()
         self.request(body=b)
         # permission_set adds the implicit metadata:read, as the GitHub API does
         self.assertEqual(self.router.calls[-1][2],{'pull_requests':'read','metadata':'read'})
     def test_above_permissions(self):
-        b=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'contents':'write'}}).encode()
+        b=json.dumps({'repo':'example-org/widget-repo','permissions':{'contents':'write'}}).encode()
         with self.assertRaises(Refused):self.request(body=b)
     def test_client_app_selection_rejected(self):
         b=json.loads(self.body);b['app_slug']='swu-echo'
