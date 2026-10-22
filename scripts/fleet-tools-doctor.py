@@ -123,7 +123,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet-cli-release.py",
         "scripts/agent_sync/mcp/tools.json",
         "scripts/agent_sync/mcp/fixtures.jsonl",
-        "scripts/agent_sync/mcp/listener-tools.json",
+        "scripts/agent_sync/mcp/eavesdropper-tools.json",
         "scripts/agent_sync/mcp/renamed-tools.json",
         "scripts/agent_sync/mcp/gb-identities.json",
         "scripts/agent_sync/mcp/notes-tools.json",

@@ -425,6 +425,7 @@ export class FakeZulip {
     const before = Number(params.num_before ?? 0);
     const after = Number(params.num_after ?? 0);
     if (params.anchor === "newest") rows = rows.slice(-Math.max(before, 1));
+    else if (params.anchor === "oldest") rows = rows.slice(0, Math.max(after, 1));
     else {
       const anchor = Number(params.anchor);
       const include = params.include_anchor === "true";

@@ -50,6 +50,7 @@ from . import (
     zulip_cli,
     zulip_ops,
 )
+from . import dm_policy as DMP
 from . import identity as I
 from . import live as LIVE
 from . import router as ROUTER
@@ -996,6 +997,14 @@ def build_parser(
         "The default when no --to is given;  with --to it adds the owner to the group",
     )
     p.add_argument(
+        "--clarifying-question",
+        dest="clarifying_question",
+        action="store_true",
+        help="Operator only:  true when this DM is the one clarifying question it may open about a message "
+        "whose addressee could not be resolved to a single seat (owner decision, Oct 22 2026).  Every other "
+        "seat is refused when it opens a new DM;  a reply inside a DM Operator opened needs no flag.",
+    )
+    p.add_argument(
         "--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session\u2192TO] tag"
     )
     body_file_opt(p)
@@ -1854,6 +1863,75 @@ def _dm_recipients(agent: Agent, args: argparse.Namespace) -> DmRecipients:
     return DmRecipients(users, labels)
 
 
+def _int_or_none(value: Any) -> int | None:
+    """The value as an int, or None when it is missing or not one (never a guess)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
+    """The DM rule (owner decision, Oct 22 2026):  `agent-sync dm` may not open a new direct message.
+
+    A reply inside a conversation Operator already opened is still allowed, so the existing messages
+    are read first.  A refusal is audited (ids and the reason only) and then raised as the policy's own
+    DmRefused, which exits 3 (a refusal) rather than 2 (a malformed command)."""
+    env = getattr(getattr(agent, "rt", None), "env", None) or os.environ
+    bots = {int(u["user_id"]): bool(u.get("is_bot")) for u in agent.users()}
+    recipients = [
+        {"user_id": u["user_id"], "is_bot": bots.get(int(u["user_id"]), False)} for u in to.users
+    ]
+    existing: list[Mapping[str, Any]] = []
+    try:
+        # Anchored at the head of the conversation, like the hosted dmOpener:  the rule asks whether
+        # the OLDEST message came from Operator, so a conversation older than the window must be read
+        # from its first message.  The newest window cannot see that opener and would refuse a seat's
+        # legitimate reply inside a long-running Operator-opened DM.
+        existing = agent.fetch(
+            [{"operator": "dm", "operand": to.ids}], anchor="oldest", num_after=200
+        )
+    except Z.ApiError as exc:
+        # Same discrimination as tools.py _dm_exists, so both transports decide alike.  A rejected
+        # credential (401/403) and a rate limit (429) are definitive answers from Zulip and propagate,
+        # because treating them as "no such conversation" would make the CLI refuse the message with a
+        # terminal dm_not_allowed instead of the credential or retryable error the caller can act on.
+        # A transient failure (408, any 5xx) becomes a NetworkError for the same reason; only an
+        # ordinary "no messages" answer falls through to the empty list.
+        status = exc.status
+        if exc.code == "RATE_LIMIT_HIT" or status == 429:
+            raise
+        if status == 408 or (isinstance(status, int) and status >= 500):
+            raise NetworkError(
+                "Zulip answered HTTP %s for the direct message narrow" % status
+            ) from exc
+        if status in (401, 403):
+            raise
+        existing = []
+    try:
+        DMP.check_new_dm(
+            env,
+            identity=agent.seat,
+            recipients=recipients,
+            operator_opened=DMP.operator_opened_dm(
+                recipients,
+                existing,
+                operator_user_id=DMP.operator_user_id(env),
+                self_id=_int_or_none(agent.me().get("user_id")),
+            ),
+            clarifying=bool(getattr(args, "clarifying_question", None)),
+            owner_user_id=_owner_id_pinned(agent) or None,
+        )
+    except DMP.DmRefused as refused:
+        DMP.audit_refusal(
+            env,
+            None,
+            transport="cli",
+            identity=agent.tag,
+            recipients=recipients,
+            reason=refused.reason,
+            message=str(refused),
+        )
+        raise
+
+
 def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
     """A private message from this seat's own bot to the owner (the default), to named fleet peers or
     people, or to a group of up to 8.  The same path as `post`:  the secret scanner, the seat tag
@@ -1862,6 +1940,7 @@ def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
     integration bots, deactivated users and this bot itself are refused before anything is sent."""
     text = _read_text(agent, args.text, getattr(args, "body_file", None))
     to = _dm_recipients(agent, args)
+    _dm_rule(agent, args, to)
     body = _compose(agent, text, labels=to.labels, mentions=[], no_tag=args.no_tag)
     where = to.describe()
     check = (

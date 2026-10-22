@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { HostedTools, HOSTED_TOOLS_BY_NAME, HOSTED_READ_TOOLS, HOSTED_WRITE_TOOLS } from "../src/hosted-tools.js";
-import { ListenerClient, listenerClientFromEnv, listenerBaseUrl, listenerSigningString, LISTENER_TOOLS } from "../src/listener.js";
+import { ListenerClient, listenerClientFromEnv, listenerBaseUrl, listenerSigningString, EAVESDROPPER_TOOLS } from "../src/eavesdropper.js";
 import { ZulipClient } from "../src/zulip.js";
 import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
@@ -74,11 +74,11 @@ function ok(result, tool) {
   return result.structuredContent;
 }
 
-test("the hosted list carries the five read-only listener tools from listener-tools.json, never listener_ack", () => {
-  const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/listener-tools.json"), "utf8"));
-  assert.deepEqual(LISTENER_TOOLS, file.tools.filter((t) => t.name !== "listener_ack"));
-  assert.equal(HOSTED_TOOLS_BY_NAME.listener_ack, undefined);
-  for (const tool of LISTENER_TOOLS) {
+test("the hosted list carries the five read-only listener tools from eavesdropper-tools.json, never eavesdropper_ack", () => {
+  const file = JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/eavesdropper-tools.json"), "utf8"));
+  assert.deepEqual(EAVESDROPPER_TOOLS, file.tools.filter((t) => t.name !== "eavesdropper_ack"));
+  assert.equal(HOSTED_TOOLS_BY_NAME.eavesdropper_ack, undefined);
+  for (const tool of EAVESDROPPER_TOOLS) {
     assert.ok(HOSTED_READ_TOOLS.has(tool.name) && !HOSTED_WRITE_TOOLS.has(tool.name), tool.name);
     assert.equal(tool.inputSchema.additionalProperties, false);
   }
@@ -107,7 +107,7 @@ test("listenerBaseUrl and listenerClientFromEnv:  https origin only, the seat's 
 
 test("not configured:  every listener tool says not_configured and the Zulip tools still work", async () => {
   const { tools } = harness();
-  for (const tool of LISTENER_TOOLS) {
+  for (const tool of EAVESDROPPER_TOOLS) {
     const error = toolError(await tools.call(tool.name, {}), "not_configured");
     assert.match(error.message, /LISTENER_API_URL/);
   }
@@ -127,40 +127,40 @@ test("reads:  signed GETs for the grant's seat, fenced items, integer-only struc
     api = fakeListener({ views, now: () => clock.now });
     return new ListenerClient({ baseUrl: BASE, seat: "GROK-WEB", key: KEY, fetch: api.fetch, now: () => clock.now });
   } });
-  assert.deepEqual(ok(await tools.call("listener_status", {}), "listener_status"), { inbox_pending: 2, owner_queue_pending: 1, held_back: 3, wakes_24h: 4, leases: 0, paused: false });
-  const inbox = await tools.call("listener_inbox", { since_seq: 7, limit: 5 });
-  assert.deepEqual(ok(inbox, "listener_inbox"), { count: 2, ids: [501, 502], seqs: [8, 9], next_seq: 9 });
+  assert.deepEqual(ok(await tools.call("eavesdropper_status", {}), "eavesdropper_status"), { inbox_pending: 2, owner_queue_pending: 1, held_back: 3, wakes_24h: 4, leases: 0, paused: false });
+  const inbox = await tools.call("eavesdropper_inbox", { since_seq: 7, limit: 5 });
+  assert.deepEqual(ok(inbox, "eavesdropper_inbox"), { count: 2, ids: [501, 502], seqs: [8, 9], next_seq: 9 });
   const text = inbox.content[0].text;
   assert.equal(text.split("\n").filter((l) => l.startsWith("BEGIN_UNTRUSTED_ZULIP")).length, 1);
   assert.match(text, /\[marker removed\]/);
   assert.ok(!text.includes("nested"));
   assert.ok(api.requests.at(-1).url.endsWith("/listener/v1/GROK-WEB/inbox?since_seq=7&limit=5"));
   assert.equal(api.requests.at(-1).init.redirect, "manual");
-  assert.deepEqual(ok(await tools.call("listener_owner_queue", {}), "listener_owner_queue"), { count: 1, seqs: [3] });
-  assert.deepEqual(ok(await tools.call("listener_wakes", { state: "surfaced" }), "listener_wakes"), { count: 1, ids: [501] });
-  assert.deepEqual(ok(await tools.call("listener_held_back", {}), "listener_held_back"), { count: 1, ids: [601], lost: 2 });
+  assert.deepEqual(ok(await tools.call("eavesdropper_owner_queue", {}), "eavesdropper_owner_queue"), { count: 1, seqs: [3] });
+  assert.deepEqual(ok(await tools.call("eavesdropper_wakes", { state: "surfaced" }), "eavesdropper_wakes"), { count: 1, ids: [501] });
+  assert.deepEqual(ok(await tools.call("eavesdropper_held_back", {}), "eavesdropper_held_back"), { count: 1, ids: [601], lost: 2 });
 });
 
 test("errors map to short tool errors and never echo the listener's body or the key", async () => {
   for (const [status, code] of [[401, "not_authorized"], [404, "not_configured"], [400, "invalid_argument"], [503, "unavailable"], [302, "not_authorized"]]) {
     const { tools } = harness({ listener: (clock) => new ListenerClient({ baseUrl: BASE, seat: "GROK-WEB", key: KEY, fetch: fakeListener({ status, now: () => clock.now }).fetch, now: () => clock.now }) });
-    const result = await tools.call("listener_status", {});
+    const result = await tools.call("eavesdropper_status", {});
     toolError(result, code);
     assert.ok(!JSON.stringify(result).includes(KEY), `${status} leaked the key`);
   }
   const wrongSeat = harness({ listener: (clock) => new ListenerClient({ baseUrl: BASE, seat: "GROK-WEB", key: KEY, fetch: fakeListener({ seat: "JET", now: () => clock.now }).fetch, now: () => clock.now }) });
-  toolError(await wrongSeat.tools.call("listener_status", {}), "upstream_error");
+  toolError(await wrongSeat.tools.call("eavesdropper_status", {}), "upstream_error");
   const down = harness({ listener: () => new ListenerClient({ baseUrl: BASE, seat: "GROK-WEB", key: KEY, fetch: async () => { throw new TypeError("network"); } }) });
-  assert.equal(toolError(await down.tools.call("listener_inbox", {}), "unavailable").retryable, true);
+  assert.equal(toolError(await down.tools.call("eavesdropper_inbox", {}), "unavailable").retryable, true);
 });
 
 test("the read API's answer is parsed before use:  odd fields fall back on their own, a bad envelope is upstream_error", async () => {
   const answer = (body) => async () => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   const client = (fetchImpl) => (clock) => new ListenerClient({ baseUrl: BASE, seat: "GROK-WEB", key: KEY, fetch: fetchImpl, now: () => clock.now });
   const odd = harness({ listener: client(answer({ contract: "agent-sync-read/1", seat: "GROK-WEB", record: "status", view: { inbox_pending: "lots", held_back: -3, wakes_24h: 4, paused: "yes" } })) });
-  assert.deepEqual(ok(await odd.tools.call("listener_status", {}), "listener_status"), { inbox_pending: 0, owner_queue_pending: 0, held_back: 0, wakes_24h: 4, leases: 0, paused: false });
+  assert.deepEqual(ok(await odd.tools.call("eavesdropper_status", {}), "eavesdropper_status"), { inbox_pending: 0, owner_queue_pending: 0, held_back: 0, wakes_24h: 4, leases: 0, paused: false });
   const noView = harness({ listener: client(answer({ contract: "agent-sync-read/1", seat: "GROK-WEB", record: "status", view: [1, 2] })) });
-  toolError(await noView.tools.call("listener_status", {}), "upstream_error");
+  toolError(await noView.tools.call("eavesdropper_status", {}), "upstream_error");
   const wrongContract = harness({ listener: client(answer({ contract: "other/9", seat: "GROK-WEB", record: "status", view: {} })) });
-  toolError(await wrongContract.tools.call("listener_status", {}), "upstream_error");
+  toolError(await wrongContract.tools.call("eavesdropper_status", {}), "upstream_error");
 });

@@ -137,7 +137,7 @@ class SeatAndMcpTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, "b" * 40 + "\trefs/heads/main", "")
             if "diff" in argv:
                 return subprocess.CompletedProcess(
-                    argv, 0, "scripts/agent_sync/mcp/listener-tools.json", ""
+                    argv, 0, "scripts/agent_sync/mcp/eavesdropper-tools.json", ""
                 )
             return subprocess.CompletedProcess(argv, 1, "", "")
 
@@ -343,7 +343,7 @@ class McpStartupTests(unittest.TestCase):
                 argv,
                 1,
                 b"",
-                b"simple-chat: internal error: FileNotFoundError: listener-tools.json\n",
+                b"simple-chat: internal error: FileNotFoundError: eavesdropper-tools.json\n",
             )
 
         def working(argv, **kw):

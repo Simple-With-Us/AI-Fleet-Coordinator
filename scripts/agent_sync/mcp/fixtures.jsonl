@@ -82,8 +82,8 @@
 {"case": "star with no ids", "kind": "schema", "tool": "zulip_star", "arguments": {"message_ids": []}, "expect": "invalid_argument"}
 {"case": "nine DM recipients for a scheduled message", "kind": "schema", "tool": "zulip_scheduled_create", "arguments": {"user_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9], "text": "x", "deliver_at": 4102444800}, "expect": "invalid_argument"}
 {"case": "status text over 60 characters", "kind": "schema", "tool": "zulip_set_status", "arguments": {"status_text": "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"}, "expect": "invalid_argument"}
-{"case": "listener_ack takes no seat", "kind": "schema", "transports": ["stdio"], "tool": "listener_ack", "arguments": {"inbox_seq": 1, "seat": "CODEX"}, "expect": "invalid_argument"}
-{"case": "listener_inbox takes no seat", "kind": "schema", "tool": "listener_inbox", "arguments": {"seat": "CODEX"}, "expect": "invalid_argument"}
+{"case": "eavesdropper_ack takes no seat", "kind": "schema", "transports": ["stdio"], "tool": "eavesdropper_ack", "arguments": {"inbox_seq": 1, "seat": "CODEX"}, "expect": "invalid_argument"}
+{"case": "eavesdropper_inbox takes no seat", "kind": "schema", "tool": "eavesdropper_inbox", "arguments": {"seat": "CODEX"}, "expect": "invalid_argument"}
 {"case": "loaded key in an edit", "kind": "write_secret", "tool": "zulip_edit_message", "arguments": {"message_id": 1}, "field": "text", "input": "the key is $FIXTURE_KEY", "expect": "refused_secret"}
 {"case": "Basic form in a scheduled message", "kind": "write_secret", "tool": "zulip_scheduled_create", "arguments": {"topic": "t", "deliver_at": 4102444800}, "field": "text", "input": "Authorization: Basic $FIXTURE_BASIC", "expect": "refused_secret"}
 {"case": "private key block in a draft", "kind": "write_secret", "tool": "zulip_draft_create", "arguments": {"topic": "t"}, "field": "text", "input": "-----BEGIN OPENSSH PRIVATE KEY-----", "expect": "refused_secret"}
