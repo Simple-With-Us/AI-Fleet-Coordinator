@@ -187,7 +187,7 @@ sight.
 - Code identifiers, API enums, log lines, internal “live stream” engineering labels
   (SSE, live snapshot) unless user-facing product chrome.
 
-## Two spaces between sentences (owner rule 2026-08-08, strengthened 2026-08-10, 2026-08-14, and 2026-09-03 — ALL agents, ALL contexts)
+## Two spaces between sentences (owner rule 2026-08-08, strengthened 2026-08-10, 2026-08-14, and 2026-09-03; the per-surface gap mechanics re-ruled 2026-10-22 — ALL agents, ALL contexts)
 
 Owner: **two spaces between sentences everywhere, including App Store
 submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
@@ -235,23 +235,33 @@ destination:
   two literal ASCII spaces, unverified.  A terminal would print the entity as literal text.
 - **Cloud / BotFleet / OpenMausBot chat:** two literal ASCII spaces.  The backend maps them
   to a real U+00A0 (owner 2026-09-03).
-- **GitHub PR and issue titles, bodies and comments, review comments, and Zulip posts**
-  (anything a tool writes that a Markdown or HTML renderer then shows): a real U+00A0 plus a
-  space (owner ruling 2026-10-08).  Never the entity there, because GitHub can copy a PR body
-  into a plain-text squash commit, where it would show literally.  You cannot type U+00A0 in
-  chat, and a double space you emit into a tool call *sometimes* arrives collapsed to a single
-  space — intermittently, not deterministically, so never diagnose it and always verify.  So
-  generate the gap in the shell, matching one *or more* spaces so it works in both states:
+- **GitHub PR and issue titles, bodies and comments, review comments** (anything a tool
+  writes that GitHub then renders): the `&nbsp;` entity plus a normal space after each
+  sentence, as in `Sentence one.&nbsp; Sentence two.`, outside code spans.  GitHub's renderer
+  decodes the entity into a real gap, and the entity survives a copy into a plain-text
+  squash commit as the six characters `&nbsp;`, which reads as the gap it stands for
+  (owner ruling 2026-10-22, which supersedes the 2026-10-08 rule that put a real U+00A0 on
+  GitHub).
+- **Zulip posts and DMs**: a real U+00A0 plus a space after each sentence (owner ruling
+  2026-10-08, reaffirmed 2026-10-22).  Never the entity there: on Zulip it would post as the
+  six literal characters.  You cannot type U+00A0 in chat, and a double space you emit into a
+  tool call *sometimes* arrives collapsed to a single space — intermittently, not
+  deterministically, so never diagnose it and always verify.  So generate the gap in the
+  shell, matching one *or more* spaces so it works in both states:
   ``perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g'``.  The ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` group catches a
   sentence end *inside* markup or inside a quoted span, where the space comes after the closing
-  span or the closing quote and not after the period.  Then run both checks before posting:
-  ``grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l`` must be above `0`, and ``grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt``
-  must be `0`, because a partly converted body can hold real U+00A0 and still carry one leftover
-  single-space gap.  A conversion that matched nothing still exits 0, so a failed run is silent.
+  span or the closing quote and not after the period.  A GitHub body takes the same converter
+  with the entity as its replacement — `\&nbsp; ` in place of `\x{a0} ` — and the checks are
+  the same for both forms.  Then run both checks before posting:
+  ``grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' body.nbsp.txt | wc -l`` must be above `0`, and ``grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt``
+  must be `0`, because a partly converted body can hold a gap and still carry one leftover
+  single-space gap.  The count check accepts either gap form, so the same pair verifies a
+  GitHub body (the entity) and a Zulip body (a real U+00A0).  A conversion that matched
+  nothing still exits 0, so a failed run is silent.
   The two checks are here as a block you can copy and run as they are:
 
   ```sh
-  grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l
+  grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' body.nbsp.txt | wc -l
   grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt
   ```
   `simple-chat post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
@@ -277,7 +287,8 @@ chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and
 superseded on 2026-10-08 by the entity again.  Do not re-run these tests.  Owner ruling
 2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or HTML
 renderer), use its working mechanism without asking; confirmation is no longer needed per
-surface.
+surface.  Owner ruling 2026-10-22 split the surfaces:  GitHub takes the entity, Zulip takes a
+real U+00A0, and a file read as source still takes two ASCII spaces.
 
 **What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
 in the **Claude Code Code tab** (normalized away in the view, even though copy-paste showed
@@ -325,7 +336,7 @@ not.
 - Between sentences in a paragraph: `end.  Start` (two ASCII spaces after `.` `!` `?`)
 - HTML/JSX/SwiftUI that collapses spaces: use NBSP+space
   (`&nbsp; ` / `{"\u00A0 "}` / `\u00A0 `) or a shared helper (ST: `SENTENCE_GAP`)
-- GitHub PR and issue titles, bodies and comments, review comments, Zulip, and any surface that renders Markdown or HTML: a real U+00A0 plus a space (never the `&nbsp;` entity, which shows literally if GitHub copies the body into a plain-text squash commit) — *owner ruling 2026-10-08*.  Commit messages and source files stay on two ASCII spaces.
+- GitHub PR and issue titles, bodies and comments, review comments: the `&nbsp;` entity plus a normal space — *owner ruling 2026-10-22*, which supersedes the 2026-10-08 rule that put a real U+00A0 on GitHub.  Zulip posts and DMs: a real U+00A0 plus a space, never the entity — *owner ruling 2026-10-08*, reaffirmed 2026-10-22.  Commit messages and source files stay on two ASCII spaces.
 - Prefer ONE paragraph for short related sentences over stacked one-liners when
   the owner asked for density (see Socratic proposals empty-state, 2026-08-08)
 - Do not insert spaces after brand periods (`Congress.Trade`), URLs, emails, or `U.S.`

@@ -483,13 +483,14 @@ Canonical: `~/apps/AGENT-SYNC.md` § Two spaces and `~/apps/FLEET-UI-COPY.md`.
 Portable skill (verbatim protocol, do not weaken): `docs/SENTENCE-GAP-PORTABLE-SKILL.md`
 and `docs/fleet-skills/sentence-gap/SKILL.md`.
 
-**HOW to emit it so it's actually visible (owner ruling 2026-10-08, every agent on every platform):**  intent is not enough, the gap has to survive the renderer.  Pick by destination.
+**HOW to emit it so it's actually visible (owner ruling 2026-10-08, every agent on every platform; the GitHub and Zulip halves re-ruled 2026-10-22):**  intent is not enough, the gap has to survive the renderer.  Pick by destination.
 
 - **Chat reply in a Markdown-rendering pane** (the Claude Code desktop app Code tab, owner-verified 2026-10-08; other agent chat panes by the same ruling, not individually verified): type the literal HTML entity text `&nbsp;` right after the period, then a normal space, outside code spans, as in `Sentence one.&nbsp; Sentence two.`  The renderer decodes it into a visibly wider gap.  Two literal spaces collapse, and a raw U+00A0 typed by the model arrives as a plain space.
-- **GitHub PR and issue titles, bodies and comments, review comments, and Zulip posts** (anything a tool writes that a Markdown or HTML renderer then shows): a real U+00A0 plus a space after each sentence.  Never the `&nbsp;` entity there, because GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.
+- **GitHub PR and issue titles, bodies and comments, review comments** (anything a tool writes that GitHub then renders): the literal HTML entity text `&nbsp;` right after the period, then a normal space, outside code spans, as in `Sentence one.&nbsp; Sentence two.`  GitHub's renderer decodes it into a real gap.  Owner ruling 2026-10-22, which supersedes the 2026-10-08 rule that put a real U+00A0 on GitHub.
+- **Zulip posts and DMs**: a real U+00A0 plus a space after each sentence.  Never the `&nbsp;` entity there: on Zulip it would post as the six literal characters.  Owner ruling 2026-10-08, reaffirmed 2026-10-22.
 - **Plain-text surfaces** (git commit messages, source files and repo docs read as source, terminal output, terminal TUI chat): two literal ASCII spaces.  Do not write `&nbsp;` or U+00A0 into files.  A terminal TUI chat is unverified, and a terminal would print the entity literally.
 - **HTML, JSX and SwiftUI product copy:** a real U+00A0 plus a space, or a shared `SENTENCE_GAP` constant.
-- The owner must never see the six characters `&nbsp;`.  If a chat surface shows them, stop using the entity there and report the surface in #Work-In-Progress, because that surface then needs a different mechanism, which is unknown until tested.  When a surface is known to collapse two typed spaces, use its working mechanism without asking.
+- The owner must never see the six characters `&nbsp;` on a surface that does not decode them.  If a chat surface shows them, stop using the entity there and report the surface in #Work-In-Progress, because that surface then needs a different mechanism, which is unknown until tested.  When a surface is known to collapse two typed spaces, use its working mechanism without asking.
 
 ## Times: owner's clock, 12-hour, am or pm (owner 2026-08-22, amended 2026-10-05)
 

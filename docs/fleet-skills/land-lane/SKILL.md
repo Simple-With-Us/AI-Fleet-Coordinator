@@ -26,7 +26,7 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[TEAM_KEY, Agent] …`.
 
-Prose: commit body, rollout docs and Notes source take two ASCII spaces between sentences.  PR titles, bodies and comments take a real U+00A0 plus a space (convert with the `perl` recipe in `sentence-gap`; never the `&nbsp;` entity there).  Chat replies to the owner use the mechanism of the pane you are in:  `&nbsp;` plus a space in the MiniMax Code chat pane (owner-verified 2026-10-18, reaffirmed 2026-10-20) and in the Claude Code Code tab, and two ASCII spaces in a terminal.  See `owner-copy`.
+Prose: commit body, rollout docs and Notes source take two ASCII spaces between sentences.  PR titles, bodies and comments take the `&nbsp;` entity plus a normal space (owner ruling 2026-10-22, which supersedes the 2026-10-08 real U+00A0 for GitHub; convert with the GitHub form of the `perl` recipe in `sentence-gap`, whose checks accept either gap form).  Chat replies to the owner use the mechanism of the pane you are in:  `&nbsp;` plus a space in the MiniMax Code chat pane (owner-verified 2026-10-18, reaffirmed 2026-10-20) and in the Claude Code Code tab, and two ASCII spaces in a terminal.  See `owner-copy`.
 
 ## Gate
 
