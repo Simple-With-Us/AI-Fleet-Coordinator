@@ -341,8 +341,18 @@ class PostLeaseTests(AttachHarness):
         self.assertEqual(lease["posted"], [posted])
         self.assertEqual(lease["topics"][0]["topic"], "AFC work")
         self.assertIsNotNone(lease["topics"][0]["expires"])
-        self.assertEqual(self.run_cli("post", "--topic", "roll call", "online", env=env).code, 0)
-        self.assertEqual(len(L.load_lease(self.seat_paths(), LEASE)["topics"]), 1, "presence topics are never leased")
+        # A presence topic is never leased.  The presence list names the channel the
+        # runtime defaults to, so the post has to name that channel for the test to
+        # be about a presence topic at all.
+        self.assertEqual(
+            self.run_cli(
+                "post", "--channel", Z.DEFAULT_CHANNEL, "--topic", "roll call", "online", env=env
+            ).code,
+            0,
+        )
+        self.assertEqual(
+            len(L.load_lease(self.seat_paths(), LEASE)["topics"]), 1, "presence topics are never leased"
+        )
 
     @staticmethod
     def synthetic_github_token_shape() -> str:
