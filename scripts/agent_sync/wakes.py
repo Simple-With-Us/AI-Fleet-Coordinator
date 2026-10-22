@@ -540,7 +540,7 @@ def build_prompt(*, seat: str, pending: Pending, history: list[Mapping[str, Any]
                  is_bot: Callable[[Any], Any], owner_of: Callable[[Mapping[str, Any]], bool],
                  format_time: Callable[[float], str], board_enabled: bool, nonce: str | None = None,
                  route: str | None = None, held_back: Mapping[str, Any] | None = None,
-                 chats: list[dict[str, Any]] | None = None) -> str:
+                 chats: list[dict[str, Any]] | None = None, tagged_address: str | None = None) -> str:
     """The daemon-authored header outside the untrusted block, then the last messages of the
     topic (or DM thread) inside it, each as exactly one JSON line (metadata and body together).
     Channel and topic names in the header are quoted JSON strings, so a crafted topic cannot add
@@ -548,7 +548,10 @@ def build_prompt(*, seat: str, pending: Pending, history: list[Mapping[str, Any]
     (the header says routing is disabled, so the model leaves route null).  `held_back`
     (heldback.wake_summary), when its count is above 0, adds one trusted header line with the count
     and a second untrusted block after the messages:  the newest held-back wakes, one JSON line
-    each, ids, links and reasons only, never a body."""
+    each, ids, links and reasons only, never a body.  `tagged_address` is the session letter the
+    trigger addressed, when it carried one; the header then says the seat may ask the Operator
+    for the candidate list, that the ask never blocks, and that the seat proceeds on its default
+    letter and names the letter it used."""
     nonce = nonce or L.new_nonce()
     held_count = int(held_back.get("count") or 0) if held_back else 0
     held_items = list(held_back.get("items") or []) if held_back and held_count > 0 else []
@@ -568,6 +571,20 @@ def build_prompt(*, seat: str, pending: Pending, history: list[Mapping[str, Any]
         "Routing: %s." % ("enabled; at most one seat, only when an owner trigger asks for another seat's help"
                           if route is None else "disabled (%s); leave route null" % route),
     ]
+    if tagged_address:
+        lines.append(
+            "Session letter: the address used the session letter %s.  When more than one session "
+            "could hold it, you may ask the Operator for the candidate list.  The ask never "
+            "blocks: proceed on your default letter, name the letter you used, and answer in "
+            "your own thread." % L.quoted(tagged_address, 8)
+        )
+    else:
+        lines.append(
+            "Session letter: when a tagged address (a platform mention plus a session letter) is "
+            "ambiguous, you may ask the Operator for the candidate list.  The ask never blocks: "
+            "proceed on your default letter, name the letter you used, and answer in your own "
+            "thread."
+        )
     if held_count > 0:
         lines.append("Held back: %d earlier wake%s of this seat did not run because of its budget or a full queue.  "
                      "The newest %d follow the messages, in a second block between the markers, newest first:  "

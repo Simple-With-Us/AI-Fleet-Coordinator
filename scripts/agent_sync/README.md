@@ -274,6 +274,33 @@ The Operator session registry (AFC-412) holds the short, sayable letter for each
 - **The wake sees it.**  Every catalog row a muse wake shows carries the session's `label`, its `label_ref` (`MM A`, or `MM A (gen 2)` for a recycled letter) and its `location`.  A row with no registration reads as unlettered, and a registry that cannot be read is reported to the listener log rather than shown as every session having no letter.
 - **The other commands.**  `pending-outbox` and `mark-exported` are the export bridge for the Sheets exporter.
 
+### The candidate list
+
+A tagged address is a platform mention plus a letter (`@**MiniMax** Z`).  One topic can hold several seats and several sessions, so a letter can be ambiguous.  The seat that was addressed may ask the Operator which sessions the letter could mean, and the Operator answers the sender with a direct message from the Operator bot, so the seat's own thread stays clean.  A direct message is not a tagged address:  it is plain replies, so it carries no letter and needs no candidate list.  The ask never blocks:  the seat proceeds on its default letter, names the letter it used, and answers in its own thread, and the Operator's reply re-binds the thread.
+
+`operator_candidates.send_candidate_list()` is that one message.
+
+```python
+send_candidate_list(
+    *,
+    seat,                 # the seat that is asking
+    platform,             # the platform its sessions live on
+    letters=(),           # the letter(s) the sender used or could have meant
+    candidates=(),        # the candidate sessions:  letter, seat, native_session_id, title
+    recipient=None,       # the sender:  a user id, a typed name or a realm user record
+    default_letter=None,  # the letter the seat is using by default
+    env=None, home=None, owner_user_id=0, realm=None, now=None,
+    client=None, credentials=None, fetch=None, window=DEDUPE_WINDOW,
+) -> dict
+```
+
+- **The Operator bot sends it.**  The credential comes from `service_identity.operator_credentials` (the Operator's own two names in Infisical `/zulip_operator`), and `users/me` must be the pinned Operator bot (`service_identity.operator_bot`).  The asking seat's own credential is refused, so the seat never sends this and its key never leaves its lane.
+- **It refuses rather than guesses.**  An unresolvable recipient, a missing Operator credential or a bot that is not the Operator is a `refused` outcome with a reason, never an exception into the wake path.  The answer is always a dict:  `status` is `sent`, `refused` or `duplicate`, `reason` says why, and `message_id` and `recipient` are there when it went out.
+- **It does not repeat itself.**  An identical list to the same recipient inside the window (15 minutes) is refused as a `duplicate`, so a seat that asks twice does not spam the sender.  The state is the asking seat's own:  `<state root>/<SEAT>/operator-candidates.json`, in a directory created with mode 700.
+- **The body.**  One sentence per candidate, each naming its letter, its seat and its title, two literal ASCII spaces between the sentences.  It says which letter the seat is using by default and that the ask never blocks.  The client converts the gap to the Zulip form on the way out, like every other message.
+
+The caller is the Operator's listener, which holds the registry, the candidate sessions and the sender's id.  The wake prompt tells the seat the rule:  when a tagged address is ambiguous the seat may ask the Operator for the candidate list, the ask never blocks, and the seat proceeds on its default letter and names the letter it used.
+
 ## Tests
 
 ```
