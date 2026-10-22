@@ -28,7 +28,7 @@ So the connection says who may act, and each call says who is acting.  Bots are 
 
 | Connection | May act as |
 |---|---|
-| Hosted CURSOR grant | CURSOR, GROK-WEB, and every **enabled** GB-* persona in `delegated-identities.js` (eleven today:  DIRECTOR, FIXER, DESIGNER, COMPILER, HOUSEKEEPER, PUBLISHER, DEPLOYER, MONITOR, PLUMBER, ORACLE, TRADER) |
+| Hosted CURSOR grant | CURSOR, GROK-WEB, and every **enabled** GB-* persona in `delegated-identities.js` (twelve today:  DIRECTOR, FIXER, DESIGNER, COMPILER, HOUSEKEEPER, PUBLISHER, DEPLOYER, MONITOR, PLUMBER, ORACLE, TRADER, ENGINEER) |
 | Hosted GROK-WEB grant | GROK-WEB, CURSOR, and the same enabled GB-* personas (one shared group) |
 | Any other hosted grant | Its own seat |
 | Stdio MCP or CLI on the Mac | Every agent bot whose credential file is on the Mac:  the seat bots, BF-* and GB-* |
