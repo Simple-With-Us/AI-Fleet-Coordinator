@@ -30,7 +30,7 @@ final class WakeSettingsTests: XCTestCase {
           "MM": {
             "bot": "MM",
             "wake": "muse",
-            "muse": "/tmp/fixture-apps/muse-bin",
+            "muse": "/tmp/fixture-apps/muse-bin-1.4.11-R6667.1",
             "connected": true,
             "paused": false,
             "wakes_paused": false,
@@ -353,7 +353,7 @@ final class WakeSettingsTests: XCTestCase {
     func test_the_ledger_is_parsed_once_for_both_views() {
         let ledger = """
         {"ts": 999900.0, "wake_id": "a", "state": "accepted", "owner": false, "topic_key": "c\\u0000t1", "topic": "first"}
-        {"ts": 999950.0, "wake_id": "b", "state": "done", "owner": true, "topic_key": "c\\u0000t2", "topic": "second"}
+        {"ts": 999950.0, "wake_id": "b", "state": "accepted", "owner": true, "topic_key": "c\\u0000t2", "topic": "second"}
         """
         let parsed = WakeLedger.parse(ledger)
         XCTAssertEqual(parsed.malformed, 0)
