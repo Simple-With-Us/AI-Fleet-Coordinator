@@ -1523,7 +1523,10 @@ class Tools:
 
         - a **credential rejection** (401, 403) means this bot's key was refused, which says
           nothing at all about the conversation.  It is re-raised so `map_exception` renders it as
-          `not_authorized`/`zulip_error` with the masked preview, never as "no such DM".
+          `not_authorized` (401) or `zulip_error` (403) with the HTTP status and Zulip's code, never
+          as "no such DM".  The rendered error carries no part of the key, not even a masked
+          preview:  the status and code identify the refusal, and the seat's key is named by the
+          seat itself.
         - a **rate limit** (429) is re-raised unchanged, so `map_exception` renders it as
           `rate_limited` with the `retry_after_s` hint instead of a generic outage.
         - a **transient** failure (408, a gateway or any other 5xx) becomes a `NetworkError`,

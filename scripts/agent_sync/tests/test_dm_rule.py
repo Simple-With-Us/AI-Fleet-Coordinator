@@ -581,8 +581,9 @@ class DmLookupCredentialTests(unittest.TestCase):
 
     Returning `[]` for either one tells the rule "no conversation", and it then refuses a seat's
     legitimate reply inside an Operator-opened DM with a terminal `dm_not_allowed` that no retry
-    can clear.  A 401/403 carries no masked preview if it is swallowed, and a 429/5xx is not
-    terminal at all.  So credential rejection propagates (and `map_exception` renders it), a 429
+    can clear.  A 401/403 swallowed that way loses its status and Zulip code, and a 429/5xx is not
+    terminal at all.  So credential rejection propagates (and `map_exception` renders it with the
+    status and code, never any part of the key), a 429
     is re-raised unchanged (and renders as `rate_limited` with its retry hint), and the other
     transient statuses are re-raised as `NetworkError`, which the caller makes retryable."""
 
@@ -613,6 +614,34 @@ class DmLookupCredentialTests(unittest.TestCase):
         self.assertEqual(error.code, "not_authorized")
         self.assertEqual(error.extra["status"], 401)
         self.assertEqual(error.extra["zulip_code"], "UNAUTHORIZED")
+        # A 403 is not swallowed either:  it surfaces with its status and code, not as a DM refusal.
+        forbidden = T.map_exception(Z.ApiError("zulip refused", status=403, code="UNAUTHORIZED"))
+        self.assertEqual(forbidden.code, "zulip_error")
+        self.assertEqual(forbidden.extra["status"], 403)
+        self.assertEqual(forbidden.extra["zulip_code"], "UNAUTHORIZED")
+
+    def test_the_cli_lookup_lets_a_rejected_key_through_too(self) -> None:
+        # `agent-sync dm` reads the conversation with the same discrimination as `_dm_exists`:  a
+        # rejected key propagates as the ApiError it is, never as the policy's DmRefused.
+        from agent_sync import cli
+
+        for status in (401, 403):
+
+            class RejectedAgent:
+                seat = "CLAUDE"
+                tag = "claude-code/1.2.3"
+                rt = types.SimpleNamespace(env={})
+
+                def users(self) -> list[dict[str, Any]]:
+                    return [{"user_id": 9, "is_bot": True}]
+
+                def fetch(self, operands: Any, **kw: Any) -> list[dict[str, Any]]:
+                    raise Z.ApiError("zulip refused the key", status=status)
+
+            to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
+            with self.assertRaises(Z.ApiError) as caught:
+                cli._dm_rule(RejectedAgent(), types.SimpleNamespace(), to)
+            self.assertEqual(caught.exception.status, status, "the credential error survives")
 
     def test_a_transient_status_is_retryable_not_an_empty_conversation(self) -> None:
         for status in (408, 500, 502, 503):
