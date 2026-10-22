@@ -240,7 +240,8 @@ export function subEventName(sub) {
 export function validateSpikeArguments(args) {
   if (args === undefined || args === null) return {};
   if (typeof args !== "object" || Array.isArray(args)) throw new EventError(INVALID_PARAMS, "arguments must be an object");
-  for (const key of Object.keys(args)) throw new EventError(INVALID_PARAMS, `Unknown argument ${logSafe(key, 40)}`);
+  // The refusal never echoes the argument's name (review finding):  the spike has no arguments to name.
+  if (Object.keys(args).length > 0) throw new EventError(INVALID_PARAMS, "fleet.spike.ping takes no arguments");
   return {};
 }
 

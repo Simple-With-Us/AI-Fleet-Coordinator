@@ -433,7 +433,7 @@ async function serveWake(request, env, ctx, config) {
  * One hand-fired `fleet.spike.ping` (src/spike.js).  Every way it is not set
  * up is a 404:  SPIKE_EXTRA_EVENTS not "on", no SPIKE_HMAC_KEY, a seat that is
  * not hosted or has no wake key (no events are offered to it), or a
- * SPIKE_HMAC_KEY equal to the seat's wake key, which must never sign a spike.
+ * SPIKE_HMAC_KEY equal to any seat's wake key, which must never sign a spike.
  * Then the signature, freshness and shape, then SeatGate.spikeClaim (dedupe,
  * rate limit, pause), then delivery inside this request.  The answer holds
  * counts only (spikeReply).
@@ -446,7 +446,9 @@ async function serveSpike(request, env, ctx, config) {
   const wakeKey = typeof env[WAKE_SECRETS[seat]] === "string" ? env[WAKE_SECRETS[seat]].trim() : "";
   const key = spikeKey(env.SPIKE_HMAC_KEY);
   if (!wakeKey || !key) return notFound();
-  if (key === wakeKey) {
+  // SPIKE_HMAC_KEY must never equal any seat's wake key, not only this seat's.
+  const wakeKeys = Object.values(WAKE_SECRETS).map((name) => (typeof env[name] === "string" ? env[name].trim() : "")).filter(Boolean);
+  if (wakeKeys.includes(key)) {
     console.log(JSON.stringify({ event: "spike_refused", seat, reason: "key_reused" }));
     return notFound();
   }
