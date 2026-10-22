@@ -1,73 +1,51 @@
-"""Named-secret adapter. Runtime must provide an independently scoped identity.
+"""Named-secret adapter. Secrets resolve through the fleet-secrets CLI only.
 
-No universal-auth bootstrap or folder export is supported here. Deployment must
-verify that the supplied identity is denied outside the approved secret paths.
+Owner decision 2026-10-21:  no process-environment secrets, no .env files and
+no direct Infisical HTTP in fleet components.  The CLI holds its own
+independently scoped identity;  deployment must verify that identity is denied
+outside the approved secret paths (/operator-github/callers, /github-apps).
 """
 
-import json
-import os
 import re
-import urllib.error
-import urllib.parse
-import urllib.request
+import subprocess
 
-from .github_token_router import NoRedirect, RoutingError, secret_names
+from .github_token_router import RoutingError, secret_names
+
+LOOKUP_TIMEOUT_SECONDS = 10
+
+
+def fleet_secrets_get(path, name):
+    """Read one named secret via `fleet-secrets get`;  errors name the variable,
+    never a value or backend detail.  The path argument documents the intended
+    secret folder for reviewers and injected test transports;  the CLI resolves
+    it from its own configuration."""
+    try:
+        result = subprocess.run(
+            ["fleet-secrets", "get", name],
+            capture_output=True,
+            timeout=LOOKUP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        raise RoutingError(name + " unavailable: fleet-secrets lookup timed out") from None
+    except FileNotFoundError:
+        raise RoutingError(name + " unavailable: fleet-secrets executable not found") from None
+    except OSError:
+        raise RoutingError(name + " unavailable: fleet-secrets lookup failed") from None
+    if result.returncode:
+        raise RoutingError(name + " unavailable: fleet-secrets lookup failed")
+    value = result.stdout.decode("utf-8", "replace").strip()
+    if not value:
+        raise RoutingError(name + " unavailable: fleet-secrets returned an empty value")
+    return value
 
 
 class NamedSecrets:
-    def __init__(self, bearer_for, seats, apps, *, project=None, transport=None):
-        self.project = project or os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID")
-        self.bearer_for = bearer_for
+    """Allowlisted name-to-value lookup for caller keys and App credentials."""
+
+    def __init__(self, seats, apps, *, transport=None):
         self.seats = frozenset(seats)
         self.apps = frozenset(apps)
-        self.transport = transport or self._read
-
-    def _read(self, path, name):
-        if not self.project:
-            raise RoutingError("INFISICAL_FLEET_OPS_PROJECT_ID is not configured")
-        token = self.bearer_for()
-        if not isinstance(token, str) or not token:
-            raise RoutingError("Scoped secret identity unavailable")
-        query = urllib.parse.urlencode(
-            {
-                "projectId": self.project,
-                "environment": "prod",
-                "secretPath": path,
-                "expandSecretReferences": "false",
-                "includeImports": "false",
-            }
-        )
-        req = urllib.request.Request(
-            "https://app.infisical.com/api/v4/secrets/" + name + "?" + query,
-            headers={
-                "Authorization": "Bearer " + token,
-                "User-Agent": "swu-operator-github-broker/0.1",
-            },
-        )
-        try:
-            with urllib.request.build_opener(NoRedirect()).open(req, timeout=10) as response:
-                raw = response.read(32769)
-                if len(raw) > 32768:
-                    raise ValueError()
-                value = json.loads(raw)["secret"]["secretValue"]
-            if not isinstance(value, str) or not value or "${" in value:
-                raise ValueError()
-            return value
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                # Diagnosable without disclosure:  first-eight/last-four only.
-                preview = (
-                    token[:8] + "..." + token[-4:] if len(token) > 12 else "<too short to preview>"
-                )
-                raise RoutingError(
-                    "Infisical rejected the credential (HTTP "
-                    + str(e.code)
-                    + "); token preview "
-                    + preview
-                ) from None
-            raise RoutingError("Named secret unavailable") from None
-        except Exception:
-            raise RoutingError("Named secret unavailable") from None
+        self.transport = transport or fleet_secrets_get
 
     def caller_key(self, seat):
         if seat not in self.seats or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,31}", seat):

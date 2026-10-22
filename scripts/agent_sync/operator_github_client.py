@@ -40,34 +40,33 @@ def caller_key_name(seat):
 
 
 def caller_key(seat):
-    """Load THIS seat's caller signing key from approved sources only.
+    """Load THIS seat's caller signing key from the approved source only.
 
-    Environment first, then `fleet-secrets get`.  A caller-chosen local file
-    is not an approved credential path and is not consulted.  Failures name
-    the variable operators must provision, never the value seen.
+    Owner decision 2026-10-21:  `fleet-secrets get` is the single credential
+    path - the process environment, .env files and caller-chosen local files
+    are never consulted.  Failures name the variable operators must
+    provision, never the value seen.
     """
     name = caller_key_name(seat)
-    key = os.environ.get(name)
-    if not key:  # an exported empty placeholder means absent
-        try:
-            result = subprocess.run(
-                ["fleet-secrets", "get", name],
-                capture_output=True,
-                timeout=10,
-            )
-        except subprocess.TimeoutExpired:
-            # Distinct infrastructure signals:  a hung lookup is 124, a missing
-            # executable is 127, so operators can tell both from a refused lookup.
-            print(name + " unavailable: fleet-secrets lookup timed out", file=sys.stderr)
-            raise SystemExit(124) from None
-        except FileNotFoundError:
-            print(name + " unavailable: fleet-secrets executable not found", file=sys.stderr)
-            raise SystemExit(127) from None
-        except OSError:
-            raise ClientError(name + " unavailable: fleet-secrets lookup failed") from None
-        if result.returncode:
-            raise ClientError(name + " unavailable: fleet-secrets lookup failed")
-        key = result.stdout.decode("utf-8", "replace").strip()
+    try:
+        result = subprocess.run(
+            ["fleet-secrets", "get", name],
+            capture_output=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        # Distinct infrastructure signals:  a hung lookup is 124, a missing
+        # executable is 127, so operators can tell both from a refused lookup.
+        print(name + " unavailable: fleet-secrets lookup timed out", file=sys.stderr)
+        raise SystemExit(124) from None
+    except FileNotFoundError:
+        print(name + " unavailable: fleet-secrets executable not found", file=sys.stderr)
+        raise SystemExit(127) from None
+    except OSError:
+        raise ClientError(name + " unavailable: fleet-secrets lookup failed") from None
+    if result.returncode:
+        raise ClientError(name + " unavailable: fleet-secrets lookup failed")
+    key = result.stdout.decode("utf-8", "replace").strip()
     if not 32 <= len(key) <= 4096:
         raise ClientError(name + " is missing or invalid")
     return key

@@ -227,14 +227,17 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(self.audit[-1]['outcome'],'outcome_unknown')
 
 class CallerKeyTests(unittest.TestCase):
-    def test_env_var_is_used_first(self):
+    def test_fleet_secrets_is_the_single_source(self):
         import os
         from unittest.mock import patch
         from agent_sync.operator_github_client import caller_key
-        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':'e'*32}):
-            with patch('agent_sync.operator_github_client.subprocess.run') as run:
+        class Done:
+            returncode=0
+            stdout=b'e'*32+b'\n'
+        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':'z'*32}):
+            with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()) as run:
                 self.assertEqual(caller_key('ECHO'),'e'*32)
-                run.assert_not_called()
+                run.assert_called_once()
     def test_fleet_secrets_fallback(self):
         import os
         from unittest.mock import patch
@@ -262,16 +265,22 @@ class CallerKeyTests(unittest.TestCase):
         import os
         from unittest.mock import patch
         from agent_sync.operator_github_client import caller_key
-        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':'short'}):
-            with self.assertRaises(ClientError):caller_key('ECHO')
-    def test_empty_env_var_falls_back_to_fleet_secrets(self):
+        class Done:
+            returncode=0
+            stdout=b'short'
+        with patch.dict(os.environ,{},clear=True):
+            with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()):
+                with self.assertRaises(ClientError):caller_key('ECHO')
+    def test_environment_is_never_consulted(self):
+        # Owner decision 2026-10-21:  fleet-secrets is the single credential
+        # path;  an exported variable must be ignored even when valid-looking.
         import os
         from unittest.mock import patch
         from agent_sync.operator_github_client import caller_key
         class Done:
             returncode=0
             stdout=b'g'*32+b'\n'
-        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':''}):
+        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':'h'*32}):
             with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()) as run:
                 self.assertEqual(caller_key('ECHO'),'g'*32)
                 run.assert_called_once()
