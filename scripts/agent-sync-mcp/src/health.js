@@ -65,12 +65,28 @@ const iso = (s) => (s > 0 ? new Date(s * 1000).toISOString().replace(/\.\d{3}Z$/
  *   ok        otherwise
  */
 export function classifySeat(seat, row, nowS) {
+  if (row?.missing || row?.unreadable) {
+    return {
+      seat,
+      state: "fail",
+      minted: false,
+      minted_age_days: null,
+      expires_in_days: null,
+      remint_due_in_days: null,
+      mint_count: 0,
+      last_mint_ok_at: null,
+      last_mint_fail_at: null,
+      last_mint_fail_kind: null,
+      note: row.missing ? "no Linear credentials installed for this hosted seat" : "seat state could not be read",
+    };
+  }
   const token = row?.token ?? null;
   const note = row?.note ?? {};
   const failKind = KINDS.has(note.last_fail_kind) ? note.last_fail_kind : note.last_fail_kind ? "unexpected" : null;
   const lastFailAt = Number(note.last_fail_at) || 0;
   const lastOkAt = Number(note.last_ok_at) || 0;
-  const failedSinceOk = lastFailAt > 0 && lastFailAt >= lastOkAt;
+  // Notes are stored at second granularity:  a success in the same second as a failure counts as the later event.
+  const failedSinceOk = lastFailAt > 0 && lastFailAt > lastOkAt;
   const out = {
     seat,
     state: "ok",

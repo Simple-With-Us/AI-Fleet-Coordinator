@@ -498,7 +498,8 @@ async function serveLinearHealth(request, env, config) {
   const key = healthKey(env.HEALTH_HMAC_KEY);
   if (!key) return notFound();
   const wakeKeys = Object.values(WAKE_SECRETS).map((name) => (typeof env[name] === "string" ? env[name].trim() : ""));
-  if (wakeKeys.includes(key)) {
+  const spikeKeyRaw = typeof env.SPIKE_HMAC_KEY === "string" ? env.SPIKE_HMAC_KEY.trim() : "";
+  if (wakeKeys.includes(key) || (spikeKeyRaw && spikeKeyRaw === key)) {
     console.log(JSON.stringify({ event: "health_refused", reason: "key_reused" }));
     return notFound();
   }
@@ -513,9 +514,12 @@ async function serveLinearHealth(request, env, config) {
     return checked.status === 404 ? notFound() : textResponse(checked.status === 401 ? "Unauthorized" : checked.status === 413 ? "Payload Too Large" : "Bad Request", checked.status);
   }
   const identities = [];
+  const missing = [];
   for (const seat of LINEAR_SEATS) {
     const names = linearSecretNames(seat);
-    if (names && config.hostedSeats.includes(seat) && [names.clientId, names.clientSecret].every((n) => typeof env[n] === "string" && env[n].trim() !== "")) identities.push(seat);
+    if (!names || !config.hostedSeats.includes(seat)) continue;
+    if ([names.clientId, names.clientSecret].every((n) => typeof env[n] === "string" && env[n].trim() !== "")) identities.push(seat);
+    else missing.push(seat);
   }
   const delegated = loadDelegatedCredentials(env);
   for (const identity of delegated.roles.keys()) identities.push(identity);
@@ -523,9 +527,10 @@ async function serveLinearHealth(request, env, config) {
     try {
       return { seat, row: await gate(env, seat).linearHealth() };
     } catch {
-      return { seat, row: { token: null, note: { last_fail_at: 1, last_ok_at: 0, last_fail_kind: "unexpected" } } };
+      return { seat, row: { unreadable: true } };
     }
   }));
+  for (const seat of missing) rows.push({ seat, row: { missing: true } });
   return jsonResponse({ ...healthReport(rows, Math.floor(Date.now() / 1000)), bundle: delegated.valid ? "ok" : "invalid" }, 200);
 }
 

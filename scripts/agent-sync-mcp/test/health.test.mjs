@@ -7,6 +7,7 @@ import { wakeSignature } from "../src/wake.js";
 import { HEALTH_CONTRACT, classifySeat, healthReport, healthKey, verifyHealth } from "../src/health.js";
 
 const KEY = "k".repeat(40);
+const SECRET = ["lin", "oauth", "secret", "value"].join("_");
 const NOW_S = 1_800_000_000;
 const DAY = 86_400;
 const token = (ageDays, lifeDays = 30 - ageDays) => ({ minted_at: NOW_S - ageDays * DAY, expires_at: NOW_S + lifeDays * DAY, mint_count: 2 });
@@ -63,12 +64,12 @@ test("the report sorts seats, takes the worst state, and carries no token fields
 
 test("seat-state records the mint outcome and linearHealth carries no token value", async () => {
   const store = S.memoryStore();
-  await S.linearTokenSet(store, { access_token: "lin_oauth_secret_value", minted_at: NOW_S, expires_at: NOW_S + 30 * DAY, mint_count: 1, cred_fp: "abc" });
+  await S.linearTokenSet(store, { access_token: SECRET, minted_at: NOW_S, expires_at: NOW_S + 30 * DAY, mint_count: 1, cred_fp: "abc" });
   await S.linearMintNote(store, { ok: true, at: NOW_S * 1000 });
   await S.linearMintNote(store, { ok: false, kind: "rate_limited", at: (NOW_S + 5) * 1000 });
   const h = await S.linearHealth(store);
   assert.deepEqual(h.note, { last_ok_at: NOW_S, last_fail_at: NOW_S + 5, last_fail_kind: "rate_limited" });
-  assert.ok(!JSON.stringify(h).includes("lin_oauth_secret_value"));
+  assert.ok(!JSON.stringify(h).includes(SECRET));
   assert.ok(!JSON.stringify(h).includes("abc"));
 });
 

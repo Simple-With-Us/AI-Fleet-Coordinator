@@ -750,6 +750,7 @@ export class LinearClient {
     const fingerprint = await this.#fingerprint();
     const same = cached?.cred_fp === fingerprint;
     if (same && cached?.minted_at && now - Number(cached.minted_at) < 86_400) {
+      await this.#noteMint({ ok: false, kind: "mint" });
       const why = cached.access_token && cached.access_token === failed ? `Linear refused the cached ${this.seatLabel()} token` : `the cached ${this.seatLabel()} token is unusable`;
       throw new LinearError("mint", { message: `${why}, and it was minted under 24 hours ago.  Linear allows one mint per app per day, so this server does not mint again.  Jay rotates the app's credentials in Infisical to force one.` });
     }

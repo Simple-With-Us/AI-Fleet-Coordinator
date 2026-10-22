@@ -61,6 +61,13 @@ def read_key():
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a 3xx:  the signed request must not be forwarded to another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def fetch(url, key, now=None):
     body = request_body(now)
     req = urllib.request.Request(
@@ -74,7 +81,7 @@ def fetch(url, key, now=None):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=30) as resp:
             return resp.status, json.loads(resp.read(1_000_000).decode("utf-8"))
     except urllib.error.HTTPError as err:
         return err.code, None
@@ -82,11 +89,31 @@ def fetch(url, key, now=None):
         return 0, None
 
 
+STATES = ("ok", "warn", "fail")
+
+
+def valid_answer(answer):
+    """The full top-level and per-seat shape, checked before anything is persisted."""
+    if not isinstance(answer, dict) or answer.get("contract") != CONTRACT:
+        return False
+    if answer.get("worst") not in STATES or answer.get("bundle") not in ("ok", "invalid"):
+        return False
+    seats = answer.get("seats")
+    if not isinstance(seats, list):
+        return False
+    for seat in seats:
+        if not isinstance(seat, dict) or not isinstance(seat.get("seat"), str):
+            return False
+        if seat.get("state") not in STATES:
+            return False
+    return True
+
+
 def document(status, answer, generated_at=None):
     stamp = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(generated_at if generated_at is not None else time.time())
     )
-    if status == 200 and isinstance(answer, dict) and answer.get("contract") == CONTRACT:
+    if status == 200 and valid_answer(answer):
         return {
             "schemaVersion": SCHEMA_VERSION,
             "tool": "fleet-worker-health",
@@ -116,14 +143,25 @@ def document(status, answer, generated_at=None):
 
 def write_atomic(path, doc):
     directory = os.path.dirname(path)
+    if os.path.islink(directory):
+        raise OSError("state directory is a symlink; refusing to write")
     os.makedirs(directory, mode=0o700, exist_ok=True)
+    if os.path.islink(directory):
+        raise OSError("state directory is a symlink; refusing to write")
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".worker-health-")
     try:
         with os.fdopen(fd, "w") as handle:
             json.dump(doc, handle, indent=2, sort_keys=True)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.chmod(tmp, 0o600)
         os.replace(tmp, path)
+        dir_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
