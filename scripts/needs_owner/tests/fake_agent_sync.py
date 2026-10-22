@@ -95,7 +95,7 @@ def main():
     argv = sys.argv[1:]
     # The fake realm is "work-in-progress" (the renamed #agent-sync):  pin it the way
     # agent_sync/tests/harness.py pins its own, or channel-less commands lose the realm.
-    args = C.build_parser("work-in-progress").parse_args(argv)
+    args = C.build_parser(channel_default="work-in-progress").parse_args(argv)
     stdin = ""
     if getattr(args, "text", None) == ["-"]:
         stdin = sys.stdin.read()
@@ -217,7 +217,7 @@ def send(world, args, seat, stdin):
     else:
         known = (world.get("topics_by_id") or {}).get(str(args.id))
         original = next((m for m in world["messages"] if m["id"] == args.id), None)
-        channel, topic = (original["channel"], original["topic"]) if original else ("agent-sync", known or "OWNER x")
+        channel, topic = (original["channel"], original["topic"]) if original else ("work-in-progress", known or "OWNER x")
     if getattr(args, "to_owner", False) and not (owner_id(world) and owner_id(world) > 0):
         sys.stderr.write("no owner to message:  daemon.owner_user_id is not pinned\n")
         return 2

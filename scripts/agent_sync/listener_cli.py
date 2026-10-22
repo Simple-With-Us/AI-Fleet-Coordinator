@@ -719,7 +719,7 @@ def cmd_init(rt: Any, args: argparse.Namespace) -> int:
         except Z.AgentSyncError:
             subs = set()
         rt.out(
-            "  %s: %s ok, role %s%s, subscribed to #agent-sync: %s\n"
+            "  %s: %s ok, role %s%s, subscribed to #%s: %s\n"
             % (
                 name,
                 "environment credentials"
@@ -729,7 +729,10 @@ def cmd_init(rt: Any, args: argparse.Namespace) -> int:
                 ),
                 role,
                 "" if ok_role else " (REFUSED: the listener takes moderator or member bots only)",
-                "yes" if "agent-sync" in subs else "NO",
+                Z.DEFAULT_CHANNEL,
+                "yes"
+                if Z.DEFAULT_CHANNEL.casefold() in {str(s).casefold() for s in subs}
+                else "NO",
             )
         )
     if not args.yes:

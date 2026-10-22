@@ -13,12 +13,14 @@ import json
 import pathlib
 import unittest
 
+from agent_sync import live as L
 from agent_sync import router as R
 from agent_sync import zulip as Z
 from agent_sync.mcp import tools as T
 from agent_sync.mcp.tools import with_defaults
 
 MCP_DIR = pathlib.Path(__file__).resolve().parents[1] / "mcp"
+AGENT_SYNC_DIR = pathlib.Path(__file__).resolve().parents[1]
 
 
 class DefaultChannelTests(unittest.TestCase):
@@ -52,6 +54,34 @@ class DefaultChannelTests(unittest.TestCase):
         self.assertEqual(
             Z.default_channel({Z.ENV_CHANNEL: "other"}), "other"
         )
+
+    def test_the_presence_topics_follow_the_default_channel(self) -> None:
+        # live.py sits on the hook fast path and may not import agent_sync.zulip, so it holds the
+        # coordination channel as a literal.  This test is the drift guard:  when the realm renames
+        # the channel again, that literal has to move with it, or the listener stops recognising
+        # presence messages in the channel it actually lives in.
+        presence_channels = {c for c, _ in L.DEFAULT_PRESENCE}
+        self.assertIn(Z.DEFAULT_CHANNEL, presence_channels)
+        # The realm kept the old name as a "DO NOT USE" tombstone stream, so a regression to it
+        # would post into a stream nobody reads and fail silently rather than loudly.
+        self.assertNotIn("agent-sync", presence_channels)
+
+    def test_the_shipped_listener_configs_carry_the_same_presence_topics(self) -> None:
+        # The server config and its test fixture are what the listener actually reads, so a
+        # literal that only the in-code default moved on leaves the deployed listener deaf.
+        shipped = (
+            AGENT_SYNC_DIR / "server" / "listener.toml",
+            AGENT_SYNC_DIR / "tests" / "fixtures" / "server-listener-live-oct9.toml",
+        )
+        for path in shipped:
+            self.assertTrue(path.exists(), "%s is missing" % path)
+            text = path.read_text()
+            self.assertIn('"roll call"', text, "%s lost the roll call topic" % path)
+            self.assertIn(
+                Z.DEFAULT_CHANNEL,
+                text,
+                "%s still names the old channel for presence" % path,
+            )
 
     def test_every_mcp_tool_that_defaults_a_channel_defaults_it_to_the_same_name(self) -> None:
         # `with_defaults()` fills a schema default into every MCP call that omits `channel`, so a

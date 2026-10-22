@@ -6,6 +6,7 @@ import subprocess
 import sys
 import unittest
 
+from needs_owner import links
 from needs_owner import notify as notifymod
 from needs_owner import text as T
 from needs_owner.proc import Result
@@ -300,7 +301,7 @@ class NoticeTests(unittest.TestCase):
         topic = self.w.zulip()["messages"][0]["topic"]
 
         def read() -> list:
-            ran = subprocess.run([str(self.w.bin / "simple-chat"), "read", "--as", "CLAUDE", "--json", "--channel", "agent-sync",
+            ran = subprocess.run([str(self.w.bin / "simple-chat"), "read", "--as", "CLAUDE", "--json", "--channel", links.CHANNEL,
                                   "--topic", topic, "--include-self"], capture_output=True, text=True, env=self.w.env(), timeout=60)
             self.assertEqual(ran.returncode, 0, ran.stderr)
             return [json.loads(line) for line in ran.stdout.splitlines()]

@@ -135,7 +135,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         "coalesce_seconds = 20",
         "coalesce_max_seconds = 90",
         "owner_coalesce_seconds = 5",
-        'presence_topics = [["agent-sync", "roll call"], ["agent-sync", "fleet"], ["builds", "gates"], ["alerts", "*"]]',
+        'presence_topics = [["work-in-progress", "roll call"], ["work-in-progress", "fleet"], ["builds", "gates"], ["alerts", "*"]]',
         "",
         "[platform.claude-code]",
         'seat = "CLAUDE"                   # the Claude Code platform default:  hooks and local views when AGENT_SEAT is',
