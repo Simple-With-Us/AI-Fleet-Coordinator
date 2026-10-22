@@ -100,10 +100,22 @@ class Relay:
             self.audit.record(seat, action, repo, "bad_request", {"reason": str(exc)})
             return 400, {"error": str(exc)}
         except RelayGitHubError as exc:
+            retryable = exc.status == 0 or exc.status == 429 or exc.status >= 500
+            outcome = "github_retryable" if retryable else "github_terminal"
             self.audit.record(
-                seat, action, repo, "github_error", {"status": exc.status, "message": exc.message}
+                seat, action, repo, outcome, {"status": exc.status, "message": exc.message}
             )
-            return 502, {"error": "github call failed", "github_status": exc.status}
+            if retryable:
+                return 502, {
+                    "error": "github call failed",
+                    "github_status": exc.status,
+                    "retryable": True,
+                }
+            return 400, {
+                "error": "github refused the request",
+                "github_status": exc.status,
+                "retryable": False,
+            }
         self.audit.record(seat, action, repo, "ok", {**args, **result})
         return 200, result
 

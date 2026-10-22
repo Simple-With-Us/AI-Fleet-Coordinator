@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -26,6 +27,14 @@ MINT_PERMISSION_CEILING = ("contents", "pull_requests", "issues", "actions", "me
 
 class AppTokenError(Exception):
     """A mint or credential lookup failed;  never carries secret material."""
+
+
+class InfisicalHttpError(AppTokenError):
+    """Infisical answered with an HTTP status;  carries only the status code."""
+
+    def __init__(self, status: int):
+        super().__init__(f"infisical http {status}")
+        self.status = status
 
 
 def _b64(data: bytes) -> bytes:
@@ -104,6 +113,8 @@ class InfisicalSource:
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
                 raw = resp.read(1024 * 1024)
+        except urllib.error.HTTPError as exc:
+            raise InfisicalHttpError(exc.code) from None
         except (urllib.error.URLError, OSError) as exc:
             raise AppTokenError(f"infisical unavailable: {type(exc).__name__}") from None
         try:
@@ -112,17 +123,31 @@ class InfisicalSource:
             raise AppTokenError("infisical reply was not JSON") from None
 
     def _login(self) -> None:
-        data = self._call(
-            "POST",
-            "/api/v1/auth/universal-auth/login",
-            {"clientId": self._cid, "clientSecret": self._csec},
-            auth=False,
-        )
+        try:
+            data = self._call(
+                "POST",
+                "/api/v1/auth/universal-auth/login",
+                {"clientId": self._cid, "clientSecret": self._csec},
+                auth=False,
+            )
+        except InfisicalHttpError as exc:
+            if exc.status in (401, 403):
+                raise AppTokenError(
+                    f"infisical rejected the machine identity ({self._masked_identity()})"
+                ) from None
+            raise
         self._token = str(data.get("accessToken") or "")
         if not self._token:
             raise AppTokenError("infisical login returned no token")
 
+    def _masked_identity(self) -> str:
+        return f"client id ending {self._cid[-4:]}" if len(self._cid) >= 4 else "client id"
+
     def secret(self, name: str) -> str:
+        # Fleet credential order:  environment first, then Infisical.
+        env_value = os.environ.get(name)
+        if env_value:
+            return env_value
         if name in self._cache:
             return self._cache[name]
         if not self._token:

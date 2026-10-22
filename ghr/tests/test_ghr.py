@@ -12,6 +12,7 @@ import os
 import tempfile
 import threading
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -658,3 +659,74 @@ class TestAuditSecretHashing(unittest.TestCase):
         self.assertEqual(row["note_len"], 34)
         self.assertEqual(row["keep"], "v")
         self.assertNotIn("note", row)
+
+
+class TestInfisicalSourceOrdering(unittest.TestCase):
+    def test_environment_wins_over_infisical(self):
+        from ghr.app_tokens import InfisicalSource
+
+        def boom(req, timeout=0):
+            raise AssertionError("network must not be touched when env supplies the value")
+
+        source = InfisicalSource("cid-1234", "secret", "ws", opener=boom)
+        with unittest.mock.patch.dict(os.environ, {"GH_APP_X_ID": "42"}):
+            self.assertEqual(source.secret("GH_APP_X_ID"), "42")
+
+    def test_rejected_login_names_masked_identity_only(self):
+        import urllib.error as ue
+
+        from ghr.app_tokens import AppTokenError, InfisicalSource
+
+        def unauthorized(req, timeout=0):
+            raise ue.HTTPError(req.full_url, 401, "no", {}, None)
+
+        source = InfisicalSource("abcd1234wxyz", "supersecretvalue", "ws", opener=unauthorized)
+        with self.assertRaises(AppTokenError) as ctx:
+            source.secret("GH_APP_X_ID")
+        self.assertIn("client id ending wxyz", str(ctx.exception))
+        self.assertNotIn("supersecretvalue", str(ctx.exception))
+
+
+class TestGithubErrorSplit(unittest.TestCase):
+    class ErrClient(StubClient):
+        def __init__(self, status):
+            super().__init__()
+            self._status = status
+
+        def open_pr(self, repo, base, head, title, body):
+            raise RelayGitHubError(self._status, "boom")
+
+    def _handle(self, status):
+        tmp = tempfile.mkdtemp()
+        relay = Relay(
+            SeatPolicy(SEATS_JSON),
+            self.ErrClient(status),
+            AuditLog(os.path.join(tmp, "a.jsonl")),
+        )
+        code, payload = relay.handle(
+            SEAT_TOKEN,
+            "open_pr",
+            {
+                "repo": "Simple-With-Us/AI-Fleet-Coordinator",
+                "base": "main",
+                "head": "b",
+                "title": "t",
+                "body": "x",
+            },
+        )
+        rows = [json.loads(line) for line in open(os.path.join(tmp, "a.jsonl"))]
+        return code, payload, rows[-1]["result"]
+
+    def test_retryable_failures_are_502_and_marked(self):
+        for status in (0, 429, 500, 503):
+            code, payload, outcome = self._handle(status)
+            self.assertEqual(code, 502, status)
+            self.assertTrue(payload["retryable"], status)
+            self.assertEqual(outcome, "github_retryable", status)
+
+    def test_terminal_failures_are_400_and_marked(self):
+        for status in (401, 403, 404, 422):
+            code, payload, outcome = self._handle(status)
+            self.assertEqual(code, 400, status)
+            self.assertFalse(payload["retryable"], status)
+            self.assertEqual(outcome, "github_terminal", status)
