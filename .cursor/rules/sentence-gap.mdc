@@ -124,7 +124,7 @@ Matching one *or more* is half the fix.  The **markup group** ``([*_`~)\]"\x{27}
 is the other half:  a sentence end that sits *inside* a markup span is followed by the markup and
 only then by the space, so a pattern that wants the space right after the sentence end never
 matches it.  `**Bold sentence.**  Next sentence.` would post with no gap, and neither of the two
-checks below would catch it, because the file still holds other U+00A0 characters and this shape
+checks below would catch it, because the file still holds other gap characters and this shape
 is not a single space after a sentence end.  The group captures the markup and re-emits it before
 the gap, so the span survives and the gap lands after the closing markup.
 
