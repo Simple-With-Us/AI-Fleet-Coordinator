@@ -53,7 +53,9 @@ def read_key():
         return key
     binary = shutil.which("fleet-secrets") or os.path.expanduser("~/.local/bin/fleet-secrets")
     try:
-        out = subprocess.run([binary, "get", "HEALTH_HMAC_KEY"], capture_output=True, text=True, timeout=30)
+        out = subprocess.run(
+            [binary, "get", "HEALTH_HMAC_KEY"], capture_output=True, text=True, timeout=30
+        )
     except (OSError, subprocess.SubprocessError):
         return ""
     return out.stdout.strip() if out.returncode == 0 else ""
