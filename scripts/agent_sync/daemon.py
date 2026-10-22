@@ -56,6 +56,7 @@ from . import muse_bridge as MB
 from . import muse_bridge_mac as MBM
 from . import notes as NOTES
 from . import notes_relay as NR
+from . import operator_candidates as OC
 from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
@@ -80,6 +81,10 @@ DOWN_NOTIFY_SECONDS = 30 * 60.0
 CLOCK_JUMP_SECONDS = 120.0
 TOPIC_BACKFILL_CAP = 200
 PAGE = 100
+#: Session letters that are also ordinary English words.  They count as a tagged address only when
+#: they stand alone at the end of the message;  inside a sentence ("@**MiniMax** I think we ship")
+#: they are prose, never an address.
+PROSE_LETTERS = frozenset({"A", "I"})
 MAX_PAGES = 20
 RING_LIMIT = 5000
 CURSOR_FLUSH_SECONDS = 1.0
@@ -3162,7 +3167,17 @@ class Daemon:
             exclude=pending.trigger_ids,
             limit=int(runner.cfg.held_back["items_in_wake"]),
         )
-        chat_context = self.chat_context(runner, pending, history)
+        # Only a trigger message can carry the address, and the Operator's list goes to the sender
+        # of the message the letter was found in, not to the first trigger's sender.
+        letter, address_sender_id = self.tagged_letter(runner, history, pending.trigger_ids)
+        # The letter is resolved before the context is built, because the context ranks and
+        # cuts its rows before the letters join, and the addressed session has to survive
+        # that cut.
+        chat_context = self.chat_context(runner, pending, history, letter)
+        if letter:
+            # No platform is passed:  the ambiguity check is cross-platform and the platform named
+            # in the body is read off the registry rows the ask actually got.
+            self.ask_operator_for_candidates(runner, pending, letter, "", address_sender_id)
         prompt = W.build_prompt(
             seat=runner.seat,
             pending=pending,
@@ -3175,6 +3190,7 @@ class Daemon:
             route=self.route_gate(runner, pending),
             held_back=held,
             chats=chat_context,
+            tagged_address=letter or None,
         )
         held_count = held["count"] if held else 0
         is_muse = runner.cfg.wake == "muse"
@@ -3570,15 +3586,25 @@ class Daemon:
                 continue
             if not location:
                 continue
-            identity = (platform, location, scope, native)
+            # The catalog names the adapter it discovered through ("cursor-cloud"), and
+            # the registry keys on the platform ("cursor").  Both sides fold to the
+            # same namespace, so the join finds the session the register path stored.
+            identity = (OR.normalize_platform(platform), location, scope, native)
             if identity not in owners:
                 identities.append(identity)
             owners.setdefault(identity, []).append(row_id)
         failed: list[tuple[str, str, str, str]] = []
+        db_path = OR.registry_db_path(self.root, self.env)
+        # An override points at the shared store the Operator runs.  If that store
+        # is not there, the override is pointing at a path that is not mounted, and
+        # every row reads as unlettered.  A missing file is worth saying out loud
+        # there, because it is a deployment fault rather than an empty registry.
+        override = str(self.env.get(OR.ENV_REGISTRY_PATH, "") or "").strip()
+        if override and not os.path.isfile(db_path):
+            self.log.write("session-registry-missing", path=db_path)
+            return {}
         try:
-            found = OR.lookup_many(
-                OR.registry_db_path(self.root, self.env), identities, failures=failed
-            )
+            found = OR.lookup_many(db_path, identities, failures=failed)
         except OR.RegistryUnavailable as exc:
             # The registry could not be read at all:  a hot journal, a locked file.  Every
             # row reads as unlettered, and the reason goes to the listener log, so a
@@ -3603,8 +3629,264 @@ class Daemon:
                 labels[row_id] = (str(entry.get("label") or ""), str(entry.get("ref") or ""))
         return labels
 
+    def tagged_letter(
+        self,
+        runner: Any,
+        history: list[Mapping[str, Any]],
+        trigger_ids: Sequence[int] | None = None,
+    ) -> tuple[str, int | None]:
+        """(the session letter a trigger addressed, the sender of that message).
+
+        The letter sits next to the mention, the way the owner ruled:  "@**MiniMax** Z".
+        Only that shape counts, so a capital letter in ordinary prose is never read as an
+        address, and a bare letter with no mention is not an address at all.
+
+        Only the trigger messages can carry the address.  The rest of the topic history is not
+        scanned:  an address posted earlier in the topic, by anyone, for any question, must not
+        make this later unrelated wake look tagged.
+
+        The sender is the one whose message carried the letter, which is not always the first
+        trigger's sender (wakes.Pending.sender_id):  in a shared topic another user can ask the
+        same question.  The Operator's candidate list goes to the person who wrote the address.
+
+        "I" and "A" are valid session letters and the two English words that collide with them, so
+        they count as an address only when they stand alone at the end of the message.  In a
+        sentence ("@**MiniMax** I think we ship Friday") they are prose.
+        """
+        bots = (
+            R.fleet_bots_by_seat(
+                runner.users,
+                self.fleet_tags,
+                self.config.owner_user_id,
+                outgoing_webhook_seats=self.config.outgoing_webhook_seats,
+            ).get(runner.seat)
+            or []
+        )
+        wanted = {
+            int(i) for i in (trigger_ids or ()) if isinstance(i, int) and not isinstance(i, bool)
+        }
+        for bot in bots:
+            name = str(bot.get("full_name") or "")
+            if not name:
+                continue
+            for mention in ("@**%s**" % name, "@**%s|%d**" % (name, int(bot["user_id"]))):
+                for message in history:
+                    message_id = message.get("id")
+                    if (
+                        wanted
+                        and isinstance(message_id, int)
+                        and not isinstance(message_id, bool)
+                        and message_id not in wanted
+                    ):
+                        continue  # only a trigger can carry the address
+                    # A fetched message is a Zulip message, so its text is "content".
+                    body = str(message.get("content") or "")
+                    index = body.find(mention)
+                    if index < 0:
+                        continue
+                    tail = body[index + len(mention) :]
+                    match = re.match(r"\s+([A-Z])(?![A-Za-z0-9])", tail)
+                    if not match:
+                        continue
+                    letter = match.group(1)
+                    if letter in PROSE_LETTERS and tail[match.end() :].strip():
+                        continue  # "I think ..." is a sentence, not an address
+                    sender = message.get("sender_id")
+                    return letter, (
+                        int(sender)
+                        if isinstance(sender, int) and not isinstance(sender, bool)
+                        else None
+                    )
+        return "", None
+
+    def operator_candidates(self, platform: str, letter: str) -> list[dict[str, Any]]:
+        """The live sessions that could hold one letter.
+
+        With no platform this is the cross-platform query.  The registry keeps at most one live
+        holder of (platform, letter) - idx_alias_active - so the platform-scoped query can return
+        at most one row and can never show the ambiguity this list exists for.  The letter
+        namespace is per platform, so the same letter can be live on several of them at once, and
+        only the cross-platform query sees that.
+        """
+        db_path = OR.registry_db_path(self.root, self.env)
+        if platform:
+            return OR.candidates_for(db_path, platform, letter)
+        return OR.candidates_for_letter(db_path, letter)
+
+    def operator_dm_allowed(self, user_id: int) -> bool:
+        """Whether this user may be handed the candidate list.
+
+        The list carries native session ids and session titles, which are the fleet's internal
+        inventory.  The listener watches every public channel the fleet bot is in, so any realm
+        user can trigger a wake; without this gate an unrelated user could be handed that
+        inventory by direct message.  Only the pinned owner, or a user the owner has explicitly
+        allowed in `[operator] dm_allow`, is a legal recipient.
+        """
+        owner = int(getattr(self.config, "owner_user_id", 0) or 0)
+        if owner and int(user_id) == owner:
+            return True
+        allowed = getattr(self.config, "operator_dm_allow", None) or ()  # config.py parses it
+        return any(
+            isinstance(allow, int) and not isinstance(allow, bool) and int(allow) == int(user_id)
+            for allow in allowed
+        )
+
+    def ask_operator_for_candidates(
+        self,
+        runner: Any,
+        pending: Any,
+        letter: str,
+        platform: str = "",
+        address_sender_id: int | None = None,
+    ) -> None:
+        """Ask the Operator for the candidate list when a tagged letter is not one session.
+
+        The ask never blocks:  the seat answers in its own thread and names the letter it
+        used, and the Operator's own DM to the sender carries the list, so the seat's
+        thread stays clean.  The ask is made only when the letter does not name exactly
+        one session, because a letter that does name one needs no list.
+
+        `address_sender_id` is the sender of the message the letter was found in.  It is the
+        recipient, not the pending's first-trigger sender:  in a shared topic another user can
+        write the address, and that person is the one who asked which session it meant.
+        """
+        # Cross-platform on purpose:  see operator_candidates.  A platform-scoped query returns at
+        # most one row, which would make this send unreachable.
+        candidates = self.operator_candidates("", letter)
+        if len(candidates) == 1:
+            return
+        if not candidates:
+            return
+        # The platform is never a hardcoded seat name:  it is the namespace the letter is actually
+        # live in, read off this seat's own registry row when it holds one.
+        platform = platform or self.platform_of(runner, candidates)
+        recipient = address_sender_id or getattr(pending, "sender_id", None)
+        if not recipient:
+            self.log.write(
+                "operator-candidate-list",
+                seat=runner.seat,
+                letter=letter,
+                status="skipped",
+                reason="no sender",
+            )
+            return
+        recipient = int(recipient)
+        if not self.operator_dm_allowed(recipient):
+            # Refused before any send:  the list carries internal session inventory, and an
+            # unvalidated realm user id from a public-channel trigger is not a legal recipient.
+            self.log.write(
+                "operator-candidate-list",
+                seat=runner.seat,
+                letter=letter,
+                status="skipped",
+                reason="recipient not the owner and not allowed",
+            )
+            return
+        try:
+            outcome = OC.send_candidate_list(
+                seat=runner.seat,
+                platform=platform,
+                letters=[letter],
+                candidates=candidates,
+                recipient=int(recipient),
+                env=self.env,
+                home=self.home,
+                owner_user_id=self.config.owner_user_id,
+            )
+        except Exception as exc:
+            # send_candidate_list is contracted to answer with a dict and never raise, so an escape
+            # here is a bug in this handler, not a delivery outcome:  log it as its own state so it
+            # is never mistaken for a terminal refusal.
+            self.log.write(
+                "operator-candidate-list",
+                seat=runner.seat,
+                letter=letter,
+                status="error",
+                # The module's own token, so one filter on `unknown` finds every possibly-sent row.
+                delivery_status=OC.DELIVERY_UNKNOWN,
+                error=type(exc).__name__,
+            )
+            return
+        self.log.write(
+            "operator-candidate-list",
+            seat=runner.seat,
+            letter=letter,
+            status=str(outcome.get("status") or ""),
+            # ok / unknown / refused / retryable, so a retryable or
+            # outcome-unknown delivery stays pending instead of being filed as a
+            # terminal failure.  The value is the module's own vocabulary and
+            # is logged verbatim, so one field tells the whole story.
+            delivery_status=str(outcome.get("delivery_status") or ""),
+            reason=str(outcome.get("reason") or ""),
+            candidates=len(candidates),
+        )
+
+    def addressed_row(self, rows: list[dict[str, Any]], letter: str) -> dict[str, Any] | None:
+        """The catalog row that holds the session letter the trigger addressed.
+
+        A tagged address is "@**MiniMax** Z", so the letter is the seat's own platform
+        and the row that holds it is the session the sender meant.  The rows are ranked
+        and cut before the letters join, so without this the addressed session could be
+        cut out of the list and the address would name a session the wake never saw.
+
+        The lookup is the registry's own:  the letter names a session, and the session
+        names the catalog row.  The letter space is per platform, so the platform is
+        taken from the rows rather than assumed:  each namespace the rows carry is
+        asked, and the one whose holder matches a row is the answer.  A letter nobody
+        holds names no row, and a registry that cannot be read names no row either;
+        neither breaks the wake.
+        """
+        want = str(letter or "").strip().upper()
+        if not want or not rows:
+            return None
+        db_path = OR.registry_db_path(self.root, self.env)
+        namespaces = []
+        for row in rows:
+            namespace = OR.normalize_platform(str(row.get("platform") or ""))
+            if namespace and namespace not in namespaces:
+                namespaces.append(namespace)
+        for namespace in namespaces:
+            try:
+                found = OR.resolve_label(db_path, namespace, want)
+            except Exception:
+                continue
+            if not found:
+                continue
+            native = str(found.get("native_session_id") or "")
+            seat = str(found.get("seat") or "").upper()
+            if not native:
+                continue
+            for row in rows:
+                if str(row.get("session_id") or "") != native:
+                    continue
+                if seat and str(row.get("seat") or "").upper() != seat:
+                    continue
+                return row
+        return None
+
+    def platform_of(self, runner: Any, candidates: list[dict[str, Any]]) -> str:
+        """The platform namespace this seat's sessions live in, read off the registry rows.
+
+        Never a hardcoded seat name:  the fleet runs `minimax`, `claude-code` and others, and the
+        letter namespace is per platform.  This seat's own row wins;  otherwise the first row that
+        names a platform is the best answer the registry can give.
+        """
+        fallback = ""
+        for row in candidates:
+            name = str(row.get("platform") or "").strip().lower()
+            if not name:
+                continue
+            if str(row.get("seat") or "").strip().upper() == str(runner.seat).strip().upper():
+                return name
+            fallback = fallback or name
+        return fallback
+
     def chat_context(
-        self, runner: SeatRunner, pending: W.Pending, history: list[dict[str, Any]] | None = None
+        self,
+        runner: SeatRunner,
+        pending: W.Pending,
+        history: list[dict[str, Any]] | None = None,
+        letter: str = "",
     ) -> list[dict[str, Any]]:
         """Bounded metadata for an addressed Muse wake; transcript reads require one exact request."""
         if runner.cfg.wake != "muse" or not pending.trigger_ids or pending.route_tagged:
@@ -3630,6 +3912,9 @@ class Daemon:
                 "wake",
                 "read",
             }
+            # A direct message is owner-only plain replies (owner ruling, Oct 21 2026):  the
+            # session letter is for a tagged address, so a DM context carries no letter.
+            private = pending.type == "private"
 
             def relevance(row):
                 metadata = " ".join(
@@ -3660,7 +3945,16 @@ class Daemon:
                         for capability in ("wake", "read")
                     )
                 ]
-            rows = sorted(rows, key=relevance, reverse=True)[:24]
+            # A tagged address names one session, so the row that holds the letter
+            # has to be in the list or the address names nothing.  The rows are
+            # ranked and cut before the letters join, so the letter is resolved
+            # here and the holder is pulled in ahead of the cut and kept in it.
+            addressed = self.addressed_row(rows, letter)
+            if addressed is not None:
+                rows = [addressed] + [row for row in rows if row is not addressed]
+                rows = rows[:24]
+            else:
+                rows = sorted(rows, key=relevance, reverse=True)[:24]
             labels = self.session_labels(rows)
             context = []
             remaining = 24000
@@ -3684,9 +3978,16 @@ class Daemon:
                 # platform, the seat and the location, because a letter alone never
                 # resolves a session across surfaces, and a recycled letter carries its
                 # generation.
-                letter, letter_ref = labels.get(str(row.get("id") or ""), ("", ""))
-                public["label"] = letter
-                public["label_ref"] = letter_ref
+                #
+                # A direct message carries no letter (owner ruling, Oct 21 2026):  the letter
+                # is for a tagged address, and a DM is owner-only plain replies.  So a DM
+                # context carries no label at all, rather than a letter the owner has to be
+                # told to ignore.
+                row_letter, row_letter_ref = labels.get(str(row.get("id") or ""), ("", ""))
+                if private:
+                    row_letter, row_letter_ref = "", ""
+                public["label"] = row_letter
+                public["label_ref"] = row_letter_ref
                 public["location"] = str(getattr(self.config, "instance", "") or "")
                 encoded = self.scrub(json.dumps(public, ensure_ascii=True))
                 if len(encoded) > remaining:

@@ -316,6 +316,10 @@ class Pending:
             "skip_leases": list(self.skip_leases),
             "trigger_ts": self.trigger_ts,
             "route_tagged": self.route_tagged,
+            # The FIRST trigger's sender, kept in the row so a wake reloaded after a daemon
+            # restart still knows who asked.  The Operator candidate-list DM reads exactly this
+            # field as its recipient, so dropping it here silently disabled that path on reload.
+            "sender_id": self.sender_id,
         }
         if self.catch_up:
             row["catch_up"] = True
@@ -346,6 +350,12 @@ class Pending:
         ts = view.get("trigger_ts")
         pending.trigger_ts = (
             float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None
+        )
+        # sender_id is excluded when it is a bool, exactly as trigger_ts is:  a reloaded wake must
+        # keep the person who asked, or the Operator candidate-list DM takes its "no sender" branch.
+        sender = view.get("sender_id")
+        pending.sender_id = (
+            int(sender) if isinstance(sender, int) and not isinstance(sender, bool) else None
         )
         pending.route_tagged = view.get("route_tagged") is True
         pending.catch_up = view.get("catch_up") is True
@@ -691,6 +701,7 @@ def build_prompt(
     route: str | None = None,
     held_back: Mapping[str, Any] | None = None,
     chats: list[dict[str, Any]] | None = None,
+    tagged_address: str | None = None,
 ) -> str:
     """The daemon-authored header outside the untrusted block, then the last messages of the
     topic (or DM thread) inside it, each as exactly one JSON line (metadata and body together).
@@ -699,7 +710,10 @@ def build_prompt(
     (the header says routing is disabled, so the model leaves route null).  `held_back`
     (heldback.wake_summary), when its count is above 0, adds one trusted header line with the count
     and a second untrusted block after the messages:  the newest held-back wakes, one JSON line
-    each, ids, links and reasons only, never a body."""
+    each, ids, links and reasons only, never a body.  `tagged_address` is the session letter the
+    trigger addressed, when it carried one; the header then says the Operator already carried the
+    candidate list to the sender as a direct message, that nothing blocks, and that the seat
+    proceeds on its default letter and names the letter it used."""
     nonce = nonce or L.new_nonce()
     held_count = int(held_back.get("count") or 0) if held_back else 0
     held_items = list(held_back.get("items") or []) if held_back and held_count > 0 else []
@@ -725,6 +739,21 @@ def build_prompt(
             else "disabled (%s); leave route null" % route
         ),
     ]
+    if tagged_address:
+        lines.append(
+            "Session letter: the address used the session letter %s.  When more than one session "
+            "could hold it, the Operator has already carried the candidate list to the sender as "
+            "a direct message, so you do not need to ask.  Nothing here blocks: proceed on your "
+            "default letter, name the letter you used, and answer in your own thread."
+            % L.quoted(tagged_address, 8)
+        )
+    else:
+        lines.append(
+            "Session letter: when a tagged address (a platform mention plus a session letter) is "
+            "ambiguous, the Operator carries the candidate list to the sender as a direct "
+            "message.  Nothing here blocks: proceed on your default letter, name the letter you "
+            "used, and answer in your own thread."
+        )
     if held_count > 0:
         lines.append(
             "Held back: %d earlier wake%s of this seat did not run because of its budget or a full queue.  "
