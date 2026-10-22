@@ -1420,12 +1420,24 @@ class Round6Tests(unittest.TestCase):
     def test_outcome_store_at_capacity_evicts_a_refused_row(self):
         from ghr import outcomes
 
-        with tempfile.TemporaryDirectory() as tmp:
-            store = outcomes.OutcomeStore(os.path.join(tmp, "o.json"))
-            for i in range(outcomes.MAX_ENTRIES):
-                store.begin(f"k{i}")
-                store.finish(f"k{i}", "refused")
-            self.assertIsNone(store.begin("fresh"))
+        cap = 20
+        with unittest.mock.patch.object(outcomes, "MAX_ENTRIES", cap):
+            store = outcomes.OutcomeStore(None)
+            keys = [outcomes.key_for("S", "act", {"i": i}) for i in range(cap)]
+            for k in keys:
+                store.begin(k)
+                store.finish(k, "refused")
+            fresh = outcomes.key_for("S", "act", {"i": "fresh"})
+            self.assertIsNone(store.begin(fresh))  # None means acquired, a refused row was evicted
+            self.assertLessEqual(len(store._rows), cap)
+
+    def test_mcp_wrapper_thread_id_matches_the_relay_shape(self):
+        from ghr import mcp_server
+
+        base = {"repo": "Example-Org/widget-repo"}
+        for bad in ("PRRT_a b", "PRRT_short", "PRRT_" + "a" * 129):
+            self.assertIsNotNone(mcp_server._validate_args("resolve_thread", {**base, "thread_id": bad}))
+        self.assertIsNone(mcp_server._validate_args("resolve_thread", {**base, "thread_id": "PRRT_kwDOAbc-123_x"}))
 
     def test_thread_id_shape_and_unexpected_names_are_400s(self):
         from ghr.server import _validate_args

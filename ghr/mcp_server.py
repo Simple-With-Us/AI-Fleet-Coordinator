@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -151,7 +152,7 @@ def _validate_args(name: str, args: dict) -> str | None:
             return f"argument {key!r} must be an object"
     thread_id = args.get("thread_id")
     if name == "resolve_thread" and not (
-        isinstance(thread_id, str) and thread_id.startswith("PRRT_") and len(thread_id) < 128
+        isinstance(thread_id, str) and re.fullmatch(r"PRRT_[A-Za-z0-9_-]{6,128}", thread_id)
     ):
         return "thread_id must be a PRRT_ review-thread id"
     if name == "workflow_dispatch":
