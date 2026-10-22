@@ -159,6 +159,10 @@ function stubZulip(behaviour = {}) {
           display_recipient: "alerts",
           subject: "Shared.Service",
           sender_email: "datadog-bot@example.invalid",
+          // A standing block, not an alert line:  reconciliation accepts only a
+          // message this worker rendered, and the rendered block opens with this
+          // header.
+          content: "**Status: Shared.Service**\n\n**All clear** (1 monitored)\n",
         };
       return { ok: true, json: async () => ({ result: "success", msg: message }) };
     }
@@ -642,6 +646,8 @@ test("F4 an unpinned id is proved before it is adopted", async () => {
       display_recipient: "alerts",
       subject: "Some.Other.Topic",
       sender_email: "datadog-bot@example.invalid",
+      // A real standing block, just this source's block for a different topic.
+      content: "**Status: Some.Other.Topic**\n\n**All clear** (1 monitored)\n",
     }),
   });
   try {
@@ -694,6 +700,9 @@ test("F4 an unpinned id sent by another bot is refused", async () => {
       display_recipient: "alerts",
       subject: "Shared.Service",
       sender_email: "betterstack-bot@example.invalid",
+      // Another bot's one-line alert: same channel, same topic, same shape of
+      // message, and no standing-block header.
+      content: "● `SEVERE`  •  Shared.Service  •  error rate above threshold\n",
     }),
   });
   try {
@@ -720,11 +729,19 @@ test("F4 a source cannot come back and take a pin another source reconciled", as
   kv.store.set(statusKey("datadog", "alerts", "Shared.Service"), "4242");
   kv.store.set(statusOwnerKey(4242), JSON.stringify("datadog"));
   const storage = fakeStorage();
-  await storage.put(
-    deliveryKey("datadog", "alerts", "Shared.Service", "rev-1"),
-    { outcome: "ok", id: 100, revision: "rev-1" },
-  );
   const env = envFor(kv, { WRITER_STORAGE: storage });
+  // The stale outcome row has to be stored under the revision refreshStatus
+  // actually reads, which is the revision of the rows it collects.  A row
+  // parked under an invented revision is never read, so the stale id would
+  // never reach the id selection and this test would pass against the old,
+  // wrong ordering as well as the new one.
+  const revision = await statusRevision(
+    await collectStates(env, "datadog", "alerts", "Shared.Service"),
+  );
+  await storage.put(
+    deliveryKey("datadog", "alerts", "Shared.Service", revision),
+    { outcome: "ok", id: 100, revision },
+  );
   const stub = stubZulip();
   try {
     const content = await refreshStatus(env, "datadog", "alerts", "Shared.Service");
@@ -1705,4 +1722,268 @@ test("F4 a reconciliation cannot adopt a message another source owns", async () 
   } finally {
     working.restore();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Round two: the findings kody-ai raised against this PR.
+//
+// Each test names the finding it pins, so a failure says which behaviour
+// regressed.
+// ---------------------------------------------------------------------------
+
+test("F5 a resolved issue status closes its incident even on a firing action", async () => {
+  // "reopened" is a firing action, so a short-circuit on the action alone would
+  // raise a fresh SEVERE line for an issue Sentry reports as resolved.  The
+  // issue's own status has to win over what the action claimed.
+  const event = fromSentry({
+    ...SENTRY_ISSUE_PAYLOAD,
+    action: "reopened",
+    data: {
+      ...SENTRY_ISSUE_PAYLOAD.data,
+      issue: { ...SENTRY_ISSUE_PAYLOAD.data.issue, status: "resolved" },
+    },
+  });
+  assert.equal(event.firing, false);
+  assert.equal(event.severity, "INFO");
+  // The identity and the incident are unchanged: only the firing call moved.
+  assert.equal(event.key, "sentry:proj-1");
+});
+
+test("F6 an unknown barrier with no standing id refuses instead of posting again", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  // A POST whose acknowledgement was lost: the barrier is unknown and carries
+  // the id it was writing to.  The pin that held that id is gone, so the retry
+  // cannot edit the message it already owns.
+  await storage.put(
+    deliveryBarrierKey("datadog", "alerts", "Shared.Service"),
+    { outcome: "unknown", id: 100, revision: "rev-1" },
+  );
+  const stub = stubZulip();
+  try {
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+    // The point of the barrier: no second standing message on top of one that
+    // may already exist.
+    assert.equal(stub.posts().length, 0);
+    assert.equal(stub.patches().length, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("F7 an unknown barrier whose id is still ours retries by editing it", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  // The pin still points at 100 and this source owns it, so the retry is an
+  // edit of a message that already exists, never a second create.
+  kv.store.set(statusKey("datadog", "alerts", "Shared.Service"), "100");
+  kv.store.set(statusOwnerKey(100), JSON.stringify("datadog"));
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  await storage.put(
+    deliveryBarrierKey("datadog", "alerts", "Shared.Service"),
+    { outcome: "unknown", id: 100, revision: "rev-1" },
+  );
+  const stub = stubZulip();
+  try {
+    await refreshStatus(env, "datadog", "alerts", "Shared.Service");
+    assert.equal(stub.posts().length, 0);
+    assert.equal(stub.patches().length, 1);
+    assert.match(String(stub.patches()[0].url), /\/messages\/100$/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("F8 reconcile refuses one of this source's own alert lines", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  // This source's one-line alert for this topic, sent by this source's bot.
+  // Channel, topic and sender all match, so only the standing-block header tells
+  // it apart from the standing message.  Adopting it would point the pin at the
+  // alert and then PATCH the rendered block over its content.
+  const stub = stubZulip({
+    messageFor: () => ({
+      id: 4242,
+      type: "stream",
+      display_recipient: "alerts",
+      subject: "Shared.Service",
+      sender_email: "datadog-bot@example.invalid",
+      content: "● `SEVERE`  •  Shared.Service  •  error rate above threshold\n",
+    }),
+  });
+  try {
+    const response = await handler.fetch(
+      new Request(
+        "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+        { headers: { authorization: "Bearer fixture" } },
+      ),
+      env,
+      {},
+    );
+    assert.equal(response.status, 409);
+    // Nothing adopted, nothing edited, nothing posted: the alert line survives.
+    assert.equal(kv.store.get(statusKey("datadog", "alerts", "Shared.Service")), undefined);
+    assert.equal(kv.store.get(statusOwnerKey(4242)), undefined);
+    assert.equal(stub.patches().length, 0);
+    assert.equal(stub.posts().length, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("F9 reconcile accepts the source's own standing block", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  const losing = stubZulip({ throwOn: (call) => isStatusWrite(call) });
+  try {
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+  } finally {
+    losing.restore();
+  }
+  // The stubbed read returns a message carrying the rendered header, so the
+  // reconciliation is accepted and the topic resumes.
+  const stub = stubZulip();
+  try {
+    const response = await handler.fetch(
+      new Request(
+        "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+        { headers: { authorization: "Bearer fixture" } },
+      ),
+      env,
+      {},
+    );
+    assert.equal(response.status, 200);
+    assert.equal(stub.patches().length, 1);
+    assert.match(String(stub.patches()[0].url), /\/messages\/4242$/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("F10 a message missing a consumed field is not proof of anything", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  // Everything the contract reads is present except the content, so the message
+  // cannot be shown to be a standing block and cannot be adopted.  Reading the
+  // missing field as empty would have accepted it on weaker evidence.
+  const stub = stubZulip({
+    messageFor: () => ({
+      id: 4242,
+      type: "stream",
+      display_recipient: "alerts",
+      subject: "Shared.Service",
+      sender_email: "datadog-bot@example.invalid",
+    }),
+  });
+  try {
+    const response = await handler.fetch(
+      new Request(
+        "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+        { headers: { authorization: "Bearer fixture" } },
+      ),
+      env,
+      {},
+    );
+    assert.equal(response.status, 503);
+    assert.equal(kv.store.get(statusOwnerKey(4242)), undefined);
+    assert.equal(stub.posts().length, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("F11 an identity carrying a credential is refused before it becomes a key", async () => {
+  // The identity becomes a durable storage key and is relayed into the standing
+  // block, so a body that puts a token where an identity belongs must not be
+  // filed:  persisting it would copy the secret into this worker's storage.
+  assert.throws(
+    () =>
+      fromSentry({
+        ...SENTRY_ISSUE_PAYLOAD,
+        data: {
+          ...SENTRY_ISSUE_PAYLOAD.data,
+          issue: {
+            ...SENTRY_ISSUE_PAYLOAD.data.issue,
+            shortId: "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+          },
+        },
+      }),
+    /sentry issue identity looks like a credential/,
+  );
+  // The same guard covers a metric alert's identity, which is the field the
+  // finding named.
+  assert.throws(
+    () =>
+      fromSentry({
+        ...SENTRY_METRIC_PAYLOAD,
+        data: {
+          ...SENTRY_METRIC_PAYLOAD.data,
+          metric_alert: {
+            ...SENTRY_METRIC_PAYLOAD.data.metric_alert,
+            id: "AKIAIOSFODNN7EXAMPLE",
+          },
+        },
+      }),
+    /sentry metric identity looks like a credential/,
+  );
+  // The refusal names the field and never the value, so a log of the message
+  // cannot leak the secret it refused.
+  try {
+    fromSentry({
+      ...SENTRY_ISSUE_PAYLOAD,
+      data: {
+        ...SENTRY_ISSUE_PAYLOAD.data,
+        issue: {
+          ...SENTRY_ISSUE_PAYLOAD.data.issue,
+          shortId: "sk-ant-0123456789abcdefghijkl",
+        },
+      },
+    });
+    assert.fail("expected the identity to be refused");
+  } catch (error) {
+    assert.doesNotMatch(String(error.message), /sk-ant-/);
+  }
+  // An ordinary identity is unaffected: the guard must not refuse real alerts.
+  assert.equal(fromSentry(SENTRY_ISSUE_PAYLOAD).key, "sentry:proj-1");
+  assert.equal(fromSentry(SENTRY_METRIC_PAYLOAD).key, "sentry:metric:5678");
 });
