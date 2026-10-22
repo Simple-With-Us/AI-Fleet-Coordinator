@@ -182,6 +182,37 @@ class RetentionTests(unittest.TestCase):
         self.make_backup("2026-10-01")
         self.assertEqual(self.mod.prune_old_backups(self.gdrive, keep=30), [])
 
+    def test_a_drive_that_cannot_be_listed_does_not_take_the_job_down(self) -> None:
+        # The Drive is a File Provider mount, and it refuses some requests:
+        # listing the root of a large Drive is one of them, and it has refused
+        # from the launchd job with "Operation not permitted" while the same
+        # call succeeds from a shell.  Retention is housekeeping and it runs
+        # *after* the repository zips are already in Drive, so a refusal there
+        # has to be reported and carried on rather than raised.  Raised, it
+        # takes the whole job down, the mirror never runs, and the daily
+        # backup is reported as broken when the part the owner depends on had
+        # already succeeded.
+        self.make_backup("2026-10-01")
+
+        real_iterdir = Path.iterdir
+
+        def refuse(iterated_path):
+            raise PermissionError(1, "Operation not permitted", str(iterated_path))
+
+        Path.iterdir = refuse
+        try:
+            found = self.mod.dated_backup_folders(self.gdrive)
+            removed = self.mod.prune_old_backups(self.gdrive, keep=0)
+        finally:
+            Path.iterdir = real_iterdir
+
+        self.assertEqual(found, [], "an unlistable Drive yields no backup folders")
+        self.assertEqual(removed, [], "an unlistable Drive removes nothing")
+        self.assertTrue(
+            (self.gdrive / "Website & App Source Backups - 2026-10-01").is_dir(),
+            "the backup folder is still there",
+        )
+
 
 class DryRunTests(unittest.TestCase):
     """--dry-run changes nothing:  no folder, no zips, no notes, no removal."""

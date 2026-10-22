@@ -158,11 +158,29 @@ def dated_backup_folders(gdrive: Path) -> list[tuple[datetime.date, Path]]:
 
     Only a folder whose name is the prefix plus a real ISO date counts, so
     nothing else in Drive can be mistaken for a backup set.
+
+    A Drive root that cannot be listed is reported and treated as empty
+    rather than raised.  The Drive is a File Provider mount, and it refuses
+    some requests outright: listing the root of a large Drive is one of them,
+    and it has refused from the launchd job with "Operation not permitted"
+    while the same call succeeds from a shell.  Retention is housekeeping, and
+    it runs *after* the repository zips are already in Drive, so a refusal
+    there must not take the job down: the run would fail, the mirror would
+    never run, and the daily backup would be reported as broken when the part
+    the owner depends on had already succeeded.
     """
     found: list[tuple[datetime.date, Path]] = []
-    if not gdrive.is_dir():
+    try:
+        if not gdrive.is_dir():
+            return found
+        entries = sorted(gdrive.iterdir(), key=lambda p: p.name)
+    except OSError as exc:
+        print(
+            f"WARN: could not list {gdrive} to prune old backups: {exc}",
+            file=sys.stderr,
+        )
         return found
-    for entry in sorted(gdrive.iterdir(), key=lambda p: p.name):
+    for entry in entries:
         if not entry.is_dir() or not entry.name.startswith(BACKUP_FOLDER_PREFIX):
             continue
         stamp = entry.name[len(BACKUP_FOLDER_PREFIX) :]
