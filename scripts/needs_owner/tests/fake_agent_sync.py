@@ -93,7 +93,9 @@ def message_json(m):
 
 def main():
     argv = sys.argv[1:]
-    args = C.build_parser().parse_args(argv)
+    # The fake realm is "agent-sync":  pin it the way agent_sync/tests/harness.py pins its own,
+    # or every command line without --channel defaults to the live realm name.
+    args = C.build_parser("agent-sync").parse_args(argv)
     stdin = ""
     if getattr(args, "text", None) == ["-"]:
         stdin = sys.stdin.read()
