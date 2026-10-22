@@ -14,8 +14,8 @@ from agent_sync.service_identity import (
 
 OPERATOR_BOT_ID=43210
 OPERATOR_EMAIL="operator@example.test"
-AFC_PROJECT=str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-afc'))
-ENV={"OPERATOR_ZULIP_USER_ID":str(OPERATOR_BOT_ID),"OPERATOR_ZULIP_EMAIL":OPERATOR_EMAIL,"INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID":AFC_PROJECT,"ZULIP_SITE":"https://realm.example.test"}
+FLEET_OPS_PROJECT=str(uuid.uuid5(uuid.NAMESPACE_URL, 'fixture-project-fleet-ops'))
+ENV={"OPERATOR_ZULIP_USER_ID":str(OPERATOR_BOT_ID),"OPERATOR_ZULIP_EMAIL":OPERATOR_EMAIL,"INFISICAL_FLEET_OPS_PROJECT_ID":FLEET_OPS_PROJECT,"ZULIP_SITE":"https://realm.example.test"}
 def check_bot(user):
     return operator_bot(user,ENV,12)
 
@@ -103,7 +103,7 @@ class Tests(unittest.TestCase):
             operator_credentials(ENV, fetch=fetch)
         self.assertNotIn("DO-NOT-LOG", str(c.exception))
 
-    def test_the_production_reader_is_pinned_to_the_afc_project_and_the_two_names(self):
+    def test_the_production_reader_is_pinned_to_fleet_ops_and_the_two_names(self):
         seen = {}
 
         def fake(names, env, home, path=None):
@@ -118,8 +118,9 @@ class Tests(unittest.TestCase):
         self.assertEqual(
             seen["names"], ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY")
         )
-        # the AFC /zulip store, not Fleet-OPS /zulip and not the ambient environment
-        self.assertEqual(seen["env"][Z.ENV_INFISICAL_PROJECT], AFC_PROJECT)
+        # Fleet-OPS (where /zulip_operator lives), not the AFC Notes store and
+        # not the ambient environment
+        self.assertEqual(seen["env"][Z.ENV_INFISICAL_PROJECT], FLEET_OPS_PROJECT)
         # and the Operator's own folder: the seat keys are in /zulip and the
         # Operator's names are in /zulip_operator, so a read that does not name
         # the folder looks in the wrong store and finds nothing.
@@ -128,7 +129,7 @@ class Tests(unittest.TestCase):
     def test_wrong_owner_refused(self):
         self.assertFalse(check_bot({"bot_owner_id":99,"is_bot":True,"user_id":OPERATOR_BOT_ID,"email":OPERATOR_EMAIL}))
     def test_missing_project_refused(self):
-        with self.assertRaises(Z.CredentialError):operator_credentials({k:v for k,v in ENV.items() if k != "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"})
+        with self.assertRaises(Z.CredentialError):operator_credentials({k:v for k,v in ENV.items() if k != "INFISICAL_FLEET_OPS_PROJECT_ID"})
     def test_missing_identity_refused(self):
         with self.assertRaises(Z.CredentialError):operator_credentials({})
 

@@ -8,7 +8,7 @@ The listener permits OPERATOR with bot=Operator, creds=infisical and wake=inbox.
 
 Set OPERATOR_ZULIP_USER_ID and OPERATOR_ZULIP_EMAIL from the approved service registry on the listener, hosted Worker, and every host running the Notes CLI.  Both settings are required for Operator acceptance.  The authenticated bot must match that ID and email and belong to the pinned owner.  Missing settings or a mismatched owner fail closed.  Tests use synthetic identities.
 
-The listener also requires INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID for the Notes credential store and ZULIP_SITE for the realm.  This dedicated project selection does not change the project used by other seats.  Named reads, caches, names listings and outage backoff remain separated by project.  Concrete project identifiers and secret-store coordinates belong in private deployment configuration.
+The listener also requires INFISICAL_FLEET_OPS_PROJECT_ID (the same Fleet-OPS project setting every fleet credential read uses) and ZULIP_SITE for the realm.  The Operator names live in Fleet-OPS /zulip_operator - verified present 2026-10-21;  an earlier revision read them from the AFC project, where they do not exist, which is why the credential read never worked.  Concrete project identifiers and secret-store coordinates belong in private deployment configuration.
 
 The hosted Worker requires the same Operator identity settings when NOTES_RELAY_CONSUMER selects OPERATOR.  OWNER_USER_ID remains the pinned owner setting.  The consumer-sync script validates the consumer label only; it does not authenticate or grant authority to a bot.
 
