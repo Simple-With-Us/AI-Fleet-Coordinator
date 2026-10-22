@@ -15,7 +15,6 @@ import json
 import os
 import socket
 import struct
-import sys
 
 SOCK = os.path.expanduser("~/.minimax/app-server-control/app-server.sock")
 HOST = "mcode.local"
@@ -73,7 +72,7 @@ def read_frame(s, timeout=15):
     s.settimeout(timeout)
     try:
         head = s.recv(2)
-    except socket.timeout:
+    except TimeoutError:
         return None, b""
     if not head:
         return None, b""
@@ -105,15 +104,22 @@ def main():
     if "101" not in head.split("\r\n")[0]:
         print(head[:600])
         return 2
-    send_text(s, json.dumps({
-        "id": "lifecycle-1",
-        "method": "initialize",
-        "params": {
-            "protocolVersion": PROTOCOL_VERSION,
-            "clientInfo": {"name": "mcode-probe"},
-            "capabilities": {"desktopService": {"transportProtocolVersion": TRANSPORT_PROTOCOL_VERSION}},
-        },
-    }))
+    send_text(
+        s,
+        json.dumps(
+            {
+                "id": "lifecycle-1",
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "clientInfo": {"name": "mcode-probe"},
+                    "capabilities": {
+                        "desktopService": {"transportProtocolVersion": TRANSPORT_PROTOCOL_VERSION}
+                    },
+                },
+            }
+        ),
+    )
     opcode, body = read_frame(s)
     print("--- initialize reply (opcode %s) ---" % opcode)
     text = body.decode("utf-8", "replace")
