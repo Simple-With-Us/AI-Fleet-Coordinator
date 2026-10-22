@@ -75,6 +75,25 @@ class Tests(unittest.TestCase):
             self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
         self.assertFalse(self.mints)
 
+    def test_wrong_app_refusal_carries_masked_preview(self):
+        self.router = TokenRouter(
+            lambda slug: (100, "-----BEGIN RSA PRIVATE KEY-----\n" + "A" * 40 + "\n-----END RSA PRIVATE KEY-----"),
+            Path(self.temp.name) / "cache",
+            api=self.api,
+            signer=lambda *a: "MOCK",
+            clock=lambda: 1800000000,
+        )
+        self.wrong_app = True
+        try:
+            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
+        except RoutingError as exc:
+            preview = getattr(exc, "credential_preview", None)
+        else:
+            self.fail("expected RoutingError")
+        self.assertIsNotNone(preview)
+        self.assertNotIn("PRIVATE KEY", preview)
+        self.assertNotIn("A" * 20, preview)
+
     def test_suspended_fails_closed(self):
         self.suspended = True
         with self.assertRaises(RoutingError):

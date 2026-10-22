@@ -298,7 +298,10 @@ class TokenRouter:
         ):
             raise RoutingError("GitHub /app identity has malformed fields", outcome="refused")
         if app["id"] != app_id or app["slug"] != slug:
-            raise RoutingError("Key belongs to a different App", outcome="refused")
+            exc = RoutingError("Key belongs to a different App", outcome="refused")
+            if pem_preview:
+                exc.credential_preview = pem_preview
+            raise exc
         install = self.api("GET", "/repos/" + owner + "/" + repo + "/installation", bearer)
         account = install.get("account")
         if (
