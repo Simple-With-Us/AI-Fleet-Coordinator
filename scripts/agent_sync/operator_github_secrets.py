@@ -1,4 +1,4 @@
-"""Named-secret adapter. Secrets resolve through the fleet-secrets CLI only.
+"""Named-secret adapter.  Secrets resolve through the fleet-secrets CLI only.
 
 Owner decision 2026-10-21:  no process-environment secrets, no .env files and
 no direct Infisical HTTP in fleet components.  The CLI holds its own
