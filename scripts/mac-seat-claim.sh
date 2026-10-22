@@ -29,7 +29,7 @@ CURSOR_AGENT="${CURSOR_AGENT:-cursor-agent}"
 # Zulip posting needs no shared secret: the agent-sync CLI reads the seat's own
 # Zulip credential (Infisical Fleet-OPS /zulip).  The old AGENT_SYNC_ENV / AGENT_SYNC_POST_URL
 # relay is retired and deliberately not referenced here.
-ZULIP_CHANNEL="${ZULIP_CHANNEL:-agent-sync}"
+ZULIP_CHANNEL="${ZULIP_CHANNEL:-Work-In-Progress}"
 
 BY=""
 REPO_FILTER=""

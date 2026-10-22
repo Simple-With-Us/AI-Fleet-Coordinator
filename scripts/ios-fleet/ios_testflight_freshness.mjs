@@ -42,7 +42,7 @@
  * and at most --max-ships (default 1) per run.  It never passes --force-ship
  * or any gate override, and never runs an App Store GM workflow.
  *
- * ALERTS (--alert) go to Zulip #agent-sync, topic "AFC testflight-freshness",
+ * ALERTS (--alert) go to Zulip #Work-In-Progress, topic "AFC testflight-freshness",
  * through the agent-sync CLI:  an app still behind six hours after the check
  * first saw it behind (so the catch-up ship has had its chance, or could not
  * run), or the check itself failing.  One digest post per run, at most one
@@ -66,7 +66,7 @@ export const EXIT_BEHIND = 1;
 export const EXIT_FAILED = 2;
 export const SENTENCE_GAP = "  ";
 export const ALERT_TOPIC = "AFC testflight-freshness";
-export const ALERT_CHANNEL = "agent-sync";
+export const ALERT_CHANNEL = "Work-In-Progress";
 const HOUR = 3600e3;
 const MINUTE = 60e3;
 const NOT_CURRENT = new Set(["behind", "no-build", "expired", "shipping", "processing"]);

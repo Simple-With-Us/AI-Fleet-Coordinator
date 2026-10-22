@@ -118,7 +118,7 @@ runs an App Store GM workflow.  Every one of these must hold, or the app is repo
 
 ## Alerts (`--alert`)
 
-The check posts to Zulip `#agent-sync`, topic `AFC testflight-freshness`, with
+The check posts to Zulip `#Work-In-Progress`, topic `AFC testflight-freshness`, with
 `simple-chat post --as CLAUDE --session tfresh` (override the seat with `IOS_TF_FRESHNESS_SEAT`):
 
 - an app the check has seen behind, without a break, for **more than 6 hours**:  by then the
