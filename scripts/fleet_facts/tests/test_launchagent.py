@@ -138,9 +138,21 @@ class ZshenvRowTests(unittest.TestCase):
         (self.row,) = [line for line in text.splitlines() if line.startswith("| `~/.zshenv` (the `GH_TOKEN` refresh)")]
 
     def test_the_order_names_the_fleet_default_and_this_shell_as_the_exception(self) -> None:
-        self.assertIn("the environment first and `fleet-secrets get` second", self.row)
+        self.assertIn("A nonempty inherited `GH_TOKEN` wins", self.row)
+        self.assertIn("That is the fleet default", self.row)
         self.assertIn("this shell is the one documented exception", self.row)
         self.assertIn("approved by Jay on Oct 21, 2026", self.row)
+
+    def test_the_sync_row_lists_the_sources_the_script_accepts(self) -> None:
+        text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
+        (row,) = [line for line in text.splitlines() if line.startswith("| `scripts/fleet_secrets/sync_cli_login.py`")]
+        script = (REPO / "scripts" / "fleet_secrets" / "sync_cli_login.py").read_text(encoding="utf-8")
+        for source in ('"env"', '"fleet-secrets"', '"file"'):
+            self.assertIn(source, script, "the script no longer accepts this source")
+        for source in ("--from env NAME", "--from fleet-secrets --from-path PATH", "--from file PATH"):
+            self.assertIn(source, row, "the row does not list a source the script accepts")
+        for rejected in ("--from gh", "--from stdin", "--from keychain"):
+            self.assertNotIn(rejected, row, "the row lists a source the script rejects")
 
     def test_the_store_side_is_qualified_and_the_fallbacks_are_named(self) -> None:
         self.assertIn("a nonempty fleet-store value wins whenever the store answers with one", self.row)
@@ -164,6 +176,10 @@ class ZshenvRowTests(unittest.TestCase):
         self.assertIn("scripts/fleet_secrets/sync_cli_login.py", self.row)
         self.assertIn("`git-relay` is the consumer of those per-seat logins", self.row)
         self.assertNotIn("Agents do not handle tokens at all", self.row)
+
+    def test_the_durable_piece_says_where_a_seat_own_login_comes_from(self) -> None:
+        self.assertIn("A seat's own login is written from `--from file`", self.row)
+        self.assertIn("it is not a per-seat source", self.row)
 
 
 if __name__ == "__main__":  # pragma: no cover
