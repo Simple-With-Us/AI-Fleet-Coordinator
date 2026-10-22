@@ -39,7 +39,9 @@ MAX_SENDER = 64
 MAX_QUESTION = 200
 MAX_SEAT = 32
 
-_COMMON_FIELDS = frozenset({"message_id", "sender_user_id", "sender", "state", "asked_at", "deadline", "question"})
+_COMMON_FIELDS = frozenset(
+    {"message_id", "sender_user_id", "sender", "state", "asked_at", "deadline", "question"}
+)
 _STATE_FIELDS = {
     PENDING: frozenset(),
     ROUTED: frozenset({"answered_at", "answering_seat"}),
@@ -75,7 +77,9 @@ def _text(value: Any, field: str, key: str, limit: int) -> str:
     if not isinstance(value, str):
         raise ValueError("clarify: entry %s has a non-string %s" % (key, field))
     if len(value) > limit:
-        raise ValueError("clarify: entry %s has an over-long %s (%d > %d)" % (key, field, len(value), limit))
+        raise ValueError(
+            "clarify: entry %s has an over-long %s (%d > %d)" % (key, field, len(value), limit)
+        )
     return value
 
 
@@ -117,7 +121,9 @@ def _validate_entry(key: str, entry: Any) -> dict[str, Any]:
     if state == DROPPED:
         _number(entry["dropped_at"], "dropped_at", key)
         if entry["reason"] != REASON_NO_REPLY:
-            raise ValueError("clarify: entry %s has an unknown drop reason %r" % (key, entry["reason"]))
+            raise ValueError(
+                "clarify: entry %s has an unknown drop reason %r" % (key, entry["reason"])
+            )
     return dict(entry)
 
 
@@ -128,7 +134,9 @@ def load(root: str) -> dict[str, Any]:
     entries = data.get("entries") if isinstance(data, dict) else None
     if not isinstance(entries, Mapping):
         return {"entries": {}}
-    return {"entries": {str(key): _validate_entry(str(key), value) for key, value in entries.items()}}
+    return {
+        "entries": {str(key): _validate_entry(str(key), value) for key, value in entries.items()}
+    }
 
 
 def save(root: str, data: Mapping[str, Any]) -> None:
