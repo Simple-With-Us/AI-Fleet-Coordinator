@@ -1,11 +1,12 @@
 """Per-seat GitHub App tokens, minted and refreshed by the relay.
 
 Seats never see an App id, private key, or the 1-hour installation-token
-expiry:  the relay reads each seat App's credentials environment-first, then from
-Infisical (GH_APP_<SLUG>_ID and GH_APP_<SLUG>_PRIVATE_KEY in the configured
-project, prod, /github-apps), signs a JWT with the local openssl binary
-(stdlib has no RSA), and caches installation tokens in memory, refreshing 5
-minutes early.  The private key reaches openssl through an inherited pipe fd,
+expiry:  the relay reads each seat App's credentials (GH_APP_<SLUG>_ID and
+GH_APP_<SLUG>_PRIVATE_KEY, prod /github-apps) through the `fleet-secrets`
+CLI only - owner decision 2026-10-21:  no process-environment secrets and no
+direct Infisical HTTP in the relay - signs a JWT with the local openssl
+binary (stdlib has no RSA), and caches installation tokens in memory,
+refreshing 5 minutes early.  The private key reaches openssl through an inherited pipe fd,
 so nothing is written to disk and no secret is ever logged or returned beyond
 the minted token a seat is allowed to use.
 """
@@ -18,31 +19,14 @@ import os
 import subprocess
 import threading
 import time
-import urllib.error
-import urllib.request
 
 TIMEOUT_SECONDS = 30
 REFRESH_MARGIN_SECONDS = 300
 MINT_PERMISSION_CEILING = ("contents", "pull_requests", "issues", "actions", "metadata")
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """A 3xx must never be followed:  redirects can carry the bearer to another origin."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
 class AppTokenError(Exception):
     """A mint or credential lookup failed;  never carries secret material."""
-
-
-class InfisicalHttpError(AppTokenError):
-    """Infisical answered with an HTTP status;  carries only the status code."""
-
-    def __init__(self, status: int):
-        super().__init__(f"infisical http {status}")
-        self.status = status
 
 
 def _b64(data: bytes) -> bytes:
@@ -86,104 +70,39 @@ def sign_jwt(app_id: int, pem: str, now: int) -> str:
         os.close(read_fd)
 
 
-class InfisicalSource:
-    """Reads one named secret at a time from Infisical via universal auth."""
+class FleetSecretsSource:
+    """Reads one named secret at a time through the `fleet-secrets` CLI.
 
-    def __init__(
-        self,
-        client_id: str,
-        client_secret: str,
-        workspace_id: str,
-        environment: str = "prod",
-        secret_path: str = "/github-apps",
-        base_url: str = "https://app.infisical.com",
-        opener=None,
-    ):
-        if not client_id or not client_secret or not workspace_id:
-            raise AppTokenError("Infisical machine identity is not configured")
-        self._cid = client_id
-        self._csec = client_secret
-        self._workspace = workspace_id
-        self._env = environment
-        self._path = secret_path
-        self._base = base_url.rstrip("/")
-        self._opener = opener or urllib.request.build_opener(_NoRedirect()).open
-        self._token = ""
+    The only approved credential path for the relay:  no environment reads,
+    no direct Infisical calls.  The CLI's own identity and backend are its
+    concern;  this class runs it with a timeout, caches values in memory, and
+    never logs or includes what it returns.
+    """
+
+    def __init__(self, executable: str = "fleet-secrets", runner=subprocess.run):
+        self._exe = executable
+        self._run = runner
         self._cache: dict[str, str] = {}
 
-    def _call(self, method: str, path: str, payload: dict | None, auth: bool) -> dict:
-        req = urllib.request.Request(
-            self._base + path,
-            method=method,
-            data=json.dumps(payload).encode() if payload is not None else None,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "swu-pr-relay",
-                **({"Authorization": f"Bearer {self._token}"} if auth else {}),
-            },
-        )
-        try:
-            with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
-                raw = resp.read(1024 * 1024)
-        except urllib.error.HTTPError as exc:
-            raise InfisicalHttpError(exc.code) from None
-        except (urllib.error.URLError, OSError) as exc:
-            raise AppTokenError(f"infisical unavailable: {type(exc).__name__}") from None
-        try:
-            return json.loads(raw) if raw else {}
-        except json.JSONDecodeError:
-            raise AppTokenError("infisical reply was not JSON") from None
-
-    def _login(self) -> None:
-        try:
-            data = self._call(
-                "POST",
-                "/api/v1/auth/universal-auth/login",
-                {"clientId": self._cid, "clientSecret": self._csec},
-                auth=False,
-            )
-        except InfisicalHttpError as exc:
-            if exc.status in (401, 403):
-                raise AppTokenError(
-                    f"infisical rejected the machine identity ({self._masked_identity()})"
-                ) from None
-            raise
-        self._token = str(data.get("accessToken") or "")
-        if not self._token:
-            raise AppTokenError("infisical login returned no token")
-
-    def _masked_identity(self) -> str:
-        return f"client id ending {self._cid[-4:]}" if len(self._cid) >= 4 else "client id"
-
     def secret(self, name: str) -> str:
-        # Fleet credential order:  environment first, then Infisical.
-        env_value = os.environ.get(name)
-        if env_value:
-            return env_value
         if name in self._cache:
             return self._cache[name]
-        if not self._token:
-            self._login()
-        from urllib.parse import quote
-
-        path = (
-            "/api/v3/secrets/raw/"
-            + quote(name, safe="")
-            + f"?workspaceId={self._workspace}&environment={self._env}"
-            + f"&secretPath={quote(self._path, safe='')}"
-        )
         try:
-            data = self._call("GET", path, None, auth=True)
-        except InfisicalHttpError as exc:
-            if exc.status != 401:
-                raise
-            # The cached access token expired or was revoked:  one fresh login,
-            # then retry the read once with the new token.
-            self._login()
-            data = self._call("GET", path, None, auth=True)
-        value = str((data.get("secret") or {}).get("secretValue") or "")
+            result = self._run([self._exe, "get", name], capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            raise AppTokenError(f"fleet-secrets lookup timed out for {name}") from None
+        except FileNotFoundError:
+            raise AppTokenError("fleet-secrets executable not found") from None
+        except OSError as exc:
+            raise AppTokenError(
+                f"fleet-secrets lookup failed for {name}: {type(exc).__name__}"
+            ) from None
+        if result.returncode:
+            # stderr can carry backend detail;  report only the variable name.
+            raise AppTokenError(f"fleet-secrets has no value for {name}")
+        value = result.stdout.decode("utf-8", "replace").strip()
         if not value:
-            raise AppTokenError(f"infisical secret {name} is missing or empty")
+            raise AppTokenError(f"fleet-secrets returned an empty value for {name}")
         self._cache[name] = value
         return value
 

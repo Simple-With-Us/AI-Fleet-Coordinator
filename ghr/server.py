@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -385,28 +386,16 @@ def from_env() -> Relay:
     audit = AuditLog(os.environ.get("PR_RELAY_AUDIT_PATH", "pr-relay-audit.jsonl"))
     outcomes = OutcomeStore(os.environ.get("PR_RELAY_OUTCOMES_PATH", "pr-relay-outcomes.json"))
     app_minter = None
-    if os.environ.get("INFISICAL_CLIENT_ID"):
-        missing = [
-            name
-            for name in ("INFISICAL_CLIENT_SECRET", "INFISICAL_WORKSPACE_ID")
-            if not os.environ.get(name)
-        ]
-        if missing:
-            raise SystemExit(
-                f"ghr config: {', '.join(missing)} required when INFISICAL_CLIENT_ID is set"
-            )
-        from .app_tokens import AppTokenMinter, InfisicalSource
+    if os.environ.get("PR_RELAY_APP_MINT", "1") != "0":
+        # App-credential reads go through the fleet-secrets CLI only (owner
+        # decision 2026-10-21:  no env secrets, no direct Infisical).  The CLI
+        # must be installed on this host or App actions stay unavailable.
+        if not shutil.which("fleet-secrets"):
+            raise SystemExit("ghr config: fleet-secrets executable not found on PATH")
+        from .app_tokens import AppTokenMinter, FleetSecretsSource
 
-        try:
-            source = InfisicalSource(
-                os.environ["INFISICAL_CLIENT_ID"],
-                os.environ["INFISICAL_CLIENT_SECRET"],
-                os.environ["INFISICAL_WORKSPACE_ID"],
-            )
-        except AppTokenError as exc:
-            raise SystemExit(f"ghr config: {exc}") from exc
         app_minter = AppTokenMinter(
-            source,
+            FleetSecretsSource(),
             lambda method, path, bearer, payload=None: client._call(
                 method, path, payload, bearer=bearer
             ),

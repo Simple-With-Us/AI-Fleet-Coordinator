@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -659,30 +660,79 @@ class TestAuditSecretHashing(unittest.TestCase):
         self.assertNotIn("note", row)
 
 
-class TestInfisicalSourceOrdering(unittest.TestCase):
-    def test_environment_wins_over_infisical(self):
-        from ghr.app_tokens import InfisicalSource
+class TestFleetSecretsSource(unittest.TestCase):
+    """Owner decision 2026-10-21:  relay secrets resolve through the
+    fleet-secrets CLI only - never the process environment, never direct
+    Infisical HTTP."""
 
-        def boom(req, timeout=0):
-            raise AssertionError("network must not be touched when env supplies the value")
+    def _source(self, stdout=b"", returncode=0, calls=None):
+        from ghr.app_tokens import FleetSecretsSource
 
-        source = InfisicalSource("cid-1234", "secret", "ws", opener=boom)
-        with unittest.mock.patch.dict(os.environ, {"GH_APP_X_ID": "42"}):
-            self.assertEqual(source.secret("GH_APP_X_ID"), "42")
+        def runner(argv, capture_output, timeout):
+            if calls is not None:
+                calls.append(argv)
+            return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=b"")
 
-    def test_rejected_login_names_masked_identity_only(self):
-        import urllib.error as ue
+        return FleetSecretsSource(runner=runner)
 
-        from ghr.app_tokens import AppTokenError, InfisicalSource
+    def test_reads_through_fleet_secrets_get_and_caches(self):
+        calls = []
+        source = self._source(stdout=b"value\n", calls=calls)
+        self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "value")
+        self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "value")
+        self.assertEqual(calls, [["fleet-secrets", "get", "GH_APP_SWU_ECHO_ID"]])
 
-        def unauthorized(req, timeout=0):
-            raise ue.HTTPError(req.full_url, 401, "no", {}, None)
+    def test_environment_is_never_consulted(self):
+        calls = []
+        source = self._source(stdout=b"from-fleet-secrets\n", calls=calls)
+        with unittest.mock.patch.dict(os.environ, {"GH_APP_SWU_ECHO_ID": "from-env"}):
+            self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "from-fleet-secrets")
+        self.assertEqual(len(calls), 1)
 
-        source = InfisicalSource("abcd1234wxyz", "supersecretvalue", "ws", opener=unauthorized)
+    def test_missing_value_names_the_variable_only(self):
+        from ghr.app_tokens import AppTokenError
+
+        source = self._source(returncode=1)
         with self.assertRaises(AppTokenError) as ctx:
+            source.secret("GH_APP_SWU_ECHO_PRIVATE_KEY")
+        self.assertIn("GH_APP_SWU_ECHO_PRIVATE_KEY", str(ctx.exception))
+
+    def test_timeout_and_missing_executable_are_named_errors(self):
+        from ghr.app_tokens import AppTokenError, FleetSecretsSource
+
+        def hanging(argv, capture_output, timeout):
+            raise subprocess.TimeoutExpired(argv, timeout)
+
+        with self.assertRaises(AppTokenError) as ctx:
+            FleetSecretsSource(runner=hanging).secret("GH_APP_X_ID")
+        self.assertIn("timed out", str(ctx.exception))
+
+        def missing(argv, capture_output, timeout):
+            raise FileNotFoundError(argv[0])
+
+        with self.assertRaises(AppTokenError) as ctx:
+            FleetSecretsSource(runner=missing).secret("GH_APP_X_ID")
+        self.assertIn("not found", str(ctx.exception))
+
+    def test_empty_value_is_refused(self):
+        from ghr.app_tokens import AppTokenError
+
+        source = self._source(stdout=b"  \n")
+        with self.assertRaises(AppTokenError):
             source.secret("GH_APP_X_ID")
-        self.assertIn("client id ending wxyz", str(ctx.exception))
-        self.assertNotIn("supersecretvalue", str(ctx.exception))
+
+    def test_secret_value_never_appears_in_errors(self):
+        from ghr.app_tokens import AppTokenError, FleetSecretsSource
+
+        def runner(argv, capture_output, timeout):
+            return subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=b"backend detail")
+
+        try:
+            FleetSecretsSource(runner=runner).secret("GH_APP_X_ID")
+        except AppTokenError as exc:
+            self.assertNotIn("backend detail", str(exc))
+        else:
+            self.fail("expected AppTokenError")
 
 
 class TestGithubErrorSplit(unittest.TestCase):
@@ -1134,55 +1184,3 @@ class TestMcpSchemaEnforcement(unittest.TestCase):
     def test_missing_required_rejected_before_forwarding(self):
         reply = self._call("open_pr", {"repo": "a/b"})
         self.assertEqual(reply["error"]["code"], -32602)
-
-
-class TestInfisicalEnvFallback(unittest.TestCase):
-    def test_environment_absent_falls_through_to_infisical(self):
-        from ghr.app_tokens import InfisicalSource
-
-        with unittest.mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("GH_APP_ABSENT_ID", None)
-
-            def opener(req, timeout=30):
-                if "login" in req.full_url:
-                    return _FakeResp({"accessToken": "tok-1"})
-                return _FakeResp({"secret": {"secretValue": "from-infisical"}})
-
-            source = InfisicalSource("cid-1234", "secret", "ws", opener=opener)
-            self.assertEqual(source.secret("GH_APP_ABSENT_ID"), "from-infisical")
-
-
-class TestInfisicalRelogin(unittest.TestCase):
-    def test_401_triggers_one_relogin_and_retry(self):
-        from ghr.app_tokens import InfisicalSource
-
-        calls = []
-
-        logins = []
-
-        def opener(req, timeout=30):
-            calls.append(req.full_url)
-            if "login" in req.full_url:
-                logins.append(1)
-                return _FakeResp({"accessToken": "tok-%d" % len(logins)})
-            if req.headers.get("Authorization") == "Bearer tok-2":
-                return _FakeResp({"secret": {"secretValue": "value"}})
-            raise urllib.error.HTTPError(req.full_url, 401, "unauthorized", {}, None)
-
-        source = InfisicalSource("cid-1234", "secret", "ws", opener=opener)
-        self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "value")
-        self.assertEqual(sum(1 for c in calls if "login" in c), 2)
-
-
-class _FakeResp:
-    def __init__(self, data):
-        self._data = data
-
-    def read(self, _n=10_000_000):
-        return json.dumps(self._data).encode()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False

@@ -57,12 +57,14 @@ is only a policy entry.
 | resolve_thread | seat's App (pull_requests write) | implemented |
 | create_release, rerun_workflow, cancel_workflow, set_labels, create_issue_comment, request_reviewers, set_branch_protection, create_repo | seat's App | registered, refused until implemented |
 
-App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read one named key at a time,
-environment first, then Infisical (INFISICAL_CLIENT_ID / _SECRET / _WORKSPACE_ID env, prod
-/github-apps), JWT signed with the local openssl binary (the key reaches openssl through an
-inherited pipe fd, never a file), installation tokens cached in memory under a lock and refreshed
-5 minutes early.  An expired or revoked Infisical access token triggers one fresh login and one
-retry.  Nothing secret is written to disk, logged, or audited;  audit rows hash token values.
+App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read one named key at a time
+through the `fleet-secrets` CLI only (owner decision 2026-10-21:  no process-environment
+secrets, no direct Infisical HTTP in the relay), JWT signed with the local openssl binary
+(the key reaches openssl through an inherited pipe fd, never a file), installation tokens
+cached in memory under a lock and refreshed 5 minutes early.  Values are cached in memory
+per process.  Nothing secret is written to disk, logged, or audited;  audit rows hash token
+values.  PR_RELAY_APP_MINT=0 disables App actions;  otherwise the fleet-secrets executable
+must be on PATH at startup.
 
 ## MCP wrapper
 
