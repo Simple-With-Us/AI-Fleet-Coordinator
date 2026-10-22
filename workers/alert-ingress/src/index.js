@@ -45,7 +45,7 @@ import {
   DEFAULT_MIN_OPEN_MS,
   PROD_DOWN_MIN_OPEN_MS,
 } from "./state.js";
-import { postEvent, writeStatus, renderStatus } from "./zulip.js";
+import { postEvent, writeStatus, renderStatus, fetchMessage } from "./zulip.js";
 
 const DEFAULT_CHANNEL = "alerts";
 
@@ -635,12 +635,18 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   if (barrier?.outcome === "unknown" && !barrier.id) {
     throw deliveryError(source, "unknown", { code: null, retryAfter: null });
   }
-  // A message id the operator just adopted wins over an id left on an older
-  // outcome row, so a reconcile edits the adopted message, not a stale one.
+  // A message id the operator just adopted wins over anything else, so a reconcile
+  // edits the adopted message and not a stale one.
+  //
+  // After that, the CURRENT pin wins over an id left on an older outcome row.  The
+  // outcome row is history:  it records what a past delivery believed, and a reconcile
+  // that moved the standing message does not rewrite it.  Preferring the history would
+  // let a returning source edit a message it no longer owns and re-pin it, which is how
+  // a source that had been reconciled away came back and took the topic's pin again.
   let statusId =
     options.adoptId ||
-    prior?.id ||
     Number(await env.ALERT_STATE.get(statusKey(source, channel, topic), "json")) ||
+    prior?.id ||
     null;
   // Pinned ownership: a standing message belongs to exactly one source.  A
   // message id another vendor pinned is never edited here, and never adopted
@@ -1087,7 +1093,10 @@ const handler = {
         if (!SOURCE_TOKEN.test(source)) {
           return json({ error: "unknown source", source }, 400);
         }
-        if (!resolveCredential(env, source)) {
+        // The source's own credential, bound because an adopted id is proved with it:
+        // the message has to be shown to have been sent by this source's bot.
+        const credential = resolveCredential(env, source);
+        if (!credential) {
           return json(
             {
               error: "credential unavailable",
@@ -1118,6 +1127,38 @@ const handler = {
           if (pinned && pinned !== source) {
             return json(
               { error: "message owned by another source", source, id },
+              409,
+            );
+          }
+          // An unpinned id is proved before it is adopted.  A bare id names any
+          // message in the realm, and a PATCH on it edits whatever it points at, so
+          // the id has to be shown to be this source's standing message in THIS
+          // topic before anything is adopted or mutated.  A message that cannot be
+          // read is not adopted either:  refusing costs one round trip, while a
+          // wrong adoption edits somebody else's message.
+          const message = await fetchMessage({
+            email: credential.email,
+            apiKey: credential.apiKey,
+            messageId: id,
+          });
+          if (!message) {
+            return json(
+              { error: "message could not be read", source, id },
+              503,
+            );
+          }
+          const channelName =
+            typeof message.display_recipient === "string"
+              ? message.display_recipient
+              : String(message.display_recipient?.name || "");
+          const sameTopic =
+            message.type === "stream" &&
+            channelName === String(DEFAULT_CHANNEL) &&
+            String(message.subject || "") === String(topic);
+          const sameSender = String(message.sender_email || "") === credential.email;
+          if (!sameTopic || !sameSender) {
+            return json(
+              { error: "message is not this source's standing message", source, id },
               409,
             );
           }

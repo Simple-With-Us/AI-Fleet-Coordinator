@@ -148,6 +148,20 @@ function stubZulip(behaviour = {}) {
       }
       return { ok: true, json: async () => ({ result: "success", id: nextId++ }) };
     }
+    if (opts.method === "GET" && /\/messages\/\d+$/.test(String(url))) {
+      // A message read, so an operator-supplied id can be proved to be the standing
+      // message of this topic before it is adopted.
+      const id = Number(/\/messages\/(\d+)$/.exec(String(url))[1]);
+      const message =
+        behaviour.messageFor?.({ id, call }) ?? {
+          id,
+          type: "stream",
+          display_recipient: "alerts",
+          subject: "Shared.Service",
+          sender_email: "datadog-bot@example.invalid",
+        };
+      return { ok: true, json: async () => ({ result: "success", msg: message }) };
+    }
     return { ok: true, json: async () => ({ result: "success" }) };
   };
   return {
@@ -596,6 +610,147 @@ test("F4 a held delivery holds the whole topic, across revisions", async () => {
   } finally {
     working.restore();
   }
+});
+
+test("F4 an unpinned id is proved before it is adopted", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  const losing = stubZulip({ throwOn: (call) => isStatusWrite(call) });
+  try {
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+  } finally {
+    losing.restore();
+  }
+
+  // The operator names an id that is not this topic's standing message.  A bare id
+  // names any message in the realm, so adopting it and PATCHing it would edit
+  // something else entirely, and the refusal costs one round trip.
+  const wrong = stubZulip({
+    messageFor: () => ({
+      id: 4242,
+      type: "stream",
+      display_recipient: "alerts",
+      subject: "Some.Other.Topic",
+      sender_email: "datadog-bot@example.invalid",
+    }),
+  });
+  try {
+    const response = await handler.fetch(
+      new Request(
+        "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+        { headers: { authorization: "Bearer fixture" } },
+      ),
+      env,
+      {},
+    );
+    assert.equal(response.status, 409);
+    // Nothing was adopted and nothing was edited.
+    assert.equal(wrong.patches().length, 0);
+    assert.equal(wrong.posts().length, 0);
+    assert.equal(
+      kv.store.get(statusKey("datadog", "alerts", "Shared.Service")),
+      undefined,
+    );
+  } finally {
+    wrong.restore();
+  }
+});
+
+test("F4 an unpinned id sent by another bot is refused", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  const losing = stubZulip({ throwOn: (call) => isStatusWrite(call) });
+  try {
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+  } finally {
+    losing.restore();
+  }
+
+  // Right topic, wrong owner: the message is not this source's standing message.
+  const other = stubZulip({
+    messageFor: () => ({
+      id: 4242,
+      type: "stream",
+      display_recipient: "alerts",
+      subject: "Shared.Service",
+      sender_email: "betterstack-bot@example.invalid",
+    }),
+  });
+  try {
+    const response = await handler.fetch(
+      new Request(
+        "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+        { headers: { authorization: "Bearer fixture" } },
+      ),
+      env,
+      {},
+    );
+    assert.equal(response.status, 409);
+    assert.equal(other.patches().length, 0);
+  } finally {
+    other.restore();
+  }
+});
+
+test("F4 a source cannot come back and take a pin another source reconciled", async () => {
+  const kv = fakeKV();
+  // The topic's standing message for this source is 4242, and an older outcome row
+  // still carries 100 from before the reconcile.  The current record is
+  // authoritative: the stale row must not be edited and re-pinned.
+  kv.store.set(statusKey("datadog", "alerts", "Shared.Service"), "4242");
+  kv.store.set(statusOwnerKey(4242), JSON.stringify("datadog"));
+  const storage = fakeStorage();
+  await storage.put(
+    deliveryKey("datadog", "alerts", "Shared.Service", "rev-1"),
+    { outcome: "ok", id: 100, revision: "rev-1" },
+  );
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  const stub = stubZulip();
+  try {
+    const content = await refreshStatus(env, "datadog", "alerts", "Shared.Service");
+    assert.ok(content);
+    // The message that was edited is the current one, not the stale row.
+    assert.equal(stub.patches().length, 1);
+    assert.match(String(stub.patches()[0].url), /\/messages\/4242$/);
+    assert.equal(stub.posts().length, 0);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("S1 a resolved issue status closes its incident whatever the action says", async () => {
+  // An "assigned" event on an issue that is already resolved carries the issue's
+  // level, which still reads "error", so the level alone would reopen a closed
+  // incident.
+  const event = fromSentry({
+    ...SENTRY_ISSUE_PAYLOAD,
+    action: "assigned",
+    data: {
+      ...SENTRY_ISSUE_PAYLOAD.data,
+      issue: { ...SENTRY_ISSUE_PAYLOAD.data.issue, status: "resolved" },
+    },
+  });
+  assert.equal(event.firing, false);
 });
 
 test("F4 an operator reconciliation releases a held topic", async () => {

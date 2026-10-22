@@ -235,11 +235,20 @@ export function fromSentry(payload) {
   const FIRING_ACTIONS = /^(created|triggered|reopened|unresolved|escalated|critical|warning)$/;
   const CLOSING_ACTIONS = /^(resolved|closed|complete|completed|ok|archived|ignored)$/;
   const closedByLevel = /^(ok|resolved|recovered|closed)$/.test(level);
+  // The issue's own status closes it, whatever the action was.  A housekeeping
+  // event on an issue that is already resolved - "assigned" on a resolved issue -
+  // carries the issue's level, which still reads "error", so the level alone would
+  // reopen an incident that is closed.  A missing status stays firing, which is the
+  // safe direction:  a status-less delivery must never close a live incident.
+  const issueStatus = sentryFirst(issue?.status).toLowerCase();
+  const closedByStatus = /^(ok|resolved|recovered|closed|complete|completed|ignored|archived)$/.test(
+    issueStatus,
+  );
   const firing = FIRING_ACTIONS.test(action)
     ? true
     : CLOSING_ACTIONS.test(action)
       ? false
-      : !closedByLevel;
+      : !(closedByLevel || closedByStatus);
 
   const severity =
     (Object.hasOwn(SENTRY_SEVERITY, level) && SENTRY_SEVERITY[level]) ||

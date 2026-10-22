@@ -127,6 +127,21 @@ export async function writeStatus({
   return created && created.id ? created.id : null;
 }
 
+/**
+ * Fetch one message by id.
+ *
+ * A message id an operator supplies has to be proved before anything is adopted or
+ * edited:  an id on its own names any message in the realm, so the caller needs to see
+ * the channel, the topic and the sender to know it is the standing message it claims.
+ *
+ * @returns {Promise<object|null>} the message, or null when it cannot be read
+ */
+export async function fetchMessage({ email, apiKey, messageId }) {
+  const data = await zulip(`/messages/${messageId}`, { email, apiKey });
+  const msg = data && data.msg && typeof data.msg === "object" ? data.msg : null;
+  return msg;
+}
+
 /** Render the standing status block for a topic's current states. */
 export function renderStatus({ topic, states, updatedAt, source }) {
   const rows = states
