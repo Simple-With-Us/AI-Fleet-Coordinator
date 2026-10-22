@@ -171,6 +171,7 @@ def _save_seen(path: str, seen: list[str]) -> None:
     if os.path.islink(directory):
         raise OSError("state directory is a symlink")
     os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)  # makedirs leaves an existing directory's mode alone
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:

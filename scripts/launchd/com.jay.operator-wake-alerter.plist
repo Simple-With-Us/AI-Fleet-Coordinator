@@ -27,7 +27,7 @@
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>umask 077 &amp;&amp; mkdir -p "$HOME/.local/state/operator" &amp;&amp; exec /usr/bin/python3 -I /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/agent_sync/wake_alerter.py</string>
+    <string>umask 077 &amp;&amp; mkdir -p "$HOME/.local/state/operator" &amp;&amp; chmod 700 "$HOME/.local/state/operator" &amp;&amp; exec /usr/bin/python3 -I /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/agent_sync/wake_alerter.py</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts</string>
