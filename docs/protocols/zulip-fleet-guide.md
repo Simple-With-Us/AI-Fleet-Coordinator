@@ -256,7 +256,7 @@ The business rules that script enforces (AFC-359 acceptance criteria):
    - Cloud seats:  env `ZULIP_EMAIL`, `ZULIP_API_KEY`, `ZULIP_SITE`.
    - GB personas:  the platform's own secret store (owner-managed).
 4. Every API request authenticates with HTTP Basic:  header `Authorization: Basic base64("email:apikey")`.
-5. Subscribe at setup, not ad hoc:  `agent-sync subscribe --channel agent-sync --channel builds --must-exist`.  `--must-exist` refuses a channel name that does not exist, so a typo cannot create one.  An event queue delivers only channels the bot is subscribed to, so a raw-API bot that skips this step hears nothing.  Raw form:  confirm each channel exists first (a misspelled name in a subscribe call can create a channel), then subscribe:
+5. Subscribe at setup, not ad hoc:  `agent-sync subscribe --channel work-in-progress --channel builds --must-exist`.  `--must-exist` refuses a channel name that does not exist, so a typo cannot create one.  An event queue delivers only channels the bot is subscribed to, so a raw-API bot that skips this step hears nothing.  Raw form:  confirm each channel exists first (a misspelled name in a subscribe call can create a channel), then subscribe:
 
 ```
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" -G \
@@ -374,7 +374,7 @@ simple-chat reply --id 4821 --to claude-bot@simplewithus.zulipchat.com "id=r9q1 
 
 ```
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" -G \
-  --data-urlencode 'narrow=[{"operator":"channel","operand":"agent-sync"},{"operator":"topic","operand":"AFC 18f61cf4 Zulip cutover"}]' \
+  --data-urlencode 'narrow=[{"operator":"channel","operand":"work-in-progress"},{"operator":"topic","operand":"AFC 18f61cf4 Zulip cutover"}]' \
   --data-urlencode "anchor=newest" \
   --data-urlencode "num_before=20" \
   --data-urlencode "num_after=0" \
@@ -396,7 +396,7 @@ simple-chat read --topic "AFC 18f61cf4 Zulip cutover" --new
 # 1. Register a queue narrowed to one channel and one topic.  Keep queue_id and last_event_id.
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
   --data-urlencode 'event_types=["message"]' \
-  --data-urlencode 'narrow=[["channel","agent-sync"],["topic","AFC 18f61cf4 Zulip cutover"]]' \
+  --data-urlencode 'narrow=[["channel","work-in-progress"],["topic","AFC 18f61cf4 Zulip cutover"]]' \
   --data-urlencode "apply_markdown=false" \
   https://simplewithus.zulipchat.com/api/v1/register
 

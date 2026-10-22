@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import unittest
 
 from agent_sync import live as L
@@ -18,6 +19,21 @@ from agent_sync import router as R
 from agent_sync import zulip as Z
 from agent_sync.mcp import tools as T
 from agent_sync.mcp.tools import with_defaults
+from fleet_skill_identity import catalog_seats
+
+
+def _without_comments(text: str, suffix: str) -> str:
+    """The file's text with its comments taken out.
+
+    A channel is written `#name`, and a comment marker is `#` followed by whitespace in Python
+    and shell and `//` in JavaScript, so the two never look the same.  A `#!/usr/bin/env bash`
+    line and a `#` inside a shell string are comments and go too.
+    """
+    if suffix in (".js", ".mjs"):
+        return re.sub(r"//.*", "", text)
+    if suffix in (".py", ".sh"):
+        return re.sub(r"#(?![A-Za-z]).*", "", text)
+    return text
 
 MCP_DIR = pathlib.Path(__file__).resolve().parents[1] / "mcp"
 AGENT_SYNC_DIR = pathlib.Path(__file__).resolve().parents[1]
@@ -112,6 +128,91 @@ class DefaultChannelTests(unittest.TestCase):
         self.assertEqual(
             T.default_channel_for({"AGENT_SYNC_CHANNEL": "side-chats"}, schema),
             "side-chats",
+        )
+
+    def test_the_cli_fleet_help_names_the_live_channel(self) -> None:
+        # `--fleet` only works in the fleet coordination channel, and the help text is where a
+        # seat learns that.  A help string still naming the old channel sends it to the tombstone.
+        # The channel's display name is title-cased and its slug is not, so the check folds case.
+        help_text = (AGENT_SYNC_DIR / "cli.py").read_text()
+        self.assertIn("#%s" % Z.DEFAULT_CHANNEL, help_text.casefold())
+        self.assertNotIn("#agent-sync", help_text.casefold())
+
+    def test_no_channel_in_the_skills_pack_names_the_old_channel(self) -> None:
+        # The pack is what every seat reads, and it is rendered from the canonical tree, so a
+        # rename that moves the code and not the pack leaves every seat pointing at a stream
+        # nobody reads.  A channel is always written in its hashtag form, so that form is the
+        # signal;  the runtime's own source may still mention the old name in a comment that
+        # explains the rename, and the pack may not.
+        repo_root = AGENT_SYNC_DIR.parents[1]
+        pack = repo_root / "docs" / "fleet-skills"
+        retired = {seat.seat_key for seat in catalog_seats() if seat.retired}
+        offenders = []
+        for path in sorted(pack.rglob("*.md")):
+            parts = path.relative_to(pack).parts
+            # A retired seat's catalog copy is history:  the generator leaves it as it was, and
+            # no live seat reads it.
+            if len(parts) > 2 and parts[0] == "by-seat" and parts[1] in retired:
+                continue
+            if "#agent-sync" in path.read_text():
+                offenders.append(str(path.relative_to(repo_root)))
+        for path in sorted((repo_root / ".claude" / "skills").rglob("SKILL.md")):
+            if "#agent-sync" in path.read_text():
+                offenders.append(str(path.relative_to(repo_root)))
+        self.assertEqual(
+            offenders,
+            [],
+            "the skills pack still names the old channel:  %s" % ", ".join(offenders),
+        )
+
+    def test_no_onboarding_prompt_names_the_old_channel(self) -> None:
+        # An onboarding prompt is the first thing a seat reads, so a prompt that names the old
+        # channel sends that seat to the tombstone before it has read anything else.  These are
+        # the live prompts;  the fleet guide's changelog rows are history and are not checked
+        # here.
+        repo_root = AGENT_SYNC_DIR.parents[1]
+        prompts = (
+            "docs/FX-ONBOARDING-PROMPT.md",
+            "docs/INSTINCT-ONBOARDING-PROMPT.md",
+            "docs/MUSE-ONBOARDING.md",
+            "docs/ONBOARDING-NEW-AGENT.md",
+            "docs/ONBOARDING-NEW-APP.md",
+            "docs/OPENCODE-ONBOARDING-PROMPT.md",
+        )
+        for name in prompts:
+            path = repo_root / name
+            self.assertTrue(path.exists(), "%s is missing" % name)
+            self.assertNotIn(
+                "#agent-sync",
+                path.read_text(),
+                "%s still names the old channel" % name,
+            )
+
+    def test_no_live_source_names_the_old_channel(self) -> None:
+        # The last three renames each left a live straggler:  a CLI help string, a tool error
+        # message and a shell script's echo.  A channel reference is written `#name`, and a
+        # comment marker is `#` followed by whitespace in Python and shell and `//` in
+        # JavaScript, so the comments can go and the references can be read.  A comment that
+        # explains the rename is allowed to name the old channel;  a string that tells a seat
+        # where to post is not.
+        repo_root = AGENT_SYNC_DIR.parents[1]
+        offenders = []
+        for base in ("scripts", "workers"):
+            for path in sorted((repo_root / base).rglob("*")):
+                if path.suffix not in (".py", ".js", ".mjs", ".sh"):
+                    continue
+                parts = path.relative_to(repo_root).parts
+                if "node_modules" in parts or "dist" in parts or "tests" in parts:
+                    continue
+                if path.name.startswith("test_") or ".test." in path.name:
+                    continue
+                text = _without_comments(path.read_text(), path.suffix)
+                if "#agent-sync" in text:
+                    offenders.append(str(path.relative_to(repo_root)))
+        self.assertEqual(
+            offenders,
+            [],
+            "a live source still names the old channel:  %s" % ", ".join(offenders),
         )
 
 

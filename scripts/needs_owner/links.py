@@ -1,7 +1,7 @@
 """A Zulip topic link, taken apart.
 
 `needs-owner file --mirror-of LINK` names the OWNER topic a Grok Bot persona already opened.  Only a
-link on this realm, in #agent-sync, to a topic that starts `OWNER `, and that names its message
+link on this realm, in #Work-In-Progress, to a topic that starts `OWNER `, and that names its message
 (`/near/<id>`), is accepted:  the id is what the link-back reply and the notice record use.
 """
 

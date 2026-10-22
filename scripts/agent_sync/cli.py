@@ -927,7 +927,7 @@ def build_parser(
     p.add_argument(
         "--fleet",
         action="store_true",
-        help="fleet-wide wake:  also add @**all**.  Only in #agent-sync, topic 'fleet'.  It notifies every "
+        help="fleet-wide wake:  also add @**all**.  Only in #Work-In-Progress, topic 'fleet'.  It notifies every "
         "seat and the owner, so use it only when every seat must act.  Zulip refuses it from a bot the "
         "realm's can_mention_many_users_group does not include;  then use --to for each bot that "
         "must act",

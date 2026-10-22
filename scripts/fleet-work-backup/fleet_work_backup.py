@@ -3545,7 +3545,7 @@ def _agent_sync_send(cmd: list, text: str) -> bool:
 
 def post_alert(cfg: Config, text: str, wake: bool = True, failed: list | None = None) -> bool:
     """Tell the fleet through agent-sync as this job's seat, in up to two places:  a post in the work topic of
-    #agent-sync and, when ``cfg.alert_dm_owner``, a Zulip DM to the owner with the text alone.  With ``wake`` the
+    #Work-In-Progress and, when ``cfg.alert_dm_owner``, a Zulip DM to the owner with the text alone.  With ``wake`` the
     post carries the ``--to`` mentions (``cfg.alert_to``) and ``cfg.alert_note`` after the text;  without it the post
     names nobody and wakes nobody (good news does not spend a peer's wake budget).  Each send is tried even when the
     other fails.  Never raises.  True when at least one was delivered;  ``failed`` (a list, when given) collects the
