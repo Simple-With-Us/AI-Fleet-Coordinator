@@ -109,7 +109,12 @@ test("row 3:  every other grant acts as exactly its own seat;  a persona or a pe
 test("row 4:  a persona that GB_IDENTITIES leaves out is in no set", () => {
   assert.ok(GB_IDENTITIES.includes("GB-ENGINEER"));
   assert.ok(!GB_IDENTITIES.includes("GB-RETIRED"));
-  for (const seat of KNOWN_SEATS) assert.ok(!allowedIdentities(seat).includes("GB-RETIRED"), seat);
+  for (const seat of KNOWN_SEATS) {
+    const expected = SHARED_IDENTITY_SEATS.includes(seat)
+      ? [seat, ...SHARED_IDENTITY_SEATS.filter((other) => other !== seat), ...GB_IDENTITIES]
+      : [seat];
+    assert.deepEqual([...allowedIdentities(seat)], expected, seat);
+  }
 });
 
 // ---------------------------------------------------------------- the call rule (row 5)
