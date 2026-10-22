@@ -529,7 +529,7 @@ class ReleaseTests(unittest.TestCase):
 class ShippedDataFilesTests(unittest.TestCase):
     """Every data file the agent_sync package reads at run time ships in a release.  The .py
     modules are allowed by pattern;  JSON and similar files must be named in EXACT one by one, and
-    a new one that is not breaks the server's `agent-sync mcp` at startup (listener-tools.json,
+    a new one that is not breaks the server's `agent-sync mcp` at startup (eavesdropper-tools.json,
     2026-10-16)."""
 
     def test_every_tracked_agent_sync_data_file_is_allowed(self):
@@ -555,8 +555,8 @@ class ShippedDataFilesTests(unittest.TestCase):
     def test_listener_tools_is_required_of_new_bundles_only(self):
         # A new bundle must carry it (agent-sync mcp reads it at startup), but retained releases
         # are judged by BASE_REQUIRED, so the ones built before it stay valid rollback targets.
-        self.assertIn("scripts/agent_sync/mcp/listener-tools.json", release.TOOL_REQUIRED)
-        self.assertNotIn("scripts/agent_sync/mcp/listener-tools.json", release.BASE_REQUIRED)
+        self.assertIn("scripts/agent_sync/mcp/eavesdropper-tools.json", release.TOOL_REQUIRED)
+        self.assertNotIn("scripts/agent_sync/mcp/eavesdropper-tools.json", release.BASE_REQUIRED)
 
     def test_fleetlink_tools_is_shipped_and_required_of_new_bundles_only(self):
         # The fleetlink_* contract:  agent-sync mcp reads it at startup, so a new bundle must carry it,

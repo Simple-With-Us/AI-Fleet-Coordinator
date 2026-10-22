@@ -343,13 +343,13 @@ class ActualRuntime(unittest.TestCase):
         self.assertEqual([item["id"] for item in replies], [1, 2])
         self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-11-25")
         self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "agent-sync")
-        # What the real server serves:  tools.json, listener-tools.json (AFC-330), notes-tools.json and
+        # What the real server serves:  tools.json, eavesdropper-tools.json (AFC-330), notes-tools.json and
         # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs, then
         # fleetlink-tools.json.  Every file must ship, or `agent-sync mcp` fails at startup on the server (it
         # did, 2026-10-16).
         mcp = self.release / "scripts/agent_sync/mcp"
         served = []
-        for name in ("tools.json", "listener-tools.json", "notes-tools.json", "recall-tools.json"):
+        for name in ("tools.json", "eavesdropper-tools.json", "notes-tools.json", "recall-tools.json"):
             served += json.loads((mcp / name).read_bytes())["tools"]
         self.assertTrue(served)
         listed = replies[1]["result"]["tools"]

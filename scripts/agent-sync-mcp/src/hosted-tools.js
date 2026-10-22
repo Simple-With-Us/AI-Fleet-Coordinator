@@ -1009,6 +1009,34 @@ export class HostedTools {
     return this.messagesResult("dm_read", [["with", userIds.join(",")]], shown, next);
   }
 
+  // The opener of one DM conversation:  its oldest message, fetched anchored at "oldest".
+  //
+  // This must not be read out of the newest-50 window.  Once a conversation runs past 50 messages the
+  // opener has scrolled out of that window, so the lowest id left is one the seat sent itself and a
+  // reply inside a DM Operator opened is refused as though it were a new DM.  num_after 1 asks Zulip
+  // for that single first message instead of paging back through the thread.
+  async dmOpener(userIds, expected) {
+    const result = await this.zulip.get("messages", {
+      narrow: [{ operator: "dm", operand: userIds }],
+      anchor: "oldest",
+      num_before: 0,
+      num_after: 1,
+      include_anchor: true,
+      apply_markdown: false,
+    });
+    return (
+      [...(result.messages ?? [])]
+        .filter(
+          (m) =>
+            m &&
+            isInt(m.id) &&
+            m.type === "private" &&
+            dmPeople(m).map((p) => p.id).sort((a, b) => a - b).join(",") === expected,
+        )
+        .sort((a, b) => a.id - b.id)[0] ?? null
+    );
+  }
+
   // The DM rule (owner decision, Oct 22 2026, hard cutover).  Mirrors scripts/agent_sync/dm_policy.py
   // so both transports refuse the same calls with the same guidance.  A seat may not open a new
   // direct message;  a reply inside a conversation Operator already opened is allowed, because that
@@ -1018,16 +1046,13 @@ export class HostedTools {
     if (this.config?.dmRule === false) return;
     const selfId = this.me.user_id;
     const operatorId = this.config?.operatorUserId ?? 1217148;
-    let messages = [];
+    let opener = null;
     if (userIds.length) {
       const expected = [...new Set([selfId, ...userIds])].sort((a, b) => a - b).join(",");
-      messages = (await this.page([{ operator: "dm", operand: userIds }], undefined, 50)).filter(
-        (m) => m.type === "private" && dmPeople(m).map((p) => p.id).sort((a, b) => a - b).join(",") === expected,
-      );
+      opener = await this.dmOpener(userIds, expected);
     }
     // Oldest message in this exact conversation:  if Operator sent it, this seat may reply inside.
-    const oldest = messages.reduce((best, m) => (!best || Number(m.id) < Number(best.id) ? m : best), null);
-    if (oldest && Number(oldest.sender_id) === Number(operatorId)) return;
+    if (opener && Number(opener.sender_id) === Number(operatorId)) return;
     if (this.seat === "OPERATOR" && args.clarifying_question) return;
 
     const bots = users.filter((u) => u.is_bot);

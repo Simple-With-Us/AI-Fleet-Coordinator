@@ -1525,7 +1525,7 @@ class Tools:
                 )
                 if m.get("type") == "private"
             ]
-        except Z.APIError:
+        except (Z.ApiError, Z.NetworkError):
             return []
 
     @staticmethod

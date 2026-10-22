@@ -108,6 +108,27 @@ test("a reply inside a DM Operator opened stays allowed", async () => {
   assert.ok(directMessages(fake).some((m) => m.sender_id === fake.me.user_id), "the seat answered in the conversation");
 });
 
+test("a reply inside a long DM Operator opened stays allowed (more than 50 messages)", async () => {
+  const { tools, fake, operator } = harness();
+  // Operator opens the conversation;  the seat then keeps answering in it until the thread is long
+  // enough that Operator's opener has scrolled out of the newest-50 window the rule used to read.
+  // Read that way the lowest id left is one this seat sent, so the reply was refused as though the
+  // seat had opened the DM.  Only anchoring at the oldest message still finds the true opener.
+  fake.addDm(operator, [], "which seat is this for?");
+  for (let i = 0; i < 60; i += 1) fake.addDm(fake.me, [operator], `answer ${i}`);
+  const result = await tools.call("zulip_dm_send", { user_ids: [operator.user_id], text: "CODEX" });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.ok(directMessages(fake).some((m) => m.sender_id === fake.me.user_id), "the seat answered in the conversation");
+});
+
+test("a conversation the seat opened itself is still refused after 50 messages", async () => {
+  const { tools, fake } = harness();
+  // The opener here is the seat, not Operator:  the long thread must not turn into a free pass.
+  for (let i = 0; i < 60; i += 1) fake.addDm(fake.me, [], `mine ${i}`);
+  const error = errorOf(await tools.call("zulip_dm_send", { user_ids: [fake.users.find((u) => u.full_name === "Codex").user_id], text: "hello" }), "dm_not_allowed");
+  assert.match(error.message, /may not open a new direct message/);
+});
+
 // Operator is deliberately NOT in KNOWN_SEATS:  it is the server-side admin seat, not an OAuth
 // connector seat, so no hosted grant may act as it.  The one-DM-it-may-open rule is therefore
 // unreachable from here and is proven in scripts/agent_sync/tests/test_dm_rule.py instead;  what

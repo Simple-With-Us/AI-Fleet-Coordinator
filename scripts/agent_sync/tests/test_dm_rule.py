@@ -23,6 +23,8 @@ from typing import Any
 
 from agent_sync import clarify
 from agent_sync import dm_policy as DMP
+from agent_sync import zulip as Z
+from agent_sync.mcp import tools as T
 
 
 class FakeZulip:
@@ -214,6 +216,82 @@ class OperatorOpenedDmTests(unittest.TestCase):
         self.assertFalse(DMP.operator_opened_dm(people, seat_opened))
         # No messages yet:  nothing exists to reply inside.
         self.assertFalse(DMP.operator_opened_dm(people, []))
+
+
+class DmExistsFetchFailureTests(unittest.TestCase):
+    """A failed conversation lookup is an empty conversation, not a crash.
+
+    `_dm_exists` caught `Z.APIError`, but zulip.py has always defined `ApiError` and `NetworkError`,
+    so the except clause itself raised AttributeError and the DM rule crashed on any API or network
+    failure instead of treating the conversation as new."""
+
+    @staticmethod
+    def _tools(raising: Exception) -> Any:
+        class RaisingAgent:
+            seat = "CODEX"
+            calls: list[dict[str, Any]] = []
+
+            def fetch(self, operands: Any, **kw: Any) -> list[dict[str, Any]]:
+                RaisingAgent.calls.append({"operands": operands, **kw})
+                raise raising
+
+        tools = T.Tools.__new__(T.Tools)
+        tools.agent = RaisingAgent()
+        tools.me = {"user_id": 7}
+        return tools
+
+    def test_an_api_error_means_no_existing_messages(self) -> None:
+        for exc in (Z.ApiError("zulip said no"), Z.NetworkError("connection reset")):
+            with self.subTest(exc=type(exc).__name__):
+                self.assertEqual(self._tools(exc)._dm_exists([9]), [])
+
+    def test_the_except_clause_names_classes_that_exist(self) -> None:
+        # Pins the bug itself:  a typo'd name here fails only when an exception is actually raised.
+        self.assertTrue(hasattr(Z, "ApiError"))
+        self.assertTrue(hasattr(Z, "NetworkError"))
+        self.assertEqual(self._tools(Z.ApiError("boom"))._dm_exists([]), [], "empty id list short-circuits")
+
+    def test_a_working_fetch_still_reports_the_conversation(self) -> None:
+        class WorkingAgent:
+            seat = "CODEX"
+
+            def fetch(self, operands: Any, **kw: Any) -> list[dict[str, Any]]:
+                return [
+                    {"type": "private", "id": 5, "sender_id": Z.OPERATOR_USER_ID},
+                    {"type": "stream", "id": 6},
+                ]
+
+        tools = T.Tools.__new__(T.Tools)
+        tools.agent = WorkingAgent()
+        tools.me = {"user_id": 7}
+        self.assertEqual([m["id"] for m in tools._dm_exists([9])], [5], "only private messages, unchanged")
+
+
+class ClarifyingFlagOnTheCliTests(unittest.TestCase):
+    """`agent-sync dm` must be able to say "this is the one clarifying question".
+
+    The DM check read `args.clarifying_question`, but the `dm` parser never registered
+    `--clarifying-question`, so the attribute was always absent and Operator's clarifying DM was
+    refused on the CLI no matter what it passed."""
+
+    @staticmethod
+    def _parser() -> Any:
+        from agent_sync import cli
+
+        return cli.build_parser()
+
+    def test_the_dm_parser_registers_the_flag(self) -> None:
+        args = self._parser().parse_args(["dm", "--clarifying-question", "which seat?"])
+        self.assertTrue(args.clarifying_question, "the flag must reach the DM check")
+
+    def test_without_the_flag_it_is_false(self) -> None:
+        args = self._parser().parse_args(["dm", "which seat?"])
+        self.assertFalse(args.clarifying_question, "an ordinary DM is not a clarifying question")
+
+    def test_the_operator_allowance_reads_that_attribute(self) -> None:
+        # The attribute name the check reads is the one argparse now sets.
+        args = self._parser().parse_args(["dm", "--clarifying-question"])
+        self.assertEqual(getattr(args, "clarifying_question", None), True)
 
 
 if __name__ == "__main__":

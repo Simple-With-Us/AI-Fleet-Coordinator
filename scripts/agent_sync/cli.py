@@ -933,6 +933,14 @@ def build_parser() -> argparse.ArgumentParser:
         "The default when no --to is given;  with --to it adds the owner to the group",
     )
     p.add_argument(
+        "--clarifying-question",
+        dest="clarifying_question",
+        action="store_true",
+        help="Operator only:  true when this DM is the one clarifying question it may open about a message "
+        "whose addressee could not be resolved to a single seat (owner decision, Oct 22 2026).  Every other "
+        "seat is refused when it opens a new DM;  a reply inside a DM Operator opened needs no flag.",
+    )
+    p.add_argument(
         "--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session\u2192TO] tag"
     )
     body_file_opt(p)
