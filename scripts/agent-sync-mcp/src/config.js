@@ -234,6 +234,14 @@ export function loadConfig(env) {
   const accessAud = String(env.ACCESS_AUD ?? "").trim();
   const ownerEmails = parseList(env, "OWNER_EMAILS").map((e) => e.toLowerCase());
 
+  // Which Access variables are absent or malformed.  Naming them is what lets a
+  // fail-closed /authorize or /admin answer say what to provision instead of a
+  // bare "not configured".  A placeholder AUD counts as missing.
+  const accessMissing = [];
+  if (!/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(teamDomain)) accessMissing.push("ACCESS_TEAM_DOMAIN");
+  if (!/^[0-9a-f]{64}$/.test(accessAud)) accessMissing.push("ACCESS_AUD");
+  if (ownerEmails.length === 0) accessMissing.push("OWNER_EMAILS");
+
   return Object.freeze({
     host: PUBLIC_HOST,
     // The DM rule (owner decision, Oct 22 2026, hard cutover):  a seat may not open a new direct
@@ -268,9 +276,10 @@ export function loadConfig(env) {
       teamDomain,
       aud: accessAud,
       ownerEmails: Object.freeze(ownerEmails),
-      // Fail closed:  until the Access app exists and its AUD is in vars,
+      // Fail closed:  until the Access app exists and its AUD is provisioned,
       // nothing behind Access can be reached.
-      configured: /^[a-z0-9-]+\.cloudflareaccess\.com$/.test(teamDomain) && /^[0-9a-f]{64}$/.test(accessAud) && ownerEmails.length > 0,
+      configured: accessMissing.length === 0,
+      missing: Object.freeze(accessMissing),
     }),
     mcpDisabled: String(env.MCP_DISABLED ?? "") === "1",
     channelsDeny: Object.freeze(channelsDeny),
