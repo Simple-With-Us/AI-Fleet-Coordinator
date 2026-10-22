@@ -267,10 +267,6 @@ class ItemTests(unittest.TestCase):
         self.assertIsNone(I.age_hours("not a time", at))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class BoardWriteOptInTests(unittest.TestCase):
     def test_board_calls_export_the_write_opt_in(self):
         import os
@@ -287,3 +283,7 @@ class BoardWriteOptInTests(unittest.TestCase):
             result = runner.board("comment", "AFC-1", "x")
             self.assertEqual(result.out, "1")
             self.assertNotIn("LINEAR_BOARD_WRITES", runner.env)
+
+
+if __name__ == "__main__":
+    unittest.main()
