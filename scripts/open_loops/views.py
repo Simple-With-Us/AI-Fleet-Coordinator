@@ -180,7 +180,7 @@ def needs_owner_view(data: Any) -> dict:
 
 
 def asks_view(data: Any) -> dict:
-    """C3 `agent-sync asks status --json`:  the owner's earlier asks that are still open."""
+    """C3 `simple-chat asks status --json`:  the owner's earlier asks that are still open."""
     document = data.get("document") if isinstance(data, dict) else None
     rows = None
     if isinstance(document, list):

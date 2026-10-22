@@ -14,7 +14,7 @@ open-loops send   --dm-file PATH --facts PATH [--c2-id ID] [--dry-run] [--again]
 
 `--out` writes a file at mode 0600 (in a folder made at 0700) instead of printing.  Everything is read-only except
 `send`, which is refused for every seat but BF-DEPLOYER.  `lint` runs the same checks `send` runs, for any seat, and
-sends nothing (it needs no agent-sync and no C2 id), so whoever writes a routine text can check a DM before
+sends nothing (it needs no simple-chat and no C2 id), so whoever writes a routine text can check a DM before
 BF-Deployer's routine exists.
 
 ## gather
@@ -49,9 +49,9 @@ unknown, and `asks` says "not built yet".
 **Claims.**  For each In Progress claim the activity function gets every signal this host could read:  Linear
 comments (the sweepers' own and `updated_at` never count), the same-repo PR's update time and head commit time, the
 lane's last C1 snapshot, and the claimant's own posts in its `<ID> ...` Zulip topic (`zulip_topics.py`, a bounded read
-through the installed agent-sync, only for claims that look idle).  A source that was tried and failed makes the claim
+through the installed simple-chat, only for claims that look idle).  A source that was tried and failed makes the claim
 `unknown`, never idle:  that includes a Zulip topic list that could not be read (a TLS timeout, exit 3) and a claim the
-80-read or 5-minute Zulip budget skipped.  Only a host with no agent-sync at all leaves the Zulip source `unchecked`.  A source that could not be tried (no PR yet, no C1, no agent-sync) is listed under the claim's
+80-read or 5-minute Zulip budget skipped.  Only a host with no simple-chat at all leaves the Zulip source `unchecked`.  A source that could not be tried (no PR yet, no C1, no simple-chat) is listed under the claim's
 `unchecked`:  that can only make a claim look more idle, so the digest may flag a claim that is moving but never hides a
 stuck one.  Claims held by OWNER or JAY are counted, not banded.  `CLAIM_EXPIRY_LAUNCH_AT` (or `--launch-at`, or a
 `launch_at` in C4's report) starts the clock once it is in the past.
@@ -106,7 +106,7 @@ characters for today's real data, against a 137 KB facts file), with the same li
    * no `@**` or `@_**`, and no `/poll` or `/todo` line;
    * every link is in `facts["urls"]` (a `www.` address or any other scheme counts as a link);
    * the F3 secret scanner finds nothing;
-   * sentence gaps:  agent-sync's own `sentence_gap` is applied (two spaces become U+00A0 plus a space), and a sentence
+   * sentence gaps:  simple-chat's own `sentence_gap` is applied (two spaces become U+00A0 plus a space), and a sentence
      that still ends in one space outside code, links and fences is a problem;
    * the facts id is in the text (the duplicate check looks for it);  the full-list link is in the text;
    * "Work Not on GitHub Yet" is in the text when `not_on_github.count` is above 0;
@@ -121,17 +121,17 @@ characters for today's real data, against a 137 KB facts file), with the same li
    stops (exit 5):  "could not check" must not become "send twice".
 5. `simple-chat dm --owner --session openloop --json --body-file F` sends the linted, gap-converted text from a private
    copy (0600 in a 0700 folder), so the bytes that were checked are the bytes that are sent.  The text is never on a
-   command line.  Exit 6 from agent-sync (the request may have been delivered) is reported as such and not retried.
+   command line.  Exit 6 from simple-chat (the request may have been delivered) is reported as such and not retried.
 6. `simple-chat post --session openloop --topic "<C2 ID> open-loops heartbeat" --json --body-file F`, no mention:  the
    facts id, the DM's character count, the sources that were ok and the ones Missing.  When the DM was already out the
    heartbeat is posted only if the topic does not already carry this facts id.
 
 Exit status:  0 sent (or already sent) and the heartbeat is in place;  2 usage, a bad file or no C2 id;  3 refused (wrong
-seat, no agent-sync, an F3 helper missing);  4 lint failed;  5 could not check for a duplicate, or the send failed;  6 the
+seat, no simple-chat, an F3 helper missing);  4 lint failed;  5 could not check for a duplicate, or the send failed;  6 the
 DM is out but the heartbeat is not.  `--dry-run` runs steps 1 to 4 and sends nothing.
 
-Every agent-sync command line is built by a function in `send.py` (and `zulip_topics.py`), and `test_parser_parity`
-runs each through `agent_sync.cli.build_parser()`.  The fake agent-sync the tests use does the same for every call.
+Every simple-chat command line is built by a function in `send.py` (and `zulip_topics.py`), and `test_parser_parity`
+runs each through `agent_sync.cli.build_parser()`.  The fake simple-chat the tests use does the same for every call.
 
 ## Not built yet
 
@@ -172,4 +172,4 @@ python3 scripts/fleet_facts/check_fixtures.py --root scripts/open_loops/tests
 
 Synthetic data only (team key FFX, `example-*` repositories, UUIDs `00000000-0000-4000-8000-<12 hex>`).  In-process tests
 script the outside world (`builders.World`);  the CLI and install tests run a real `python3 -I` subprocess with fake `gh`,
-`board`, `lane`, C1, C6, `agent-sync` and `fleet-facts` programs on `PATH` and a temp `HOME`.
+`simple-board`, `lane`, C1, C6, `simple-chat` and `fleet-facts` programs on `PATH` and a temp `HOME`.

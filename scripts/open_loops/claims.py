@@ -11,7 +11,7 @@ this host could read, and only those:
 
 A source that was tried and failed is passed as {"ok": False}, which makes the claim "unknown", never idle.
 That includes a Zulip topic list that could not be read and a claim the Zulip read budget skipped.
-A source that could not be tried here (no PR for the branch, no C1, no agent-sync) is not passed and is
+A source that could not be tried here (no PR for the branch, no C1, no simple-chat) is not passed and is
 listed under the claim's `unchecked`:  it can only make a claim look MORE idle, so the digest may flag a
 claim that is in fact moving, but never hides one that is stuck.  Linear's `updated_at` is never read.
 
@@ -141,7 +141,7 @@ def build(linear: dict, github: dict, autopush: dict, autopush_rows: list[dict],
             seen = by_ident.get(ident)
             if seen is None and result.get("status") != "absent":
                 # The source was tried and gave this claim no answer:  the topic list failed, or the read budget ran
-                # out before the claim's turn.  That is "unknown", never idle.  Only a host with no agent-sync at all
+                # out before the claim's turn.  That is "unknown", never idle.  Only a host with no simple-chat at all
                 # ("absent") could not try, and that stays "unchecked".
                 seen = {"ok": False}
             if seen is not None:

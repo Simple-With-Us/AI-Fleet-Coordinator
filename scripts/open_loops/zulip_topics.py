@@ -2,17 +2,17 @@
 
     read_signals(run, wanted)    wanted = [{"identifier": "FFX-1", "seat": "CLAUDE"}, ...]
 
-Read through the installed `agent-sync` (the running seat's own bot, read-only):
+Read through the installed simple-chat (the running seat's own bot, read-only):
 
-    agent-sync topics --json --limit 1000                      the topic names of #agent-sync, newest first
-    agent-sync read --topic NAME --json --limit 30 --include-self    one topic's newest messages
+    simple-chat topics --json --limit 1000                      the topic names of #agent-sync, newest first
+    simple-chat read --topic NAME --json --limit 30 --include-self    one topic's newest messages
 
 An issue's topic is any topic whose name is the identifier or starts with `<identifier> `.  Only messages that
 name a seat count (a person's post is not the claimant's), and the activity function compares the seat.  The
 whole pass is bounded (80 topic reads, 5 minutes);  a claim that did not get a read is counted in `skipped`
 and left out of `by_ident`, and claims.py then marks it {"ok": False} so its band is "unknown", never idle.  A
 read that failed makes that claim's band "unknown" the same way, and so does a topic list that failed (status
-"failed").  Only a host with no agent-sync (status "absent") leaves the source unchecked.  If the topic list is as long as the limit, a claim with no topic found is unknown too (its topic
+"failed").  Only a host with no simple-chat (status "absent") leaves the source unchecked.  If the topic list is as long as the limit, a claim with no topic found is unknown too (its topic
 may be past the limit).
 """
 from __future__ import annotations
@@ -80,11 +80,11 @@ def read_signals(run: Runner, wanted: list[dict], *, monotonic: Callable[[], flo
         return out
     exe = which("simple-chat")
     if exe is None:
-        out.update(status="absent", reason="agent-sync is not installed", skipped=len(wanted))
+        out.update(status="absent", reason="simple-chat is not installed", skipped=len(wanted))
         return out
     result = run(argv_topics(exe), timeout=TIMEOUT_S)
     if result.reason or result.rc != 0:
-        out.update(status="failed", reason="agent-sync topics %s" % (result.reason or "exited %s" % result.rc), skipped=len(wanted))
+        out.update(status="failed", reason="simple-chat topics %s" % (result.reason or "exited %s" % result.rc), skipped=len(wanted))
         return out
     try:
         listing = json.loads(result.out)
@@ -93,7 +93,7 @@ def read_signals(run: Runner, wanted: list[dict], *, monotonic: Callable[[], flo
         names = [(t.get("name"), t.get("max_id") if isinstance(t.get("max_id"), int) else 0) for t in listing
                  if isinstance(t, dict) and isinstance(t.get("name"), str)]
     except (ValueError, AttributeError):
-        out.update(status="failed", reason="agent-sync topics did not print a topic list", skipped=len(wanted))
+        out.update(status="failed", reason="simple-chat topics did not print a topic list", skipped=len(wanted))
         return out
     truncated = len(names) >= TOPICS_LIMIT
     names.sort(key=lambda item: -item[1])

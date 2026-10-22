@@ -8,7 +8,7 @@
       The facts as the full Markdown list (--brief: five items per list and "+ N more").
   lint --dm-file PATH --facts PATH
       Any seat:  run the same checks `send` runs on a DM and print the problems (exit 4 if any);  sends nothing, needs
-      no agent-sync and no C2 id, so the author of a routine text can check a DM before BF-Deployer exists.
+      no simple-chat and no C2 id, so the author of a routine text can check a DM before BF-Deployer exists.
   send --dm-file PATH --facts PATH [--c2-id ID] [--dry-run] [--again]
       BF-Deployer only:  lint the DM, skip a duplicate, send it to the owner, post the heartbeat.
 

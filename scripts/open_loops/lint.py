@@ -6,14 +6,14 @@ problems out (empty means it passes).  A problem names the rule and where, never
   * every link is one the gatherer made (`facts["urls"]`);  a bare `www.` address or any other scheme counts
     as a link;
   * the F3 secret scanner finds nothing;
-  * sentence gaps:  the text is run through agent-sync's own `sentence_gap` (two spaces become U+00A0 plus a
+  * sentence gaps:  the text is run through simple-chat's own `sentence_gap` (two spaces become U+00A0 plus a
     space), and then any sentence that still ends in a single space outside code, links and fences is a problem;
   * the facts id is in the text (the duplicate check looks for it);
   * the full-list link is in the text;
   * "Work Not on GitHub Yet" is in the text when the facts have work that is not on GitHub;
   * "Missing:" is in the text when the facts have a source that could not be read.
 
-`prepare(text)` returns the text agent-sync will actually send (gaps converted), which `send` sends as it is.
+`prepare(text)` returns the text simple-chat will actually send (gaps converted), which `send` sends as it is.
 """
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def lint(text: str, facts: Mapping[str, Any]) -> list[str]:
     if bad:
         shown = ", ".join(str(n) for n in dict.fromkeys(bad[:5]))
         problems.append("%d sentence%s end%s in one space (line %s);  put two spaces after each sentence, "
-                        "agent-sync turns them into U+00A0 plus a space" % (len(bad), "" if len(bad) == 1 else "s", "s" if len(bad) == 1 else "", shown))
+                        "simple-chat turns them into U+00A0 plus a space" % (len(bad), "" if len(bad) == 1 else "s", "s" if len(bad) == 1 else "", shown))
     if facts.get("facts_id") not in ready:
         problems.append("the facts id %s is not in the DM (the duplicate check needs it)" % facts.get("facts_id"))
     if facts.get("full_list_url") not in ready:

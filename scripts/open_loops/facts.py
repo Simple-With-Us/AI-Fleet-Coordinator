@@ -53,7 +53,7 @@ def _answer(document: Mapping, name: str) -> dict:
 
 
 def _not_built(name: str, answer: dict) -> dict:
-    """`agent-sync asks status` is C3's, built in Phase 2:  today agent-sync answers it with a usage error (exit 2).
+    """`simple-chat asks status` is C3's, built in Phase 2:  today simple-chat answers it with a usage error (exit 2).
     That is "not built yet", not a failure to show as Missing every morning."""
     if name == "asks" and answer["status"] == "failed" and str(answer.get("reason") or "").endswith("exited 2"):
         return {"status": "absent", "reason": "not built yet (C3, Phase 2)", "data": None}
