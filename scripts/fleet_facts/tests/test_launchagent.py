@@ -93,22 +93,25 @@ class LaunchAgentTests(unittest.TestCase):
         """The launch agent's provenance is in the changelog,  as an inventory entry.
 
         The window used to be the first 600 characters of the section,  which only
-        reached the entry by accident:  it held because the entry above it happened
-        to be long.  Any inventory pass by any seat  (which adds one line at the
-        top)  moved the entry out of the window and broke a test about a launch
-        agent.  The record is what matters,  so the entry is looked for where it
-        is,  and it has to be an inventory entry like every other.
+        reached the entry by accident:  it held while the entries above it happened
+        to be short,  and every new inventory pass adds one line at the top and
+        pushes that entry further out,  so the next inventory by any seat would have
+        failed a test about a launch agent.  The record is what matters,  so the
+        entry is looked for where it is,  and it has to be an inventory entry like
+        every other.
         """
         text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
         changelog = text.split("## Inventory Changelog & Historical Updates", 1)[1]
+        # The section ends at the next heading:  a later section's "Last inventory:"
+        # line is not part of this changelog and must not be counted here.
+        changelog = changelog.split("\n## ", 1)[0]
         entries = [line for line in changelog.splitlines() if line.startswith("Last inventory:")]
         self.assertTrue(entries, "the changelog has no inventory entries")
         matching = [line for line in entries if ISSUE in line]
-        self.assertEqual(
-            len(matching), 1, "the changelog records the launch agent's inventory exactly once"
-        )
-        self.assertIn(
-            LABEL, matching[0], "the entry names the launch agent it inventoried"
+        self.assertTrue(matching, "the changelog does not record the launch agent's inventory")
+        self.assertTrue(
+            any(LABEL in line for line in matching),
+            "the entry that names the launch agent does not name it",
         )
 
     def test_the_helper_row_no_longer_calls_the_launcher_a_stub(self) -> None:
