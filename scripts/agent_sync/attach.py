@@ -996,5 +996,5 @@ def main(
         return 0
     except Exception as exc:  # noqa: BLE001 - a hook must never take the session down
         L.hook_log(ctx.root, "error", command=command, error=type(exc).__name__)
-        ctx.err("agent-sync %s: internal error: %s\n" % (command, type(exc).__name__))
+        ctx.err("simple-chat %s: internal error: %s\n" % (command, type(exc).__name__))
         return 1 if command != "attach" or not argv or argv[0] not in ("--hook", "--rewake") else 0

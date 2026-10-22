@@ -841,6 +841,11 @@ class ProtocolTests(McpHarness):
                     words = verb.split()
                     owners = [c for c, top in tops.items() if words[0] in top]
                     self.assertTrue(owners, "%s is not a verb of any command" % words[0])
+                    # #860 r4:  "status" is a top-level verb of both commands, so without this the
+                    # test stays green when simple-notes drops it and the tool silently points at
+                    # the listener's status instead of the notes request status.
+                    if name.startswith("notes_"):
+                        self.assertIn("simple-notes", owners, "%s is not a simple-notes verb" % verb)
                     for command in owners:
                         if len(words) > 1:
                             sub = next(

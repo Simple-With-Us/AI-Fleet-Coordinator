@@ -309,7 +309,7 @@ def linear_team_keys() -> list[str] | None:
         return None
     try:
         proc = subprocess.run(
-            ["board", "api", "query", "{ teams(first: 250) { nodes { key } } }"],
+            ["simple-board", "api", "query", "{ teams(first: 250) { nodes { key } } }"],
             capture_output=True,
             text=True,
             timeout=60,

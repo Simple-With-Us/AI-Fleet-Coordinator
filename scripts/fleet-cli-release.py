@@ -91,11 +91,10 @@ EXACT = frozenset(
 )
 # What every release ever installed contains.  verify_retained, rollback and status judge a retained
 # release by this set, so a release that predates the AFC-331 tools stays valid and can be rolled back to.
+# The renamed entry points are NOT here:  a retained pre-rename release carries scripts/agent-sync instead,
+# so demanding the new names would make status and rollback refuse exactly the rollback targets they exist for.
 BASE_REQUIRED = frozenset(
     {
-        "scripts/simple-chat",
-        "scripts/simple-notes",
-        "scripts/simple-board",
         "scripts/linear-board/board",
         "fleet-apps.json",
         *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
@@ -109,6 +108,11 @@ BASE_REQUIRED = frozenset(
 # The recall, lane and fleet-mode files (AFC-331).  A new bundle must carry them;  an older retained one need not.
 TOOL_REQUIRED = frozenset(
     {
+        # The hard-cutover entry points (rename of scripts/agent-sync):  a new bundle must carry them, but a
+        # retained older release carries scripts/agent-sync instead and stays a valid rollback target.
+        "scripts/simple-chat",
+        "scripts/simple-notes",
+        "scripts/simple-board",
         "scripts/recall",
         *("scripts/fleet_rag/" + name + ".py" for name in RECALL_MODULES),
         "scripts/fleet_lanes/bin/lane",

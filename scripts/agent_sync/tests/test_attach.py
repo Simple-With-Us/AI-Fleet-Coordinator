@@ -187,6 +187,15 @@ class HookTests(AttachHarness):
         self.assertEqual(self.hook("not-an-event")[0], 0)
         self.assertEqual(self.attach_run("--hook", "prompt", stdin="{not json")[0], 0)
 
+    def test_unexpected_exception_names_simple_chat_not_the_retired_command(self) -> None:
+        # #860 r4:  the generic hook failure names the current command; the retired
+        # `agent-sync` name must not resurface in user-facing errors after the hard cutover.
+        with mock.patch.object(attach, "cmd_attach", side_effect=RuntimeError("boom")):
+            code, out, err = self.attach_run()
+        self.assertEqual(code, 1)
+        self.assertIn("simple-chat attach: internal error: RuntimeError", err)
+        self.assertNotIn("agent-sync attach", err)
+
 
 class RewakeTests(AttachHarness):
     def setUp(self) -> None:

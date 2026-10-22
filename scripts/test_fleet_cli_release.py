@@ -311,10 +311,22 @@ class ReleaseTests(unittest.TestCase):
         self.receive(make_bundle("new"))
         current = release.release_at(self.base, "current")
         meta = json.loads((current / "release.json").read_text())
-        del meta["files"]["scripts/simple-chat"]
+        del meta["files"]["scripts/agent_sync/cli.py"]
         (current / "release.json").write_text(json.dumps(meta))
         with self.assertRaisesRegex(release.Refused, "invalid_release_metadata"):
             release.control(self.home, "status")
+
+    def test_renamed_entry_points_are_new_bundle_only(self):
+        # #860 r4:  a retained pre-rename release carries scripts/agent-sync, not the three cutover
+        # entry points, so they must live in TOOL_REQUIRED (new bundles carry them) rather than
+        # BASE_REQUIRED (which would make status and rollback refuse the rollback target itself).
+        for path in ("scripts/simple-chat", "scripts/simple-notes", "scripts/simple-board"):
+            self.assertIn(path, release.TOOL_REQUIRED, path)
+            self.assertNotIn(
+                path,
+                release.BASE_REQUIRED,
+                "a retained pre-rename release stays a valid rollback target: " + path,
+            )
 
     def test_smoke_runs_the_new_tools(self):
         # The smoke cases for recall, lane and fleet-mode fail a release whose tool exits wrongly.
@@ -452,6 +464,11 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(list(self.base.glob(".stage-*")), [])
 
     def test_smoke_distinguishes_timeout_from_launch_failure_without_output(self):
+        # The first smoke case is a TOOL_REQUIRED script, which smoke skips when the release has no
+        # such file (a retained pre-tool release);  materialize it so the error-code mapping runs.
+        script = self.home / "scripts" / "simple-chat"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("# test double\n")
         for failure, code in (
             (
                 subprocess.TimeoutExpired("private command", 12, output=b"private output"),
