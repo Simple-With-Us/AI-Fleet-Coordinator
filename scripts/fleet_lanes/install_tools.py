@@ -2430,9 +2430,9 @@ PLATFORMS: dict[str, Platform] = {
             new_mode=0o600,
             notes=(
                 "OpenCode's config schema has no hooks key.  `apply tools` writes the guard plugin into the stable dir "
-                f"({OPENCODE_PLUGIN_FILE}); `apply opencode` lists that file by ABSOLUTE path as a string entry in the "
-                "plugin array of ~/.config/opencode/opencode.json (the plugin array is the proven load path; "
-                "~/.config/opencode/plugin directory auto-discovery is UNCONFIRMED and is not relied on).  Nothing else "
+                f"({OPENCODE_PLUGIN_FILE}); `apply opencode` lists its DIRECTORY by ABSOLUTE path in the "
+                "plugins array of ~/.config/opencode/opencode.json (V2 rejects a file entry, and a configured "
+                "plugin path must be a directory).  Nothing else "
                 "in opencode.json is changed: its other keys are never printed, a backup is owner-only (0600) whatever "
                 "the file's mode, and the plugin text holds no credential, so no second copy of any token in that file "
                 "is made.",
@@ -6484,8 +6484,9 @@ def verify_opencode(
             t,
             "fires",
             "SKIP",
-            "verify cannot load the plugin; the owner proof is a new OpenCode session asked to run a process "
-            "listing, which must be refused (the deny path was exercised on this host in v2.1.1 on 2026-10-22)",
+            "whether OpenCode loads this local plugin and denies a live shell call is UNVERIFIED; the owner "
+            "proof is a new OpenCode session asked to run a process listing, which must be refused (the deny "
+            "path was exercised on this host in v2.1.1 on 2026-10-22)",
         )
     )
     return out
