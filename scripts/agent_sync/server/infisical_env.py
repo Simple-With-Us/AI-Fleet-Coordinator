@@ -21,9 +21,12 @@ The allowlist is built from the seat partition (every seat it gives to "server")
 CODE is the seat with hyphens as underscores.  An Infisical value wins over a container variable of the same
 name, so a rotation in Infisical takes effect on the next restart even if Coolify still holds an old copy.
 
-On any failure (login refused, network, a bad response) it logs one line naming the stage and the HTTP status,
-never a body or a value, and starts the listener with the container's own environment (the identity removed),
-so a deployment that still carries Coolify copies keeps working.  No value is ever printed or logged.
+Infisical (fleet-secrets' source project) is the intended source of these variables;  Coolify copies are only a
+fallback.  On any failure (login refused, network, a bad response) it logs one ERROR line naming the stage and the
+HTTP status, never a body or a value, and starts the listener with the container's own environment (the identity
+removed), so a deployment that still carries Coolify copies keeps working.  A successful load logs one line with
+the variable count and how many GB seats got both Zulip names from Infisical (names only).  No value is ever
+printed or logged.
 """
 from __future__ import annotations
 
@@ -180,8 +183,15 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         out[name] = found[name]
     where = "%s %s" % ((env.get("INFISICAL_ENVIRONMENT") or "prod").strip(),
                        (env.get("INFISICAL_SECRET_PATH") or "/zulip").strip())
-    return out, ("loaded %d variables from Infisical (%s; %d replaced a container value, %d other names in the "
-                 "folder ignored)" % (len(loaded), where, replaced, len(found) - len(loaded)))
+    gb = sorted(code for code in codes if code.startswith("GB_"))
+    complete = [c for c in gb if f"ZULIP_{c}_EMAIL" in loaded and f"ZULIP_{c}_API_KEY" in loaded]
+    missing_gb = [c for c in gb if c not in complete]
+    coverage = f"; GB seats with both Zulip names from Infisical: {len(complete)} of {len(gb)}"
+    if missing_gb:
+        coverage += " (not loaded: " + ", ".join(c.replace("_", "-") for c in missing_gb) + ")"
+    ignored = len(found) - len(loaded)
+    return out, (f"loaded {len(loaded)} variables from Infisical ({where}; {replaced} replaced a container value, "
+                 f"{ignored} other names in the folder ignored){coverage}")
 
 
 def main(argv: list[str]) -> int:
@@ -189,7 +199,8 @@ def main(argv: list[str]) -> int:
         log("usage: infisical_env.py <program> [args ...]")
         return 2
     env, line = build_env(os.environ)
-    log(line)
+    # A failed or skipped load means the container runs on Coolify copies:  make that stand out in the log.
+    log(("ERROR: " if line.startswith(("Infisical load", "Infisical not used")) else "") + line)
     os.execve(argv[1], argv[1:], env)
     return 127  # not reached
 
