@@ -25,6 +25,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agent_sync import operator_candidates as OC
 from agent_sync import service_identity as SI
@@ -33,7 +34,7 @@ from agent_sync import wakes as W
 from agent_sync import zulip as Z
 from agent_sync.tests.fake_zulip import FakeZulip
 
-OPERATOR_ID = 1217148
+OPERATOR_ID = 9001  # synthetic:  a fixture must not name a live bot id
 OPERATOR_EMAIL = "operator-bot@zulip.test"
 SEAT_EMAIL = "claude-bot@zulip.test"
 OWNER_ID = 12
@@ -103,6 +104,11 @@ class CandidateListTests(unittest.TestCase):
 
     def auth_for(self, email: str, key: str) -> str:
         return "Basic " + base64.b64encode(("%s:%s" % (email, key)).encode()).decode()
+
+    def send_with_broken_post(self, *, maybe_sent: bool) -> dict:
+        """One send whose POST fails after every read succeeded, so the dedupe row is the only state left behind."""
+        with mock.patch.object(Z.ZulipClient, "post", _BrokenPost(maybe_sent)):
+            return self.send()
 
     def direct_messages(self) -> list[dict]:
         return [m for m in self.fake.messages if m["type"] == "private"]
@@ -211,6 +217,22 @@ class CandidateListTests(unittest.TestCase):
         self.assertEqual(later["status"], "sent", later["reason"])
         self.assertEqual(len(self.direct_messages()), 2)
 
+    def test_a_definitely_unsent_failure_releases_the_reservation(self) -> None:
+        # A refused connection certainly delivered nothing, so the dedupe row must not stand:
+        # keeping it would refuse the retry as a duplicate for the whole window and the sender
+        # would never get the list at all.
+        out = self.send_with_broken_post(maybe_sent=False)
+        self.assertEqual(out["status"], "refused")
+        retry = self.send(now=1000.0 + 60.0)
+        self.assertEqual(retry["status"], "sent", retry["reason"])
+
+    def test_an_uncertain_failure_keeps_the_reservation(self) -> None:
+        # The opposite case: the request may have reached the server, so it must not be resent.
+        out = self.send_with_broken_post(maybe_sent=True)
+        self.assertEqual(out["status"], "refused")
+        again = self.send(now=1000.0 + 60.0)
+        self.assertEqual(again["status"], "duplicate")
+
     def test_the_state_lives_in_the_seats_own_private_directory(self) -> None:
         self.send()
         seat_dir = self.state / "MM"
@@ -219,6 +241,16 @@ class CandidateListTests(unittest.TestCase):
         self.assertEqual(
             stat.S_IMODE(os.stat(seat_dir / OC.STATE_FILE).st_mode), 0o600
         )
+
+
+class _BrokenPost:
+    """Replaces the real client's POST so only the send fails, the way a dropped connection does."""
+
+    def __init__(self, maybe_sent: bool) -> None:
+        self.maybe_sent = maybe_sent
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        raise Z.NetworkError("connection refused", maybe_sent=self.maybe_sent)
 
 
 class RecipientTests(unittest.TestCase):
@@ -274,7 +306,7 @@ class WakePromptTests(unittest.TestCase):
 
     def prompt(self, **overrides) -> str:
         pending = W.Pending(
-            "w1", "MM", {"channel": "agent-sync", "topic": "AFC-412"}, owner=False, now=1.0, due=2.0
+            "w1", "MM", {"channel": Z.DEFAULT_CHANNEL, "topic": "AFC-412"}, owner=False, now=1.0, due=2.0
         )
         pending.add({"id": 5}, False)
         kwargs = dict(

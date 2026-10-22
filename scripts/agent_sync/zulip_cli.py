@@ -98,7 +98,7 @@ def add_parsers(
             type=cli._channel,
             default=None,
             metavar="C",
-            help="channel (default: %s) for a channel message" % Z.DEFAULT_CHANNEL,
+            help="channel (default: %s) for a channel message" % channel_default,
         )
         p.add_argument(
             "--topic", type=cli._topic, default=None, metavar="T", help="topic of a channel message"

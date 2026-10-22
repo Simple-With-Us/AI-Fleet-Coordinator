@@ -80,8 +80,10 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(links.parse_topic_link(other, {"AGENT_SYNC_REALM": "https://chat.example.test"}).message_id, 777)
 
     def test_bad_links(self) -> None:
+        # the slug comes from the one canonical channel, so a rename cannot leave a stale no-op replace here
+        other_channel = self.OK.replace("%d-%s" % (12, links.CHANNEL), "12-general")
         for bad in ("", "nonsense", self.OK.replace("https", "http"), self.OK.replace("/near/777", ""), self.OK.replace("OWNER.20", "X.20"),
-                    self.OK.replace("12-agent-sync", "12-general"), self.OK + "/more"):
+                    other_channel, self.OK + "/more"):
             with self.assertRaises(Refusal, msg=bad):
                 links.parse_topic_link(bad, {})
 

@@ -154,7 +154,7 @@ def notice_seats(seat: str) -> frozenset[str]:
     return frozenset({f3.identity.canonical_seat(seat), FALLBACK_SEAT})
 
 
-def find_notice(runner: Runner, topic: str, uid: str, *, filer: str | None = None) -> int | None:
+def find_notice(runner: Runner, topic: str, uid: str, *, filer: str | None = None, channel: str | None = None) -> int | None:
     """The id of the message that announced the item whose uid is `uid`, else None.  `filer` is the seat that
     filed the item when the caller is not that seat (the fallback notifier runs as CLAUDE, so the filer's own bot
     must be allowed too, or a post the filer's bot landed but did not record would be posted a second time).
@@ -174,7 +174,7 @@ def find_notice(runner: Runner, topic: str, uid: str, *, filer: str | None = Non
         SESSION,
         "--json",
         "--channel",
-        CHANNEL,
+        CHANNEL if channel is None else channel,
         "--topic",
         topic,
         "--include-self",
@@ -251,6 +251,9 @@ def notify(
     b = item.block
     if b is None:
         raise Refusal("%s has no readable needs-owner block;  adopt it first" % item.identifier)
+    # one channel for the whole call, from the caller's own environ, so the post and the read-back
+    # that confirms it can never look in two different channels
+    channel = linkmod.resolve_channel(environ)
     if item.notified:
         return Notice(
             "notified", item.notified[0], item.notified[1] or item.topic, None, True, already=True
@@ -259,7 +262,7 @@ def notify(
         return _mirror(runner, item, linkmod.parse_topic_link(b.mirror_of, environ))
     topic = T.topic_for(item.identifier, b.question)
     if rescan:
-        earlier = find_notice(runner, topic, b.uid, filer=b.filed_by)
+        earlier = find_notice(runner, topic, b.uid, filer=b.filed_by, channel=channel)
         if earlier is not None:
             return _announce(runner, item, earlier, topic)
     result = runner.agent_sync(
@@ -269,6 +272,8 @@ def notify(
         "--session",
         SESSION,
         "--json",
+        "--channel",
+        channel,
         "--topic",
         topic,
         "--to-owner",
@@ -281,7 +286,7 @@ def notify(
         if msg_id is not None:
             return _announce(runner, item, msg_id, topic)
         landed = find_notice(
-            runner, topic, b.uid, filer=b.filed_by
+            runner, topic, b.uid, filer=b.filed_by, channel=channel
         )  # posted, but the answer carried no id
         return (
             _announce(runner, item, landed, topic)
@@ -291,7 +296,7 @@ def notify(
     if result.missing:
         return _pending(runner, item, topic, "no_agent_sync")
     if result.timed_out or result.code in MAYBE_SENT_CODES:
-        landed = find_notice(runner, topic, b.uid, filer=b.filed_by)
+        landed = find_notice(runner, topic, b.uid, filer=b.filed_by, channel=channel)
         if landed is not None:
             return _announce(runner, item, landed, topic)
         return _pending(runner, item, topic, "send_failed")

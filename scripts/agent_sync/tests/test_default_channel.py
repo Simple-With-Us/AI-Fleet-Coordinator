@@ -9,10 +9,14 @@ fleet-wide outage.
 
 from __future__ import annotations
 
+import json
+import pathlib
 import unittest
 
 from agent_sync import router as R
 from agent_sync import zulip as Z
+
+MCP_DIR = pathlib.Path(__file__).resolve().parents[1] / "mcp"
 
 
 class DefaultChannelTests(unittest.TestCase):
@@ -46,6 +50,24 @@ class DefaultChannelTests(unittest.TestCase):
         self.assertEqual(
             Z.default_channel({Z.ENV_CHANNEL: "other"}), "other"
         )
+
+    def test_every_mcp_tool_that_defaults_a_channel_defaults_it_to_the_same_name(self) -> None:
+        # `with_defaults()` fills a schema default into every MCP call that omits `channel`, so a
+        # stale default in the shipped tool contract silently targets a stream that no longer
+        # exists — the outage this default was changed to end, still live on the MCP path.
+        spec = json.loads((MCP_DIR / "tools.json").read_text())
+        seen = 0
+        for tool in spec["tools"]:
+            channel = (tool.get("inputSchema") or {}).get("properties", {}).get("channel")
+            if not isinstance(channel, dict) or "default" not in channel:
+                continue
+            seen += 1
+            self.assertEqual(
+                channel["default"],
+                Z.DEFAULT_CHANNEL,
+                "%s still defaults channel to %r" % (tool.get("name"), channel["default"]),
+            )
+        self.assertGreater(seen, 0, "no MCP channel default was checked")
 
 
 if __name__ == "__main__":

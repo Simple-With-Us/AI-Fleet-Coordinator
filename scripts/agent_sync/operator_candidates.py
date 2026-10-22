@@ -501,8 +501,12 @@ def _send_candidate_list(
     try:
         result = client.post("messages", {"type": "direct", "to": [recipient_id], "content": body})
     except Z.NetworkError as exc:
-        # The message may have reached the server:  keep the reservation so it is not sent twice.
-        _record(path, key, at, window, recipient_id, None, "sent" if exc.maybe_sent else "failed")
+        if exc.maybe_sent:
+            # The message may have reached the server:  keep the reservation so it is not sent twice.
+            _record(path, key, at, window, recipient_id, None, "sent")
+        else:
+            # It certainly did not go out:  drop the reservation so a clean retry is possible.
+            _release(path, key, at, window)
         return _outcome("refused", "the candidate list could not be sent: %s" % exc)
     except Z.AgentSyncError as exc:
         _release(path, key, at, window)

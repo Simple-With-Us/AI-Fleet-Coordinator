@@ -15,9 +15,19 @@ from typing import NamedTuple
 from .errors import Refusal
 
 DEFAULT_REALM = "https://simplewithus.zulipchat.com"
-CHANNEL = (
-    os.environ.get("AGENT_SYNC_CHANNEL", "").strip() or "work-in-progress"
-)  # the realm renamed #agent-sync; the env var overrides
+DEFAULT_CHANNEL = "work-in-progress"  # the realm renamed #agent-sync;  AGENT_SYNC_CHANNEL overrides
+
+
+def resolve_channel(environ: dict | None = None) -> str:
+    """The service channel, casefolded so it compares with every casefolded name here.
+
+    Read from the caller's own `environ` when one is supplied, so a caller (and its tests) controls
+    the channel instead of the module's import-time snapshot of `os.environ`."""
+    env = os.environ if environ is None else environ
+    return (env.get("AGENT_SYNC_CHANNEL") or "").strip().casefold() or DEFAULT_CHANNEL
+
+
+CHANNEL = resolve_channel()
 
 
 class TopicLink(NamedTuple):
@@ -59,11 +69,12 @@ def parse_topic_link(raw: str, environ: dict | None = None) -> TopicLink:
     chan = _decode(match.group("chan"))
     chan = re.sub(r"^[0-9]+-", "", chan)
     topic = _decode(match.group("topic"))
-    if chan.casefold() != CHANNEL:
-        raise Refusal("--mirror-of must be in #%s" % CHANNEL)
+    channel = resolve_channel(environ)
+    if chan.casefold() != channel:
+        raise Refusal("--mirror-of must be in #%s" % channel)
     if not topic.startswith("OWNER "):
         raise Refusal("--mirror-of must be an OWNER topic (its name starts with 'OWNER ')")
-    return TopicLink(link, CHANNEL, topic, int(match.group("id")))
+    return TopicLink(link, channel, topic, int(match.group("id")))
 
 
 def _encode(part: str) -> str:
@@ -76,16 +87,15 @@ def make_topic_link(
     message_id: int,
     *,
     stream_id: int | None = None,
-    channel: str = CHANNEL,
+    channel: str | None = None,
     environ: dict | None = None,
 ) -> str:
-    """The link to message `message_id` in `topic` of #agent-sync on this realm, in the form `parse_topic_link`
-    reads back (`.../#narrow/channel/<stream id>-work-in-progress/topic/<topic>/near/<id>`).  Without the stream id the
-    channel part is its name alone, which Zulip also resolves."""
+    """The link to message `message_id` in `topic` of the service channel on this realm, in the form
+    `parse_topic_link` reads back (`.../#narrow/channel/<stream id>-work-in-progress/topic/<topic>/near/<id>`).
+    Without the stream id the channel part is its name alone, which Zulip also resolves."""
     host = realm_host(environ)
-    chan = (
-        "%d-%s" % (stream_id, channel) if isinstance(stream_id, int) and stream_id > 0 else channel
-    )
+    chan = channel if channel is not None else resolve_channel(environ)
+    chan = "%d-%s" % (stream_id, chan) if isinstance(stream_id, int) and stream_id > 0 else chan
     return "https://%s/#narrow/channel/%s/topic/%s/near/%d" % (
         host,
         _encode(chan),
