@@ -31,6 +31,51 @@ fi
 if grep -q 'cleanmymac clean --force && cleanmymac optimize ram' "$ROOT/mac-resource-watch.py"; then
   fail "playbook must not tell Housekeeper to optimize ram"
 fi
+# The committed scripts must not name a private sibling repository or its
+# internal source paths.  A test fixture is committed and indexed, so a
+# private project name and the layout of its source tree end up in a public
+# index.  The lock protocol only needs to say that an equivalent helper in a
+# sibling repository implements the same rules.
+#
+# The forbidden strings are NOT committed here:  they are read from the
+# environment, so this file carries neither the name nor the layout of a real
+# private project.  A developer who wants the real check sets
+# PRIVATE_REPO_GUARD, PRIVATE_TEST_PY_PATH and PRIVATE_TEST_SWIFT_PATH outside
+# the repository; CI sets nothing and gets a synthetic sentinel, which still
+# exercises both guards end to end instead of letting them silently pass.
+PRIVATE_REPO="${PRIVATE_REPO_GUARD:-Synthetic-Private-Sibling-Repo}"
+PRIVATE_PY_PATH="${PRIVATE_TEST_PY_PATH:-synthetic-private-repo/internal/module.py}"
+PRIVATE_SWIFT_PATH="${PRIVATE_TEST_SWIFT_PATH:-synthetic-private-repo/internal/Module.swift}"
+# The guard definitions are the one place these strings are named, so they are
+# left out of the check on the fixtures themselves.
+guard_lines() {
+  cat "$@" | grep -vE '^[[:space:]]*PRIVATE_(REPO|PY_PATH|SWIFT_PATH)='
+}
+if grep -nF -e "$PRIVATE_PY_PATH" -e "$PRIVATE_SWIFT_PATH" \
+    "$ROOT/mac-auto-cleanup.sh" "$ROOT/mac-resource-watch.py"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository's internal source paths"
+fi
+if grep -nF "$PRIVATE_REPO" "$ROOT/mac-resource-watch.py"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository"
+fi
+if guard_lines "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh" \
+    | grep -nF -e "$PRIVATE_PY_PATH" -e "$PRIVATE_SWIFT_PATH" -e "$PRIVATE_REPO"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository"
+fi
+# A name split across two lines, or written with a space or a hyphen instead
+# of run together, defeats a fixed-string grep -- and a committed script must
+# not carry it that way either.  Both the haystack and the needle are stripped
+# of whitespace, comment markers and the separators a name can be broken on,
+# so every spelling and every split is caught without the guard having to name
+# either half.
+PRIVATE_REPO_SPELLED="$(printf '%s' "$PRIVATE_REPO" | tr -d '[:space:]#_-')"
+if tr -d '[:space:]#_-' < "$ROOT/mac-resource-watch.py" | grep -qF "$PRIVATE_REPO_SPELLED"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository, split across lines"
+fi
+if guard_lines "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh" \
+    | tr -d '[:space:]#_-' | grep -qF "$PRIVATE_REPO_SPELLED"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository, split across lines"
+fi
 python3 - "$ROOT/mac-resource-watch.py" <<'PY' || fail "evaluate swap conjunct"
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("watch", sys.argv[1])
@@ -80,6 +125,21 @@ try:
     mod.STATE_DIR = state
     mod.HOUSEKEEPER_LOCK = lock
     mod._HOUSEKEEPER_LOCK_INODE = None
+
+    def owner_record(pid, **overrides):
+        """An owner record in the shape the protocol publishes.
+
+        The owner file is shared state, so the reader accepts the declared
+        shape and nothing else:  these four keys, these types, these bounds.
+        """
+        record = {
+            "pid": pid,
+            "host": "test-host",
+            "acquired_at": 1700000000.0,
+            "lock": str(lock),
+        }
+        record.update(overrides)
+        return record
 
     # 1. A free lock is taken.
     assert mod._acquire_housekeeper_lock() is True
@@ -160,7 +220,13 @@ try:
     owner.write_text('{"pid": "not a number"}', encoding="utf-8")
     mod._clear_housekeeper_owner(only_pid=os.getpid())
     assert owner.is_file(), "an owner file with an unusable pid must not be deleted"
-    owner.write_text('{"pid": %d}' % os.getpid(), encoding="utf-8")
+    # A record that is not in the declared shape is not an owner record
+    # either, even when its pid is ours: a holder that cannot read the record
+    # cannot know that it describes it.
+    owner.write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
+    mod._clear_housekeeper_owner(only_pid=os.getpid())
+    assert owner.is_file(), "an owner file outside the declared shape must not be deleted"
+    owner.write_text(json.dumps(owner_record(os.getpid())), encoding="utf-8")
     mod._clear_housekeeper_owner(only_pid=os.getpid())
     assert not owner.exists(), "an owner file that names us must be removed"
 
@@ -232,9 +298,9 @@ try:
     # 13. The shared guard over the housekeeper protocol.
     #
     #     Every implementation of this protocol -- this watcher, the cleanup
-    #     script in this repo, HogHunter's scripts/vacuum/lock.py and
-    #     HogHunter's Sources/Storage/HousekeeperLock.swift -- serializes the
-    #     critical sections of the lock with an exclusive flock on ONE file:
+    #     script in this repo and an equivalent lock helper in a sibling
+    #     repository -- serializes the critical sections of the lock with an
+    #     exclusive flock on ONE file:
     #     ~/.claude-disk-janitor/.housekeeper.lock.guard, a SIBLING of the
     #     lock directory.  It is never inside the lock directory, because the
     #     lock is released with a plain rmdir and rmdir refuses a directory
@@ -277,7 +343,7 @@ try:
         time.sleep(0.02)
     assert holder_ready.exists(), "the holder process must have taken the guard"
     owner = mod._housekeeper_owner_path()
-    owner.write_text('{"pid": %d}' % os.getpid(), encoding="utf-8")
+    owner.write_text(json.dumps(owner_record(os.getpid())), encoding="utf-8")
     started = time.time()
     mod._clear_housekeeper_owner(only_pid=os.getpid())
     elapsed = time.time() - started
@@ -302,14 +368,16 @@ try:
     #     at all and lets a later reader take it over on the age rule.
     contender_src = (
         "import fcntl, json, os, sys, time\n"
-        "guard_path, owner_path, go_path, done_path = sys.argv[1:5]\n"
+        "guard_path, owner_path, go_path, done_path, lock_path = sys.argv[1:6]\n"
         "deadline = time.time() + 30\n"
         "while not os.path.exists(go_path) and time.time() < deadline:\n"
         "    time.sleep(0.02)\n"
         "fd = os.open(guard_path, os.O_RDWR | os.O_CREAT, 0o600)\n"
         "fcntl.flock(fd, fcntl.LOCK_EX)\n"
         "try:\n"
-        "    open(owner_path, 'w').write(json.dumps({'pid': 424242, 'host': 'contender'}))\n"
+        "    record = {'pid': 424242, 'host': 'contender',"
+        " 'acquired_at': 1700000000.0, 'lock': lock_path}\n"
+        "    open(owner_path, 'w').write(json.dumps(record))\n"
         "finally:\n"
         "    fcntl.flock(fd, fcntl.LOCK_UN)\n"
         "    os.close(fd)\n"
@@ -317,11 +385,11 @@ try:
     )
     go_path = state / "contender-go"
     contender_done = state / "contender-done"
-    owner.write_text('{"pid": %d}' % os.getpid(), encoding="utf-8")
+    owner.write_text(json.dumps(owner_record(os.getpid())), encoding="utf-8")
     contender = subprocess.Popen(
         [
             sys.executable, "-c", contender_src,
-            str(guard_file), str(owner), str(go_path), str(contender_done),
+            str(guard_file), str(owner), str(go_path), str(contender_done), str(lock),
         ]
     )
     real_read_text = pathlib.Path.read_text
@@ -451,6 +519,214 @@ try:
     ), (
         "a refused restore must name the moved-aside copy, or the orphaned "
         "peer lock accumulates invisibly (messages: %r)" % (messages,))
+
+    # 20. The owner record must match the declared schema EXACTLY.
+    #
+    #     The owner file is shared state that any process can write, and its
+    #     parsed shape is handed to the lock-ownership logic.  A record that
+    #     is missing a key, carries an unknown key, or holds a value of the
+    #     wrong type or out of bounds is not an owner record, and accepting
+    #     one lets a malformed file decide who holds the lock.
+    #
+    #     A malformed record is REJECTED with None and never with an
+    #     exception: a raise here would escape the release path and leak the
+    #     lock.
+    parse = mod._parse_housekeeper_owner
+    good = owner_record(4242)
+    assert parse(json.dumps(good)) == good, "a record in the declared shape must be accepted"
+
+    def rejects(record, why):
+        assert parse(json.dumps(record)) is None, why
+
+    rejects({"pid": 4242}, "a record that is missing a key must be rejected")
+    rejects({"pid": 4242, "host": "h", "acquired_at": 1.0}, "a record that is missing a key must be rejected")
+    rejects(dict(good, extra="x"), "a record with an unknown key must be rejected")
+    rejects(dict(good, pid=0), "a pid of zero must be rejected")
+    rejects(dict(good, pid=-1), "a negative pid must be rejected")
+    rejects(dict(good, pid=True), "a boolean pid must be rejected")
+    rejects(dict(good, pid=1.5), "a non-integer pid must be rejected")
+    rejects(dict(good, host=""), "an empty host must be rejected")
+    rejects(dict(good, host=17), "a non-string host must be rejected")
+    rejects(dict(good, acquired_at="now"), "a non-numeric acquired_at must be rejected")
+    rejects(dict(good, acquired_at=True), "a boolean acquired_at must be rejected")
+    rejects(dict(good, acquired_at=float("nan")), "a NaN acquired_at must be rejected")
+    rejects(dict(good, acquired_at=float("inf")), "an infinite acquired_at must be rejected")
+    rejects(dict(good, lock=""), "an empty lock must be rejected")
+    rejects(dict(good, lock=None), "a non-string lock must be rejected")
+    for raw in ("", "null", "42", '"a string"', "{}", '[1, 2, 3]', "{not json",
+                '{"pid": true}', '{"pid": 1, "host": null, "acquired_at": 0, "lock": "x"}'):
+        assert parse(raw) is None, "a malformed record must be rejected, not accepted: %r" % raw
+
+    # 21. The owner record is written ATOMICALLY.
+    #
+    #     A write that truncates the owner file in place can leave partial
+    #     JSON behind after a crash, and the owner record is the safety
+    #     metadata the lock-ownership logic reads.  The write goes to a temp
+    #     file in the same directory, is fsynced, renamed over the owner
+    #     file, and the directory is fsynced too.
+    owner = mod._housekeeper_owner_path()
+    owner.write_text(json.dumps(owner_record(111)), encoding="utf-8")
+    replace_calls = []
+    fsync_calls = []
+    real_replace = mod.os.replace
+    real_fsync = mod.os.fsync
+
+    def spy_replace(src, dst, *args, **kwargs):
+        replace_calls.append((str(src), str(dst), os.stat(src).st_mode & 0o777))
+        return real_replace(src, dst, *args, **kwargs)
+
+    def spy_fsync(fd):
+        fsync_calls.append(fd)
+        return real_fsync(fd)
+
+    mod.os.replace = spy_replace
+    mod.os.fsync = spy_fsync
+    try:
+        mod._write_housekeeper_owner()
+    finally:
+        mod.os.replace = real_replace
+        mod.os.fsync = real_fsync
+    assert replace_calls, (
+        "the owner record must be written with an atomic replace, not in "
+        "place: a write that truncates the file can leave partial JSON "
+        "behind")
+    src, dst, tmp_mode = replace_calls[-1]
+    assert dst == str(owner), replace_calls
+    assert os.path.dirname(src) == str(state), (
+        "the temp file must be in the same directory as the owner file")
+    assert tmp_mode == 0o600, "the temp file must be private, got %o" % tmp_mode
+    assert not os.path.exists(src), "the temp file must be gone after the write"
+    assert len(fsync_calls) >= 2, (
+        "the temp file and its directory must both be fsynced (got %d)"
+        % len(fsync_calls))
+    assert owner.stat().st_mode & 0o777 == 0o600, (
+        "the owner record must be private, got %o" % (owner.stat().st_mode & 0o777))
+    assert json.loads(owner.read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+    # And a write that FAILS must leave the previous record intact:  the
+    # file is replaced atomically, so a failure cannot leave a truncated
+    # owner file behind, and the temp file must not survive it.
+    owner.write_text(json.dumps(owner_record(111)), encoding="utf-8")
+
+    def boom(src, dst, *args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    mod.os.replace = boom
+    try:
+        mod._write_housekeeper_owner()
+    finally:
+        mod.os.replace = real_replace
+    assert json.loads(owner.read_text(encoding="utf-8"))["pid"] == 111, (
+        "a failed write must not destroy the previous owner record")
+    leftovers = [p.name for p in state.iterdir() if p.name.endswith(".tmp")]
+    assert not leftovers, (
+        "a failed write must not leave a temp file behind: %r" % (leftovers,))
+
+    # 22. The guard's state directory is PRIVATE, and a symlinked one is
+    #     refused.
+    #
+    #     The guard and the owner record are shared state that must not be
+    #     world readable, and a symlinked state directory can redirect the
+    #     shared guard somewhere else entirely.
+    saved_lock = mod.HOUSEKEEPER_LOCK
+    saved_umask = os.umask(0o022)
+    try:
+        private_state = scratch / "private-state"
+        mod.HOUSEKEEPER_LOCK = private_state / ".housekeeper.lock"
+        with mod._housekeeper_guard():
+            pass
+        assert private_state.is_dir(), "the guard must create its state directory"
+        private_mode = private_state.stat().st_mode & 0o777
+        assert private_mode == 0o700, (
+            "the state directory must be created private, got %o" % private_mode)
+
+        # An EXISTING directory keeps its own permissions:  it is not ours to
+        # change.
+        kept_state = scratch / "kept-state"
+        kept_state.mkdir()
+        os.chmod(kept_state, 0o755)
+        mod.HOUSEKEEPER_LOCK = kept_state / ".housekeeper.lock"
+        with mod._housekeeper_guard():
+            pass
+        kept_mode = kept_state.stat().st_mode & 0o777
+        assert kept_mode == 0o755, (
+            "an existing state directory's permissions must be left "
+            "unchanged, got %o" % kept_mode)
+
+        # A SYMLINKED state directory can redirect the shared guard, so it is
+        # refused.
+        real_state = scratch / "real-state"
+        real_state.mkdir()
+        linked_state = scratch / "linked-state"
+        os.symlink(real_state, linked_state)
+        mod.HOUSEKEEPER_LOCK = linked_state / ".housekeeper.lock"
+        refused = False
+        try:
+            with mod._housekeeper_guard():
+                pass
+        except OSError:
+            refused = True
+        assert refused, "a symlinked housekeeper state directory must be refused"
+        assert not (real_state / ".housekeeper.lock.guard").exists(), (
+            "a refused state directory must not be used for the guard")
+
+        # The refusal above is its OWN exception type, so the acquire can tell
+        # it apart from a genuine I/O failure.  A symlinked state directory is
+        # still a clean "skip the cleanup", and not a crash.
+        mod.HOUSEKEEPER_LOCK = linked_state / ".housekeeper.lock"
+        assert mod._acquire_housekeeper_lock() is False, (
+            "a symlinked state directory must skip the cleanup, not raise")
+        mod.HOUSEKEEPER_LOCK = lock
+
+        # A GENUINE failure -- permissions, a full disk, a read-only
+        # filesystem -- is not "a peer holds the lock".  It must reach the
+        # caller, or a broken install is reported as a busy lock for ever.
+        real_acquire = mod._acquire_housekeeper_lock_locked
+        def boom_locked():
+            raise PermissionError(13, "Permission denied")
+        mod._acquire_housekeeper_lock_locked = boom_locked
+        propagated = False
+        try:
+            mod._acquire_housekeeper_lock()
+        except PermissionError:
+            propagated = True
+        finally:
+            mod._acquire_housekeeper_lock_locked = real_acquire
+        assert propagated, (
+            "a genuine OSError from the acquire must propagate, not be "
+            "reported as an unavailable lock")
+
+        # A failure AFTER the mkdir must not leave the lock behind.
+        # run_cleanup returns before its try/finally, so nothing else would
+        # release it, and every peer would read it as a live lock until it
+        # goes stale -- the machine would lose reclaim for the whole window.
+        orphan_state = scratch / "orphan-state"
+        mod.STATE_DIR = orphan_state
+        mod.HOUSEKEEPER_LOCK = orphan_state / ".housekeeper.lock"
+        mod._HOUSEKEEPER_LOCK_INODE = None
+        def created_then_failed():
+            mod.HOUSEKEEPER_LOCK.mkdir(parents=True, exist_ok=True)
+            # The inode is recorded immediately after the mkdir, so the
+            # failure path knows the lock is ours to drop.
+            mod._HOUSEKEEPER_LOCK_INODE = mod._lock_inode()
+            raise RuntimeError("failed after the lock was created")
+        mod._acquire_housekeeper_lock_locked = created_then_failed
+        try:
+            mod._acquire_housekeeper_lock()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("the post-mkdir failure must propagate")
+        assert not mod.HOUSEKEEPER_LOCK.exists(), (
+            "a lock created before a failure must not be orphaned: every peer "
+            "would skip reclaim until it went stale")
+        assert mod._HOUSEKEEPER_LOCK_INODE is None, (
+            "the recorded inode must be cleared when the lock is dropped")
+        mod._acquire_housekeeper_lock_locked = real_acquire
+        mod.STATE_DIR = state
+    finally:
+        os.umask(saved_umask)
+        mod.HOUSEKEEPER_LOCK = saved_lock
 
 finally:
     shutil.rmtree(scratch, ignore_errors=True)
