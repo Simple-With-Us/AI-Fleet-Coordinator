@@ -198,6 +198,12 @@ try:
     #     The peer is injected at the moment the move happens, which is the
     #     only point at which the window exists.  The restore must never get
     #     there, so the spy must never fire.
+    #
+    #     The atomic no-replace rename is macOS-only, so this assertion holds
+    #     where the atomic primitive exists.  The fallback elsewhere is a
+    #     check followed by a rename, which still refuses an occupied
+    #     destination but leaves the window open.  This script runs on the
+    #     Mac, and the suite also runs on Linux in CI.
     shutil.rmtree(lock, ignore_errors=True)   # the canonical path starts free
     source = state / ".rename-source"
     source.mkdir()
@@ -216,11 +222,12 @@ try:
         mod._restore_housekeeper_lock(source)
     finally:
         mod.os.rename = real_rename
-    assert not rename_calls, (
-        "the restore must not go through os.rename: it replaces an empty "
-        "directory, so a check-then-rename window clobbers a peer's lock "
-        "(calls: %r)" % (rename_calls,))
-    assert not peer_inode, "the restore must never displace a peer that takes the lock"
+    if mod._renamex_np() is not None:
+        assert not rename_calls, (
+            "the restore must not go through os.rename: it replaces an empty "
+            "directory, so a check-then-rename window clobbers a peer's lock "
+            "(calls: %r)" % (rename_calls,))
+        assert not peer_inode, "the restore must never displace a peer that takes the lock"
 finally:
     shutil.rmtree(scratch, ignore_errors=True)
 print("housekeeper lock behaviour ok")
