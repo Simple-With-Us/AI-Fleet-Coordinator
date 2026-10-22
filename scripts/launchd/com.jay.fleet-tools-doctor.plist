@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.jay.fleet-tools-doctor (AFC-461):  every 15 minutes, write the report Muster reads,
+  ~/.local/state/fleet-tools/report.json (0600, atomic), for the Mac and the Hetzner server.
+  It runs the managed runtime's copy of the doctor, so the checker moves with main, under
+  /usr/bin/python3 -I (Python 3.9 on macOS).  It installs nothing and changes nothing.
+  Standard, not throttled:  with LowPriorityIO most `version` probes missed their 5 second cap.
+  The server half needs the read-only `fleet-tools-ro` SSH key (docs/protocols/fleet-tool-parity.md);
+  until it exists, the doctor reports the server as unknown, "no read-only route to the server".
+  Install:  cp this file to ~/Library/LaunchAgents/ and
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.fleet-tools-doctor.plist
+  Stop:     launchctl bootout gui/$(id -u)/com.jay.fleet-tools-doctor
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.fleet-tools-doctor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-I</string>
+    <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet-tools-doctor.py</string>
+    <string>--remote</string>
+    <string>fleet-tools-ro</string>
+    <string>--write</string>
+    <string>/Users/jay/.local/state/fleet-tools/report.json</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/apps/logs/fleet-tools-doctor.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/apps/logs/fleet-tools-doctor.launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+  </dict>
+</dict>
+</plist>

@@ -99,6 +99,10 @@ jobs:
         python3 scripts/test_fleet_cli_sync.py
         python3 scripts/test_fleet_cli_runtime.py
         bash -n scripts/agent-sync-runtime-sync.sh
+    # Keeps the docs/PR-AUTOFIX.md caller template's permissions and secrets
+    # block in step with what the pr-autofix reusable declares and consumes.
+    - name: Autofix caller template guard
+      run: python3 scripts/test_pr_autofix_doc_template.py
     - name: agent-sync CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
@@ -186,6 +190,11 @@ jobs:
     - name: Autofix model default tests
       run: |
         cd scripts && python3 -m unittest test_autofix_model_defaults -v
+    # Owner rule 2026-10-21:  the request gate fires only on a tag that opens
+    # the comment.  The test runs the reusables' own marked gate block.
+    - name: Autofix request gate tests
+      run: |
+        cd scripts && python3 -m unittest test_autofix_request_gate -v
     # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
@@ -357,6 +366,23 @@ jobs:
     - name: Mac resource watch tests
       run: bash scripts/test-mac-resource-watch.sh
 
+  mac-scripts:
+    name: Mac scripts
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v7
+    # The maintenance scripts that run on Jay's Mac, and their contracts.
+    # They have to run on macOS: the scripts use BSD stat and BSD find, and
+    # the tests assert on the inode of the lock directory, which is what tells
+    # a live peer's lock apart from one this process created.  The Ubuntu test
+    # job cannot run them, so this job is where they actually run -- before
+    # this one existed the cleanup lock contract was never exercised in CI at
+    # all, and its assertions were decoration.
+    - name: Mac cleanup script tests
+      run: bash scripts/test-mac-auto-cleanup.sh
+    - name: Mac resource watch tests
+      run: bash scripts/test-mac-resource-watch.sh
+
   muster-macos-build:
     name: Muster macOS build
     runs-on: macos-latest
@@ -371,3 +397,9 @@ jobs:
           xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
             -destination 'platform=macOS' -derivedDataPath .build/CI \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= build
+      - name: Run the Muster unit tests
+        working-directory: muster
+        run: |
+          xcodebuild -project Muster.xcodeproj -scheme Muster -configuration Debug \
+            -destination 'platform=macOS' -derivedDataPath .build/CITest \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= test

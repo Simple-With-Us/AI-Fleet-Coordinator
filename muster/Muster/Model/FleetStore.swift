@@ -24,6 +24,13 @@ final class FleetStore: ObservableObject {
     @Published private(set) var generatedAt: Date?
     @Published private(set) var engineRoot: URL?
     @Published private(set) var commandLine: String = ""
+    /// Why the manifest could not be read,  when it is there and cannot be read.
+    ///
+    /// It is kept for the whole session,  because the manifest is read once and a
+    /// refusal does not go away when the next run succeeds.
+    @Published private(set) var manifestProblem: String?
+    /// Why the registry could not be read,  when it is there and cannot be read.
+    @Published private(set) var registryProblem: String?
     /// The check time the run shares,  which is one timestamp for nearly every rule.
     ///
     /// The engine checks every rule in one pass,  so every cell would otherwise carry
@@ -33,6 +40,62 @@ final class FleetStore: ObservableObject {
     @Published private(set) var commonCheckedAt: Date?
 
     private let location: EngineLocation?
+
+    /// Where the engine lives,  for a surface that runs it.
+    var engineLocation: EngineLocation? { location }
+
+    /// The engine's own answer about which Infisical project its copy belongs to.
+    ///
+    /// The answer is read once and kept,  because the engine's project does not
+    /// change while the app runs and every visit to a surface that needs it should
+    /// not start another interpreter.  The read runs off the main actor,  and the
+    /// task is the store's,  so a surface that goes away leaves the answer cached
+    /// rather than the work in flight.
+    ///
+    /// A read that fails is not kept.  The engine can fail for a moment  (it is
+    /// another program,  on another machine's answer),  and a tab that could never
+    /// recover until the app was relaunched would be worse than a second read.
+    func engineAnswer() async -> EngineIdentity.Answer {
+        let box: AnswerBox
+        answerLock.lock()
+        if let existing = answerBox {
+            box = existing
+            answerLock.unlock()
+        } else if let location = self.location {
+            let made = AnswerBox(
+                task: Task<EngineIdentity.Answer, Never>.detached(priority: .userInitiated) {
+                    EngineIdentity.read(
+                        location: location,
+                        home: FileManager.default.homeDirectoryForCurrentUser
+                    )
+                }
+            )
+            answerBox = made
+            box = made
+            answerLock.unlock()
+        } else {
+            answerLock.unlock()
+            return EngineIdentity.Answer(identity: nil, reason: "the engine was not found")
+        }
+        let answer = await box.task.value
+        if answer.identity == nil {
+            answerLock.lock()
+            // Only the task that failed is dropped:  a newer one may already be
+            // running,  and dropping it would start a second interpreter.
+            if answerBox === box { answerBox = nil }
+            answerLock.unlock()
+        }
+        return answer
+    }
+
+    /// The one read of the engine's answer,  and the lock that guards it.
+    private final class AnswerBox {
+        let task: Task<EngineIdentity.Answer, Never>
+        init(task: Task<EngineIdentity.Answer, Never>) { self.task = task }
+    }
+
+    private let answerLock = NSLock()
+    private var answerBox: AnswerBox?
     private let manifest: SeatManifest?
     private let registry: FleetRegistry?
     private var results: [CheckResult] = []
@@ -43,11 +106,45 @@ final class FleetStore: ObservableObject {
         location = located
         engineRoot = located?.root
         commandLine = located?.commandLine ?? ""
-        manifest = located.flatMap { try? FleetDataReader.loadManifest(at: $0.manifestURL) }
-        registry = located.flatMap { try? FleetDataReader.loadRegistry(at: $0.registryURL) }
+        // A manifest that is a version this app does not read is refused,  and the
+        // refusal is kept.  A refused manifest is not the same as no manifest:  the
+        // roster falls back to the registry's tags,  and without the reason the
+        // operator sees a grid of unknown rows and no idea why.
+        var loadedManifest: SeatManifest?
+        var manifestProblem: String?
+        if let located, FileManager.default.fileExists(atPath: located.manifestURL.path) {
+            do {
+                loadedManifest = try FleetDataReader.loadManifest(at: located.manifestURL)
+            } catch {
+                manifestProblem = Self.describe(error)
+            }
+        }
+        manifest = loadedManifest
+        self.manifestProblem = manifestProblem
+        // The registry is read the same way the manifest is:  a file that is there
+        // and cannot be read is a problem to name,  not a file that is not there.
+        var loadedRegistry: FleetRegistry?
+        var registryProblem: String?
+        if let located, FileManager.default.fileExists(atPath: located.registryURL.path) {
+            do {
+                loadedRegistry = try FleetDataReader.loadRegistry(at: located.registryURL)
+            } catch {
+                registryProblem = Self.describe(error, what: "the registry")
+            }
+        }
+        registry = loadedRegistry
+        self.registryProblem = registryProblem
         roster = Self.roster(from: registry, manifest: manifest)
         rebuild()
         refresh()
+    }
+
+    /// Why a file could not be read,  in the app's own words.
+    private static func describe(_ error: Error, what: String = "the manifest") -> String {
+        if let version = error as? SeatManifest.ManifestVersionError {
+            return version.errorDescription ?? "\(what) is a version this app does not read"
+        }
+        return "\(what) could not be read:  \(error.localizedDescription)"
     }
 
     /// The rows of the grid:  the live roster, in registry order.
@@ -78,6 +175,20 @@ final class FleetStore: ObservableObject {
         let views: [ConfigFileView]
         /// Why the pair does not apply,  when a cover says so.
         let coverReason: String?
+    }
+
+    /// The citation each rule carries in the manifest,  by rule id.
+    ///
+    /// The manifest's `source` field is where the directive,  the date or the message
+    /// that asked for a rule is recorded.  It is empty on every rule today,  and the
+    /// panel says that rather than showing a blank line.
+    func ruleSources(seat: String, kind: ConfigKind) -> [String: String] {
+        guard let manifest else { return [:] }
+        var sources: [String: String] = [:]
+        for rule in manifest.rules(seat: seat, kind: kind) {
+            if let source = rule.source { sources[rule.id] = source }
+        }
+        return sources
     }
 
     /// The artifacts a cell is about,  read for the panel to show.

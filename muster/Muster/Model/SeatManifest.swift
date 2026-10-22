@@ -7,8 +7,42 @@ import Foundation
 /// (the design document, decision D5).  The manifest says what should exist;  the
 /// envelope says what does.
 struct SeatManifest: Decodable {
+    /// The manifest version this app understands.
+    ///
+    /// The manifest is versioned separately from the status envelope,  and they are
+    /// not the same number:  the manifest is at 2 and the envelope is at 1.  A
+    /// manifest the app cannot read is refused,  the same way an envelope it cannot
+    /// read is refused,  because a partly-read manifest drops fields and a missing
+    /// field looks like an absent rule.
+    static let supportedSchemaVersion = 2
+
     let schemaVersion: Int
     let seats: [String: SeatManifestEntry]
+
+    /// The manifest,  if it is a version this app reads.
+    static func read(at url: URL) throws -> SeatManifest {
+        let data = try Data(contentsOf: url)
+        let manifest = try JSONDecoder().decode(SeatManifest.self, from: data)
+        guard manifest.schemaVersion == supportedSchemaVersion else {
+            throw ManifestVersionError.unsupported(manifest.schemaVersion)
+        }
+        return manifest
+    }
+
+    /// A manifest version this app does not read.
+    ///
+    /// The error names the version it found and the version it reads,  because a
+    /// refusal nobody can act on is a refusal nobody acts on.
+    enum ManifestVersionError: LocalizedError {
+        case unsupported(Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupported(let found):
+                return "the manifest is version \(found);  this app reads version \(SeatManifest.supportedSchemaVersion)"
+            }
+        }
+    }
 }
 
 /// One seat's desired state.
@@ -25,6 +59,12 @@ struct ManifestRule: Decodable {
     let platforms: [String]
     /// What the rule checks, and where.
     let check: ManifestCheck?
+    /// Where the rule came from:  the directive,  the date or the message that
+    /// asked for it.
+    ///
+    /// This is the citation the fleet asked for,  and it is empty on every rule
+    /// today,  so the panel says that it is empty rather than showing nothing.
+    let source: String?
 
     /// The check a rule declares.
     struct ManifestCheck: Decodable {
@@ -103,8 +143,7 @@ struct FleetRegistry: Decodable {
 /// Reads the two JSON files the grid needs beside the envelope.
 enum FleetDataReader {
     static func loadManifest(at url: URL) throws -> SeatManifest {
-        let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode(SeatManifest.self, from: data)
+        try SeatManifest.read(at: url)
     }
 
     static func loadRegistry(at url: URL) throws -> FleetRegistry {

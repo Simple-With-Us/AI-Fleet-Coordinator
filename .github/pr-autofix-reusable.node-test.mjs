@@ -166,21 +166,26 @@ test('request gate precedes the paid model run in the claude-code-action reusabl
   }
 });
 
-test('autofix requires an explicit tag per type; untagged bot comments fire nothing (owner rule 2026-10-20)', () => {
-  // Jay:  "that is dumb needs to be tag of it".  Sentry is exempt from the tag, the cap,
-  // and the notification;  the owner is exempt from the cap only.
-  assert.match(workflow, /@pr-autofix/);
-  assert.match(workflow, /No @pr-autofix tag in the comment, skipping/);
-  assert.match(claudeReusable, /@claude-code-autofix/);
-  assert.match(claudeReusable, /No @claude-code-autofix tag in the review, skipping/);
-  assert.match(codexReusable, /@codex-autofix/);
-  assert.match(codexReusable, /No @codex-autofix tag in the review, skipping/);
+test('autofix requires an explicit tag per type; untagged bot comments fire nothing (owner rules 2026-10-20 and 2026-10-21)', () => {
+  // Jay:  "that is dumb needs to be tag of it", and 2026-10-21:  the tag must OPEN the
+  // comment - a review that mentions the tag while discussing it is discussion, not a
+  // request (Kody's verification replies started runs nobody requested).  Sentry is
+  // exempt from the tag, the cap, and the notification;  the owner is exempt from the
+  // cap only.  scripts/test_autofix_request_gate.py runs the marked block itself.
+  for (const [name, text] of [['pr-autofix', workflow], ['claude-code', claudeReusable], ['codex', codexReusable]]) {
+    assert.match(text, /REQUEST-GATE-BEGIN/, name);
+    assert.match(text, /REQUEST-GATE-END/, name);
+    assert.match(text, /gate_verdict=request/, name);
+  }
+  assert.match(workflow, /No @pr-autofix request at the start of the comment, skipping/);
+  assert.match(claudeReusable, /No @claude-code-autofix request at the start of the review, skipping/);
+  assert.match(codexReusable, /No @codex-autofix request at the start of the review, skipping/);
   // The tag check runs before the marker is written, so an untagged comment never
   // consumes the bot's one request on the PR.
   for (const [name, text] of [['claude-code', claudeReusable], ['codex', codexReusable]]) {
-    assert(text.indexOf('No ' + (name === 'claude-code' ? '@claude-code-autofix' : '@codex-autofix') + ' tag') < text.indexOf('swu-autofix-run: bot='), name);
+    assert(text.indexOf('REQUEST-GATE-BEGIN') < text.indexOf('swu-autofix-run: bot='), name);
   }
-  assert(workflow.indexOf('No @pr-autofix tag in the comment') < workflow.indexOf('swu-autofix-run: bot='), 'pr-autofix order');
+  assert(workflow.indexOf('REQUEST-GATE-BEGIN') < workflow.indexOf('swu-autofix-run: bot='), 'pr-autofix order');
 });
 
 test('org variable retargets model and endpoint fleet-wide, pins stay the fallback (owner switch 2026-10-21)', () => {

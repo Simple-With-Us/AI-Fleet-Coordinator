@@ -11,6 +11,18 @@ struct FleetOverviewView: View {
             if case .failed(let reason) = store.phase {
                 FailureBanner(reason: reason)
             }
+            if let problem = store.manifestProblem {
+                FailureBanner(
+                    reason: problem,
+                    title: "The manifest could not be read,  so the roster is not the manifest's."
+                )
+            }
+            if let problem = store.registryProblem {
+                FailureBanner(
+                    reason: problem,
+                    title: "The registry could not be read,  so the grid has no rows of its own."
+                )
+            }
             TabView {
                 MiniMaxDetailView()
                     .tabItem { Label("MiniMax", systemImage: "bolt.shield") }
@@ -18,6 +30,8 @@ struct FleetOverviewView: View {
                     .tabItem { Label("Fleet Grid", systemImage: "square.grid.3x3") }
                 FleetView()
                     .tabItem { Label("Fleet", systemImage: "list.bullet.rectangle") }
+                ControlsView()
+                    .tabItem { Label("Controls", systemImage: "slider.horizontal.3") }
             }
             Divider()
             ApplyActivityView()
@@ -118,6 +132,7 @@ struct FleetOverviewView: View {
 /// The banner that says why the last run cannot be trusted.
 struct FailureBanner: View {
     let reason: String
+    var title: String = "The engine did not answer, so every cell reads unknown."
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -125,7 +140,7 @@ struct FailureBanner: View {
                 .foregroundStyle(.red)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text("The engine did not answer, so every cell reads unknown.")
+                Text(title)
                     .font(.callout.weight(.medium))
                 Text(reason)
                     .font(.system(size: 11, design: .monospaced))

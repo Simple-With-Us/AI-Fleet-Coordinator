@@ -65,4 +65,70 @@ assert ".claude-disk-janitor/.housekeeper.lock" in auto, "mac-auto-cleanup.sh ta
 assert mod.HOUSEKEEPER_LOCK_STALE_SEC == 7200, mod.HOUSEKEEPER_LOCK_STALE_SEC
 print("housekeeper lock ok")
 PY
+python3 - "$ROOT/mac-resource-watch.py" <<'PY' || fail "housekeeper lock behaviour"
+import importlib.util, os, shutil, sys, tempfile, time
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("watch", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.log = lambda msg: None
+
+scratch = Path(tempfile.mkdtemp(prefix="hk-lock-"))
+try:
+    state = scratch / ".claude-disk-janitor"
+    lock = state / ".housekeeper.lock"
+    mod.STATE_DIR = state
+    mod.HOUSEKEEPER_LOCK = lock
+    mod._HOUSEKEEPER_LOCK_INODE = None
+
+    # 1. A free lock is taken.
+    assert mod._acquire_housekeeper_lock() is True
+    assert lock.is_dir(), "the lock directory must exist once it is held"
+
+    # 2. The owner file sits BESIDE the lock, not inside it: the lock has to
+    #    stay empty so the release rmdir works.
+    owner = mod._housekeeper_owner_path()
+    assert owner == state / ".housekeeper.lock.owner", owner
+    assert owner.is_file(), "the holder must record who it is"
+    assert not list(lock.iterdir()), "the lock directory must stay empty"
+
+    # 3. A live peer's lock is refused and is not displaced.
+    inode_before = lock.stat().st_ino
+    assert mod._acquire_housekeeper_lock() is False, "a live lock must be refused"
+    assert lock.stat().st_ino == inode_before, "a refused takeover must not replace the lock"
+
+    # 4. The release removes the lock this process created.
+    mod._release_housekeeper_lock()
+    assert not lock.exists(), "the release must remove the lock"
+    assert not owner.exists(), "the release must remove the owner file"
+
+    # 5. A stale lock is taken over by moving it aside, and no copy is left.
+    lock.mkdir(parents=True)
+    stale = time.time() - (mod.HOUSEKEEPER_LOCK_STALE_SEC + 60)
+    os.utime(lock, (stale, stale))
+    assert mod._acquire_housekeeper_lock() is True, "a stale lock must be taken over"
+    assert lock.is_dir(), "the canonical lock must exist after a takeover"
+    leftovers = [p for p in state.iterdir() if p.name.startswith(".housekeeper.lock.stale-")]
+    assert not leftovers, leftovers
+
+    # 6. The release is ownership checked: a lock that was taken over as stale
+    #    while this process was running is NOT ours to remove.
+    mod._release_housekeeper_lock()
+    lock.mkdir(parents=True)
+    successor = lock.stat().st_ino
+    mod._HOUSEKEEPER_LOCK_INODE = successor - 1  # as if ours had been replaced
+    mod._release_housekeeper_lock()
+    assert lock.is_dir(), "the release must not remove a lock this process does not own"
+
+    # 7. A stale lock with contents in it is not ours to take.
+    shutil.rmtree(lock)
+    lock.mkdir(parents=True)
+    (lock / "leftover.txt").write_text("not ours", encoding="utf-8")
+    os.utime(lock, (stale, stale))
+    assert mod._acquire_housekeeper_lock() is False, "a non-empty lock must not be taken"
+    assert (lock / "leftover.txt").is_file(), "a non-empty lock must be put back"
+finally:
+    shutil.rmtree(scratch, ignore_errors=True)
+print("housekeeper lock behaviour ok")
+PY
 echo OK

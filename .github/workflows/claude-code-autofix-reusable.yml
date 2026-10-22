@@ -203,14 +203,65 @@ jobs:
               needs_tag=false ;;
           esac
           requester=$(printf '%s' "$author" | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
-          if [ "$requester" != "sentry" ] && [ "$needs_tag" = "true" ] && \
-             ! grep -qiE '(^|[^A-Za-z0-9_-])@claude-code-autofix([^A-Za-z0-9_-]|$)' "$RUNNER_TEMP/request_body.txt"; then
-            echo "::notice::No @claude-code-autofix tag in the review, skipping"
+          gate_skip=false
+          if [ "$needs_tag" = "true" ]; then
+            GATE_BODY_FILE="$RUNNER_TEMP/request_body.txt"
+            GATE_TAG='@claude-code-autofix'
+            # REQUEST-GATE-BEGIN - scripts/test_autofix_request_gate.py runs this exact block.
+            awk '
+              fence == "" && /^[[:space:]]*>/ { next }
+              fence == "" {
+                s = $0
+                sub(/^[[:space:]]*/, "", s)
+                c = substr(s, 1, 1)
+                n = 0
+                if (c != "") { while (substr(s, n + 1, 1) == c) n++ }
+                if ((c == "`" || c == "~") && n >= 3) { fence = c; flen = n; next }
+                print
+                next
+              }
+              {
+                s = $0
+                sub(/^[[:space:]]*/, "", s)
+                c = substr(s, 1, 1)
+                n = 0
+                if (c != "") { while (substr(s, n + 1, 1) == c) n++ }
+                # Only a pure run of the same marker as the opener, at least as
+                # long as the opener and carrying no info string, closes the fence.
+                if (c == fence && n >= flen && substr(s, n + 1) ~ /^[[:space:]]*$/) { fence = ""; flen = 0 }
+                next
+              }
+            ' "$GATE_BODY_FILE" > "$RUNNER_TEMP/request_text.txt"
+            gate_line=$(grep -m1 -E '[^[:space:]]' "$RUNNER_TEMP/request_text.txt" || true)
+            if printf '%s' "$gate_line" | grep -qiE "^[[:space:]]*${GATE_TAG}([^A-Za-z0-9_-]|\$)"; then
+              gate_verdict=request
+            else
+              gate_verdict=discussion
+            fi
+            # The skip decision lives inside the marked block so the polarity of
+            # this comparison is covered by the extracted-block test.
+            gate_skip=false
+            if [ "$requester" != "sentry" ] && [ "$gate_verdict" != "request" ]; then
+              gate_skip=true
+            fi
+            # REQUEST-GATE-END
+          else
+            gate_verdict=request
+          fi
+          if [ "$gate_skip" = "true" ]; then
+            echo "::notice::No @claude-code-autofix request at the start of the review, skipping"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [ "$requester" = "jaywedgeworth22" ] || [ "$requester" = "sentry" ]; then
             echo "::notice::$author is exempt from the one-run-per-bot rule"
+            marker="swu-autofix-run: bot=$requester"
+            # Exempt runs still leave their run-id marker:  the auto-merge gate
+            # reads these to hold a merge while the run is in flight (owner rule
+            # 2026-10-21).
+            gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+              -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  Owner/sentry request:  exempt from the per-bot cap (owner rule 2026-10-20)." \
+              > /dev/null
             exit 0
           fi
           marker="swu-autofix-run: bot=$requester"
