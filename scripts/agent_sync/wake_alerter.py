@@ -65,7 +65,7 @@ _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def sign(key: str, path: str, query: str, timestamp: str) -> str:
-    body = (f"{READ_CONTRACT}\nGET\n{path}\n{query}\n{timestamp}").encode("utf-8")
+    body = (f"{READ_CONTRACT}\nGET\n{path}\n{query}\n{timestamp}").encode()
     return hmac.new(key.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
 
