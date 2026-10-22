@@ -381,7 +381,11 @@ async function serveGbBearerMcp(request, env, token) {
   const identityGate = gate(env, identity);
   const checked = await identityGate.gbBearerCheck(await sha256Hex(parsed.token));
   if (!checked.ok) {
-    try { await identityGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
+    // Only a token whose hash matched is logged (expired).  A wrong guess is not:  anyone can send one, and the
+    // audit log is capped, so guesses would push real mint and revoke rows out.
+    if (checked.reason === "expired") {
+      try { await identityGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
+    }
     return refuse();
   }
   const state = await identityGate.getState();
@@ -392,6 +396,7 @@ async function serveGbBearerMcp(request, env, token) {
     seat: identity,
     callerSeat: identity,
     callerGate: identityGate,
+    verifySeat: true,
     scopes,
     clientId: "gb-bearer",
     grantRef,
