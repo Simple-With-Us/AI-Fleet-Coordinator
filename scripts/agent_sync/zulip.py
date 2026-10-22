@@ -149,6 +149,7 @@ def default_channel(env: Mapping[str, str] | None = None) -> str:
             return override.strip()
     return DEFAULT_CHANNEL
 
+
 MAX_TOPIC_LENGTH = 60
 USER_AGENT = "agent-sync/1 (fleet)"
 
