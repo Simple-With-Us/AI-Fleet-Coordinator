@@ -242,6 +242,9 @@ export function classifyPath(pathname) {
       // The listener's wake (src/wake.js).  Outside Cloudflare Access, which
       // covers /authorize and /admin only;  its own HMAC is the gate.
       if (/^\/internal\/wake\/[A-Z][A-Z0-9-]{0,31}$/.test(pathname)) return "wake";
+      // AFC-477 spike (temporary, src/spike.js):  a 404 unless SPIKE_EXTRA_EVENTS
+      // is "on" and SPIKE_HMAC_KEY is set.  Its own HMAC is the gate.
+      if (/^\/internal\/spike\/[A-Z][A-Z0-9-]{0,31}$/.test(pathname)) return "spike";
       return null;
   }
 }
