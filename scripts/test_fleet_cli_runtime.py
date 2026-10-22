@@ -349,7 +349,12 @@ class ActualRuntime(unittest.TestCase):
         # did, 2026-10-16).
         mcp = self.release / "scripts/agent_sync/mcp"
         served = []
-        for name in ("tools.json", "eavesdropper-tools.json", "notes-tools.json", "recall-tools.json"):
+        for name in (
+            "tools.json",
+            "eavesdropper-tools.json",
+            "notes-tools.json",
+            "recall-tools.json",
+        ):
             served += json.loads((mcp / name).read_bytes())["tools"]
         self.assertTrue(served)
         listed = replies[1]["result"]["tools"]
