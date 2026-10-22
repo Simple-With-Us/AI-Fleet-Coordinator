@@ -1,0 +1,1 @@
+../../Muster/Model/WakeSettingsWriter.swift
