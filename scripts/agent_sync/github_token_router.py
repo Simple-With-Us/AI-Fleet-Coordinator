@@ -55,15 +55,22 @@ _CREDENTIAL_MARKERS = (
     "xoxb-",
     "xoxp-",
     "AKIA",
-    "sk-",
     "-----BEGIN",
 )
+
+# OpenAI-style keys need a length qualifier:  a bare "sk-" also matches
+# ordinary repository names such as flask-app, task-manager or disk-usage.
+_CREDENTIAL_PATTERNS = (re.compile(r"sk-[A-Za-z0-9_-]{16,}"),)
 
 
 def target_parts(target):
     # Refuse credential-shaped input before the value is relayed to GitHub or
     # persisted in a cache key, and never echo it back.
-    if not isinstance(target, str) or any(m in target for m in _CREDENTIAL_MARKERS):
+    if (
+        not isinstance(target, str)
+        or any(m in target for m in _CREDENTIAL_MARKERS)
+        or any(p.search(target) for p in _CREDENTIAL_PATTERNS)
+    ):
         # Field-specific refusal code;  callers log the code, never the value.
         raise RoutingError("secret_refused:target", outcome="refused")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", target):
@@ -106,14 +113,31 @@ def jwt(app_id, pem, clock=time.time):
     try:
         with os.fdopen(fd, "w") as f:
             f.write(pem)
-        result = subprocess.run(
-            ["openssl", "dgst", "-sha256", "-sign", name], input=unsigned, capture_output=True
-        )
+        try:
+            result = subprocess.run(
+                ["openssl", "dgst", "-sha256", "-sign", name],
+                input=unsigned,
+                capture_output=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            raise RoutingError("App signing timed out", outcome="retryable") from None
+        except FileNotFoundError:
+            raise RoutingError("App signer unavailable: openssl not found") from None
         if result.returncode:
             raise RoutingError("App signing failed")
         return (unsigned + b"." + b64(result.stdout)).decode()
     finally:
         os.unlink(name)
+
+
+def _masked_pem(pem):
+    """First-eight/last-four of the key body, armor stripped - the masked
+    diagnostic a rejected provider credential must report, never the value."""
+    body = "".join(line.strip() for line in pem.splitlines() if "-----" not in line)
+    if len(body) < 12:
+        return None
+    return body[:8] + "\u2026" + body[-4:]
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -122,6 +146,19 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def github_call(method, path, bearer, body=None):
+    """_github_call plus outcome normalization:  every failure from a
+    possibly-sent POST leaves with outcome_unknown (never replay it), and
+    every read-side failure with retryable, even when the raise site (for
+    example _bounded_json) did not classify it."""
+    try:
+        return _github_call(method, path, bearer, body)
+    except RoutingError as exc:
+        if exc.outcome is None:
+            exc.outcome = "outcome_unknown" if method == "POST" else "retryable"
+        raise
+
+
+def _github_call(method, path, bearer, body=None):
     if not path.startswith("/") or path.startswith("//"):
         raise RoutingError("Invalid API path")
     req = urllib.request.Request(
@@ -159,9 +196,14 @@ def github_call(method, path, bearer, body=None):
             outcome = "outcome_unknown" if method == "POST" else "retryable"
         else:
             outcome = "refused"
-        raise RoutingError(
+        err = RoutingError(
             "GitHub request failed, HTTP " + str(e.code), status=e.code, outcome=outcome
-        ) from None
+        )
+        err.code = e.code
+        retry_after = e.headers.get("Retry-After") if e.headers else None
+        if isinstance(retry_after, str) and retry_after.isdigit():
+            err.retry_after = int(retry_after)
+        raise err from None
     except (OSError, ValueError):
         raise RoutingError(
             "GitHub transport or response failed",
@@ -240,18 +282,24 @@ class TokenRouter:
             if app_id <= 0:
                 raise ValueError()
         except (TypeError, ValueError):
-            raise RoutingError("Invalid App ID") from None
+            raise RoutingError("Invalid App ID", outcome="refused") from None
+        pem_preview = _masked_pem(pem)
         bearer = self.signer(app_id, pem)
         del pem
-        app = self.api("GET", "/app", bearer)
+        try:
+            app = self.api("GET", "/app", bearer)
+        except RoutingError as exc:
+            if exc.status in (401, 403) and pem_preview:
+                exc.credential_preview = pem_preview
+            raise
         if (
             not isinstance(app.get("id"), int)
             or isinstance(app.get("id"), bool)
             or not isinstance(app.get("slug"), str)
         ):
-            raise RoutingError("GitHub /app identity has malformed fields")
+            raise RoutingError("GitHub /app identity has malformed fields", outcome="refused")
         if app["id"] != app_id or app["slug"] != slug:
-            raise RoutingError("Key belongs to a different App")
+            raise RoutingError("Key belongs to a different App", outcome="refused")
         install = self.api("GET", "/repos/" + owner + "/" + repo + "/installation", bearer)
         account = install.get("account")
         if (
@@ -262,10 +310,10 @@ class TokenRouter:
             or not isinstance(account.get("login"), str)
             or account["login"].casefold() != owner.casefold()
         ):
-            raise RoutingError("Installation identity mismatch or suspension")
+            raise RoutingError("Installation identity mismatch or suspension", outcome="refused")
         iid = install.get("id")
         if not isinstance(iid, int) or iid <= 0:
-            raise RoutingError("Missing installation ID")
+            raise RoutingError("Missing installation ID", outcome="refused")
         scope = {
             "app_id": app_id,
             "installation_id": iid,

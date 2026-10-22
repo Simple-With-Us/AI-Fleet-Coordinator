@@ -164,18 +164,24 @@ class ReviewFixTests(unittest.TestCase):
         self.ledger=NonceLedger(Path(self.temp.name)/"replay")
         self.router=Router();self.audit=[]
         self.broker=Broker(lambda seat:'a'*64 if seat=='CODEX' else None,
-            lambda seat:CallerPolicy('swu-codex',{'simple-with-us/ai-fleet-coordinator':{'contents':'read','metadata':'read'}}),
+            lambda seat:CallerPolicy('swu-codex',{'example-org/widget-repo':{'contents':'read','metadata':'read'}}),
             self.router,lambda slug:{'login':slug+'[bot]','id':123},clock=lambda:1000,audit=lambda **kw:self.audit.append(kw),enabled=True,nonce_ledger=self.ledger)
-        self.path='/operator/v1/github/CODEX/token';self.body=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'contents':'read'}}).encode()
+        self.path='/operator/v1/github/CODEX/token';self.body=json.dumps({'repo':'example-org/widget-repo','permissions':{'contents':'read'}}).encode()
     def request(self,nonce='1'*64):
         return self.broker.issue(self.path,'1000',nonce,signature('a'*64,self.path,'1000',nonce,self.body),self.body)
-    def test_missing_key_is_503_naming_variable(self):
+    def test_unknown_seat_is_401_not_a_provisioning_oracle(self):
         self.path='/operator/v1/github/WISE/token'
-        body=json.dumps({'repo':'Simple-With-Us/AI-Fleet-Coordinator','permissions':{'contents':'read'}}).encode()
+        body=json.dumps({'repo':'example-org/widget-repo','permissions':{'contents':'read'}}).encode()
         with self.assertRaises(Refused) as c:
             self.broker.issue(self.path,'1000','9'*64,signature('a'*64,self.path,'1000','9'*64,body),body)
+        self.assertEqual(c.exception.status,401)
+        self.assertEqual(c.exception.reason,'authentication failed')
+    def test_malformed_key_is_503_naming_per_seat_variable(self):
+        self.broker.key_for=lambda seat:'tooshort'
+        with self.assertRaises(Refused) as c:
+            self.request()
         self.assertEqual(c.exception.status,503)
-        self.assertIn('OPERATOR_GITHUB_CALLER_KEY',c.exception.reason)
+        self.assertIn('OPERATOR_GITHUB_CALLER_CODEX_HMAC',c.exception.reason)
     def test_claimed_replay_blocks_a_second_replay(self):
         first=self.request()
         # A concurrent replay claims the ok row first;  the broker's own replay must refuse.
@@ -214,9 +220,9 @@ class CallerKeyTests(unittest.TestCase):
         import os
         from unittest.mock import patch
         from agent_sync.operator_github_client import caller_key
-        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_KEY':'e'*32}):
+        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':'e'*32}):
             with patch('agent_sync.operator_github_client.subprocess.run') as run:
-                self.assertEqual(caller_key(),'e'*32)
+                self.assertEqual(caller_key('ECHO'),'e'*32)
                 run.assert_not_called()
     def test_fleet_secrets_fallback(self):
         import os
@@ -227,9 +233,9 @@ class CallerKeyTests(unittest.TestCase):
             stdout=b'f'*32+b'\n'
         with patch.dict(os.environ,{},clear=True):
             with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()) as run:
-                self.assertEqual(caller_key(),'f'*32)
+                self.assertEqual(caller_key('ECHO'),'f'*32)
                 args=run.call_args[0][0]
-                self.assertEqual(args,['fleet-secrets','get','OPERATOR_GITHUB_CALLER_KEY'])
+                self.assertEqual(args,['fleet-secrets','get','OPERATOR_GITHUB_CALLER_ECHO_HMAC'])
     def test_missing_everywhere_names_variable_not_value(self):
         import os
         from unittest.mock import patch
@@ -239,14 +245,25 @@ class CallerKeyTests(unittest.TestCase):
             stdout=b''
         with patch.dict(os.environ,{},clear=True):
             with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()):
-                with self.assertRaises(ClientError) as c:caller_key()
-        self.assertIn('OPERATOR_GITHUB_CALLER_KEY',str(c.exception))
+                with self.assertRaises(ClientError) as c:caller_key('ECHO')
+        self.assertIn('OPERATOR_GITHUB_CALLER_ECHO_HMAC',str(c.exception))
     def test_short_key_refused(self):
         import os
         from unittest.mock import patch
         from agent_sync.operator_github_client import caller_key
-        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_KEY':'short'}):
-            with self.assertRaises(ClientError):caller_key()
+        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':'short'}):
+            with self.assertRaises(ClientError):caller_key('ECHO')
+    def test_empty_env_var_falls_back_to_fleet_secrets(self):
+        import os
+        from unittest.mock import patch
+        from agent_sync.operator_github_client import caller_key
+        class Done:
+            returncode=0
+            stdout=b'g'*32+b'\n'
+        with patch.dict(os.environ,{'OPERATOR_GITHUB_CALLER_ECHO_HMAC':''}):
+            with patch('agent_sync.operator_github_client.subprocess.run',return_value=Done()) as run:
+                self.assertEqual(caller_key('ECHO'),'g'*32)
+                run.assert_called_once()
 
 class RunBoundedTests(unittest.TestCase):
     def test_missing_executable_exits_127(self):

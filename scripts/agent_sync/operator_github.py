@@ -141,10 +141,28 @@ class Broker:
             if status in (401, 403, 429) or exc_outcome in ("retryable", "refused"):
                 self._release_quietly(seat, nonce)
                 if status in (401, 403, 429):
-                    raise Refused(502, "token issuance refused") from None
+                    details = {"provider_code": getattr(exc, "code", None) or status}
+                    retry_after = getattr(exc, "retry_after", None)
+                    if isinstance(retry_after, int):
+                        details["retry_after"] = retry_after
+                    if status in (401, 403):
+                        # Rule 17:  a rejected provider credential is reported
+                        # only by its first-eight/last-four masked preview.
+                        preview = getattr(exc, "credential_preview", None)
+                        if isinstance(preview, str) and re.fullmatch(".{8}\u2026.{4}", preview):
+                            details["credential_preview"] = preview
+                        else:
+                            details["credential_preview"] = "unavailable"
+                    raise Refused(502, "token issuance refused: " + json.dumps(details)) from None
                 raise Refused(502, "token issuance failed") from None
             self._settle_quietly(seat, nonce, "outcome_unknown")
             audit_state["outcome"] = "outcome_unknown"
+            if exc_outcome == "outcome_unknown":
+                # A dropped or timed-out mint may already have reached
+                # GitHub:  stay explicitly unknown, forbid automatic retry.
+                raise Refused(
+                    503, "token issuance outcome_unknown; do not retry automatically"
+                ) from None
             if status == 408 or (isinstance(status, int) and status >= 500):
                 raise Refused(503, "token issuance uncertain; retry with a fresh nonce") from None
             raise Refused(502, "token issuance failed") from None
@@ -178,11 +196,20 @@ class Broker:
                     raise Refused(429, "rate limited")
                 self.rates[seat] = bucket + [now]
             key = self.key_for(seat)
+            if key is None:
+                # Unknown seat:  an authentication failure, never a
+                # provisioning outage, and the same answer as a bad
+                # signature - a distinct status here would be a
+                # pre-authentication allowlist oracle.
+                raise Refused(401, "authentication failed")
             if not isinstance(key, str) or len(key) < 32:
-                # A missing or malformed caller secret is a provisioning
-                # problem, not a client authentication failure:  name the
-                # variable operators must provision, never the value seen.
-                raise Refused(503, "OPERATOR_GITHUB_CALLER_KEY is not provisioned")
+                # A present but malformed caller secret is a provisioning
+                # problem:  name the per-seat variable operators must
+                # provision, never the value seen.
+                raise Refused(
+                    503,
+                    "OPERATOR_GITHUB_CALLER_" + seat + "_HMAC is not provisioned",
+                )
             if (
                 not isinstance(sig, str)
                 or not re.fullmatch(r"[a-f0-9]{64}", sig)

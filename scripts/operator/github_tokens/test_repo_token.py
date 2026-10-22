@@ -144,11 +144,19 @@ class ReviewFixTests(unittest.TestCase):
         )
 
     def test_openai_shaped_target_refused_with_stable_code(self):
-        for target in ("Simple-With-Us/sk-abc123", "Simple-With-Us/disk-utils"):
-            with self.assertRaises(RoutingError) as ctx:
+        target = "example-org/sk-" + "a" * 20
+        with self.assertRaises(RoutingError) as ctx:
+            self.router.token_for("swu-echo", target, {"contents": "read"})
+        self.assertEqual(str(ctx.exception), "secret_refused:target")
+        self.assertNotIn("a" * 20, str(ctx.exception))
+
+    def test_legitimate_names_with_sk_substring_are_not_refused(self):
+        # "sk-" as a bare substring must not refuse flask-app, task-manager
+        # or disk-usage;  those targets fail later for the mock key instead.
+        for target in ("example-org/disk-usage", "example-org/flask-app"):
+            with self.assertRaises(Exception) as ctx:
                 self.router.token_for("swu-echo", target, {"contents": "read"})
-            self.assertEqual(str(ctx.exception), "secret_refused:target")
-            self.assertNotIn("abc123", str(ctx.exception))
+            self.assertNotEqual(str(ctx.exception), "secret_refused:target")
 
     def test_malformed_app_identity_fails_closed(self):
         def api(method, path, bearer, body=None):

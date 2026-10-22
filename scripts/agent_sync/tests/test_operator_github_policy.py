@@ -110,12 +110,13 @@ class PolicyTests(unittest.TestCase):
             request('ECHO', 'Simple-With-Us/AI-Fleet-Coordinator', {'contents': 'write'})
         self.assertEqual(caught.exception.status, 403)
 
-        # seat not in the allowlist: no caller key, which surfaces as a
-        # provisioning failure naming OPERATOR_GITHUB_CALLER_KEY (never the value)
+        # seat not in the allowlist: no caller key, which is an authentication
+        # failure identical to a bad signature - never a distinct status that
+        # would enumerate the allowlist before authentication
         with self.assertRaises(Refused) as caught:
             request('WISE', 'Simple-With-Us/AI-Fleet-Coordinator', {'contents': 'read'})
-        self.assertEqual(caught.exception.status, 503)
-        self.assertIn('OPERATOR_GITHUB_CALLER_KEY', caught.exception.reason)
+        self.assertEqual(caught.exception.status, 401)
+        self.assertEqual(caught.exception.reason, 'authentication failed')
 
 
 if __name__ == '__main__':

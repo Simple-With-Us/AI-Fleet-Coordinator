@@ -33,33 +33,35 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-CALLER_KEY_NAME = "OPERATOR_GITHUB_CALLER_KEY"
+def caller_key_name(seat):
+    # Seat-scoped, matching the broker's secret
+    # (OPERATOR_GITHUB_CALLER_<SEAT>_HMAC):  each seat holds only its own.
+    return "OPERATOR_GITHUB_CALLER_" + seat + "_HMAC"
 
 
-def caller_key():
-    """Load the caller signing key from approved sources only.
+def caller_key(seat):
+    """Load THIS seat's caller signing key from approved sources only.
 
     Environment first, then `fleet-secrets get`.  A caller-chosen local file
     is not an approved credential path and is not consulted.  Failures name
     the variable operators must provision, never the value seen.
     """
-    key = os.environ.get(CALLER_KEY_NAME)
-    if key is None:
+    name = caller_key_name(seat)
+    key = os.environ.get(name)
+    if not key:  # an exported empty placeholder means absent
         try:
             result = subprocess.run(
-                ["fleet-secrets", "get", CALLER_KEY_NAME],
+                ["fleet-secrets", "get", name],
                 capture_output=True,
                 timeout=10,
             )
         except (OSError, subprocess.TimeoutExpired):
-            raise ClientError(
-                CALLER_KEY_NAME + " unavailable: fleet-secrets lookup failed"
-            ) from None
+            raise ClientError(name + " unavailable: fleet-secrets lookup failed") from None
         if result.returncode:
-            raise ClientError(CALLER_KEY_NAME + " unavailable: fleet-secrets lookup failed")
+            raise ClientError(name + " unavailable: fleet-secrets lookup failed")
         key = result.stdout.decode("utf-8", "replace").strip()
     if not 32 <= len(key) <= 4096:
-        raise ClientError(CALLER_KEY_NAME + " is missing or invalid")
+        raise ClientError(name + " is missing or invalid")
     return key
 
 
@@ -128,7 +130,7 @@ def execute(url, seat, repo, permissions, command, *, popen=subprocess.Popen):
     perms = permission_set(permissions)
     if any(v != "read" for v in perms.values()):
         raise ClientError("Initial client supports read permissions only")
-    key = caller_key()
+    key = caller_key(seat)
     path = "/operator/v1/github/" + seat + "/token"
     body = json.dumps(
         {"repo": repo, "permissions": perms}, sort_keys=True, separators=(",", ":")
