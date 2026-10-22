@@ -7,7 +7,7 @@ Steps (design section 2), for each (seat, message) pair:
 
   1. Drop a muted topic unless the message is `direct` or a DM.
   2. Classify:  own, owner, eligible, direct, fleet, wildcard, dm, wake_tag, stale, reply_to.
-     `fleet` is the fleet-wide wake:  a stream-wide wildcard (`@**all**`) in #agent-sync > `fleet`
+     `fleet` is the fleet-wide wake:  a stream-wide wildcard (`@**all**`) in #work-in-progress > `fleet`
      (owner 2026-10-09: there is no `fleet` user group and none will be made).  A wildcard anywhere
      else is only `wildcard`.
   3. Own posts go to other leases on the topic as passive sibling items.  Never inbox, never wake.
@@ -56,8 +56,9 @@ from .live import is_presence, topic_key
 INTERRUPT = "interrupt"
 PASSIVE = "passive"
 WILDCARD_FLAGS = ("wildcard_mentioned", "stream_wildcard_mentioned", "topic_wildcard_mentioned")
-# The one place a wildcard is the fleet-wide wake (owner 2026-10-09).
-FLEET_WAKE_CHANNEL = "agent-sync"
+# The one place a wildcard is the fleet-wide wake (owner 2026-10-09).  The realm
+# renamed the channel on Oct 22, 2026, and the `fleet` topic moved with it.
+FLEET_WAKE_CHANNEL = "work-in-progress"
 FLEET_WAKE_TOPIC = "fleet"
 FLEET_WAKE_KEY = topic_key(FLEET_WAKE_CHANNEL, FLEET_WAKE_TOPIC)
 _PLAIN_ALL_RE = re.compile(r"(?<![\w*])@(?:all|everyone)\b(?!-)", re.IGNORECASE)

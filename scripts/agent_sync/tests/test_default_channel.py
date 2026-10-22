@@ -11,12 +11,19 @@ from __future__ import annotations
 
 import unittest
 
+from agent_sync import router as R
 from agent_sync import zulip as Z
 
 
 class DefaultChannelTests(unittest.TestCase):
     def test_the_default_channel_is_the_realm_s_live_coordination_channel(self) -> None:
         self.assertEqual(Z.DEFAULT_CHANNEL, "work-in-progress")
+
+    def test_the_fleet_wake_lives_where_the_default_channel_points(self) -> None:
+        # `--fleet` without `--channel` posts to the default channel, and the listener
+        # classifies the wake by channel:  the two names must agree or the default-path
+        # wake is refused and live wakes never classify.
+        self.assertEqual(R.FLEET_WAKE_CHANNEL, Z.DEFAULT_CHANNEL)
 
     def test_the_channel_name_is_settable(self) -> None:
         self.assertEqual(Z.ENV_CHANNEL, "AGENT_SYNC_CHANNEL")
