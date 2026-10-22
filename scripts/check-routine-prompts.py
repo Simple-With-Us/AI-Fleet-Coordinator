@@ -10,7 +10,8 @@ or POSTed to BotFleet.  This checker keeps a text safe to run unattended.  Rules
                     name wakes nobody or the wrong one, so mentions are built at run time from the live user list
   code-path         a path under ~/Code:  that tree is the human's integration tree and is reset by a daemon
   slack-helper      the retired Slack helper or a Slack endpoint (Zulip replaced Slack on 2026-10-07)
-  single-space-gap  a sentence boundary with one ASCII space (the fleet writes two spaces, or U+00A0 plus a space)
+  single-space-gap  a sentence boundary with one ASCII space (the fleet writes two spaces, a non-breaking space plus a space,
+                    or the non-breaking-space entity plus a space)
   reminder-missing  the owner's standing reminder is not quoted
   secret-shaped     a secret-shaped string (the agent-sync secret scanner, plus the F3 prefixes held locally)
   gb-label          a Grok Bot text (`gb-<role>.md`) without its own `[GB-<ROLE>]` label or `<role>-grok-bot@` email,
@@ -236,7 +237,8 @@ def check_text(name: str, text: str, gb_role: str | None = None, *, max_chars: i
         found.append(Finding(name, number, "slack-helper", "the Slack helper is retired;  post through Zulip"))
     for number in single_space_gaps(text):
         found.append(Finding(name, number, "single-space-gap",
-                             "two spaces, or U+00A0 and a space, between sentences"))
+                             "two spaces, a non-breaking space and a space, or the "
+                             "non-breaking-space entity and a space, between sentences"))
 
     collapsed = re.sub(r"\s+", " ", text.replace(" ", " "))
     if OWNER_REMINDER not in collapsed:

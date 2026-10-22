@@ -22,10 +22,10 @@ a peer who copies the (public) uid can never become the notice.
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 
+from . import comment_keys
 from . import f3, records
 from . import links as linkmod
 from . import text as T
@@ -34,13 +34,22 @@ from .items import Item
 from .proc import Result, Runner
 
 SESSION = "needsown"  # agent-sync cuts a session label to 8 characters
-CHANNEL = (
-    os.environ.get("AGENT_SYNC_CHANNEL", "").strip() or "work-in-progress"
-)  # the realm renamed #agent-sync; the env var overrides
+# The realm renamed #agent-sync, and the env var overrides it.  The name is read
+# through the links module, which casefolds it, so a mixed-case override still
+# compares with the casefolded channel names everywhere else.
+CHANNEL = linkmod.resolve_channel()
 READ_BACK = 30  # messages read when looking for a post that may have landed
 MAYBE_SENT_CODES = (5, 6)
 FALLBACK_SEAT = "CLAUDE"  # CLAUDE's fallback notifier (C6-2) posts a pending notice for any seat
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+# The board CLI's exit codes.  2 usage, 3 claim held, 4 no credentials, 5 rate
+# limit (the request was never applied), 6 auth refused and 7 writes off are
+# all decided before anything is written, so they are definite refusals.  Exit 1
+# is the generic failure and carries both a GraphQL refusal and a transport
+# failure, so its message decides which one it was.
+BOARD_REFUSED_CODES = (2, 3, 4, 5, 6, 7)
+UNKNOWN_MARKERS = ("no usable response", "not confirmed", "timed out", "timeout")
 
 
 @dataclass
@@ -155,7 +164,13 @@ def notice_seats(seat: str) -> frozenset[str]:
 
 
 def find_notice(
-    runner: Runner, topic: str, uid: str, *, filer: str | None = None, channel: str | None = None
+    runner: Runner,
+    topic: str,
+    uid: str,
+    *,
+    filer: str | None = None,
+    channel: str | None = None,
+    environ: dict | None = None,
 ) -> int | None:
     """The id of the message that announced the item whose uid is `uid`, else None.  `filer` is the seat that
     filed the item when the caller is not that seat (the fallback notifier runs as CLAUDE, so the filer's own bot
@@ -176,7 +191,7 @@ def find_notice(
         SESSION,
         "--json",
         "--channel",
-        CHANNEL if channel is None else channel,
+        channel if channel is not None else linkmod.resolve_channel(environ),
         "--topic",
         topic,
         "--include-self",
@@ -208,19 +223,64 @@ def find_notice(
     return min(found) if found else None
 
 
-def _record(runner: Runner, item: Item, text: str) -> bool:
-    """One comment on the item, tried twice."""
+def _classify(result: Result) -> str:
+    """What one board comment attempt did.
+
+    `ok` is the comment on the issue.  `refused` means the CLI decided before it
+    wrote anything, so a later run may try again.  `unknown` means the request
+    may have landed, so nothing more is written on this key."""
+    if result.ok:
+        return "ok"
+    if result.timed_out:
+        return "unknown"
+    if result.missing:
+        return "refused"  # the board CLI is not installed, so nothing was written
+    if result.code in BOARD_REFUSED_CODES:
+        return "refused"
+    text = "%s %s" % (result.err or "", result.out or "")
+    if any(marker in text.lower() for marker in UNKNOWN_MARKERS):
+        return "unknown"
+    return "refused"
+
+
+def _record(runner: Runner, item: Item, text: str, *, environ: dict | None = None) -> bool:
+    """One comment on the item, written once.
+
+    The board CLI derives a comment's own id from the seat and the session, so the
+    same record written by the filing seat and again by CLAUDE's fallback notifier
+    is two comments on one issue, and a retry after a lost response can post the
+    record a second time.  The key store holds one outcome per item and record
+    text, so the second writer returns the first one's result instead of posting
+    again.
+
+    A definite refusal is tried twice, because nothing was written either time.  An
+    unknown outcome is not tried again:  the request may have landed, and a second
+    write could post the record twice."""
+    env = environ if environ is not None else runner.env
+    key = comment_keys.key_for(item.identifier, text)
+    held = comment_keys.get(key, env)
+    if held == comment_keys.OK:
+        return True
+    if held == comment_keys.UNKNOWN:
+        return False
     for _ in range(2):
         with runner.private_file(text) as path:
-            if runner.board(
-                "comment", item.identifier, "--by", runner.seat, "--text-file", path
-            ).ok:
-                return True
+            outcome = _classify(
+                runner.board("comment", item.identifier, "--by", runner.seat, "--text-file", path)
+            )
+        if outcome == "ok":
+            comment_keys.put(key, comment_keys.OK, env)
+            return True
+        if outcome == "unknown":
+            comment_keys.put(key, comment_keys.UNKNOWN, env)
+            return False
+    # A definite refusal:  the key is released, so a later run may write the record.
+    comment_keys.release(key, env)
     return False
 
 
 def record(runner: Runner, item: Item, text: str) -> bool:
-    """One comment on the item (tried twice), written as the runner's seat.  The notifier's reply records use it."""
+    """One comment on the item, written as the runner's seat.  The notifier's reply records use it."""
     return _record(runner, item, text)
 
 

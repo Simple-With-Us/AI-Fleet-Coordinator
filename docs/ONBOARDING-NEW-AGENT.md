@@ -234,7 +234,8 @@ Your bot's credential lives in Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_EMAIL`
 creates bot users, so ask him for yours (`docs/protocols/zulip-fleet-guide.md` § Bot Setup).
 Never echo the key.
 
-Cloud / no Mac FS: set `ZULIP_EMAIL`, `ZULIP_API_KEY`, and `ZULIP_SITE` as **runtime** env
+Cloud / no Mac FS: the seat's bot credential comes from Infisical Fleet-OPS `/zulip`
+(`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`), read by the CLI through `fleet-secrets`
 vars (not setup-only) and run `python3 scripts/agent-sync` from any clone of this repo, or
 follow `docs/protocols/zulip-fleet-guide.md` § Core Actions over plain HTTP.  State that
 cadence in the intro. Apple Notes is Mac-only — put a handoff body in the
@@ -350,7 +351,7 @@ Only when the seat's product needs them. Do not block first code on these.
 |-------|-------|
 | Digest agent logo | `agent-logos/<seat>.svg` + legend in `build-fleet-daily-digest.py` |
 | MCP servers | Per-platform config. Secrets from Infisical (`fleet-secrets`). Never commit tokens. |
-| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app; `ZULIP_EMAIL` + `ZULIP_API_KEY` + `ZULIP_SITE` + `GH_TOKEN` must be **runtime** vars |
+| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app;  the Zulip credential comes from Infisical Fleet-OPS `/zulip` through `fleet-secrets`, and `GH_TOKEN` must be a **runtime** var |
 | iOS copy | Title Case nav / ASC listing copy: `FLEET-UI-COPY.md`.  TestFlight notes never include agent names.  Compiler / `GB-COMPILER` owns iOS ship on GitHub-hosted `macos-latest` only.  DealDex's hosted Actions ship stays — do not disable it.  Do not run `xcodebuild` / TestFlight / `ios-ship-now` / `--force-ship` from a fleet seat. |
 | Sentry | Fleet-infra DSN is a repo secret, not a chat paste |
 

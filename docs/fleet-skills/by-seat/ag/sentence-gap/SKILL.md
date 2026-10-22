@@ -1,7 +1,7 @@
 ---
 name: sentence-gap
 description: >-
-  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows the canonical portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08; MiniMax Code chat pane, owner-verified 2026-10-18 and reaffirmed 2026-10-20); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
+  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows the canonical portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08; MiniMax Code chat pane, owner-verified 2026-10-18 and reaffirmed 2026-10-20); the literal &nbsp; entity plus a space in GitHub PR and issue text (owner-ruled 2026-10-22); a real U+00A0 plus a space in Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
 ---
 
 # Sentence gap (portable — always on)
@@ -41,7 +41,7 @@ code spans, as in `Sentence one.&nbsp; Sentence two.`.  Two ASCII spaces collaps
 pane, and a raw U+00A0 typed by the model arrives as a plain space, so the entity is the
 form that actually renders a gap.
 
-For a destination that takes a real U+00A0 (GitHub, Zulip, rendered HTML), generate the
+For a destination that takes a real U+00A0 (Zulip, rendered HTML), generate the
 character in the shell rather than typing it, because a model that emits U+00A0 directly
 can have it normalized to a plain space:
 
@@ -54,7 +54,7 @@ verify that same file, so the check reads the bytes you just produced and never 
 copy of the same name:
 
 ```sh
-grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' reply.txt | wc -l
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' reply.txt | wc -l
 grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' reply.txt
 ```
 
@@ -111,7 +111,8 @@ depends on the surface, so pick by destination:
 | **Plain-text chat (no Markdown rendering)** | two literal ASCII spaces | Nothing collapses them; an entity would show as the ugly text `&nbsp;` |
 | **Files read as source** — repo docs, commit messages, code comments, config, diffs, terminal output | two literal ASCII spaces | Read in an editor/terminal/`git diff`, which preserve them verbatim; an entity would appear literally |
 | **HTML / JSX / SwiftUI / any rendered product copy** | a real U+00A0 plus a space, or a shared `SENTENCE_GAP` constant | Raw double spaces collapse in HTML.  Source may use the entity only when the renderer expands it.  The owner must never see `&nbsp;` as text. |
-| **GitHub PR and issue titles, bodies and comments, review comments, Zulip posts, and any text a tool writes that a Markdown or HTML renderer then displays** | a real U+00A0 plus a space | Owner ruling 2026-10-08.  Tools preserve the character, and the renderer shows a real gap.  Never use the `&nbsp;` entity here: GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.  Supersedes the 2026-10-07 finding that two ASCII spaces were enough in Zulip. |
+| **GitHub PR and issue titles, bodies and comments, review comments, and any text a tool writes that GitHub then renders** | the literal entity text `&nbsp;` then a normal space after each sentence → `End.&nbsp; Next.` | Owner ruling 2026-10-22:  "On GitHub use `&nbsp; ` instead."  GitHub's renderer decodes the entity into a real gap, and the entity survives a copy into a plain-text squash commit as the six characters `&nbsp;`, which reads as the gap it stands for.  Supersedes the 2026-10-08 ruling that a real U+00A0 belongs here. |
+| **Zulip posts, and any text a tool writes for a surface that renders Markdown or HTML and is not named above** | a real U+00A0 plus a space | Owner ruling 2026-10-22:  "type a non-breaking space (NBSP) first, then a normal space."  Zulip collapses plain double spaces, and a real U+00A0 renders as a real gap.  The `&nbsp;` entity is for GitHub and for the chat panes named above;  on Zulip it would post as the six literal characters. |
 | **Markdown source** | two literal spaces *between* sentences | ⚠️ Two spaces at the **end of a line** is the unrelated hard-line-break syntax — don't confuse the two |
 | **Any surface not listed above** — a pane, a client, a tool or a channel you have not been told about | two literal ASCII spaces | Owner ruling 2026-10-20: an untested surface takes two ASCII spaces until it reports otherwise.  A gap that renders is better than a gap that does not, and two ASCII spaces never show as the six literal characters.  When the surface is verified, change its row here and report the finding in #Work-In-Progress so every seat gets it. |
 
@@ -183,7 +184,7 @@ partly-converted body can have real U+00A0 and still carry a leftover ASCII gap 
 spaces.
 
 ```sh
-grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l  # must be > 0
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' body.nbsp.txt | wc -l  # must be > 0
 grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt  # must be 0
 ```
 
@@ -193,6 +194,30 @@ and still ships a wrong gap.  `[^0-9]` in front is deliberate, so a legitimate n
 marker (`1. Item`) is not mistaken for an unconverted gap — the same reason the conversion
 carries `(?<![0-9])`.  Expect rare benign hits from abbreviations (`Dr. Smith`, `e.g. A`);
 read them and confirm they are abbreviations rather than real sentences.
+
+### The GitHub form: the `&nbsp;` entity
+
+**On GitHub the gap is the `&nbsp;` entity, not a raw U+00A0.**  Owner ruling 2026-10-22:
+"On GitHub use `&nbsp; ` instead."  GitHub's renderer decodes the entity into a real gap,
+and the entity survives a copy into a plain-text squash commit as the six characters
+`&nbsp;`, which reads as the gap it stands for.  So the converter for a GitHub body
+replaces the gap with the entity and a space, and everything else — the markup group, the
+lookbehind that keeps a numbered list a list, and the lookahead — is the same:
+
+```sh
+umask 077
+perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\&nbsp; /g' body.txt > body.entity.txt
+```
+
+The only difference from the converter above is the replacement:  `$1$2\&nbsp; ` writes the
+six characters and a space where `$1$2\x{a0} ` writes the byte pair and a space.  The
+`\&` is the perl escape for a literal `&`, so the entity is emitted rather than an
+interpolation.
+
+**The checks are the same for both forms.**  The count check accepts either the entity or
+the raw U+00A0, so the same pair verifies a GitHub body and a Zulip body.  The leftover
+check is unchanged for both, because it looks for the gap that was *not* made — a plain
+space where a gap belongs — and the entity is not a plain space.
 
 Both checks carry the same markup group as the converter, and they have to:  a gap that sits
 after a markup span is emitted as `<punctuation><markup><U+00A0><space>`, so a check that looks

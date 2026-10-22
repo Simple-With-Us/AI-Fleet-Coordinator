@@ -56,9 +56,11 @@ export const REVIEWER_JQ = `[.[] | select(${REVIEWER_BOTS.map((login) => `.user.
   + ' | sort_by(.created_at) | reverse | .[:30] | .[]'
   + ' | {user: .user.login, path, line: (.line // .original_line), body: (.body // "")[:4000]}';
 
-// GitHub text takes U+00A0 plus a space between sentences (owner rule):  two ASCII
-// spaces collapse to one when GitHub renders the comment.
-export const SENTENCE_GAP = '\u00a0 ';
+// GitHub text takes the `&nbsp;` entity plus a space between sentences (owner ruling
+// 2026-10-22):  GitHub's renderer decodes the entity into a real gap, and the entity
+// survives a copy into a plain-text squash commit as the six characters `&nbsp;`.
+// Supersedes the 2026-10-08 ruling that a raw U+00A0 belongs here.
+export const SENTENCE_GAP = '&nbsp; ';
 
 export function dispatchCommentBody({ owner, repo, number } = {}) {
   if (!owner || !repo || number == null) {

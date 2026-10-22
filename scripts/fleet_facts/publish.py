@@ -299,7 +299,7 @@ def build_full_list(run: Runner, deadline: Deadline, key: str) -> tuple[dict, st
         shutil.rmtree(folder, ignore_errors=True)
 
 
-GAP = "\u00a0 "      # the Markdown is rendered on GitHub, where two typed spaces collapse
+GAP = "&nbsp; "    # GitHub renders the entity into a real gap (owner ruling 2026-10-22)
 
 
 def unavailable_text(now: datetime, reason: str | None) -> str:
