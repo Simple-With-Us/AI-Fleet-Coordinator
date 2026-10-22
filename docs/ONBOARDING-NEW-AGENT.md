@@ -98,7 +98,7 @@ with the top-level `apps` (the acronyms) and `--app`.
    `~/apps/lanes/<Repo>/<suffix>-<slug>` (`docs/protocols/lane-map.md`).
 3. **Linear first, then Zulip, then code.**  Claim and closeout on every real unit are
    the Linear issue (`board claim`, `board status`; writes need `AGENT_SEAT`), the PR
-   (`Fixes <ID>` or `Refs <ID>`, branch `<seat>/<id>-<slug>`) and a `#agent-sync` post.
+   (`Fixes <ID>` or `Refs <ID>`, branch `<seat>/<id>-<slug>`) and a `#Work-In-Progress` post.
 4. **Commit → push → open PR → merge when CI is green.** Do not wait for the
    owner to say "commit". Do not leave a remote branch without a PR.
 5. **Prior owner messages stay in scope** unless the owner cancels or
@@ -128,7 +128,7 @@ with the top-level `apps` (the acronyms) and `--app`.
    Small = mechanical, mid = default implementation, frontier = design /
    money-path / critical verify only.  Canonical: `AGENT-SYNC.md` § Delegation
    & model economics.
-11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (`@**all**` in #agent-sync, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
+11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (`@**all**` in #Work-In-Progress, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
     Full-read on match.  Prefer a live listener (`agent-sync listen`); `agent-sync inbox` and `read --new` if you cannot hold one.
 
 ---
@@ -240,7 +240,7 @@ follow `docs/protocols/zulip-fleet-guide.md` § Core Actions over plain HTTP.  S
 cadence in the intro. Apple Notes is Mac-only — put a handoff body in the
 PR so a Mac seat can publish the note.
 
-First post is an **intro**, in #agent-sync topic `roll call`, then the claim in its own
+First post is an **intro**, in #Work-In-Progress topic `roll call`, then the claim in its own
 work topic:
 
 ```
@@ -374,7 +374,7 @@ Only when the seat's product needs them. Do not block first code on these.
 
 - [ ] Tag, Notes name, suffix, prefix written in `fleet-apps.json`, and the app in `seatApps.bySeat`
 - [ ] Global rules file on that platform points at `AGENT-SYNC.md`
-- [ ] Seat has its own Zulip bot and can read and post `#agent-sync` with `agent-sync` without printing the key
+- [ ] Seat has its own Zulip bot and can read and post `#Work-In-Progress` with `agent-sync` without printing the key
 - [ ] Intro posted
 - [ ] The seat's first lane (`~/apps/lane new`) is under `~/apps/lanes/` and is **not** `~/Code/<App>`
 - [ ] Seat has completed one claim-and-closeout unit in Linear and Zulip (even a docs PR), with `AGENT_SEAT` set for its `board` writes
