@@ -37,6 +37,17 @@ ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision
 # no fallback host and no alias:  this script provisions the one true host.
 ZONE_NAME = "simplewithus.com"
 HOST = "agents.simplewithus.com"
+# The retired host, kept as its own constants for one reason only:  cleanup and
+# verification.  The hard cutover stopped SERVING it - the Worker answers 404
+# for that Host and no alias exists - but a public hostname aimed at the Mac's
+# local dev port with no Access in front of it is a standing risk, not a
+# preference.  Dropping its tunnel ingress rule and its *.cfargotunnel.com CNAME
+# is how the retired name stops resolving to the Mac at all.  Nothing here may
+# serve, alias or redirect the retired host.
+RETIRED_ZONE_NAME = "jays.services"
+RETIRED_HOST = "agent-sync.jays.services"
+# Cleanup and post-deploy checks cover both names;  provisioning covers only HOST.
+RETIRED_HOSTS = (HOST, RETIRED_HOST)
 ISSUER = f"https://{HOST}"
 RESOURCE = f"{ISSUER}/mcp"
 TEAM_DOMAIN = "silent-frost-37e0.cloudflareaccess.com"
@@ -121,16 +132,29 @@ def plan(apply: bool, what: str) -> bool:
 # ---------------------------------------------------------------- lookups
 
 
-def zone_id(cf: Cloudflare) -> str:
-    res = cf.ok("GET", "/zones", name=ZONE_NAME)
+def zone_id(cf: Cloudflare, zone: str = ZONE_NAME) -> str:
+    res = cf.ok("GET", "/zones", name=zone)
     for z in res.get("result") or []:
         if z["account"]["id"] == ACCOUNT_ID:
             return z["id"]
-    raise SystemExit(f"error: zone {ZONE_NAME} not on account {ACCOUNT_ID}")
+    raise SystemExit(f"error: zone {zone} not on account {ACCOUNT_ID}")
 
 
-def dns_records(cf: Cloudflare, zid: str) -> list[dict]:
-    return cf.ok("GET", f"/zones/{zid}/dns_records", name=HOST).get("result") or []
+def dns_records(cf: Cloudflare, zid: str, host: str = HOST) -> list[dict]:
+    return cf.ok("GET", f"/zones/{zid}/dns_records", name=host).get("result") or []
+
+
+def tunnel_hosts(cf: Cloudflare, hosts=RETIRED_HOSTS) -> dict[str, list[str]]:
+    """Map each hostname to the tunnel services an ingress rule points it at."""
+    t = tunnel(cf)
+    if not t:
+        return {}
+    found = {}
+    for rule in tunnel_config(cf, t["id"]).get("ingress") or []:
+        hostname = rule.get("hostname")
+        if hostname in hosts:
+            found.setdefault(hostname, []).append(rule.get("service"))
+    return found
 
 
 def tunnel(cf: Cloudflare) -> dict | None:
@@ -302,22 +326,67 @@ def cmd_kv(cf: Cloudflare, apply: bool) -> None:
         say(f"created {KV_TITLE} id={res.get('id')}")
 
 
+def put_worker_secret(name: str, value: str) -> None:
+    """Set an encrypted Worker secret.
+
+    The value is fed on stdin, never argv, and wrangler's own output is
+    captured rather than relayed:  it can echo the value, so only the exit
+    status is reported.  Naming the secret is safe; its value is not.
+    """
+    if shutil.which("wrangler"):
+        argv = ["wrangler"]
+    elif shutil.which("npx"):
+        argv = ["npx", "wrangler"]
+    else:
+        raise SystemExit(f"error: wrangler is not on PATH; cannot provision {name}")
+    try:
+        proc = subprocess.run(
+            argv + ["secret", "put", name, "--config", str(WRANGLER)],
+            input=value + "\n",
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SystemExit(f"error: could not run wrangler to set {name}: {exc}") from exc
+    if proc.returncode != 0:
+        raise SystemExit(f"error: wrangler secret put {name} failed (exit {proc.returncode})")
+
+
 def cmd_write_config(cf: Cloudflare, apply: bool) -> None:
     text = WRANGLER.read_text(encoding="utf-8")
     ns = kv_namespace(cf)
     app = access_app(cf)
     if not ns or not app:
         raise SystemExit("error: run 'kv --apply' and 'access --apply' first")
-    new = text.replace("REPLACE_WITH_OAUTH_KV_ID", ns["id"]).replace(
-        "REPLACE_WITH_ACCESS_AUD", app["aud"]
+    # The KV namespace id is not a credential, so it stays in the committed file.
+    # Replace whatever is there - the original placeholder or the id written by
+    # an earlier run - so a re-created namespace is picked up instead of being
+    # silently ignored as "already configured".
+    new, count = re.subn(
+        r'("binding"\s*:\s*"OAUTH_KV"\s*,\s*"id"\s*:\s*)"[^"]*"',
+        lambda m: f'{m.group(1)}"{ns["id"]}"',
+        text,
     )
-    if new == text:
-        say("wrangler.jsonc already has both ids")
-        return
-    say(f"OAUTH_KV id -> {ns['id']}")
-    say(f"ACCESS_AUD -> {app['aud']}")
-    if plan(apply, "write wrangler.jsonc"):
-        WRANGLER.write_text(new, encoding="utf-8")
+    if count == 0:
+        raise SystemExit("error: no OAUTH_KV binding id found in wrangler.jsonc; not touching it")
+    if count > 1:
+        raise SystemExit("error: OAUTH_KV binding is ambiguous in wrangler.jsonc; not touching it")
+    if new != text:
+        say(f"OAUTH_KV id -> {ns['id']}")
+        if plan(apply, "write wrangler.jsonc"):
+            WRANGLER.write_text(new, encoding="utf-8")
+    else:
+        say("wrangler.jsonc already has the live OAUTH_KV id")
+
+    # The Access aud is a private Cloudflare resource identifier, so it is not
+    # committed.  Provision it as an encrypted Worker secret, fed on stdin so
+    # the value never appears in argv or in this script's output.  The Worker's
+    # /authorize and /admin fail closed naming ACCESS_AUD until it is set.
+    say(f"ACCESS_AUD -> provisioned as a Worker secret from the {ACCESS_APP_NAME!r} app")
+    if plan(apply, "wrangler secret put ACCESS_AUD (deploys a new Worker version)"):
+        put_worker_secret("ACCESS_AUD", app["aud"])
+        say("ACCESS_AUD secret is set; redeploy is not required for it to take effect")
 
 
 def _backup(name: str, payload: dict) -> pathlib.Path:
@@ -329,37 +398,38 @@ def _backup(name: str, payload: dict) -> pathlib.Path:
 
 
 def cmd_dns(cf: Cloudflare, apply: bool) -> None:
-    zid = zone_id(cf)
-    recs = dns_records(cf, zid)
-    if not recs:
-        say(f"no DNS record for {HOST}; nothing to delete")
-        return
-    for r in recs:
-        if r["type"] != "CNAME" or not r["content"].endswith(".cfargotunnel.com"):
-            raise SystemExit(
-                f"error: unexpected record {r['type']} -> {r['content']}; not touching it"
-            )
-    for r in recs:
-        say(
-            f"record: {r['type']} {r['name']} -> {r['content']} proxied={r.get('proxied')} id={r['id']}"
-        )
-        if plan(
-            apply,
-            f"back up and delete DNS record {r['id']} (a Worker custom domain cannot bind while it exists)",
-        ):
-            path = _backup(f"dns-{r['id']}.json", r)
-            say(f"backup: {path}")
-            cf.ok("DELETE", f"/zones/{zid}/dns_records/{r['id']}")
-            say("deleted")
+    for zone, host in ((ZONE_NAME, HOST), (RETIRED_ZONE_NAME, RETIRED_HOST)):
+        zid = zone_id(cf, zone)
+        recs = dns_records(cf, zid, host)
+        if not recs:
+            say(f"no DNS record for {host} in zone {zone}; nothing to delete")
+            continue
+        for r in recs:
+            if r["type"] != "CNAME" or not r["content"].endswith(".cfargotunnel.com"):
+                raise SystemExit(
+                    f"error: unexpected record {r['type']} -> {r['content']}; not touching it"
+                )
+        for r in recs:
             say(
-                "The backup is a record of what existed, NOT a rollback:  recreating this CNAME would publish"
+                f"record: {r['type']} {r['name']} -> {r['content']} proxied={r.get('proxied')} id={r['id']}"
             )
-            say(
-                "the Mac's local port again with no Access.  To undo a bad deploy, roll back the Worker version."
-            )
-            say(
-                "Next:  deploy (step 5), then 'check', then 'tunnel --apply' (step 6) to drop the dead ingress rule."
-            )
+            if plan(
+                apply,
+                f"back up and delete DNS record {r['id']} (a Worker custom domain cannot bind while it exists)",
+            ):
+                path = _backup(f"dns-{r['id']}.json", r)
+                say(f"backup: {path}")
+                cf.ok("DELETE", f"/zones/{zid}/dns_records/{r['id']}")
+                say("deleted")
+                say(
+                    "The backup is a record of what existed, NOT a rollback:  recreating this CNAME would publish"
+                )
+                say(
+                    "the Mac's local port again with no Access.  To undo a bad deploy, roll back the Worker version."
+                )
+                say(
+                    "Next:  deploy (step 5), then 'check', then 'tunnel --apply' (step 6) to drop the dead ingress rules."
+                )
 
 
 def cmd_tunnel(cf: Cloudflare, apply: bool) -> None:
@@ -368,24 +438,27 @@ def cmd_tunnel(cf: Cloudflare, apply: bool) -> None:
         raise SystemExit(f"error: tunnel {TUNNEL_NAME} not found")
     config = tunnel_config(cf, t["id"])
     ingress = config.get("ingress") or []
-    keep = [r for r in ingress if r.get("hostname") != HOST]
-    removed = [r for r in ingress if r.get("hostname") == HOST]
+    # Drop a rule for the served host OR the retired one:  either keeps a public
+    # hostname aimed at the Mac alive.
+    keep = [r for r in ingress if r.get("hostname") not in RETIRED_HOSTS]
+    removed = [r for r in ingress if r.get("hostname") in RETIRED_HOSTS]
     if not removed:
-        say("no ingress rule for this host; nothing to do")
+        say(f"no ingress rule for {HOST} or {RETIRED_HOST}; nothing to do")
         return
-    if len(removed) != 1 or not keep or keep[-1].get("hostname"):
+    if not keep or keep[-1].get("hostname"):
         raise SystemExit(
-            "error: unexpected ingress shape (want exactly one rule removed and a catch-all last); not touching it"
+            "error: unexpected ingress shape (want only hostname rules removed and a catch-all last); not touching it"
         )
     say(f"tunnel {TUNNEL_NAME} ({t['id']}): {len(ingress)} rules -> {len(keep)}")
-    say(f"remove: {removed[0].get('hostname')} -> {removed[0].get('service')}")
+    for rule in removed:
+        say(f"remove: {rule.get('hostname')} -> {rule.get('service')}")
     say(
         "Do this right after the custom domain is verified:  a dead rule that points at a local dev port"
     )
-    say("comes back to life the moment anyone re-adds a CNAME for this host.")
+    say("comes back to life the moment anyone re-adds a CNAME for that host.")
     if plan(
         apply,
-        "PUT the tunnel configuration without that rule (whole-config write on a live tunnel)",
+        "PUT the tunnel configuration without those rules (whole-config write on a live tunnel)",
     ):
         path = _backup(f"tunnel-{t['id']}-config.json", config)
         say(f"backup: {path}")
@@ -559,28 +632,22 @@ def cmd_check(cf: Cloudflare | None, _apply: bool) -> None:
             json.dumps([d.get("service") for d in domains]),
         )
         t = tunnel(cf)
-        stale = (
-            [
-                r.get("service")
-                for r in (tunnel_config(cf, t["id"]).get("ingress") or [])
-                if r.get("hostname") == HOST
-            ]
-            if t
-            else []
-        )
-        expect(
-            "no stale tunnel ingress rule for this host (run 'tunnel --apply')",
-            not stale,
-            json.dumps(stale),
-        )
-        expect(
-            "no leftover tunnel DNS record",
-            not [
-                r
-                for r in dns_records(cf, zone_id(cf))
-                if r["type"] == "CNAME" and r["content"].endswith(".cfargotunnel.com")
-            ],
-        )
+        stale = tunnel_hosts(cf) if t else {}
+        for host in RETIRED_HOSTS:
+            expect(
+                f"no stale tunnel ingress rule for {host} (run 'tunnel --apply')",
+                host not in stale,
+                json.dumps(stale.get(host, [])),
+            )
+        for zone, host in ((ZONE_NAME, HOST), (RETIRED_ZONE_NAME, RETIRED_HOST)):
+            expect(
+                f"no leftover tunnel DNS record for {host} in zone {zone}",
+                not [
+                    r
+                    for r in dns_records(cf, zone_id(cf, zone), host)
+                    if r["type"] == "CNAME" and r["content"].endswith(".cfargotunnel.com")
+                ],
+            )
 
     say(f"{failures} failure(s)")
     if failures:
