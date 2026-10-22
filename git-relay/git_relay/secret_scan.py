@@ -1,8 +1,8 @@
-"""Outbound text hygiene for GHR:  keep pasted credentials out of relayed content.
+"""Outbound text hygiene for git-relay:  keep pasted credentials out of relayed content.
 
 Seats supply free text (PR titles, bodies, review replies).  A seat can paste a
 token into that text by mistake - or a compromised seat could try to exfiltrate
-one through a PR authored under the owner's token.  The relay refuses any
+one through a PR authored under the owner's token.  git-relay refuses any
 outbound text that matches a known credential shape before it leaves for
 GitHub, and the audit log hashes any detail value that matches one, whatever
 key it arrived under.

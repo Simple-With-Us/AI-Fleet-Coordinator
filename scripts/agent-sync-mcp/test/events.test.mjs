@@ -179,7 +179,7 @@ test("callback URLs:  https, 443, public allowlisted host only", () => {
   assert.equal(reason("https://evil.com/x"), "host_not_allowed");
   assert.equal(reason("https://chatgpt.com.evil.com/x"), "host_not_allowed");
   assert.equal(reason("https://evilchatgpt.com/x"), "host_not_allowed");
-  assert.equal(reason("https://agent-sync.jays.services/internal/wake/JET"), "host_not_allowed");
+  assert.equal(reason("https://agents.simplewithus.com/internal/wake/JET"), "host_not_allowed");
   assert.equal(reason("https://chatgpt.com/a b"), "malformed");
   assert.equal(reason("not a url"), "malformed");
   assert.equal(reason(`https://chatgpt.com/${"a".repeat(2100)}`), "malformed");

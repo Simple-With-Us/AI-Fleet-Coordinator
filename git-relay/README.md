@@ -1,13 +1,26 @@
-# GHR - the GitHub relay (ghr/)
+# git-relay - the GitHub relay CLI, and GR-MCP
 
-GHR knows each seat from its bearer token and picks the credential by task:  PR-write authoring
-runs under the owner's scoped PR-only token (the only copy lives in the service's environment),
-and every other GitHub task runs under the seat's own GitHub App token, which the relay mints and
-refreshes from App keys in Infisical.  Every call is checked against per-seat policy and written
-to the audit log, allowed or denied.
+git-relay knows each seat from its bearer token and picks the credential by task:  PR-write
+authoring runs under the owner's scoped PR-only token (the only copy lives in the service's
+environment), and every other GitHub task runs under the seat's own GitHub App token, which
+git-relay mints and refreshes from App keys in Infisical.  Every call is checked against per-seat
+policy and written to the audit log, allowed or denied.
 
-This is deliberately separate from the OPS-966 operator broker: that stays disabled and
-unwired; this package is its own service with its own token and its own (much smaller) surface.
+The MCP wrapper is **GR-MCP**:  `git-relay mcp`.  It is the only MCP server for GitHub work and
+it is not reachable through ST-MCP.
+
+## git-relay owns per-bot GitHub token minting (owner decision 2026-10-22, Q5)
+
+git-relay is the ONE path in the fleet that mints per-bot GitHub App tokens.  The OPS-966
+Operator GitHub token broker (`scripts/agent_sync/operator_github*.py`,
+`scripts/agent_sync/github_token_router.py`, `scripts/operator/github_tokens/repo_token.py`) is
+NOT a minting path:  it stays disabled by default, and both of its mint primitives now fail
+closed naming git-relay, before any App credential is read.  That code is retained for review
+history and was not deleted;  it simply cannot mint.
+
+`scripts/agent_sync/tests/test_github_relay_minting_owner.py` is the executable form of this:
+it fails if a second unguarded mint site ever appears in the repository, if the broker's guard
+is bypassed, or if the broker's real router can reach a mint.
 
 ## Status
 
@@ -64,14 +77,15 @@ secrets, no direct Infisical HTTP in the relay), JWT signed with the local opens
 cached in memory under per-(app, repo, permissions) locks (one slow mint never blocks another
 seat's) and refreshed 5 minutes early.  Values are cached in memory
 per process.  Nothing secret is written to disk, logged, or audited;  audit rows hash token
-values.  PR_RELAY_APP_MINT=0 disables App actions;  otherwise the fleet-secrets executable
+values.  GIT_RELAY_APP_MINT=0 disables App actions;  otherwise the fleet-secrets executable
 must be on PATH at startup.
 
 ## MCP wrapper
 
-`ghr/mcp_server.py` is a stdio MCP server (initialize, tools/list, tools/call) that
-exposes the relay actions as MCP tools. A seat runs it with only its own bearer token
-(PR_RELAY_SEAT_TOKEN, PR_RELAY_URL); the wrapper forwards over HTTP, so policy, caps and audit
+**GR-MCP** (`git-relay/git_relay/mcp_server.py`, run as `git-relay mcp`) is a stdio MCP server
+(initialize, tools/list, tools/call) that advertises itself as `GR-MCP` and exposes the relay
+actions as MCP tools. A seat runs it with only its own bearer token
+(GIT_RELAY_SEAT_TOKEN, GIT_RELAY_URL); the wrapper forwards over HTTP, so policy, caps and audit
 stay server-side. Refusals come back as tool errors, never protocol errors.
 
 ## Relay as a permission layer (owner direction 2026-10-21)
@@ -80,13 +94,13 @@ Per-seat policy (actions, repos, mint_permission ceilings, rate caps) is a first
 layer of its own:  it can narrow what a credential allows, never exceed it.  A seat's effective
 power is the INTERSECTION of the relay policy and the underlying GitHub credential - tightening
 either side restricts the seat, and no policy entry can grant what GitHub already denies.  Policy
-lives in reviewed config (PR_RELAY_SEATS_JSON sourced from a reviewed file or Infisical), so
+lives in reviewed config (GIT_RELAY_SEATS_JSON sourced from a reviewed file or Infisical), so
 permission changes ship without touching GitHub App settings;  every change is a reviewed PR (or an
 audited Infisical write), and every call - allowed or denied - is in the audit log.
 
 ## Policy
 
-Seats come from `PR_RELAY_SEATS_JSON` at process start:
+Seats come from `GIT_RELAY_SEATS_JSON` at process start:
 
 ```json
 {
@@ -98,8 +112,12 @@ Seats come from `PR_RELAY_SEATS_JSON` at process start:
 }
 ```
 
+A seat's `app_slug` must be that seat's own bot identity:  one bearer = one Zulip bot = one
+GitHub App (owner decision 2026-10-22, Q7).  A config entry naming another bot's App is refused
+at load, so a bearer can never act through a GitHub App that is not its own bot.
+
 Every check is an allowlist: an action or repo not named is denied. Token comparison is
-constant-time over all seats. A per-seat hourly call cap (`PR_RELAY_RATE_PER_HOUR`, default 120)
+constant-time over all seats. A per-seat hourly call cap (`GIT_RELAY_RATE_PER_HOUR`, default 120)
 limits a leaked seat token's blast radius.
 
 ## Outbound hygiene
@@ -116,7 +134,7 @@ relay's HTTP API directly, where the response goes only to that caller.
 
 ## Audit
 
-One JSON object per line at `PR_RELAY_AUDIT_PATH` (default `pr-relay-audit.jsonl`), fsynced after
+One JSON object per line at `GIT_RELAY_AUDIT_PATH` (default `git-relay-audit.jsonl`), fsynced after
 every write: timestamp, seat, action, repo, result (ok / denied / bad_request / unavailable /
 github_terminal / github_unknown / duplicate_refused), and the GitHub id/URL returned. Titles and
 bodies are never logged; the row keeps their length and SHA-256 so a call is attributable without
@@ -141,7 +159,7 @@ app-token minting unavailable.
 
 Every non-idempotent write (open_pr, edit_pr, reply_thread, comment_pr, merge_pr,
 workflow_dispatch, resolve_thread) is gated by a durable outcome record at
-`PR_RELAY_OUTCOMES_PATH` (default `pr-relay-outcomes.json`), keyed by seat + action + canonical
+`GIT_RELAY_OUTCOMES_PATH` (default `git-relay-outcomes.json`), keyed by seat + action + canonical
 arguments, with explicit pending / ok / refused / unknown states.  A 4xx answer from GitHub is a
 definite refusal and releases the key, with two exceptions:  408 (request timeout) can arrive
 after GitHub applied the write, so it is treated as outcome UNKNOWN, and 429 is simply
@@ -160,18 +178,22 @@ credential (never cached in the store) and a re-mint is safe under the minter's 
 | Env var | Default | Purpose |
 | --- | --- | --- |
 | GITHUB_TOKEN | (required) | Scoped PR-only token; the only credential the service holds |
-| PR_RELAY_SEATS_JSON | (required) | Seat tokens, action allowlists, repo allowlists |
-| PR_RELAY_AUDIT_PATH | pr-relay-audit.jsonl | Audit log location |
-| PR_RELAY_OUTCOMES_PATH | pr-relay-outcomes.json | Write idempotency outcome store |
-| PR_RELAY_HOST | 127.0.0.1 | Bind address |
-| PR_RELAY_PORT | 8471 | Bind port |
-| PR_RELAY_RATE_PER_HOUR | 120 | Per-seat hourly call cap |
+| GIT_RELAY_SEATS_JSON | (required) | Seat tokens, action allowlists, repo allowlists |
+| GIT_RELAY_AUDIT_PATH | git-relay-audit.jsonl | Audit log location |
+| GIT_RELAY_OUTCOMES_PATH | git-relay-outcomes.json | Write idempotency outcome store |
+| GIT_RELAY_HOST | 127.0.0.1 | Bind address |
+| GIT_RELAY_PORT | 8471 | Bind port |
+| GIT_RELAY_RATE_PER_HOUR | 120 | Per-seat hourly call cap |
+| GIT_RELAY_APP_MINT | 1 | Set to 0 to disable App actions and all App minting |
 
 ```
-python3 -m ghr.server
+git-relay serve                 # the CLI; also the default command
+git-relay mcp                   # GR-MCP over stdio
+python3 -m git_relay.server     # equivalent, no wrapper needed
 ```
 
-Stdlib only; no dependencies to install.
+`git-relay/bin/git-relay` runs straight from a checkout with no install step.  Stdlib only, no
+dependencies to install.
 
 ## Seat provisioning and deployment
 
@@ -182,7 +204,7 @@ separate decision; nothing here installs daemons or touches the operator broker.
 ## Tests
 
 ```
-python3 -m unittest discover -s ghr/tests -t . -v
+cd git-relay && python3 -m unittest discover -s git_relay/tests -t . -v
 ```
 
 Fakes only: no network, no real token.
