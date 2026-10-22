@@ -15,6 +15,7 @@ import argparse
 import ctypes
 import fcntl
 import json
+import math
 import os
 import re
 import socket
@@ -65,7 +66,7 @@ CLEAN_COOLDOWN_CRIT_SEC = int(os.environ.get("RESOURCE_CLEAN_COOLDOWN_CRIT_SEC",
 LOCK_FILE = STATE_DIR / "resource-watch.lock"
 LOCK_STALE_SEC = int(os.environ.get("RESOURCE_LOCK_STALE_SEC", "1800"))
 # The lock every reclaiming scheduler shares, so two of them never reclaim at once:
-# mac-cleanup (4h), Hog Hunter's robotic vacuum (300s), the BotFleet routines, the
+# mac-cleanup (4h), a sibling reclaimer's robotic vacuum (300s), the BotFleet routines, the
 # resource webhook and a live bot thread.  It is a directory, taken with mkdir, and
 # stale after 120 minutes -- the same lock and the same age mac-auto-cleanup.sh uses.
 HOUSEKEEPER_LOCK = STATE_DIR / ".housekeeper.lock"
@@ -271,8 +272,8 @@ def _housekeeper_owner_path() -> Path:
     It cannot live inside the lock directory: the lock is released with a
     plain rmdir, and rmdir refuses a directory that has anything in it.  A file
     inside the lock would make the release silently fail and leak the lock
-    forever.  This is the same path the HogHunter lock uses
-    (scripts/vacuum/lock.py), so the two read each other's owner file.
+    forever.  This is the same path an equivalent lock helper in a sibling
+    repository uses, so the two read each other's owner file.
     """
     return HOUSEKEEPER_LOCK.with_name(HOUSEKEEPER_LOCK.name + ".owner")
 
@@ -281,11 +282,11 @@ def _housekeeper_guard_path() -> Path:
     """The shared guard over the housekeeper protocol:  a SIBLING of the lock.
 
     Every implementation of this protocol -- this watcher, the cleanup script
-    in this repo (scripts/mac-auto-cleanup.sh), HogHunter's
-    scripts/vacuum/lock.py and HogHunter's Sources/Storage/HousekeeperLock.swift
-    -- serializes the critical sections of the lock with an exclusive flock on
-    this ONE file:  the ownership validation, the stale takeover, the removal,
-    the mkdir, the owner-file publication and every release path.
+    in this repo (scripts/mac-auto-cleanup.sh) and an equivalent lock helper
+    in a sibling repository -- serializes the critical sections of the lock
+    with an exclusive flock on this ONE file:  the ownership validation, the
+    stale takeover, the removal, the mkdir, the owner-file publication and
+    every release path.
 
     It is never inside the lock directory, because the lock is released with a
     plain rmdir and rmdir refuses a directory that has anything in it.  It is
@@ -321,7 +322,37 @@ def _housekeeper_guard():
     with _GUARD_LOCK:
         if _GUARD_DEPTH == 0:
             path = _housekeeper_guard_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
+            parent = path.parent
+            if parent.is_symlink():
+                # A symlinked state directory can REDIRECT the shared guard:
+                # the flock would then be taken on a file somewhere else
+                # entirely, and two implementations would not be sharing one
+                # guard.  Refuse it.
+                raise OSError(
+                    f"refusing a symlinked housekeeper state directory: {parent}"
+                )
+            if not parent.is_dir():
+                # The state directory is PRIVATE:  the guard and the owner
+                # record are shared state that must not be world readable.
+                try:
+                    parent.mkdir(mode=0o700, parents=True)
+                except FileExistsError:
+                    # Another process created it between the check and here:
+                    # it is not ours to change.
+                    pass
+                else:
+                    # mkdir's mode is masked by the umask, so the private
+                    # mode is set explicitly.  The chmod goes through the
+                    # opened directory and not through the path, so it cannot
+                    # follow a symlink that appeared in the meantime.
+                    dir_fd = os.open(
+                        str(parent),
+                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                    )
+                    try:
+                        os.fchmod(dir_fd, 0o700)
+                    finally:
+                        os.close(dir_fd)
             fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -342,12 +373,26 @@ def _housekeeper_guard():
                     os.close(fd)
 
 
+# The exact shape of an owner record.  The owner file is shared state that
+# any process can write, so a record is either exactly this -- the key set,
+# the types and the bounds of every value -- or it is not an owner record at
+# all.
+_OWNER_KEYS = frozenset({"pid", "host", "acquired_at", "lock"})
+
+
 def _parse_housekeeper_owner(raw: str) -> dict | None:
     """The owner payload in a raw owner file, or None when it is not usable.
 
     The owner file is shared state that any process can write, so its shape is
     checked rather than coerced.  int() on a pid that is not a number raises,
     and a raise here would escape the release path and leak the lock.
+
+    The record has to match the declared schema EXACTLY:  the key set, the
+    type of every value and the bounds of every value.  A record that is
+    missing a key, carries an unknown key, or holds a value of the wrong type
+    or out of bounds is not an owner record, and handing one to the
+    lock-ownership logic would let a malformed file decide who holds the lock.
+    A malformed record is rejected here, and this function never raises.
     """
     try:
         owner = json.loads(raw)
@@ -355,8 +400,25 @@ def _parse_housekeeper_owner(raw: str) -> dict | None:
         return None
     if not isinstance(owner, dict):
         return None
-    pid = owner.get("pid")
+    if set(owner) != _OWNER_KEYS:
+        # A missing key and an unknown key are the same failure:  the record
+        # is not the record this protocol publishes.
+        return None
+    pid = owner["pid"]
     if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    host = owner["host"]
+    if not isinstance(host, str) or not host:
+        return None
+    acquired_at = owner["acquired_at"]
+    if isinstance(acquired_at, bool) or not isinstance(acquired_at, (int, float)):
+        return None
+    if not math.isfinite(acquired_at):
+        # json accepts NaN and Infinity as literals, so a finite bound is a
+        # real check and not a formality.
+        return None
+    lock = owner["lock"]
+    if not isinstance(lock, str) or not lock:
         return None
     return owner
 
@@ -389,7 +451,7 @@ def _read_housekeeper_owner() -> dict | None:
 
 
 def _write_housekeeper_owner() -> None:
-    """Record who holds the lock, in the shape the HogHunter lock reads.
+    """Record who holds the lock, in the shape the sibling lock reads.
 
     The pid is what makes a killed holder recoverable: the next process to ask
     for the lock can see that the pid is gone and take over at once instead of
@@ -398,18 +460,58 @@ def _write_housekeeper_owner() -> None:
     mutex.  It is written AFTER the lock directory, so its mtime is newer and
     a reader can tell that it describes the current holder.
 
+    The write is ATOMIC:  a temp file in the same directory is written,
+    flushed and fsynced, renamed over the owner file, and the directory is
+    fsynced too.  Writing the owner file in place truncates it first, so a
+    crash or a power loss can leave partial JSON behind, and the owner record
+    is the safety metadata the lock-ownership logic reads.
+
     The write is under the shared guard, because a writer that interleaves
     with a reader can leave a half-written file behind.
     """
     payload = {
         "pid": os.getpid(),
-        "host": socket.gethostname(),
+        # The host must be a non-empty string:  that is the declared shape of
+        # the record, and a record this process writes must be one it can
+        # read back.
+        "host": socket.gethostname() or "unknown",
         "acquired_at": time.time(),
         "lock": str(HOUSEKEEPER_LOCK),
     }
     try:
         with _housekeeper_guard():
-            _housekeeper_owner_path().write_text(json.dumps(payload), encoding="utf-8")
+            owner_path = _housekeeper_owner_path()
+            tmp_path = owner_path.with_name(
+                f".{owner_path.name}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                # The temp file is PRIVATE (0600):  the owner record names a
+                # pid and a host and sits in a shared directory.
+                fd = os.open(
+                    str(tmp_path),
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(payload))
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_path, owner_path)
+                dir_fd = os.open(
+                    str(owner_path.parent),
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                )
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            finally:
+                # The temp file is removed on EVERY path out of here, so a
+                # failed write leaves no debris next to the owner file.
+                try:
+                    tmp_path.unlink()
+                except FileNotFoundError:
+                    pass
     except OSError:
         pass
 
@@ -563,7 +665,10 @@ def _acquire_housekeeper_lock_locked() -> bool:
     check, the takeover, the removal and the owner-file publication.
     """
     global _HOUSEKEEPER_LOCK_INODE
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # The state directory holds the lock and the owner record, so it is
+    # created PRIVATE.  The guard has usually created it already, and an
+    # existing directory keeps its own permissions.
+    STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     for _ in range(2):
         try:
             HOUSEKEEPER_LOCK.mkdir()
