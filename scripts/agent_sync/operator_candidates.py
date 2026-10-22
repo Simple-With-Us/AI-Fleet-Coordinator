@@ -641,7 +641,8 @@ def _send_candidate_list(
         if status in (401, 403):
             return _outcome(
                 "refused",
-                "the Operator credential was rejected.  Preview: %s" % _masked(getattr(creds, "key", "")),
+                "the Operator credential was rejected.  Preview: %s"
+                % _masked(getattr(creds, "key", "")),
                 delivery_status=DELIVERY_REFUSED,
                 code="credential_rejected",
                 recipient=recipient_id,

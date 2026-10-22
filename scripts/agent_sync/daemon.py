@@ -3637,7 +3637,9 @@ class Daemon:
             ).get(runner.seat)
             or []
         )
-        wanted = {int(i) for i in (trigger_ids or ()) if isinstance(i, int) and not isinstance(i, bool)}
+        wanted = {
+            int(i) for i in (trigger_ids or ()) if isinstance(i, int) and not isinstance(i, bool)
+        }
         for bot in bots:
             name = str(bot.get("full_name") or "")
             if not name:
