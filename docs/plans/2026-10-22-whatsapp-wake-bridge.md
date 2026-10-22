@@ -82,13 +82,21 @@ Three parts, kept distinct as Jet asked:  the poller and sender, the store and t
 - One self-contained module in the hosted MCP Worker (today ST-MCP, Worker script `agent-sync-mcp`), registered through a small interface (section 12).
 - Signed routes, working paths:  `POST /internal/wa-ingest/JET`, `GET /internal/wa-outbox/JET` (held open up to 25 seconds), `POST /internal/wa-outbox/JET/result` and `POST /internal/wa-heartbeat/JET`.
 - It stores messages, the binding, the dedupe ledger and the send ledger in `wa_`-prefixed tables (section 7).
-- Ingest is idempotent:  insert-or-ignore on the message id.  Only newly stored messages count toward a wake.
+- Ingest decides each message in this order, and records the outcome in the 35-day dedupe ledger (section 7) whatever it is:
+  1. **Ledger first.**  If the keyed hash of the message id is already in the ledger, the message is a replay and is dropped.  The ledger is checked before the inbox because inbox rows are deleted long before the ledger's 35 days, so an insert-or-ignore on the inbox alone would let a replay through once its row was gone.
+  2. **Binding cutoff, on Meta's clock.**  If Meta's own `messages[].timestamp` (p. 11, L808-811) is earlier than the binding cutoff, which is Meta's timestamp of the code message (section 6), the message is dropped and ledgered as `pre_binding`.  Receive time on the bridge or the Worker is never used for this.
+  3. **Age and high-water mark.**  A message whose Meta timestamp is more than 31 days old is dropped as `stale`, because Meta keeps 30 days (p. 16, L1229) and the ledger cannot vouch beyond its 35.  After an offset reset the bridge flags its batches `replay: true`, and in those batches a message older than the newest message already stored is dropped as `replay`, even if the ledger has lost it.
+  4. **Sender.**  A sender other than the bound one is quarantined and ledgered as `quarantined`, with no body.
+  5. **Store.**  Only then is the message stored, with an insert-or-ignore on the message id as a last guard.  Only a newly stored message counts toward a ring.
+- Messages the bridge drops itself, before any binding or from an unbound sender, still reach the ledger:  the bridge sends their message id and Meta timestamp, never their body.
+- The 5-minute window on the signed call protects the HTTP request against replay, not the messages inside it.  A message's age is judged only by Meta's timestamp and the ledger.
 - Wake ids use their own `wa:` namespace, apart from Zulip's `wake_seen`.
 - The event carries metadata only:  seat, wake id, pending count, oldest and newest receive times, held and unknown reply counts, and the binding state.  No text and no ids.
-- Three tools, for seat JET only:
-  - `whatsapp_read(since?, limit, ack_through?)`, with `limit` at most 50.  It returns pending messages oldest first, with text inside a fence marked as untrusted data, plus the state of each reply.
-  - `whatsapp_reply(text, client_ref, reply_to?)`.  It is idempotent on `client_ref`, has no recipient argument, and returns an `intent_id` and its state.
-  - `whatsapp_send_status(intent_id?, action?)`, where `action` is `release` or `cancel` for a held reply (section 9).
+- Three tools, for seat JET only.  This list is the whole contract, and later sections refer to it without adding parameters:
+  - `whatsapp_read(since_seq?, limit?, ack_through?)`.  `limit` defaults to 20 and is at most 50.  It returns pending messages oldest first, each with its `seq` (a per-seat counter the Worker assigns), Meta's timestamp, its type, its text inside a fence marked as untrusted data, and `reply_to_seq` when it quotes an earlier message.  It also returns the state of each recent reply.  Without `since_seq` it starts at the oldest unacknowledged message.
+  - `whatsapp_reply(text, client_ref, reply_to_seq?, ack_through?, resend_of?, duplicate_ok?)`.  It is idempotent on `client_ref`, has no recipient argument, and returns an `intent_id` and its state.  The Worker maps `reply_to_seq` to Meta's message id for `context.message_id`.  `resend_of` together with `duplicate_ok: true` is the only way to resend a reply whose outcome is `unknown` (section 10).
+  - `whatsapp_send_status(intent_id?, action?)`.  Without `intent_id` it lists recent replies and their states.  `action` is `release` or `cancel`, and applies only to a `held` reply (section 9).  It never resends.
+- `ack_through=<seq>`, on `whatsapp_read` or `whatsapp_reply`, acknowledges every message up to and including that `seq`.  It is refused for a `seq` the Worker has not yet returned to Jet, so Jet cannot acknowledge a message it has not seen.  It is idempotent, and a value lower than an earlier one changes nothing.
 - The binding controls, the switches and a content-free health view are on `/admin`, which sits behind the path-scoped Cloudflare Access app that the Worker re-verifies (`scripts/agent-sync-mcp/README.md:42`).
 
 ### Unchanged
@@ -129,15 +137,18 @@ So "creator-only messaging" fully covers the outbound direction.  Even a buggy b
 
 ### Establishing the binding (proposed)
 
-1. Jay opens `/admin` (Cloudflare Access, re-verified by the Worker) and presses Start WhatsApp Binding.  The Worker makes a one-time code of 8 characters from an unambiguous alphabet, keeps only its HMAC, and shows it only on that page.  The window lasts 10 minutes, the code works once, and three wrong attempts close the window.
+1. Jay opens `/admin` (Cloudflare Access, re-verified by the Worker) and presses Start WhatsApp Binding.  The Worker makes a random window id and a one-time code of 8 symbols from a 32-symbol alphabet with no look-alike characters, about 40 bits.  It stores only the code's keyed hash (below) and shows the code only on that page.  The window lasts 10 minutes and the code works once.
 2. Jay sends exactly that code, from his own phone, in the agent's WhatsApp chat.
-3. While a window is open, the bridge sends the Worker only the sender id, the message id and a hash of each new text message, never the body.  Outside a window, and before any binding exists, nothing from WhatsApp is stored or woken.
-4. When a hash matches, the Worker asks the bridge to run the creator check on that message:  `POST /agent/v1/statuses` with `status: "read"`.
+3. While a window is open, the Worker tells the bridge the window id and expiry in its answer to every ingest and heartbeat.  A new text message is a candidate only if its body, after trimming, upper-casing and removing spaces and hyphens, has the code's shape:  8 symbols of the alphabet.  For a candidate the bridge sends the Worker the sender id, the message id, Meta's timestamp and the keyed hash of the normalized body, never the body.  Any other message is not a candidate and costs no attempt.  Outside a window, and before any binding exists, no body is stored and nothing wakes Jet.  Only the ledger records each message (section 5).
+4. The Worker compares the two hashes in constant time.  Attempts are counted per sender:  a sender with three non-matching candidates is ignored for the rest of that window, but the window stays open for everyone else, so a stranger cannot lock Jay out.  The window closes only when it expires, when the code is used, or when Jay cancels it.  Any candidate from a sender other than the one that binds raises a content-free alert.  Three guesses per sender against 40 bits is no real chance.
+5. When a hash matches, the code is spent, and the Worker asks the bridge to run the creator check on that message:  `POST /agent/v1/statuses` with `status: "read"`.
    - 200 means Meta accepted a read receipt, which it allows only on the creator's messages, so the sender is the creator.
-   - 403 with 131005 means the sender is not the creator.  The binding is refused, the window closes, and a content-free alert goes out.
+   - 403 with 131005 means the sender is not the creator, so the code has reached someone else.  The binding is refused, the window closes, and a content-free alert goes out.
    - 500, 503 or a timeout is inconclusive, because the message may already be marked read (p. 27, L2150-2155).  The bridge repeats the check up to three times with backoff, as the manual says to for those codes.  If it is still inconclusive, no binding is made and Jay starts again.
-5. Both checks passed, the Worker records the binding:  the agent id (`entry[].id`, p. 10, L710-712), the sender's full `user:<id>`, the bound time, `verified_via: code+creator_check`, the last check time and a binding epoch.  The bridge keeps a copy, because it needs the id for `to`.  `/admin` shows the bound time, the last check and a short fingerprint, never the id itself.
-6. Nothing received before the bound time ever wakes Jet, including the code message.
+6. Both checks passed, the Worker records the binding:  the agent id (`entry[].id`, p. 10, L710-712), the sender's full `user:<id>`, the binding cutoff, `verified_via: code+creator_check`, the last check time and a binding epoch.  The cutoff is Meta's own timestamp of the code message (`messages[].timestamp`, p. 11, L808-811), so the cutoff and every later comparison use Meta's clock, never the bridge's or the Worker's.  The bridge keeps a copy of the binding, because it needs the id for `to`.  `/admin` shows the bound time, the last check and a short fingerprint, never the id itself.
+7. A message whose Meta timestamp is earlier than the cutoff never reaches the inbox or wakes Jet, however late it arrives.  The code message itself is ledgered and never stored (section 5).
+
+**The keyed hash.**  Both sides use one scheme:  `HMAC-SHA256(K_pair, window_id + ":" + normalized_text)`.  `K_pair` is derived from the ingest signing key that both already hold:  `K_pair = HMAC-SHA256(WA_BRIDGE_HMAC_KEY_JET, "wa-bridge/1 pairing")`.  So no new secret is needed, the bridge and the Worker compute the same value, a hash seen on the wire is useless without the key, and including the window id ties each hash to one window.
 
 Never:  a binding by first arrival, by message content alone, by Jet, by a peer, or by anything posted in Zulip.
 
@@ -165,7 +176,7 @@ Two different things are kept, for different reasons:
 | Bridge state | Offset, activation time, the binding copy, a ring of keyed message-id hashes, and the local send ledger (intent id, state, body hash, sent message id).  No bodies. | A 0700 state directory on the bridge host | Hashes and ledger rows 35 days | The bridge user and root | Swept at start and hourly.  The directory is wiped at decommission. |
 | Worker inbox | Inbound text (at most 4,096 characters), message id, time, type and reply-to id | ST-MCP Worker, SeatGate Durable Object (or its own class, section 12) | 7 days from receipt, or 24 hours after Jet acknowledges it, whichever is first (proposed, Jay decides) | Seat JET through `whatsapp_read`, for the bound sender's messages only | Hard row delete (below) |
 | Worker outbox | Jet's reply text | Same | Until the reply is final (`sent`, `refused`, `cancelled` or `expired`), then deleted at once.  A held reply expires unsent after 24 hours.  An `unknown` reply's text goes after 24 hours, and Jet still has its own copy. | Seat JET through `whatsapp_send_status` (state, never text) | Same |
-| Dedupe ledger | HMAC-SHA256 of each message id under a Worker key, and the receive time | Same | 35 days from receipt:  Meta's 30 days plus 5 days of margin | The Worker only | Same sweep |
+| Dedupe ledger | HMAC-SHA256 of each message id under a Worker key, Meta's timestamp, and the outcome (`stored`, `pre_binding`, `quarantined`, `pairing`, `stale` or `replay`).  Every message the bridge sees gets a row, including the ones it drops. | Same | 35 days from Meta's timestamp:  Meta's 30 days plus 5 days of margin | The Worker only | Same sweep |
 | Send ledger | Intent id, a hash of `client_ref`, state, attempts, times, body hash, sent message id, delivered and read times | Same | 35 days | Seat JET through `whatsapp_send_status`;  counts on `/admin` | Same sweep |
 | Audit rows | Event kind, counts and hashes | Same | The existing 90-day audit (`seat-state.js:159`) | `/admin` | The existing sweep |
 | Event payloads | Counts, times and states only | OpenAI, in Jet's conversation | OpenAI's retention | Jet's conversation | No content to delete |
@@ -198,7 +209,7 @@ SeatGate is a SQLite-backed Durable Object (`scripts/agent-sync-mcp/wrangler.jso
 
 The store is the record, not the event.  A message stays pending until Jet acknowledges it, and the Worker keeps ringing, within the budget, until Jet does.
 
-- **Acknowledgement.**  `whatsapp_read` returns pending messages oldest first.  Jet acknowledges with `ack_through=<seq>` on its next `whatsapp_read` or on `whatsapp_reply`.  A turn that reads and then dies loses nothing.
+- **Acknowledgement.**  `whatsapp_read` returns pending messages oldest first.  Jet acknowledges with `ack_through=<seq>` on its next `whatsapp_read` or on `whatsapp_reply`, as defined in section 5.  A turn that reads and then dies loses nothing.
 - **A delivered ring** (`delivered` of 1 or more):  the state becomes `ringing`.  If nothing is acknowledged within 10 minutes, the Worker rings once more.
 - **`delivered: 0`** (no subscriber, a lapsed or revoked subscription, or a failed delivery):  the state becomes `undelivered`.  The Worker tries again at 1, 5, 15, 30 and 60 minutes, then hourly, within the budget.  Outbound delivery has to run in a Worker request (`events.js:43-45`), so these retries ride the bridge's signed 60-second heartbeat.  If Jay wants re-rings while the bridge itself is down, a Worker cron trigger every 5 minutes is the backstop.  That trigger is new, so it is an ops change.
 - **Re-subscribing.**  Whenever Jet's conversation subscribes to or refreshes the WhatsApp event while messages are pending, the Worker rings once right after it stores the subscription.
@@ -206,7 +217,7 @@ The store is the record, not the event.  A message stays pending until Jet ackno
 - **Long gaps.**  If messages are pending and no ring has been delivered for 6 hours, a content-free Sentry alert goes out, and again at 24 hours.  Opening Jet's conversation renews the subscription and triggers the catch-up ring.
 - **Expiry before reading.**  The stub and alert in section 7.
 - **The bridge is down.**  Messages wait in Meta's buffer for up to 30 days (p. 16, L1229-1231) and are read from the saved offset on restart.  Sentry Crons alerts on a missed check-in after 10 minutes.  Past 30 days Meta expires them, and nothing can recover them.
-- **The bridge loses its state.**  It replays from `offset=0` (p. 15, L1214-1218).  The Worker's 35-day ledger and the binding time stop old messages from waking Jet again.
+- **The bridge loses its state.**  It replays from `offset=0` (p. 15, L1214-1218) and flags those batches `replay: true`.  The ledger check, the binding cutoff on Meta's timestamps and the high-water mark (section 5) stop old messages from waking Jet again, even after their inbox rows are gone.
 
 ## 9. Switches, And What Disabling Send Does
 
@@ -245,7 +256,14 @@ The ledger states are `queued`, `claimed`, `sending`, and then one of `sent`, `r
 
 **Note on 500.**  The send-errors table says to retry a 500 with exponential backoff and points to "Retrying a send" (p. 26, L2063-2066).  That section says a 500 leaves it unknown whether the message was sent, that a retry may send it twice, and to decide in advance whether to retry (p. 9, L620-622).  This design decides in advance:  never.
 
-An `unknown` reply shows up for Jet in the tools and in the next event.  Jet may resend only with `resend_of=<intent_id>` and an explicit acknowledgement that Jay may receive it twice, and only when Jay asks for that.  Nothing retries an unknown send automatically.
+An `unknown` reply shows up for Jet in the tools and in the next event.  Nothing retries it automatically.  The only way to resend it is a `whatsapp_reply` call that carries both of these:
+
+- `resend_of=<intent_id>`, naming a reply whose state is `unknown`.
+- `duplicate_ok: true`.  This is the explicit acknowledgement that Jay may receive the message twice.  Without it the call is refused with `duplicate_ack_required`.
+
+The Worker also refuses the resend if its `text` does not hash to the same value as the original, because a different text is a new reply rather than a resend, and it refuses a second resend of the same original.  The resend gets its own `intent_id` and `client_ref`, and the ledger links the two (`resent_as` on the original).  If the resend also ends `unknown`, the same rule applies to it, and still nothing is automatic.
+
+Jet resends only when Jay asks for it, in WhatsApp or in Jet's conversation.  The Worker cannot see where Jay asked, so it records every resend with its acknowledgement and shows the count on `/admin` and in the health record.
 
 Also:
 
@@ -293,6 +311,7 @@ Also:
 - **A8.**  Meta's agent terms say that agent chats are not end-to-end encrypted, that a user may have up to 5 agents, that Meta may cap, suspend or remove agents, that reverse engineering is banned, and that the rollout is a beta in some countries.  This comes from the earlier research pass on Meta's Third-Party Agents Terms.  It was not re-verified for this revision and is not cited to a section, so treat it as unverified until it is.
 - **A9.**  ChatGPT accepts a second event subscription in the same conversation, with a stable callback URL.  The spike tests this.
 - **A10.**  Workers KV keeps no point-in-time copy of an expired key, which the crypto-shred option relies on.  To confirm against Cloudflare's documentation before relying on it.
+- **A11.**  `messages[].timestamp` is set consistently within one chat.  The manual says only that it is a Unix time in seconds (p. 11, L808-811), not whose clock sets it.  The binding cutoff is the code message's own timestamp from the same chat, so a constant offset cancels out.
 
 ### What the package does that the bridge must not
 
@@ -421,6 +440,9 @@ The service is Meta's own WhatsApp Agent Platform, which carries the lowest ban 
 - 400 with code 100 and 401 with code 190:  it stops, with no tight loop.
 - A second poller (409, code 1752041):  it stands down, then retries once after 5 minutes.  A second conflict within 30 minutes stops it until someone flips a switch or restarts it, so it never ping-pongs.
 - A replayed batch:  one stored row and one ring.
+- A replay after the inbox rows were deleted:  the ledger drops it, and nothing rings.
+- A message whose Meta timestamp is before the binding cutoff, delivered after the binding:  dropped as `pre_binding`.
+- A replay batch after the ledger lost its rows:  messages older than the high-water mark are dropped.  A message more than 31 days old is dropped as `stale`.
 - `kill -9` between poll and ingest, between ingest and the offset save, and during a send:  nothing is lost, nothing rings twice, and the in-flight send becomes `unknown`.
 - Deleting the state directory:  no old message wakes Jet again.
 - A backlog from before activation or binding:  ignored.
@@ -438,6 +460,9 @@ The service is Meta's own WhatsApp Agent Platform, which carries the lowest ban 
 - An inconclusive creator check (500, 503 or a timeout):  retried, then no binding.
 - A re-check answering 403, and a send answering 403 with 131005:  `suspect`, sends held.
 - A changed sender id or agent id:  quarantined, then re-bound only through `/admin`.
+- The bridge and the Worker compute the same keyed hash for the same code, and a hash made for another window id does not match.
+- A stranger sending three wrong codes is ignored for the rest of the window, and Jay's correct code from his own chat still binds in that window.
+- Messages that are not code-shaped cost no attempt.
 
 ### Worker
 
@@ -447,6 +472,7 @@ The service is Meta's own WhatsApp Agent Platform, which carries the lowest ban 
 - Wake ids are kept apart.
 - A bad HMAC, a stale `sent_at`, or `JET_ROUTINE_KEY` used on the new routes:  refused.
 - The event payload carries no text and no ids.
+- The tool contract:  `ack_through` for a `seq` not yet returned is refused.  A resend without `duplicate_ok: true`, of a reply that is not `unknown`, with a different text, or of an original already resent, is refused.  `whatsapp_send_status` cannot resend.
 - Retention:  bodies are not returned after expiry, the sweep deletes them, the 35-day ledger outlives them, and an unread expiry leaves a stub and raises an alert.  With crypto-shredding, a row restored after its day key expired cannot be decrypted.
 - SEND off:  queued and new replies become `held`, nothing is claimed, the in-flight send completes, and re-enabling does not release held replies without a release.
 - A lapsed subscription:  `delivered: 0`, then retries on the heartbeat, then one catch-up ring on re-subscribe.  No message is lost.
