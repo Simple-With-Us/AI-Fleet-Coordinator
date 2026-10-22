@@ -1644,7 +1644,7 @@ try {
     // Rotating replaces it at once.
     const rotated = await adminAction("mint_gb_bearer", { identity: PERSONA });
     const next = (await rotated.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
-    assert.notEqual(next, bearer);
+    assert.ok(next !== bearer, "a rotation mints a different token");
     assert.equal((await mcp(bearer, "tools/list")).status, 401, "the old bearer is dead");
     assert.equal((await call(next, "whoami")).json.result.structuredContent.seat, PERSONA);
     // Revoke.

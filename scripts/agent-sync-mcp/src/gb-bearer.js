@@ -11,12 +11,10 @@
 //   where   nowhere else.  Not in Infisical, not in a Worker secret, not in logs
 //           or the audit rows (which hold who, when and expiry only).
 
-import { safeEqual } from "./policy.js";
 import { GB_IDENTITIES } from "./delegated-identities.js";
 
 export const GB_BEARER_PREFIX = "gbb_";
 export const GB_BEARER_TTL_MS = 90 * 24 * 60 * 60 * 1000;
-export const GB_BEARER_USED_WRITE_MS = 60 * 60 * 1000;
 
 const TOKEN_RE = /^gbb_([a-z][a-z0-9]{1,19})_([A-Za-z0-9_-]{43})$/;
 const GB_SET = new Set(GB_IDENTITIES);
@@ -57,9 +55,4 @@ export async function newGbBearer(identity) {
   if (!GB_SET.has(identity)) throw new Error("not a Grok Bot identity");
   const token = `${GB_BEARER_PREFIX}${roleOf(identity)}_${base64url(crypto.getRandomValues(new Uint8Array(32)))}`;
   return { token, hash: await sha256Hex(token) };
-}
-
-/** Constant-time check of a presented hash against the stored row. */
-export function gbBearerMatches(row, hash) {
-  return Boolean(row?.hash) && safeEqual(String(row.hash), String(hash));
 }

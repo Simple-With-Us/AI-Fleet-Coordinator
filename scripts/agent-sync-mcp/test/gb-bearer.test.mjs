@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import * as S from "../src/seat-state.js";
 import {
-  parseGbBearer, newGbBearer, sha256Hex, gbBearerFromRequest, gbBearerMatches, roleOf, GB_BEARER_TTL_MS,
+  parseGbBearer, newGbBearer, sha256Hex, gbBearerFromRequest, roleOf, GB_BEARER_TTL_MS,
 } from "../src/gb-bearer.js";
 import { IdentityRouter, GB_IDENTITIES, allowedIdentities } from "../src/delegated-identities.js";
 import { gbBearerRevealPage, adminPage } from "../src/pages.js";
@@ -97,10 +97,11 @@ test("last_used is written at most once an hour", async () => {
   assert.equal((await S.gbBearerStatus(store, NOW + 3_700_000)).last_used_at, NOW + 3_700_000);
 });
 
-test("gbBearerMatches compares hashes in constant time shape", () => {
-  assert.equal(gbBearerMatches({ hash: "ab" }, "ab"), true);
-  assert.equal(gbBearerMatches({ hash: "ab" }, "ac"), false);
-  assert.equal(gbBearerMatches(null, "ab"), false);
+test("every Grok Bot identity round-trips through newGbBearer and parseGbBearer", async () => {
+  for (const identity of GB_IDENTITIES) {
+    const { token } = await newGbBearer(identity);
+    assert.equal(parseGbBearer(token)?.identity, identity, identity);
+  }
 });
 
 class Stub {

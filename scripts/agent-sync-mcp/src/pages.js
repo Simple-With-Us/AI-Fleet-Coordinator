@@ -197,7 +197,7 @@ function actionButton(csrf, action, label, fields = {}) {
  */
 export function gbBearerRevealPage({ identity, token, expiresAt }) {
   const body = `<h1>Bearer For ${escapeHtml(identity)}</h1>
-<p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only a hash, so it cannot show it again.", "To get another, mint a new one here, which replaces this one.")}</p>
+<p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only a hash, so it cannot show it again.", "To get another, mint a new one here, which replaces this one.", "Do not refresh or resubmit this page:  that mints a new token and ends this one.")}</p>
 <p><code id="gb-bearer-token">${escapeHtml(token)}</code></p>
 <p>${sentences(`Expires ${ownerTime(expiresAt)}.`, "Send it as an Authorization: Bearer header to the MCP URL, and it acts only as this bot.")}</p>
 <p><a href="/admin">Back to Agent-Sync Admin</a></p>`;
