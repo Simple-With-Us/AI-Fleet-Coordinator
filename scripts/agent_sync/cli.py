@@ -2644,7 +2644,9 @@ COMMAND_SPECS: dict[str, dict[str, frozenset[str]]] = {
 }
 
 
-def build_parser_for(prog: str, channel_default: str = Z.DEFAULT_CHANNEL) -> argparse.ArgumentParser:
+def build_parser_for(
+    prog: str, channel_default: str = Z.DEFAULT_CHANNEL
+) -> argparse.ArgumentParser:
     """The parser for one entry point: only that command's verbs, under its own name."""
     spec = COMMAND_SPECS.get(prog)
     if spec is None:
