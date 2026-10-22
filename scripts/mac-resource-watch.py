@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import fcntl
 import json
 import os
 import re
@@ -20,10 +21,12 @@ import socket
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 HOME = Path.home()
@@ -274,6 +277,117 @@ def _housekeeper_owner_path() -> Path:
     return HOUSEKEEPER_LOCK.with_name(HOUSEKEEPER_LOCK.name + ".owner")
 
 
+def _housekeeper_guard_path() -> Path:
+    """The shared guard over the housekeeper protocol:  a SIBLING of the lock.
+
+    Every implementation of this protocol -- this watcher, the cleanup script
+    in this repo (scripts/mac-auto-cleanup.sh), HogHunter's
+    scripts/vacuum/lock.py and HogHunter's Sources/Storage/HousekeeperLock.swift
+    -- serializes the critical sections of the lock with an exclusive flock on
+    this ONE file:  the ownership validation, the stale takeover, the removal,
+    the mkdir, the owner-file publication and every release path.
+
+    It is never inside the lock directory, because the lock is released with a
+    plain rmdir and rmdir refuses a directory that has anything in it.  It is
+    never deleted either:  deleting it would split the flock, and two
+    processes could each hold a different inode and both believe they hold the
+    guard.
+    """
+    return HOUSEKEEPER_LOCK.with_name(HOUSEKEEPER_LOCK.name + ".guard")
+
+
+# The guard serializes every implementation of this protocol against every
+# other one, so it has to be a real inter-process lock and not an in-process
+# one:  the owner file is shared state that any process can write, and the
+# check and the unlink in the clear have to be atomic against another PROCESS
+# too.
+#
+# The RLock serializes the threads of THIS process and is re-entrant, so a
+# guarded section that calls another guarded function cannot deadlock on
+# itself.  The flock is what serializes against OTHER processes.
+_GUARD_LOCK = threading.RLock()
+_GUARD_FD: int | None = None
+_GUARD_DEPTH = 0
+
+
+@contextmanager
+def _housekeeper_guard():
+    """Hold the shared housekeeper guard for the duration of the block.
+
+    The guard is released by closing the descriptor, and it is released on
+    every path out of the block, exceptions included.
+    """
+    global _GUARD_FD, _GUARD_DEPTH
+    with _GUARD_LOCK:
+        if _GUARD_DEPTH == 0:
+            path = _housekeeper_guard_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError:
+                os.close(fd)
+                raise
+            _GUARD_FD = fd
+        _GUARD_DEPTH += 1
+        try:
+            yield
+        finally:
+            _GUARD_DEPTH -= 1
+            if _GUARD_DEPTH == 0 and _GUARD_FD is not None:
+                fd, _GUARD_FD = _GUARD_FD, None
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+
+
+def _parse_housekeeper_owner(raw: str) -> dict | None:
+    """The owner payload in a raw owner file, or None when it is not usable.
+
+    The owner file is shared state that any process can write, so its shape is
+    checked rather than coerced.  int() on a pid that is not a number raises,
+    and a raise here would escape the release path and leak the lock.
+    """
+    try:
+        owner = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(owner, dict):
+        return None
+    pid = owner.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    return owner
+
+
+def _read_housekeeper_owner() -> dict | None:
+    """Read the owner file and parse it, under the shared guard.
+
+    None means the file is gone or cannot be read as an owner record.  A
+    holder that cannot read the file cannot know whose it is, and deleting it
+    would let a peer fall back to the age rule and take over a lock that is
+    still held, so a caller that gets None leaves the file alone.
+    """
+    try:
+        with _housekeeper_guard():
+            try:
+                raw = _housekeeper_owner_path().read_text(encoding="utf-8")
+            except OSError:
+                # A missing file is an OSError too:  there is no owner to
+                # name, so the file is left alone.
+                return None
+            except ValueError:
+                # A file that is not UTF-8 raises UnicodeDecodeError, which is
+                # a ValueError and NOT an OSError.  It must not escape the
+                # release path:  an owner file nobody can read is left alone
+                # like any other malformed one.
+                return None
+            return _parse_housekeeper_owner(raw)
+    except OSError:
+        return None
+
+
 def _write_housekeeper_owner() -> None:
     """Record who holds the lock, in the shape the HogHunter lock reads.
 
@@ -283,6 +397,9 @@ def _write_housekeeper_owner() -> None:
     failing to write it must not fail the acquire; the lock itself is the
     mutex.  It is written AFTER the lock directory, so its mtime is newer and
     a reader can tell that it describes the current holder.
+
+    The write is under the shared guard, because a writer that interleaves
+    with a reader can leave a half-written file behind.
     """
     payload = {
         "pid": os.getpid(),
@@ -291,7 +408,8 @@ def _write_housekeeper_owner() -> None:
         "lock": str(HOUSEKEEPER_LOCK),
     }
     try:
-        _housekeeper_owner_path().write_text(json.dumps(payload), encoding="utf-8")
+        with _housekeeper_guard():
+            _housekeeper_owner_path().write_text(json.dumps(payload), encoding="utf-8")
     except OSError:
         pass
 
@@ -302,35 +420,34 @@ def _clear_housekeeper_owner(only_pid: int | None = None) -> None:
     The pid check keeps one holder from deleting the identity of another: if
     our lock was taken over as stale while we were still running, the file now
     names somebody else and we leave it alone.
+
+    The check and the unlink are ONE decision, taken under the shared guard.
+    Between a read and an unlink a contender can replace the owner file with
+    its own, and the unlink would then delete the NEW holder's identity; with
+    the owner file gone a later reader falls back to the age rule and can take
+    over a lock that is genuinely held.
     """
+    try:
+        with _housekeeper_guard():
+            _clear_housekeeper_owner_locked(only_pid)
+    except OSError:
+        pass
+
+
+def _clear_housekeeper_owner_locked(only_pid: int | None) -> None:
+    """The clear itself, with the owner lock already held."""
     owner_path = _housekeeper_owner_path()
     if only_pid is not None:
-        try:
-            raw = owner_path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            raw = None
-        except OSError:
+        owner = _read_housekeeper_owner()
+        if owner is None:
+            # Malformed state is not proof that the file describes us, so it is
+            # left alone rather than deleted:  a holder that cannot read the
+            # file cannot know whose it is, and deleting it would let a peer
+            # fall back to the age rule and take over a lock that is still
+            # held.
             return
-        if raw is not None:
-            # The owner file is shared state that any process can write, so its
-            # shape is checked rather than coerced.  int() on a pid that is not
-            # a number raises, and a raise here would escape the release path
-            # and leak the lock.  Malformed state is also not proof that the
-            # file describes us, so it is left alone rather than deleted: a
-            # holder that cannot read the file cannot know whose it is, and
-            # deleting it would let a peer fall back to the age rule and take
-            # over a lock that is still held.
-            try:
-                owner = json.loads(raw)
-            except ValueError:
-                return
-            if not isinstance(owner, dict):
-                return
-            pid = owner.get("pid")
-            if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
-                return
-            if pid != only_pid:
-                return
+        if owner["pid"] != only_pid:
+            return
     try:
         owner_path.unlink()
     except OSError:
@@ -422,10 +539,30 @@ def _acquire_housekeeper_lock() -> bool:
     live peer's lock out of the way leaves the canonical path briefly absent,
     and a third reclaimer can mkdir it and sweep at the same time -- the double
     sweep this lock exists to prevent.
+
+    The staleness decision reads NO owner file.  The shell holder writes none
+    and recovers by the age rule, so an owner-based rule here would be wrong
+    for that peer.  The owner file is therefore only ever touched by the
+    write, the read and the clear, and all three run under the shared guard,
+    so the file cannot be half-written or replaced under a reader.
+
+    The whole section runs under the shared guard, so a takeover in another
+    implementation of this protocol cannot slip between this one's check and
+    its mutation.
     """
-    global _HOUSEKEEPER_LOCK_INODE
     if os.environ.get("HOUSEKEEPER_LOCK_OWNER") == "1":
         return True
+    with _housekeeper_guard():
+        return _acquire_housekeeper_lock_locked()
+
+
+def _acquire_housekeeper_lock_locked() -> bool:
+    """The acquire itself, with the shared guard already held.
+
+    The guard is held across the whole section:  the mkdir, the staleness
+    check, the takeover, the removal and the owner-file publication.
+    """
+    global _HOUSEKEEPER_LOCK_INODE
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     for _ in range(2):
         try:
@@ -471,7 +608,9 @@ def _acquire_housekeeper_lock() -> bool:
         if moved_age < HOUSEKEEPER_LOCK_STALE_SEC:
             # Fresh after all: it belongs to a live peer.  Put it back.
             if not _restore_housekeeper_lock(aside):
-                log("failed to restore the housekeeper lock; skipping cleanup")
+                # The copy stays where it is, so name it:  an orphaned copy
+                # is invisible otherwise, and the copies accumulate.
+                log(f"failed to restore the housekeeper lock from {aside}; skipping cleanup")
             log("housekeeper lock is live after all; skipping cleanup")
             return False
         try:
@@ -480,7 +619,7 @@ def _acquire_housekeeper_lock() -> bool:
             # Not the empty marker we made: a lock directory with something in
             # it is not ours to take.  Put it back.
             if not _restore_housekeeper_lock(aside):
-                log("failed to restore the housekeeper lock; skipping cleanup")
+                log(f"failed to restore the housekeeper lock from {aside}; skipping cleanup")
             log("housekeeper lock has contents; skipping cleanup")
             return False
         try:
@@ -513,10 +652,21 @@ def _release_housekeeper_lock() -> None:
     A lock that was taken over as stale while this process was running is not
     ours to remove: removing it would drop the new holder's lock while it is
     still working.  The inode recorded at acquire time tells the two apart.
+
+    The whole section runs under the shared guard, so the ownership check and
+    the removal are one decision:  a takeover in another implementation of
+    this protocol cannot replace the canonical lock between the inode check
+    and the rmdir and have the exiting holder delete the NEW holder's lock.
     """
-    global _HOUSEKEEPER_LOCK_INODE
     if os.environ.get("HOUSEKEEPER_LOCK_OWNER") == "1":
         return
+    with _housekeeper_guard():
+        _release_housekeeper_lock_locked()
+
+
+def _release_housekeeper_lock_locked() -> None:
+    """The release itself, with the shared guard already held."""
+    global _HOUSEKEEPER_LOCK_INODE
     if _HOUSEKEEPER_LOCK_INODE is not None and _lock_inode() != _HOUSEKEEPER_LOCK_INODE:
         return
     _clear_housekeeper_owner(only_pid=os.getpid())
