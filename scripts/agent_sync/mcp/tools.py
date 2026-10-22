@@ -1512,7 +1512,14 @@ class Tools:
 
     def _dm_exists(self, ids: Sequence[int]) -> list[Mapping[str, Any]]:
         """The messages already in this conversation, oldest included, so a seat can tell an
-        Operator-opened DM (which it may answer) from one it would be opening itself."""
+        Operator-opened DM (which it may answer) from one it would be opening itself.
+
+        A definitive `ApiError` (Zulip said no to this narrow) is an empty conversation, so the
+        rule falls through to its refusal.  A `NetworkError` is a *transient* failure and is left to
+        propagate:  collapsing it into an empty conversation would read as "no conversation exists",
+        and the DM rule would then answer a seat's legitimate reply inside an Operator-opened
+        conversation with a terminal `dm_not_allowed` refusal that no retry can clear.  The caller
+        turns that error into a retryable `unavailable` instead."""
         me = _int(self.me.get("user_id"))
         everyone = ids or ([me] if me else [])
         if not everyone:
@@ -1525,7 +1532,7 @@ class Tools:
                 )
                 if m.get("type") == "private"
             ]
-        except (Z.ApiError, Z.NetworkError):
+        except Z.ApiError:
             return []
 
     @staticmethod
@@ -1577,7 +1584,18 @@ class Tools:
         around by delivering the same message later:  a scheduled or draft direct message is the same
         act as sending it now.  A refusal is audited (ids and the reason only) before it is raised."""
         ids = [int(p["user_id"]) for p in people]
-        existing = self._dm_exists(ids)
+        try:
+            existing = self._dm_exists(ids)
+        except Z.NetworkError as exc:
+            # The conversation could not be read.  Say so, retryable:  refusing the send as
+            # `dm_not_allowed` would be a terminal answer to a question we never got to ask, and it
+            # would be the wrong answer whenever Operator did open this conversation.
+            raise ToolError(
+                "unavailable",
+                "could not read this direct message conversation from Zulip, so the DM rule "
+                "cannot decide; retry once the connection is back",
+                retryable=True,
+            ) from exc
         env = getattr(getattr(self.agent, "rt", None), "env", None) or os.environ
         try:
             DMP.check_new_dm(

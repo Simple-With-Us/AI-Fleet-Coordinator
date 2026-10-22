@@ -70,7 +70,7 @@ import {
   fleetlinkSummary,
   mapFleetLinkError,
 } from "./fleetlink.js";
-import { DM_READ_TOOLS, DM_WRITE_TOOLS, DM_MAX_RECIPIENTS, DM_SCAN_LIMIT, DM_INSTRUCTIONS } from "./dm.js";
+import { DM_READ_TOOLS, DM_WRITE_TOOLS, DM_MAX_RECIPIENTS, DM_SCAN_LIMIT, DM_OPENER_WINDOW, DM_INSTRUCTIONS } from "./dm.js";
 import {
   LINEAR_TOOLS,
   LINEAR_READ_TOOLS,
@@ -1014,19 +1014,28 @@ export class HostedTools {
   //
   // This must not be read out of the newest-50 window.  Once a conversation runs past 50 messages the
   // opener has scrolled out of that window, so the lowest id left is one the seat sent itself and a
-  // reply inside a DM Operator opened is refused as though it were a new DM.  num_after 1 asks Zulip
-  // for that single first message instead of paging back through the thread.
+  // reply inside a DM Operator opened is refused as though it were a new DM.  Anchoring at "oldest"
+  // asks Zulip for the head of the conversation instead of paging back through the thread.
+  //
+  // The narrow is `dm:[...]`, which is a **union**:  for a group conversation it also carries the
+  // 1:1 threads with each named person, so the very first message Zulip returns is often from a
+  // different conversation than the one asked about.  Asking for a single message (num_after 1)
+  // therefore threw away the opener whenever an earlier 1:1 thread existed, and dmRuleCheck refused
+  // a reply inside a conversation Operator had opened.  So: read a window, keep the oldest message
+  // whose participant set is exactly this conversation, and only fall through to the refusal when
+  // the window really holds no opener.  Fail-closed stays correct — a genuine new DM is refused, and
+  // a conversation older than the window is refused rather than wrongly allowed.
   async dmOpener(userIds, expected) {
     const result = await this.zulip.get("messages", {
       narrow: [{ operator: "dm", operand: userIds }],
       anchor: "oldest",
       num_before: 0,
-      num_after: 1,
+      num_after: DM_OPENER_WINDOW,
       include_anchor: true,
       apply_markdown: false,
     });
     return (
-      [...(result.messages ?? [])]
+      [...(Array.isArray(result?.messages) ? result.messages : [])]
         .filter(
           (m) =>
             m &&

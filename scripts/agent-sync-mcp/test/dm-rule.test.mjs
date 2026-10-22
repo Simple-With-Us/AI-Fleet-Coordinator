@@ -121,6 +121,32 @@ test("a reply inside a long DM Operator opened stays allowed (more than 50 messa
   assert.ok(directMessages(fake).some((m) => m.sender_id === fake.me.user_id), "the seat answered in the conversation");
 });
 
+test("a group DM whose 1:1 threads are older still finds the opener (union narrow)", async () => {
+  const { tools, fake, codex, operator } = harness();
+  // Real Zulip answers a `dm:[...]` narrow with a **union**:  for a group conversation it also
+  // returns the 1:1 threads the caller has with each named person, oldest first.  FakeZulip's own
+  // narrow is an exact participant match, so this one read is answered here instead, the way the
+  // live API behaves.
+  //
+  // The order matters:  a 1:1 thread with Codex goes in first, then Operator opens the group
+  // {me, Codex, Operator}.  Asked for a single oldest message (num_after 1) the opener read got the
+  // 1:1 message, the exact-participant filter threw it away, and dmRuleCheck then refused a reply
+  // inside a conversation Operator had opened.  Reading a window finds the real opener.
+  fake.addDm(codex, [], "earlier, just the two of us");
+  fake.addDm(operator, [fake.me, codex], "which seat is this for?");
+  fake.failNext("GET", "messages", (entry) => {
+    const operand = (JSON.parse(entry.params.narrow)[0].operand ?? []).map(Number);
+    const union = fake.messages.filter(
+      (m) => m.type === "private" && m.display_recipient.some((p) => operand.includes(p.id)),
+    );
+    const after = Number(entry.params.num_after);
+    return fake.ok({ messages: union.slice(0, Math.max(after, 1)) });
+  });
+  const result = await tools.call("zulip_dm_send", { user_ids: [codex.user_id, operator.user_id], text: "CODEX" });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.ok(directMessages(fake).some((m) => m.sender_id === fake.me.user_id), "the seat answered in the conversation");
+});
+
 test("a conversation the seat opened itself is still refused after 50 messages", async () => {
   const { tools, fake } = harness();
   // The opener here is the seat, not Operator:  the long thread must not turn into a free pass.

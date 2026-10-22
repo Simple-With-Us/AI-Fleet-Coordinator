@@ -49,6 +49,11 @@ def human(user_id: int, name: str = "Human") -> dict[str, Any]:
     return {"user_id": user_id, "full_name": name, "is_bot": False}
 
 
+# Obviously nobody's Zulip id, for fixtures that need a sender on a private message and no more.
+# Never the production Operator id:  a committed test fixture should not carry a real identity.
+SYNTHETIC_OPERATOR_ID = 999_000_001
+
+
 class ClarifyingWakeTests(unittest.TestCase):
     """(f)  an ambiguous wake asks exactly one question;  a clean one asks nothing."""
 
@@ -362,11 +367,17 @@ class ClarifyQueueHardeningTests(unittest.TestCase):
 
 
 class DmExistsFetchFailureTests(unittest.TestCase):
-    """A failed conversation lookup is an empty conversation, not a crash.
+    """A failed conversation lookup is a transport answer, and the two failures differ.
 
     `_dm_exists` caught `Z.APIError`, but zulip.py has always defined `ApiError` and `NetworkError`,
     so the except clause itself raised AttributeError and the DM rule crashed on any API or network
-    failure instead of treating the conversation as new."""
+    failure instead of treating the conversation as new.
+
+    Catching both fixed that crash but over-corrected:  a transient `NetworkError` collapsed into
+    an empty conversation is indistinguishable from a genuinely new DM, so the rule answered a
+    seat's legitimate reply inside an Operator-opened conversation with a terminal `dm_not_allowed`
+    that no retry could clear.  `ApiError` stays terminal (Zulip said no, so the conversation does
+    not exist); `NetworkError` propagates and surfaces as a retryable `unavailable`."""
 
     @staticmethod
     def _tools(raising: Exception) -> Any:
@@ -384,9 +395,22 @@ class DmExistsFetchFailureTests(unittest.TestCase):
         return tools
 
     def test_an_api_error_means_no_existing_messages(self) -> None:
-        for exc in (Z.ApiError("zulip said no"), Z.NetworkError("connection reset")):
-            with self.subTest(exc=type(exc).__name__):
-                self.assertEqual(self._tools(exc)._dm_exists([9]), [])
+        # Definitive:  Zulip answered and the answer was no such conversation, so the rule refuses.
+        self.assertEqual(self._tools(Z.ApiError("zulip said no"))._dm_exists([9]), [])
+
+    def test_a_network_error_is_not_an_empty_conversation(self) -> None:
+        # Transient.  Returning [] here would read as "no conversation exists" and turn a reply
+        # inside a conversation Operator opened into a terminal dm_not_allowed refusal, so the
+        # error propagates instead and the caller makes it retryable.
+        with self.assertRaises(Z.NetworkError):
+            self._tools(Z.NetworkError("connection reset"))._dm_exists([9])
+
+    def test_a_transient_lookup_failure_is_retryable_not_a_refusal(self) -> None:
+        tools = self._tools(Z.NetworkError("connection reset"))
+        with self.assertRaises(T.ToolError) as caught:
+            tools._check_dm_rule([human(9)], {})
+        self.assertEqual(caught.exception.code, "unavailable")
+        self.assertTrue(caught.exception.retryable, "a retry must be able to clear this")
 
     def test_the_except_clause_names_classes_that_exist(self) -> None:
         # Pins the bug itself:  a typo'd name here fails only when an exception is actually raised.
@@ -400,7 +424,7 @@ class DmExistsFetchFailureTests(unittest.TestCase):
 
             def fetch(self, operands: Any, **kw: Any) -> list[dict[str, Any]]:
                 return [
-                    {"type": "private", "id": 5, "sender_id": Z.OPERATOR_USER_ID},
+                    {"type": "private", "id": 5, "sender_id": SYNTHETIC_OPERATOR_ID},
                     {"type": "stream", "id": 6},
                 ]
 
