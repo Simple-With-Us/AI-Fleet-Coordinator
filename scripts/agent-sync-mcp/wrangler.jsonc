@@ -10,7 +10,9 @@
   // ZULIP_CLAUDE_API_KEY (Worker provisioning unconfirmed), from Infisical
   // Fleet-OPS /zulip, and the three recall secrets
   // RECALL_API_TOKEN, RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET
-  // (DEPLOY.md, "Fleet recall").
+  // (DEPLOY.md, "Fleet recall").  AFC-477 spike (temporary):  SPIKE_HMAC_KEY
+  // and the flag SPIKE_EXTRA_EVENTS are secrets too, so a deploy from main
+  // never flips the flag (DEPLOY.md, "AFC-477 second-event spike").
   "$schema": "node_modules/wrangler/config-schema.json",
   // The Worker SCRIPT NAME stays `agent-sync-mcp`, deliberately, even though the
   // server is now called ST-MCP.  A Durable Object namespace is named

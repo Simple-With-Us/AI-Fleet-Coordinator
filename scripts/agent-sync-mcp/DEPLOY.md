@@ -184,6 +184,63 @@ The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `ea
 
 `notes_create`, `notes_update`, `notes_pin`, `notes_unpin` and `notes_status` (`src/notes.js`) relay Apple Notes requests to `#notes-relay`;  the Mac listener does the work (`docs/protocols/per-call-identity.md`, section 5).  Before the first call: the owner creates the public channel `#notes-relay`, every bot that relays is subscribed to it (the channel rule needs that), and the Mac's `listener.toml` has `[notes_relay] enabled = true`.  No secret or var changes.  The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/agent-sync-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/agent_sync/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools.  `notes_status` counts a check mark, a cross mark or a refusal reply only from the relay consumer's bot, named by the fleet knob `NOTES_RELAY_CONSUMER`.  It is a tunable, so it lives in Infisical (not in `wrangler.jsonc`):  **the owner creates the key `NOTES_RELAY_CONSUMER` with the value `CLAUDE` in the AI Fleet Coordinator project, `prod`, root path `/`** (INFISICAL.md, "Fleet knobs").  The Mac reads it through `fleet_knobs` (default `CLAUDE` when Infisical is unreachable with no last-known-good copy, logged as `default CLAUDE (unreachable:...)`);  the Worker gets it as a binding of the same name.  Copy it at deploy, after the key exists:  `python3 -I sync_notes_consumer.py` checks (prints the seat name, writes nothing to Infisical), `python3 -I sync_notes_consumer.py --apply` runs `wrangler secret put NOTES_RELAY_CONSUMER` with the value on stdin.  Rerun it whenever the key changes.  **Rotating the consumer:**  only the current consumer's marks and replies are trusted, on purpose, so a former consumer cannot forge a result.  Rotate it only with an empty spool (no request queued or half-run), and expect the status of any request sent before the rotation to read `queued` afterwards.  Until it has run, `notes_status` answers `not_configured` and trusts no reaction.  One more binding counts against the Worker's limit (see the FleetLink note below).  **Live since Sun, Oct 18, 2026:**  the knob is `CLAUDE` in Infisical, the Worker binding is installed, `#notes-relay` exists with every fleet agent bot subscribed (38, created by the realm-admin bot), and the Mac listener's `[notes_relay]` is on (`notes-relay-started`, consumer from Infisical).  Create, pin and unpin through the relay were verified end to end that afternoon.
 
+## AFC-477 second-event spike (temporary)
+
+Jay approved a spike with Jet first (Thu, Oct 22, about 6:40am):  can Jet's ChatGPT conversation hold a second MCP Events subscription, `fleet.spike.ping`, and be woken by it, while `zulip.mention` keeps working?  No WhatsApp code, credential or poller.  Spec section 3.12, item 16.  Two Worker secrets, both set with Step 1's environment, and no var, binding-class or migration change:
+
+- `SPIKE_HMAC_KEY`:  the key that signs `POST /internal/spike/<SEAT>`.  Its own value, never `JET_ROUTINE_KEY` or any `WAKE_HMAC_KEY_<SEAT>`;  the Worker answers 404 when it equals any of them.
+- `SPIKE_EXTRA_EVENTS`:  `on` offers the spike event and opens the route.  It is a secret binding rather than a `wrangler.jsonc` var on purpose, so another agent's deploy from `main` does not turn it off while the spike runs.
+
+**Turn it on.**  Deploy the merged code (Step 1) first, then make the key in a 0600 file that is never printed, and set both secrets from standard input:
+
+```bash
+umask 077
+KEYFILE="$SCRATCH/spike_hmac_key"            # a 0600 file in your session scratchpad, never the repo
+openssl rand -hex 32 | tr -d '\n' > "$KEYFILE"
+# Infisical first if a writer allows it.  fleet-secrets set takes CACHE_* names under /linear only and refuses
+# this one before reading anything;  then the key lives only in $KEYFILE for the spike and is deleted after.
+WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPIKE_HMAC_KEY < "$KEYFILE" >/dev/null && echo "set SPIKE_HMAC_KEY"
+printf on | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPIKE_EXTRA_EVENTS >/dev/null && echo "set SPIKE_EXTRA_EVENTS"
+```
+
+`wrangler secret put` deploys a new version at once.  Check:  `/health` answers `{"ok":true}`, an unsigned `POST /internal/spike/JET` answers 401 (404 means the flag, the key or JET's wake key is missing, or the two keys are equal), an unsigned `POST /internal/wake/JET` still answers 401, and a connected JET chat's `events/list` shows `zulip.mention` then `fleet.spike.ping`.  `server/discover` does not change (`events: {}`).
+
+**Fire one ping.**  Only after Jet says it subscribed.  The body is exactly four fields, and the signature is the lowercase hex HMAC-SHA256 of the raw bytes.  The key comes from an inherited `SPIKE_HMAC_KEY` first, else from `$KEYFILE` (the only other place it lives, because no Infisical writer takes it), and is never printed, not even in part.  The script exits non-zero on anything but a 2xx:
+
+```bash
+SPIKE_HMAC_KEY="${SPIKE_HMAC_KEY:-$(cat "$KEYFILE")}" python3 -I - <<'PY'
+import hmac, hashlib, json, os, sys, time, urllib.error, urllib.request, uuid
+key = os.environ.get("SPIKE_HMAC_KEY", "")
+if len(key) < 32: sys.exit("SPIKE_HMAC_KEY is missing or shorter than 32 characters")
+spike_id = str(uuid.uuid4())
+body = json.dumps({"contract": "agent-sync-spike/1", "seat": "JET", "spike_id": spike_id, "sent_at": int(time.time())}).encode()
+sig = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
+req = urllib.request.Request("https://agents.simplewithus.com/internal/spike/JET", data=body, method="POST",
+                             headers={"Content-Type": "application/json", "X-Agent-Sync-Spike-Signature": sig})
+try:
+    with urllib.request.urlopen(req, timeout=25) as r: print(spike_id, r.status, r.read().decode()[:300])
+except urllib.error.HTTPError as e:
+    kind = "outcome_unknown" if e.code >= 500 else "retry_later" if e.code in (408, 429) else "refused"
+    sys.exit(f"{spike_id} HTTP {e.code} {kind}:  {e.read().decode()[:200]}")
+except (urllib.error.URLError, TimeoutError) as e:
+    sys.exit(f"{spike_id} no answer (outcome_unknown):  {type(e).__name__}")
+PY
+```
+
+The answer holds counts only:  202 `{"ok": true, "subscribers": 1, "delivered": 1, "outcome": "delivered"}` means ChatGPT's callback took it, not that Jet's conversation ran a turn (only Jet can say that).  `no_subscriber` means Jet has no live spike subscription.  At most 3 pings an hour per seat (429 after that), and a repeated `spike_id` is a 200 duplicate that sends nothing.  An `outcome_unknown` (a 5xx, a timeout, no answer) may have been delivered:  ask Jet before firing again, and a new ping always takes a new `spike_id`.
+
+**Turn it off** when Jay says so, fastest first (same environment as Step 1;  confirm each delete when wrangler asks):
+
+```bash
+WRANGLER_SEND_METRICS=false npx --no-install wrangler secret delete SPIKE_EXTRA_EVENTS   # route 404, event no longer offered
+WRANGLER_SEND_METRICS=false npx --no-install wrangler secret delete SPIKE_HMAC_KEY
+rm -f "$KEYFILE"
+```
+
+Either delete alone closes the route.  A spike subscription left behind is never sent anything (the wake reaches `zulip.mention` only) and lapses by itself within its TTL (24 hours by default);  Jet can also unsubscribe it, which works with the flag off.  Removing the code is a later PR.
+
+**Status.**  Not deployed yet.
+
 ## Rotate a key
 
 Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULIP_<SEAT>_API_KEY` in Infisical `prod` `/zulip`, and anyone with deploy rights reruns `install_seat_key.py <SEAT> --apply`.  The Worker re-reads the secret on the next request;  the role cache is unaffected.
@@ -197,6 +254,7 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 | Take a seat's key away | `python3 -I install_seat_key.py <SEAT> --delete --apply` (tools then answer `not_authorized`) |
 | Kill the key itself | Jay regenerates it in Zulip |
 | Stop the whole endpoint | `"MCP_DISABLED": "1"` in `wrangler.jsonc`, then step 1:  `/mcp` answers 503 |
+| Stop the AFC-477 spike | `wrangler secret delete SPIKE_EXTRA_EVENTS` with the step 1 environment:  `/internal/spike/<SEAT>` answers 404 and `fleet.spike.ping` is no longer offered |
 | Undo a bad deploy | `npx --no-install wrangler rollback` with the step 1 environment |
 | Remove it | `npx --no-install wrangler delete` with the step 1 environment.  Never restore the old tunnel CNAME or rule |
 
