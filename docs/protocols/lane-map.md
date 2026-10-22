@@ -95,6 +95,34 @@ The tools that choose their own worktree location are pointed at the v2 tree.  C
 
 The other tools are as before (platform table).
 
+## Server Hosts
+
+A server host (the Hetzner VPS) keeps the project mirrors and the lanes on their own volume, and every tool session on that host starts in the lanes root.
+
+**The layout.**  The volume is `/mnt/fleet-extra`: `Code/` holds the project mirrors (the GitHub checkouts a seat picks to work in) and `apps/` holds the apps, `lanes/` among them.  `~/Code` and `~/apps` resolve to them, so the policy path an agent uses is unchanged: `~/apps/lanes/<Repo>/<seat>-<slug>`, and `~/Code/<Repo>` is the integration tree.  The lanes root has two spellings on that host, `~/apps/lanes` and `/mnt/fleet-extra/apps/lanes`, and they are the same directory, so a config may name either one.
+
+**The rule.**  A tool session starts in the lanes root, not in a project.  The agent then runs `lane new <app> <slug>` and works in the lane it made.  This is the same policy the Mac follows, where the OpenCode session directory is `~/apps/lanes`.
+
+**Where each tool's working directory is set on a server host.**
+
+| Tool | Where the working directory is set | Value |
+|---|---|---|
+| Codex | The tmux session's directory: `-c` in `~/.local/bin/codex-tmux-boot` and `~/.local/bin/codex-tmux-autostart` | the lanes root.  Codex's own worktree root stays `~/apps/lanes/_codex` (`[desktop] git-worktree-root` in `~/.codex/config.toml`). |
+| Claude Code | The launcher's directory: an interactive shell starts in the lanes root, and `claude-remote-control.service` runs there | the lanes root.  The Claude Code CLI has no working directory setting of its own. |
+| OpenCode | The session directory the client sends, which is the client's own directory; `opencode-server.service` runs there and `worktree.directory` in `~/.config/opencode/opencode.json` names the folder for the worktrees OpenCode makes itself | the lanes root.  OpenCode's server chdirs to `$HOME` at startup, so its unit's `WorkingDirectory` does not move the server's own directory; the session directory comes from the client. |
+| MiniMax Code | The ACP runtime that the Shellular agent runs spawns the CLI: `cwd` in `~/apps/muse-acp-runtime/minimax-shellular-acp.py` | the lanes root, overridable with `FLEET_LANES_ROOT`. |
+| Muse Code | The same, in `~/apps/muse-acp-runtime/muse-shellular-acp.py` | the lanes root, overridable with `FLEET_LANES_ROOT`. |
+| Clutch, Kimi Code, Vibe, Copilot CLI, Cursor, Grok, Antigravity, Fx | Nothing of their own.  Start them inside a lane made by `lane new`, the way the platform table says. | n/a |
+
+**Apply and verify.**  `scripts/fleet_lanes/server_working_dirs.py` owns those knobs.  `--apply` writes only what differs and leaves a timestamped backup beside every file it touches; `--verify` reports each knob and exits nonzero when one is off.
+
+```bash
+cd scripts && python3 fleet_lanes/server_working_dirs.py --verify
+cd scripts && python3 fleet_lanes/server_working_dirs.py --apply
+```
+
+**OpenCode's own worktrees.**  The OpenCode row of the tool settings table says not to point `worktree.directory` at the lanes root, because the key is flat and cannot express `<Repo>/<name>`.  That still holds on a server host: the sanctioned value is `~/apps/lanes/<Repo>`, set per repo, and a flat lanes root there is a deviation from this map.
+
 ## Platform Table
 
 Facts verified 2026-10-07 unless the row says otherwise; the OpenCode, Conductor, Clutch, Kimi and Copilot rows were checked Sat, Oct 10, 2026.  `UNVERIFIED` means the discovery sweep could not confirm it.
