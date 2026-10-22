@@ -46,8 +46,8 @@ from pathlib import Path
 from typing import Any
 
 from .. import cli as CLI
-from .. import identity as IDENT
 from .. import dm_policy as DMP
+from .. import identity as IDENT
 from .. import listener_records as LR
 from .. import live as LIVE
 from .. import notes as NOTES
@@ -1596,10 +1596,17 @@ class Tools:
             )
         except DMP.DmRefused as refused:
             DMP.audit_refusal(
-                env, None, transport=TRANSPORT, identity=self.agent.tag,
-                recipients=people, reason=refused.reason, message=str(refused),
+                env,
+                None,
+                transport=TRANSPORT,
+                identity=self.agent.tag,
+                recipients=people,
+                reason=refused.reason,
+                message=str(refused),
             )
-            raise ToolError(DMP.DmRefused.code, str(refused), extra={"replacement": "side_chats"}) from None
+            raise ToolError(
+                DMP.DmRefused.code, str(refused), extra={"replacement": "side_chats"}
+            ) from None
         self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
         explicit = args.get("idempotency_key")
         key = self._key(
