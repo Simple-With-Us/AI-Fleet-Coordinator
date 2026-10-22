@@ -415,6 +415,21 @@ def coerce_integers(schema: Mapping[str, Any], value: Any) -> Any:
     return value
 
 
+def default_channel_for(env: Mapping[str, Any], schema: Mapping[str, Any]) -> Any:
+    """The channel an MCP tool should use when the caller named none.
+
+    Only tools whose schema declares a `channel` default get one — the others keep their
+    "the caller must name a target" validation.  When one does, the value comes from the
+    runtime's own environment rather than the schema literal, so `AGENT_SYNC_CHANNEL` is
+    honoured and the shipped contract cannot point at a renamed-away stream.
+    """
+    props = schema.get("properties") or {}
+    channel_prop = props.get("channel")
+    if not (isinstance(channel_prop, dict) and "default" in channel_prop):
+        return None
+    return Z.default_channel(env)
+
+
 def with_defaults(schema: Mapping[str, Any], arguments: Mapping[str, Any]) -> dict[str, Any]:
     filled = dict(arguments)
     for name, sub in (schema.get("properties") or {}).items():
@@ -720,7 +735,7 @@ class Tools:
                     handler = functools.partial(self._tool_linear, name)
                 if handler is None and name.startswith("fleetlink_"):
                     handler = functools.partial(self._tool_fleetlink, name)
-                result = handler(with_defaults(spec["inputSchema"], arguments))
+                result = handler(self._with_channel(spec["inputSchema"], arguments))
                 outcome = "ok"
             except Exception as exc:  # noqa: BLE001 - every failure becomes a tool error
                 error = map_exception(exc, write=name in WRITE_TOOLS)
@@ -746,6 +761,24 @@ class Tools:
         return {"content": [{"type": "text", "text": text}], "structuredContent": dict(structured)}
 
     # ---- helpers ---------------------------------------------------------------------------
+    def _with_channel(
+        self, schema: Mapping[str, Any], arguments: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """`with_defaults`, plus the channel resolved from this runtime's own environment.
+
+        The tool contract deliberately carries no static `channel` default:  a literal in
+        `tools.json` is baked in at call time and would silently override
+        `AGENT_SYNC_CHANNEL` (and go on targeting the stream the realm just renamed away).
+        Resolving it here keeps one source of truth — `Z.default_channel(env)` — across the
+        MCP path, the CLI and the listener.
+        """
+        filled = with_defaults(schema, arguments)
+        if "channel" not in arguments:
+            resolved = default_channel_for(self.agent.rt.env, schema)
+            if resolved is not None:
+                filled["channel"] = resolved
+        return filled
+
     def _attribution(self, meta: Any) -> None:
         """Native metadata controls attribution only; credential identity stays pinned."""
         self._call_tag = self.process_tag

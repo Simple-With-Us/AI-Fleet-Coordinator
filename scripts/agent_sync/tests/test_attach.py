@@ -12,6 +12,7 @@ from unittest import mock
 
 from agent_sync import attach
 from agent_sync import live as L
+from agent_sync import zulip as Z
 from agent_sync.tests.listener_harness import ListenerHarness, fake_watcher, mode_of
 
 PID = os.getpid()
@@ -312,7 +313,12 @@ class DrainWaitDetachTests(AttachHarness):
         code, out, err = self.attach_run("--topic", "AFC 18f61cf4 Zulip cutover")
         self.assertEqual(out.strip(), "lease " + LEASE)
         topics = L.load_lease(self.seat_paths(), LEASE)["topics"]
-        self.assertEqual(topics, [{"channel": "agent-sync", "topic": "AFC 18f61cf4 Zulip cutover", "expires": None}])
+        # the lease is recorded under the channel the runtime defaults to, so a live message in
+        # that channel matches the lease key (live.topic_key casefolds both halves)
+        self.assertEqual(
+            topics,
+            [{"channel": Z.DEFAULT_CHANNEL, "topic": "AFC 18f61cf4 Zulip cutover", "expires": None}],
+        )
 
 
 class PostLeaseTests(AttachHarness):

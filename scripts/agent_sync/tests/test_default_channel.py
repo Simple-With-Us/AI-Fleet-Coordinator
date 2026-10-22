@@ -15,6 +15,8 @@ import unittest
 
 from agent_sync import router as R
 from agent_sync import zulip as Z
+from agent_sync.mcp import tools as T
+from agent_sync.mcp.tools import with_defaults
 
 MCP_DIR = pathlib.Path(__file__).resolve().parents[1] / "mcp"
 
@@ -53,8 +55,8 @@ class DefaultChannelTests(unittest.TestCase):
 
     def test_every_mcp_tool_that_defaults_a_channel_defaults_it_to_the_same_name(self) -> None:
         # `with_defaults()` fills a schema default into every MCP call that omits `channel`, so a
-        # stale default in the shipped tool contract silently targets a stream that no longer
-        # exists — the outage this default was changed to end, still live on the MCP path.
+        # stale default in the shipped tool contract targets a stream name that no longer exists —
+        # the outage this default was changed to end, still live on the MCP path.
         spec = json.loads((MCP_DIR / "tools.json").read_text())
         seen = 0
         for tool in spec["tools"]:
@@ -68,6 +70,19 @@ class DefaultChannelTests(unittest.TestCase):
                 "%s still defaults channel to %r" % (tool.get("name"), channel["default"]),
             )
         self.assertGreater(seen, 0, "no MCP channel default was checked")
+
+    def test_the_mcp_layer_resolves_that_default_from_the_runtime_not_the_schema(self) -> None:
+        # A schema default is applied before any handler runs, so a literal in tools.json would also
+        # silently override AGENT_SYNC_CHANNEL.  mcp/tools.py _with_channel replaces the schema
+        # default with the runtime's own answer, keeping one source of truth across MCP and CLI.
+        schema = {"properties": {"channel": {"type": "string", "default": Z.DEFAULT_CHANNEL}}}
+        with_default = with_defaults(schema, {})
+        self.assertEqual(with_default["channel"], Z.DEFAULT_CHANNEL)
+        # the same call under an override must not be served the schema literal
+        self.assertEqual(
+            T.default_channel_for({"AGENT_SYNC_CHANNEL": "side-chats"}, schema),
+            "side-chats",
+        )
 
 
 if __name__ == "__main__":

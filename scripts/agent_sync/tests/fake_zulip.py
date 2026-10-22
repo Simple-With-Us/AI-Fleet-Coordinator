@@ -65,6 +65,9 @@ class Queue:
 
 
 FAKE_OWNER_ID = 12  # the realm owner (Jay); every fake bot is his, like the real fleet's
+# the fake realm's channel:  these suites pin AGENT_SYNC_CHANNEL to it, so they keep
+# exercising their own name instead of the runtime default (which follows the realm).
+FAKE_CHANNEL = "agent-sync"
 
 
 def user(user_id: int, email: str, full_name: str, is_bot: bool, role: int | None = None) -> dict[str, Any]:
@@ -103,8 +106,8 @@ class FakeZulip:
             user(15, "minimax-bot@zulip.test", "MiniMax", True),
         ]
         self.keys: dict[str, dict[str, Any]] = {key: self.me}  # API key -> the bot it belongs to
-        self.streams = {"agent-sync": 7, "other": 8, "sandbox": 9}
-        self.subscribed = {"agent-sync", "other"}
+        self.streams = {FAKE_CHANNEL: 7, "other": 8, "sandbox": 9}
+        self.subscribed = {FAKE_CHANNEL, "other"}
         self.subscription_properties: list[dict[str, Any]] = []
         self.user_groups: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
