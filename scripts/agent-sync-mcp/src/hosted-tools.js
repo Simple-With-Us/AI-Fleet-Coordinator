@@ -423,7 +423,7 @@ export class HostedTools {
   requireScope(name) {
     const scope = HOSTED_READ_TOOLS.has(name) ? RESOURCE_SCOPES.read : RESOURCE_SCOPES.write;
     if (this.scopes.has(scope)) return;
-    const challenge = `Bearer error="insufficient_scope", scope="${scope}", resource_metadata="https://agent-sync.jays.services/.well-known/oauth-protected-resource/mcp", error_description="This tool needs ${scope}"`;
+    const challenge = `Bearer error="insufficient_scope", scope="${scope}", resource_metadata="https://agents.simplewithus.com/.well-known/oauth-protected-resource/mcp", error_description="This tool needs ${scope}"`;
     throw new ToolError("not_authorized", `This tool needs the ${scope} scope.  Reconnect the app and approve ${scope}.`, {
       meta: { "mcp/www_authenticate": [challenge] },
     });

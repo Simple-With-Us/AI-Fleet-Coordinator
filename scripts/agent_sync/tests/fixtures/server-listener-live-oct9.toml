@@ -56,7 +56,7 @@ creds = "env"                     # ZULIP_MA_EMAIL, ZULIP_MA_API_KEY (muse-assis
 wake = "inbox"
 
 # JET (ChatGPT) is woken through OpenAI MCP Events:  the http wake POSTs agent-sync-wake/1 to the hosted
-# MCP Worker (https://agent-sync.jays.services/internal/wake/JET), which sends a signed `zulip.mention` event to
+# MCP Worker (https://agents.simplewithus.com/internal/wake/JET), which sends a signed `zulip.mention` event to
 # every ChatGPT chat or dot that subscribed (scripts/agent-sync-mcp/ARMING-JAY.md, "Wake Jet").  JET_ROUTINE_URL
 # is that URL;  JET_ROUTINE_KEY is the shared HMAC key, the same value as the Worker secret WAKE_HMAC_KEY_JET
 # (kept in Infisical Fleet-OPS /jet-wake-hmac as JET_ROUTINE_KEY).  Until both are set and the container restarts, each wake

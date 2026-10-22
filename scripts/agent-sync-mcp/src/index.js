@@ -6,7 +6,7 @@
 // tools from tools.json, each seat posting as its own Zulip bot (Phase 2).
 //
 // Request order, outermost first:
-//   1. Host check (404 for anything but agent-sync.jays.services) and a path
+//   1. Host check (404 for anything but agents.simplewithus.com) and a path
 //      allowlist (404 for everything else).  GET /health is a static 200.
 //   2. /oauth/token:  rate limit, Content-Type and Authorization checked the
 //      way the library reads them, client_id allowlist before any fetch, blank
@@ -936,6 +936,10 @@ export default {
       console.log(JSON.stringify({ event: "config_error", message: logSafe(error?.message, 200) }));
       return textResponse("Server misconfigured", 500);
     }
+    // Hard cutover (owner ruling, Oct 22, 2026):  the old agent-sync.jays.services
+    // host is not answered, aliased or redirected.  It fails this single-host
+    // check exactly like any unknown Host, so a request there gets a clean 404
+    // rather than a working fallback.  The route is gone from wrangler.jsonc too.
     if (!hostAllowed(request, config.host)) return notFound();
     const route = classifyPath(new URL(request.url).pathname);
     if (!route) return notFound();
@@ -947,7 +951,7 @@ export default {
     }
     if (route === "mcp" && config.mcpDisabled) {
       await recordDiagnostic(env, { kind: "mcp", reason: "mcp_disabled", status: 503 });
-      return textResponse("The agent-sync MCP server is turned off.", 503, { "Retry-After": "3600" });
+      return textResponse("The ST-MCP server is turned off.", 503, { "Retry-After": "3600" });
     }
     if (route === "wake") return serveWake(request, env, ctx, config);
     if (route === "token") {

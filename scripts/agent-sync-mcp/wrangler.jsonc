@@ -1,6 +1,7 @@
 {
-  // Hosted agent-sync MCP server (docs/protocols/agent-sync-mcp.md section 3).
-  // Account Usage.Jays.Services, hostname agent-sync.jays.services (decision D1).
+  // Hosted ST-MCP server (docs/protocols/agent-sync-mcp.md section 3).
+  // Account Usage.Jays.Services, hostname agents.simplewithus.com (decision D1;
+  // hard cutover from agent-sync.jays.services, owner ruling Oct 22, 2026).
   // Deploy by hand from DEPLOY.md.  Never from CI and never on merge:  agents
   // auto-merge to main, so a merge must not be a deploy (spec 3.2).
   //
@@ -11,6 +12,16 @@
   // RECALL_API_TOKEN, RECALL_ACCESS_CLIENT_ID and RECALL_ACCESS_CLIENT_SECRET
   // (DEPLOY.md, "Fleet recall").
   "$schema": "node_modules/wrangler/config-schema.json",
+  // The Worker SCRIPT NAME stays `agent-sync-mcp`, deliberately, even though the
+  // server is now called ST-MCP.  A Durable Object namespace is named
+  // <script name>.<class name> and is created by this script's migration, so
+  // renaming the script would point `SeatGate` at a brand new empty namespace
+  // and orphan every live DO:  the arming windows, grant epochs, pause flags,
+  // write spacing, budgets, idempotency rows, role cache, audit logs and cached
+  // Linear tokens in agent-sync-mcp.SeatGate (spec 3.7).  KV would survive,
+  // because kv_namespaces binds by explicit id, but the DO state would not.
+  // The public hostname, issuer, serverInfo name and every doc are ST-MCP; only
+  // this internal script name is left, and only to protect live state.
   "name": "agent-sync-mcp",
   "main": "src/index.js",
   "account_id": "3a9368057468d0909cafaa85df12d1b7",
@@ -23,10 +34,14 @@
 
   // Only the custom domain.  workers.dev and preview URLs would bypass the
   // path-scoped Access app and keep old versions callable (spec 3.2).
+  // Hard cutover (owner ruling Oct 22, 2026):  agent-sync.jays.services is no
+  // longer a custom domain here.  With the route gone Cloudflare stops routing
+  // that host to this Worker at all, and src/policy.js refuses it as an unknown
+  // Host even if the route is ever re-added.  No alias, no redirect, no fallback.
   "workers_dev": false,
   "preview_urls": false,
   "routes": [
-    { "pattern": "agent-sync.jays.services", "custom_domain": true }
+    { "pattern": "agents.simplewithus.com", "custom_domain": true }
   ],
 
   // Our own console.log lines are the audit trail.  The automatic per-request
@@ -59,7 +74,7 @@
 
   "vars": {
     // Must equal the compiled hostname;  the Worker refuses to start otherwise.
-    "PUBLIC_HOST": "agent-sync.jays.services",
+    "PUBLIC_HOST": "agents.simplewithus.com",
     // Seats this deploy serves (owner decisions D1, D2).  JET was left out while
     // openai-dot-bot was a realm administrator, because hosted seats accept
     // member (400) only (spec 3.6).  Jay demoted every bot to member on Fri,
@@ -151,7 +166,7 @@
     // ACCESS_AUD comes from the Access app infra_phase0.py creates.  Until it
     // is set, /authorize and /admin answer 403 (fail closed).
     "ACCESS_TEAM_DOMAIN": "silent-frost-37e0.cloudflareaccess.com",
-    "ACCESS_AUD": "ccc199b875e1695813415fad65b550627345d8f632e6aff0144e6f18f6c7951e",
+    "ACCESS_AUD": "5fd6bff0108042d9ba053528bcb6c8e9a39d69eb318ab28f44cbac6bef515991",
     // Must match the Access policy's emails exactly.  Spec 3.3:  mail@jays.services
     // only.  The identity provider is One-time PIN, so a second address would make
     // that inbox a full admin credential for this server.

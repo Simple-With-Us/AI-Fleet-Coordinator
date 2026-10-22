@@ -22,6 +22,28 @@ from pathlib import Path
 
 API = "https://api.github.com"
 
+# Owner decision 2026-10-22 (Q5):  git-relay is the ONE path that mints per-bot
+# GitHub App tokens.  This Operator GitHub token broker (OPS-966) is kept for
+# review history only and must never mint.  The guard below is a module
+# constant and a hard refusal, not an environment variable, a constructor flag
+# or a fallback:  nothing here can re-enable seat App token minting, so the
+# broker fails closed and names the path that does own minting.
+MINTING_OWNER = "git-relay"
+MINTING_REFUSED = (
+    "seat GitHub App token minting is owned by git-relay (GR-MCP); the Operator "
+    "GitHub token broker is disabled and will not mint"
+)
+
+
+def refuse_minting():
+    """Fail closed before any credential read, cache write or GitHub call.
+
+    The rest of this module is the reviewed OPS-966 implementation, retained
+    unchanged for review history.  It is unreachable from token_for and must
+    stay that way unless the owner decides git-relay no longer owns minting.
+    """
+    raise RoutingError(MINTING_REFUSED + "; use " + MINTING_OWNER, outcome="refused")
+
 
 class RoutingError(Exception):
     """status is the provider HTTP code when one exists.
@@ -272,6 +294,7 @@ class TokenRouter:
         return None
 
     def token_for(self, slug, target, permissions):
+        refuse_minting()  # owner decision 2026-10-22 (Q5):  git-relay owns minting
         secret_names(slug)  # Validate before credential retrieval.
         owner, repo = target_parts(target)
         requested = permission_set(permissions)

@@ -1,59 +1,29 @@
-import copy
-import json
+"""Tests for the OPS-966 routing prototype.
+
+Owner decision 2026-10-22 (Q5):  git-relay is the ONE path that mints per-bot
+GitHub App tokens, so `TokenRouter.token_for` now fails closed and names
+git-relay.  The input-validation helpers the router used are still directly
+testable, so those contracts keep their coverage here;  the mint/cache
+behaviour they used to assert is unreachable by design and is covered by
+`MintingOwnershipTests` instead.
+"""
+
 import tempfile
 import unittest
 from pathlib import Path
 
-from repo_token import RoutingError, TokenRouter, secret_names
+from repo_token import (
+    MINTING_OWNER,
+    RoutingError,
+    TokenRouter,
+    permission_set,
+    secret_names,
+    target_parts,
+)
 
 
-class Tests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.mints = []
-        self.wrong_app = False
-        self.suspended = False
-        self.wrong_scope = False
-        self.router = TokenRouter(
-            lambda slug: (100 if slug == "swu-echo" else 200, "NOT-A-KEY"),
-            Path(self.temp.name) / "cache",
-            api=self.api,
-            signer=lambda *a: "MOCK",
-            clock=lambda: 1800000000,
-        )
-
-    def api(self, method, path, bearer, body=None):
-        app_id = getattr(self, "app_id", 100)
-        if path == "/app":
-            return {
-                "id": app_id,
-                "slug": "swu-wise"
-                if self.wrong_app
-                else ("swu-echo" if app_id == 100 else "swu-wise"),
-            }
-        if method == "GET":
-            owner = path.split("/")[2]
-            return {
-                "id": 111 if owner == "Simple-With-Us" else 222,
-                "app_id": app_id,
-                "account": {"login": owner},
-                "suspended_at": "yes" if self.suspended else None,
-            }
-        self.mints.append((path, copy.deepcopy(body)))
-        owner = "Simple-With-Us" if "/111/" in path else "example-user"
-        return {
-            "token": "MOCK-NOT-A-REAL-TOKEN",
-            "expires_at": "2027-01-15T09:00:00Z",
-            "permissions": body["permissions"],
-            "repositories": [
-                {
-                    "full_name": owner
-                    + "/"
-                    + ("WRONG" if self.wrong_scope else body["repositories"][0])
-                }
-            ],
-        }
+class ValidationTests(unittest.TestCase):
+    """The reviewed input contract, still reachable without minting."""
 
     def test_names(self):
         self.assertEqual(
@@ -61,155 +31,134 @@ class Tests(unittest.TestCase):
             ("GH_APP_SWU_BF_BUILDER_ID", "GH_APP_SWU_BF_BUILDER_PRIVATE_KEY"),
         )
 
+    def test_names_reject_bad_slug(self):
+        for bad in ("../echo", "echo", "SWU-ECHO", ""):
+            with self.assertRaises(RoutingError, msg=bad):
+                secret_names(bad)
+
     def test_bad_target(self):
-        with self.assertRaises(RoutingError):
-            self.router.token_for("swu-echo", "example-repo", {"contents": "read"})
+        for bad in ("example-repo", "", "../a/b", "a/b/c", "a/..", "a/b?x=1"):
+            with self.assertRaises(RoutingError, msg=bad):
+                target_parts(bad)
 
-    def test_bad_slug(self):
-        with self.assertRaises(RoutingError):
-            self.router.token_for("../echo", "a/b", {"contents": "read"})
-
-    def test_wrong_app_fails_closed(self):
-        self.wrong_app = True
-        with self.assertRaises(RoutingError):
-            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
-        self.assertFalse(self.mints)
-
-    def test_wrong_app_refusal_carries_masked_preview(self):
-        self.router = TokenRouter(
-            lambda slug: (
-                100,
-                "-----BEGIN RSA PRIVATE KEY-----\n" + "A" * 40 + "\n-----END RSA PRIVATE KEY-----",
-            ),
-            Path(self.temp.name) / "cache",
-            api=self.api,
-            signer=lambda *a: "MOCK",
-            clock=lambda: 1800000000,
-        )
-        self.wrong_app = True
-        try:
-            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
-        except RoutingError as exc:
-            preview = getattr(exc, "credential_preview", None)
-        else:
-            self.fail("expected RoutingError")
-        # The mask is exactly first-eight/last-four of the armor-stripped body:
-        # a malformed or missing preview fails this, not just a leaking one.
-        self.assertEqual(preview, "A" * 8 + "…" + "A" * 4)
-        self.assertNotIn("PRIVATE KEY", preview)
-        self.assertNotIn("A" * 20, preview)
-
-    def test_suspended_fails_closed(self):
-        self.suspended = True
-        with self.assertRaises(RoutingError):
-            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
-
-    def test_wrong_scope_not_cached(self):
-        self.wrong_scope = True
-        with self.assertRaises(RoutingError):
-            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
-        self.assertEqual(list(self.router.cache.glob("*.json")), [])
-
-    def test_org_personal_split(self):
-        self.router.token_for("swu-echo", "Simple-With-Us/Test", {"contents": "read"})
-        self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
-        self.assertEqual(
-            [x[0] for x in self.mints],
-            ["/app/installations/111/access_tokens", "/app/installations/222/access_tokens"],
-        )
-
-    def test_cache_reuse(self):
-        for _ in range(2):
-            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
-        self.assertEqual(len(self.mints), 1)
-        f = next(self.router.cache.glob("*.json"))
-        self.assertEqual(f.stat().st_mode & 0o777, 0o600)
-
-    def test_permission_cache_split(self):
-        for p in ["read", "write"]:
-            self.router.token_for("swu-echo", "example-user/example-repo", {"contents": p})
-        self.assertEqual(len(self.mints), 2)
-
-    def test_app_cache_split(self):
-        self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
-        self.app_id = 200
-        self.router.token_for("swu-wise", "example-user/example-repo", {"contents": "read"})
-        self.assertEqual(len(list(self.router.cache.glob("*.json"))), 2)
-
-    def test_expired_refresh(self):
-        self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
-        f = next(self.router.cache.glob("*.json"))
-        d = json.loads(f.read_text())
-        d["expires_at"] = "2020-01-01T00:00:00Z"
-        f.write_text(json.dumps(d))
-        self.router.token_for("swu-echo", "example-user/example-repo", {"contents": "read"})
-        self.assertEqual(len(self.mints), 2)
-
-    def test_no_permissions(self):
-        with self.assertRaises(RoutingError):
-            self.router.token_for("swu-echo", "a/b", {})
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-class ReviewFixTests(unittest.TestCase):
-    """Regression tests for the second Kody review round."""
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.router = TokenRouter(
-            lambda slug: (100, "NOT-A-KEY"),
-            Path(self.temp.name) / "cache",
-            api=lambda *a, **k: None,
-            signer=lambda *a: "MOCK",
-        )
-
-    def test_openai_shaped_target_refused_with_stable_code(self):
+    def test_credential_shaped_target_is_refused_with_a_stable_code(self):
         target = "example-org/sk-" + "a" * 20
         with self.assertRaises(RoutingError) as ctx:
-            self.router.token_for("swu-echo", target, {"contents": "read"})
+            target_parts(target)
         self.assertEqual(str(ctx.exception), "secret_refused:target")
         self.assertNotIn("a" * 20, str(ctx.exception))
 
     def test_legitimate_names_with_sk_substring_are_not_refused(self):
         # "sk-" as a bare substring must not refuse flask-app, task-manager
-        # or disk-usage;  those targets fail later for the mock key instead.
+        # or disk-usage.
         for target in ("example-org/disk-usage", "example-org/flask-app"):
-            with self.assertRaises(Exception) as ctx:
-                self.router.token_for("swu-echo", target, {"contents": "read"})
-            self.assertNotEqual(str(ctx.exception), "secret_refused:target")
+            self.assertEqual(target_parts(target), ("example-org", target.split("/")[1]))
 
-    def test_malformed_app_identity_fails_closed(self):
-        def api(method, path, bearer, body=None):
-            if path == "/app":
-                return {"id": "100", "slug": "swu-echo"}
-            return {}
+    def test_permissions_must_be_explicit_read_or_write(self):
+        for bad in ({}, {"contents": "admin"}, {"Contents": "read"}, {"contents": "write "}):
+            with self.assertRaises(RoutingError, msg=str(bad)):
+                permission_set(bad)
 
-        router = TokenRouter(
-            lambda slug: (100, "NOT-A-KEY"),
-            Path(self.temp.name) / "c2",
-            api=api,
+    def test_metadata_permission_is_forced_to_read(self):
+        self.assertEqual(permission_set({"contents": "write"})["metadata"], "read")
+        with self.assertRaises(RoutingError):
+            permission_set({"metadata": "write"})
+
+
+class MintingOwnershipTests(unittest.TestCase):
+    """The Operator broker is not a minting path (Q5).
+
+    Every assertion here is about the refusal:  the guard must fire before any
+    App credential is read, before any cache file is written and before any
+    GitHub call is made, and it must name git-relay as the path that owns
+    minting.
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.loader_calls = []
+        self.api_calls = []
+        self.router = TokenRouter(
+            self.loader,
+            Path(self.temp.name) / "cache",
+            api=self.api,
             signer=lambda *a: "MOCK",
+            clock=lambda: 1800000000,
         )
-        with self.assertRaises(RoutingError) as ctx:
-            router.token_for("swu-echo", "a/b", {"contents": "read"})
-        self.assertIn("malformed", str(ctx.exception))
 
-    def test_malformed_installation_account_fails_closed(self):
-        def api(method, path, bearer, body=None):
-            if path == "/app":
-                return {"id": 100, "slug": "swu-echo"}
-            return {"id": 111, "app_id": 100, "account": {"login": 7}, "suspended_at": None}
+    def loader(self, slug):
+        self.loader_calls.append(slug)
+        return 100, "NOT-A-KEY"
 
-        router = TokenRouter(
-            lambda slug: (100, "NOT-A-KEY"),
-            Path(self.temp.name) / "c3",
-            api=api,
-            signer=lambda *a: "MOCK",
-        )
+    def api(self, method, path, bearer, body=None):
+        self.api_calls.append((method, path))
+        raise AssertionError("the guard must refuse before any GitHub call")
+
+    def _refused(self, slug="swu-echo", target="example-user/example-repo", perms=None):
         with self.assertRaises(RoutingError) as ctx:
-            router.token_for("swu-echo", "a/b", {"contents": "read"})
-        self.assertIn("identity", str(ctx.exception))
+            self.router.token_for(slug, target, {"contents": "read"} if perms is None else perms)
+        return ctx.exception
+
+    def test_token_for_refuses_and_names_git_relay(self):
+        exc = self._refused()
+        self.assertEqual(MINTING_OWNER, "git-relay")
+        self.assertIn(MINTING_OWNER, str(exc))
+        self.assertIn("will not mint", str(exc))
+
+    def test_refusal_is_a_definite_refusal_not_an_unknown_outcome(self):
+        # "outcome_unknown" would tell a caller to reconcile a credential that
+        # may exist;  nothing was requested, so this is a plain refusal.
+        self.assertEqual(self._refused().outcome, "refused")
+        self.assertIsNone(self._refused().status)
+
+    def test_refusal_happens_before_any_credential_read(self):
+        self._refused()
+        self.assertEqual(self.loader_calls, [])
+
+    def test_refusal_happens_before_any_github_call(self):
+        self._refused()
+        self.assertEqual(self.api_calls, [])
+
+    def test_refusal_writes_no_token_cache(self):
+        self._refused()
+        self.assertEqual(list(self.router.cache.glob("*.json")), [])
+
+    def test_refusal_never_carries_credential_material(self):
+        exc = self._refused()
+        message = str(exc)
+        self.assertIsNone(getattr(exc, "credential_preview", None))
+        self.assertNotIn("NOT-A-KEY", message)
+        self.assertNotIn("MOCK", message)
+        self.assertNotIn("PRIVATE KEY", message)
+
+    def test_refusal_holds_for_any_slug_target_and_permissions(self):
+        for slug, target, perms in (
+            ("swu-echo", "example-user/example-repo", {"contents": "read"}),
+            ("swu-wise", "Simple-With-Us/Test", {"contents": "write"}),
+            ("swu-echo", "a/b", {"metadata": "read"}),
+        ):
+            exc = self._refused(slug, target, perms)
+            self.assertIn(MINTING_OWNER, str(exc))
+        self.assertEqual(self.loader_calls, [])
+        self.assertEqual(self.api_calls, [])
+
+
+class CacheShapeTests(unittest.TestCase):
+    """The private-cache guard still holds without reaching a mint."""
+
+    def test_cache_dir_is_private_and_never_a_symlink(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        router = TokenRouter(lambda slug: (1, "K"), Path(temp.name) / "cache")
+        path = router._cache_file(("scope",))
+        self.assertEqual(path.parent.stat().st_mode & 0o077, 0)
+        # A symlinked cache directory is refused rather than followed.
+        link = Path(temp.name) / "link"
+        link.symlink_to(path.parent)
+        with self.assertRaises(RoutingError):
+            TokenRouter(lambda slug: (1, "K"), link)._cache_file(("scope",))
+
+
+if __name__ == "__main__":
+    unittest.main()

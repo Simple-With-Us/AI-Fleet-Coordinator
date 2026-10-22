@@ -6,7 +6,7 @@
       "--config",
       "scripts/agent-sync-mcp/wrangler.jsonc"
     ],
-    "health": "https://agent-sync.jays.services/health",
+    "health": "https://agents.simplewithus.com/health",
     "ok": true,
     "access": true
   },

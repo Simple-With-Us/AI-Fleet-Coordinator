@@ -145,8 +145,13 @@ export function clientBoundToSeat(client, seat, redirectUri, config) {
 }
 
 /**
- * Host check (spec 3.2):  only the D1 hostname, on the default port.  Both the
+ * Host check (spec 3.2):  only the one hostname, on the default port.  Both the
  * URL the runtime built and the raw Host header must name it.
+ *
+ * Hard cutover (owner ruling, Oct 22, 2026):  this takes exactly one host, not
+ * a list.  The old agent-sync.jays.services host is refused here like any other
+ * unknown Host, so there is no fallback, alias or redirect left to keep it
+ * working.  Passing an array is not supported on purpose.
  */
 export function hostAllowed(request, host) {
   let url;

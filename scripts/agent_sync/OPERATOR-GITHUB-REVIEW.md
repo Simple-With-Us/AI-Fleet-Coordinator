@@ -2,6 +2,25 @@
 
 No service is started or registered with the daemon by this change. No runtime settings, listener partition, proxy, credentials, or host have changed. `Broker.enabled` defaults false.
 
+## Not a minting path: git-relay owns GitHub App tokens (2026-10-22, Q5)
+
+Owner decision: **git-relay is the ONE path in the fleet that mints per-bot GitHub App tokens.**
+The Operator GitHub token broker is therefore not a minting path, and this slice stays as reviewed
+history only. Nothing below was deleted; the code is retained and unchanged, but it cannot mint.
+
+- `Broker.enabled` still defaults to `false`.
+- `github_token_router.TokenRouter.token_for` and `repo_token.TokenRouter.token_for` now call
+  `refuse_minting()` as their first statement and raise `RoutingError` naming `git-relay`, before
+  any App credential is read, any cache file written, or any GitHub call made.  The refusal is a
+  module constant, not an environment variable or constructor flag:  there is no override and no
+  fallback that re-enables minting here.
+- The broker's policy table, nonce ledger, client and target binding are all still in place and
+  still tested;  they simply no longer lead to a token.
+
+Enforced by `tests/test_github_relay_minting_owner.py`, which fails if a second unguarded mint
+site appears anywhere in the repository, if the guard stops firing, or if the broker's real router
+can reach a mint.  For the actions themselves, see `git-relay/README.md`.
+
 ## Files
 
 - `github_token_router.py`: previously live-sampled token routing core.
@@ -10,6 +29,8 @@ No service is started or registered with the daemon by this change. No runtime s
 - `operator_github_policy.py`: the seat allowlist - the trusted server-side policy lookup (pilot: CODEX and ECHO, AI-Fleet-Coordinator only, read ceilings), plus the allowlist-bound caller-key and App-credential loaders.
 - `operator_github_state.py`: durable SQLite replay ledger.
 - `operator_github_secrets.py`: named-secret adapter (one exact name per call, approved sets only).
+- `tests/test_github_relay_minting_owner.py`: minting-ownership guard - git-relay is the only
+  minting path, and this broker cannot mint.
 - `tests/test_operator_github.py`: 23 focused tests.
 - `tests/test_operator_github_policy.py`: allowlist shape, loader binding and wired-broker end-to-end tests.
 
