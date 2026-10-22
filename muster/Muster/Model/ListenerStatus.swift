@@ -161,17 +161,28 @@ struct AgentSyncInvocation: Equatable {
     }
 
     /// `daemon test-wake --seat S --runtime R --run`:  run the seat's wake for real.
-    static func testWakeRun(seat: String, runtime: String) throws -> AgentSyncInvocation {
+    ///
+    /// `runtime` is nil when the seat's wake is not one of the runtimes the CLI names
+    /// (`claude`, `muse`, `mcode`, `fallback`).  Passing a wake type the CLI does not know
+    /// -- `inbox` or `http` -- makes argparse exit 2 with "invalid choice",  so the flag is
+    /// left off and the CLI's own default (`auto`) decides instead.
+    static func testWakeRun(seat: String, runtime: String?) throws -> AgentSyncInvocation {
         AgentSyncInvocation([
-            "daemon", "test-wake", "--seat", try checked(seat), "--runtime", try checked(runtime), "--run",
-        ], timeout: testWakeTimeout)
+            "daemon", "test-wake", "--seat", try checked(seat),
+        ] + runtimeArgument(runtime) + ["--run"], timeout: testWakeTimeout)
     }
 
     /// `daemon test-wake --seat S --runtime R --pin`:  pin the binary that passed.
-    static func testWakePin(seat: String, runtime: String) throws -> AgentSyncInvocation {
+    static func testWakePin(seat: String, runtime: String?) throws -> AgentSyncInvocation {
         AgentSyncInvocation([
-            "daemon", "test-wake", "--seat", try checked(seat), "--runtime", try checked(runtime), "--pin",
-        ], timeout: testWakeTimeout)
+            "daemon", "test-wake", "--seat", try checked(seat),
+        ] + runtimeArgument(runtime) + ["--pin"], timeout: testWakeTimeout)
+    }
+
+    /// `--runtime R`,  or nothing when there is no runtime to name.
+    private static func runtimeArgument(_ runtime: String?) -> [String] {
+        guard let runtime else { return [] }
+        return ["--runtime", (try? checked(runtime)) ?? runtime]
     }
 
     /// The command as a person would type it.

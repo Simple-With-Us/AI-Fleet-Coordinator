@@ -267,14 +267,14 @@ struct WakeSettingsView: View {
                 }
                 .disabled(store.isBusy)
                 Button {
-                    Task { await store.testWake(seat: seat.seat, runtime: seat.liveWake?.rawValue ?? "muse") }
+                    Task { await store.testWake(seat: seat.seat, runtime: runtimeArgument(for: seat)) }
                 } label: {
                     Label("Test wake", systemImage: "play.and.pause")
                 }
                 .disabled(store.isBusy)
                 .help("Runs the seat's wake for real.  A failed run never pins.")
                 Button {
-                    Task { await store.pin(seat: seat.seat, runtime: seat.liveWake?.rawValue ?? "muse") }
+                    Task { await store.pin(seat: seat.seat, runtime: runtimeArgument(for: seat)) }
                 } label: {
                     Label("Pin", systemImage: "pin")
                 }
@@ -283,6 +283,19 @@ struct WakeSettingsView: View {
             }
         }
         .padding(.vertical, 6)
+    }
+
+    /// The runtime to name on the command line,  or nil when the seat's wake is not one the
+    /// CLI names.
+    ///
+    /// `daemon test-wake --runtime` accepts only `claude`, `muse`, `mcode` and `fallback`.
+    /// `WakeType` also has `inbox` and `http`,  and passing either made argparse exit 2 with
+    /// "invalid choice",  so both buttons always reported a failed test wake and never
+    /// pinned anything.  Nil leaves the flag off and the CLI's own default (`auto`) decides.
+    private func runtimeArgument(for seat: WakeSeat) -> String? {
+        guard let wake = seat.liveWake,
+              ["claude", "muse", "mcode"].contains(wake.rawValue) else { return nil }
+        return wake.rawValue
     }
 
     /// The draft's binding for one setting.

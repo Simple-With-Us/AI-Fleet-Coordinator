@@ -13,7 +13,7 @@ final class ListenerConfigFileTests: XCTestCase {
     bot = "MM"
     wake = "muse"
     model = "muse-spark-1.3-contributor"
-    muse = "/Users/jay/.local/bin/muse-bin-1.4.11-R6667.1"
+    muse = "/tmp/fixture-apps/muse-bin"
     fallback = "mcode"
     fallback_uncontained_ok = true
     budget = { wakes_per_hour = 5, wakes_per_day = 80, per_topic_per_hour = 6, owner_per_day = 40, owner_per_topic_per_hour = 12, usd_per_day = 4.0 }
@@ -174,6 +174,74 @@ final class ListenerConfigFileTests: XCTestCase {
         let reread = ListenerConfigDocument(text: written)
         XCTAssertNil(reread.value(section: "seat.MM", key: "fallback"))
         XCTAssertEqual(reread.value(section: "seat.MM", key: "wake"), .text("muse"))
+    }
+
+    /// Removing the last key of an inline table takes the comma with it.
+    ///
+    /// The comma has to go inside the removed range.  Left behind it becomes a trailing
+    /// comma,  and TOML 1.0 forbids one in an inline table,  so `tomllib.load` would
+    /// reject the whole file and the listener would fall back to an empty config.
+    func test_a_removal_of_the_last_inline_key_leaves_no_trailing_comma() throws {
+        let document = ListenerConfigDocument(text: sample)
+        let written = try document.removing(
+            section: "seat.MM",
+            key: "live",
+            subPath: ["loop_turns"]
+        )
+        XCTAssertFalse(
+            written.contains("owner_per_day = 20, }"),
+            "the last key went but its comma stayed: \(written)"
+        )
+        // The rest of the table is intact.
+        XCTAssertTrue(written.contains("live = { per_hour = 6"))
+        XCTAssertTrue(written.contains("owner_per_day = 20 }"))
+        let reread = ListenerConfigDocument(text: written)
+        XCTAssertNil(reread.value(section: "seat.MM", key: "live", subPath: ["loop_turns"]))
+        XCTAssertEqual(
+            reread.value(section: "seat.MM", key: "live", subPath: ["per_hour"]),
+            .number(6)
+        )
+        // Nothing outside the table moved.
+        XCTAssertEqual(reread.value(section: "seat.MM", key: "wake"), .text("muse"))
+    }
+
+    /// Removing a key the file does not hold changes nothing,  and is not an error.
+    ///
+    /// The panel seeds an unset setting's field with a dash,  so clearing one is a
+    /// legitimate "remove this" gesture.  Throwing there aborted the whole Apply and threw
+    /// away every other edit in the same batch.
+    func test_a_removal_of_a_key_the_file_lacks_is_a_no_op() throws {
+        let document = ListenerConfigDocument(text: sample)
+        XCTAssertEqual(try document.removing(section: "seat.MM", key: "provider"), sample)
+        XCTAssertEqual(try document.removing(section: "seat.NOPE", key: "wake"), sample)
+        // A key that exists but not at that sub-path leaves the file alone too.
+        XCTAssertEqual(
+            try document.removing(section: "seat.MM", key: "budget", subPath: ["board_per_day"]),
+            sample
+        )
+    }
+
+    /// A batch of edits keeps the ones that land when one of them removes a missing key.
+    func test_a_batch_keeps_its_edits_when_one_removes_a_missing_key() throws {
+        let document = ListenerConfigDocument(text: sample)
+        var written = try document.removing(section: "seat.MM", key: "provider")
+        written = try ListenerConfigDocument(text: written).setting(
+            section: "seat.MM",
+            key: "wake",
+            to: .text("claude")
+        )
+        let reread = ListenerConfigDocument(text: written)
+        XCTAssertEqual(reread.value(section: "seat.MM", key: "wake"), .text("claude"))
+    }
+
+    /// A cap is never negative,  and never not-a-number.
+    func test_a_cap_that_is_negative_or_not_finite_is_not_written() {
+        XCTAssertNil(WakeSettingKey.wakesPerHour.value(from: "-1"))
+        XCTAssertNil(WakeSettingKey.usdPerDay.value(from: "-0.5"))
+        XCTAssertNil(WakeSettingKey.liveLoopTurns.value(from: "nan"))
+        XCTAssertNil(WakeSettingKey.liveLoopTurns.value(from: "inf"))
+        // Zero is a real cap.
+        XCTAssertEqual(WakeSettingKey.wakesPerHour.value(from: "0"), .number(0))
     }
 
     /// Two numbers with the same value are the same number,  whatever they are written as.

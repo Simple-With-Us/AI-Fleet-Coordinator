@@ -531,13 +531,18 @@ struct ListenerConfigDocument: Equatable {
     ///
     /// Removing a key inside an inline table removes that key and its value,  and leaves
     /// the rest of the table alone.  Removing the last key of a table removes the table.
+    ///
+    /// Removing a key the file does not hold changes nothing and is not an error:  the
+    /// panel seeds an unset setting's field with a dash,  so clearing one is a legitimate
+    /// "remove this setting" gesture.  Throwing there would abort the whole Apply and
+    /// discard every other edit in the same batch.
     func removing(section: String, key: String, subPath: [String] = []) throws -> String {
         var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         guard let found = sections.first(where: { $0.name == section }) else {
-            throw WriteError.pathIsEmpty
+            return text
         }
         guard let assignment = found.assignments.first(where: { $0.key == key }) else {
-            throw WriteError.pathIsEmpty
+            return text
         }
         guard !subPath.isEmpty else {
             lines.remove(at: assignment.line)
@@ -546,7 +551,8 @@ struct ListenerConfigDocument: Equatable {
         guard let entry = locate(assignment.node, path: subPath),
               let entries = assignment.node.tableEntries,
               let target = entries.first(where: { $0.node.range == entry.range }) else {
-            throw WriteError.notATable("\(section).\(key)")
+            // Nothing at that sub-path to take out,  which is the same no-op as above.
+            return text
         }
         // A table with one key left has no reason to stay.
         if entries.count == 1 {
@@ -568,6 +574,12 @@ struct ListenerConfigDocument: Equatable {
             end = probe
         } else {
             // The last entry of the table:  take the comma in front of it too.
+            //
+            // The comma has to stay inside the removed range.  A range that started after
+            // it would leave the comma behind as a trailing comma,  and TOML 1.0 forbids one
+            // inside an inline table:  `tomllib.load` would reject the whole file,  and the
+            // listener would fall back to an empty config.  So the range covers
+            // ", key = value",  not "key = value".
             var back = start
             while back > line.startIndex {
                 let previous = line.index(before: back)
@@ -577,12 +589,6 @@ struct ListenerConfigDocument: Equatable {
                 }
                 if line[previous] == "," {
                     start = previous
-                    var after = line.index(after: start)
-                    while after < target.keyRange.lowerBound,
-                          line[after] == " " || line[after] == "\t" {
-                        after = line.index(after: after)
-                    }
-                    start = after
                 }
                 break
             }

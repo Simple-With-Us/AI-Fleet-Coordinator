@@ -45,12 +45,12 @@ struct OperatorOptions: Equatable {
         ),
         Name(
             name: "OPERATOR_ZULIP_USER_ID",
-            location: "the listener's environment",
+            location: "Infisical  Fleet-OPS /zulip_operator via fleet-secrets",
             purpose: "the pinned bot check"
         ),
         Name(
             name: "OPERATOR_ZULIP_EMAIL",
-            location: "the listener's environment",
+            location: "Infisical  Fleet-OPS /zulip_operator via fleet-secrets",
             purpose: "the pinned bot check"
         ),
     ]

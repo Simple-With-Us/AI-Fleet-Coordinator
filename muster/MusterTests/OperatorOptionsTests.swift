@@ -57,6 +57,21 @@ final class OperatorOptionsTests: XCTestCase {
         }
     }
 
+    /// Every name the Operator needs names Infisical as its source.
+    ///
+    /// The listener's environment is where the values arrive,  not where they live:
+    /// `scripts/agent_sync/service_identity.py` holds `OPERATOR_INFISICAL_PATH =
+    /// "/zulip_operator"`,  so the panel must not point an operator at a plain env var.
+    func test_every_operator_name_names_infisical_as_its_source() {
+        for name in OperatorOptions.names {
+            XCTAssertTrue(
+                name.location.contains("Infisical"),
+                "\(name.name) is shown as living in \(name.location)"
+            )
+        }
+        XCTAssertEqual(OperatorOptions.requiredCreds, "infisical")
+    }
+
     /// The letters the Operator issues come from one pool.
     func test_the_letter_pool_is_the_letters_the_registry_uses() {
         XCTAssertEqual(OperatorOptions.letterPool.count, 26)

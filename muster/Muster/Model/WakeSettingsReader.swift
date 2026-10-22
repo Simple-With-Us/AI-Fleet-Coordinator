@@ -134,8 +134,14 @@ struct WakeSettingsReader {
             }
             pins[tag] = seatPins
             if let ledger = readText(location.ledgerURL(seat: tag)) {
-                usage[tag] = WakeLedger.usage(from: ledger, now: now())
-                recent[tag] = WakeLedger.outcomes(from: ledger)
+                // One read and one parse for both views:  the ledger was not decoded once
+                // per question.
+                let parsed = WakeLedger.parse(ledger)
+                usage[tag] = WakeLedger.usage(from: parsed, now: now())
+                recent[tag] = parsed.outcomes
+                if parsed.malformed > 0 {
+                    problems.append("\(tag): \(parsed.malformed) wake ledger row(s) could not be read,  so its counters may be low.")
+                }
             }
         }
         sources.pins = pins

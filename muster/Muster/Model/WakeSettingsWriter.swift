@@ -132,6 +132,11 @@ extension WakeSettingKey {
         }
         if isNumeric {
             guard let number = Double(trimmed) else { return nil }
+            // A cap is a count or an amount,  so a negative or a non-finite one is not a
+            // value this app can write.  `agent_sync/config.py` would refuse the setting
+            // when it read the file,  and the seat would silently fall back to an inbox
+            // wake after a reload:  a bad number must never reach the file.
+            guard number.isFinite, number >= 0 else { return nil }
             return .number(number)
         }
         return .text(trimmed)

@@ -45,36 +45,90 @@ enum WakeLedger {
     /// The states a budget counts.
     static let countedStates: Set<String> = ["accepted", "started", "done", "failed"]
 
+    /// The ledger read once.
+    ///
+    /// The panel needs two things from the same rows:  the merged wakes behind the counters,
+    /// and the last few wakes behind the list.  Reading the file and decoding it twice cost
+    /// a second full parse of a file that grows for the life of the seat,  and it was paid on
+    /// every refresh and again after every apply,  pause,  resume and pin.
+    struct Parsed {
+        /// Every wake in the ledger,  merged from its rows.
+        var wakes: [Wake] = []
+        /// The last few wakes,  newest first.
+        var outcomes: [Outcome] = []
+        /// How many rows were not valid ledger rows.
+        ///
+        /// A row can be half-written when the daemon dies mid-append,  so this is counted
+        /// rather than thrown:  a torn last line must not blank the panel.  It is not left
+        /// silent either:  the reader says how many rows it could not read,  so a ledger that
+        /// has gone bad is visible instead of quietly under-counting the budget.
+        var malformed: Int = 0
+    }
+
+    /// Reads the ledger in one pass.
+    static func parse(_ text: String, limit: Int = 8) -> Parsed {
+        var states: [String: String] = [:]
+        var owners: [String: Bool] = [:]
+        var topicKeys: [String: String?] = [:]
+        var topics: [String: String?] = [:]
+        var times: [String: [String: Double]] = [:]
+        var lastAt: [String: Double] = [:]
+        var order: [String] = []
+        var malformed = 0
+        let decoder = JSONDecoder()
+
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let data = line.data(using: .utf8),
+                  let row = try? decoder.decode(Row.self, from: data),
+                  let identifier = row.wake_id, !identifier.isEmpty,
+                  let ts = row.ts, ts.isFinite else {
+                malformed += 1
+                continue
+            }
+            if times[identifier] == nil {
+                times[identifier] = [:]
+                order.append(identifier)
+            }
+            if let state = row.state {
+                states[identifier] = state
+                if times[identifier]?[state] == nil { times[identifier]?[state] = ts }
+            }
+            if let owner = row.owner { owners[identifier] = owner }
+            if row.topic_key != nil { topicKeys[identifier] = row.topic_key }
+            if row.topic != nil { topics[identifier] = row.topic }
+            lastAt[identifier] = ts
+        }
+
+        var parsed = Parsed()
+        parsed.malformed = malformed
+        for identifier in order {
+            let accepted = times[identifier]?["accepted"] ?? times[identifier]?["started"]
+            parsed.wakes.append(Wake(
+                state: states[identifier] ?? "",
+                owner: owners[identifier] ?? false,
+                topicKey: topicKeys[identifier] ?? nil,
+                at: accepted.map { Date(timeIntervalSince1970: $0) }
+            ))
+            parsed.outcomes.append(Outcome(
+                id: identifier,
+                state: states[identifier] ?? "",
+                topic: topics[identifier] ?? nil,
+                owner: owners[identifier] ?? false,
+                at: lastAt[identifier].map { Date(timeIntervalSince1970: $0) }
+            ))
+        }
+        parsed.outcomes.sort { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }
+        parsed.outcomes = Array(parsed.outcomes.prefix(limit))
+        return parsed
+    }
+
     /// The wakes in the ledger,  merged.
     ///
     /// Later rows win for the fields,  and the first time each state was reached is kept:
     /// that is the runtime's own rule,  so a wake that was accepted and then failed counts
     /// from the moment it was accepted.
     static func wakes(from text: String) -> [Wake] {
-        var merged: [String: (state: String, owner: Bool, topicKey: String?, times: [String: Double])] = [:]
-        let decoder = JSONDecoder()
-        for line in text.split(whereSeparator: \.isNewline) {
-            guard let data = line.data(using: .utf8),
-                  let row = try? decoder.decode(Row.self, from: data),
-                  let identifier = row.wake_id else { continue }
-            var view = merged[identifier] ?? ("", false, nil, [:])
-            if let state = row.state { view.state = state }
-            if let owner = row.owner { view.owner = owner }
-            if let topicKey = row.topic_key { view.topicKey = topicKey }
-            if let ts = row.ts, let state = row.state, view.times[state] == nil {
-                view.times[state] = ts
-            }
-            merged[identifier] = view
-        }
-        return merged.values.map { view in
-            let accepted = view.times["accepted"] ?? view.times["started"]
-            return Wake(
-                state: view.state,
-                owner: view.owner,
-                topicKey: view.topicKey,
-                at: accepted.map { Date(timeIntervalSince1970: $0) }
-            )
-        }
+        parse(text).wakes
     }
 
     /// The last few wakes,  newest first.
@@ -82,32 +136,7 @@ enum WakeLedger {
     /// This is what the panel shows of the seat's recent wakes and their outcomes,  so an
     /// unanswered message is visible next to the setting that would have answered it.
     static func outcomes(from text: String, limit: Int = 8) -> [Outcome] {
-        let decoder = JSONDecoder()
-        var merged: [String: Outcome] = [:]
-        for line in text.split(whereSeparator: \.isNewline) {
-            guard let data = line.data(using: .utf8),
-                  let row = try? decoder.decode(Row.self, from: data),
-                  let identifier = row.wake_id else { continue }
-            var outcome = merged[identifier] ?? Outcome(
-                id: identifier,
-                state: row.state ?? "",
-                topic: row.topic,
-                owner: row.owner ?? false,
-                at: row.ts.map { Date(timeIntervalSince1970: $0) }
-            )
-            if let state = row.state { outcome = Outcome(
-                id: identifier,
-                state: state,
-                topic: row.topic ?? outcome.topic,
-                owner: row.owner ?? outcome.owner,
-                at: row.ts.map { Date(timeIntervalSince1970: $0) } ?? outcome.at
-            ) }
-            merged[identifier] = outcome
-        }
-        return merged.values
-            .sorted { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }
-            .prefix(limit)
-            .map { $0 }
+        parse(text, limit: limit).outcomes
     }
 
     /// How much of the budget the seat has used.
@@ -115,7 +144,12 @@ enum WakeLedger {
     /// The counting rule is the runtime's:  a wake counts from the moment it was accepted,
     /// and the owner's budget and everybody else's are counted apart.
     static func usage(from text: String, now: Date) -> WakeUsage {
-        let wakes = self.wakes(from: text)
+        usage(from: parse(text), now: now)
+    }
+
+    /// How much of the budget the seat has used,  from a ledger already read once.
+    static func usage(from parsed: Parsed, now: Date) -> WakeUsage {
+        let wakes = parsed.wakes
         let day: TimeInterval = 86_400
         let hour: TimeInterval = 3_600
 

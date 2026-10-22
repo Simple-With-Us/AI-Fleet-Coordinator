@@ -33,6 +33,12 @@ final class WakeSettingsStore: ObservableObject {
     /// The values the file held when the draft was made,  so only a changed value is
     /// written.
     private var original: [String: [WakeSettingKey: String]] = [:]
+    /// The roster the last full read was given.  The refreshes that follow an apply,  a
+    /// pause or a pin are parameterless,  and a parameterless refresh would read with an
+    /// empty roster:  a seat that is on the roster but has no `[seat.X]` section and is not
+    /// in the listener's status would drop out of the panel until the next manual refresh.
+    /// Keeping the last roster makes those refreshes read the same seats.
+    private var roster: [String] = []
 
     init(
         location: ListenerStateLocation = ListenerStateLocation(),
@@ -47,10 +53,11 @@ final class WakeSettingsStore: ObservableObject {
     // MARK: Reading
 
     /// Reads everything and shows it.
-    func refresh(roster: [String] = []) async {
+    func refresh(roster: [String]? = nil) async {
+        if let roster { self.roster = roster }
         isBusy = true
         defer { isBusy = false }
-        let reader = WakeSettingsReader(location: location, runner: runner, roster: roster)
+        let reader = WakeSettingsReader(location: location, runner: runner, roster: self.roster)
         let sources = await Task.detached(priority: .userInitiated) {
             await reader.read()
         }.value
@@ -183,7 +190,7 @@ final class WakeSettingsStore: ObservableObject {
     // MARK: The pin
 
     /// Runs the seat's wake for real,  so a changed setting is proved by a wake that ran.
-    func testWake(seat: String, runtime: String) async {
+    func testWake(seat: String, runtime: String?) async {
         isBusy = true
         defer { isBusy = false }
         do {
@@ -199,7 +206,7 @@ final class WakeSettingsStore: ObservableObject {
     }
 
     /// Pins the binary whose test wake passed.
-    func pin(seat: String, runtime: String) async {
+    func pin(seat: String, runtime: String?) async {
         isBusy = true
         defer { isBusy = false }
         do {

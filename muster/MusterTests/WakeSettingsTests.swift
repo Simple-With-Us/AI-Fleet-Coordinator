@@ -12,8 +12,8 @@ final class WakeSettingsTests: XCTestCase {
     bot = "MM"
     wake = "muse"
     model = "muse-spark-1.3-contributor"
-    muse = "/Users/jay/.local/bin/muse-bin-1.4.11-R6667.1"
-    mcode = "/Users/jay/.local/bin/mcode"
+    muse = "/tmp/fixture-apps/muse-bin"
+    mcode = "/tmp/fixture-apps/mcode-bin"
     fallback = "mcode"
     fallback_uncontained_ok = true
     budget = { wakes_per_hour = 5, wakes_per_day = 80, per_topic_per_hour = 6, owner_per_day = 40, owner_per_topic_per_hour = 12, usd_per_day = 4.0 }
@@ -30,7 +30,7 @@ final class WakeSettingsTests: XCTestCase {
           "MM": {
             "bot": "MM",
             "wake": "muse",
-            "muse": "/Users/jay/.local/bin/muse-bin-1.4.11-R6667.1",
+            "muse": "/tmp/fixture-apps/muse-bin",
             "connected": true,
             "paused": false,
             "wakes_paused": false,
@@ -168,7 +168,7 @@ final class WakeSettingsTests: XCTestCase {
     func test_a_pinned_fallback_is_a_pass() {
         let pins = ["MM": ["mcode": PinEvidence(
             runtime: "mcode",
-            binary: "/Users/jay/.local/bin/mcode",
+            binary: "/tmp/fixture-apps/mcode-bin",
             model: "mcode-model",
             verifiedAt: Date(timeIntervalSince1970: 1_792_535_804),
             pinned: true,
@@ -190,7 +190,7 @@ final class WakeSettingsTests: XCTestCase {
     func test_a_model_a_pin_proves_is_a_pass() {
         let pins = ["MM": ["muse": PinEvidence(
             runtime: "muse",
-            binary: "/Users/jay/.local/bin/muse-bin-1.4.11-R6667.1",
+            binary: "/tmp/fixture-apps/muse-bin",
             model: "muse-spark-1.3-contributor",
             verifiedAt: Date(timeIntervalSince1970: 1_792_535_804),
             pinned: true,
@@ -345,5 +345,59 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(document.value(section: "seat.MM", key: "model"), .text("another-model"))
         XCTAssertEqual(document.value(section: "seat.MM", key: "fallback_uncontained_ok"), .bool(false))
         XCTAssertEqual(document.problems, [])
+    }
+
+    // MARK: The ledger,  read once
+
+    /// One read of the ledger feeds both the counters and the recent wakes.
+    func test_the_ledger_is_parsed_once_for_both_views() {
+        let ledger = """
+        {"ts": 999900.0, "wake_id": "a", "state": "accepted", "owner": false, "topic_key": "c\\u0000t1", "topic": "first"}
+        {"ts": 999950.0, "wake_id": "b", "state": "done", "owner": true, "topic_key": "c\\u0000t2", "topic": "second"}
+        """
+        let parsed = WakeLedger.parse(ledger)
+        XCTAssertEqual(parsed.malformed, 0)
+        XCTAssertEqual(parsed.wakes.count, 2)
+        XCTAssertEqual(parsed.outcomes.count, 2)
+        XCTAssertEqual(parsed.outcomes.first?.id, "b")
+        XCTAssertEqual(parsed.outcomes.first?.topic, "second")
+        // The counters come out of that same pass.
+        let usage = WakeLedger.usage(from: parsed, now: Date(timeIntervalSince1970: 1_000_000))
+        XCTAssertEqual(usage.wakesThisDay, 1)
+        XCTAssertEqual(usage.ownerThisDay, 1)
+    }
+
+    /// A row that is not a ledger row is counted and said out loud,  not silently dropped.
+    func test_a_malformed_ledger_row_is_counted_rather_than_hidden() {
+        let ledger = """
+        {"ts": 999900.0, "wake_id": "a", "state": "accepted", "owner": false, "topic_key": "c\\u0000t1"}
+        {"ts": 999950.0, "wake_id": "b", "state":
+        not json at all
+        {"ts": 999960.0, "state": "accepted"}
+        {"wake_id": "d", "state": "done"}
+        """
+        let parsed = WakeLedger.parse(ledger)
+        XCTAssertEqual(parsed.malformed, 4)
+        XCTAssertEqual(parsed.wakes.count, 1)
+    }
+
+    // MARK: The command line
+
+    /// A test wake names a runtime only when the CLI knows that runtime.
+    func test_a_test_wake_names_a_runtime_only_when_the_cli_knows_it() throws {
+        XCTAssertEqual(
+            try AgentSyncInvocation.testWakeRun(seat: "MM", runtime: "muse").arguments,
+            ["daemon", "test-wake", "--seat", "MM", "--runtime", "muse", "--run"]
+        )
+        // `inbox` and `http` are wake types but not CLI runtimes:  naming one made argparse
+        // exit 2 with "invalid choice",  so both buttons always failed.
+        XCTAssertEqual(
+            try AgentSyncInvocation.testWakeRun(seat: "MM", runtime: nil).arguments,
+            ["daemon", "test-wake", "--seat", "MM", "--run"]
+        )
+        XCTAssertEqual(
+            try AgentSyncInvocation.testWakePin(seat: "MM", runtime: nil).arguments,
+            ["daemon", "test-wake", "--seat", "MM", "--pin"]
+        )
     }
 }
