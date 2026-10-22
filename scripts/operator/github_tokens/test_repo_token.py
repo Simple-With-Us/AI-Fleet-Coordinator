@@ -77,7 +77,10 @@ class Tests(unittest.TestCase):
 
     def test_wrong_app_refusal_carries_masked_preview(self):
         self.router = TokenRouter(
-            lambda slug: (100, "-----BEGIN RSA PRIVATE KEY-----\n" + "A" * 40 + "\n-----END RSA PRIVATE KEY-----"),
+            lambda slug: (
+                100,
+                "-----BEGIN RSA PRIVATE KEY-----\n" + "A" * 40 + "\n-----END RSA PRIVATE KEY-----",
+            ),
             Path(self.temp.name) / "cache",
             api=self.api,
             signer=lambda *a: "MOCK",
