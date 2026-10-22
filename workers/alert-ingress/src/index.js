@@ -1359,6 +1359,13 @@ const handler = {
     try {
       return json(await handleEvent(source, payload, env));
     } catch (error) {
+      // A body whose identity looks like a credential is refused before it
+      // becomes a key.  That is the sender's bad request, so it answers 400
+      // naming the field, never the value, rather than escaping as a writer
+      // outage that a vendor would retry.
+      if (error?.code === "invalid_identity") {
+        return json({ error: "invalid payload", field: error.field }, 400);
+      }
       if (error?.code === "credential_unavailable") {
         return json(
           {
@@ -1765,20 +1772,26 @@ export class AlertWriter {
     }
   }
 }
+// The one name the writer is reached by.  The webhook path and the cron sweep
+// must resolve to the same object, because the delivery barrier lives in that
+// object's storage:  two names would be two writers, each blind to the other's
+// barrier, and both could post a standing message for one topic.  So the name
+// is written once, here, and both call sites read it.
+const WRITER_OBJECT_NAME = "alerts-v1";
+const writerFor = (env) =>
+  env.ALERT_WRITER.get(env.ALERT_WRITER.idFromName(WRITER_OBJECT_NAME));
 export default {
   async fetch(request, env) {
     if (new URL(request.url).pathname === "/health")
       return handler.fetch(request, env, {});
     if (!env.ALERT_WRITER)
       return json({ error: "durable writer unavailable", stale: true }, 503);
-    return env.ALERT_WRITER.get(env.ALERT_WRITER.idFromName("alerts-v1")).fetch(
-      request,
-    );
+    return writerFor(env).fetch(request);
   },
   async scheduled(event, env, ctx) {
     if (!env.ALERT_WRITER || !env.INGRESS_SHARED_TOKEN) return;
     ctx.waitUntil(
-      env.ALERT_WRITER.get(env.ALERT_WRITER.idFromName("alerts-v1")).fetch(
+      writerFor(env).fetch(
         new Request("https://internal/sweep", {
           headers: { authorization: `Bearer ${env.INGRESS_SHARED_TOKEN}` },
         }),

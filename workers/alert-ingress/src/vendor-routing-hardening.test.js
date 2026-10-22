@@ -1987,3 +1987,88 @@ test("F11 an identity carrying a credential is refused before it becomes a key",
   assert.equal(fromSentry(SENTRY_ISSUE_PAYLOAD).key, "sentry:proj-1");
   assert.equal(fromSentry(SENTRY_METRIC_PAYLOAD).key, "sentry:metric:5678");
 });
+
+test("F12 a message id Zulip refuses is refused, not reported as a writer outage", async () => {
+  // fetchMessage promises null for a message it cannot read.  A refusal (an id
+  // that does not exist, or one this bot cannot see) and a read that never
+  // answers both have to keep that promise, so the reconcile answers its own
+  // "message could not be read" instead of throwing out of the handler.
+  for (const behaviour of [
+    {
+      refuseOn: (call) => call.method === "GET" && /\/messages\/4242$/.test(call.url),
+      refuseStatus: 404,
+    },
+    {
+      throwOn: (call) => call.method === "GET" && /\/messages\/4242$/.test(call.url),
+    },
+  ]) {
+    const kv = fakeKV();
+    seedSignal(kv, {
+      source: "datadog",
+      key: "datadog:1",
+      service: "Shared.Service",
+      state: pendingState(),
+    });
+    const env = envFor(kv, { WRITER_STORAGE: fakeStorage() });
+    const stub = stubZulip(behaviour);
+    try {
+      const response = await handler.fetch(
+        new Request(
+          "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+          { headers: { authorization: "Bearer fixture" } },
+        ),
+        env,
+        {},
+      );
+      assert.equal(response.status, 503);
+      assert.equal((await response.json()).error, "message could not be read");
+      assert.equal(kv.store.get(statusOwnerKey(4242)), undefined);
+      assert.equal(
+        kv.store.get(statusKey("datadog", "alerts", "Shared.Service")),
+        undefined,
+      );
+      assert.equal(stub.posts().length, 0);
+      assert.equal(stub.patches().length, 0);
+    } finally {
+      stub.restore();
+    }
+  }
+});
+
+test("F13 an identity carrying a credential is a 400 at the webhook route", async () => {
+  // The refusal is the sender's bad request.  It must answer 400 naming the
+  // field, not escape the handler as a writer outage a vendor would retry, and
+  // the response must never carry the value it refused.
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  const body = JSON.stringify({
+    ...SENTRY_ISSUE_PAYLOAD,
+    data: {
+      ...SENTRY_ISSUE_PAYLOAD.data,
+      issue: {
+        ...SENTRY_ISSUE_PAYLOAD.data.issue,
+        shortId: "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+      },
+    },
+  });
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: { "sentry-hook-signature": sentrySig(body) },
+        body,
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 400);
+    const text = await response.text();
+    assert.match(text, /sentry issue identity/);
+    assert.doesNotMatch(text, /ghp_/);
+    assert.equal(kv.store.size, 0);
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});

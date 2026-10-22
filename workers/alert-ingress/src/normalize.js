@@ -323,7 +323,12 @@ export function fromSentry(payload) {
   // The message names the field and never the value or a prefix of it.
   const identityField = issue ? "sentry issue identity" : "sentry metric identity";
   if (credentialShape(issue ? issueIdentity : metricIdentity)) {
-    throw new Error(`${identityField} looks like a credential`);
+    // The code lets the webhook route answer a bad request that names the
+    // field, instead of the refusal escaping as a writer outage.
+    const error = new Error(`${identityField} looks like a credential`);
+    error.code = "invalid_identity";
+    error.field = identityField;
+    throw error;
   }
   const key = issue
     ? `sentry:${issueIdentity.toLowerCase()}`

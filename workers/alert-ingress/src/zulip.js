@@ -184,11 +184,21 @@ const isReadableMessage = (message) => {
  * a caller that read a missing field as empty would accept a message on weaker
  * evidence than it thinks it has.
  *
+ * A message Zulip refuses to return (an id that does not exist, one this bot
+ * cannot see) or a read that never answers is also a message that cannot be
+ * read, so it comes back as null rather than as an exception.  Thrown, it
+ * escaped the reconcile route and surfaced as the durable writer's generic
+ * "writer unavailable", which sent the operator to the wrong subsystem.
+ *
  * @returns {Promise<object|null>} the message, or null when it cannot be read
  */
 export async function fetchMessage({ email, apiKey, messageId }) {
-  const data = await zulip(`/messages/${messageId}`, { email, apiKey });
-  return isReadableMessage(data?.msg) ? data.msg : null;
+  try {
+    const data = await zulip(`/messages/${messageId}`, { email, apiKey });
+    return isReadableMessage(data?.msg) ? data.msg : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
