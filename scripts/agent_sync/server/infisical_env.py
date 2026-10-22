@@ -239,6 +239,13 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     coverage = f"; GB seats with both Zulip names from Infisical: {len(complete)} of {len(gb)}"
     if missing_gb:
         coverage += " (not loaded: " + ", ".join(c.replace("_", "-") for c in missing_gb) + ")"
+    # A seat is only wakeable when its alert endpoint and key are present too:  count them apart.
+    # They may come from Coolify copies instead, so this reports, it does not refuse.
+    armed = [c for c in gb if f"ZULIP_ALERT_{c}_ENDPOINT" in loaded and f"ZULIP_ALERT_{c}_KEY" in loaded]
+    coverage += f"; GB seats with alert endpoint and key from Infisical: {len(armed)} of {len(gb)}"
+    no_alert = [c for c in gb if c not in armed]
+    if no_alert:
+        coverage += " (not loaded: " + ", ".join(c.replace("_", "-") for c in no_alert) + ")"
     ignored = len(found) - len(loaded)
     return out, (
         f"loaded {len(loaded)} variables from Infisical ({where}; {replaced} replaced a container value, "

@@ -250,6 +250,7 @@ class InfisicalEnvTests(unittest.TestCase):
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
             out, line = IE.build_env(self.env(fake))
         self.assertIn("; GB seats with both Zulip names from Infisical: ", line)
+        self.assertIn("; GB seats with alert endpoint and key from Infisical: ", line)
         self.assertIn("(not loaded: ", line)
         for value in self.values.values():
             self.assertNotIn(value, line)
