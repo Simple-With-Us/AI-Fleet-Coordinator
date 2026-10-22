@@ -1,4 +1,4 @@
-// Normalizer tests.  Run: node --test workers/alert-ingress/src/
+// Normalizer tests.  Run: node --test workers/alert-ingress/src/*.test.js
 
 import test from "node:test";
 import assert from "node:assert/strict";

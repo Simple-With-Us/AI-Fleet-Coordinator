@@ -37,11 +37,33 @@ A message is only warranted when **state** changes.  The channel ends up as:
 |---|---|
 | `POST /webhook/:source` | vendor event; signature verified, replies immediately |
 | `GET  /status` | **machine-readable** status for any consumer that renders it |
-| `GET  /status/:channel/:topic` | the rendered standing status, as Markdown |
+| `GET  /status/:source/:channel/:topic` | rebuild one source's standing status, with that source's credential |
+| `GET  /status/:channel/:topic` | rebuild every source's standing status for that topic |
 | `GET  /sweep` | run the promotion sweep by hand |
 | `GET  /health` | liveness |
 
 Sources with a bespoke parser: `datadog`, `betterstack`.  Anything else falls back to a conventional-key reader.  The route's source name is authoritative, so a payload cannot claim to be another integration.
+
+Both refresh routes are operator-only (the shared bearer token) and both refuse any channel other than `alerts`: the bot only ever writes into the alerts channel, so a standing message can never be written anywhere else.  The two-segment route carries no vendor dimension, so it refreshes every source that tracks that topic, each with its own credential; the three-segment route names one source and refreshes only that one.
+
+## Vendor routing
+
+Every source has its own identity, its own state namespace and its own standing message.  Two vendors that share a service name cannot edit each other's message, and one vendor can never post as another.
+
+**Credentials.**  Each source resolves its own pair, and there is no path from one source to another source's bot:
+
+| Source | Credential names |
+|---|---|
+| `datadog` | `ZULIP_BOT_EMAIL_DATADOG` / `ZULIP_BOT_API_KEY_DATADOG` |
+| `betterstack` | `ZULIP_BOT_EMAIL_BETTERSTACK` / `ZULIP_BOT_API_KEY_BETTERSTACK` |
+| `generic` | `ZULIP_BOT_EMAIL_GENERIC` / `ZULIP_BOT_API_KEY_GENERIC`, or the legacy `ZULIP_BOT_EMAIL` / `ZULIP_BOT_API_KEY` pair |
+| any other route name | `ZULIP_BOT_EMAIL_<ROUTE>` / `ZULIP_BOT_API_KEY_<ROUTE>` |
+
+The legacy un-suffixed pair **is** the generic source's own identity.  It is not a wildcard fallback for any vendor: a source with no pair of its own fails closed, posts nothing, writes no status, and answers with a structured error (`{"error": "credential unavailable", "source": "..."}`).  A route name is its own source, so a custom route needs a custom pair.
+
+**State.**  Every key that can be shared between two vendors carries its source, so the state of one vendor can never be read, refreshed or swept as another's.  The standing status of a topic belongs to exactly one vendor: a vendor never PATCHes a message id another vendor pinned (`statusowner:<id>` records the pinner) and never adopts one.  The first refresh after this change creates a fresh standing message per vendor; the pre-change shared `status:<channel>:<topic>` id is left unread rather than adopted.
+
+**Deployment precondition.**  This change is code only.  Deploying it requires the per-vendor credentials to exist in Infisical first, because a vendor source with no pair of its own now fails closed instead of borrowing the shared bot.
 
 ## One writer, many readers
 
@@ -60,6 +82,7 @@ GET /status
       "alerts": [
         {
           "key": "datadog:22024797",
+          "source": "datadog",
           "service": "Mac.Jays.Services",
           "phase": "alerting",
           "severity": "MODERATE",
@@ -71,6 +94,12 @@ GET /status
         }
       ]
     }
+  },
+  "sources": {
+    "datadog": {
+      "summary": { "topics": 1, "alerts": 2, "firing": 1 },
+      "topics": { "Mac.Jays.Services": { "firing": 1, "total": 2, "alerts": [] } }
+    }
   }
 }
 ```
@@ -81,6 +110,8 @@ Contract rules, enforced by `status.test.js`:
 - alerts sort firing → pending → ok;
 - a topic whose states have all cleared is **dropped**, so the view self-cleans as incidents resolve;
 - the payload carries no credential, ever.
+
+The top-level shape above is unchanged.  A `sources` breakdown is added beside it, so a consumer can read one vendor's view without re-deriving it: `sources.<source>.summary` counts that source's topics, alerts and firing signals, and `sources.<source>.topics` is the same per-topic shape for that source alone.  The flat `topics` map stays the fleet-wide view, and every alert row names the source that owns it.
 
 **Live consumer:** the Usage Monitor `/ops` page (`usage.jays.services/ops`) renders this as its Fleet Alerts card, so the dashboard and the Zulip channel cannot disagree.
 
@@ -103,27 +134,38 @@ An incident is held, not posted, until it is still open after `MIN_OPEN_MS` (def
 | Key | Value |
 |---|---|
 | `state:<key>` | `AlertState` — phase (`ok`/`pending`/`alerting`), severity, since, text, link |
+| `src:<key>` | the source that owns the state, so the sweep resolves that vendor's credential |
 | `svc:<key>` | service name, so a topic stays stable |
 | `svcname:<source>:<service>` | alert key for service-derived generic keys, so a renamed vendor label re-joins its incident |
-| `topic:<channel>:<topic>` | topic membership; tracked explicitly rather than parsed out of `idx:` |
-| `idx:<channel>:<topic>:<key>` | membership marker, so a status rebuild knows its rows |
-| `status:<channel>:<topic>` | message id of the standing status, for the PATCH |
+| `topic:<source>:<channel>:<topic>` | topic membership for one source |
+| `idx:<source>:<channel>:<topic>:<key>` | membership marker, so a status rebuild knows its rows |
+| `status:<source>:<channel>:<topic>` | message id of that source's standing status, for the PATCH |
+| `statusowner:<message id>` | the source that pinned a standing message |
+
+The durable delivery outcome of a standing status is keyed per source as well: `delivery:["<source>","<channel>","<topic>"]`, so a held write for one vendor never blocks another vendor's refresh.
 
 ## Setup (owner)
 
 1. Create a KV namespace and put its id in `wrangler.toml`.
-2. Create a Zulip bot with an API key — **not** an incoming webhook, which cannot edit.  The bot posts to `#alerts` only.
-3. Register `ZULIP_BOT_EMAIL`, `ZULIP_BOT_API_KEY`, `INGRESS_SHARED_TOKEN`, `DATADOG_WEBHOOK_SECRET` and/or `BETTERSTACK_WEBHOOK_SECRET`, and the `MIN_OPEN_MS` tunable, in the Infisical inventory (`INFISICAL.md`) -- Infisical is the sole source of truth for secrets and settings knobs -- then provision the Worker bindings from Infisical through the secure owner handoff documented there.  A bare `wrangler secret put` creates Worker-only copies that Infisical rotations will not govern.
+2. Create a Zulip bot with an API key — **not** an incoming webhook, which cannot edit.  The bot posts to `#alerts` only.  Create one bot per vendor that needs its own standing message, and give each one its own pair of names.
+3. Register `INGRESS_SHARED_TOKEN`, `DATADOG_WEBHOOK_SECRET` and/or `BETTERSTACK_WEBHOOK_SECRET`, the `MIN_OPEN_MS` tunable, and one `ZULIP_BOT_EMAIL_*` / `ZULIP_BOT_API_KEY_*` pair per source (see [Vendor routing](#vendor-routing)) in the Infisical inventory (`INFISICAL.md`) -- Infisical is the sole source of truth for secrets and settings knobs -- then provision the Worker bindings from Infisical through the secure owner handoff documented there.  A bare `wrangler secret put` creates Worker-only copies that Infisical rotations will not govern.
 4. Deploy, then re-point each vendor's webhook at `https://alert-ingress.<account>.workers.dev/webhook/<source>` and set the matching secret on the vendor side.
 5. Stop the old Zulip incoming-webhook bots for that source, or both will post.
+
 
 ## Tests
 
 ```bash
-cd workers/alert-ingress && node --test src/
+cd workers/alert-ingress && node --test src/*.test.js
 ```
 
 Pure functions, no Workers runtime needed.  The suite includes the real Oct 18 flap replayed: ten events, zero messages until it genuinely stays open.
+
+The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 110 tests.
+
+`vendor-routing.test.js` covers the vendor routing: same-topic isolation between two vendors, message ids that are never reused across vendors, the sweep and the resolve path using the right vendor credential, a missing or refused credential failing closed, an ambiguous write that never creates a second message, and a refresh that is refused outside the alerts channel.
+
+`vendor-routing-hardening.test.js` covers the hardening that answered the review: the missing credential names the operator has to set, a failed status delivery is surfaced instead of swallowed, only an unknown outcome holds a repeat delivery, the delivery outcome is scoped to a content revision, a pre-routing membership marker names an incident rather than a source, the credential slug is injective in the source name, the sweep survives one bad incident, the legacy refresh route reports the sources it could not refresh, a malformed percent-escape is a bad request, and an unknown webhook field never reaches persistence or the channel.
 
 ## Deliberate non-goals
 
@@ -139,7 +181,7 @@ Source review does not activate this ingress.  The shipped configuration intenti
 
 An approved deployment must bind `ALERT_WRITER` to exported class `AlertWriter` and declare its SQLite class migration in its private Wrangler deployment configuration, in addition to the existing `ALERT_STATE` binding.  This repository does not provision those resources.  The existing deployment-boundary decision remains explicit in the PR; a merge does not establish a production runtime.
 
-Before any standing-message write the object persists an `unknown` delivery outcome keyed by channel/topic.  Only a validated successful response records `ok` with a positive integer message ID.  Timeout, malformed success, crash and ambiguous network failure retain `unknown`, and subsequent refreshes do not replay it.  Explicit provider refusal records `refused` and also requires operator reconciliation; no automatic create follows a failed edit.  An operator must inspect the actual Zulip message before repairing a held outcome.
+Before any standing-message write the object persists an `unknown` delivery outcome keyed by source, channel and topic.  Only a validated successful response records `ok` with a positive integer message ID.  Timeout, malformed success, crash and ambiguous network failure retain `unknown`, and subsequent refreshes do not replay it.  Explicit provider refusal records `refused` and also requires operator reconciliation; no automatic create follows a failed edit.  An operator must inspect the actual Zulip message before repairing a held outcome.
 
 Inventory walks drain at most 20 pages and 2,000 keys, reject missing/cyclic cursors and never publish a partial inventory as complete.  The writer returns HTTP 503 with `stale: true` when inventory fails.  Reads use bounded batches of four; independent sweep status-refresh failures emit only a fixed event name and leave other topics eligible for processing.
 
