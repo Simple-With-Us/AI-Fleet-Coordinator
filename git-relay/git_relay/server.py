@@ -21,6 +21,7 @@ or returned.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -528,10 +529,6 @@ LEGACY_STATE_FILES = {
 # this is generous; it exists to fail loudly rather than silently start with an
 # empty ledger.
 ADOPT_LOCK_WAIT_SECONDS = 5.0
-# A lock older than this outlived any adoption (a copy of one small file), so
-# its owner must have died between creating it and finishing.  Reclaiming it
-# keeps a crash from wedging every later startup on the same directory.
-ADOPT_LOCK_STALE_SECONDS = 120.0
 
 
 def _fsync_dir(directory: str) -> None:
@@ -543,28 +540,45 @@ def _fsync_dir(directory: str) -> None:
         os.close(fd)
 
 
-def _adopt_lock_is_stale(lock_path: str) -> bool:
-    """A lock its owner cannot still hold:  the owner is dead or it is too old."""
+def _acquire_adopt_lock(lock_path: str) -> int | None:
+    """Try once to hold the adoption lock;  return its fd, or None if it is held.
+
+    The lock is an exclusive ``flock`` on the lock file, not the file's mere
+    existence.  The kernel drops it when its owner exits, however it exits, so a
+    crash mid-adoption cannot wedge later startups and no staleness guess (an
+    age bound, a PID that may be reused) is ever needed.  Nothing ever deletes a
+    lock another process holds.  The holder unlinks the file before it lets go,
+    so after taking the lock the path must still name the file this fd has
+    open;  if it does not, a previous holder finished in between and the caller
+    tries again on the fresh file.  Only "held by someone else" counts as
+    contention:  every other OSError propagates.
+    """
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        age = time.time() - os.path.getmtime(lock_path)
-    except OSError:
-        return False
-    if age > ADOPT_LOCK_STALE_SECONDS:
-        return True
-    try:
-        with open(lock_path, encoding="utf-8") as handle:
-            pid = int(handle.read().strip())
-    except (OSError, ValueError):
-        return False
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except OSError:
-        return False
-    return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return None
+        try:
+            on_path = os.stat(lock_path)
+        except FileNotFoundError:
+            os.close(fd)
+            return -1
+        held = os.fstat(fd)
+        if (on_path.st_dev, on_path.st_ino) != (held.st_dev, held.st_ino):
+            os.close(fd)
+            return -1
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        os.fsync(fd)
+        return fd
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
 
 
 def adopt_legacy_state(default_path: str) -> str:
@@ -587,40 +601,23 @@ def adopt_legacy_state(default_path: str) -> str:
     lock_path = os.path.join(directory, f".{default_name}.adopt.lock")
     deadline = time.monotonic() + ADOPT_LOCK_WAIT_SECONDS
     while True:
-        try:
-            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            try:
-                os.write(lock_fd, f"{os.getpid()}\n".encode())
-                os.fsync(lock_fd)
-            except BaseException:
-                try:
-                    os.close(lock_fd)
-                except OSError:
-                    pass
-                try:
-                    os.unlink(lock_path)
-                except OSError:
-                    pass
-                raise
+        lock_fd = _acquire_adopt_lock(lock_path)
+        if lock_fd is not None and lock_fd >= 0:
             break
-        except FileExistsError:
-            # Someone else is adopting, or already did.  Either way the answer is
-            # the same, unless the lock is stale:  its owner died mid-adoption,
-            # so take it over instead of wedging every later startup.
-            if os.path.exists(current_path) or not os.path.exists(legacy_path):
-                return default_path
-            if _adopt_lock_is_stale(lock_path):
-                try:
-                    os.unlink(lock_path)
-                except OSError:
-                    pass
-                continue
-            if time.monotonic() > deadline:
-                raise SystemExit(
-                    f"error: {lock_path} is held; another git-relay is adopting "
-                    f"{legacy_name} into {default_name}.  Retry once it finishes."
-                )
-            time.sleep(0.05)
+        if lock_fd == -1:
+            # The previous holder finished and removed the file we locked;  the
+            # next attempt locks the current one.
+            continue
+        # Someone else is adopting, or already did.  Either way the answer is
+        # the same once their file is in place.
+        if os.path.exists(current_path) or not os.path.exists(legacy_path):
+            return default_path
+        if time.monotonic() > deadline:
+            raise SystemExit(
+                f"error: {lock_path} is held; another git-relay is adopting "
+                f"{legacy_name} into {default_name}.  Retry once it finishes."
+            )
+        time.sleep(0.05)
     try:
         # Re-check under the lock:  the current file always wins.
         if os.path.exists(current_path) or not os.path.exists(legacy_path):
@@ -645,11 +642,15 @@ def adopt_legacy_state(default_path: str) -> str:
                 os.unlink(tmp_path)
             raise
     finally:
-        os.close(lock_fd)
+        # Unlink while still holding the lock, then release it by closing.  A
+        # waiter that locks the unlinked file sees the path no longer names it
+        # and retries, so two adopters never run at once.
         try:
             os.unlink(lock_path)
-        except OSError:
+        except FileNotFoundError:
             pass
+        finally:
+            os.close(lock_fd)
     print(
         f"git-relay: adopted the pre-rename {legacy_name} as {default_name}; "
         "its held write outcomes still apply",
