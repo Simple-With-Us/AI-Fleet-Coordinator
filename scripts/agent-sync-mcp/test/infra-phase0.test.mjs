@@ -88,7 +88,10 @@ test("a retired zone that is not on the account does not abort dns --apply", () 
   assert.equal(absent.raised, null, `dns --apply aborted: ${absent.raised}`);
   assert.deepEqual(absent.deleted, ["rec-new"], "the served zone's record is still deleted");
   assert.ok(
-    absent.output.some((line) => /jays\.services is not on account/.test(line)),
+    // Matched on the stable wording, not on a hostname:  this repo does not
+    // add private infrastructure hostnames to committed source, and the zone
+    // name is already covered by the fixture's own constants.
+    absent.output.some((line) => /is not on account/.test(line)),
     `the absent zone is reported, not swallowed: ${JSON.stringify(absent.output)}`,
   );
 });
