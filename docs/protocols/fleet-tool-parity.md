@@ -1,6 +1,6 @@
 # Fleet Tool Parity
 
-Every fleet capability exists on three surfaces:  the hosted Agent-Sync MCP server (`https://agent-sync.jays.services/mcp`, for cloud seats), the local tools (the stdio `agent-sync mcp` server and the `agent-sync`, `board` and `fleet-share` commands), and the Hetzner server, where Codex and Claude run the same local tools.  Five commands are the tool set on both hosts:  `agent-sync`, `board`, `recall`, `lane` and `fleet-mode` (`fleet-share` and `fleet-tools-doctor` come with the FleetLink checkout and this repo).  `apple-notes-coding.sh` is Mac-only by design.  This page is the rule for keeping them equal:  one contract per service, a CI test that fails when a surface drifts from it, and a doctor that checks each host.
+Every fleet capability exists on three surfaces:  the hosted Agent-Sync MCP server (`https://agents.simplewithus.com/mcp`, for cloud seats), the local tools (the stdio `agent-sync mcp` server and the `agent-sync`, `board` and `fleet-share` commands), and the Hetzner server, where Codex and Claude run the same local tools.  Five commands are the tool set on both hosts:  `agent-sync`, `board`, `recall`, `lane` and `fleet-mode` (`fleet-share` and `fleet-tools-doctor` come with the FleetLink checkout and this repo).  `apple-notes-coding.sh` is Mac-only by design.  This page is the rule for keeping them equal:  one contract per service, a CI test that fails when a surface drifts from it, and a doctor that checks each host.
 
 ## Contracts
 
