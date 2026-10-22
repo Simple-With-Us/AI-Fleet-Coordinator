@@ -31,6 +31,12 @@ async function zulip(path, { email, apiKey, method = "GET", form } = {}) {
     const error = new Error("Zulip rejected request");
     error.outcome =
       res.status >= 400 && res.status < 500 ? "refused" : "unknown";
+    // The status code and the retry hint are safe to keep: they say what the
+    // upstream answered, not what it said.  The caller needs them to decide
+    // whether a refusal may be retried and how long to wait.
+    error.status = res.status;
+    const retryAfter = Number(res.headers?.get?.("retry-after"));
+    if (Number.isInteger(retryAfter)) error.retryAfter = retryAfter;
     throw error;
   }
   try {

@@ -151,6 +151,23 @@ function seedSignal(kv, { source, key, service, topic = service, state }) {
   kv.store.set(topicKey(source, "alerts", topic), "1");
 }
 
+/**
+ * The durable delivery row of one source's standing status.
+ *
+ * The row is scoped to the revision of the content it carries, so the key is
+ * found by its prefix rather than built exactly.
+ */
+function deliveryRow(storage, source, channel, topic) {
+  const prefix = `delivery:${JSON.stringify([source, channel, topic])}`.replace(
+    /\]$/,
+    "",
+  );
+  for (const [key, value] of storage.data) {
+    if (key.startsWith(prefix)) return value;
+  }
+  return undefined;
+}
+
 test("two vendors on one topic keep their own standing message and credential", async () => {
   const kv = fakeKV();
   const env = envFor(kv);
@@ -389,20 +406,30 @@ test("a source with no credential of its own fails closed", async () => {
   }
 });
 
-test("a refused credential is recorded and never retried as another bot", async () => {
+test("a refused credential is released for a retry that still uses its own bot", async () => {
   const kv = fakeKV();
   const storage = fakeStorage();
   const env = envFor(kv, { WRITER_STORAGE: storage });
   const zulip = stubZulip({ refuseOn: () => true });
   try {
-    await handleEvent("datadog", datadogEvent, env);
-    await handleEvent("datadog", datadogEvent, env);
-    // The refusal is held for reconciliation, not retried.
-    const outcome = storage.data.get(deliveryKey("datadog", "alerts", "Shared.Service"));
+    const first = await handleEvent("datadog", datadogEvent, env);
+    // The refusal is surfaced to the caller instead of being swallowed.
+    assert.equal(first.statusDelivery.outcome, "refused");
+    assert.equal(first.statusDelivery.code, 403);
+
+    // A refusal is definitive, so nothing was delivered: the row is released
+    // and the refusal metadata is kept for the operator.
+    const outcome = deliveryRow(storage, "datadog", "alerts", "Shared.Service");
     assert.equal(outcome.outcome, "refused");
-    assert.equal(zulip.calls.length, 1);
-    // And it was never sent as another source's bot.
-    assert.equal(zulip.calls[0].email, "datadog-bot@example.invalid");
+    assert.equal(outcome.released, true);
+    assert.equal(outcome.code, 403);
+
+    // A later attempt may try again, and it is never sent as another bot.
+    await handleEvent("datadog", datadogEvent, env);
+    assert.equal(zulip.calls.length, 2);
+    for (const call of zulip.calls) {
+      assert.equal(call.email, "datadog-bot@example.invalid");
+    }
   } finally {
     zulip.restore();
   }
@@ -452,12 +479,16 @@ test("an ambiguous write for one vendor never creates a message and never blocks
       call.email === "datadog-bot@example.invalid" && call.method === "PATCH",
   });
   try {
-    await handleEvent("datadog", datadogEvent, env);
+    const datadog = await handleEvent("datadog", datadogEvent, env);
     await handleEvent("betterstack", betterstackEvent, env);
     const postsBefore = zulip.posts().length;
 
-    await refreshStatus(env, "datadog", "alerts", "Shared.Service");
-    const held = storage.data.get(deliveryKey("datadog", "alerts", "Shared.Service"));
+    // The lost write is surfaced to the caller instead of being swallowed.
+    await assert.rejects(
+      () => refreshStatus(env, "datadog", "alerts", "Shared.Service"),
+      /status delivery failed/,
+    );
+    const held = deliveryRow(storage, "datadog", "alerts", "Shared.Service");
     assert.equal(held.outcome, "unknown");
 
     // A second refresh of that vendor creates no new message and sends nothing.
@@ -467,8 +498,11 @@ test("an ambiguous write for one vendor never creates a message and never blocks
 
     // The other vendor is untouched by the held write.
     await refreshStatus(env, "betterstack", "alerts", "Shared.Service");
-    const other = storage.data.get(
-      deliveryKey("betterstack", "alerts", "Shared.Service"),
+    const other = deliveryRow(
+      storage,
+      "betterstack",
+      "alerts",
+      "Shared.Service",
     );
     assert.equal(other.outcome, "ok");
     // No new standing message was created for either vendor.
@@ -755,8 +789,10 @@ test("a source named like an Object member does not erase the refresh response",
   const kv = fakeKV();
   const env = envFor(kv, {
     INGRESS_SHARED_TOKEN: "fixture",
-    ZULIP_BOT_EMAIL__PROTO_: "proto-bot@example.invalid",
-    ZULIP_BOT_API_KEY__PROTO_: "proto-key",
+    // The credential slug of "__proto__" is the escaped form, so this source
+    // has an identity of its own and cannot collide with another one.
+    ZULIP_BOT_EMAIL__5F_5FPROTO_5F_5F: "proto-bot@example.invalid",
+    ZULIP_BOT_API_KEY__5F_5FPROTO_5F_5F: "proto-key",
   });
   // The route name is the source name, so a route named "__proto__" is a
   // source named "__proto__".  On a plain object the write to it sets the

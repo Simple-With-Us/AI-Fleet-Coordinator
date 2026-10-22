@@ -82,10 +82,18 @@ const topicKey = (source, c, t) => `topic:${source}:${c}:${t}`;
 const statusKey = (source, c, t) => `status:${source}:${c}:${t}`;
 // Membership marker prefix, so a status rebuild knows its rows.
 const indexPrefix = (source, c, t) => `idx:${source}:${c}:${t}:`;
+// Membership keys written before vendor routing carried no source.  They
+// belong to the generic source, which owns the legacy un-suffixed identity,
+// and they are still read so an incident tracked before the routing change
+// does not vanish from the dashboard.
+const legacyTopicKey = (c, t) => `topic:${c}:${t}`;
+const legacyIndexPrefix = (c, t) => `idx:${c}:${t}:`;
 // Durable delivery outcome of one source's standing status.  Per source, so a
-// held write for one vendor never blocks another vendor's refresh.
-const deliveryKey = (source, c, t) =>
-  `delivery:${JSON.stringify([source, c, t])}`;
+// held write for one vendor never blocks another vendor's refresh, and scoped
+// to the revision of the content it carries, so a changed standing block is a
+// new delivery and an unchanged one is not.
+const deliveryKey = (source, c, t, revision = "base") =>
+  `delivery:${JSON.stringify([source, c, t, revision])}`;
 // Which source pinned a standing message id.  A vendor never edits a message
 // another vendor pinned.
 const statusOwnerKey = (id) => `statusowner:${id}`;
@@ -101,10 +109,7 @@ const SOURCE_TOKEN = /^[a-z0-9_-]{1,32}$/;
  * route name -- needs its own dedicated pair and has no fallback at all.
  */
 export function credentialPairs(source) {
-  const slug = String(source || "generic")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .toUpperCase();
+  const slug = credentialSlug(source);
   if (slug === "GENERIC")
     return [
       {
@@ -119,6 +124,33 @@ export function credentialPairs(source) {
       apiKey: `ZULIP_BOT_API_KEY_${slug}`,
     },
   ];
+}
+
+/**
+ * The credential slug of one source, injective in the source name.
+ *
+ * The slug used to collapse every run of non-alphanumeric characters into a
+ * single underscore, so `acme-eu` and `acme_eu` produced the same slug and the
+ * two routes shared one bot identity and could edit each other's standing
+ * messages.  Now every character outside `[a-z0-9]` encodes as an underscore
+ * followed by two uppercase hex digits of its UTF-8 byte, so distinct source
+ * names never share a slug.  The escape width is fixed, which keeps the
+ * encoding uniquely decodable and therefore injective.
+ *
+ * The three built-in sources contain only `[a-z]`, so their slugs are
+ * unchanged: `datadog` is `DATADOG`, `betterstack` is `BETTERSTACK` and
+ * `generic` is `GENERIC`.
+ */
+export function credentialSlug(source) {
+  const name = String(source || "generic").toLowerCase();
+  let slug = "";
+  for (const byte of new TextEncoder().encode(name)) {
+    const char = String.fromCharCode(byte);
+    if (char >= "a" && char <= "z") slug += char;
+    else if (char >= "0" && char <= "9") slug += char;
+    else slug += `_${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return slug.toUpperCase();
 }
 
 /**
@@ -144,12 +176,60 @@ export function resolveCredential(env, source) {
   return null;
 }
 
+/**
+ * The secret variable names that are still missing for one source.
+ *
+ * The names are not secret; the values are.  An operator who cannot tell
+ * which variable to configure cannot configure it, so the failure names every
+ * variable that is absent or blank for this source, in the order the pairs
+ * are tried.  The list covers every candidate pair, so a source with more than
+ * one candidate names what is absent across all of them; it is only read when
+ * no pair resolved, so those are the names an operator has to set.
+ */
+export function missingCredentialNames(env, source) {
+  const missing = [];
+  for (const pair of credentialPairs(source)) {
+    if (!isConfigured(env, pair.email)) missing.push(pair.email);
+    if (!isConfigured(env, pair.apiKey)) missing.push(pair.apiKey);
+  }
+  return missing;
+}
+
+/** A variable counts as configured when it is a non-blank string. */
+function isConfigured(env, name) {
+  const value = env?.[name];
+  return typeof value === "string" && value.trim() !== "";
+}
+
 /** Structured failure for a source that has no credential of its own. */
-function credentialError(source) {
+function credentialError(source, missing = []) {
   const error = new Error("credential unavailable");
   error.code = "credential_unavailable";
   error.source = source;
   error.status = 503;
+  error.missing = missing;
+  return error;
+}
+
+/**
+ * A sanitized delivery failure.
+ *
+ * The upstream error is never echoed, because it can carry a credential or a
+ * response body from the Zulip API.  The caller sees a fixed message, the
+ * source, and a status code.  `outcome` keeps the distinction that matters
+ * for a retry: `refused` is definitive and may be retried, `unknown` means
+ * the write may have landed and must not be repeated blindly.
+ */
+function deliveryError(source, outcome, detail = {}) {
+  const error = new Error("status delivery failed");
+  error.code = "status_delivery_failed";
+  error.source = source;
+  error.status = 502;
+  error.outcome = outcome;
+  error.detail = {
+    code: Number.isInteger(detail.code) ? detail.code : null,
+    retryAfter: Number.isInteger(detail.retryAfter) ? detail.retryAfter : null,
+  };
   return error;
 }
 
@@ -224,28 +304,68 @@ function authorized(request, env) {
   );
 }
 
+/**
+ * The sources that own the incidents of a pre-routing topic.
+ *
+ * A pre-routing topic marker names a topic but not a source, so the sources
+ * are read from the incidents its legacy markers list.
+ */
+async function legacyTopicSources(env, channel, topic) {
+  const prefix = legacyIndexPrefix(channel, topic);
+  const legacy = await listAll(env.ALERT_STATE, prefix);
+  const sources = new Set();
+  for (const { name } of legacy) {
+    const key = name.slice(prefix.length);
+    sources.add(await resolveStateSource(env, key));
+  }
+  return [...sources].sort();
+}
+
 /** All tracked states for one source in one topic, with their service labels. */
 async function collectStates(env, source, channel, topic) {
   const prefix = indexPrefix(source, channel, topic);
-  const keys = { keys: await listAll(env.ALERT_STATE, prefix) };
-  // Parallel reads: serial get pairs cost 2N KV round-trips per call.
-  const fetched = await mapBounded(keys.keys, async ({ name }) => {
-    const key = name.slice(prefix.length);
+  const scoped = await listAll(env.ALERT_STATE, prefix);
+  const entries = scoped.map((entry) => ({ ...entry, prefix }));
+  // Records written before vendor routing carry an unscoped marker that names
+  // the incident but not the source, so the incident's own source decides
+  // which standing block it belongs in.  Reading both marker forms costs one
+  // extra list per topic, and the dedupe below is what keeps an incident
+  // that carries both from appearing twice.
+  const legacyPrefix = legacyIndexPrefix(channel, topic);
+  const legacy = await listAll(env.ALERT_STATE, legacyPrefix);
+  for (const entry of legacy) {
+    entries.push({ ...entry, prefix: legacyPrefix, legacy: true });
+  }
+  const fetched = await mapBounded(entries, async (entry) => {
+    const key = entry.name.slice(entry.prefix.length);
     const raw = await env.ALERT_STATE.get(stateKey(key), "json");
     if (!raw) return null;
+    if (entry.legacy) {
+      const owner = await resolveStateSource(env, key);
+      if (owner !== source) return null;
+    }
     const svc = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
     return { key, ...raw, service: svc, source };
   });
-  return fetched.filter(Boolean);
+  // The same incident can carry both markers, so rows are keyed by the alert
+  // key: without that the incident would appear twice in the standing block.
+  const byKey = new Map();
+  for (const row of fetched) if (row) byKey.set(row.key, row);
+  return [...byKey.values()];
 }
 
 /**
  * Read one topic-membership key.
  *
- * The key is `topic:<source>:<channel>:<topic>`.  The channel is checked
- * against the alerts channel because the worker only ever writes there, and
- * that check is also what keeps a pre-routing key (`topic:alerts:<topic>`)
- * from being misread as a source.
+ * The current key is `topic:<source>:<channel>:<topic>`.  The channel is
+ * checked against the alerts channel because the worker only ever writes
+ * there, and that check is also what keeps a pre-routing key
+ * (`topic:alerts:<topic>`) from being misread as a source.
+ *
+ * A pre-routing key is `topic:<channel>:<topic>` and carries no source.  It
+ * is read as a legacy membership of the generic source.  The current format
+ * is tried first, so a key whose source happens to be `alerts` is never
+ * mistaken for the legacy form.
  */
 function parseTopicKey(name) {
   if (!name.startsWith("topic:")) return null;
@@ -259,15 +379,44 @@ function parseTopicKey(name) {
   return { source, channel, topic };
 }
 
+/**
+ * Read a pre-routing topic-membership key.
+ *
+ * `topic:<channel>:<topic>` was written before vendor routing and carries no
+ * source, so it names a topic and nothing more.  The channel must be the
+ * alerts channel, the only channel this worker ever writes.  The sources of
+ * the topic are read from the incidents its legacy markers list.
+ */
+function parseLegacyTopicKey(name) {
+  if (!name.startsWith("topic:")) return null;
+  const parts = name.slice("topic:".length).split(":");
+  if (parts.length < 2) return null;
+  const [channel, ...rest] = parts;
+  const topic = rest.join(":");
+  if (channel !== DEFAULT_CHANNEL) return null;
+  if (!topic) return null;
+  return { channel, topic };
+}
+
 /** Every source that tracks one topic. */
 async function sourcesForTopic(env, channel, topic) {
   const keys = { keys: await listAll(env.ALERT_STATE, "topic:") };
   const sources = new Set();
   for (const { name } of keys.keys) {
     const parsed = parseTopicKey(name);
-    if (!parsed) continue;
-    if (parsed.channel !== channel || parsed.topic !== topic) continue;
-    sources.add(parsed.source);
+    if (parsed) {
+      if (parsed.channel !== channel || parsed.topic !== topic) continue;
+      sources.add(parsed.source);
+      continue;
+    }
+    // A pre-routing topic marker names a topic but not a source, so the
+    // sources are the owners of the incidents its legacy markers list.
+    const legacy = parseLegacyTopicKey(name);
+    if (!legacy) continue;
+    if (legacy.channel !== channel || legacy.topic !== topic) continue;
+    for (const owner of await legacyTopicSources(env, channel, topic)) {
+      sources.add(owner);
+    }
   }
   return [...sources].sort();
 }
@@ -300,8 +449,22 @@ async function collectTopics(env) {
   const pairs = new Map();
   for (const { name } of keys.keys) {
     const parsed = parseTopicKey(name);
-    if (!parsed) continue;
-    pairs.set(`${parsed.source}\u0000${parsed.topic}`, parsed);
+    if (parsed) {
+      pairs.set(`${parsed.source}\u0000${parsed.topic}`, parsed);
+      continue;
+    }
+    // A pre-routing topic marker names a topic but not a source, so it
+    // contributes one pair per source that owns an incident in that topic.
+    const legacy = parseLegacyTopicKey(name);
+    if (!legacy) continue;
+    const owners = await legacyTopicSources(env, legacy.channel, legacy.topic);
+    for (const owner of owners) {
+      pairs.set(`${owner}\u0000${legacy.topic}`, {
+        source: owner,
+        channel: legacy.channel,
+        topic: legacy.topic,
+      });
+    }
   }
   // Null-prototype maps: topic names come from vendor service labels, so a
   // topic literally named "constructor" or "__proto__" must not resolve to an
@@ -364,15 +527,51 @@ function ctStamp() {
 }
 
 /**
+ * A digest of what the standing block says, independent of the timestamp.
+ *
+ * The rendered content carries an "updated at" stamp, so it differs on every
+ * refresh.  Scoping the delivery outcome to that stamp would make every
+ * refresh a new delivery identity and defeat the idempotency guard, so the
+ * revision is computed from the rows themselves: the same rows need no new
+ * delivery, and changed rows are a new revision that may be delivered.
+ */
+async function statusRevision(states) {
+  const rows = states
+    .map((s) => [s.phase, s.severity, s.service, s.text, s.link])
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(rows)),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 16);
+}
+
+/**
  * Rewrite the standing status block for one source in one topic.
  *
  * The source decides both the credential and the message: a vendor never
  * touches another vendor's standing message, and a vendor with no credential
  * of its own writes nothing at all.
+ *
+ * The delivery outcome is scoped to the revision of the content, so a changed
+ * standing block is a new delivery and an unchanged one is not.  Only an
+ * `unknown` outcome blocks: it means the write may have landed, so repeating
+ * it blindly could post twice.  A `refused` outcome is definitive, so the row
+ * is released and a later attempt may try again, and the refusal code and
+ * retry hint are preserved for the operator.
+ *
+ * A failed delivery is never swallowed.  The outcome is recorded and a
+ * sanitized error is thrown, so the caller learns the standing block is not
+ * current instead of reading a successful return as a delivered one.
  */
 async function refreshStatus(env, source, channel, topic, options = {}) {
   const credential = options.credential || resolveCredential(env, source);
-  if (!credential) throw credentialError(source);
+  if (!credential) {
+    throw credentialError(source, missingCredentialNames(env, source));
+  }
   const states = await collectStates(env, source, channel, topic);
   const content = renderStatus({
     topic,
@@ -381,10 +580,12 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
     source,
   });
   if (!env.WRITER_STORAGE) throw new Error("durable writer required");
-  const outcomeKey = deliveryKey(source, channel, topic);
+  const revision = await statusRevision(states);
+  const outcomeKey = deliveryKey(source, channel, topic, revision);
   const prior = await env.WRITER_STORAGE.get(outcomeKey);
-  if (prior?.outcome === "unknown" || prior?.outcome === "refused")
-    return content;
+  // Only an unknown outcome blocks.  A refused outcome is definitive and was
+  // released, so a corrected credential or a later attempt may proceed.
+  if (prior?.outcome === "unknown") return content;
   let statusId =
     prior?.id ||
     Number(await env.ALERT_STATE.get(statusKey(source, channel, topic), "json")) ||
@@ -401,6 +602,7 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   await env.WRITER_STORAGE.put(outcomeKey, {
     outcome: "unknown",
     id: statusId,
+    revision,
   });
   try {
     const id = await writeStatus({
@@ -412,7 +614,7 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
       statusId,
     });
     if (id) {
-      await env.WRITER_STORAGE.put(outcomeKey, { outcome: "ok", id });
+      await env.WRITER_STORAGE.put(outcomeKey, { outcome: "ok", id, revision });
       await env.ALERT_STATE.put(
         statusKey(source, channel, topic),
         JSON.stringify(id),
@@ -420,12 +622,24 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
       await env.ALERT_STATE.put(statusOwnerKey(id), JSON.stringify(source));
     }
   } catch (error) {
-    if (error?.outcome === "refused") {
+    const outcome = error?.outcome === "refused" ? "refused" : "unknown";
+    const detail = {
+      code: Number.isInteger(error?.status) ? error.status : null,
+      retryAfter: Number.isInteger(error?.retryAfter) ? error.retryAfter : null,
+    };
+    if (outcome === "refused") {
+      // A refusal is definitive: nothing was delivered, so the row is
+      // released and a later attempt may try again.  The code and the retry
+      // hint are kept for the operator.
       await env.WRITER_STORAGE.put(outcomeKey, {
         outcome: "refused",
+        released: true,
         id: statusId,
+        revision,
+        ...detail,
       });
     }
+    throw deliveryError(source, outcome, detail);
   }
   return content;
 }
@@ -486,7 +700,9 @@ async function handleEvent(source, payload, env) {
   const sourceName = String(source || "generic").toLowerCase();
   const credential = resolveCredential(env, sourceName);
   // A source with no credential of its own posts nothing and writes nothing.
-  if (!credential) throw credentialError(sourceName);
+  if (!credential) {
+    throw credentialError(sourceName, missingCredentialNames(env, sourceName));
+  }
   const event = normalize(sourceName, payload);
   const channel = DEFAULT_CHANNEL;
   // Keep the original topic for a stable key when vendor labels change.  The
@@ -574,11 +790,34 @@ async function handleEvent(source, payload, env) {
 
   // Every outcome refreshes the standing status, which is what makes the
   // channel readable at a glance instead of by scrolling.
-  const status = await refreshStatus(env, sourceName, channel, topic, {
-    credential,
-  });
+  //
+  // A delivery failure is reported, not thrown.  The incident is recorded and
+  // the vendor's event was accepted, so the webhook must not fail over a
+  // standing block that could not be written; the caller is told the status
+  // is stale instead.
+  let status = null;
+  let statusDelivery = null;
+  try {
+    status = await refreshStatus(env, sourceName, channel, topic, {
+      credential,
+    });
+  } catch (error) {
+    if (error?.code !== "status_delivery_failed") throw error;
+    statusDelivery = {
+      outcome: error.outcome,
+      code: error.detail?.code ?? null,
+      retryAfter: error.detail?.retryAfter ?? null,
+    };
+    console.error(
+      JSON.stringify({
+        event: "alert.status_delivery_failed",
+        source: sourceName,
+        outcome: error.outcome,
+      }),
+    );
+  }
 
-  return { action: result.action, posted: !!posted, status };
+  return { action: result.action, posted: !!posted, status, statusDelivery };
 }
 
 /** Promote aged incidents.  Wire as a cron trigger. */
@@ -593,39 +832,37 @@ async function runSweep(env) {
   const dirtyTopics = new Map();
   for (const { name } of all.keys) {
     const key = name.slice("state:".length);
-    const prev = await env.ALERT_STATE.get(name, "json");
-    // Records written before vendor routing have no per-source indices, so
-    // the new readers cannot see them.  Recreate the indices here -- before
-    // the promotion below refreshes the standing status from them -- so a
-    // legacy incident is never announced while the dashboard still reports
-    // zero monitored incidents.  New incidents always carry their markers,
-    // so after one pass this is a single cheap existence check per state.
-    if (prev) {
+    // One incident can fail for many reasons, and none of them may abort the
+    // batch: a source lookup that throws, a credential that cannot be
+    // resolved, a state that cannot be read.  Every item is handled on its
+    // own, and the sweep continues with the next one.
+    try {
+      const prev = await env.ALERT_STATE.get(name, "json");
+      if (!prev) continue;
+      const source = await resolveStateSource(env, key);
+      // Records written before vendor routing have no per-source indices, so
+      // the new readers cannot see them.  Recreate the indices here -- before
+      // the promotion below refreshes the standing status from them -- so a
+      // legacy incident is never announced while the dashboard still reports
+      // zero monitored incidents.  New incidents always carry their markers,
+      // so after one pass this is a single cheap existence check per state.
       const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
       const topic = boundedTopic(service);
-      const source = await resolveStateSource(env, key);
       const marker = indexPrefix(source, DEFAULT_CHANNEL, topic) + key;
       if ((await env.ALERT_STATE.get(marker)) === null) {
         await env.ALERT_STATE.put(marker, "1");
         await env.ALERT_STATE.put(topicKey(source, DEFAULT_CHANNEL, topic), "1");
       }
-    }
-    const s = sweep(prev, now, { minOpenMs });
-    if (!s) continue;
-    const source = await resolveStateSource(env, key);
-    const credential = resolveCredential(env, source);
-    // No credential of its own means no post at all: the incident stays
-    // pending until the source has one, and it is never sent as another bot.
-    if (!credential) {
-      console.error(JSON.stringify({ event: "alert.credential_unavailable" }));
-      continue;
-    }
-    s.state = advanceRevision(prev, s.state);
-    try {
-      const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
-      // The same bounded topic the ingest path uses, so a long vendor label
-      // does not strand the promotion in a different topic.
-      const topic = boundedTopic(service);
+      const s = sweep(prev, now, { minOpenMs });
+      if (!s) continue;
+      s.state = advanceRevision(prev, s.state);
+      const credential = resolveCredential(env, source);
+      // No credential of its own means no post at all: the incident stays
+      // pending until the source has one, and it is never sent as another bot.
+      if (!credential) {
+        console.error(JSON.stringify({ event: "alert.credential_unavailable" }));
+        continue;
+      }
       await sendEventOnce(
         env,
         transitionIdentity(key, "announce", prev, s.state),
@@ -720,12 +957,18 @@ const handler = {
         return json({ error: "unauthorized" }, 401);
       }
       const segments = sourceStatusMatch ? sourceStatusMatch.slice(1) : null;
-      const channel = decodeURIComponent(
-        segments ? segments[1] : statusMatch[1],
-      );
-      const topic = decodeURIComponent(
-        segments ? segments[2] : statusMatch[2],
-      );
+      // A malformed percent-escape is a bad request, not a server error, so it
+      // is classified here rather than escaping as an unhandled URIError.
+      let channel;
+      let topic;
+      let source = null;
+      try {
+        channel = decodeURIComponent(segments ? segments[1] : statusMatch[1]);
+        topic = decodeURIComponent(segments ? segments[2] : statusMatch[2]);
+        if (segments) source = decodeURIComponent(segments[0]).toLowerCase();
+      } catch {
+        return json({ error: "invalid path" }, 400);
+      }
       // The bot only ever writes into the alerts channel.  Any other channel
       // is refused rather than written, whatever the operator token says.
       if (channel !== DEFAULT_CHANNEL) {
@@ -741,18 +984,37 @@ const handler = {
       if (segments) {
         // Source-aware refresh: one vendor's standing status, with that
         // vendor's own credential.
-        const source = decodeURIComponent(segments[0]).toLowerCase();
         if (!SOURCE_TOKEN.test(source)) {
           return json({ error: "unknown source", source }, 400);
         }
         if (!resolveCredential(env, source)) {
           return json(
-            { error: "credential unavailable", source },
+            {
+              error: "credential unavailable",
+              source,
+              missing: missingCredentialNames(env, source),
+            },
             503,
           );
         }
-        const content = await refreshStatus(env, source, DEFAULT_CHANNEL, topic);
-        return json({ source, channel: DEFAULT_CHANNEL, topic, content });
+        try {
+          const content = await refreshStatus(
+            env,
+            source,
+            DEFAULT_CHANNEL,
+            topic,
+          );
+          return json({ source, channel: DEFAULT_CHANNEL, topic, content });
+        } catch (error) {
+          // The standing block could not be written.  That is a bad gateway,
+          // not a silent success: the caller must not read the route as
+          // confirmation that the channel is current.
+          if (error?.code !== "status_delivery_failed") throw error;
+          return json(
+            { error: "status delivery failed", source, outcome: error.outcome },
+            502,
+          );
+        }
       }
       // The legacy route carries no vendor dimension, so it refreshes every
       // source that tracks the topic, each with its own credential.  A topic
@@ -766,23 +1028,56 @@ const handler = {
       // response that carries it.
       const rendered = Object.create(null);
       const unavailable = [];
-      for (const source of tracked ? sources : ["generic"]) {
-        if (!resolveCredential(env, source)) {
-          unavailable.push({ source, error: "credential unavailable" });
+      const failed = [];
+      // The sources are refreshed in parallel.  A serial loop made the
+      // response wait for every source's Zulip timeout in turn, so the route
+      // could take N times the timeout of a single source.
+      const results = await mapBounded(
+        tracked ? sources : ["generic"],
+        async (source) => {
+          if (!resolveCredential(env, source)) {
+            return { source, unavailable: true };
+          }
+          try {
+            return {
+              source,
+              content: await refreshStatus(
+                env,
+                source,
+                DEFAULT_CHANNEL,
+                topic,
+              ),
+            };
+          } catch (error) {
+            if (error?.code !== "status_delivery_failed") throw error;
+            return { source, failed: true, outcome: error.outcome };
+          }
+        },
+      );
+      for (const result of results) {
+        if (result.unavailable) {
+          unavailable.push({
+            source: result.source,
+            error: "credential unavailable",
+          });
           continue;
         }
-        rendered[source] = await refreshStatus(
-          env,
-          source,
-          DEFAULT_CHANNEL,
-          topic,
-        );
+        if (result.failed) {
+          failed.push({
+            source: result.source,
+            error: "status delivery failed",
+            outcome: result.outcome,
+          });
+          continue;
+        }
+        rendered[result.source] = result.content;
       }
       return json({
         channel: DEFAULT_CHANNEL,
         topic,
         sources: rendered,
         unavailable,
+        failed,
       });
     }
 
@@ -801,7 +1096,14 @@ const handler = {
     // posts nothing, writes no status, and never borrows another source's
     // identity.
     if (!resolveCredential(env, source)) {
-      return json({ error: "credential unavailable", source }, 503);
+      return json(
+        {
+          error: "credential unavailable",
+          source,
+          missing: missingCredentialNames(env, source),
+        },
+        503,
+      );
     }
 
     // Bytes, not UTF-16 code units: a non-ASCII body can be far larger in
@@ -824,7 +1126,11 @@ const handler = {
     } catch (error) {
       if (error?.code === "credential_unavailable") {
         return json(
-          { error: "credential unavailable", source: error.source },
+          {
+            error: "credential unavailable",
+            source: error.source,
+            missing: error.missing || [],
+          },
           503,
         );
       }
@@ -848,9 +1154,13 @@ export const __testing = {
   collectTopics,
   sourcesForTopic,
   parseTopicKey,
+  parseLegacyTopicKey,
   resolveStateSource,
   resolveCredential,
   credentialPairs,
+  credentialSlug,
+  missingCredentialNames,
+  statusRevision,
   safeEqual,
   stateKey,
   srcKey,
