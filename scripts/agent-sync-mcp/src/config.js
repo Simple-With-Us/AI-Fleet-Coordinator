@@ -10,7 +10,13 @@ import { DEFAULT_CALLBACK_HOSTS, isHostPattern } from "./events.js";
 
 // D1:  the only hostname this Worker answers on.  It is a constant, not a var,
 // so a config edit cannot widen the Host check.
-export const PUBLIC_HOST = "agent-sync.jays.services";
+//
+// Hard cutover (owner ruling, Oct 22, 2026):  the previous hostname,
+// agent-sync.jays.services, is NOT answered, aliased or redirected here.  Any
+// request naming it is refused like any other unknown Host (policy.js
+// `hostAllowed`, 404 at index.js).  Nothing may reintroduce a second accepted
+// host without a new owner decision.
+export const PUBLIC_HOST = "agents.simplewithus.com";
 export const ISSUER = `https://${PUBLIC_HOST}`;
 export const RESOURCE = `${ISSUER}/mcp`;
 export const RESOURCE_METADATA_URL = `${ISSUER}/.well-known/oauth-protected-resource/mcp`;

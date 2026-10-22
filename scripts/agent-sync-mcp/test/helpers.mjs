@@ -61,7 +61,7 @@ export function testEnv(overrides = {}) {
 
 export const CHATGPT_CLIENT = "https://chatgpt.com/oauth/client.json";
 export const CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
-export const RESOURCE = "https://agent-sync.jays.services/mcp";
+export const RESOURCE = "https://agents.simplewithus.com/mcp";
 export const CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
 export function authorizeParams(overrides = {}) {
@@ -85,7 +85,7 @@ export function authorizeParams(overrides = {}) {
   return params;
 }
 
-export const ISSUER = "https://agent-sync.jays.services";
+export const ISSUER = "https://agents.simplewithus.com";
 
 /**
  * The Origin header a browser sends on a form POST, per the Fetch Standard's

@@ -1,11 +1,11 @@
-"""MCP wrapper for the PR relay:  seats call tools, never see the GitHub token.
+"""GR-MCP:  the MCP wrapper for git-relay.  Seats call tools, never see the token.
 
 A minimal stdio JSON-RPC server implementing the MCP handshake subset seats
 need:  initialize, notifications/initialized, tools/list and tools/call.  The
 wrapper holds only the seat's own bearer token;  every call is forwarded to
-the relay over HTTP, where policy, rate caps and the audit log apply.
+git-relay over HTTP, where policy, rate caps and the audit log apply.
 
-Config:  PR_RELAY_URL (default http://127.0.0.1:8471), PR_RELAY_SEAT_TOKEN.
+Config:  GIT_RELAY_URL (default http://127.0.0.1:8471), GIT_RELAY_SEAT_TOKEN.
 """
 
 from __future__ import annotations
@@ -175,7 +175,7 @@ class RelayMcp:
 
     def __init__(self, relay_url: str, seat_token: str, opener=None):
         if not seat_token:
-            raise ValueError("PR_RELAY_SEAT_TOKEN is required")
+            raise ValueError("GIT_RELAY_SEAT_TOKEN is required")
         self._url = relay_url.rstrip("/")
         self._token = seat_token
         self._opener = opener or urllib.request.urlopen
@@ -190,7 +190,7 @@ class RelayMcp:
                 {
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "swu-pr-relay", "version": "1"},
+                    "serverInfo": {"name": "GR-MCP", "version": "1"},
                 },
             )
         if method == "tools/list":
@@ -256,8 +256,8 @@ def main() -> None:
     import sys
 
     server = RelayMcp(
-        os.environ.get("PR_RELAY_URL", "http://127.0.0.1:8471"),
-        os.environ.get("PR_RELAY_SEAT_TOKEN", ""),
+        os.environ.get("GIT_RELAY_URL", "http://127.0.0.1:8471"),
+        os.environ.get("GIT_RELAY_SEAT_TOKEN", ""),
     )
     for line in sys.stdin:
         if len(line) > MAX_LINE:
