@@ -1534,7 +1534,8 @@ try {
     assert.equal(consent.status, 302, await consent.clone().text());
     const loc = new URL(consent.headers.get("location"));
     const granted = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: c.verifier, redirect_uri: CHATGPT_REDIRECT, client_id: CHATGPT_CLIENT, resource: RESOURCE });
-    assert.equal(granted.status, 200, JSON.stringify(granted.body));
+    // Only the OAuth error code on failure, never the body (it would hold tokens on success).
+    assert.equal(granted.status, 200, String(granted.body?.error ?? ""));
     spikeTokens = granted.body;
 
     const discover = await mcpModern(spikeTokens.access_token, "server/discover");
