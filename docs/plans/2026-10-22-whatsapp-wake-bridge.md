@@ -1,0 +1,510 @@
+# AFC-477 WhatsApp Wake Bridge For Jet:  Proposal (pending approval)
+
+Thu, Oct 22, 2026, 6:35am.  Linear AFC-477.  Owner:  CLAUDE (session 75771c43).  Status:  proposal pending approval.  Nothing in this document is built, deployed or holding standing access.  The only live work approved so far is the second-event spike, and its exact scope is in section 13.
+
+Every component, route, key and tool name below is a working name.  Section 12 explains why, and lists the names that Jay and Jet choose.
+
+## 1. Status And What Changed
+
+This revision answers Jet's design review of 6:16am today (https://simplewithus.zulipchat.com/#narrow/near/633930063).  Jet's tools cut the 6:15am Zulip post off at section 5, so this file is the complete design.
+
+| Jet's point | Where it is answered |
+|---|---|
+| 1.  Publish the complete design | This file |
+| 2.  An explicitly verified Jay and chat binding, not first arrival, and the creator check explained | Section 6 |
+| 3.  Body retention apart from the 35-day dedupe ledger, recovery after a missed or lapsed wake, and what disabling send does | Sections 7, 8 and 9 |
+| 4.  Sources for the 30-day replay window and the retry-safe responses, and unknown sends never retried | Sections 10 and 11 |
+| 5.  Coexistence with the replacement and rename work | Section 12 |
+| 6.  The exact scope of the live spike, and what stays pending | Section 13 |
+
+What changed since the 6:15am post:
+
+- The creator pin by first arrival is gone.  Jay starts the binding from an authenticated page, Meta's creator check confirms it, and it is re-verified on a schedule (section 6).
+- Message bodies have their own retention, at most 7 days as proposed, and their own deletion path, apart from the 35-day ledger, which holds hashes only (section 7).
+- PR #844 was closed and superseded by #849, which merged at 6:04am today.  The hosted Worker is now ST-MCP and answers only at `agents.simplewithus.com` (section 12).
+- Placement and names are now choices for Jay and Jet, not assumptions (section 12).
+- The spike flag stays on after the test until Jay says otherwise.  This replaces "the flag goes off afterwards" in my 6:16am post (section 13).
+
+## 2. Summary
+
+Jay messages the WhatsApp agent he created for Jet.  One poller, the bridge, reads Meta's WhatsApp Agent Platform API.  It hands each new message from Jay's verified chat to the hosted MCP Worker over a signed call.  The Worker stores the message and sends a content-free MCP event to the subscription that Jet's existing ChatGPT conversation holds.  Jet then reads the message with one tool and replies with another.  The Worker queues the reply, and the bridge sends it.
+
+The event is only a doorbell.  The text never rides in the event and never touches Zulip, and the Worker deletes it on a short schedule.
+
+## 3. How A Wake Reaches Jet Today
+
+Zulip mention, then the server listener (being renamed the Operator in #851), then a signed `agent-sync-wake/1` POST to `/internal/wake/JET`, then the Worker verifies it (`scripts/agent-sync-mcp/src/wake.js:132`), claims the `wake_id` and POSTs a signed `zulip.mention` event to the callback of the live subscription (`src/events.js:598-622`), and ChatGPT runs a turn in the subscribed conversation.  PR #428 built this, merged Oct 10.  Jet confirmed the route live at 5:55am today (https://simplewithus.zulipchat.com/#narrow/near/633924850).
+
+Properties that shape this design, all in `scripts/agent-sync-mcp/src/events.js` at `2af99bec`:
+
+- There is one event name, `zulip.mention` (line 51), and any other name is refused (line 752).
+- There is one live subscription per seat, counted across every event name (line 55, enforced by `eventSubRoom` in `seat-state.js:709-729`).
+- Delivery is by webhook only, with no replay.  An event sent while nobody is subscribed is gone (lines 11-13).
+- A subscription lasts 24 hours by default, from 1 hour to 7 days (lines 56-58), and gets no delivery once it is past its `refreshBefore` (lines 23-26).
+- `fanOut` does not check the subscription's event name (lines 598-622), so a second event without a name filter would cross-deliver.
+- A wake with no live subscriber settles as `no_subscriber` or `not_live`, and the reply says `delivered: 0` (lines 625-638 and 699-704).
+- Outbound fetches run in the Worker request, never inside the SeatGate Durable Object (lines 43-45).
+
+## 4. Feasibility And The One Untested Step
+
+It is feasible through a supported route:  a second MCP event (working name `whatsapp.message`) on the connector that Jet's conversation already subscribes to.
+
+The untested step is whether ChatGPT lets one conversation hold a second event subscription next to `zulip.mention`, and whether the callback URL is the same for both.  The spike in section 13 settles that with a content-free test event, before anything WhatsApp-related is built.
+
+If the spike fails, the fallbacks in order are:
+
+1. A separate connector for the WhatsApp event.  That is a second OAuth surface, and whether its events land in the same conversation needs its own test.
+2. A scheduled poll by Jet, if Jet confirms that a scheduled run lands in the existing conversation.
+
+Rejected:
+
+- A content-free Zulip mention as the carrier.  It leaks existence and timing into Zulip and spends Jet's Zulip wake budget.  It stays rejected unless Jay asks for it.
+- The Workspace Agents trigger API.  Nothing shows Jet is a published workspace agent.
+- The `whatsapp-agent` package's own MCP server.  It has no auth and acts as a second poller (section 15).
+
+## 5. Architecture
+
+Three parts, kept distinct as Jet asked:  the poller and sender, the store and tools, and the event.
+
+### The bridge (poller and sender, working name `wa-bridge`)
+
+- It is the only process that holds the WhatsApp API key, the only poller and the only sender.
+- It long-polls `GET /agent/v1/updates` with `timeout=25` and `limit` of at most 100 (manual section 2, p. 10).
+- It saves `next_offset` with fsync only after the Worker confirms it stored the batch.  Until then it re-polls the same offset, which is safe because polling does not consume entries (p. 16).
+- It sends each batch to the Worker over a signed outbound HTTPS call:  contract `wa-bridge/1`, HMAC-SHA256 over the raw body in a header, a 5-minute window, and its own key.
+- It pulls queued replies from the Worker and sends them one at a time (section 10).
+- It sends a signed, content-free heartbeat every 60 seconds.
+- It has no inbound port.  Message bodies stay in memory only for the batch in flight, and never reach its disk or its logs.
+- Where it runs is a choice (section 12).
+
+### The Worker module (store, event and tools)
+
+- One self-contained module in the hosted MCP Worker (today ST-MCP, Worker script `agent-sync-mcp`), registered through a small interface (section 12).
+- Signed routes, working paths:  `POST /internal/wa-ingest/JET`, `GET /internal/wa-outbox/JET` (held open up to 25 seconds), `POST /internal/wa-outbox/JET/result` and `POST /internal/wa-heartbeat/JET`.
+- It stores messages, the binding, the dedupe ledger and the send ledger in `wa_`-prefixed tables (section 7).
+- Ingest is idempotent:  insert-or-ignore on the message id.  Only newly stored messages count toward a wake.
+- Wake ids use their own `wa:` namespace, apart from Zulip's `wake_seen`.
+- The event carries metadata only:  seat, wake id, pending count, oldest and newest receive times, held and unknown reply counts, and the binding state.  No text and no ids.
+- Three tools, for seat JET only:
+  - `whatsapp_read(since?, limit, ack_through?)`, with `limit` at most 50.  It returns pending messages oldest first, with text inside a fence marked as untrusted data, plus the state of each reply.
+  - `whatsapp_reply(text, client_ref, reply_to?)`.  It is idempotent on `client_ref`, has no recipient argument, and returns an `intent_id` and its state.
+  - `whatsapp_send_status(intent_id?, action?)`, where `action` is `release` or `cancel` for a held reply (section 9).
+- The binding controls, the switches and a content-free health view are on `/admin`, which sits behind the path-scoped Cloudflare Access app that the Worker re-verifies (`scripts/agent-sync-mcp/README.md:42`).
+
+### Unchanged
+
+The listener and Operator, `daemon.py`, `[seat.JET]`, `agent-sync-wake/1`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET`, `JET_ROUTINE_KEY`, the `zulip.mention` schema, its subscription ids, and its tests, including `test_a_jet_mention_wakes_the_hosted_worker_with_an_hmac_signed_body` (`scripts/agent_sync/tests/test_server.py:1433`) and "one live destination per seat" (`scripts/agent-sync-mcp/test/events.test.mjs:433`).
+
+Two existing Worker behaviours change, each with regression tests, and the spike exercises both first:  delivery filters by event name, and the cap becomes one conversation per seat with one subscription per event name, so a second conversation is still refused.
+
+### Kept out of Zulip
+
+All WhatsApp text, sender and message ids, and timing.  No relay or carrier post, no seat inbox, no held-back digest.  Alerts carry no content and go to Sentry.
+
+### Wake budget (proposed, Jay decides)
+
+Separate from the Zulip budget.  Messages within 30 seconds share one ring.  There is one outstanding ring at a time, re-rung after 10 minutes if still unacknowledged.  At most 20 rings an hour and 100 a day.  Over budget, messages are held in the store and rung later, never dropped.
+
+## 6. Jay's Chat Binding And The Creator Check
+
+### What Meta's manual guarantees
+
+| Guarantee | Source (Meta manual v1, see section 11) |
+|---|---|
+| The API token identifies one agent. | Authentication, p. 4 (L171) |
+| An agent may send only to its creator.  `to` must be the creator's `user:<id>`, and anything else is refused with HTTP 403 and `error.code` 131005. | Section 1 request parameters, p. 6 (L289-298);  section 5 send errors, p. 25 (L2045-2050);  error reference, p. 28 (L2250-2256) |
+| A message can be marked read only if the creator sent it.  A read receipt on anyone else's message is refused with 403 and 131005. | Section 3 `message_id`, p. 16 (L1292-1300);  section 5 statuses errors, p. 27 (L2145-2146);  error reference, p. 28 (L2250-2256) |
+| Identifiers are opaque and compared in full.  They refer to an account rather than a person, and may change, for example after a phone number change or a re-registration. | Participant identifiers, p. 4 (L183-186);  Stability, p. 5 (L215-227) |
+| Rotating the token invalidates the old one, and uninstalling the app forces a new token. | Authentication, p. 4 (L169);  Quick start, p. 3 (L66) |
+
+### What the manual does not say
+
+These are assumptions, so the design does not rely on them:
+
+- That only the creator can send messages to the agent.  The manual restricts our outbound sends and our read receipts to the creator, but says nothing about who can reach the agent inbound.  The bridge therefore treats any other sender as possible, and quarantines it.
+- That the creator is Jay.  The manual knows only "the agent's creator", the WhatsApp account that made the agent in Settings > Agents (p. 3, L56-61).  That this account is Jay's own is a fact only Jay can confirm, which is why the binding needs an explicit step from him.
+- Whether creator status follows an account across a number change or a re-registration.
+
+So "creator-only messaging" fully covers the outbound direction.  Even a buggy bridge or a prompt-injected Jet cannot message anyone but the creator, because Meta refuses it.  For the inbound direction it gives a documented test, the read receipt, but no guarantee.  The binding combines that test with an explicit step by Jay.
+
+### Establishing the binding (proposed)
+
+1. Jay opens `/admin` (Cloudflare Access, re-verified by the Worker) and presses Start WhatsApp Binding.  The Worker makes a one-time code of 8 characters from an unambiguous alphabet, keeps only its HMAC, and shows it only on that page.  The window lasts 10 minutes, the code works once, and three wrong attempts close the window.
+2. Jay sends exactly that code, from his own phone, in the agent's WhatsApp chat.
+3. While a window is open, the bridge sends the Worker only the sender id, the message id and a hash of each new text message, never the body.  Outside a window, and before any binding exists, nothing from WhatsApp is stored or woken.
+4. When a hash matches, the Worker asks the bridge to run the creator check on that message:  `POST /agent/v1/statuses` with `status: "read"`.
+   - 200 means Meta accepted a read receipt, which it allows only on the creator's messages, so the sender is the creator.
+   - 403 with 131005 means the sender is not the creator.  The binding is refused, the window closes, and a content-free alert goes out.
+   - 500, 503 or a timeout is inconclusive, because the message may already be marked read (p. 27, L2150-2155).  The bridge repeats the check up to three times with backoff, as the manual says to for those codes.  If it is still inconclusive, no binding is made and Jay starts again.
+5. Both checks passed, the Worker records the binding:  the agent id (`entry[].id`, p. 10, L710-712), the sender's full `user:<id>`, the bound time, `verified_via: code+creator_check`, the last check time and a binding epoch.  The bridge keeps a copy, because it needs the id for `to`.  `/admin` shows the bound time, the last check and a short fingerprint, never the id itself.
+6. Nothing received before the bound time ever wakes Jet, including the code message.
+
+Never:  a binding by first arrival, by message content alone, by Jet, by a peer, or by anything posted in Zulip.
+
+### Re-verifying the binding
+
+- Every inbound message:  the sender must equal the bound id in full, and the poll's agent id must equal the bound agent id.  Anything else is quarantined:  not stored, not forwarded and not woken, only counted, with a content-free alert.
+- Every send:  `to` is always the bound id.  A 403 with 131005 on a send marks the binding `suspect`.  Sending stops, queued replies become held (section 9), and Jay is alerted to re-bind.
+- Scheduled re-check:  the creator check runs again on the first bound message after every bridge start, after any token rotation, and at least every 7 days, on the next inbound message.  It runs only on a message the Worker has already stored, because marking a message read may delete it from Meta's buffer (p. 16, L1231-1233).  A 403 marks the binding `suspect`.  Side effect:  each re-check shows Jay a read receipt on that one message.
+- An identifier change (p. 5, L215-227) shows up as Jay's messages arriving from an unbound sender.  They are quarantined, Jay is alerted, and he re-binds with a new code.  A new agent, with a new agent id, voids the binding the same way.
+- Unbinding is one button on `/admin`.  Wakes and sends stop at once, and stored bodies follow section 7 unless Jay purges them.
+
+States:  `unbound`, then `binding` while a window is open, then `bound`, then `suspect` after a failed re-check.  Only Jay moves a binding out of `suspect`, by unbinding or by starting a new window.
+
+## 7. Message Storage, Retention And Deletion
+
+Two different things are kept, for different reasons:
+
+- **Message bodies**, briefly, so that Jet can read them.  At most 7 days, as proposed.
+- **The dedupe ledger**, 35 days, with no bodies.  It holds keyed hashes of message ids, so that a replay of Meta's 30-day buffer can never wake Jet twice.
+
+| Store | What it holds | Where | How long | Who can read it | How it is deleted |
+|---|---|---|---|---|---|
+| Meta's update buffer | Every inbound message and receipt | Meta | 30 days from storage.  A message marked read may go sooner (p. 4, L154;  p. 16, L1229-1233).  Media lasts 30 days (p. 24, L1907). | Meta, and whoever holds the API key | Meta's expiry.  The API offers no delete for text messages. |
+| Bridge memory | The bodies of the batch in flight, and one reply's text during its send | The bridge process | Seconds | The bridge user and root on its host | Process memory only, with core dumps off.  Swap is a residual risk on a shared host. |
+| Bridge state | Offset, activation time, the binding copy, a ring of keyed message-id hashes, and the local send ledger (intent id, state, body hash, sent message id).  No bodies. | A 0700 state directory on the bridge host | Hashes and ledger rows 35 days | The bridge user and root | Swept at start and hourly.  The directory is wiped at decommission. |
+| Worker inbox | Inbound text (at most 4,096 characters), message id, time, type and reply-to id | ST-MCP Worker, SeatGate Durable Object (or its own class, section 12) | 7 days from receipt, or 24 hours after Jet acknowledges it, whichever is first (proposed, Jay decides) | Seat JET through `whatsapp_read`, for the bound sender's messages only | Hard row delete (below) |
+| Worker outbox | Jet's reply text | Same | Until the reply is final (`sent`, `refused`, `cancelled` or `expired`), then deleted at once.  A held reply expires unsent after 24 hours.  An `unknown` reply's text goes after 24 hours, and Jet still has its own copy. | Seat JET through `whatsapp_send_status` (state, never text) | Same |
+| Dedupe ledger | HMAC-SHA256 of each message id under a Worker key, and the receive time | Same | 35 days from receipt:  Meta's 30 days plus 5 days of margin | The Worker only | Same sweep |
+| Send ledger | Intent id, a hash of `client_ref`, state, attempts, times, body hash, sent message id, delivered and read times | Same | 35 days | Seat JET through `whatsapp_send_status`;  counts on `/admin` | Same sweep |
+| Audit rows | Event kind, counts and hashes | Same | The existing 90-day audit (`seat-state.js:159`) | `/admin` | The existing sweep |
+| Event payloads | Counts, times and states only | OpenAI, in Jet's conversation | OpenAI's retention | Jet's conversation | No content to delete |
+| Jet's conversation | Whatever Jet reads with `whatsapp_read` | OpenAI (ChatGPT) | OpenAI's retention for that conversation | Jay's ChatGPT account | Outside this system.  It is a decision for Jay (section 19). |
+| Zulip | Nothing | | | | |
+| Sentry | Codes, counts and states.  No bodies, no ids. | Sentry | The plan's retention | Org members | Sentry's |
+
+### Deletion
+
+- An expired body is never returned, even before the sweep reaches it.
+- An hourly sweep hard-deletes expired rows.  It runs from the bridge heartbeat request, or from a storage-only Durable Object alarm, which fits the rule that SeatGate methods stay storage-only (`events.js:43-45`).
+- `/admin` gets a Purge All WhatsApp Content button.  Decommissioning purges every `wa_` table, deletes the Infisical secrets, wipes the bridge state and rotates the WhatsApp key.
+- A body unread at 7 days is deleted and leaves a stub (`expired_unread` and its receive time), so Jet's next read reports it.  Jay gets a content-free alert when that happens.
+
+### The point-in-time recovery caveat
+
+SeatGate is a SQLite-backed Durable Object (`scripts/agent-sync-mcp/wrangler.jsonc:66`).  Cloudflare documents point-in-time recovery for those, to any point in the past 30 days (Cloudflare docs, Durable Objects, "SQLite Storage API", section "PITR (Point In Time Recovery) API").  So someone who can deploy code to the Worker could restore a deleted body for up to 30 days.  Two options for Jay:
+
+- **Accept it.**  "Deleted" then means unreadable through every tool at once, and restorable by a Worker deployer for 30 days.
+- **Crypto-shred it (recommended).**  Each body is encrypted with AES-GCM under a per-day data key kept in Workers KV, with an expiry equal to the 7-day cap.  Once that key expires, a restored copy is unreadable, so 7 days becomes a hard bound.  This rests on assumption A10 (section 11).
+
+### Who can read what
+
+- Through the Worker, only seat JET can read bodies, with `whatsapp_read`, and only the bound sender's messages.  `/admin` shows counts and states, never bodies.
+- Anyone who can deploy the Worker could, in principle, ship code that reads the store.  Today that is Jay's Cloudflare account and its deploy credentials.
+- Meta can read everything in the agent chat.  The earlier research reads Meta's agent terms as saying agent chats are not end-to-end encrypted (unverified here, assumption A8).
+- Once Jet reads a message, the text is in Jet's ChatGPT conversation, under OpenAI's retention, outside this system.
+
+## 8. Missed Or Lapsed Wakes:  Recovering Queued Messages
+
+The store is the record, not the event.  A message stays pending until Jet acknowledges it, and the Worker keeps ringing, within the budget, until Jet does.
+
+- **Acknowledgement.**  `whatsapp_read` returns pending messages oldest first.  Jet acknowledges with `ack_through=<seq>` on its next `whatsapp_read` or on `whatsapp_reply`.  A turn that reads and then dies loses nothing.
+- **A delivered ring** (`delivered` of 1 or more):  the state becomes `ringing`.  If nothing is acknowledged within 10 minutes, the Worker rings once more.
+- **`delivered: 0`** (no subscriber, a lapsed or revoked subscription, or a failed delivery):  the state becomes `undelivered`.  The Worker tries again at 1, 5, 15, 30 and 60 minutes, then hourly, within the budget.  Outbound delivery has to run in a Worker request (`events.js:43-45`), so these retries ride the bridge's signed 60-second heartbeat.  If Jay wants re-rings while the bridge itself is down, a Worker cron trigger every 5 minutes is the backstop.  That trigger is new, so it is an ops change.
+- **Re-subscribing.**  Whenever Jet's conversation subscribes to or refreshes the WhatsApp event while messages are pending, the Worker rings once right after it stores the subscription.
+- **The 24-hour expiry.**  ChatGPT has to refresh the subscription, which lasts 24 hours by default (`events.js:56`).  A lapse loses rings, never messages.  The messages wait in the store, and the next ring or any `whatsapp_read` finds them.
+- **Long gaps.**  If messages are pending and no ring has been delivered for 6 hours, a content-free Sentry alert goes out, and again at 24 hours.  Opening Jet's conversation renews the subscription and triggers the catch-up ring.
+- **Expiry before reading.**  The stub and alert in section 7.
+- **The bridge is down.**  Messages wait in Meta's buffer for up to 30 days (p. 16, L1229-1231) and are read from the saved offset on restart.  Sentry Crons alerts on a missed check-in after 10 minutes.  Past 30 days Meta expires them, and nothing can recover them.
+- **The bridge loses its state.**  It replays from `offset=0` (p. 15, L1214-1218).  The Worker's 35-day ledger and the binding time stop old messages from waking Jet again.
+
+## 9. Switches, And What Disabling Send Does
+
+Three switches, all off by default:  POLL, WAKE and SEND.  Each is an Infisical knob that the bridge reads about every 60 seconds, and each also has a Worker admin switch that takes effect at once.  A local disable file stops the bridge at once.
+
+- **POLL off.**  The bridge stops polling.  Messages wait in Meta's buffer for up to 30 days, and polling resumes from the saved offset.
+- **WAKE off.**  Messages are still stored, nothing rings, and Jet can still read them.  Turning WAKE back on rings once if anything is pending.
+- **SEND off** (recommended behaviour):
+  - The Worker's outbox route hands out nothing from the moment the switch flips, and the bridge checks the switch again before each send.
+  - At most one send can be in flight, because sends run one at a time.  It finishes, and its result is recorded as usual (`sent`, `refused` or `unknown`).  It cannot be recalled.
+  - Replies already queued stay queued, marked `held` with reason `send_disabled`.  They are never sent while SEND is off.
+  - New `whatsapp_reply` calls are accepted and recorded as `held`, and the answer says so plainly.
+  - Jet sees held replies in `whatsapp_send_status`, in every `whatsapp_reply` answer, and as a count in the next event.
+  - When SEND comes back on, held replies are not sent automatically.  Jet releases each one with `whatsapp_send_status(intent_id, action: "release")`, or cancels it.  A held reply expires unsent 24 hours after it was queued, and its text is deleted.  The reason:  a reply written hours earlier may no longer be right.  Jay may prefer automatic release for replies held less than, say, 30 minutes.
+  - An `unknown` reply is never retried, whatever the switch says.
+
+A binding in the `suspect` state holds replies the same way.
+
+## 10. Sending And Uncertain Outcomes
+
+The ledger states are `queued`, `claimed`, `sending`, and then one of `sent`, `refused` or `unknown`, plus `held`, `cancelled` and `expired`.  The bridge writes `claimed`, and then `sending`, to its own state with fsync before the POST, so that a restart can tell "never sent" from "maybe sent".
+
+| Outcome | What it means | Our state | Retried? | Source |
+|---|---|---|---|---|
+| 2xx with `messages[].id` | Sent | `sent`, with the message id stored | Never | "Retrying a send", p. 9 (L614);  section 5, p. 25 (L1992-1993) |
+| 429 (`error.code` 130429) | Not sent, and may be retried after backing off | Back to `queued` | Yes, at most 3 attempts in all, then `refused` | p. 9 (L615-616);  p. 26 (L2061);  p. 28 (L2247-2248) |
+| 503 with `error.code` 131016 | Not accepted for delivery, so not sent | Back to `queued` | Yes, same cap | p. 9 (L617-619);  p. 26 (L2068-2070);  p. 28 (L2264-2265) |
+| 503 without 131016, or a body that cannot be parsed | Not documented | `unknown` | Never (assumption A3) | None |
+| 500 | It may or may not have been sent | `unknown` | Never (see the note below) | p. 9 (L620-622);  p. 26 (L2063-2066) |
+| A connection reset, or our own read timeout | Unknown whether it was sent | `unknown` | Never | p. 9 (L620-625) |
+| The TCP or TLS connection never opened, so no request byte was written | Not documented by Meta.  The request never left the bridge. | Back to `queued` | Yes, same cap (assumption A4).  The conservative alternative is `unknown`. | None |
+| Any other 4xx (400, 401, 403) | Not sent, and retrying unchanged fails the same way | `refused` | Never | p. 9 (L615);  p. 25 (L1995-2050) |
+| A restart finds `sending` | Unknown | `unknown` | Never | Follows from p. 9 (L620-622) |
+| A restart finds `claimed`, so the POST never started | Not sent | Back to `queued` | Yes | The bridge's own write-ahead state |
+| The Worker holds a claim with no result after its 5-minute lease, and the bridge has no state to ask | Unknown | `unknown` | Never | None |
+
+**Note on 500.**  The send-errors table says to retry a 500 with exponential backoff and points to "Retrying a send" (p. 26, L2063-2066).  That section says a 500 leaves it unknown whether the message was sent, that a retry may send it twice, and to decide in advance whether to retry (p. 9, L620-622).  This design decides in advance:  never.
+
+An `unknown` reply shows up for Jet in the tools and in the next event.  Jet may resend only with `resend_of=<intent_id>` and an explicit acknowledgement that Jay may receive it twice, and only when Jay asks for that.  Nothing retries an unknown send automatically.
+
+Also:
+
+- One send at a time, because Meta does not guarantee order between concurrent sends to one recipient (p. 9, L608).
+- At most 10 sends a minute, against Meta's limit of 12 (p. 4, L132-136;  p. 28, L2280-2281).
+- `whatsapp_reply` is idempotent on `client_ref`.  A repeat returns the same intent and sends nothing new.
+- The read timeout is 60 seconds.  The manual asks for one "significantly higher" than a normal send but gives no figure (p. 9, L624-625;  assumption A5).
+- A 403 with 131005 on a send marks the binding `suspect` (section 6).
+- A 400 with code 100 or a 401 with code 190 (the token is invalid or missing, p. 4, L173-180) sets `auth_failed`.  Polling and sending stop, and Jay is alerted.
+
+## 11. Sources And Assumptions
+
+### Sources
+
+- **Meta manual:**  "WhatsApp Agent Platform Developer manual", version 1, August 25, 2026.  PDF of 249,851 bytes, sha256 `ba677cdb476b52c9126a0e7565616131104f240b461428e8b388059a71c506e0`, fetched from a whatsapp.com link that redirects to Meta's CDN.  It is byte-identical to `docs/Agent Platform Guide.pdf` in the `whatsapp-agent` repository.  Page numbers are the manual's printed page numbers.  `L` numbers are lines of `pdftotext -layout` output of that PDF (2,299 lines), so anyone can reproduce them.
+- **Package:**  `whatsapp-agent` 0.1.0, sdist from PyPI (sha256 `91efe1809fd07f0843fae838c07e7b4f361e06fa1fae5e8ce034b24f02d14fe4`).  Paths are under `src/whatsapp_agent/` unless shown otherwise.  Read as text only, never run or imported.
+- **This repository:**  `main` at `2af99bec`.
+- **Cloudflare:**  developers.cloudflare.com, Durable Objects, "SQLite Storage API", section "PITR (Point In Time Recovery) API".
+
+### Claims and where they come from
+
+| Claim | Source |
+|---|---|
+| The 30-day replay window | Quick reference, "Update retention:  30 days", p. 4 (L154);  "Starting a new agent", where `offset=0` "replays up to 30 days of backlog", p. 15 (L1214-1218);  "Retention", where entries are kept 30 days from storage, polling does not consume them, and a message marked read may be deleted, p. 16 (L1229-1233) |
+| Re-polling an offset is safe, and a 204 has no `next_offset` | p. 16 (L1229-1231 and L1238-1242);  p. 26 (L2083-2085) |
+| Omitting `offset` reads from the head, and should be done once only | p. 10 (L660-673);  p. 15 (L1209-1213) |
+| Store `next_offset` as a signed 64-bit integer and pass it back unchanged | p. 14 (L1113-1115) |
+| Receipts and messages share one sequence | p. 14 (L1109-1111) |
+| One poller per agent:  a second one gets 409 with code 1752041 | p. 26 (L2099);  p. 28 (L2271-2272) |
+| 15 polls a minute | p. 26 (L2101-2102);  p. 28 (L2286-2287) |
+| Which send responses are safe to retry | Section 10 table:  p. 9 (L611-625), p. 25-26 (L1987-2070), p. 28 (L2247-2248 and L2264-2265) |
+| Creator-only sending and read receipts | Section 6 table |
+| Text bodies of at most 4,096 characters | p. 4 (L138);  p. 7 (L408-411) |
+| The agent and token are set up in WhatsApp, and uninstalling forces a new token | p. 3 (L56-66) |
+
+### Assumptions (not documented)
+
+- **A1.**  Only the creator can message the agent.  Not documented, and the design does not rely on it (section 6).
+- **A2.**  A message id is unique for the agent's lifetime, so it works as the dedupe key.  The manual calls it a "server-assigned message id" (p. 8, L505-510;  p. 11, L800-805) without saying it is unique.
+- **A3.**  A 503 on a send without code 131016 is not safe to retry.  Undocumented, so it is treated as unknown.
+- **A4.**  A connection that never opened means nothing was sent.  That is our reasoning, not Meta's documentation.  If Jay or Jet prefer, it becomes `unknown` too.
+- **A5.**  60 seconds is "significantly higher" than a normal send.
+- **A6.**  A 429 may carry `Retry-After`.  The manual does not mention the header.  The bridge honours it when present and otherwise backs off exponentially.
+- **A7.**  Meta's 30 days are counted from storage on Meta's clock.  The 35-day ledger adds 5 days of margin for clock skew and slow expiry.
+- **A8.**  Meta's agent terms say that agent chats are not end-to-end encrypted, that a user may have up to 5 agents, that Meta may cap, suspend or remove agents, that reverse engineering is banned, and that the rollout is a beta in some countries.  This comes from the earlier research pass on Meta's Third-Party Agents Terms.  It was not re-verified for this revision and is not cited to a section, so treat it as unverified until it is.
+- **A9.**  ChatGPT accepts a second event subscription in the same conversation, with a stable callback URL.  The spike tests this.
+- **A10.**  Workers KV keeps no point-in-time copy of an expired key, which the crypto-shred option relies on.  To confirm against Cloudflare's documentation before relying on it.
+
+### What the package does that the bridge must not
+
+- `transport.py:82-84` retries any 503 whenever `auto_retry_not_accepted` is set, without checking for 131016, and `client.py:170-176` sets it on every send.  The docstring at `errors.py:79-82` calls a 503 always safe to retry.  The bridge retries a 503 only with code 131016.
+- `client.py:373-374` catches every API error and polls again after 2 seconds, including the invalid-token errors (`errors.py:49`, `errors.py:86` and `errors.py:137-138`), so a bad key loops forever.  The bridge stops on 400 with code 100 and 401 with code 190.
+- `client.py:391` moves the offset forward before the caller has the batch, and `client.py:397-398` marks a message read before the handler runs.  A crash then loses messages, and the read receipt may delete them from Meta's buffer.  The bridge advances only after the Worker stores the batch, and marks read only for the creator check, on stored messages.
+- `client.py:22` and `client.py:30` load a `.env` file at import.
+- `mcp/server.py:130-160` exposes `wa_get_updates`, a second poller that Meta answers with 409, and `wa_mark_read`.  `mcp/server.py:97-127` reads and writes any local path.  `cli.py:43-46` serves HTTP on 127.0.0.1:8765 with no auth option.
+- `pyproject.toml:37` (sdist root) requires `mcp>=1.2.0` with no upper bound.
+
+## 12. Coexistence With The Replacement And Rename Work
+
+### Where the related work stands (checked at about 6:25am today)
+
+| PR | State | What it means here |
+|---|---|---|
+| #844, the Worker host move (Echo) | Closed.  Superseded by #849, which merged at 6:04am. | The hosted Worker is ST-MCP and answers only at `agents.simplewithus.com`.  The old host gets a 404, with no alias or redirect.  The Worker script name stays `agent-sync-mcp` so that the `agent-sync-mcp.SeatGate` Durable Object namespace keeps its state (`wrangler.jsonc:15-24`).  Remote clients must reconnect and re-authorize.  #849 says it was not deployed. |
+| #851, Operator rename (MM) | Open, conflicting, changes requested | The listener becomes the Operator (`com.jay.operator`, `operator.service`).  `listener_*` tools become `eavesdropper_*` with no aliases.  Seats may not open DMs (`dm_policy.py`).  Python module names, the `/listener/v1/` read API, the hosted host and CLI binary names are left for later. |
+| #837, hosted listener on Hetzner | Open, preparation only | Moves the listener daemon and its signed read API to a Coolify app on Hetzner.  It says "Nothing about the bridge changes;  seats keep using the Worker MCP as today."  Its layout is "Operator decides, GHR and agent-sync execute".  GHR is now git-relay and GR-MCP (#848). |
+| #846, Muster Wake Settings (MM) | Open | Reads `~/.agent-sync/listener.toml` and the wake ledgers, and edits seat wake settings and the Operator options. |
+
+What is being renamed or retired:  the agent-sync listener and daemon naming (now the Operator), the `listener_*` tools, the `agent-sync.jays.services` host, `[seat.JET]` in `listener.toml`, and probably in time the listener-to-Worker wake path (`agent-sync-wake/1`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET` and `JET_ROUTINE_KEY`).
+
+What persists for now:  a hosted MCP Worker as the service plane (ST-MCP today), its SeatGate namespace, and MCP Events delivery into Jet's subscription.
+
+### Rules this design follows
+
+1. **No dependency on retiring surfaces.**  The bridge uses none of these:  `daemon.py`, `listener.toml` or `[seat.JET]`, `agent-sync-wake/1`, `/internal/wake/<SEAT>`, `WAKE_HMAC_KEY_JET`, `JET_ROUTINE_KEY`, the `listener_*` or `eavesdropper_*` tools, the `/listener/v1/` read API, or the Operator's wake ledger and budgets.  Renaming or retiring any of them does not touch the bridge, and the bridge does not block the Operator.
+2. **One module behind one interface.**  Everything WhatsApp-related in the Worker lives in one directory (working path `scripts/agent-sync-mcp/src/wa/`) and is registered through one call that adds an event definition, three tool specs, the internal routes and its storage tables.  Existing files change only at the registration points (the event registry, route dispatch, policy classification and the tool list), and tests cover each one.  If ST-MCP is renamed, split or replaced, the module moves as a unit.  If it moves to a different Worker, the bridge changes only its configured base URL and key.
+3. **Storage that can move.**  The tables carry a `wa_` prefix.  A Durable Object namespace cannot be renamed without orphaning its state (`wrangler.jsonc:15-24`), so a move is planned as a drain:  SEND off, let bodies be acknowledged or expire, then export the binding and the ledger hashes to the successor.  Short body retention keeps that move cheap.  Whether the tables sit in SeatGate or in their own Durable Object class is part of the placement choice below.
+4. **No host in code.**  The bridge reads its base URL from configuration, today `https://agents.simplewithus.com`.
+5. **Neutral working names.**  Nothing is named after agent-sync, the listener or the Operator.  The names in this document are placeholders until Jay and Jet choose:  `wa-bridge` (the poller), `wa-bridge/1` (the ingest contract), `/internal/wa-*/JET` (the routes), `WA_BRIDGE_HMAC_KEY_JET` (the signing key), `whatsapp.message` (the event), `whatsapp_read`, `whatsapp_reply` and `whatsapp_send_status` (the tools), and `WHATSAPP_BRIDGE_*` (the knobs).
+6. **Muster stays separate from the Operator's settings.**  Nothing is added to `listener.toml` or to the Wake Settings tab of #846.  The switches are Infisical knobs, and Muster later gets a read-only health card fed by the Worker's content-free status.
+7. **Sequencing.**  The Worker module lands after #851 merges, because #851 also edits `index.js`, `config.js` and `hosted-tools.js`, and it builds on #849.  The #849 cutover forces Jet to reconnect when it is deployed.  If Jay picks a new OAuth scope for these tools, it can ride that reconnect only if this work is approved before that deploy.  Otherwise the JET-only allowlist needs no re-consent.
+8. **The DM rule.**  Under #851 seats may not open DMs, so alerts never use one.  They go to Sentry, content-free.
+
+### Placement:  a choice for Jay and Jet
+
+Where the Worker side lives:
+
+- **W1.  A module in ST-MCP, the current Worker,** on the same connector as `zulip.mention`.  For:  it is the only route known to reach Jet's existing conversation, and the spike tests exactly this.  Against:  it grows a Worker whose naming is still settling, which the module boundary contains.
+- **W2.  A separate Worker and connector for WhatsApp.**  For:  fully independent of ST-MCP.  Against:  a second connector in Jet's conversation with its own OAuth, and it is unknown whether its events land in the same conversation, so it needs a second spike.
+- **W3.  Inside whatever succeeds ST-MCP, once that is named.**  For:  no later move.  Against:  it waits on that decision.
+
+Where the poller lives:
+
+- **P1.  Its own systemd unit and OS user on the Hetzner box.**  The earlier proposal.  Independent of Coolify and the Operator.
+- **P2.  A Coolify app in the "Fleet Infra" project,** like the hosted listener in #837.  Runtime-only secrets, because Coolify bakes build-time variables into build logs.
+- **P3.  A Worker Durable Object poller on an alarm.**  It keeps the WhatsApp key off the shared box, but needs a spike on 25-second long polls from an alarm and a hand-installed Worker secret for the key.
+- **P4.  A part of the Operator.**  Against:  it couples the bridge to the Operator while its naming and scope are still moving, and Jet asked to keep the listener and wake component distinct from the tool server.
+
+My recommendation is W1 with P1 or P2, behind the module boundary.  The choice is Jay's and Jet's.
+
+## 13. The Live Spike:  Exact Scope
+
+Approved by Jay (my 6:16am post, https://simplewithus.zulipchat.com/#narrow/near/633929990).  It answers one question:  can Jet's existing conversation hold a second event subscription, next to `zulip.mention`, and be woken by it?
+
+**In scope, live:**
+
+- A flag-gated `fleet.spike.ping` event in ST-MCP, advertised only while the flag is on.  It carries no content:  no message text and no Zulip or WhatsApp data.
+- Its own `SPIKE_HMAC_KEY`, a new Worker secret that signs only the spike's fire route.  It is not `WAKE_HMAC_KEY_JET` and not `JET_ROUTINE_KEY`.  The key is generated once, kept in AFC Infisical (prod), and installed with `wrangler secret put`.
+- The two Worker changes from section 5:  the cap counted per event name, and delivery filtered by event name.
+- One fired event.  CLAUDE fires it once, after Jet subscribes from its existing conversation.  Jet reports in the topic whether the conversation woke and what the event looked like.
+- `zulip.mention` unchanged and regression-tested in the same PR.  After the fire, one @-mention proves the Zulip wake still works.
+- The flag stays on after the test until Jay says otherwise.
+- Steps:  review and merge of the spike PR, a hand deploy of ST-MCP (merging does not deploy), the one Worker secret, Jet's subscription, the one fire, Jet's report, and the one Zulip check.  Another CLAUDE worker is building the spike on branch `claude/afc-477-second-event-spike`.
+
+**Not in the spike:**  no WhatsApp credential is read, no WhatsApp API call is made, and nothing is stored, forwarded or sent.  No machine identity, no Infisical identity, no host setup and no change to the listener or Operator.
+
+**Pending specific approval after the spike:**
+
+- The new machine identity for the bridge.
+- The bridge's signing key (`WA_BRIDGE_HMAC_KEY_JET`, working name).
+- Host setup:  the unit or app, its OS user, egress and state directory.
+- Ongoing message forwarding:  any read of `/jet/WHATSAPP_API_KEY`, and turning POLL, WAKE or SEND on.
+- Also:  the WhatsApp key rotation, the OAuth scope or allowlist, deploying the Worker module and its tables, the Sentry monitor, and the knob entries.
+
+## 14. Credential And Access Scope
+
+- **The key:**  AFC Infisical, prod, `/jet/WHATSAPP_API_KEY`, as a reference only.  The value may start with `WHATSAPP_API_KEY=`, so the bridge strips exactly one leading occurrence in the process and never sources or evaluates it.  The Authorization header is redacted from logs, and errors are logged as code and `fbtrace_id` only.
+- **The bridge identity** (working name `wa-bridge`):
+  - Universal Auth, no organization role, project role No Access.
+  - One extra privilege:  Secrets Read and Describe, env prod, path exactly `/jet` (not `/jet/**`).  If the installed Infisical supports name conditions, also limit it to the bridge's own names.
+  - Client-secret trusted IP set to the bridge host's address, and a short token lifetime.
+  - Its own credentials come from a root-only 0600 file through systemd `LoadCredential`, or a Coolify runtime-only secret.  Never the shared `/root/.config/fleet-secrets/bootstrap.json`.
+  - Before go-live, prove that reads of other AFC folders and of Fleet-OPS fail, and that every write fails.
+- **The signing key** `WA_BRIDGE_HMAC_KEY_JET` (working name):  in `/jet`, and installed as a Worker secret.
+- **The switches:**  `fleet_knobs.fetch` exports the whole AFC root folder (`scripts/fleet_knobs/source.py:116-127`), which the bridge identity must not see.  `fetch_named` already reads named keys from one folder (`source.py:158`), so the bridge reads its knobs from `/jet` that way.  Whether the knob registry and `INFISICAL.md` can list keys outside the root folder still needs a check.
+- **Remaining risk:**  root on the shared box can reach `/jet` through the shared automation identity, and can read the bridge's memory.  Agent sessions on that box run as root.  Options for Jay:
+  - Accept it.
+  - Move the key to its own Infisical project that only the bridge identity can read.  That blocks Infisical reads, not memory reads.
+  - Poll from the Worker (P3), which keeps the key off the box.
+- **Rotate before standing access.**  The key has been inside Jet's cloud workspace.  Rotating it also locks out any stray poller still running there.
+
+## 15. Why Not The whatsapp-agent Package
+
+- It has one maintainer, a repository about a month old, and one release.
+- Its retry, offset and read-receipt behaviour conflicts with this design (section 11).
+- Its MCP server has no auth, acts as a second poller and reaches the local filesystem (section 11).
+- Never run its `doctor` command, because it polls and would evict the bridge.
+
+Instead, the bridge is about 150 lines written against Meta's manual for the three endpoints it needs:  `GET /agent/v1/updates`, `POST /agent/v1/messages` and `POST /agent/v1/statuses`.  The manual and the package source are references, read as text.
+
+The service is Meta's own WhatsApp Agent Platform, which carries the lowest ban risk of the available routes.  Its terms are new, and the points in assumption A8 are not yet verified.
+
+## 16. Ops Changes That Need Approval
+
+1. **The bridge host**, in one of P1 to P3:
+   - P1:  OS user `wa-bridge`, always-on unit `wa-bridge.service` with `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, `ReadWritePaths` for the state directory only, `UMask=0077`, `LimitCORE=0` and `LoadCredential`.  It runs from a pinned release directory and restarts explicitly on deploy, not from the hourly-updated fleet CLI checkout.
+   - State in a 0700 directory of a few kilobytes, logs to journald, nothing in /tmp.
+   - The process gets a row in the processes list (`/Users/jay/apps/MAC-LOCAL-PROCESSES.md`) and its Apple Note.
+   - Jay decides whether the failing units already on the host are cleared first.
+2. **Egress from the bridge host:**  `api.whatsapp.com:443`, the Worker host (`agents.simplewithus.com`), Infisical and Sentry ingest.  No inbound port, no DNS record, no tunnel, and no media host.
+3. **Infisical:**  the bridge identity and the signing key in `/jet`.  Jay rotates the WhatsApp key in WhatsApp (Settings > Agents > the agent > API key) and saves the new value.
+4. **Cloudflare:**  a hand deploy per `scripts/agent-sync-mcp/DEPLOY.md` (merging does not deploy), `wrangler secret put` for the signing key, the new tables, and the KV namespace if crypto-shredding is chosen.  A cron trigger only if Jay wants re-rings while the bridge is down (section 8).
+5. **OAuth:**  either a scope only JET can hold, which needs one re-consent best bundled with the #849 reconnect, or a JET-only allowlist in `config.js` with no re-consent.
+6. **Knobs:**  `WHATSAPP_BRIDGE_ENABLED=false`, `WHATSAPP_BRIDGE_WAKE_ENABLED=false`, `WHATSAPP_BRIDGE_SEND_ENABLED=false`, `WHATSAPP_BRIDGE_WAKES_PER_HOUR=20` and `WHATSAPP_BRIDGE_WAKES_PER_DAY=100`, with registry entries and a regenerated `INFISICAL.md`.  The Worker gets its own admin switches.
+7. **Sentry:**  one Crons monitor for the bridge.
+8. **Jet:**  stop any poller in its cloud workspace and delete the key copy there.
+
+## 17. Test Plan
+
+### Bridge, against a fake WhatsApp server
+
+- A reset during a poll, a 5xx, and a 429 with and without `Retry-After`:  it backs off, the offset is unchanged, and nothing is lost.
+- 400 with code 100 and 401 with code 190:  it stops, with no tight loop.
+- A second poller (409, code 1752041):  it stands down, then retries once after 5 minutes.  A second conflict within 30 minutes stops it until someone flips a switch or restarts it, so it never ping-pongs.
+- A replayed batch:  one stored row and one ring.
+- `kill -9` between poll and ingest, between ingest and the offset save, and during a send:  nothing is lost, nothing rings twice, and the in-flight send becomes `unknown`.
+- Deleting the state directory:  no old message wakes Jet again.
+- A backlog from before activation or binding:  ignored.
+- A message from another sender:  quarantined, with no body stored anywhere.
+- Every send outcome in the section 10 table, including 500, a reset, a read timeout and a 503 without 131016:  `unknown`, never retried, and visible in the tools.  429 and 503 with 131016:  bounded retries.
+- A repeated `client_ref`:  one send.
+- Each switch off:  the bridge stops within 60 seconds, and the disable file stops it at once.
+- Logs searched for the token and for test text:  neither is found.
+- Credential reads outside `/jet`:  denied.
+
+### Binding
+
+- No binding:  nothing is stored or woken.
+- The right code from the creator:  bound.  The right code from another sender (the creator check answers 403):  refused.  A wrong code three times:  the window closes.  An expired window:  refused.
+- An inconclusive creator check (500, 503 or a timeout):  retried, then no binding.
+- A re-check answering 403, and a send answering 403 with 131005:  `suspect`, sends held.
+- A changed sender id or agent id:  quarantined, then re-bound only through `/admin`.
+
+### Worker
+
+- The existing `zulip.mention` and JET tests pass unchanged.
+- Cross-delivery is impossible in both directions.
+- One conversation can hold both events, and a second conversation is refused for each.
+- Wake ids are kept apart.
+- A bad HMAC, a stale `sent_at`, or `JET_ROUTINE_KEY` used on the new routes:  refused.
+- The event payload carries no text and no ids.
+- Retention:  bodies are not returned after expiry, the sweep deletes them, the 35-day ledger outlives them, and an unread expiry leaves a stub and raises an alert.  With crypto-shredding, a row restored after its day key expired cannot be decrypted.
+- SEND off:  queued and new replies become `held`, nothing is claimed, the in-flight send completes, and re-enabling does not release held replies without a release.
+- A lapsed subscription:  `delivered: 0`, then retries on the heartbeat, then one catch-up ring on re-subscribe.  No message is lost.
+- The coexistence boundary:  a test fails if the WhatsApp module imports any listener, eavesdropper or wake module, or reads a `WAKE_HMAC_KEY_*` or `*_ROUTINE_KEY`.
+
+### End to end with Jet (live, after the key rotation, each phase approved)
+
+1. Jet's existing conversation holds both subscriptions, as shown by the event summary on `/admin`.
+2. Jay binds the chat with a code.
+3. Jay sends "AFC-477 test 1", Jet's conversation gets a turn within about 60 seconds, and Jet reads the message with `whatsapp_read`.
+4. Jet replies with `whatsapp_reply`, Jay receives it, and the ledger shows `sent` and later `read`.
+5. A Zulip mention still wakes Jet as before.
+6. Restarting the bridge mid-conversation loses nothing and duplicates nothing.
+7. Turning POLL off stops polling, and turning it back on resumes from the saved offset.
+8. Searching Zulip, including #alerts and DMs, for the test strings finds nothing.
+9. Health shows running, then disabled.
+
+Uncertain sends are tested against the fake server only, never live.  Nothing is called always-on or complete until a real WhatsApp message wakes Jet's existing conversation and Jay receives Jet's reply.
+
+## 18. Rollout
+
+Each phase needs Jay's go-ahead:
+
+0. The spike (section 13):  a content-free test event, no WhatsApp.
+1. Binding and read-only:  POLL on, WAKE off, SEND off.  Jay binds the chat.
+2. WAKE on.
+3. SEND on.
+
+## 19. Decisions For Jay And Questions For Jet
+
+### For Jay
+
+1. Approve the design direction.  Nothing with standing access is built or deployed before that.
+2. Placement:  W1, W2 or W3 for the Worker side, and P1, P2, P3 or P4 for the poller (section 12).
+3. Names:  keep the working names, or choose others once the replacement's naming settles.
+4. Body retention:  7 days, or 24 hours after Jet acknowledges, whichever is first, or other numbers.  And accept point-in-time recovery, or crypto-shred (section 7).
+5. The binding ceremony through `/admin` and the creator check (section 6).
+6. Held replies when SEND comes back on:  released one by one by Jet (recommended), or automatic release for short holds (section 9).
+7. A connection that never opened:  retry it as not sent (assumption A4), or treat it as unknown.
+8. A new OAuth scope with a re-consent, best bundled with the #849 reconnect, or a JET-only allowlist.
+9. The remaining risk from root on the shared box (section 14).
+10. Rotating the WhatsApp key.
+11. The wake budget, and whether WhatsApp has its own.
+12. Whether agent-chat text may be relayed to ChatGPT under Meta's terms, once those terms are verified (assumption A8).
+13. Read receipts and typing indicators.  The creator re-check shows at least one read receipt every 7 days.
+14. A Worker cron trigger for re-rings while the bridge is down, or not.
+
+### For Jet
+
+1. In the spike:  can your conversation subscribe to the test event next to `zulip.mention`, and is the callback URL the same for both?
+2. Would subscribing to a new event need a fresh consent on your side?
+3. Is any poller still running in your workspace, and can you delete the key copy there?
+4. Is a metadata-only payload enough, or do you want a short excerpt?
+5. Do the acknowledgement (`ack_through`) and the held-reply release fit how your conversation works?
+6. Are you a published workspace agent?
+
+## 20. Checked And Not Checked
+
+Checked:  the Worker and listener code on `main` at `2af99bec`, the state of PRs #837, #844, #846, #849 and #851 at about 6:25am today, the Meta manual and the `whatsapp-agent` 0.1.0 source as cited above, Cloudflare's documentation on point-in-time recovery, and Jet's own report from 5:55am.
+
+Not checked or not live-tested:  whether ChatGPT accepts a second event in one conversation (the spike), the state of Jet's live subscription, whether #849 has been deployed, how WhatsApp behaves beyond its manual, Meta's terms (assumption A8), and Workers KV's behaviour for expired keys (assumption A10).
