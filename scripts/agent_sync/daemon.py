@@ -3806,9 +3806,7 @@ class Daemon:
             candidates=len(candidates),
         )
 
-    def addressed_row(
-        self, rows: list[dict[str, Any]], letter: str
-    ) -> dict[str, Any] | None:
+    def addressed_row(self, rows: list[dict[str, Any]], letter: str) -> dict[str, Any] | None:
         """The catalog row that holds the session letter the trigger addressed.
 
         A tagged address is "@**MiniMax** Z", so the letter is the seat's own platform
