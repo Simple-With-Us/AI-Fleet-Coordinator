@@ -221,7 +221,11 @@ try:
     with urllib.request.urlopen(req, timeout=25) as r: print(spike_id, r.status, r.read().decode()[:300])
 except urllib.error.HTTPError as e:
     kind = "outcome_unknown" if e.code >= 500 else "retry_later" if e.code in (408, 429) else "refused"
-    sys.exit(f"{spike_id} HTTP {e.code} {kind}:  {e.read().decode()[:200]}")
+    try:
+        detail = e.read().decode()[:200]
+    except Exception:
+        detail = "<unreadable body>"
+    sys.exit(f"{spike_id} HTTP {e.code} {kind}:  {detail}")
 except (OSError, http.client.HTTPException) as e:  # URLError, timeouts, resets, RemoteDisconnected, IncompleteRead
     sys.exit(f"{spike_id} no answer (outcome_unknown):  {type(e).__name__}")
 PY
