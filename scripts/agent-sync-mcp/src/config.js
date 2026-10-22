@@ -256,6 +256,11 @@ export function loadConfig(env) {
     operatorZulipUserId,
     operatorZulipEmail,
     eventCallbackHosts: Object.freeze(eventCallbackHosts),
+    // AFC-477 spike (temporary):  offer `fleet.spike.ping` and answer
+    // POST /internal/spike/<SEAT> only while this is exactly "on".  It is a
+    // Worker secret binding, not a var, so a later deploy from main does not
+    // turn it off (DEPLOY.md, "AFC-477 second-event spike").
+    spikeExtraEvents: String(env.SPIKE_EXTRA_EVENTS ?? "").trim() === "on",
   });
 }
 
