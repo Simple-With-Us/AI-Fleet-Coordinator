@@ -37,6 +37,23 @@ Mac-bound surfaces listed above.  (Working assumption until Jay names
 otherwise:  "the Operator" is the OPS-966 Operator component - the AFC
 repo-token routing/dispatch plane - not a new piece.)
 
+## The Mac as an Operator client (design notes - scope NOT yet confirmed)
+
+Owner direction 2026-10-21 (design notes only, no build until Jay confirms
+scope):
+
+- The Mac is ALSO an Operator client and runs many sessions of its own;  it
+  is a minor client relative to the server, not an exception to the layout.
+- Every session - server-side or Mac - gets a per-session identifier and
+  sends its session info to the Operator.  (Jay's phrase was "session
+  letters";  exact meaning is being confirmed with him - treat as
+  per-session identifiers for now.)
+- Open item Jay asked for:  an Apple Notes relay that works remotely.
+  Apple Notes stays Mac-bound, so a thin relay on the Mac (same pattern as
+  this alerter:  a small launchd unit behind the signed read API, or a
+  worker-side route) would expose Notes to the server-side plane without
+  moving it.  No design or build until Jay confirms the scope.
+
 ## Headless wake:  launching Muse Code from a wake event
 
 For a seat hosted on the server (Muse Code is installed there, per Jay), a
