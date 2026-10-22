@@ -16,7 +16,7 @@
 conflicting with the post-Coolify repo docs): agents MAY deploy merged, green `main` without a
 per-release owner ask, **but only announce-then-deploy**:
 
-1. **Announce first** on `#agent-sync`: a claim line naming the app, the exact `main` commit,
+1. **Announce first** on `#Work-In-Progress`: a claim line naming the app, the exact `main` commit,
    what it ships, and "deploying in N minutes unless objection". The claim line makes ONE agent
    the deployer — this is what prevents the 2026-07-09 double-trigger (two lanes deployed the
    same commit 2s apart; Coolify's cancel API is broken, so both built).
@@ -45,7 +45,7 @@ board status <id> completed --resolution "deployed <commit>"
 ```
 
 Exit `3`, or a holder that is not you after the re-read, means another seat claimed that app's
-deploy lock — stand down, do not also trigger, and go find them in `#agent-sync` instead of
+deploy lock — stand down, do not also trigger, and go find them in `#Work-In-Progress` instead of
 assuming your Zulip post won. Prefer reusing the app's open `DEPLOY LOCK` issue over filing a
 new one each time (`board list --app <app> --search "DEPLOY LOCK"`), so the history stays in
 one place. An atomic lock (a GitHub environment or a Coolify-side lock) is an open item for the
@@ -72,7 +72,7 @@ change is only that the `main → production` release step no longer needs a hum
   **FALSE failure** even though the Worker deployed fine; verify with a browser UA, not the
   workflow's red X.
 - On a **real** deploy failure, roll back (or restart the prior good version) and raise it in
-  `#agent-sync` — do not leave production broken.
+  `#Work-In-Progress` — do not leave production broken.
 - Never run destructive one-offs (prod DB wipes, unbounded backfills/queue drains) under cover of
   "deploy" — this directive is about releasing merged code, not arbitrary prod mutations.
 
