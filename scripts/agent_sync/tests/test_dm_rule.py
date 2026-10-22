@@ -120,7 +120,10 @@ class SeatDmRefusedTests(unittest.TestCase):
         # seat label must not survive into a file an admin reads -- not even in part.
         for label in (
             "ghp_" + "a" * 36,
-            "aB3xQ7mZ9pL2kR8sT4vW6yH1nC5dF0gJ",  # 32 mixed-case letters and digits:  Zulip-shaped
+            # Built at runtime from a 4-char fragment, so no realistic credential literal is
+            # committed; the value is still 32 mixed-case letters and digits, which is what the
+            # scanner flags as Zulip-shaped.
+            "0aB1" * 8,
         ):
             with tempfile.TemporaryDirectory() as tmp:
                 self.assertTrue(
@@ -579,7 +582,8 @@ class DmLookupCredentialTests(unittest.TestCase):
     Returning `[]` for either one tells the rule "no conversation", and it then refuses a seat's
     legitimate reply inside an Operator-opened DM with a terminal `dm_not_allowed` that no retry
     can clear.  A 401/403 carries no masked preview if it is swallowed, and a 429/5xx is not
-    terminal at all.  So credential rejection propagates (and `map_exception` renders it), and
+    terminal at all.  So credential rejection propagates (and `map_exception` renders it), a 429
+    is re-raised unchanged (and renders as `rate_limited` with its retry hint), and the other
     transient statuses are re-raised as `NetworkError`, which the caller makes retryable."""
 
     @staticmethod
@@ -611,9 +615,28 @@ class DmLookupCredentialTests(unittest.TestCase):
         self.assertEqual(error.extra["zulip_code"], "UNAUTHORIZED")
 
     def test_a_transient_status_is_retryable_not_an_empty_conversation(self) -> None:
-        for status in (408, 429, 500, 502, 503):
+        for status in (408, 500, 502, 503):
             with self.assertRaises(Z.NetworkError):
                 self._tools(Z.ApiError("zulip said no", status=status))._dm_exists([9])
+
+    def test_a_rate_limit_stays_a_rate_limit_with_its_retry_hint(self) -> None:
+        # A 429 is Zulip answering, not the connection failing:  collapsing it into a
+        # NetworkError would render a generic retryable `unavailable` and drop the back-off
+        # hint, so the seat retries immediately into the rate limit.  The ApiError is
+        # re-raised unchanged and map_exception renders it as `rate_limited`.
+        for exc in (
+            Z.ApiError("slow down", status=429, code="RATE_LIMIT_HIT", data={"retry-after": 7}),
+            Z.ApiError("slow down", code="RATE_LIMIT_HIT"),
+        ):
+            with self.assertRaises(Z.ApiError) as caught:
+                self._tools(exc)._dm_exists([9])
+            self.assertIs(caught.exception, exc, "re-raised unchanged, never converted")
+        error = T.map_exception(
+            Z.ApiError("slow down", status=429, code="RATE_LIMIT_HIT", data={"retry-after": 7})
+        )
+        self.assertEqual(error.code, "rate_limited")
+        self.assertTrue(error.retryable)
+        self.assertEqual(error.retry_after_s, 7.0)
 
     def test_a_definitive_narrow_error_is_still_an_empty_conversation(self) -> None:
         # 400 is Zulip saying no to this narrow, which is a real answer:  the rule may refuse.

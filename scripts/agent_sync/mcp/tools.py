@@ -1523,7 +1523,9 @@ class Tools:
         - a **credential rejection** (401, 403) means this bot's key was refused, which says
           nothing at all about the conversation.  It is re-raised so `map_exception` renders it as
           `not_authorized`/`zulip_error` with the masked preview, never as "no such DM".
-        - a **transient** failure (408, 429, a gateway or any other 5xx) becomes a `NetworkError`,
+        - a **rate limit** (429) is re-raised unchanged, so `map_exception` renders it as
+          `rate_limited` with the `retry_after_s` hint instead of a generic outage.
+        - a **transient** failure (408, a gateway or any other 5xx) becomes a `NetworkError`,
           which the caller turns into a retryable `unavailable` rather than a terminal refusal."""
         me = _int(self.me.get("user_id"))
         everyone = ids or ([me] if me else [])
@@ -1539,11 +1541,11 @@ class Tools:
             ]
         except Z.ApiError as exc:
             status = exc.status
-            if exc.code == "RATE_LIMIT_HIT" or status == 429 or status == 408:
-                raise Z.NetworkError(
-                    "Zulip answered HTTP %s for the direct message narrow" % status
-                ) from exc
-            if isinstance(status, int) and (status >= 500 or status in Z.GATEWAY_STATUSES):
+            if exc.code == "RATE_LIMIT_HIT" or status == 429:
+                # A rate limit is a definitive answer from Zulip, not a transport failure:
+                # map_exception renders it as `rate_limited` with the retry_after_s hint.
+                raise
+            if status == 408 or (isinstance(status, int) and status >= 500):
                 raise Z.NetworkError(
                     "Zulip answered HTTP %s for the direct message narrow" % status
                 ) from exc

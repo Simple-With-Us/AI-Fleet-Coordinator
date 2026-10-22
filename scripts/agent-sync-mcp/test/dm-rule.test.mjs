@@ -202,6 +202,19 @@ test("a malformed messages answer is a retryable read failure, never a terminal 
   assert.deepEqual(directMessages(fake), [], "nothing was sent while the rule could not decide");
 });
 
+test("a 429 on the DM-rule read stays a rate limit with its retry hint", async () => {
+  const { tools, fake, codex } = harness();
+  // Zulip answered, so this is not an outage:  the client retries once inside its budget and
+  // then the ApiError reaches mapException, which renders rate_limited with the retry_after_s
+  // hint instead of a generic unavailable.  Fail both attempts so the retry is exhausted too.
+  fake.failNext("GET", "messages", () => fake.error(429, "RATE_LIMIT_HIT", { "retry-after": 7 }));
+  fake.failNext("GET", "messages", () => fake.error(429, "RATE_LIMIT_HIT", { "retry-after": 7 }));
+  const error = errorOf(await tools.call("zulip_dm_send", { user_ids: [codex.user_id], text: "hello" }), "rate_limited");
+  assert.equal(error.retryable, true, "the seat backs off and retries");
+  assert.equal(error.retry_after_s, 7, "the back-off hint survives");
+  assert.deepEqual(directMessages(fake), [], "nothing was sent while the rule could not decide");
+});
+
 test("AGENT_SYNC_DM_RULE=off restores today's behaviour", async () => {
   const fake = new FakeZulip();
   const clock = { now: Date.parse("2026-10-22T10:00:00Z") };
