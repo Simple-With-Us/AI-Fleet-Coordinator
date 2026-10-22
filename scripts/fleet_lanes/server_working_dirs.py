@@ -30,7 +30,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -236,7 +235,7 @@ def knob_unit(path: Path, root: Path) -> tuple[bool, str]:
     if not path.exists():
         return True, f"not installed ({path.name})"
     text = read(path)
-    match = re.search(r"^WorkingDirectory=(\S+)", text, flags=re.M)
+    match = re.search(r"^WorkingDirectory=(\S+)", text, flags=re.MULTILINE)
     wd = match.group(1) if match else None
     if same_dir(wd, root):
         return True, f"WorkingDirectory is {wd}"
@@ -305,7 +304,7 @@ def apply_acp(path: Path, root: Path) -> bool:
         return False
     updated = text
     if "import os" not in updated:
-        updated = re.sub(r"^import json$", "import json\nimport os", updated, count=1, flags=re.M)
+        updated = re.sub(r"^import json$", "import json\nimport os", updated, count=1, flags=re.MULTILINE)
     updated = updated.replace(
         "        text=True, bufsize=1,\n    )",
         '        text=True, bufsize=1,\n'
