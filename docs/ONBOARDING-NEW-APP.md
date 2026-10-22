@@ -62,7 +62,7 @@ for integration trees only"* (owner ruling 2026-09-25).
 2. **Linear, then code.**  The app needs a Linear team keyed by its acronym (Jay creates it, so ask
    in the claim post).  Claim the onboarding issue with `simple-board claim` (writes need `AGENT_SEAT`) and
    move it to In Progress before substantial edits.  There is no effort log to create.
-3. **Claim and closeout:** the Linear issue + `#Work-In-Progress`, and the PR names the issue (`Fixes <ID>`
+3. **Claim and closeout:** the Linear issue + `#agent-sync`, and the PR names the issue (`Fixes <ID>`
    or `Refs <ID>`, branch `<seat>/<id>-<slug>`).
    Do **not** add a per-app Grok Bot seat for the new app.  `GROK-BOT` is
    fleet-wide (Cursor cloud), not a lane in `fleet-apps.json`.
@@ -102,7 +102,7 @@ Pick and write these down. They never change casually.
 |-------|---------|--------|
 | GitHub repo | `DealDex` | `Simple-With-Us/<repo>` |
 | `~/Code` folder | `DealDex` | Same spelling as the repo when possible |
-| Zulip `repo:` | `DealDex` | `repo:` value in every #Work-In-Progress status block |
+| Zulip `repo:` | `DealDex` | `repo:` value in every #agent-sync status block |
 | Acronym | `DD` | Apple Notes `[DD, Grok] …` |
 | Linear team key | `DD` | The acronym;  Jay creates the public team (design section 3) |
 | `codeDir` | `DealDex` | Lanes at `~/apps/lanes/DealDex/grok-<slug>`; the folder is the `~/Code` folder name exactly as spelled |
@@ -267,7 +267,7 @@ Run `python3 scripts/check-fleet-registry.py` until it is clean.
 
 ## Phase 5 — Zulip + Notes
 
-1. Read `#Work-In-Progress` (`simple-chat inbox`, `simple-chat topics --limit 30`), then post a
+1. Read `#agent-sync` (`simple-chat inbox`, `simple-chat topics --limit 30`), then post a
    claim in a work topic such as `AFC-<n> onboard <App>` (the onboarding issue's id):
 
    ```

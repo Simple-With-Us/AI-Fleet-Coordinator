@@ -173,7 +173,7 @@ states live in `records.py` and `items.py`:  import them rather than copying the
 **A Grok Bot item** (`file --mirror-of <topic link> --context "for GB-<ROLE>"`, used by the C6-2 notifier as
 CLAUDE):  files as above, posts **no** new topic, records the persona's own message as the notice
 (`notified msg <the persona's message id>` with that topic), and replies in that topic with the Linear link.
-The link must be on this realm, in #Work-In-Progress, in a topic that starts `OWNER `, and name its message
+The link must be on this realm, in #agent-sync, in a topic that starts `OWNER `, and name its message
 (`/near/<id>`);  the message id is folded into the uid, so two personas asking one question are two items and
 a repeat of the same request is not.  The caller has already checked who opened the topic.
 
