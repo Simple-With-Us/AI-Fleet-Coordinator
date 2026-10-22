@@ -26,6 +26,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from agent_sync import operator_candidates as OC
 from agent_sync import service_identity as SI
@@ -343,7 +344,7 @@ class StubClient:
     """A Zulip client that answers from a fixed script, so the delivery state machine is testable
     without a socket."""
 
-    def __init__(self, *, me=None, users=None, post_error=None):
+    def __init__(self, *, me=None, users=None, post_error=None, me_error=None):
         self.me = me or {
             "user_id": OPERATOR_ID, "email": OPERATOR_EMAIL, "is_bot": True,
             "bot_owner_id": OWNER_ID,
@@ -352,10 +353,13 @@ class StubClient:
             "members": [{"user_id": OWNER_ID, "email": "jay@example.test", "is_bot": False}]
         }
         self.post_error = post_error
+        self.me_error = me_error
         self.posts = []
 
     def get(self, endpoint):
         if endpoint == "users/me":
+            if self.me_error is not None:
+                raise self.me_error
             return self.me
         if endpoint == "users":
             return self.users
@@ -406,8 +410,10 @@ class DeliveryStateTests(unittest.TestCase):
     def test_a_provably_unsent_failure_is_retryable(self) -> None:
         client = StubClient(post_error=Z.NetworkError("connect refused", maybe_sent=False))
         out = self.send(client)
-        self.assertEqual(out["delivery_status"], OC.DELIVERY_REFUSED)
-        self.assertTrue(out["retryable"], "a request that never reached Zulip must stay retryable")
+        # A retryable delivery is its own state, not a sibling flag on a
+        # terminal refusal:  anything that reads delivery_status alone can tell
+        # them apart.
+        self.assertEqual(out["delivery_status"], OC.DELIVERY_RETRYABLE)
         # The key was released, so a clean retry inside the window is not blocked as a duplicate.
         again = self.send(StubClient(), now=1060.0)
         self.assertEqual(again["status"], "sent")
@@ -459,3 +465,53 @@ class DeliveryStateTests(unittest.TestCase):
         self.assertIn(
             "%d sessions could hold it" % (OC.MAX_CANDIDATES + 6), out["body"]
         )
+
+    def test_a_rejected_credential_on_the_identity_call_is_masked_too(self) -> None:
+        # The identity check is the FIRST call the credential makes, so a bad key
+        # is refused there and never reaches the POST path.  The preview has to
+        # be on both paths or the key is named in full on the first one.
+        error = Z.AgentSyncError("unauthorized")
+        error.status = 401
+        out = self.send(StubClient(me_error=error))
+        self.assertEqual(out["delivery_status"], OC.DELIVERY_REFUSED)
+        self.assertEqual(out["code"], "credential_rejected")
+        self.assertNotIn(self.key, out["reason"])
+        preview = OC._masked(self.key)
+        self.assertIn(preview[:8], out["reason"])
+        self.assertIn(preview[-4:], out["reason"])
+
+    def test_a_failure_after_the_post_keeps_the_key(self) -> None:
+        # The POST returned and the state write failed.  The message may be in
+        # the recipient's inbox, so the key is kept and the next ask is refused
+        # rather than sending a second copy of a list that did land.
+        real_record = OC._record
+
+        def fail_on_ok(path, key, at, window, recipient_id, message_id, state):
+            if state == OC.DELIVERY_OK:
+                raise OSError("state write failed")
+            return real_record(path, key, at, window, recipient_id, message_id, state)
+
+        with mock.patch.object(OC, "_record", side_effect=fail_on_ok):
+            out = self.send(StubClient())
+        # The send itself succeeded, and the id is what proves it.
+        self.assertEqual(out["status"], "sent")
+        self.assertEqual(out["message_id"], 4242)
+        # The key was kept, so the next ask is refused rather than resending.
+        again = self.send(StubClient(), now=1060.0)
+        self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
+        self.assertEqual(len(StubClient().posts), 0)
+
+    def test_a_failure_after_the_post_does_not_send_twice(self) -> None:
+        real_record = OC._record
+
+        def fail_on_ok(path, key, at, window, recipient_id, message_id, state):
+            if state == OC.DELIVERY_OK:
+                raise OSError("state write failed")
+            return real_record(path, key, at, window, recipient_id, message_id, state)
+
+        client = StubClient()
+        with mock.patch.object(OC, "_record", side_effect=fail_on_ok):
+            self.send(client)
+            again = self.send(client, now=1060.0)
+        self.assertEqual(len(client.posts), 1, "a list that may have landed is never sent twice")
+        self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)

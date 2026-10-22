@@ -3799,8 +3799,10 @@ class Daemon:
             seat=runner.seat,
             letter=letter,
             status=str(outcome.get("status") or ""),
-            # ok / unknown / refused, so a retryable or outcome-unknown delivery stays pending
-            # instead of being filed as a terminal failure.
+            # ok / unknown / refused / retryable, so a retryable or
+            # outcome-unknown delivery stays pending instead of being filed as a
+            # terminal failure.  The value is the module's own vocabulary and
+            # is logged verbatim, so one field tells the whole story.
             delivery_status=str(outcome.get("delivery_status") or ""),
             reason=str(outcome.get("reason") or ""),
             candidates=len(candidates),

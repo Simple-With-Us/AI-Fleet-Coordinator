@@ -303,6 +303,13 @@ DELIVERY_PENDING = "pending"
 DELIVERY_OK = "ok"
 DELIVERY_UNKNOWN = "unknown"
 DELIVERY_REFUSED = "refused"
+#: A delivery that provably never reached Zulip and may be tried again.
+#:
+#: It is its own state rather than a sibling flag on `refused`, because a
+#: terminal refusal and a retryable one look identical to anything that reads
+#: `delivery_status` alone.  A caller that wants to retry needs to tell them
+#: apart without reading a second field, and the ledger logs one value.
+DELIVERY_RETRYABLE = "retryable"
 
 
 def _reserve(
@@ -526,6 +533,19 @@ def _send_candidate_list(
     try:
         me = client.get("users/me")
     except Z.AgentSyncError as exc:
+        # A rejected credential is named by a masked preview only, never by any
+        # part of the key a caller could not otherwise see.  The identity check
+        # is the FIRST call the credential makes, so this is where a bad key is
+        # refused, and the preview has to be here as well as on the POST path.
+        status = getattr(exc, "status", getattr(exc, "status_code", None))
+        if status in (401, 403):
+            return _outcome(
+                "refused",
+                "the Operator credential was rejected.  Preview: %s"
+                % _masked(getattr(creds, "key", "")),
+                delivery_status=DELIVERY_REFUSED,
+                code="credential_rejected",
+            )
         return _outcome("refused", "the Operator identity could not be confirmed: %s" % exc)
     except Exception as exc:
         return _outcome(
@@ -599,11 +619,16 @@ def _send_candidate_list(
                 recipient=recipient_id,
                 body=body,
             )
+        # A row that is still pending is an ask that is in flight, or one whose
+        # record never settled.  Either way the message may be in the
+        # recipient's inbox, so the outcome is unknown and the list is not
+        # replayed.  Calling it a terminal refusal would say the message
+        # definitely did not go out, which nobody knows.
         return _outcome(
             "duplicate",
-            "an identical candidate list already went to this recipient %d seconds ago"
-            % int(since),
-            delivery_status=DELIVERY_REFUSED,
+            "an identical candidate list to this recipient %d seconds ago has an "
+            "unsettled delivery outcome and is not replayed" % int(since),
+            delivery_status=DELIVERY_UNKNOWN,
             recipient=recipient_id,
             body=body,
         )
@@ -627,8 +652,7 @@ def _send_candidate_list(
         return _outcome(
             "refused",
             "the candidate list was not sent and may be retried: %s" % exc,
-            delivery_status=DELIVERY_REFUSED,
-            retryable=True,
+            delivery_status=DELIVERY_RETRYABLE,
             recipient=recipient_id,
             body=body,
         )
@@ -654,12 +678,18 @@ def _send_candidate_list(
             recipient=recipient_id,
         )
     except Exception as exc:
-        _release(path, key, at, window)
+        # The POST returned and something after it failed:  a state write, an
+        # encoding error.  The message may already be in the recipient's inbox,
+        # so the key is KEPT and the outcome is unknown, exactly like a
+        # post-send disconnect.  Releasing it here would let the next ask send
+        # a second copy of a list that did land.
+        _record(path, key, at, window, recipient_id, None, DELIVERY_UNKNOWN)
         return _outcome(
             "refused",
-            "the candidate list could not be sent: %s" % type(exc).__name__,
-            delivery_status=DELIVERY_REFUSED,
+            "the candidate list delivery is unknown: %s" % type(exc).__name__,
+            delivery_status=DELIVERY_UNKNOWN,
             recipient=recipient_id,
+            body=body,
         )
     message_id = result.get("id") if isinstance(result, Mapping) else None
     message_id = (
@@ -667,7 +697,14 @@ def _send_candidate_list(
         if isinstance(message_id, int) and not isinstance(message_id, bool)
         else None
     )
-    _record(path, key, at, window, recipient_id, message_id, DELIVERY_OK)
+    try:
+        _record(path, key, at, window, recipient_id, message_id, DELIVERY_OK)
+    except Exception:
+        # Zulip accepted the message and it carries an id, so the delivery
+        # happened.  The state write is what failed, and the key is left as it
+        # is, so the next ask is refused as a duplicate rather than sending a
+        # second copy of a list that did land.
+        pass
     return _outcome(
         "sent",
         "the candidate list went to the sender as the Operator bot",
