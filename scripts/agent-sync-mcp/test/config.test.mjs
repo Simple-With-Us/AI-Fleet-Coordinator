@@ -149,7 +149,7 @@ test("wrangler.jsonc keeps every hostname but the custom domain off", () => {
   const w = wranglerConfig();
   assert.equal(w.workers_dev, false);
   assert.equal(w.preview_urls, false);
-  assert.deepEqual(w.routes, [{ pattern: "agents.simplewithus.com", custom_domain: true }, { pattern: "agent-sync.jays.services", custom_domain: true }]);
+  assert.deepEqual(w.routes, [{ pattern: "agents.simplewithus.com", custom_domain: true }]);
   assert.equal(w.account_id, "3a9368057468d0909cafaa85df12d1b7");
   assert.ok(w.compatibility_flags.includes("nodejs_compat"));
   assert.ok(w.compatibility_flags.includes("global_fetch_strictly_public"));

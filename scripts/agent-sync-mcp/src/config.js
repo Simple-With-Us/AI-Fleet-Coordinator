@@ -11,9 +11,7 @@ import { DEFAULT_CALLBACK_HOSTS, isHostPattern } from "./events.js";
 // D1:  the only hostname this Worker answers on.  It is a constant, not a var,
 // so a config edit cannot widen the Host check.
 export const PUBLIC_HOST = "agents.simplewithus.com";
-// The previous hostname.  Still answered during the move; it is no longer the issuer.
-export const LEGACY_HOST = "agent-sync.jays.services";
-export const ACCEPTED_HOSTS = Object.freeze([PUBLIC_HOST, LEGACY_HOST]);
+export const ACCEPTED_HOSTS = Object.freeze([PUBLIC_HOST]);
 export const ISSUER = `https://${PUBLIC_HOST}`;
 export const RESOURCE = `${ISSUER}/mcp`;
 export const RESOURCE_METADATA_URL = `${ISSUER}/.well-known/oauth-protected-resource/mcp`;

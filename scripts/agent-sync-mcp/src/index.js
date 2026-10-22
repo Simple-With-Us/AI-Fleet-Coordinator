@@ -6,7 +6,7 @@
 // tools from tools.json, each seat posting as its own Zulip bot (Phase 2).
 //
 // Request order, outermost first:
-//   1. Host check (404 for anything but agents.simplewithus.com or the legacy agent-sync.jays.services) and a path
+//   1. Host check (404 for anything but agents.simplewithus.com) and a path
 //      allowlist (404 for everything else).  GET /health is a static 200.
 //   2. /oauth/token:  rate limit, Content-Type and Authorization checked the
 //      way the library reads them, client_id allowlist before any fetch, blank

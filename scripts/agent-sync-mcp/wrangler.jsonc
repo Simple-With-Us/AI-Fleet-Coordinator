@@ -26,8 +26,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "routes": [
-    { "pattern": "agents.simplewithus.com", "custom_domain": true },
-    { "pattern": "agent-sync.jays.services", "custom_domain": true }
+    { "pattern": "agents.simplewithus.com", "custom_domain": true }
   ],
 
   // Our own console.log lines are the audit trail.  The automatic per-request

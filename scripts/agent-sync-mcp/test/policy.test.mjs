@@ -54,8 +54,7 @@ test("strict redirect refuses every bypass shape", () => {
   }
 });
 
-test("host check keeps answering the legacy host", () => {
-  assert.equal(hostAllowed(new Request("https://agent-sync.jays.services/mcp"), ["agents.simplewithus.com", "agent-sync.jays.services"]), true);
+test("host check refuses the old host", () => {
   assert.equal(hostAllowed(new Request("https://agent-sync.jays.services/mcp"), "agents.simplewithus.com"), false);
 });
 
