@@ -177,6 +177,10 @@ class ZshenvRowTests(unittest.TestCase):
         self.assertIn("`git-relay` is the consumer of those per-seat logins", self.row)
         self.assertNotIn("Agents do not handle tokens at all", self.row)
 
+    def test_the_durable_piece_says_where_a_seat_own_login_comes_from(self) -> None:
+        self.assertIn("A seat's own login is written from `--from file`", self.row)
+        self.assertIn("it is not a per-seat source", self.row)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
