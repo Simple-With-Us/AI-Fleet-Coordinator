@@ -1268,14 +1268,13 @@ class PartitionTests(ServerHarness):
         self.assertEqual(C.partition_errors(server, partition, env_instance="server"), [])
         self.assertEqual(
             sorted(server.disabled),
-            ["BF-DIRECTOR", "GB-ENGINEER"],
-            "the only disabled personas are BF-DIRECTOR and GB-ENGINEER, whose routine "
-            "keys are not inventoried yet",
+            ["BF-DIRECTOR"],
+            "the only disabled persona is BF-DIRECTOR, whose routine key is not inventoried yet",
         )
         self.assertEqual(
             sorted(server.seats),
-            sorted([s for s in gb if s != "GB-ENGINEER"] + list(CLOUD_SEATS)),
-            "the enabled seats are the other eleven GB personas and the five cloud seats",
+            sorted(list(gb) + list(CLOUD_SEATS)),
+            "the enabled seats are every GB persona and the five cloud seats",
         )
         for seat in CLOUD_SEATS:
             seat_cfg = server.seats[seat]
@@ -1804,7 +1803,8 @@ class ContainerTests(unittest.TestCase):
         self.assertNotRegex(
             text, r"(?im)^\s*(ARG|ENV)\b[^\n]*(KEY|TOKEN|SECRET|PASSWORD)", "no secret is baked in"
         )
-        self.assertNotIn("agent-sync.jays.services", text)
+        for host in ("agent-sync.jays.services", "agents.simplewithus.com"):
+            self.assertNotIn(host, text, "no hosted MCP host is baked into the image")
         ignore = (SERVER_DIR / "Dockerfile.dockerignore").read_text().splitlines()
         self.assertEqual(ignore[[i for i, l in enumerate(ignore) if not l.startswith("#")][0]], "*")
         for keep in (

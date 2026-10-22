@@ -21,10 +21,14 @@ The allowlist is built from the seat partition (every seat it gives to "server")
 CODE is the seat with hyphens as underscores.  An Infisical value wins over a container variable of the same
 name, so a rotation in Infisical takes effect on the next restart even if Coolify still holds an old copy.
 
-On any failure (login refused, network, a bad response) it logs one line naming the stage and the HTTP status,
-never a body or a value, and starts the listener with the container's own environment (the identity removed),
-so a deployment that still carries Coolify copies keeps working.  No value is ever printed or logged.
+Infisical (fleet-secrets' source project) is the intended source of these variables;  Coolify copies are only a
+fallback.  On any failure (login refused, network, a bad response) it logs one ERROR line naming the stage and the
+HTTP status, never a body or a value, and starts the listener with the container's own environment (the identity
+removed), so a deployment that still carries Coolify copies keeps working.  A successful load logs one line with
+the variable count and how many GB seats got both Zulip names from Infisical (names only).  No value is ever
+printed or logged.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -37,16 +41,25 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Callable, Mapping
+from collections.abc import Callable, Mapping
 
 API_DEFAULT = "https://app.infisical.com/api"
 IDENTITY = ("INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET")
 REQUIRED = IDENTITY + ("INFISICAL_PROJECT_ID",)
 TIMEOUT_SECONDS = 8.0
-ATTEMPTS = 2                      # per request; worst case stays well inside the 60-second health start period
-PARTITION_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "docs",
-                                 "protocols", "agent-sync-partition.toml")
-SHARED_NAMES = frozenset({"SENTRY_FLEET_DSN", "AGENT_SYNC_SENTRY_DSN"})  # the heartbeat's DSN;  the first of the two wins
+ATTEMPTS = 2  # per request; worst case stays well inside the 60-second health start period
+PARTITION_DEFAULT = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..",
+    "..",
+    "..",
+    "docs",
+    "protocols",
+    "agent-sync-partition.toml",
+)
+SHARED_NAMES = frozenset(
+    {"SENTRY_FLEET_DSN", "AGENT_SYNC_SENTRY_DSN"}
+)  # the heartbeat's DSN;  the first of the two wins
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 
 
@@ -61,17 +74,25 @@ def log(message: str) -> None:
 def server_codes(partition_file: str) -> set[str]:
     with open(partition_file, "rb") as fh:
         seats = tomllib.load(fh).get("seats") or {}
-    return {str(seat).upper().replace("-", "_") for seat, where in seats.items()
-            if where == "server" and _SEAT_RE.match(str(seat).upper())}
+    return {
+        str(seat).upper().replace("-", "_")
+        for seat, where in seats.items()
+        if where == "server" and _SEAT_RE.match(str(seat).upper())
+    }
 
 
 def allowed_names(codes: set[str]) -> set[str]:
     names: set[str] = set(SHARED_NAMES)
     for code in codes:
-        names |= {"ZULIP_%s_EMAIL" % code, "ZULIP_%s_API_KEY" % code,
-                  "ZULIP_OUTGOING_%s_TOKEN" % code,
-                  "ZULIP_ALERT_%s_ENDPOINT" % code, "ZULIP_ALERT_%s_KEY" % code,
-                  "%s_ROUTINE_URL" % code, "%s_ROUTINE_KEY" % code}
+        names |= {
+            "ZULIP_%s_EMAIL" % code,
+            "ZULIP_%s_API_KEY" % code,
+            "ZULIP_OUTGOING_%s_TOKEN" % code,
+            "ZULIP_ALERT_%s_ENDPOINT" % code,
+            "ZULIP_ALERT_%s_KEY" % code,
+            "%s_ROUTINE_URL" % code,
+            "%s_ROUTINE_KEY" % code,
+        }
     return names
 
 
@@ -91,15 +112,24 @@ def api_base(env: Mapping[str, str]) -> str:
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args, **kwargs):  # never re-send the identity or the token to another URL
+    def redirect_request(
+        self, *args, **kwargs
+    ):  # never re-send the identity or the token to another URL
         return None
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-def _request(stage: str, url: str, *, body: dict | None = None, token: str | None = None,
-             opener: Callable = _OPENER.open, sleep: Callable[[float], None] = time.sleep) -> dict:
+def _request(
+    stage: str,
+    url: str,
+    *,
+    body: dict | None = None,
+    token: str | None = None,
+    opener: Callable = _OPENER.open,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     last = "no attempt"
     for attempt in range(ATTEMPTS):
@@ -117,7 +147,7 @@ def _request(stage: str, url: str, *, body: dict | None = None, token: str | Non
             return payload
         except urllib.error.HTTPError as exc:
             last = "HTTP %d" % exc.code
-            exc.close()                 # the body is never read, let alone logged
+            exc.close()  # the body is never read, let alone logged
             if exc.code < 500:
                 break
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -132,25 +162,37 @@ def _request(stage: str, url: str, *, body: dict | None = None, token: str | Non
 def fetch(env: Mapping[str, str], **kw) -> dict[str, str]:
     """{name: value} for every secret in the folder.  Raises LoadError."""
     base = api_base(env)
-    login = _request("login", base + "/v1/auth/universal-auth/login",
-                     body={"clientId": env["INFISICAL_CLIENT_ID"].strip(),
-                           "clientSecret": env["INFISICAL_CLIENT_SECRET"].strip()}, **kw)
+    login = _request(
+        "login",
+        base + "/v1/auth/universal-auth/login",
+        body={
+            "clientId": env["INFISICAL_CLIENT_ID"].strip(),
+            "clientSecret": env["INFISICAL_CLIENT_SECRET"].strip(),
+        },
+        **kw,
+    )
     token = login.get("accessToken")
     if not isinstance(token, str) or not token:
         raise LoadError("login: no access token in the response")
-    query = urllib.parse.urlencode({
-        "workspaceId": env["INFISICAL_PROJECT_ID"].strip(),
-        "environment": (env.get("INFISICAL_ENVIRONMENT") or "prod").strip(),
-        "secretPath": (env.get("INFISICAL_SECRET_PATH") or "/zulip").strip(),
-        "expandSecretReferences": "true",
-    })
+    query = urllib.parse.urlencode(
+        {
+            "workspaceId": env["INFISICAL_PROJECT_ID"].strip(),
+            "environment": (env.get("INFISICAL_ENVIRONMENT") or "prod").strip(),
+            "secretPath": (env.get("INFISICAL_SECRET_PATH") or "/zulip").strip(),
+            "expandSecretReferences": "true",
+        }
+    )
     got = _request("read", base + "/v3/secrets/raw?" + query, token=token, **kw)
     secrets = got.get("secrets")
     if not isinstance(secrets, list):
         raise LoadError("read: no secrets list in the response")
     out: dict[str, str] = {}
     for item in secrets:
-        if isinstance(item, dict) and isinstance(item.get("secretKey"), str) and isinstance(item.get("secretValue"), str):
+        if (
+            isinstance(item, dict)
+            and isinstance(item.get("secretKey"), str)
+            and isinstance(item.get("secretValue"), str)
+        ):
             out[item["secretKey"]] = item["secretValue"]
     return out
 
@@ -160,16 +202,25 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     out = {k: v for k, v in env.items() if k not in IDENTITY}
     missing = [name for name in REQUIRED if not (env.get(name) or "").strip()]
     if missing:
-        return out, "Infisical not used (%s not set); starting with the container environment" % ", ".join(missing)
+        return (
+            out,
+            "Infisical not used (%s not set); starting with the container environment"
+            % ", ".join(missing),
+        )
     partition = env.get("AGENT_SYNC_PARTITION") or PARTITION_DEFAULT
     try:
         codes = server_codes(partition)
     except (OSError, tomllib.TOMLDecodeError) as exc:
-        return out, ("Infisical load skipped (cannot read the seat partition: %s); starting with the container "
-                     "environment" % type(exc).__name__)
+        return out, (
+            "Infisical load skipped (cannot read the seat partition: %s); starting with the container "
+            "environment" % type(exc).__name__
+        )
     allowed = allowed_names(codes)
     if not codes:
-        return out, "Infisical load skipped (the seat partition gives no seat to server); starting with the container environment"
+        return (
+            out,
+            "Infisical load skipped (the seat partition gives no seat to server); starting with the container environment",
+        )
     try:
         found = fetch(env, **kw)
     except LoadError as exc:
@@ -178,10 +229,30 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     replaced = sum(1 for name in loaded if name in env)
     for name in loaded:
         out[name] = found[name]
-    where = "%s %s" % ((env.get("INFISICAL_ENVIRONMENT") or "prod").strip(),
-                       (env.get("INFISICAL_SECRET_PATH") or "/zulip").strip())
-    return out, ("loaded %d variables from Infisical (%s; %d replaced a container value, %d other names in the "
-                 "folder ignored)" % (len(loaded), where, replaced, len(found) - len(loaded)))
+    where = "%s %s" % (
+        (env.get("INFISICAL_ENVIRONMENT") or "prod").strip(),
+        (env.get("INFISICAL_SECRET_PATH") or "/zulip").strip(),
+    )
+    gb = sorted(code for code in codes if code.startswith("GB_"))
+    complete = [c for c in gb if f"ZULIP_{c}_EMAIL" in loaded and f"ZULIP_{c}_API_KEY" in loaded]
+    missing_gb = [c for c in gb if c not in complete]
+    coverage = f"; GB seats with both Zulip names from Infisical: {len(complete)} of {len(gb)}"
+    if missing_gb:
+        coverage += " (not loaded: " + ", ".join(c.replace("_", "-") for c in missing_gb) + ")"
+    # A seat is only wakeable when its alert endpoint and key are present too:  count them apart.
+    # They may come from Coolify copies instead, so this reports, it does not refuse.
+    armed = [
+        c for c in gb if f"ZULIP_ALERT_{c}_ENDPOINT" in loaded and f"ZULIP_ALERT_{c}_KEY" in loaded
+    ]
+    coverage += f"; GB seats with alert endpoint and key from Infisical: {len(armed)} of {len(gb)}"
+    no_alert = [c for c in gb if c not in armed]
+    if no_alert:
+        coverage += " (not loaded: " + ", ".join(c.replace("_", "-") for c in no_alert) + ")"
+    ignored = len(found) - len(loaded)
+    return out, (
+        f"loaded {len(loaded)} variables from Infisical ({where}; {replaced} replaced a container value, "
+        f"{ignored} other names in the folder ignored){coverage}"
+    )
 
 
 def main(argv: list[str]) -> int:
@@ -189,7 +260,8 @@ def main(argv: list[str]) -> int:
         log("usage: infisical_env.py <program> [args ...]")
         return 2
     env, line = build_env(os.environ)
-    log(line)
+    # A failed or skipped load means the container runs on Coolify copies:  make that stand out in the log.
+    log(("ERROR: " if line.startswith(("Infisical load", "Infisical not used")) else "") + line)
     os.execve(argv[1], argv[1:], env)
     return 127  # not reached
 

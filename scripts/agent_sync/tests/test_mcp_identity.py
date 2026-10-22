@@ -2,7 +2,7 @@
 the stdio rows of section 8).
 
 The HOME of every test holds the credential files of several bots:  seats (Claude, Cursor), a BF-*
-bot, an enabled GB-* persona and GB-ENGINEER (not enabled), the owner's own account and an integration
+bot, an enabled GB-* persona and GB-RETIRED (not enabled), the owner's own account and an integration
 bot.  Expectations come from the GB table (identities.gb_identities()) and the seat registry, never
 from a literal list of personas.
 """
@@ -33,7 +33,7 @@ class IdentityHarness(McpHarness):
             "CURSOR": ("cursor-bot@zulip.test", "Cursor"),
             "BF-PLUMBER": ("bf-plumber-bot@zulip.test", "BF Plumber"),
             PERSONA: (PERSONA_EMAIL, PERSONA.title()),
-            "GB-ENGINEER": ("engineer-grok-bot@zulip.test", "Engineer"),
+            "GB-RETIRED": ("retired-grok-bot@zulip.test", "Retired"),
             "SENTRY": ("sentry-bot@zulip.test", "Sentry"),
         }
         for name, (email, full_name) in bots.items():
@@ -57,7 +57,7 @@ class IdentityHarness(McpHarness):
                 }
             )
         self.expected = sorted(
-            {"CLAUDE", "CURSOR", "BF-PLUMBER"} | ({PERSONA, "GB-ENGINEER"} & set(ENABLED))
+            {"CLAUDE", "CURSOR", "BF-PLUMBER"} | ({PERSONA, "GB-RETIRED"} & set(ENABLED))
         )
 
     def error(self, result: dict) -> dict:
@@ -73,9 +73,9 @@ class AllowedSetTests(IdentityHarness):
         self.assertEqual(names, self.expected)
         self.assertEqual(info["default_identity"], "CLAUDE")
         self.assertEqual(info["transport"], "stdio")
-        # Row 4:  GB-ENGINEER is absent while the table leaves it out;  the owner and integration bots never enter.
-        self.assertEqual("GB-ENGINEER" in names, "GB-ENGINEER" in ENABLED)
-        self.assertNotIn("GB-ENGINEER", ENABLED)
+        # Row 4:  GB-RETIRED is absent while the table leaves it out;  the owner and integration bots never enter.
+        self.assertEqual("GB-RETIRED" in names, "GB-RETIRED" in ENABLED)
+        self.assertNotIn("GB-RETIRED", ENABLED)
         for never in ("JAY", "SENTRY"):
             self.assertNotIn(never, names)
         self.assertEqual({n for n in names if n.startswith("GB-")}, {PERSONA} & set(ENABLED))
@@ -152,7 +152,7 @@ class CallRuleTests(IdentityHarness):
 
     def test_an_identity_outside_the_set_is_refused(self):
         session = self.session()
-        for name in ("SENTRY", "JAY", "REALM-ADMIN", "GB-ENGINEER", "MONET", "not a seat", 7):
+        for name in ("SENTRY", "JAY", "REALM-ADMIN", "GB-RETIRED", "MONET", "not a seat", 7):
             with self.subTest(name=name):
                 error = self.error(session.call("zulip_topics", {"identity": name}))
                 self.assertEqual(error["code"], "identity_not_allowed")
@@ -518,7 +518,7 @@ class CliTests(IdentityHarness):
         self.assertIsNone(json.loads(ok.out)["registry_problem"])
 
     def test_the_cli_never_acts_as_an_integration_bot_or_a_disabled_persona(self):
-        for name in ("SENTRY", "GB-ENGINEER"):
+        for name in ("SENTRY", "GB-RETIRED"):
             with self.subTest(name):
                 refused = self.run_cli(
                     "post", "--as", name, "--topic", "cli", "x", env=self.cli_env(AGENT_SEAT=None)
@@ -541,7 +541,7 @@ class EnvBackedTests(McpHarness):
             PERSONA: (PERSONA_EMAIL, PERSONA.title()),
             "BF-PLUMBER": ("bf-plumber-bot@zulip.test", "BF Plumber"),
             "SENTRY": ("sentry-bot@zulip.test", "Sentry"),
-            "GB-ENGINEER": ("engineer-grok-bot@zulip.test", "Engineer"),
+            "GB-RETIRED": ("retired-grok-bot@zulip.test", "Retired"),
         }
         for name, (email, full_name) in bots.items():
             key = zulip_shaped()
@@ -615,7 +615,7 @@ class EnvBackedTests(McpHarness):
                 "identities"
             ]
         ]
-        for never in ("SENTRY", "GB-ENGINEER"):
+        for never in ("SENTRY", "GB-RETIRED"):
             self.assertNotIn(never, names)
             self.assertEqual(
                 self.error(session.call("zulip_topics", {"identity": never}))["code"],

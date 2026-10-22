@@ -7,7 +7,7 @@ The allowed set is every agent bot whose Zulip credentials this host can read:
     BF-*         every BF_<ROLE>_ZULIP_KEY name in Infisical Fleet-OPS /zulip (or BF-<Role>-zuliprc in
                  the explicit AGENT_SYNC_SECRETS_DIR override) whose seat matches the BF-* pattern
     GB-*         every persona enabled in mcp/gb-identities.json, the one list the hosted Worker
-                 imports as GB_IDENTITIES (GB-ENGINEER stays out until it is enabled there)
+                 imports as GB_IDENTITIES
 
 each kept only when its credentials are reachable:  its three Infisical /zulip names (<BOT>_ZULIP_EMAIL,
 _KEY and _SITE, read through fleet-secrets;  AFC-359:  no credential folder is read by default), its file in the

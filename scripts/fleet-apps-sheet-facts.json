@@ -46,7 +46,7 @@
     "JET": {
       "notesName": "Jet",
       "zulipBotEmail": "openai-dot-bot@simplewithus.zulipchat.com",
-      "notes": "Its own identity, never a Codex default.  Wake-eligible (AFC #387) and bridged through the hosted MCP Worker (AFC #394, #403).  Its wake POSTs to https://agent-sync.jays.services/internal/wake/JET, which sends an OpenAI MCP Events zulip.mention to every subscribed ChatGPT chat (scripts/agent_sync/server/listener.toml)."
+      "notes": "Its own identity, never a Codex default.  Wake-eligible (AFC #387) and bridged through the hosted MCP Worker (AFC #394, #403).  Its wake POSTs to https://agents.simplewithus.com/internal/wake/JET, which sends an OpenAI MCP Events zulip.mention to every subscribed ChatGPT chat (scripts/agent_sync/server/listener.toml)."
     },
     "WISE": {
       "notesName": "Wise",

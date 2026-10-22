@@ -234,8 +234,26 @@ class InfisicalEnvTests(unittest.TestCase):
         env.pop("INFISICAL_PROJECT_ID")
         run = self.entrypoint(env)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("Infisical not used", run.stderr)
+        self.assertIn("ERROR: Infisical not used (missing: INFISICAL_PROJECT_ID;", run.stderr)
         self.assertNotIn(self.csecret, run.stderr)
+
+    def test_a_project_id_without_client_credentials_fails_loudly_naming_them(self) -> None:
+        env = self.env()
+        env.pop("INFISICAL_CLIENT_ID")
+        env.pop("INFISICAL_CLIENT_SECRET")
+        run = self.entrypoint(env)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn("ERROR: Infisical not used (missing: INFISICAL_CLIENT_ID INFISICAL_CLIENT_SECRET;", run.stderr)
+        self.assertIn("NOT in use", run.stderr)
+
+    def test_the_load_line_counts_gb_seats_with_both_zulip_names_without_values(self) -> None:
+        with FakeInfisical(self.cid, self.csecret, self.values) as fake:
+            out, line = IE.build_env(self.env(fake))
+        self.assertIn("; GB seats with both Zulip names from Infisical: ", line)
+        self.assertIn("; GB seats with alert endpoint and key from Infisical: ", line)
+        self.assertIn("(not loaded: ", line)
+        for value in self.values.values():
+            self.assertNotIn(value, line)
 
     def test_the_entrypoint_starts_even_when_infisical_is_unreachable(self) -> None:
         with FakeInfisical(self.cid, self.csecret, self.values) as fake:
@@ -302,8 +320,7 @@ class ApplyLiveConfigTests(unittest.TestCase):
             self.assertEqual(new["seat." + seat], sample["seat." + seat], seat)
         cfg = C.from_dict(tomllib.loads(after))
         self.assertEqual(cfg.errors, [])
-        self.assertEqual(sorted(cfg.disabled), ["GB-ENGINEER"],
-                         "the other eleven personas are enabled; GB-ENGINEER rides along disabled")
+        self.assertEqual(sorted(cfg.disabled), [], "every GB persona is enabled")
         self.assertEqual(AL.problems(after), [])
         code, out = self.run_main("--apply")
         self.assertEqual(code, 0, out)

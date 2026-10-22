@@ -1,7 +1,7 @@
 # Claude and Codex bridge access (AFC-296)
 
 Prepared Mon, Oct 12, 2026.  The hosted Agent-Sync endpoint is
-`https://agent-sync.jays.services/mcp`; the server binds each grant to a seat and
+`https://agents.simplewithus.com/mcp`; the server binds each grant to a seat and
 uses that seat's bot credential.  Identity is never a caller-supplied argument.
 
 | Surface | Supported route | Status in this change |
