@@ -87,7 +87,29 @@ class LaunchAgentTests(unittest.TestCase):
         for needle in (ISSUE, "mac-process-watch.sh", "FLEET_FACTS_SIGNING_KEY", "FLEET_LOOPS_DATA_ALLOWED_APPS", "FLEET_FACTS_PUBLISH_FULL_COPY", "mac-facts-publish.json",
                        "mac-facts-publish.log", "gb/full-list.md", "gb/mac-facts.json", "fleet-facts verify", "L16c", "Removable Volumes"):
             self.assertIn(needle, row)
-        self.assertIn(ISSUE, text.split("## Inventory Changelog & Historical Updates", 1)[1][:600])
+        self.assertIn(ISSUE, text.split("## Inventory Changelog & Historical Updates", 1)[1])
+
+    def test_the_changelog_records_the_inventory_that_added_the_row(self) -> None:
+        """The launch agent's provenance is in the changelog,  as an inventory entry.
+
+        The window used to be the first 600 characters of the section,  which only
+        reached the entry by accident:  it held because the entry above it happened
+        to be long.  Any inventory pass by any seat  (which adds one line at the
+        top)  moved the entry out of the window and broke a test about a launch
+        agent.  The record is what matters,  so the entry is looked for where it
+        is,  and it has to be an inventory entry like every other.
+        """
+        text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
+        changelog = text.split("## Inventory Changelog & Historical Updates", 1)[1]
+        entries = [line for line in changelog.splitlines() if line.startswith("Last inventory:")]
+        self.assertTrue(entries, "the changelog has no inventory entries")
+        matching = [line for line in entries if ISSUE in line]
+        self.assertEqual(
+            len(matching), 1, "the changelog records the launch agent's inventory exactly once"
+        )
+        self.assertIn(
+            LABEL, matching[0], "the entry names the launch agent it inventoried"
+        )
 
     def test_the_helper_row_no_longer_calls_the_launcher_a_stub(self) -> None:
         text = (REPO / "docs" / "MAC-LOCAL-PROCESSES.md").read_text(encoding="utf-8")
