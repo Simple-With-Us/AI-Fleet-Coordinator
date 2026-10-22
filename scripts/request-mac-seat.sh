@@ -2,7 +2,7 @@
 # request-mac-seat.sh — cloud agent files a needs-mac GitHub issue for Mac xcodebuild work.
 #
 # Cloud agents cannot run xcodebuild.  File a structured needs-mac issue, post to
-# #agent-sync, and let the Mac launchd poller (mac-seat-claim.sh) pick it up.
+# #Work-In-Progress, and let the Mac launchd poller (mac-seat-claim.sh) pick it up.
 #
 # The post goes to Zulip in a `needs-mac <repo>` topic, sent as the claiming
 # seat's own bot.  The old agent-sync relay POST is retired.
@@ -39,7 +39,7 @@ OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
 # Zulip posting needs no shared secret: the agent-sync CLI reads the seat's own
 # Zulip credential (Infisical Fleet-OPS /zulip).  The old AGENT_SYNC_POST_URL / AGENT_SYNC_ENV
 # relay is retired and deliberately not referenced here.
-ZULIP_CHANNEL="${ZULIP_CHANNEL:-agent-sync}"
+ZULIP_CHANNEL="${ZULIP_CHANNEL:-Work-In-Progress}"
 
 REPO=""
 TITLE=""

@@ -114,7 +114,14 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertFalse(doctor.post_changes(report, runner))
         self.assertEqual(
             calls[0][:6],
-            ["simple-chat", "post", "--channel", "agent-sync", "--topic", "fleet tools doctor"],
+            [
+                "simple-chat",
+                "post",
+                "--channel",
+                "Work-In-Progress",
+                "--topic",
+                "fleet tools doctor",
+            ],
         )
         self.assertIn("seat:CLAUDE: missing fleetlink token", calls[0][6])
         self.assertTrue(doctor.post_changes(doctor.Report(), runner))
