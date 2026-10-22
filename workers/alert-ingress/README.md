@@ -161,9 +161,11 @@ cd workers/alert-ingress && node --test src/*.test.js
 
 Pure functions, no Workers runtime needed.  The suite includes the real Oct 18 flap replayed: ten events, zero messages until it genuinely stays open.
 
-The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 84 tests.
+The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 110 tests.
 
 `vendor-routing.test.js` covers the vendor routing: same-topic isolation between two vendors, message ids that are never reused across vendors, the sweep and the resolve path using the right vendor credential, a missing or refused credential failing closed, an ambiguous write that never creates a second message, and a refresh that is refused outside the alerts channel.
+
+`vendor-routing-hardening.test.js` covers the hardening that answered the review: the missing credential names the operator has to set, a failed status delivery is surfaced instead of swallowed, only an unknown outcome holds a repeat delivery, the delivery outcome is scoped to a content revision, a pre-routing membership marker names an incident rather than a source, the credential slug is injective in the source name, the sweep survives one bad incident, the legacy refresh route reports the sources it could not refresh, a malformed percent-escape is a bad request, and an unknown webhook field never reaches persistence or the channel.
 
 ## Deliberate non-goals
 
