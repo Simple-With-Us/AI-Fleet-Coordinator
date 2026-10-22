@@ -16,15 +16,26 @@
 // current truth, plus a sparse timeline of events that actually mattered.
 //
 // Routes:
-//   POST /webhook/:source     receive a vendor event (signature-verified)
-//   GET  /status/:channel/:topic   rebuild the standing status (operator token required)
-//   GET  /sweep               promote incidents that aged past the window
+//   POST /webhook/:source            receive a vendor event (signature-verified)
+//   GET  /status                     machine-readable status for any consumer
+//   GET  /status/:source/:channel/:topic  rebuild one source's standing status
+//   GET  /status/:channel/:topic     rebuild every source's standing status
+//   GET  /sweep                      promote incidents that aged past the window
+//
+// Vendor routing: every source has its own identity, its own state namespace
+// and its own standing message, so two vendors that share a service name can
+// never edit each other's message.
 //
 // KV layout:
-//   state:<key>        AlertState per alertable thing
-//   status:<chan>:<topic>  message id of that topic's standing status
-//   svc:<key>          service name, so a topic stays stable across events
-//   svcname:<source>:<service>  alert key, so a renamed generic vendor label re-joins its incident
+//   state:<key>                AlertState per alertable thing
+//   src:<key>                  source that owns the state, so the sweep can
+//                              resolve the vendor credential
+//   svc:<key>                  service name, so a topic stays stable across events
+//   svcname:<source>:<service> alert key, so a renamed generic vendor label re-joins its incident
+//   topic:<source>:<chan>:<topic>   topic membership for one source
+//   idx:<source>:<chan>:<topic>:<key>  membership marker for one source
+//   status:<source>:<chan>:<topic> message id of that source's standing status
+//   statusowner:<message id>   the source that pinned a standing message
 
 import { normalize } from "./normalize.js";
 import {
@@ -39,7 +50,10 @@ import { postEvent, writeStatus, renderStatus } from "./zulip.js";
 const DEFAULT_CHANNEL = "alerts";
 
 const stateKey = (k) => `state:${k}`;
-const statusKey = (c, t) => `status:${c}:${t}`;
+// Which source owns a state.  The sweep needs it to pick the right vendor
+// credential; a state written before this key existed falls back to the
+// source prefix in its alert key.
+const srcKey = (k) => `src:${k}`;
 const svcKey = (k) => `svc:${k}`;
 // Reverse map for the generic path, whose key derives from the service label:
 // a vendor rename mints a new key, and this finds the incident it belongs to.
@@ -61,7 +75,89 @@ function boundedTopic(service) {
 // Topic membership is its own key.  Deriving the topic by splitting the `idx:`
 // key on ":" would mis-parse any service name containing a colon, so the topic
 // list is tracked explicitly instead of inferred.
-const topicKey = (c, t) => `topic:${c}:${t}`;
+// Source-scoped: the standing status of a topic belongs to exactly one
+// vendor, so every topic-shaped key carries its source.
+const topicKey = (source, c, t) => `topic:${source}:${c}:${t}`;
+// The standing status message id of one source in one topic.
+const statusKey = (source, c, t) => `status:${source}:${c}:${t}`;
+// Membership marker prefix, so a status rebuild knows its rows.
+const indexPrefix = (source, c, t) => `idx:${source}:${c}:${t}:`;
+// Durable delivery outcome of one source's standing status.  Per source, so a
+// held write for one vendor never blocks another vendor's refresh.
+const deliveryKey = (source, c, t) =>
+  `delivery:${JSON.stringify([source, c, t])}`;
+// Which source pinned a standing message id.  A vendor never edits a message
+// another vendor pinned.
+const statusOwnerKey = (id) => `statusowner:${id}`;
+// Source names are route segments, so they are bounded and boring.
+const SOURCE_TOKEN = /^[a-z0-9_-]{1,32}$/;
+
+/**
+ * The credential names one source may use, most specific first.
+ *
+ * The generic source owns the legacy un-suffixed pair: `ZULIP_BOT_EMAIL` and
+ * `ZULIP_BOT_API_KEY` ARE the generic source's own identity, not a wildcard
+ * for any vendor.  Every other source -- datadog, betterstack, or a custom
+ * route name -- needs its own dedicated pair and has no fallback at all.
+ */
+export function credentialPairs(source) {
+  const slug = String(source || "generic")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .toUpperCase();
+  if (slug === "GENERIC")
+    return [
+      {
+        email: "ZULIP_BOT_EMAIL_GENERIC",
+        apiKey: "ZULIP_BOT_API_KEY_GENERIC",
+      },
+      { email: "ZULIP_BOT_EMAIL", apiKey: "ZULIP_BOT_API_KEY" },
+    ];
+  return [
+    {
+      email: `ZULIP_BOT_EMAIL_${slug}`,
+      apiKey: `ZULIP_BOT_API_KEY_${slug}`,
+    },
+  ];
+}
+
+/**
+ * Resolve the credential of exactly one source.
+ *
+ * Returns null when that source has no credential of its own, so the caller
+ * can fail closed.  There is deliberately no path from one source to another
+ * source's bot: two vendors on one shared identity would edit each other's
+ * standing messages.
+ */
+export function resolveCredential(env, source) {
+  for (const pair of credentialPairs(source)) {
+    const email = env?.[pair.email];
+    const apiKey = env?.[pair.apiKey];
+    if (
+      typeof email === "string" &&
+      email.trim() &&
+      typeof apiKey === "string" &&
+      apiKey.trim()
+    )
+      return { email, apiKey };
+  }
+  return null;
+}
+
+/** Structured failure for a source that has no credential of its own. */
+function credentialError(source) {
+  const error = new Error("credential unavailable");
+  error.code = "credential_unavailable";
+  error.source = source;
+  error.status = 503;
+  return error;
+}
+
+/** The source that owns a state key, from its recorded source or its prefix. */
+function sourceFromKey(key) {
+  const head = String(key || "").split(":")[0] || "";
+  return SOURCE_TOKEN.test(head) ? head : "generic";
+}
 
 /** Constant-time-ish compare so signature checks do not leak by timing. */
 function safeEqual(a, b) {
@@ -128,9 +224,9 @@ function authorized(request, env) {
   );
 }
 
-/** All tracked states for one topic, with their service labels resolved. */
-async function collectStates(env, channel, topic) {
-  const prefix = `idx:${channel}:${topic}:`;
+/** All tracked states for one source in one topic, with their service labels. */
+async function collectStates(env, source, channel, topic) {
+  const prefix = indexPrefix(source, channel, topic);
   const keys = { keys: await listAll(env.ALERT_STATE, prefix) };
   // Parallel reads: serial get pairs cost 2N KV round-trips per call.
   const fetched = await mapBounded(keys.keys, async ({ name }) => {
@@ -138,59 +234,113 @@ async function collectStates(env, channel, topic) {
     const raw = await env.ALERT_STATE.get(stateKey(key), "json");
     if (!raw) return null;
     const svc = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
-    return { key, ...raw, service: svc };
+    return { key, ...raw, service: svc, source };
   });
   return fetched.filter(Boolean);
 }
 
-/** Every topic that has at least one tracked signal. */
-async function collectTopics(env) {
-  const prefix = `topic:${DEFAULT_CHANNEL}:`;
-  const seen = new Set();
-  const keys = { keys: await listAll(env.ALERT_STATE, prefix) };
+/**
+ * Read one topic-membership key.
+ *
+ * The key is `topic:<source>:<channel>:<topic>`.  The channel is checked
+ * against the alerts channel because the worker only ever writes there, and
+ * that check is also what keeps a pre-routing key (`topic:alerts:<topic>`)
+ * from being misread as a source.
+ */
+function parseTopicKey(name) {
+  if (!name.startsWith("topic:")) return null;
+  const parts = name.slice("topic:".length).split(":");
+  if (parts.length < 3) return null;
+  const [source, channel, ...rest] = parts;
+  const topic = rest.join(":");
+  if (!SOURCE_TOKEN.test(source)) return null;
+  if (channel !== DEFAULT_CHANNEL) return null;
+  if (!topic) return null;
+  return { source, channel, topic };
+}
+
+/** Every source that tracks one topic. */
+async function sourcesForTopic(env, channel, topic) {
+  const keys = { keys: await listAll(env.ALERT_STATE, "topic:") };
+  const sources = new Set();
   for (const { name } of keys.keys) {
-    const topic = name.slice(prefix.length);
-    if (topic) seen.add(topic);
+    const parsed = parseTopicKey(name);
+    if (!parsed) continue;
+    if (parsed.channel !== channel || parsed.topic !== topic) continue;
+    sources.add(parsed.source);
+  }
+  return [...sources].sort();
+}
+
+const PHASE_RANK = { alerting: 0, pending: 1, ok: 2 };
+
+/** One alert row, as the machine-readable status publishes it. */
+function alertRow(state) {
+  return {
+    key: state.key,
+    source: state.source,
+    service: state.service,
+    phase: state.phase,
+    severity: state.phase === "alerting" ? state.severity : "INFO",
+    text: state.text,
+    link: state.link,
+    since: state.since,
+    updated: state.updated,
+    prodDown: state.prodDown === true,
+  };
+}
+
+const byPhaseThenService = (a, b) =>
+  PHASE_RANK[a.phase] - PHASE_RANK[b.phase] ||
+  a.service.localeCompare(b.service);
+
+/** Every topic that has at least one tracked signal, plus a per-source view. */
+async function collectTopics(env) {
+  const keys = { keys: await listAll(env.ALERT_STATE, "topic:") };
+  const pairs = new Map();
+  for (const { name } of keys.keys) {
+    const parsed = parseTopicKey(name);
+    if (!parsed) continue;
+    pairs.set(`${parsed.source}\u0000${parsed.topic}`, parsed);
   }
   const topics = {};
+  const sources = {};
   let firing = 0;
   let total = 0;
   // Parallel across topics: serial collectStates made /status cost ~1 + T*(1+2A) KV calls.
-  const perTopic = await mapBounded([...seen].sort(), async (topic) => [
-    topic,
-    await collectStates(env, DEFAULT_CHANNEL, topic),
+  const perTopic = await mapBounded([...pairs.values()], async (pair) => [
+    pair,
+    await collectStates(env, pair.source, pair.channel, pair.topic),
   ]);
-  for (const [topic, states] of perTopic) {
+  for (const [pair, states] of perTopic) {
     // A topic whose states have all been cleared is dropped rather than
     // rendered as an empty card, so the view self-cleans as incidents resolve.
     if (states.length === 0) continue;
     const tf = states.filter((s) => s.phase === "alerting").length;
     firing += tf;
     total += states.length;
-    topics[topic] = {
-      firing: tf,
-      total: states.length,
-      alerts: states
-        .map((s) => ({
-          key: s.key,
-          service: s.service,
-          phase: s.phase,
-          severity: s.phase === "alerting" ? s.severity : "INFO",
-          text: s.text,
-          link: s.link,
-          since: s.since,
-          updated: s.updated,
-          prodDown: s.prodDown === true,
-        }))
-        .sort((a, b) => {
-          const rank = { alerting: 0, pending: 1, ok: 2 };
-          return (
-            rank[a.phase] - rank[b.phase] || a.service.localeCompare(b.service)
-          );
-        }),
-    };
+    const alerts = states.map(alertRow).sort(byPhaseThenService);
+    const flat = topics[pair.topic] || (topics[pair.topic] = {
+      firing: 0,
+      total: 0,
+      alerts: [],
+    });
+    flat.firing += tf;
+    flat.total += states.length;
+    flat.alerts.push(...alerts);
+    const bucket =
+      sources[pair.source] ||
+      (sources[pair.source] = {
+        summary: { topics: 0, alerts: 0, firing: 0 },
+        topics: {},
+      });
+    bucket.topics[pair.topic] = { firing: tf, total: states.length, alerts };
+    bucket.summary.topics++;
+    bucket.summary.alerts += states.length;
+    bucket.summary.firing += tf;
   }
-  return { topics, firing, total };
+  for (const topic of Object.values(topics)) topic.alerts.sort(byPhaseThenService);
+  return { topics, sources, firing, total };
 }
 
 /**
@@ -209,19 +359,39 @@ function ctStamp() {
   return s.replace(/\s*(AM|PM)$/, (_, m) => m.toLowerCase());
 }
 
-/** Rewrite the standing status block for a topic from all its states. */
-async function refreshStatus(env, channel, topic) {
-  const states = await collectStates(env, channel, topic);
-  const content = renderStatus({ topic, states, updatedAt: ctStamp() });
+/**
+ * Rewrite the standing status block for one source in one topic.
+ *
+ * The source decides both the credential and the message: a vendor never
+ * touches another vendor's standing message, and a vendor with no credential
+ * of its own writes nothing at all.
+ */
+async function refreshStatus(env, source, channel, topic, options = {}) {
+  const credential = options.credential || resolveCredential(env, source);
+  if (!credential) throw credentialError(source);
+  const states = await collectStates(env, source, channel, topic);
+  const content = renderStatus({
+    topic,
+    states,
+    updatedAt: ctStamp(),
+    source,
+  });
   if (!env.WRITER_STORAGE) throw new Error("durable writer required");
-  const outcomeKey = `delivery:${JSON.stringify([channel, topic])}`;
+  const outcomeKey = deliveryKey(source, channel, topic);
   const prior = await env.WRITER_STORAGE.get(outcomeKey);
   if (prior?.outcome === "unknown" || prior?.outcome === "refused")
     return content;
-  const statusId =
+  let statusId =
     prior?.id ||
-    Number(await env.ALERT_STATE.get(statusKey(channel, topic), "json")) ||
+    Number(await env.ALERT_STATE.get(statusKey(source, channel, topic), "json")) ||
     null;
+  // Pinned ownership: a standing message belongs to exactly one source.  A
+  // message id another vendor pinned is never edited here, and never adopted
+  // as this source's own standing message.
+  if (statusId) {
+    const owner = await env.ALERT_STATE.get(statusOwnerKey(statusId), "json");
+    if (owner && owner !== source) statusId = null;
+  }
   // Commit uncertainty before crossing the network.  A crash or ambiguous reply
   // cannot turn a possibly accepted create into another automatic POST.
   await env.WRITER_STORAGE.put(outcomeKey, {
@@ -230,8 +400,8 @@ async function refreshStatus(env, channel, topic) {
   });
   try {
     const id = await writeStatus({
-      email: env.ZULIP_BOT_EMAIL,
-      apiKey: env.ZULIP_BOT_API_KEY,
+      email: credential.email,
+      apiKey: credential.apiKey,
       channel,
       topic,
       content,
@@ -239,7 +409,11 @@ async function refreshStatus(env, channel, topic) {
     });
     if (id) {
       await env.WRITER_STORAGE.put(outcomeKey, { outcome: "ok", id });
-      await env.ALERT_STATE.put(statusKey(channel, topic), JSON.stringify(id));
+      await env.ALERT_STATE.put(
+        statusKey(source, channel, topic),
+        JSON.stringify(id),
+      );
+      await env.ALERT_STATE.put(statusOwnerKey(id), JSON.stringify(source));
     }
   } catch (error) {
     if (error?.outcome === "refused") {
@@ -303,7 +477,13 @@ async function sendEventOnce(env, identity, args) {
 }
 
 async function handleEvent(source, payload, env) {
-  const event = normalize(source, payload);
+  // The route is authoritative: it names the source, and the source names the
+  // credential, the state namespace and the standing message.
+  const sourceName = String(source || "generic").toLowerCase();
+  const credential = resolveCredential(env, sourceName);
+  // A source with no credential of its own posts nothing and writes nothing.
+  if (!credential) throw credentialError(sourceName);
+  const event = normalize(sourceName, payload);
   const channel = DEFAULT_CHANNEL;
   // Keep the original topic for a stable key when vendor labels change.  The
   // svc: pin and the state read are independent, so they run in parallel.
@@ -313,13 +493,13 @@ async function handleEvent(source, payload, env) {
   ]);
   if (typeof priorService === "string" && priorService) {
     event.service = priorService;
-  } else if (event.key === `${event.source}:${event.service.toLowerCase()}`) {
+  } else if (event.key === `${sourceName}:${event.service.toLowerCase()}`) {
     // Only a key derived from the service label itself (the generic path with
     // no id/fingerprint) mints a NEW key on a vendor rename, before the pin
     // can engage.  The reverse service -> key map catches exactly that rename
     // and re-joins the existing incident; identifier-keyed incidents keep
     // their svc:<key> pin and never touch this map.
-    const priorKey = await env.ALERT_STATE.get(svcNameKey(event.source, event.service), "json");
+    const priorKey = await env.ALERT_STATE.get(svcNameKey(sourceName, event.service), "json");
     if (typeof priorKey === "string" && priorKey && priorKey !== event.key) {
       event.key = priorKey;
       [priorService, prev] = await Promise.all([
@@ -336,7 +516,7 @@ async function handleEvent(source, payload, env) {
   });
 
   result.state = advanceRevision(prev, result.state);
-  const inventory = await collectStates(env, channel, topic);
+  const inventory = await collectStates(env, sourceName, channel, topic);
   if (
     !inventory.some((row) => row.key === event.key) &&
     inventory.length >= MAX_KEYS
@@ -350,8 +530,8 @@ async function handleEvent(source, payload, env) {
       env,
       transitionIdentity(event.key, result.action, prev, result.state),
       {
-        email: env.ZULIP_BOT_EMAIL,
-        apiKey: env.ZULIP_BOT_API_KEY,
+        email: credential.email,
+        apiKey: credential.apiKey,
         channel,
         topic,
         severity: sev,
@@ -365,8 +545,8 @@ async function handleEvent(source, payload, env) {
       env,
       transitionIdentity(event.key, result.action, prev, result.state),
       {
-        email: env.ZULIP_BOT_EMAIL,
-        apiKey: env.ZULIP_BOT_API_KEY,
+        email: credential.email,
+        apiKey: credential.apiKey,
         channel,
         topic,
         severity: "INFO",
@@ -379,15 +559,20 @@ async function handleEvent(source, payload, env) {
 
   await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
   await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
-  if (event.key === `${event.source}:${event.service.toLowerCase()}`) {
-    await env.ALERT_STATE.put(svcNameKey(event.source, event.service), JSON.stringify(event.key));
+  // The source is recorded with the state so the sweep can resolve the right
+  // vendor credential for this incident.
+  await env.ALERT_STATE.put(srcKey(event.key), JSON.stringify(sourceName));
+  if (event.key === `${sourceName}:${event.service.toLowerCase()}`) {
+    await env.ALERT_STATE.put(svcNameKey(sourceName, event.service), JSON.stringify(event.key));
   }
-  await env.ALERT_STATE.put(`idx:${channel}:${topic}:${event.key}`, "1");
-  await env.ALERT_STATE.put(topicKey(channel, topic), "1");
+  await env.ALERT_STATE.put(indexPrefix(sourceName, channel, topic) + event.key, "1");
+  await env.ALERT_STATE.put(topicKey(sourceName, channel, topic), "1");
 
   // Every outcome refreshes the standing status, which is what makes the
   // channel readable at a glance instead of by scrolling.
-  const status = await refreshStatus(env, channel, topic);
+  const status = await refreshStatus(env, sourceName, channel, topic, {
+    credential,
+  });
 
   return { action: result.action, posted: !!posted, status };
 }
@@ -399,23 +584,36 @@ async function runSweep(env) {
   const all = { keys: await listAll(env.ALERT_STATE, "state:") };
   await collectTopics(env); // Complete every dependent inventory before the first send.
   let promoted = 0;
-  const dirtyTopics = new Set();
+  // Topics are per source: two vendors can share a service name, and each
+  // one owns its own standing message.
+  const dirtyTopics = new Map();
   for (const { name } of all.keys) {
     const key = name.slice("state:".length);
     const prev = await env.ALERT_STATE.get(name, "json");
     const s = sweep(prev, now, { minOpenMs });
     if (!s) continue;
+    const source = await resolveStateSource(env, key);
+    const credential = resolveCredential(env, source);
+    // No credential of its own means no post at all: the incident stays
+    // pending until the source has one, and it is never sent as another bot.
+    if (!credential) {
+      console.error(JSON.stringify({ event: "alert.credential_unavailable" }));
+      continue;
+    }
     s.state = advanceRevision(prev, s.state);
     try {
       const service = (await env.ALERT_STATE.get(svcKey(key), "json")) || key;
+      // The same bounded topic the ingest path uses, so a long vendor label
+      // does not strand the promotion in a different topic.
+      const topic = boundedTopic(service);
       await sendEventOnce(
         env,
         transitionIdentity(key, "announce", prev, s.state),
         {
-          email: env.ZULIP_BOT_EMAIL,
-          apiKey: env.ZULIP_BOT_API_KEY,
+          email: credential.email,
+          apiKey: credential.apiKey,
           channel: DEFAULT_CHANNEL,
-          topic: service,
+          topic,
           severity: s.state.severity,
           service,
           what: s.state.text,
@@ -423,22 +621,30 @@ async function runSweep(env) {
         },
       );
       await env.ALERT_STATE.put(name, JSON.stringify(s.state));
+      await env.ALERT_STATE.put(srcKey(key), JSON.stringify(source));
       promoted++;
-      dirtyTopics.add(service);
+      dirtyTopics.set(`${source}\u0000${topic}`, { source, topic });
     } catch {
       console.error(JSON.stringify({ event: "alert.promotion_failed" }));
     }
   }
-  // One status refresh per topic, however many incidents promoted in it, and
-  // all in parallel instead of one rebuild per incident.
-  await mapBounded([...dirtyTopics], async (topic) => {
+  // One status refresh per source and topic, however many incidents promoted
+  // in it, and all in parallel instead of one rebuild per incident.
+  await mapBounded([...dirtyTopics.values()], async ({ source, topic }) => {
     try {
-      await refreshStatus(env, DEFAULT_CHANNEL, topic);
+      await refreshStatus(env, source, DEFAULT_CHANNEL, topic);
     } catch {
       console.error(JSON.stringify({ event: "alert.status_refresh_failed" }));
     }
   });
   return { promoted, checked: all.keys.length };
+}
+
+/** The source that owns a state: its recorded source, else its key prefix. */
+async function resolveStateSource(env, key) {
+  const recorded = await env.ALERT_STATE.get(srcKey(key), "json");
+  if (typeof recorded === "string" && recorded) return recorded.toLowerCase();
+  return sourceFromKey(key);
 }
 
 const json = (body, status = 200) =>
@@ -466,7 +672,8 @@ const handler = {
 
     // Machine-readable status for consumers that render it themselves --
     // today the Usage Monitor /ops page.  One writer, many readers, so the
-    // dashboard and the Zulip channel cannot drift apart.
+    // dashboard and the Zulip channel cannot drift apart.  The top-level
+    // shape is unchanged; the per-source breakdown is added beside it.
     if (url.pathname === "/status") {
       const collected = await collectTopics(env);
       return json({
@@ -481,21 +688,78 @@ const handler = {
       });
     }
 
+    // The refresh routes rewrite a standing Zulip message (refreshStatus calls
+    // writeStatus), so they are operator-only: an unauthenticated hit would let
+    // anyone make the bot post into any channel it can reach.
+    const sourceStatusMatch = url.pathname.match(
+      /^\/status\/([^/]+)\/([^/]+)\/([^/]+)$/,
+    );
     const statusMatch = url.pathname.match(/^\/status\/([^/]+)\/([^/]+)$/);
-    if (statusMatch) {
-      // This route rewrites the standing Zulip message (refreshStatus calls
-      // writeStatus), so it is operator-only: an unauthenticated hit would let
-      // anyone make the bot post into any channel it can reach.
+    if (sourceStatusMatch || statusMatch) {
       if (!authorized(request, env)) {
         return json({ error: "unauthorized" }, 401);
       }
-      const [, channel, topic] = statusMatch;
-      const content = await refreshStatus(
-        env,
-        decodeURIComponent(channel),
-        decodeURIComponent(topic),
+      const segments = sourceStatusMatch ? sourceStatusMatch.slice(1) : null;
+      const channel = decodeURIComponent(
+        segments ? segments[1] : statusMatch[1],
       );
-      return json({ channel, topic, content });
+      const topic = decodeURIComponent(
+        segments ? segments[2] : statusMatch[2],
+      );
+      // The bot only ever writes into the alerts channel.  Any other channel
+      // is refused rather than written, whatever the operator token says.
+      if (channel !== DEFAULT_CHANNEL) {
+        return json(
+          {
+            error: "channel not permitted",
+            channel,
+            allowed: [DEFAULT_CHANNEL],
+          },
+          403,
+        );
+      }
+      if (segments) {
+        // Source-aware refresh: one vendor's standing status, with that
+        // vendor's own credential.
+        const source = decodeURIComponent(segments[0]).toLowerCase();
+        if (!SOURCE_TOKEN.test(source)) {
+          return json({ error: "unknown source", source }, 400);
+        }
+        if (!resolveCredential(env, source)) {
+          return json(
+            { error: "credential unavailable", source },
+            503,
+          );
+        }
+        const content = await refreshStatus(env, source, DEFAULT_CHANNEL, topic);
+        return json({ source, channel: DEFAULT_CHANNEL, topic, content });
+      }
+      // The legacy route carries no vendor dimension, so it refreshes every
+      // source that tracks the topic, each with its own credential.  A topic
+      // nobody tracks still gets the generic source's standing status, which
+      // is what this route always did.
+      const sources = await sourcesForTopic(env, DEFAULT_CHANNEL, topic);
+      const tracked = sources.length > 0;
+      const rendered = {};
+      const unavailable = [];
+      for (const source of tracked ? sources : ["generic"]) {
+        if (!resolveCredential(env, source)) {
+          unavailable.push({ source, error: "credential unavailable" });
+          continue;
+        }
+        rendered[source] = await refreshStatus(
+          env,
+          source,
+          DEFAULT_CHANNEL,
+          topic,
+        );
+      }
+      return json({
+        channel: DEFAULT_CHANNEL,
+        topic,
+        sources: rendered,
+        unavailable,
+      });
     }
 
     const hookMatch = url.pathname.match(/^\/webhook\/([a-z0-9_-]{1,32})$/i);
@@ -506,6 +770,14 @@ const handler = {
     const raw = await request.text();
     if (!(await verify(request, raw, env, source))) {
       return json({ error: "bad signature" }, 401);
+    }
+
+    // The authenticated route names the source, and the source names the
+    // credential.  A source with no credential of its own fails closed: it
+    // posts nothing, writes no status, and never borrows another source's
+    // identity.
+    if (!resolveCredential(env, source)) {
+      return json({ error: "credential unavailable", source }, 503);
     }
 
     // Bytes, not UTF-16 code units: a non-ASCII body can be far larger in
@@ -523,7 +795,17 @@ const handler = {
     } catch {
       return json({ error: "invalid payload" }, 400);
     }
-    return json(await handleEvent(source, payload, env));
+    try {
+      return json(await handleEvent(source, payload, env));
+    } catch (error) {
+      if (error?.code === "credential_unavailable") {
+        return json(
+          { error: "credential unavailable", source: error.source },
+          503,
+        );
+      }
+      throw error;
+    }
   },
 
   // The sweep that promotes aged incidents to real messages.
@@ -540,13 +822,21 @@ export const __testing = {
   runSweep,
   collectStates,
   collectTopics,
+  sourcesForTopic,
+  parseTopicKey,
+  resolveStateSource,
+  resolveCredential,
+  credentialPairs,
   safeEqual,
   stateKey,
+  srcKey,
   statusKey,
+  statusOwnerKey,
   svcKey,
   topicKey,
+  deliveryKey,
   ctStamp,
-  indexPrefix: (c, t) => `idx:${c}:${t}:`,
+  indexPrefix,
 };
 
 const MAX_KEYS = 2000;

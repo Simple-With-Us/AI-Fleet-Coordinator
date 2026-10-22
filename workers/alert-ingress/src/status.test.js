@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { __testing } from "./index.js";
 
-const { collectTopics, collectStates, listAll, runSweep, handleEvent, verify, stateKey, svcKey, topicKey, indexPrefix, ctStamp } = __testing;
+const { collectTopics, collectStates, listAll, runSweep, handleEvent, verify, stateKey, srcKey, svcKey, topicKey, indexPrefix, ctStamp } = __testing;
 
 /** Minimal in-memory stand-in for the Workers KV binding. */
 function fakeKV(seed = {}) {
@@ -79,13 +79,34 @@ function fakeStorage() {
 }
 
 /** The collectors take the Workers `env`, so wrap the fake binding the same way. */
-const asEnv = (kv) => ({ ALERT_STATE: kv, WRITER_STORAGE: fakeStorage() });
+// One credential per source: the vendor sources own their own pair, and the
+// generic source owns the legacy un-suffixed one.
+const CREDENTIALS = {
+  ZULIP_BOT_EMAIL: "generic-bot@example.invalid",
+  ZULIP_BOT_API_KEY: "generic-key",
+  ZULIP_BOT_EMAIL_DATADOG: "datadog-bot@example.invalid",
+  ZULIP_BOT_API_KEY_DATADOG: "datadog-key",
+  ZULIP_BOT_EMAIL_BETTERSTACK: "betterstack-bot@example.invalid",
+  ZULIP_BOT_API_KEY_BETTERSTACK: "betterstack-key",
+  ZULIP_BOT_EMAIL_CUSTOM: "custom-bot@example.invalid",
+  ZULIP_BOT_API_KEY_CUSTOM: "custom-key",
+};
+const asEnv = (kv, extra = {}) => ({
+  ALERT_STATE: kv,
+  WRITER_STORAGE: fakeStorage(),
+  ...CREDENTIALS,
+  ...extra,
+});
 
 function seed(kv, { channel = "alerts", key, service, state }) {
+  // Every alert key names its source, so the seeded topic membership belongs
+  // to that source and to no other.
+  const source = key.includes(":") ? key.split(":")[0] : "generic";
   kv.store.set(stateKey(key), JSON.stringify(state));
   kv.store.set(svcKey(key), JSON.stringify(service));
-  kv.store.set(indexPrefix(channel, service) + key, "1");
-  kv.store.set(topicKey(channel, service), "1");
+  kv.store.set(srcKey(key), JSON.stringify(source));
+  kv.store.set(indexPrefix(source, channel, service) + key, "1");
+  kv.store.set(topicKey(source, channel, service), "1");
 }
 
 test("collectTopics groups states by topic and counts firing", async () => {
@@ -157,8 +178,8 @@ test("a topic with only healthy signals still reports, with zero firing", async 
 
 test("a dangling index entry with no stored state is skipped, not crashed on", async () => {
   const kv = fakeKV();
-  kv.store.set(indexPrefix("alerts", "Ghost.Service") + "gone", "1"); // index but no state
-  kv.store.set(topicKey("alerts", "Ghost.Service"), "1");
+  kv.store.set(indexPrefix("generic", "alerts", "Ghost.Service") + "gone", "1"); // index but no state
+  kv.store.set(topicKey("generic", "alerts", "Ghost.Service"), "1");
   seed(kv, { key: "real", service: "Real.Service", state: { phase: "ok", severity: "INFO", since: 1, updated: 2, text: "ok", link: "" } });
   const { topics, total } = await collectTopics(asEnv(kv));
   assert.equal(total, 1);
@@ -168,9 +189,9 @@ test("a dangling index entry with no stored state is skipped, not crashed on", a
 test("collectStates resolves the service label and falls back to the key", async () => {
   const kv = fakeKV();
   kv.store.set(stateKey("orphan:1"), JSON.stringify({ phase: "ok", severity: "INFO", since: 1, updated: 2, text: "t", link: "" }));
-  kv.store.set(indexPrefix("alerts", "Fallback.Service") + "orphan:1", "1");
-  kv.store.set(topicKey("alerts", "Fallback.Service"), "1");
-  const states = await collectStates(asEnv(kv), "alerts", "Fallback.Service");
+  kv.store.set(indexPrefix("orphan", "alerts", "Fallback.Service") + "orphan:1", "1");
+  kv.store.set(topicKey("orphan", "alerts", "Fallback.Service"), "1");
+  const states = await collectStates(asEnv(kv), "orphan", "alerts", "Fallback.Service");
   assert.equal(states.length, 1);
   assert.equal(states[0].service, "orphan:1", "falls back to the key when no label is stored");
 });
@@ -261,9 +282,9 @@ test("a stable key retains its original service without duplicate membership", a
     globalThis.fetch = orig;
   }
   // The state must be counted once, under the topic it now belongs to.
-  assert.equal(kv.store.has(indexPrefix("alerts", "Old.svc") + "custom:one"), true);
-  assert.equal(kv.store.has(topicKey("alerts", "Old.svc")), true);
-  assert.equal(kv.store.has(indexPrefix("alerts", "New.svc") + "custom:one"), false);
+  assert.equal(kv.store.has(indexPrefix("custom", "alerts", "Old.svc") + "custom:one"), true);
+  assert.equal(kv.store.has(topicKey("custom", "alerts", "Old.svc")), true);
+  assert.equal(kv.store.has(indexPrefix("custom", "alerts", "New.svc") + "custom:one"), false);
   const { topics, total } = await collectTopics(asEnv(kv));
   assert.deepEqual(Object.keys(topics), ["Old.svc"]);
   assert.equal(total, 1);

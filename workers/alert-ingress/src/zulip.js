@@ -122,7 +122,7 @@ export async function writeStatus({
 }
 
 /** Render the standing status block for a topic's current states. */
-export function renderStatus({ topic, states, updatedAt }) {
+export function renderStatus({ topic, states, updatedAt, source }) {
   const rows = states
     .map((s) => {
       const mark =
@@ -141,6 +141,12 @@ export function renderStatus({ topic, states, updatedAt }) {
     ? `**${firing} firing** of ${states.length}`
     : `**All clear** (${states.length} monitored)`;
 
+  // Each source owns one standing message per topic, so the block says which
+  // vendor it belongs to.
+  const footer = source
+    ? `_Updated ${updatedAt}.  Source: ${source}.  This message is edited in place; new events post below it._`
+    : `_Updated ${updatedAt}.  This message is edited in place; new events post below it._`;
+
   return [
     `**Status: ${topic}**`,
     "",
@@ -148,7 +154,7 @@ export function renderStatus({ topic, states, updatedAt }) {
     "",
     ...(rows.length ? rows : ["_no signals yet_"]),
     "",
-    `_Updated ${updatedAt}.  This message is edited in place; new events post below it._`,
+    footer,
   ].join("\n");
 }
 
