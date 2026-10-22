@@ -388,7 +388,7 @@ None.
 | `L780-p1-fleet-wake` | 780 | Process 1: Inter-Agent Communication | [Posting](../../AGENT-SYNC.md#posting) |
 | `L780-p1-peer-tag-reach` | 780 | Process 1: Inter-Agent Communication | [Posting](../../AGENT-SYNC.md#posting) |
 | `L780-p1-standard-tags` | 780 | Process 1: Inter-Agent Communication | [Posting](../../AGENT-SYNC.md#posting) |
-| `L781-p1-startup-poll-command` | 781 | Process 1: Inter-Agent Communication | retired:  agent-sync-poll.py is retired by the hard cut.  The session-start duty survives in L781-p1-startup-poll-duty as `agent-sync inbox`. |
+| `L781-p1-startup-poll-command` | 781 | Process 1: Inter-Agent Communication | retired:  agent-sync-poll.py is retired by the hard cut.  The session-start duty survives in L781-p1-startup-poll-duty as `simple-chat inbox`. |
 | `L781-p1-startup-poll-duty` | 781 | Process 1: Inter-Agent Communication | [Reading and Listening](../../AGENT-SYNC.md#reading-and-listening) |
 | `L782-p1-fleet-fullread` | 782 | Process 1: Inter-Agent Communication | [Reading and Listening](../../AGENT-SYNC.md#reading-and-listening) |
 | `L782-p1-peer-messages-data` | 782 | Process 1: Inter-Agent Communication | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |
@@ -799,7 +799,7 @@ None.
 | `L1428-use-threads` | 1428 | Multi-room & active collaboration (slack-collab) | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
 | `L1431-slack-collab-mcp` | 1431 | Multi-room & active collaboration (slack-collab) | retired:  The slack-collab MCP server is retired by the hard cut and replaced by the agent-sync CLI (L1432-cli-helper). |
 | `L1432-cli-helper` | 1432 | Multi-room & active collaboration (slack-collab) | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
-| `L1433-relay-daemon` | 1433 | Multi-room & active collaboration (slack-collab) | retired:  The pm2 agent-sync-push relay is retired by the hard cut.  Zulip server push plus `agent-sync listen` replaces it. |
+| `L1433-relay-daemon` | 1433 | Multi-room & active collaboration (slack-collab) | retired:  The pm2 agent-sync-push relay is retired by the hard cut.  Zulip server push plus `simple-chat listen` replaces it. |
 | `L1438-header-plain` | 1438-1440 | Header | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1442-header-directed` | 1442-1445 | Header | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1446-header-fleet` | 1446-1449 | Header | [Posting](../../AGENT-SYNC.md#posting) |
@@ -854,10 +854,10 @@ None.
 | `L1574-pm2-events-jsonl` | 1574-1575 | Real-time Sync | retired:  The relay's events.jsonl log is retired along with the pm2 agent-sync-push relay. |
 | `L1575-no-per-agent-socket` | 1575-1577 | Real-time Sync | retired:  This Slack Socket Mode event-distribution hazard does not apply to Zulip's per-client event queues. |
 | `L1578-relay-post-endpoint` | 1578 | Real-time Sync | retired:  The relay's authenticated POST /post endpoint is retired with the relay. |
-| `L1580-consumer-optional` | 1580-1587 | Real-time Sync | retired:  consumer.mjs is retired by the hard cut and replaced by `agent-sync listen`. |
+| `L1580-consumer-optional` | 1580-1587 | Real-time Sync | retired:  consumer.mjs is retired by the hard cut and replaced by `simple-chat listen`. |
 | `L1587-no-pm2-consumer` | 1587 | Real-time Sync | retired:  This rule about persistent consumer.mjs processes is moot because consumer.mjs is retired. |
 | `L1590-feat-no-polling` | 1590 | Real-time Sync | retired:  This describes a feature of the retired Slack relay. |
-| `L1591-feat-cursor` | 1591-1592 | Real-time Sync | retired:  The private cursor file and events.jsonl replay belong to the retired relay.  Any replay behavior now comes from `agent-sync inbox` and `agent-sync read`. |
+| `L1591-feat-cursor` | 1591-1592 | Real-time Sync | retired:  The private cursor file and events.jsonl replay belong to the retired relay.  Any replay behavior now comes from `simple-chat inbox` and `simple-chat read`. |
 | `L1593-feat-selffilter` | 1593 | Real-time Sync | [Reading and Listening](../../AGENT-SYNC.md#reading-and-listening) |
 | `L1594-feat-reconnect` | 1594 | Real-time Sync | retired:  This describes a feature of the retired Slack relay. |
 | `L1596-selffilter-required` | 1596-1599 | Real-time Sync | [Reading and Listening](../../AGENT-SYNC.md#reading-and-listening) |
@@ -870,8 +870,8 @@ None.
 | `L1622-cadence-vocabulary` | 1622-1623 | Real-time Sync | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1625-ws-oneshot-helper` | 1625-1630 | Real-time Sync | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
 | `L1632-no-long-watcher` | 1632-1633 | Real-time Sync | retired:  The long-lived watcher mode of the retired agent-sync-websocket.py helper is moot. |
-| `L1635-poller-intro` | 1635-1642 | Real-time Sync | retired:  agent-sync-poll.py is retired by the hard cut.  `agent-sync read` and `agent-sync inbox` replace it. |
-| `L1646-poll-loop-mode` | 1645-1646 | Real-time Sync | retired:  The shell loop around agent-sync-poll.py is retired.  `agent-sync listen` or `agent-sync wait` replaces it. |
+| `L1635-poller-intro` | 1635-1642 | Real-time Sync | retired:  agent-sync-poll.py is retired by the hard cut.  `simple-chat read` and `simple-chat inbox` replace it. |
+| `L1646-poll-loop-mode` | 1645-1646 | Real-time Sync | retired:  The shell loop around agent-sync-poll.py is retired.  `simple-chat listen` or `simple-chat wait` replaces it. |
 | `L1647-poll-turn-mode` | 1647-1649 | Real-time Sync | [Reading and Listening](../../AGENT-SYNC.md#reading-and-listening) |
 | `L1650-poll-cloud-mode` | 1650-1651 | Real-time Sync | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
 | `L1653-poller-truncation` | 1653-1654 | Real-time Sync | retired:  The poller's 600-character truncation note is moot because the poller is retired.  Full reads go through the agent-sync CLI. |

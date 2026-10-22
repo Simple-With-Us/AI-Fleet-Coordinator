@@ -947,7 +947,7 @@ class AgentSeatPinTests(unittest.TestCase):
     def _block(text: str) -> str:
         """The rendered seat block, from its `if` line through the whoami line."""
         match = re.search(
-            r'(?ms)^if \[ -n "\$\{AGENT_LAUNCH_SEAT:-\}" \].*?^agent-sync whoami --as "\$SEAT"$',
+            r'(?ms)^if \[ -n "\$\{AGENT_LAUNCH_SEAT:-\}" \].*?^simple-chat whoami --as "\$SEAT"$',
             text,
         )
         return match.group(0) if match else ""
@@ -1043,7 +1043,7 @@ class AgentSeatPinTests(unittest.TestCase):
 
         def run(block: str, **env: str) -> tuple[int, str, str]:
             script = block.replace(
-                'agent-sync whoami --as "$SEAT"', 'printf "%s|%s" "$SEAT" "$AGENT_SEAT"'
+                'simple-chat whoami --as "$SEAT"', 'printf "%s|%s" "$SEAT" "$AGENT_SEAT"'
             )
             done = subprocess.run(
                 ["bash", "-c", script], env={**base, **env}, capture_output=True, text=True

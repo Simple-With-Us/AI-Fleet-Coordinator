@@ -60,7 +60,7 @@ for integration trees only"* (owner ruling 2026-09-25).
    brand-new fleet app being onboarded via this procedure — strays are
    detected and logged by `code-main-keeper.sh` and pruned by the owner.
 2. **Linear, then code.**  The app needs a Linear team keyed by its acronym (Jay creates it, so ask
-   in the claim post).  Claim the onboarding issue with `board claim` (writes need `AGENT_SEAT`) and
+   in the claim post).  Claim the onboarding issue with `simple-board claim` (writes need `AGENT_SEAT`) and
    move it to In Progress before substantial edits.  There is no effort log to create.
 3. **Claim and closeout:** the Linear issue + `#Work-In-Progress`, and the PR names the issue (`Fixes <ID>`
    or `Refs <ID>`, branch `<seat>/<id>-<slug>`).
@@ -109,7 +109,7 @@ Pick and write these down. They never change casually.
 | Worktree prefix | `dealdex` | Legacy flat lane names, an accepted `lane new <app>` query and telemetry tags; no longer a lane folder |
 | Visibility | private / public | Match the product |
 
-File and claim one Linear issue on the **AFC** team (`board file --app AFC`) for the onboarding
+File and claim one Linear issue on the **AFC** team (`simple-board file --app AFC`) for the onboarding
 before you start;  the new app's own team is created by Jay in Phase 4.
 
 ---
@@ -184,7 +184,7 @@ Required:
 
 | Path | What |
 |------|------|
-| `AGENTS.md` | Worktree keepout, Zulip coordination stanza (Linear, `board`), verify commands, product traps |
+| `AGENTS.md` | Worktree keepout, Zulip coordination stanza (Linear, `simple-board`), verify commands, product traps |
 | `CLAUDE.md` | Symlink to `AGENTS.md` |
 | `STATUS.md` | Snapshot |
 | `docs/rollouts/YYYY-MM-DD-fleet-onboard.md` | This join |
@@ -267,7 +267,7 @@ Run `python3 scripts/check-fleet-registry.py` until it is clean.
 
 ## Phase 5 — Zulip + Notes
 
-1. Read `#Work-In-Progress` (`agent-sync inbox`, `agent-sync topics --limit 30`), then post a
+1. Read `#Work-In-Progress` (`simple-chat inbox`, `simple-chat topics --limit 30`), then post a
    claim in a work topic such as `AFC-<n> onboard <App>` (the onboarding issue's id):
 
    ```
@@ -277,7 +277,7 @@ Run `python3 scripts/check-fleet-registry.py` until it is clean.
    work:  onboard <App> as a fleet app
    ```
 
-2. After merge: closeout in Zulip (`DONE`, then `agent-sync resolve`), move the Linear issue to Done, write /
+2. After merge: closeout in Zulip (`DONE`, then `simple-chat resolve`), move the Linear issue to Done, write /
    update Apple Notes `[<ACRONYM>, FLEET, Grok] onboard <App>` in folder
    **Coding** via `/Users/jay/apps/apple-notes-coding.sh`.
 
@@ -308,7 +308,7 @@ as app `COOLIFY_API_TOKEN`. See `AGENT-SYNC.md`.
 1. PR on the **new app** (bootstrap files).
 2. PR on **AI-Fleet-Coordinator** (registries + this doc if you changed it).
 3. Merge both when CI is green.
-4. Confirm the Linear team exists (Jay) and `board file --app <ACRONYM>` lands in it.
+4. Confirm the Linear team exists (Jay) and `simple-board file --app <ACRONYM>` lands in it.
 5. Confirm `~/Code/<App>` fast-forwards to `main` (code-main-keeper or
    `git -C ~/Code/<App> pull --ff-only`).
 
@@ -322,7 +322,7 @@ The inverse of onboarding.  Do these in order, each through a `claude/*` lane an
 2. Stop and unload any LaunchAgent or pm2 job, and mark its row **Retired** in `MAC-LOCAL-PROCESSES.md`, then refresh the Apple Note.
 3. Move local checkouts and worktrees to the Trash (never `rm -rf`), after pushing any unpushed work to an `archive/<name>` branch.
 4. Remove the row from `fleet-apps.json`, the `DEFAULT_REPOS` and `FLEET_REPOS` lists, the ios-fleet `apps.json`, and `ios-app-versions.json`, then run `check-fleet-registry.py`.
-5. Close the app's open Linear issues with a resolution that names the successor (`board status <id> wontfix --resolution ...`), then ask Jay to archive its Linear team.
+5. Close the app's open Linear issues with a resolution that names the successor (`simple-board status <id> wontfix --resolution ...`), then ask Jay to archive its Linear team.
 6. List App Store Connect, Sentry, and Infisical cleanup as owner follow-ups.  ASC app records cannot be deleted once builds exist.
 
 ---
@@ -332,7 +332,7 @@ The inverse of onboarding.  Do these in order, each through a `claude/*` lane an
 - [ ] `~/Code/<App>` is a git checkout of `Simple-With-Us/<repo>` on `main`
 - [ ] The onboarding PR was made from a lane under `~/apps/lanes/<codeDir>/`, not from `~/Code/<App>`
 - [ ] `AGENTS.md` is tracked and forbids working in `~/Code/<App>`
-- [ ] The Linear team exists (Jay) and `board file --app <ACRONYM>` lands in it
+- [ ] The Linear team exists (Jay) and `simple-board file --app <ACRONYM>` lands in it
 - [ ] `fleet-apps.json` has the row
 - [ ] Digest + calendar `DEFAULT_REPOS` include the repo
 - [ ] Apple Notes acronym table includes the acronym

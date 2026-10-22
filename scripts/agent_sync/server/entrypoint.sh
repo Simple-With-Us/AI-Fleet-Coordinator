@@ -3,15 +3,15 @@
 #
 # On first start it copies the sample config (scripts/agent_sync/server/listener.toml) onto the
 # state volume as $AGENT_SYNC_CONFIG; it never overwrites one that exists, because
-# `agent-sync daemon init` pins the owner in that copy.  Then it execs agent-sync with the
+# `simple-chat daemon init` pins the owner in that copy.  Then it execs simple-chat with the
 # container's arguments (default:  daemon run --wait-lock).
 #
 # Credentials:  when INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET and INFISICAL_PROJECT_ID are all
 # set (a read-only Universal Auth machine identity), infisical_env.py loads the listener's
-# variables from Infisical (prod, /zulip) and execs agent-sync with them, the identity removed.
+# variables from Infisical (prod, /zulip) and execs simple-chat with them, the identity removed.
 # Infisical is the intended source;  Coolify copies are the fallback.  A partial identity logs an ERROR line
-# naming the missing variables, then agent-sync runs with the container's own environment.  Either way exec
-# keeps agent-sync as PID 1, and no value passes through this script or its log lines.
+# naming the missing variables, then simple-chat runs with the container's own environment.  Either way exec
+# keeps simple-chat as PID 1, and no value passes through this script or its log lines.
 #
 # `docker exec` gets the container's original environment, not the one PID 1 was started with.
 # Run a command that needs the seats' credentials (daemon init, for one) through this script:
@@ -25,17 +25,17 @@ umask 077
 mkdir -p "$AGENT_SYNC_STATE_DIR"
 if [ ! -e "$AGENT_SYNC_CONFIG" ]; then
     cp "$here/listener.toml" "$AGENT_SYNC_CONFIG"
-    echo "agent-sync: seeded $AGENT_SYNC_CONFIG from the image's sample; run agent-sync daemon init to pin the owner" >&2
+    echo "simple-chat: seeded $AGENT_SYNC_CONFIG from the image's sample; run simple-chat daemon init to pin the owner" >&2
 fi
 if [ -n "${INFISICAL_CLIENT_ID:-}" ] && [ -n "${INFISICAL_CLIENT_SECRET:-}" ] && [ -n "${INFISICAL_PROJECT_ID:-}" ]; then
-    exec python3 "$here/infisical_env.py" "$here/../../agent-sync" "$@"
+    exec python3 "$here/infisical_env.py" "$here/../../simple-chat" "$@"
 fi
 if [ -n "${INFISICAL_CLIENT_ID:-}${INFISICAL_CLIENT_SECRET:-}${INFISICAL_PROJECT_ID:-}" ]; then
     missing=""
     [ -n "${INFISICAL_CLIENT_ID:-}" ] || missing="$missing INFISICAL_CLIENT_ID"
     [ -n "${INFISICAL_CLIENT_SECRET:-}" ] || missing="$missing INFISICAL_CLIENT_SECRET"
     [ -n "${INFISICAL_PROJECT_ID:-}" ] || missing="$missing INFISICAL_PROJECT_ID"
-    echo "agent-sync: ERROR: Infisical not used (missing:$missing; all three must be set); the container environment's Coolify copies are the fallback and the intended Infisical source is NOT in use" >&2
+    echo "simple-chat: ERROR: Infisical not used (missing:$missing; all three must be set); the container environment's Coolify copies are the fallback and the intended Infisical source is NOT in use" >&2
 fi
 unset INFISICAL_CLIENT_ID INFISICAL_CLIENT_SECRET
-exec "$here/../../agent-sync" "$@"
+exec "$here/../../simple-chat" "$@"

@@ -32,7 +32,17 @@ from .secretscan import scan as scan_text
 from .state import state_root
 
 
-def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
+def add_parsers(
+    sub: Any, common: argparse.ArgumentParser, verbs: frozenset[str] | None = None
+) -> None:
+    """Register the `simple-notes` verbs, and the `guide` reader, on `sub`.
+
+    The notes actions are top-level verbs of `simple-notes` (`simple-notes create ...`), not a
+    `notes` group, so each one is added straight to `sub`.  `guide` prints the Agent-Sync tools
+    guide and stays on `simple-chat`; `verbs` lets each command keep the other's verbs out of its
+    own `--help`.
+    """
+
     def add(parent: Any, name: str, summary: str) -> argparse.ArgumentParser:
         return parent.add_parser(name, parents=[common], help=summary, description=summary)
 
@@ -50,14 +60,8 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
         "section", nargs="?", metavar="SECTION", help="a section heading (case does not matter)"
     )
 
-    p = add(
-        sub,
-        "notes",
-        "write Apple Notes in the owner's Coding folder, directly on a Mac or through #notes-relay",
-    )
-    nsub = p.add_subparsers(dest="notes_action", metavar="ACTION", required=True)
     for action in ("create", "update"):
-        q = add(nsub, action, "%s a note (body from stdin, --body-file or --html)" % action)
+        q = add(sub, action, "%s a note (body from stdin, --body-file or --html)" % action)
         q.add_argument("title", metavar="TITLE", help="[TEAM_KEY, Agent] Topic")
         q.add_argument(
             "body",
@@ -108,17 +112,21 @@ def add_parsers(sub: Any, common: argparse.ArgumentParser) -> None:
         )
         identity_opt(q)
     for action in ("pin", "unpin"):
-        q = add(nsub, action, "%s the note with this exact title" % action)
+        q = add(sub, action, "%s the note with this exact title" % action)
         q.add_argument("title", metavar="TITLE")
         q.add_argument(
             "--relay", action="store_true", help="post a #notes-relay request even on a Mac"
         )
         q.add_argument("--request-id", dest="request_id", metavar="ID", default=None)
         identity_opt(q)
-    q = add(nsub, "status", "where a relayed request stands:  queued, done or refused")
-    q.add_argument("request_id", metavar="REQUEST_ID")
-    q.add_argument("--message-id", dest="message_id", type=int, default=None, metavar="ID")
-    identity_opt(q)
+    # `status` is also the listener's status verb.  The two never share a command any more, so
+    # `status` is registered only when the calling command's verb set asked for it (the unfiltered
+    # build keeps the listener's).
+    if verbs is not None and "status" in verbs:
+        q = add(sub, "status", "where a relayed request stands:  queued, done or refused")
+        q.add_argument("request_id", metavar="REQUEST_ID")
+        q.add_argument("--message-id", dest="message_id", type=int, default=None, metavar="ID")
+        identity_opt(q)
 
 
 def _fail(exc: N.NotesError) -> Z.AgentSyncError:
@@ -197,6 +205,11 @@ def _read_body(rt: Any, args: argparse.Namespace) -> tuple[str, bool]:
     return "", False
 
 
+def _action(args: argparse.Namespace) -> str:
+    """The notes action: `simple-notes create` puts it in `command`; the MCP tools pass `notes_action`."""
+    return getattr(args, "notes_action", None) or args.command
+
+
 def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
     """`notes create|update|pin|unpin|status`.  A write is audited exactly once, on every exit, in the `finally`
     below (identity_log, outcome only, never the body):  the branches only record in `audit` what happened.  A status
@@ -204,7 +217,7 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
     from . import identity_log as AUDIT
 
     audit: dict[str, Any] = {}
-    write = args.notes_action != "status"
+    write = _action(args) != "status"
     try:
         return _cmd_notes(rt, args, audit)
     except (KeyboardInterrupt, SystemExit):
@@ -226,7 +239,7 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
                     transport="cli",
                     default_identity=audit["identity"],
                     identity=audit["identity"],
-                    tool="notes " + args.notes_action,
+                    tool="notes " + _action(args),
                     outcome=audit["outcome"],
                     message_id=audit.get("message_id")
                     if isinstance(audit.get("message_id"), int)
@@ -238,7 +251,7 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
     from . import cli as CLI
     from .mcp import tools as T
 
-    action = args.notes_action
+    action = _action(args)
     identity = _identity(rt, args)
     audit["identity"] = identity
     home = (

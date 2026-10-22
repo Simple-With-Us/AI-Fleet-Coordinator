@@ -40,7 +40,7 @@ tested.  When a surface needs a mechanism to show two spaces, use it without ask
 
 Producing U+00A0 through a tool:  write two ASCII spaces after each sentence, then run
 `perl -CSDA -pe 's/([.!?])  (?=\S)/$1\x{a0} /g' body.txt > body.nbsp.txt`, and check the
-output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
+output holds a U+00A0 before `gh pr create --body-file` or `simple-chat post`.
 
 > ⚠️ **Superseded 2026-10-18 — do not copy the perl line above.**  A run of whitespace written
 > into a tool call or heredoc *sometimes* collapses to a single space before it lands, and that
@@ -115,6 +115,6 @@ output holds a U+00A0 before `gh pr create --body-file` or `agent-sync post`.
   self-test in the `sentence-gap` skill on each and record the answer in its table.
 - `scripts/agent_sync/wake/wake-contract.md` still says "Two spaces between sentences".
   The wake responder is model-written text posted by the daemon, so it cannot emit U+00A0.
-  A daemon-side conversion in `agent-sync post` would make the Zulip rule automatic.
+  A daemon-side conversion in `simple-chat post` would make the Zulip rule automatic.
 - Several tests in `scripts/test_fleet_skill_identity.py` already fail on main (15 of 49).
   This change adds none.

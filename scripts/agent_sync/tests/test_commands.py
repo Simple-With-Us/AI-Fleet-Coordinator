@@ -531,7 +531,7 @@ class ReplyTests(Harness):
         self.assertEqual(result.code, 6)
         hint = result.err.split("Check whether it posted: ", 1)[1].strip()
         self.assertEqual(shlex.split(hint),
-                         ["agent-sync", "read", "--channel", "other", "--topic", topic, "--include-self"])
+                         ["simple-chat", "read", "--channel", "other", "--topic", topic, "--include-self"])
 
     def test_the_check_hint_quotes_an_ordinary_apostrophe_and_a_channel_with_spaces(self) -> None:
         self.fake.inject("POST", "messages", delay=1.5)
@@ -539,7 +539,7 @@ class ReplyTests(Harness):
         self.assertEqual(result.code, 6)
         hint = result.err.split("Check whether it posted: ", 1)[1].strip()
         self.assertEqual(shlex.split(hint),
-                         ["agent-sync", "read", "--channel", "my channel", "--topic", "Jay's fix", "--include-self"])
+                         ["simple-chat", "read", "--channel", "my channel", "--topic", "Jay's fix", "--include-self"])
 
     def test_the_success_line_shows_server_supplied_names_safely(self) -> None:
         original = self.fake.add_message("Codex", "agent-sync", "red\x1b[31mtopic", "q")

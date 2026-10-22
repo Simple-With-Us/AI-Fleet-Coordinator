@@ -241,10 +241,10 @@ class RelativeExecutableTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             out = io.StringIO()
             with patch.object(systemd.os, "access", return_value=True), patch.object(systemd, "_confirmed_too_old", return_value=False) as probe:
-                result = systemd.install({}, home, out, python="./venv/bin/python", program="scripts/agent-sync")
+                result = systemd.install({}, home, out, python="./venv/bin/python", program="scripts/simple-chat")
             self.assertEqual(result, 0)
             self.assertEqual(probe.call_args.args[0], os.path.abspath("./venv/bin/python"))
-            self.assertIn(systemd.quote(os.path.abspath("scripts/agent-sync")), Path(systemd.unit_path(home)).read_text())
+            self.assertIn(systemd.quote(os.path.abspath("scripts/simple-chat")), Path(systemd.unit_path(home)).read_text())
 
     def test_timeout_identifies_interpreter(self):
         with patch.object(systemd, "too_old", side_effect=subprocess.TimeoutExpired("probe", 1)):
