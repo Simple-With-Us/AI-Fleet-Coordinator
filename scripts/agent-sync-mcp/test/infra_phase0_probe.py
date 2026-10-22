@@ -223,9 +223,7 @@ def secret_probes() -> dict:
     diagnostic = run_with_fake_child(
         FakeChild(None, returncode=1, stdout=noisy, stderr=noisy), secret=secret
     )
-    quiet = run_with_fake_child(
-        FakeChild(None, returncode=1, stdout="", stderr=""), secret=secret
-    )
+    quiet = run_with_fake_child(FakeChild(None, returncode=1, stdout="", stderr=""), secret=secret)
 
     def missing_executable():
         def boom(argv, **kwargs):
