@@ -19,8 +19,9 @@ macOS AppleScript banners for wake events via a thin Mac client.  Jay accepted
   Default (the Mac):  one macOS banner per new wake id, bodies never reach a
   banner.  Hook mode (`OPERATOR_ALERTER_HOOK` set):  run one configured
   command per new wake instead - this is the headless-wake path for
-  server-side seats.  Both modes hold no Zulip key, no Infisical access, no
-  listener state.
+  server-side seats.  Both modes hold no Zulip key and no listener state;  the only secret
+  is the seat's routine key, read with `fleet-secrets get` (Infisical) on every
+  poll, so a rotated key needs no restart.
 - `scripts/launchd/com.jay.operator-wake-alerter.plist`:  launchd unit for
   the Mac alerter.  Config is `OPERATOR_SEAT` and `OPERATOR_LISTENER_URL` in the plist's EnvironmentVariables (no secrets);  the seat's `<CODE>_ROUTINE_KEY` is read with `fleet-secrets get` (Infisical), never from an env file.
 

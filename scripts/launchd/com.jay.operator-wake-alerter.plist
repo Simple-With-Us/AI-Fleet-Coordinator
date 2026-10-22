@@ -5,7 +5,8 @@
   listener's signed read API for new wake events and pop one macOS banner per
   event (adapters.osascript_argv; bodies never reach a banner).  This is the
   thin Mac client for the hosted-listener cutover:  it holds no Zulip key,
-  no Infisical access and no listener state.
+  no listener state.  Its one secret, the seat's routine key, is read with
+  `fleet-secrets get` (Infisical).
 
   No secret lives in this plist or in any file:  the client reads the seat's
   routine key with `fleet-secrets get` (Infisical) on every poll.  Set
@@ -26,7 +27,7 @@
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>mkdir -p "$HOME/.local/state/operator" &amp;&amp; exec /usr/bin/python3 -I /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/agent_sync/wake_alerter.py</string>
+    <string>umask 077 &amp;&amp; mkdir -p "$HOME/.local/state/operator" &amp;&amp; exec /usr/bin/python3 -I /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/agent_sync/wake_alerter.py</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts</string>

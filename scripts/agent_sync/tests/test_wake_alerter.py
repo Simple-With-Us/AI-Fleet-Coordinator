@@ -237,7 +237,7 @@ class KeyLookupTests(unittest.TestCase):
 
         class Done:
             returncode = 0
-            stdout = b" the-key\n"
+            stdout = b" the-key-0123\n"
 
         def run(argv, **kw):
             seen.append(argv)
@@ -247,7 +247,7 @@ class KeyLookupTests(unittest.TestCase):
         os.environ["OPERATOR_SECRET_PATH"] = "/zulip"
         self.addCleanup(os.environ.pop, "FLEET_SECRETS_BIN", None)
         self.addCleanup(os.environ.pop, "OPERATOR_SECRET_PATH", None)
-        self.assertEqual(WA._fleet_secrets_get("ECHO_ROUTINE_KEY", run=run), "the-key")
+        self.assertEqual(WA._fleet_secrets_get("ECHO_ROUTINE_KEY", run=run), "the-key-0123")
         self.assertEqual(seen, [["/opt/fs", "get", "ECHO_ROUTINE_KEY", "--path", "/zulip"]])
 
     def test_a_failing_or_missing_lookup_is_empty(self):
@@ -263,6 +263,77 @@ class KeyLookupTests(unittest.TestCase):
             raise OSError("x")
 
         self.assertEqual(WA._fleet_secrets_get("N", run=boom), "")
+
+    def _run_with(self, returncode, stdout, exc=None):
+        class Done:
+            pass
+
+        done = Done()
+        done.returncode, done.stdout = returncode, stdout
+
+        def run(argv, **kw):
+            if exc:
+                raise exc
+            return done
+
+        os.environ["FLEET_SECRETS_BIN"] = "/opt/fs"
+        self.addCleanup(os.environ.pop, "FLEET_SECRETS_BIN", None)
+        return run
+
+    def test_failures_keep_their_reason_and_never_the_value(self):
+        import subprocess
+
+        for rc, out, exc, want in (
+            (3, b"secret-value-xyz", None, "exited 3"),
+            (0, b"", None, "empty"),
+            (0, b"has space in it", None, "does not look like"),
+            (0, b"short", None, "does not look like"),
+            (0, b"x", subprocess.TimeoutExpired("fs", 30), "timed out"),
+            (0, b"x", OSError("no"), "could not run"),
+        ):
+            key, why = WA._read_key("ECHO_ROUTINE_KEY", run=self._run_with(rc, out, exc))
+            self.assertEqual(key, "")
+            self.assertIn(want, why)
+            self.assertNotIn("secret-value-xyz", why)
+
+    def test_a_name_that_could_be_an_option_is_refused_before_any_call(self):
+        def run(*a, **k):
+            raise AssertionError("must not run")
+
+        for name in ("--help", "-x", "A B", "", "A;B"):
+            self.assertEqual(WA._read_key(name, run=run)[0], "")
+
+    def test_the_loop_reads_the_key_every_poll(self):
+        keys = iter(["key-one-0001", "key-two-0002", ""])
+        used = []
+        sleeps = []
+
+        def fake_read(name, run=None):
+            k = next(keys)
+            return (k, "" if k else "fleet-secrets exited 1")
+
+        class Stop(Exception):
+            pass
+
+        def sleep(n):
+            sleeps.append(n)
+            if len(sleeps) == 3:
+                raise Stop
+
+        saved = (WA._read_key, WA.poll_once, WA.time.sleep)
+        WA._read_key = fake_read
+        WA.poll_once = lambda b, s, k, *a, **kw: used.append(k) or 0
+        WA.time.sleep = sleep
+        self.addCleanup(lambda: (setattr(WA, "_read_key", saved[0]), setattr(WA, "poll_once", saved[1]), setattr(WA.time, "sleep", saved[2])))
+        env = {"OPERATOR_SEAT": "echo", "OPERATOR_LISTENER_URL": "https://listener.example.test"}
+        os.environ.update(env)
+        for k in env:
+            self.addCleanup(os.environ.pop, k, None)
+        # first read is the startup check, then one per loop poll
+        keys = iter(["key-startup-0", "key-one-0001", "key-two-0002", ""])
+        with self.assertRaises(Stop):
+            WA._run(["--loop", "1"])
+        self.assertEqual(used, ["key-one-0001", "key-two-0002"])
 
 
 if __name__ == "__main__":

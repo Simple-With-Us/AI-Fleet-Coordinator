@@ -181,6 +181,14 @@ def _save_seen(path: str, seen: list[str]) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+    try:
+        dfd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass  # the rename is done;  a directory fsync is best effort on some filesystems
 
 
 _SECRETISH_RE = re.compile(
@@ -303,14 +311,23 @@ def poll_once(
     return handled
 
 
-def _fleet_secrets_get(name: str, run=None) -> str:
-    """The named secret via `fleet-secrets get`, or "" when it cannot be read.
+_SECRET_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+_KEY_RE = re.compile(r"^[\x21-\x7e]{8,512}$")
+SECRET_TIMEOUT_SECONDS = 30
+
+
+def _read_key(name: str, run=None) -> tuple[str, str]:
+    """(key, "") on success, or ("", reason) where the reason never holds a value.
 
     Only the name goes on the command line;  the value is read from the child's
-    stdout and never printed.  Errors name the variable, never a value."""
+    stdout and never printed.  The name must be a plain identifier so it cannot be
+    read as a fleet-secrets option;  the value must look like a key (printable
+    ASCII, no whitespace) so a stray error line is not signed with."""
     import shutil
     import subprocess
 
+    if not _SECRET_NAME_RE.match(name or ""):
+        return "", "the key name is not a plain identifier"
     binary = (os.environ.get("FLEET_SECRETS_BIN") or "").strip()
     if binary:
         binary = os.path.expanduser(binary)
@@ -318,19 +335,33 @@ def _fleet_secrets_get(name: str, run=None) -> str:
         home = os.path.expanduser("~/.local/bin/fleet-secrets")
         binary = home if os.access(home, os.X_OK) else (shutil.which("fleet-secrets") or "")
     if not binary:
-        return ""
+        return "", "fleet-secrets is not installed"
     argv = [binary, "get", name]
     for flag, var in (("--path", "OPERATOR_SECRET_PATH"), ("--project", "OPERATOR_SECRET_PROJECT")):
         value = (os.environ.get(var) or "").strip()
         if value:
             argv += [flag, value]
     try:
-        done = (run or subprocess.run)(argv, capture_output=True, timeout=10, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return ""
+        done = (run or subprocess.run)(
+            argv, capture_output=True, timeout=SECRET_TIMEOUT_SECONDS, check=False
+        )
+    except subprocess.TimeoutExpired:
+        return "", f"fleet-secrets timed out after {SECRET_TIMEOUT_SECONDS}s"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "", f"fleet-secrets could not run ({type(exc).__name__})"
     if done.returncode:
-        return ""
-    return done.stdout.decode("utf-8", "replace").strip()
+        return "", f"fleet-secrets exited {done.returncode}"
+    value = done.stdout.decode("utf-8", "replace").strip()
+    if not value:
+        return "", "fleet-secrets returned an empty value"
+    if not _KEY_RE.match(value):
+        return "", "the value does not look like a routine key"
+    return value, ""
+
+
+def _fleet_secrets_get(name: str, run=None) -> str:
+    """The named secret via `fleet-secrets get`, or "" when it cannot be read."""
+    return _read_key(name, run)[0]
 
 
 def _run(argv=None) -> int:
@@ -348,9 +379,9 @@ def _run(argv=None) -> int:
     if not seat or not base_url or "SET_ME" in (seat, base_url) or not key_name:
         print("wake_alerter: OPERATOR_SEAT and OPERATOR_LISTENER_URL are required", file=sys.stderr)
         return 2
-    key = _fleet_secrets_get(key_name)
+    key, why = _read_key(key_name)
     if not key:
-        print(f"wake_alerter: {key_name} unavailable from fleet-secrets", file=sys.stderr)
+        print(f"wake_alerter: {key_name} unavailable: {why}", file=sys.stderr)
         return 2
     state_path = os.environ.get("OPERATOR_STATE") or _default_state_path()
 
@@ -379,7 +410,12 @@ def _run(argv=None) -> int:
         poll_once(base_url, seat, key, state_path, runner=runner, hook=hook)
         return 0
     while True:
-        poll_once(base_url, seat, key, state_path, runner=runner, hook=hook)
+        # Read the key again every poll, so a rotated key needs no restart.
+        key, why = _read_key(key_name)
+        if key:
+            poll_once(base_url, seat, key, state_path, runner=runner, hook=hook)
+        else:
+            print(f"wake_alerter: {key_name} unavailable: {why}; will retry", file=sys.stderr)
         time.sleep(args.loop)
 
 
