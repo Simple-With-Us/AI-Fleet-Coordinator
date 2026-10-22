@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""git-relay:  the fleet GitHub relay CLI.
+
+Two commands, both entry points into the git_relay package that sits next to
+this script:
+
+    git-relay serve   run the relay HTTP service (the default command)
+    git-relay mcp     run GR-MCP, the stdio MCP wrapper seats connect to
+
+git-relay is the ONE path that mints per-bot GitHub App tokens (owner decision
+2026-10-22, Q5).  The retired Operator GitHub token broker is not a minting
+path;  see git-relay/README.md.
+
+Stdlib only, no dependencies to install.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+# Run straight from a checkout with no install step:  the package directory is
+# the parent of bin/.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+USAGE = """usage: git-relay <command>
+
+commands:
+  serve         run the git-relay HTTP service (default)
+  mcp           run GR-MCP, the stdio MCP wrapper
+  help          show this message
+
+git-relay owns per-bot GitHub App token minting.  Configuration is read from
+the environment (GIT_RELAY_* plus GITHUB_TOKEN);  see git-relay/README.md."""
+
+
+def main(argv: list[str]) -> int:
+    command = argv[1] if len(argv) > 1 else "serve"
+    if command in ("help", "-h", "--help"):
+        print(USAGE)
+        return 0
+    if command == "serve":
+        from git_relay.server import main as serve
+
+        serve()  # blocks in serve_forever
+        return 0
+    if command == "mcp":
+        from git_relay.mcp_server import main as mcp
+
+        mcp()  # blocks reading stdio
+        return 0
+    print(f"git-relay: unknown command {command!r}", file=sys.stderr)
+    print(USAGE, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

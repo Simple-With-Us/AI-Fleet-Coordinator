@@ -21,7 +21,7 @@ class PolicyError(ValueError):
 
 
 class SeatPolicy:
-    """Per-seat allowlists parsed from PR_RELAY_SEATS_JSON.
+    """Per-seat allowlists parsed from GIT_RELAY_SEATS_JSON.
 
     Shape:
         {
@@ -53,13 +53,13 @@ class SeatPolicy:
 
     def __init__(self, seats_json: str, rate_per_hour: int = 120):
         if not seats_json:
-            raise PolicyError("PR_RELAY_SEATS_JSON is empty")
+            raise PolicyError("GIT_RELAY_SEATS_JSON is empty")
         try:
             raw = json.loads(seats_json)
         except json.JSONDecodeError as exc:
-            raise PolicyError(f"PR_RELAY_SEATS_JSON is not valid JSON: {exc}") from exc
+            raise PolicyError(f"GIT_RELAY_SEATS_JSON is not valid JSON: {exc}") from exc
         if not isinstance(raw, dict) or not raw:
-            raise PolicyError("PR_RELAY_SEATS_JSON must be a non-empty object of seats")
+            raise PolicyError("GIT_RELAY_SEATS_JSON must be a non-empty object of seats")
         self._seats: dict[str, dict] = {}
         for seat, cfg in raw.items():
             if not isinstance(cfg, dict):
@@ -84,6 +84,16 @@ class SeatPolicy:
             if app_slug is not None:
                 if not isinstance(app_slug, str) or not app_slug.startswith("swu-"):
                     raise PolicyError(f"seat {seat!r}: app_slug must be a swu- app slug")
+                # Q7: one bearer per bot identity, and a bot's Zulip bot and its
+                # GitHub App are the SAME identity.  The seat key IS the bot, so
+                # an App that is not the seat's own name is another bot's App:
+                # refuse it at config load, before any bearer can authenticate,
+                # so no App action can ever run as another bot.
+                if app_slug != seat:
+                    raise PolicyError(
+                        f"seat {seat!r}: app_slug must be the seat's own bot identity "
+                        f"(one bearer = one Zulip bot = one GitHub App); got {app_slug!r}"
+                    )
                 if not mint_perms or any(
                     not isinstance(k, str) or v not in ("read", "write")
                     for k, v in mint_perms.items()
@@ -154,3 +164,11 @@ class SeatPolicy:
         """(app_slug, mintable permission ceiling) for a seat's App actions."""
         cfg = self._seats[seat]
         return cfg["app_slug"], dict(cfg["mint_permissions"])
+
+    def bot_identities(self) -> dict[str, str]:
+        """Every seat's GitHub App, for the one-bearer-one-bot audit.
+
+        Config load refuses any App that is not its own seat's name, so this
+        mapping can only ever pair a bearer with that bot's own App.
+        """
+        return {seat: cfg["app_slug"] for seat, cfg in self._seats.items() if cfg["app_slug"]}
