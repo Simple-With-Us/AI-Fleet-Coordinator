@@ -25,6 +25,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from agent_sync import chat_catalog as CC
+from agent_sync import operator_candidates as OC
 from agent_sync import operator_registry as OR
 from agent_sync import wakes as W
 from agent_sync.tests.test_daemon import DaemonHarness
@@ -55,6 +56,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Work",
+            issuer=OR.ISSUER_OPERATOR,
             )
             self.assertEqual(out["label"], "A")
             self.assertEqual(out["generation"], 1)
@@ -77,6 +79,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Work",
+            issuer=OR.ISSUER_OPERATOR,
             )
             second = OR.register_session(
                 db,
@@ -87,6 +90,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Next",
+            issuer=OR.ISSUER_OPERATOR,
             )
             self.assertEqual(first["label"], "A")
             self.assertEqual(second["label"], "B")
@@ -102,6 +106,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Work",
+                issuer=OR.ISSUER_OPERATOR,
             )
             first = OR.register_session(db, **kwargs)
             again = OR.register_session(db, **kwargs)
@@ -121,6 +126,7 @@ class RegisterPathTests(unittest.TestCase):
                     native_session_id="bad id",
                     seat="MM",
                     source="test",
+            issuer=OR.ISSUER_OPERATOR,
                 )
 
     def test_a_missing_identity_field_is_refused(self) -> None:
@@ -134,6 +140,7 @@ class RegisterPathTests(unittest.TestCase):
                     native_session_id="mvs_abc",
                     seat="MM",
                     source="test",
+                    issuer=OR.ISSUER_OPERATOR,
                 )
                 kwargs[field] = ""
                 with self.assertRaises(ValueError):
@@ -183,6 +190,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Work",
+            issuer=OR.ISSUER_OPERATOR,
             )
             # The other direction of the join:  a letter names one session.
             found = OR.resolve_label(db, "minimax", "A")
@@ -204,6 +212,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Work",
+            issuer=OR.ISSUER_OPERATOR,
             )
             # The same letter on another platform is a different session.
             self.assertIsNone(OR.resolve_label(db, "codex", "A"))
@@ -219,6 +228,7 @@ class RegisterPathTests(unittest.TestCase):
                 native_session_id="mvs_abc",
                 seat="MM",
                 source="test",
+            issuer=OR.ISSUER_OPERATOR,
             )
             # A letter that was never issued is a miss, and a miss is None.
             self.assertIsNone(OR.resolve_label(db, "minimax", "Z"))
@@ -254,6 +264,7 @@ class RegisterPathTests(unittest.TestCase):
                 native_session_id="mvs_abc",
                 seat="MM",
                 source="test",
+            issuer=OR.ISSUER_OPERATOR,
             )
             # The display form and the namespace name the same registry namespace.
             self.assertEqual(
@@ -275,6 +286,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Work",
+            issuer=OR.ISSUER_OPERATOR,
             )
             found = OR.resolve_ref(db, "minimax", "MM A")
             self.assertEqual(found["native_session_id"], "mvs_abc")
@@ -296,6 +308,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Work",
+            issuer=OR.ISSUER_OPERATOR,
             )
             registry = OR.SessionRegistry(db)
             self.addCleanup(registry.close_db)
@@ -309,6 +322,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Next",
+            issuer=OR.ISSUER_OPERATOR,
             )
             # A reference form is an exact inverse of the form the registry hands
             # out, so a bare "MM A" names the generation it was handed out for.  It
@@ -344,6 +358,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Work",
+            issuer=OR.ISSUER_OPERATOR,
             )
             registry = OR.SessionRegistry(db)
             self.addCleanup(registry.close_db)
@@ -357,6 +372,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Next",
+            issuer=OR.ISSUER_OPERATOR,
             )
             # The live letter names the session that holds it now.
             live = OR.resolve_label(db, "minimax", "A")
@@ -381,6 +397,7 @@ class RegisterPathTests(unittest.TestCase):
                 seat="MM",
                 source="test",
                 title="Work",
+            issuer=OR.ISSUER_OPERATOR,
             )
             buffer = io.StringIO()
             with contextlib.redirect_stdout(buffer):
@@ -564,6 +581,7 @@ class RegistryLookupTests(unittest.TestCase):
                 native_session_id="mvs_abc",
                 seat="MM",
                 source="test",
+            issuer=OR.ISSUER_OPERATOR,
             )
             # A path that begins with two slashes is the same file on this platform, and a
             # URI built by quoting it would read the first segment as an authority and
@@ -927,7 +945,7 @@ class TaggedLetterTests(DaemonHarness):
     mention is not an address at all.
     """
 
-    def bot(self, d, seat="CLAUDE", name="Claude", uid=1212600, email="claude-bot@simplewithus.zulipchat.com"):
+    def bot(self, d, seat="CLAUDE", name="Claude", uid=9001, email="claude-bot@example.test"):
         runner = d.seats["CLAUDE"]
         runner.users[uid] = {
             "user_id": uid,
@@ -944,31 +962,31 @@ class TaggedLetterTests(DaemonHarness):
         d = self.daemon()
         self.bot(d)
         history = [{"id": 1, "content": "@**Claude** Z what is the state of the closeout?"}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history), "Z")
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1])[0], "Z")
 
     def test_the_id_form_of_the_mention_is_read_too(self) -> None:
         d = self.daemon()
         self.bot(d)
-        history = [{"id": 1, "content": "@**Claude|1212600** Z what is the state of the closeout?"}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history), "Z")
+        history = [{"id": 1, "content": "@**Claude|9001** Z what is the state of the closeout?"}]
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1])[0], "Z")
 
     def test_a_capital_letter_in_prose_is_not_an_address(self) -> None:
         d = self.daemon()
         self.bot(d)
         history = [{"id": 1, "content": "@**Claude** the plan is A and B, so pick one"}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history), "")
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
 
     def test_a_bare_letter_with_no_mention_is_not_an_address(self) -> None:
         d = self.daemon()
         self.bot(d)
         history = [{"id": 1, "content": "is Z still running?"}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history), "")
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
 
     def test_a_mention_of_another_seat_is_not_an_address(self) -> None:
         d = self.daemon()
         self.bot(d)
         history = [{"id": 1, "content": "@**Codex** Z is that yours?"}]
-        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history), "")
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history, [1]), ("", None))
 
     def test_the_candidate_query_finds_the_live_holder(self) -> None:
         d = self.daemon()
@@ -982,6 +1000,7 @@ class TaggedLetterTests(DaemonHarness):
             seat="MM",
             source="test",
             title="Work",
+            issuer=OR.ISSUER_OPERATOR,
         )
         found = d.operator_candidates("minimax", "A")
         self.assertEqual(len(found), 1)
@@ -1055,6 +1074,7 @@ class PlatformNamespaceTests(unittest.TestCase):
                 seat="CURSOR",
                 source="test",
                 title="Cloud",
+            issuer=OR.ISSUER_OPERATOR,
             )
             second = OR.register_session(
                 db,
@@ -1065,6 +1085,7 @@ class PlatformNamespaceTests(unittest.TestCase):
                 seat="CURSOR",
                 source="test",
                 title="Local",
+            issuer=OR.ISSUER_OPERATOR,
             )
             self.assertEqual(first["label"], "A")
             self.assertNotEqual(second["label"], first["label"])
@@ -1075,11 +1096,14 @@ class PlatformNamespaceTests(unittest.TestCase):
 
     def test_an_unknown_adapter_gets_its_own_namespace(self) -> None:
         self.assertEqual(OR.normalize_platform("cursor-cloud"), "cursor")
-        self.assertEqual(OR.normalize_platform("grok-leader"), "grok")
+        self.assertEqual(OR.normalize_platform("cursor-local"), "cursor")
         self.assertEqual(OR.normalize_platform("minimax"), "minimax")
         # An adapter nobody has heard of folds to itself rather than to another
-        # platform's namespace.
+        # platform's namespace, so a new seat never joins another's letter space.
         self.assertEqual(OR.normalize_platform("brand-new"), "brand-new")
+        # An adapter that might later gain a sibling for a different seat keeps
+        # its own namespace, because a letter is only unique inside one of them.
+        self.assertEqual(OR.normalize_platform("grok-leader"), "grok-leader")
 
 
 class ReferenceFormTests(unittest.TestCase):
@@ -1100,6 +1124,7 @@ class ReferenceFormTests(unittest.TestCase):
             seat=seat,
             source="test",
             title=title,
+            issuer=OR.ISSUER_OPERATOR,
         )
 
     def recycle_a(self) -> None:
@@ -1125,3 +1150,157 @@ class ReferenceFormTests(unittest.TestCase):
         # "CODEX A" claims Codex holds A.  It does not, so the ref names no session.
         self.assertIsNone(OR.resolve_ref(self.db, "minimax", "CODEX A"))
         self.assertIsNotNone(OR.resolve_ref(self.db, "minimax", "MM A"))
+
+class AskOperatorTests(DaemonHarness):
+    """The Operator ask:  when it sends, to whom, and when it refuses to.
+
+    A letter is the same letter on two platforms only if both sessions were allocated it, so
+    the ambiguous seeds register one session per platform.  A seat never picks its own letter
+    (register_session allocates the lowest free one), so a same-platform pair would be A and B.
+    """
+
+    AMBIGUOUS = (("MM", "minimax"), ("CODEX", "claude-code"))
+
+    def seed(self, d, seats):
+        db = OR.registry_db_path(d.root, d.env)
+        for seat, platform in seats:
+            OR.register_session(
+                db,
+                platform=platform,
+                verified_host="mac-%s" % seat.lower(),
+                profile_scope="default",
+                native_session_id="mvs_%s" % seat.lower(),
+                seat=seat,
+                source="test",
+                title="Work %s" % seat,
+                issuer=OR.ISSUER_OPERATOR,
+            )
+        return db
+
+    def pending(self, sender_id):
+        p = W.Pending(
+            "w1", "CLAUDE", {"channel": "agent-sync", "topic": "AFC-412"}, owner=True,
+            now=1.0, due=2.0,
+        )
+        p.sender_id = sender_id
+        return p
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.sent = []
+
+    def stub_send(self, monkey_owner=None):
+        def fake_send(**kwargs):
+            self.sent.append(kwargs)
+            return {"status": "sent", "delivery_status": "ok", "reason": "stub"}
+
+        return fake_send
+
+    def with_stubbed_send(self, d):
+        original = OC.send_candidate_list
+        self.addCleanup(setattr, OC, "send_candidate_list", original)
+        OC.send_candidate_list = self.stub_send()
+        return OC.send_candidate_list
+
+    def test_one_candidate_sends_nothing(self) -> None:
+        d = self.daemon()
+        self.seed(d, (("MM", "minimax"),))
+        self.with_stubbed_send(d)
+        d.ask_operator_for_candidates(d.seats["CLAUDE"], self.pending(d.config.owner_user_id), "A")
+        self.assertEqual(self.sent, [], "a letter that names one session needs no list")
+
+    def test_an_ambiguous_letter_sends_to_the_tagged_sender(self) -> None:
+        d = self.daemon()
+        self.seed(d, self.AMBIGUOUS)
+        self.with_stubbed_send(d)
+        # The address was written by the owner; the first trigger came from somebody else.
+        d.ask_operator_for_candidates(
+            d.seats["CLAUDE"], self.pending(4242), "A", "", d.config.owner_user_id
+        )
+        self.assertEqual([kw["recipient"] for kw in self.sent], [d.config.owner_user_id])
+
+    def test_a_recipient_that_is_not_the_owner_is_refused(self) -> None:
+        d = self.daemon()
+        self.seed(d, self.AMBIGUOUS)
+        self.with_stubbed_send(d)
+        d.ask_operator_for_candidates(d.seats["CLAUDE"], self.pending(4242), "A")
+        self.assertEqual(self.sent, [], "internal session inventory must not go to a stranger")
+
+    def test_no_sender_is_skipped(self) -> None:
+        d = self.daemon()
+        self.seed(d, self.AMBIGUOUS)
+        self.with_stubbed_send(d)
+        d.ask_operator_for_candidates(d.seats["CLAUDE"], self.pending(None), "A")
+        self.assertEqual(self.sent, [])
+
+    def test_the_platform_comes_from_the_registry_rows(self) -> None:
+        """The body names the namespace the letter is actually live in, never a hardcoded seat
+        name:  this seat's own registry row wins over the other candidate's."""
+        d = self.daemon()
+        self.seed(d, self.AMBIGUOUS)
+        self.with_stubbed_send(d)
+        # The asking seat lives on a third platform and holds the same letter there.
+        db = OR.registry_db_path(d.root, d.env)
+        OR.register_session(
+            db, platform="codex", verified_host="mac-claude", profile_scope="default",
+            native_session_id="mvs_claude", seat="CLAUDE", source="test", title="Work CLAUDE",
+            issuer=OR.ISSUER_OPERATOR,
+        )
+        d.ask_operator_for_candidates(
+            d.seats["CLAUDE"], self.pending(d.config.owner_user_id), "A"
+        )
+        self.assertEqual(self.sent[0]["platform"], "codex")
+
+    def test_the_platform_is_never_a_hardcoded_seat_name(self) -> None:
+        d = self.daemon()
+        self.seed(d, (("MM", "minimax"), ("CODEX", "grok-leader")))
+        self.with_stubbed_send(d)
+        d.ask_operator_for_candidates(
+            d.seats["CLAUDE"], self.pending(d.config.owner_user_id), "A"
+        )
+        self.assertIn(self.sent[0]["platform"], ("minimax", "grok-leader"))
+
+    def test_the_candidate_set_spans_platforms(self) -> None:
+        """The registry keeps one live holder per (platform, letter), so only the cross-platform
+        query can ever show an ambiguity."""
+        d = self.daemon()
+        self.seed(d, self.AMBIGUOUS)
+        self.assertEqual(len(d.operator_candidates("minimax", "A")), 1)
+        self.assertEqual(len(d.operator_candidates("", "A")), 2)
+
+    def test_a_closed_session_is_not_a_live_candidate(self) -> None:
+        d = self.daemon()
+        self.seed(d, self.AMBIGUOUS)
+        self.assertEqual(len(d.operator_candidates("", "A")), 2)
+        registry = OR.SessionRegistry(OR.registry_db_path(d.root, d.env))
+        try:
+            record = next(
+                row["record_id"]
+                for row in registry._conn.execute(
+                    "SELECT record_id FROM sessions WHERE native_session_id = 'mvs_mm'"
+                ).fetchall()
+            )
+            registry.close(record)
+        finally:
+            registry.close_db()
+        found = d.operator_candidates("", "A")
+        self.assertEqual([row["seat"] for row in found], ["CODEX"])
+
+
+class PendingSenderTests(unittest.TestCase):
+    """The first trigger's sender survives the ledger round trip."""
+
+    def test_sender_id_survives_a_row_and_a_reload(self) -> None:
+        pending = W.Pending(
+            "w1", "MM", {"channel": "agent-sync", "topic": "AFC-412"}, owner=True,
+            now=1.0, due=2.0,
+        )
+        pending.add({"id": 5, "sender_id": 4242}, True)
+        self.assertEqual(pending.sender_id, 4242)
+        row = pending.row("held", 2.0)
+        self.assertEqual(row["sender_id"], 4242)
+        self.assertEqual(W.Pending.from_view(dict(row, wake_id="w1")).sender_id, 4242)
+
+    def test_a_missing_or_boolean_sender_is_none(self) -> None:
+        self.assertIsNone(W.Pending.from_view({"wake_id": "w1", "sender_id": True}).sender_id)
+        self.assertIsNone(W.Pending.from_view({"wake_id": "w1"}).sender_id)

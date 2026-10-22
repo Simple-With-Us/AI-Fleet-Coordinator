@@ -25,6 +25,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent_sync import operator_candidates as OC
 from agent_sync import service_identity as SI
@@ -33,7 +34,9 @@ from agent_sync import wakes as W
 from agent_sync import zulip as Z
 from agent_sync.tests.fake_zulip import FakeZulip
 
-OPERATOR_ID = 1217148
+# Synthetic fixture ids only:  no committed test carries a real realm user id.  The emails stay
+# on the shared fake server's reserved .test domain (fake_zulip.BOT_EMAIL), never a real address.
+OPERATOR_ID = 9101
 OPERATOR_EMAIL = "operator-bot@zulip.test"
 SEAT_EMAIL = "claude-bot@zulip.test"
 OWNER_ID = 12
@@ -201,9 +204,18 @@ class CandidateListTests(unittest.TestCase):
         first = self.send()
         self.assertEqual(first["status"], "sent", first["reason"])
         again = self.send(now=1000.0 + 60.0)
-        self.assertEqual(again["status"], "duplicate")
         self.assertIn("already went", again["reason"])
         self.assertEqual(len(self.direct_messages()), 1, "the sender was not told twice")
+
+    def test_a_retry_of_an_accepted_send_returns_the_cached_result(self) -> None:
+        """An `ok` row keeps its message id, so a retry is answerable without sending again."""
+        first = self.send()
+        self.assertEqual(first["delivery_status"], OC.DELIVERY_OK)
+        again = self.send(now=1000.0 + 60.0)
+        self.assertEqual(again["status"], "sent")
+        self.assertEqual(again["delivery_status"], OC.DELIVERY_OK)
+        self.assertEqual(again["message_id"], first["message_id"])
+        self.assertEqual(len(self.direct_messages()), 1)
 
     def test_the_same_ask_after_the_window_sends_again(self) -> None:
         self.send()
@@ -294,21 +306,21 @@ class WakePromptTests(unittest.TestCase):
     def test_the_prompt_says_the_ask_never_blocks_and_names_the_default(self) -> None:
         prompt = self.prompt()
         self.assertIn("candidate list", prompt)
-        self.assertIn("The ask never blocks", prompt)
+        self.assertIn("Nothing here blocks", prompt)
         self.assertIn("your default letter", prompt)
         self.assertIn("name the letter you used", prompt)
 
     def test_the_prompt_names_the_letter_of_the_tagged_address(self) -> None:
         prompt = self.prompt(tagged_address="Z")
         self.assertIn('the session letter "Z"', prompt)
-        self.assertIn("The ask never blocks", prompt)
+        self.assertIn("Nothing here blocks", prompt)
 
     def test_the_rule_sits_outside_the_untrusted_block(self) -> None:
         prompt = self.prompt()
         lines = prompt.splitlines()
         begin = lines.index("BEGIN_UNTRUSTED_ZULIP nonce=n")
         header = "\n".join(lines[:begin])
-        self.assertIn("The ask never blocks", header)
+        self.assertIn("Nothing here blocks", header)
 
 
 class ServiceIdentityTests(unittest.TestCase):
@@ -325,3 +337,125 @@ class ServiceIdentityTests(unittest.TestCase):
         self.assertTrue(SI.operator_bot(bot, env, OWNER_ID))
         # Another bot with the same id but a different owner is not the Operator.
         self.assertFalse(SI.operator_bot(dict(bot, bot_owner_id=99), env, OWNER_ID))
+
+
+class StubClient:
+    """A Zulip client that answers from a fixed script, so the delivery state machine is testable
+    without a socket."""
+
+    def __init__(self, *, me=None, users=None, post_error=None):
+        self.me = me or {
+            "user_id": OPERATOR_ID, "email": OPERATOR_EMAIL, "is_bot": True,
+            "bot_owner_id": OWNER_ID,
+        }
+        self.users = {"members": users} if users is not None else {
+            "members": [{"user_id": OWNER_ID, "email": "jay@example.test", "is_bot": False}]
+        }
+        self.post_error = post_error
+        self.posts = []
+
+    def get(self, endpoint):
+        if endpoint == "users/me":
+            return self.me
+        if endpoint == "users":
+            return self.users
+        raise AssertionError("unexpected GET %s" % endpoint)
+
+    def post(self, endpoint, payload):
+        self.posts.append(payload)
+        if self.post_error is not None:
+            raise self.post_error
+        return {"id": 4242}
+
+
+class DeliveryStateTests(unittest.TestCase):
+    """`ok` / `unknown` / `refused`, so a retry never resends and never loses a retryable send."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="operator-delivery-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.key = secrets.token_hex(16)
+        self.env = {
+            "HOME": str(self.tmp),
+            "AGENT_SYNC_STATE_DIR": str(self.tmp / "state"),
+            "OPERATOR_ZULIP_USER_ID": str(OPERATOR_ID),
+            "OPERATOR_ZULIP_EMAIL": OPERATOR_EMAIL,
+        }
+        self.creds = SimpleNamespace(
+            site="https://example.test", email=OPERATOR_EMAIL, key=self.key
+        )
+
+    def send(self, client, now=1000.0, **overrides):
+        kwargs = dict(
+            seat="MM", platform="minimax", letters=["Z"], candidates=CANDIDATES,
+            recipient=OWNER_ID, default_letter="A", env=self.env,
+            owner_user_id=OWNER_ID, credentials=self.creds, client=client, now=now,
+        )
+        kwargs.update(overrides)
+        return OC.send_candidate_list(**kwargs)
+
+    def test_an_accepted_send_is_ok_and_caches_the_message_id(self) -> None:
+        client = StubClient()
+        first = self.send(client)
+        self.assertEqual(first["status"], "sent")
+        self.assertEqual(first["delivery_status"], OC.DELIVERY_OK)
+        again = self.send(client, now=1060.0)
+        self.assertEqual(again["message_id"], first["message_id"])
+        self.assertEqual(len(client.posts), 1, "an acknowledged send is never repeated")
+
+    def test_a_provably_unsent_failure_is_retryable(self) -> None:
+        client = StubClient(post_error=Z.NetworkError("connect refused", maybe_sent=False))
+        out = self.send(client)
+        self.assertEqual(out["delivery_status"], OC.DELIVERY_REFUSED)
+        self.assertTrue(out["retryable"], "a request that never reached Zulip must stay retryable")
+        # The key was released, so a clean retry inside the window is not blocked as a duplicate.
+        again = self.send(StubClient(), now=1060.0)
+        self.assertEqual(again["status"], "sent")
+
+    def test_an_unknown_outcome_is_kept_and_not_replayed(self) -> None:
+        client = StubClient(post_error=Z.NetworkError("timed out", maybe_sent=True))
+        out = self.send(client)
+        self.assertEqual(out["delivery_status"], OC.DELIVERY_UNKNOWN)
+        again = self.send(client, now=1060.0)
+        self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
+        self.assertEqual(len(client.posts), 1, "a message that may exist is never sent twice")
+
+    def test_a_rejected_credential_is_named_by_a_masked_preview_only(self) -> None:
+        error = Z.AgentSyncError("unauthorized")
+        error.status = 401
+        out = self.send(StubClient(post_error=error))
+        self.assertEqual(out["delivery_status"], OC.DELIVERY_REFUSED)
+        self.assertEqual(out["code"], "credential_rejected")
+        self.assertNotIn(self.key, out["reason"])
+        preview = OC._masked(self.key)
+        self.assertIn(preview[:8], out["reason"])
+        self.assertIn(preview[-4:], out["reason"])
+
+    def test_a_secret_scan_finding_is_never_echoed(self) -> None:
+        secret = "sk-" + secrets.token_hex(12)
+        candidates = [
+            {"label": "A", "seat": "MM", "native_session_id": "mvs_x", "title": secret}
+        ]
+        out = self.send(StubClient(), candidates=candidates)
+        self.assertEqual(out["code"], "secret")
+        self.assertEqual(out["field"], "candidate_list")
+        self.assertNotIn(secret, out["reason"])
+
+    def test_a_malformed_users_response_is_refused(self) -> None:
+        for payload in ({"members": "nope"}, {"users": []}, {"members": {"a": 1}}):
+            with self.subTest(payload=payload):
+                out = self.send(StubClient(users=payload))
+                self.assertEqual(out["status"], "refused")
+                self.assertIn("malformed", out["reason"])
+
+    def test_the_count_is_not_cut_to_the_shortlist(self) -> None:
+        many = [
+            {"label": chr(65 + i % 26), "seat": "MM%d" % i,
+             "native_session_id": "mvs_%d" % i, "title": "T%d" % i}
+            for i in range(OC.MAX_CANDIDATES + 6)
+        ]
+        out = self.send(StubClient(), candidates=many)
+        self.assertEqual(out["status"], "sent")
+        self.assertIn(
+            "%d sessions could hold it" % (OC.MAX_CANDIDATES + 6), out["body"]
+        )

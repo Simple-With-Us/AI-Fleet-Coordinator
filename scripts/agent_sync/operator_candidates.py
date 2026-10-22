@@ -105,9 +105,13 @@ def render_body(
     letters: Sequence[str] = (),
     candidates: Sequence[Mapping[str, Any]] = (),
     default_letter: str | None = None,
+    total_candidates: int | None = None,
 ) -> str:
     """The candidate list as one plain-text body.  Every sentence is separated by two literal
     ASCII spaces, and every candidate is one sentence:  its letter, its seat and its title.
+
+    `candidates` may already be truncated to MAX_CANDIDATES;  `total_candidates` is how many
+    sessions hold the letter in all, so the count sentence stays true when the list is short.
 
     The body says which letter the seat is using by default and that the ask does not block, so
     the sender can answer the seat without waiting for a second round trip.
@@ -118,15 +122,18 @@ def render_body(
     platform_name = _one_line(platform, 40) or "the platform"
     used = [_one_line(letter, 8) for letter in letters]
     used = [letter for letter in used if letter]
+    # The real number of holders, never the truncated list length:  a short list must not read as
+    # an exhaustive one.
+    total = total_candidates if isinstance(total_candidates, int) else len(views)
 
     sentences: list[str] = [
         "Operator session candidates for the seat %s on %s." % (seat_name, platform_name)
     ]
     if used:
-        if len(views) > 1:
+        if total > 1:
             sentences.append(
                 "The address used the letter%s %s, and %d sessions could hold it."
-                % ("" if len(used) == 1 else "s", ", ".join(used), len(views))
+                % ("" if len(used) == 1 else "s", ", ".join(used), total)
             )
         else:
             sentences.append(
@@ -156,6 +163,27 @@ def render_body(
 # --------------------------------------------------------------------------------------------
 # The recipient
 # --------------------------------------------------------------------------------------------
+
+
+def _member_ok(member: Any) -> bool:
+    """Whether one Zulip member record carries every field this module consumes, with the right
+    shape.  Checked before the record is used, so a malformed record is a refusal rather than a
+    failure somewhere downstream."""
+    if not isinstance(member, Mapping):
+        return False
+    user_id = member.get("user_id")
+    if not isinstance(user_id, int) or isinstance(user_id, bool):
+        return False
+    for flag in ("is_active", "is_bot"):
+        if not isinstance(member.get(flag, True), bool):
+            return False
+    bot_type = member.get("bot_type", GENERIC_BOT)
+    if not isinstance(bot_type, int) or isinstance(bot_type, bool):
+        return False
+    return all(
+        isinstance(member.get(name, ""), (str, type(None)))
+        for name in ("full_name", "email", "delivery_email")
+    )
 
 
 def _members_match(members: Sequence[Mapping[str, Any]], needle: str) -> list[Mapping[str, Any]]:
@@ -262,22 +290,46 @@ def _fingerprint(recipient_id: int, body: str) -> str:
     return hashlib.sha256(("%d\n%s" % (recipient_id, body)).encode("utf-8")).hexdigest()
 
 
+#: Dedupe outcomes, so a retry never resends an acknowledged message and never blocks a
+#: recoverable one:
+#:
+#:   - `pending`:  a reservation is held and the write is in flight.
+#:   - `ok`:       Zulip accepted the message; the row carries its id, and a retry inside the
+#:                 window returns that cached result instead of sending again.
+#:   - `unknown`:  the write may or may not have reached Zulip.  Replay is refused, because the
+#:                 message may already exist.
+#:   - `refused`:  a definite refusal.  The key is released, so a clean retry is still possible.
+DELIVERY_PENDING = "pending"
+DELIVERY_OK = "ok"
+DELIVERY_UNKNOWN = "unknown"
+DELIVERY_REFUSED = "refused"
+
+
 def _reserve(
     path: str, key: str, at: float, window: float, recipient_id: int
-) -> tuple[bool, float]:
-    """(False, seconds since the last identical send) when the list already went to this
-    recipient inside the window; (True, 0) when the send may go out.  The reservation is written
-    before the message, so two asks at once cannot both send."""
+) -> tuple[bool, float, dict[str, Any]]:
+    """(allowed to send, seconds since the last identical send, the stored row).
+
+    The reservation is written before the message, so two asks at once cannot both send.  An
+    existing `ok` row carries the cached result the caller should return instead of losing the
+    message id on a retry;  an `unknown` or `refused` row blocks a replay inside the window,
+    because the message may already exist or the credential is still bad.
+    """
     with L.locked(path):
         sends = _prune(_sends(path), at, window)
         row = sends.get(key)
         if isinstance(row, Mapping):
             when = row.get("at")
             if isinstance(when, (int, float)) and not isinstance(when, bool):
-                return False, max(0.0, at - float(when))
-        sends[key] = {"at": at, "recipient": recipient_id, "state": "pending"}
+                return False, max(0.0, at - float(when)), dict(row)
+        sends[key] = {
+            "at": at,
+            "recipient": recipient_id,
+            "state": DELIVERY_PENDING,
+            "message_id": None,
+        }
         L.write_json(path, {"sends": sends}, durable=True)
-    return True, 0.0
+    return True, 0.0, {}
 
 
 def _record(
@@ -301,11 +353,28 @@ def _record(
 
 
 def _release(path: str, key: str, at: float, window: float) -> None:
-    """Drop a reservation for a send that certainly did not happen, so a clean retry is possible."""
+    """Free a key for a send that certainly did not happen.
+
+    Only a definite refusal calls this.  A write whose outcome is unknown keeps its key, so a
+    later retry refuses the replay rather than sending a second copy of a message that may
+    already exist.
+    """
     with L.locked(path):
         sends = _prune(_sends(path), at, window)
         sends.pop(key, None)
         L.write_json(path, {"sends": sends}, durable=True)
+
+
+def _masked(key: Any) -> str:
+    """A credential preview safe to log and to return to the caller:  the first eight and the last
+    four characters only.  A rejected Operator key must be identifiable without ever being
+    written out in full."""
+    text = str(key or "")
+    if not text:
+        return "missing"
+    if len(text) <= 12:
+        return "%s…" % text[:1]
+    return "%s…%s" % (text[:8], text[-4:])
 
 
 # --------------------------------------------------------------------------------------------
@@ -410,6 +479,9 @@ def _send_candidate_list(
     views = [view for view in views if view["letter"]]
     if not views:
         return _outcome("refused", "no candidate sessions to name")
+    # Counted before the shortlist:  MAX_CANDIDATES caps what the body lists, never how many
+    # sessions could hold the letter.
+    total_candidates = len(views)
     if len(views) > MAX_CANDIDATES:
         views = views[:MAX_CANDIDATES]
     if not default_letter:
@@ -422,6 +494,7 @@ def _send_candidate_list(
         letters=used_letters,
         candidates=views,
         default_letter=default_letter,
+        total_candidates=total_candidates,
     )
     # A title is a person's words:  a mention in it would notify somebody in a DM that is only a
     # list, and a secret-shaped string in it would put a secret in front of the owner.
@@ -470,11 +543,18 @@ def _send_candidate_list(
         return _outcome("refused", "the authenticated bot is not the pinned Operator")
 
     try:
-        members = list((client.get("users") or {}).get("members") or [])
+        raw_members = client.get("users")
     except Z.AgentSyncError as exc:
         return _outcome("refused", "the recipient could not be looked up: %s" % exc)
     except Exception as exc:
         return _outcome("refused", "the recipient could not be looked up: %s" % type(exc).__name__)
+    # Validated before anything downstream reads it:  a missing or malformed `users` payload must
+    # be a refusal, never a silent empty inventory that moves the failure into resolve_recipient.
+    if not isinstance(raw_members, Mapping) or not isinstance(raw_members.get("members"), list):
+        return _outcome("refused", "the Zulip users response is malformed")
+    members = raw_members["members"]
+    if any(not _member_ok(member) for member in members):
+        return _outcome("refused", "a Zulip member record is malformed")
     recipient_id, why = resolve_recipient(members, recipient)
     if recipient_id is None:
         return _outcome("refused", "the recipient is not resolvable: %s" % why)
@@ -484,16 +564,46 @@ def _send_candidate_list(
     hidden = list(secretscan.basic_forms(str(creds.email), str(creds.key)))
     flagged = secretscan.scan(body, hidden)
     if flagged:
-        return _outcome("refused", "the candidate list was withheld: %s" % flagged)
+        # The scan result itself can carry the suspected secret or its prefix, so it is never
+        # echoed.  The caller gets a stable code and the field that was withheld, nothing more.
+        return _outcome(
+            "refused",
+            "the candidate list was withheld: it matched the secret scan",
+            delivery_status=DELIVERY_REFUSED,
+            code="secret",
+            field="candidate_list",
+        )
 
     path = state_path(environment, seat_name)
     key = _fingerprint(recipient_id, body)
-    allowed, since = _reserve(path, key, at, window, recipient_id)
+    allowed, since, stored = _reserve(path, key, at, window, recipient_id)
     if not allowed:
+        state = str(stored.get("state") or "")
+        if state == DELIVERY_OK:
+            # A successful send is cached, so a retry returns the same answer with the same
+            # message id instead of sending again.
+            return _outcome(
+                "sent",
+                "the candidate list already went to this recipient %d seconds ago" % int(since),
+                delivery_status=DELIVERY_OK,
+                recipient=stored.get("recipient", recipient_id),
+                message_id=stored.get("message_id"),
+                body=body,
+            )
+        if state == DELIVERY_UNKNOWN:
+            return _outcome(
+                "refused",
+                "an identical candidate list to this recipient has an unknown delivery outcome "
+                "and is not replayed",
+                delivery_status=DELIVERY_UNKNOWN,
+                recipient=recipient_id,
+                body=body,
+            )
         return _outcome(
             "duplicate",
             "an identical candidate list already went to this recipient %d seconds ago"
             % int(since),
+            delivery_status=DELIVERY_REFUSED,
             recipient=recipient_id,
             body=body,
         )
@@ -501,25 +611,67 @@ def _send_candidate_list(
     try:
         result = client.post("messages", {"type": "direct", "to": [recipient_id], "content": body})
     except Z.NetworkError as exc:
-        # The message may have reached the server:  keep the reservation so it is not sent twice.
-        _record(path, key, at, window, recipient_id, None, "sent" if exc.maybe_sent else "failed")
-        return _outcome("refused", "the candidate list could not be sent: %s" % exc)
-    except Z.AgentSyncError as exc:
+        # A timeout or a post-send disconnect leaves the outcome unknown:  the message may already
+        # exist, so the key is kept and replay is refused.  A failure that provably never reached
+        # Zulip is retryable, so it gives the key back instead of blocking the dedupe window.
+        if getattr(exc, "maybe_sent", False):
+            _record(path, key, at, window, recipient_id, None, DELIVERY_UNKNOWN)
+            return _outcome(
+                "refused",
+                "the candidate list delivery is unknown: %s" % exc,
+                delivery_status=DELIVERY_UNKNOWN,
+                recipient=recipient_id,
+                body=body,
+            )
         _release(path, key, at, window)
-        return _outcome("refused", "the candidate list could not be sent: %s" % exc)
+        return _outcome(
+            "refused",
+            "the candidate list was not sent and may be retried: %s" % exc,
+            delivery_status=DELIVERY_REFUSED,
+            retryable=True,
+            recipient=recipient_id,
+            body=body,
+        )
+    except Z.AgentSyncError as exc:
+        # Zulip answered and refused:  the message definitely did not go out, so the key is
+        # released and the refusal is terminal.  A rejected credential is named by a masked
+        # preview only, never by any part of the key a caller could not otherwise see.
+        status = getattr(exc, "status", getattr(exc, "status_code", None))
+        _release(path, key, at, window)
+        if status in (401, 403):
+            return _outcome(
+                "refused",
+                "the Operator credential was rejected.  Preview: %s"
+                % _masked(getattr(creds, "key", "")),
+                delivery_status=DELIVERY_REFUSED,
+                code="credential_rejected",
+                recipient=recipient_id,
+            )
+        return _outcome(
+            "refused",
+            "the candidate list could not be sent: %s" % exc,
+            delivery_status=DELIVERY_REFUSED,
+            recipient=recipient_id,
+        )
     except Exception as exc:
         _release(path, key, at, window)
-        return _outcome("refused", "the candidate list could not be sent: %s" % type(exc).__name__)
+        return _outcome(
+            "refused",
+            "the candidate list could not be sent: %s" % type(exc).__name__,
+            delivery_status=DELIVERY_REFUSED,
+            recipient=recipient_id,
+        )
     message_id = result.get("id") if isinstance(result, Mapping) else None
     message_id = (
         int(message_id)
         if isinstance(message_id, int) and not isinstance(message_id, bool)
         else None
     )
-    _record(path, key, at, window, recipient_id, message_id, "sent")
+    _record(path, key, at, window, recipient_id, message_id, DELIVERY_OK)
     return _outcome(
         "sent",
         "the candidate list went to the sender as the Operator bot",
+        delivery_status=DELIVERY_OK,
         recipient=recipient_id,
         message_id=message_id,
         body=body,

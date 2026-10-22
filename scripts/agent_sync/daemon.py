@@ -78,6 +78,10 @@ DOWN_NOTIFY_SECONDS = 30 * 60.0
 CLOCK_JUMP_SECONDS = 120.0
 TOPIC_BACKFILL_CAP = 200
 PAGE = 100
+#: Session letters that are also ordinary English words.  They count as a tagged address only when
+#: they stand alone at the end of the message;  inside a sentence ("@**MiniMax** I think we ship")
+#: they are prose, never an address.
+PROSE_LETTERS = frozenset({"A", "I"})
 MAX_PAGES = 20
 RING_LIMIT = 5000
 CURSOR_FLUSH_SECONDS = 1.0
@@ -3151,12 +3155,17 @@ class Daemon:
             exclude=pending.trigger_ids,
             limit=int(runner.cfg.held_back["items_in_wake"]),
         )
-        letter = self.tagged_letter(runner, history)
+        # Only a trigger message can carry the address, and the Operator's list goes to the sender
+        # of the message the letter was found in, not to the first trigger's sender.
+        letter, address_sender_id = self.tagged_letter(runner, history, pending.trigger_ids)
+        # The letter is resolved before the context is built, because the context ranks and
+        # cuts its rows before the letters join, and the addressed session has to survive
+        # that cut.
         chat_context = self.chat_context(runner, pending, history, letter)
         if letter:
-            # The letter is the seat's own platform, because the letter namespace is per
-            # platform and the mention named this seat.
-            self.ask_operator_for_candidates(runner, pending, letter, "minimax")
+            # No platform is passed:  the ambiguity check is cross-platform and the platform named
+            # in the body is read off the registry rows the ask actually got.
+            self.ask_operator_for_candidates(runner, pending, letter, "", address_sender_id)
         prompt = W.build_prompt(
             seat=runner.seat,
             pending=pending,
@@ -3608,12 +3617,29 @@ class Daemon:
                 labels[row_id] = (str(entry.get("label") or ""), str(entry.get("ref") or ""))
         return labels
 
-    def tagged_letter(self, runner: Any, history: list[Mapping[str, Any]]) -> str:
-        """The session letter a trigger addressed, when it carried one.
+    def tagged_letter(
+        self,
+        runner: Any,
+        history: list[Mapping[str, Any]],
+        trigger_ids: Sequence[int] | None = None,
+    ) -> tuple[str, int | None]:
+        """(the session letter a trigger addressed, the sender of that message).
 
         The letter sits next to the mention, the way the owner ruled:  "@**MiniMax** Z".
         Only that shape counts, so a capital letter in ordinary prose is never read as an
         address, and a bare letter with no mention is not an address at all.
+
+        Only the trigger messages can carry the address.  The rest of the topic history is not
+        scanned:  an address posted earlier in the topic, by anyone, for any question, must not
+        make this later unrelated wake look tagged.
+
+        The sender is the one whose message carried the letter, which is not always the first
+        trigger's sender (wakes.Pending.sender_id):  in a shared topic another user can ask the
+        same question.  The Operator's candidate list goes to the person who wrote the address.
+
+        "I" and "A" are valid session letters and the two English words that collide with them, so
+        they count as an address only when they stand alone at the end of the message.  In a
+        sentence ("@**MiniMax** I think we ship Friday") they are prose.
         """
         bots = (
             R.fleet_bots_by_seat(
@@ -3624,35 +3650,82 @@ class Daemon:
             ).get(runner.seat)
             or []
         )
+        wanted = {
+            int(i) for i in (trigger_ids or ()) if isinstance(i, int) and not isinstance(i, bool)
+        }
         for bot in bots:
             name = str(bot.get("full_name") or "")
             if not name:
                 continue
             for mention in ("@**%s**" % name, "@**%s|%d**" % (name, int(bot["user_id"]))):
                 for message in history:
+                    message_id = message.get("id")
+                    if (
+                        wanted
+                        and isinstance(message_id, int)
+                        and not isinstance(message_id, bool)
+                        and message_id not in wanted
+                    ):
+                        continue  # only a trigger can carry the address
                     # A fetched message is a Zulip message, so its text is "content".
                     body = str(message.get("content") or "")
                     index = body.find(mention)
                     if index < 0:
                         continue
-                    match = re.match(r"\s+([A-Z])(?![A-Za-z0-9])", body[index + len(mention) :])
-                    if match:
-                        return match.group(1)
-        return ""
+                    tail = body[index + len(mention) :]
+                    match = re.match(r"\s+([A-Z])(?![A-Za-z0-9])", tail)
+                    if not match:
+                        continue
+                    letter = match.group(1)
+                    if letter in PROSE_LETTERS and tail[match.end() :].strip():
+                        continue  # "I think ..." is a sentence, not an address
+                    sender = message.get("sender_id")
+                    return letter, (
+                        int(sender)
+                        if isinstance(sender, int) and not isinstance(sender, bool)
+                        else None
+                    )
+        return "", None
 
     def operator_candidates(self, platform: str, letter: str) -> list[dict[str, Any]]:
-        """The live sessions that could hold one letter."""
+        """The live sessions that could hold one letter.
+
+        With no platform this is the cross-platform query.  The registry keeps at most one live
+        holder of (platform, letter) - idx_alias_active - so the platform-scoped query can return
+        at most one row and can never show the ambiguity this list exists for.  The letter
+        namespace is per platform, so the same letter can be live on several of them at once, and
+        only the cross-platform query sees that.
+        """
         db_path = OR.registry_db_path(self.root, self.env)
         if platform:
             return OR.candidates_for(db_path, platform, letter)
         return OR.candidates_for_letter(db_path, letter)
+
+    def operator_dm_allowed(self, user_id: int) -> bool:
+        """Whether this user may be handed the candidate list.
+
+        The list carries native session ids and session titles, which are the fleet's internal
+        inventory.  The listener watches every public channel the fleet bot is in, so any realm
+        user can trigger a wake; without this gate an unrelated user could be handed that
+        inventory by direct message.  Only the pinned owner, or a user the owner has explicitly
+        allowed in `[operator] dm_allow`, is a legal recipient.
+        """
+        owner = int(getattr(self.config, "owner_user_id", 0) or 0)
+        if owner and int(user_id) == owner:
+            return True
+        allowed = getattr(self.config, "operator_dm_allow", None) or ()
+        return any(
+            isinstance(allow, int) and not isinstance(allow, bool) and int(allow) == int(user_id)
+            for allow in allowed
+        )
 
     def ask_operator_for_candidates(
         self,
         runner: Any,
         pending: Any,
         letter: str,
-        platform: str,
+        platform: str = "",
+        address_sender_id: int | None = None,
     ) -> None:
         """Ask the Operator for the candidate list when a tagged letter is not one session.
 
@@ -3660,11 +3733,22 @@ class Daemon:
         used, and the Operator's own DM to the sender carries the list, so the seat's
         thread stays clean.  The ask is made only when the letter does not name exactly
         one session, because a letter that does name one needs no list.
+
+        `address_sender_id` is the sender of the message the letter was found in.  It is the
+        recipient, not the pending's first-trigger sender:  in a shared topic another user can
+        write the address, and that person is the one who asked which session it meant.
         """
-        candidates = self.operator_candidates(platform, letter)
+        # Cross-platform on purpose:  see operator_candidates.  A platform-scoped query returns at
+        # most one row, which would make this send unreachable.
+        candidates = self.operator_candidates("", letter)
         if len(candidates) == 1:
             return
-        recipient = getattr(pending, "sender_id", None)
+        if not candidates:
+            return
+        # The platform is never a hardcoded seat name:  it is the namespace the letter is actually
+        # live in, read off this seat's own registry row when it holds one.
+        platform = platform or self.platform_of(runner, candidates)
+        recipient = address_sender_id or getattr(pending, "sender_id", None)
         if not recipient:
             self.log.write(
                 "operator-candidate-list",
@@ -3674,10 +3758,22 @@ class Daemon:
                 reason="no sender",
             )
             return
+        recipient = int(recipient)
+        if not self.operator_dm_allowed(recipient):
+            # Refused before any send:  the list carries internal session inventory, and an
+            # unvalidated realm user id from a public-channel trigger is not a legal recipient.
+            self.log.write(
+                "operator-candidate-list",
+                seat=runner.seat,
+                letter=letter,
+                status="skipped",
+                reason="recipient not the owner and not allowed",
+            )
+            return
         try:
             outcome = OC.send_candidate_list(
                 seat=runner.seat,
-                platform=platform or "minimax",
+                platform=platform,
                 letters=[letter],
                 candidates=candidates,
                 recipient=int(recipient),
@@ -3686,11 +3782,15 @@ class Daemon:
                 owner_user_id=self.config.owner_user_id,
             )
         except Exception as exc:
+            # send_candidate_list is contracted to answer with a dict and never raise, so an escape
+            # here is a bug in this handler, not a delivery outcome:  log it as its own state so it
+            # is never mistaken for a terminal refusal.
             self.log.write(
                 "operator-candidate-list",
                 seat=runner.seat,
                 letter=letter,
-                status="failed",
+                status="error",
+                delivery_status="outcome_unknown",
                 error=type(exc).__name__,
             )
             return
@@ -3699,6 +3799,9 @@ class Daemon:
             seat=runner.seat,
             letter=letter,
             status=str(outcome.get("status") or ""),
+            # ok / unknown / refused, so a retryable or outcome-unknown delivery stays pending
+            # instead of being filed as a terminal failure.
+            delivery_status=str(outcome.get("delivery_status") or ""),
             reason=str(outcome.get("reason") or ""),
             candidates=len(candidates),
         )
@@ -3747,6 +3850,23 @@ class Daemon:
                     continue
                 return row
         return None
+
+    def platform_of(self, runner: Any, candidates: list[dict[str, Any]]) -> str:
+        """The platform namespace this seat's sessions live in, read off the registry rows.
+
+        Never a hardcoded seat name:  the fleet runs `minimax`, `claude-code` and others, and the
+        letter namespace is per platform.  This seat's own row wins;  otherwise the first row that
+        names a platform is the best answer the registry can give.
+        """
+        fallback = ""
+        for row in candidates:
+            name = str(row.get("platform") or "").strip().lower()
+            if not name:
+                continue
+            if str(row.get("seat") or "").strip().upper() == str(runner.seat).strip().upper():
+                return name
+            fallback = fallback or name
+        return fallback
 
     def chat_context(
         self,

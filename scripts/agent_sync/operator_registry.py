@@ -40,26 +40,21 @@ IDENTITY_FIELDS = ("platform", "verified_host", "profile_scope", "native_session
 
 # One platform namespace per platform, not per adapter.
 #
-# The chat catalog discovers sessions through adapters, and several adapters can
-# feed one platform:  "cursor-cloud" and "cursor-local" are both Cursor, and
-# "grok-leader" and "grok-live" are both Grok.  A letter is issued per
-# platform, so the namespace has to be the platform.  Keyed on the adapter name
-# the catalog emits, folding to the namespace the letters live in.  An adapter
-# that is not listed folds to itself, so a new adapter gets its own namespace
-# rather than colliding with another platform's.
+# The chat catalog discovers sessions through adapters, and two adapters can feed
+# one seat:  "cursor-cloud" and "cursor-local" are both Cursor.  A letter is
+# issued per platform, so the namespace has to be the platform.  Keyed on the
+# adapter name the catalog emits, folding to the namespace the letters live in.
+#
+# Only adapters that feed the SAME seat are folded.  Two Cursor adapters are one
+# platform because they are one seat;  folding an adapter that might later gain
+# a sibling for a different seat would merge two seats' letter spaces, and a
+# letter is only unique inside one of them.  An adapter that is not listed folds
+# to itself, so a new adapter gets its own namespace rather than colliding with
+# another platform's.
 PLATFORM_NAMESPACES = {
-    "antigravity": "antigravity",
-    "claude": "claude",
-    "codex": "codex",
     "cursor": "cursor",
     "cursor-cloud": "cursor",
     "cursor-local": "cursor",
-    "fx": "fx",
-    "grok": "grok",
-    "grok-leader": "grok",
-    "grok-live": "grok",
-    "minimax": "minimax",
-    "muse": "muse",
 }
 
 SESSIONS_HEADERS = (
@@ -786,6 +781,10 @@ def candidates_for(
     This is the query a candidate list needs:  the sessions that could hold the letter
     the sender used.  It is read-only and it never allocates, so a letter nobody holds
     simply has no candidates rather than a new one.
+
+    `retired_at IS NULL` is cached lease state, not proof of life, so a session that has
+    actually been closed (closed_at set) is not a candidate even if its alias was never
+    retired.  A closed session can never hold a letter again.
     """
     want = str(letter or "").strip().upper()
     if not want or want not in LETTERS:
@@ -804,6 +803,7 @@ def candidates_for(
             " s.state AS state"
             " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
             " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL"
+            " AND s.closed_at IS NULL"
             " ORDER BY s.registered_at DESC, a.record_id ASC",
             (normalize_platform(platform), want),
         ).fetchall()
@@ -857,7 +857,7 @@ def candidates_for_letter(db_path: str, letter: str) -> list[dict[str, Any]]:
             " a.record_id AS record_id, s.seat AS seat, s.native_session_id AS native_session_id,"
             " s.title AS title, s.verified_host AS verified_host, s.profile_scope AS profile_scope"
             " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
-            " WHERE a.letter = ? AND a.retired_at IS NULL"
+            " WHERE a.letter = ? AND a.retired_at IS NULL AND s.closed_at IS NULL"
             " ORDER BY a.platform ASC, s.registered_at DESC, a.record_id ASC",
             (want,),
         ).fetchall()
