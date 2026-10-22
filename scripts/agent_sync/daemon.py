@@ -4643,9 +4643,13 @@ class Daemon:
             url=url,
         )
         # AGENT_SEAT: the Linear board CLI refuses a write without it, and `env -i` drops the inherited one.
+        # LINEAR_BOARD_WRITES=1: the old ~/.local/bin/board wrapper exported it; simple-board is a
+        # symlink to scripts/simple-board and sets nothing, so without this every `file` exits 7.
+        board_env = dict(A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat))
+        board_env["LINEAR_BOARD_WRITES"] = "1"
         ok, detail = A.run_board(
             argv,
-            A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat),
+            board_env,
             self.board_runner,
         )
         return {

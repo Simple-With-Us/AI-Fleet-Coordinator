@@ -341,26 +341,34 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
     }
 
 
-def new_wrapper_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
-    """On a routine update (no --install), the wrappers a newer release added that this host lacks.
-    Only absent paths are written:  an existing file, managed or not, and a symlink are left alone, and
-    the Codex config is never touched here.  Without this, a command added after the first install
-    (recall, lane, fleet-mode) would ship in every release and never reach PATH."""
+LEGACY_CODEX_MCP = "agent-sync-codex-mcp"
+
+
+def codex_mcp_expected(bin_dir: Path) -> dict:
     return {
-        path: entry
-        for path, entry in wrapper_files(home).items()
-        if not path.exists() and not path.is_symlink()
+        "command": str(bin_dir / "simple-chat-codex-mcp"),
+        "env_vars": [
+            "AGENT_LAUNCHER",
+            "AGENT_LAUNCH_SEAT",
+            "AGENT_SEAT",
+            "AGENT_TAG",
+            "AGENT_SESSION",
+        ],
     }
 
 
-def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
+def migrate_codex_mcp(home: Path, files: dict) -> None:
+    """Rewrite a host's pre-rename Codex registration to the new wrapper, in `files` if it applies.
+
+    Every host installed before the AFC CLI rename carries `[mcp_servers.agent-sync]` pointing at
+    `<bin>/agent-sync-codex-mcp`, which execs `scripts/agent-sync`, a path this release does not
+    ship:  the seat's Codex MCP server would die with a FileNotFoundError.  So the one line naming
+    the legacy wrapper is replaced with the new one, and only when the host's table is exactly the
+    registration this tool wrote (same `env_vars`, command the legacy wrapper).  Anything else is
+    still a conflict and still refused:  this never rewrites a hand-edited registration.
+    """
     bin_dir = home / ".local/bin"
-    files = wrapper_files(home)
-    for path in files:
-        if path.is_symlink() or (
-            path.exists() and (not path.is_file() or MARKER.encode() not in path.read_bytes())
-        ):
-            raise Refused("existing_unmanaged_wrapper")
+    expected = codex_mcp_expected(bin_dir)
     config = home / ".codex/config.toml"
     if config.is_symlink() or (config.exists() and not config.is_file()):
         raise Refused("unsafe_codex_config")
@@ -371,19 +379,62 @@ def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
         before = tomllib.loads(original.decode())
     except (ValueError, UnicodeError):
         raise Refused("invalid_codex_config") from None
-    expected = {
-        "command": str(bin_dir / "simple-chat-codex-mcp"),
-        "env_vars": [
-            "AGENT_LAUNCHER",
-            "AGENT_LAUNCH_SEAT",
-            "AGENT_SEAT",
-            "AGENT_TAG",
-            "AGENT_SESSION",
-        ],
-    }
     present = before.get("mcp_servers", {}).get("agent-sync")
-    if present is not None and present != expected:
+    if present is None:
+        return
+    if present == expected:
+        return
+    legacy_command = str(bin_dir / LEGACY_CODEX_MCP)
+    if present.get("command") != legacy_command or present.get("env_vars") != expected["env_vars"]:
         raise Refused("existing_agent_sync_mcp_conflict")
+    old_line = ("command = " + json.dumps(legacy_command)).encode()
+    new_line = ("command = " + json.dumps(expected["command"])).encode()
+    # Exactly one such line:  an ambiguous file is not one this tool wrote, so do not guess.
+    if original.count(old_line) != 1:
+        raise Refused("existing_agent_sync_mcp_conflict")
+    after_raw = original.replace(old_line, new_line)
+    desired = copy.deepcopy(before)
+    desired.setdefault("mcp_servers", {})["agent-sync"] = expected
+    if tomllib.loads(after_raw.decode()) != desired:
+        raise Refused("codex_config_semantics_changed")
+    mode = stat.S_IMODE(config.stat().st_mode) if config.exists() else 0o600
+    files[config] = (after_raw, mode)
+
+
+def new_wrapper_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
+    """On a routine update (no --install), the wrappers a newer release added that this host lacks.
+    Only absent paths are written:  an existing file, managed or not, and a symlink are left alone.
+    Without this, a command added after the first install (recall, lane, fleet-mode) would ship in
+    every release and never reach PATH.
+
+    The Codex config is not written here, but a registration left naming the removed pre-rename
+    wrapper is migrated:  that wrapper execs a script this release no longer ships."""
+    files = {
+        path: entry
+        for path, entry in wrapper_files(home).items()
+        if not path.exists() and not path.is_symlink()
+    }
+    migrate_codex_mcp(home, files)
+    return files
+
+
+def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
+    bin_dir = home / ".local/bin"
+    files = wrapper_files(home)
+    for path in files:
+        if path.is_symlink() or (
+            path.exists() and (not path.is_file() or MARKER.encode() not in path.read_bytes())
+        ):
+            raise Refused("existing_unmanaged_wrapper")
+    expected = codex_mcp_expected(bin_dir)
+    migrate_codex_mcp(home, files)
+    config = home / ".codex/config.toml"
+    original = config.read_bytes() if config.exists() else b""
+    try:
+        before = tomllib.loads(original.decode())
+    except (ValueError, UnicodeError):
+        raise Refused("invalid_codex_config") from None
+    present = before.get("mcp_servers", {}).get("agent-sync")
     if present is None:
         addition = (
             "\n# Local CODEX-only fleet MCP; no credentials or pinned seat.\n"

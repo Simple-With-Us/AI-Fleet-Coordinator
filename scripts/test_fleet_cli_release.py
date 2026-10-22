@@ -373,6 +373,57 @@ class ReleaseTests(unittest.TestCase):
             release.release_at(self.base, "current").name, self.bundle["bundle_sha256"]
         )
 
+    def test_install_migrates_a_prerenamed_codex_registration_instead_of_refusing(self):
+        # A host installed before the CLI rename carries the legacy wrapper path;  the release must
+        # rewrite it (the old wrapper execs scripts/agent-sync, which this release no longer ships).
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        legacy = str(self.home / ".local/bin/agent-sync-codex-mcp")
+        config.write_bytes(
+            (
+                'model = "existing-worker"\n'
+                "# Local CODEX-only fleet MCP; no credentials or pinned seat.\n"
+                "[mcp_servers.agent-sync]\n"
+                'command = "%s"\n'
+                'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
+                ' "AGENT_SESSION"]\n' % legacy
+            ).encode()
+        )
+        config.chmod(0o600)
+        result = self.receive()
+        self.assertEqual(result["status"], "activated")
+        parsed = tomllib.loads(config.read_text())
+        self.assertEqual(parsed["model"], "existing-worker")
+        self.assertEqual(
+            parsed["mcp_servers"]["agent-sync"]["command"],
+            str(self.home / ".local/bin/simple-chat-codex-mcp"),
+        )
+        self.assertNotIn("agent-sync-codex-mcp", config.read_text())
+
+    def test_update_path_migrates_the_prerenamed_codex_registration_too(self):
+        self.receive()
+        config = self.home / ".codex/config.toml"
+        legacy = str(self.home / ".local/bin/agent-sync-codex-mcp")
+        config.write_bytes(
+            (
+                "[mcp_servers.agent-sync]\ncommand = \"%s\"\n"
+                'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
+                ' "AGENT_SESSION"]\n' % legacy
+            ).encode()
+        )
+        self.receive(make_bundle("two"), install=False)
+        self.assertEqual(
+            tomllib.loads(config.read_text())["mcp_servers"]["agent-sync"]["command"],
+            str(self.home / ".local/bin/simple-chat-codex-mcp"),
+        )
+
+    def test_a_hand_edited_codex_registration_is_still_refused(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b'[mcp_servers.agent-sync]\ncommand = "/owner/custom"\n')
+        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
+            self.receive()
+
     def test_update_keeps_configuration_and_wrappers_untouched(self):
         self.receive()
         config = self.home / ".codex/config.toml"

@@ -930,6 +930,9 @@ class WakeTests(DaemonHarness):
         self.assertEqual(self.ledger()[-1]["board_uid"], "zulip:CLAUDE:%d" % mid)
         # `env -i` drops the inherited seat, and the Linear board CLI refuses a write without AGENT_SEAT.
         self.assertEqual(board_envs[0].get("AGENT_SEAT"), "CLAUDE")
+        # simple-board is a plain symlink to scripts/simple-board and exports nothing itself, so the
+        # daemon must pass the write switch the old ~/.local/bin/board wrapper used to export.
+        self.assertEqual(board_envs[0].get("LINEAR_BOARD_WRITES"), "1")
 
     def test_the_loop_guard_resets_only_on_an_owner_post(self) -> None:
         daemon = self.started()

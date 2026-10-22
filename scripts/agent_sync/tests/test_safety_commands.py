@@ -71,6 +71,16 @@ class ToOwnerTests(OwnerHarness):
         self.assertEqual(self.posts(), 0)
         self.assertEqual(self.fake.requests, [])  # not even a user list was fetched
 
+    def test_the_no_owner_message_names_the_config_path_then_the_program(self) -> None:
+        #  The two %s were once swapped (Sentry 18337810), so the suggestion read as a path to run as a
+        #  command and named the program as a file.  Assert the slots, not just the prefix both orders share.
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = 0\n")
+        result = self.run_cli("post", "--topic", "t", "--to-owner", "hello")
+        self.assertEqual(result.code, 2)
+        self.assertIn("not pinned in %s (run simple-chat daemon init)"
+                      % (self.state_dir / "listener.toml"), result.err)
+
     def test_a_pinned_id_that_is_not_an_active_human_is_refused(self) -> None:
         cases = ((9999, "not a user in this realm"), (11, "is a bot"))
         for owner_id, fragment in cases:

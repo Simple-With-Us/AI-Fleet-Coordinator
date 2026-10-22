@@ -226,7 +226,7 @@ class SeatAndMcpTests(unittest.TestCase):
         ):
             self.assertFalse(doctor.is_shipped(path), path)
 
-    def test_the_same_five_tools_on_both_hosts(self):
+    def test_the_same_six_tools_on_both_hosts(self):
         self.assertEqual(
             doctor.FLEET_TOOLS,
             ("simple-chat", "simple-notes", "simple-board", "recall", "lane", "fleet-mode"),

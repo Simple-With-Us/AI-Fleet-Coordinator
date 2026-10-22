@@ -91,7 +91,7 @@ class Runner:
         return Result(done.returncode, done.stdout or "", done.stderr or "")
 
     def board(self, *args: str) -> Result:
-        return self._run("board", args, None, BOARD_TIMEOUT)
+        return self._run("simple-board", args, None, BOARD_TIMEOUT)
 
     def board_json(self, *args: str):
         """Run a `board ... --json` read and return the parsed JSON, or raise BoardFailed."""
@@ -104,8 +104,8 @@ class Runner:
             raise BoardFailed("board %s did not return JSON" % args[0]) from None
 
     def agent_sync(self, *args: str, stdin: str | None = None) -> Result:
-        return self._run("agent-sync", args, stdin, AGENT_SYNC_TIMEOUT)
+        return self._run("simple-chat", args, stdin, AGENT_SYNC_TIMEOUT)
 
     def require_board(self) -> None:
-        if find_tool("board", self.env) is None:
-            raise NeedsOwnerError("board is not installed or not on PATH")
+        if find_tool("simple-board", self.env) is None:
+            raise NeedsOwnerError("simple-board is not installed or not on PATH")

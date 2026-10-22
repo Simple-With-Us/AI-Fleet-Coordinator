@@ -472,7 +472,7 @@ def plan_target(key: str, home: str, action: str, with_agent_sync: bool,
         plan.notes.append("%s does not exist yet (scripts/install-fleet-rag.sh creates it)" %
                           os.path.join(fleet_rag_home(home, env), "fleet-recall-mcp.py"))
     if with_agent_sync and AGENT_SYNC in names and not os.path.exists(os.path.join(home, ".local", "bin", "simple-chat")):
-        plan.notes.append("~/.local/bin/agent-sync does not exist; the registration would start nothing")
+        plan.notes.append("~/.local/bin/simple-chat does not exist; the registration would start nothing")
     return plan
 
 

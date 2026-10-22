@@ -42,10 +42,11 @@ GIT_TIMEOUT = 120
 SMOKE_TIMEOUT = 20
 # The same commands the release receiver smoke-tested:  each must start and exit as expected.
 SMOKE_CASES = (
-    ("agent_sync_version", "scripts/agent-sync", ["--version"], 0),
-    ("agent_sync_mcp_help", "scripts/agent-sync", ["mcp", "--help"], 0),
-    ("board_help", "scripts/linear-board/board", ["--help"], 0),
-    ("board_missing_credentials", "scripts/linear-board/board", ["whoami"], 4),
+    ("simple_chat_version", "scripts/simple-chat", ["--version"], 0),
+    ("simple_chat_mcp_help", "scripts/simple-chat", ["mcp", "--help"], 0),
+    ("simple_notes_version", "scripts/simple-notes", ["--version"], 0),
+    ("simple_board_help", "scripts/simple-board", ["--help"], 0),
+    ("simple_board_missing_credentials", "scripts/simple-board", ["whoami"], 4),
     ("recall_help", "scripts/recall", ["--help"], 0),
     ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
     ("fleet_mode_block", "scripts/fleet-mode", [], 0),

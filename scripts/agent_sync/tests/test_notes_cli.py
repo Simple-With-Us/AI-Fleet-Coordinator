@@ -404,3 +404,17 @@ class NotesCliTests(Harness):
             ).code,
             0,
         )
+
+    def test_attach_and_detach_are_refused_by_the_commands_that_do_not_own_them(self):
+        # The Claude Code hook verbs belong to simple-chat alone;  the fast path that runs them
+        # before the parser must not let simple-notes reach it and mutate listener leases.
+        for verb in ("attach", "detach"):
+            for prog in ("simple-notes", "simple-chat"):
+                with self.subTest(prog=prog, verb=verb):
+                    result = self.run_cli(verb, prog=prog)
+                    if prog == "simple-chat":
+                        # It reaches the hook path, so it is argparse's own usage error.
+                        self.assertNotIn("invalid choice", result.err)
+                    else:
+                        self.assertEqual(result.code, 2, result.err)
+                        self.assertIn("invalid choice", result.err)

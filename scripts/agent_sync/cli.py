@@ -2631,6 +2631,10 @@ CHAT_VERBS = frozenset(
 # workstream gives them their own command; this change does not rename them.
 LISTENER_VERBS = frozenset({"attach", "detach", "daemon", "listener", "status", "wakes"})
 
+# The two verbs the Claude Code hooks run on every prompt and Stop.  They are dispatched before the
+# parser is built so the hook path loads only light modules;  that fast path is per-command.
+HOOK_VERBS = frozenset({"attach", "detach"})
+
 # Which verb set each entry point owns, per registration source.  `main(prog=...)` and
 # `build_parser_for` read this, so the four CLIs stay four commands with four separate helps.
 COMMAND_SPECS: dict[str, dict[str, frozenset[str]]] = {
@@ -2679,10 +2683,10 @@ def main(
         events_timeout=events_timeout,
     )
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in (
-        "attach",
-        "detach",
-    ):  # the entry script normally dispatches these before importing cli
+    # The hook fast path belongs to `simple-chat` alone:  attach/detach are listener verbs, so a
+    # command that does not own them (simple-notes) must fall through to the parser and be refused.
+    spec = COMMAND_SPECS.get(prog)
+    if argv and argv[0] in HOOK_VERBS and spec is not None and argv[0] in spec["listener"]:
         from . import attach
 
         return attach.main(

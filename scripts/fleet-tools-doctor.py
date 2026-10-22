@@ -1358,7 +1358,7 @@ def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.r
         return
     try:
         result = runner(
-            ["simple-chat", "mcp", "--default-seat", seat],
+            ["simple-chat", "mcp", "--default-seat=%s" % seat],
             input=MCP_PROBE,
             env={**registered_env(seat), **os.environ},
             capture_output=True,
