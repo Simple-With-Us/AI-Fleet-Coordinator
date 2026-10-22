@@ -1611,6 +1611,19 @@ try {
     const reused = await spikePost("JET", spikeBytes(), { key: WAKE_KEY_JET });
     assert.equal(reused.status, 404, "the wake key never signs a spike");
     await reused.arrayBuffer();
+    // Another seat's wake key is refused too, while JET's own key differs from it.
+    const otherWakeKey = randomBytes(32).toString("hex");
+    await mf.dispose();
+    mf = startWorker(HOST, { SPIKE_EXTRA_EVENTS: "on", SPIKE_HMAC_KEY: otherWakeKey, WAKE_HMAC_KEY_GROK_WEB: otherWakeKey });
+    const crossSeat = await spikePost("JET", spikeBytes(), { key: otherWakeKey });
+    assert.equal(crossSeat.status, 404, "no seat's wake key signs a spike");
+    await crossSeat.arrayBuffer();
+    // And with a key of its own, the same instance answers (401 here:  the signature is wrong).
+    await mf.dispose();
+    mf = startWorker(HOST, { SPIKE_EXTRA_EVENTS: "on", WAKE_HMAC_KEY_GROK_WEB: otherWakeKey });
+    const own = await spikePost("JET", spikeBytes(), { key: otherWakeKey });
+    assert.equal(own.status, 401, "SPIKE_HMAC_KEY is set and distinct, so the route is open and the wrong key is refused");
+    await own.arrayBuffer();
   });
 
   console.log(`\n${passed} passed`);
