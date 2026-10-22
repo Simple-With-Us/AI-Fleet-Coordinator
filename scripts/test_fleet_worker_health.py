@@ -48,6 +48,20 @@ class WorkerHealthReader(unittest.TestCase):
             self.assertEqual((doc["worst"], doc["error"]), ("unknown", code))
         self.assertFalse(fwh.document(200, {"contract": "other"}, 0)["reachable"])
 
+    def test_read_key_survives_a_missing_binary(self):
+        old_env, old_which = dict(os.environ), fwh.shutil.which
+        os.environ.pop("HEALTH_HMAC_KEY", None)
+        fwh.shutil.which = lambda name: "/nonexistent/fleet-secrets"
+        try:
+            self.assertEqual(fwh.read_key(), "")
+        finally:
+            fwh.shutil.which = old_which
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    def test_requests_carry_an_explicit_user_agent(self):
+        self.assertTrue(fwh.USER_AGENT.startswith("fleet-worker-health/"))
+
     def test_write_is_atomic_and_private(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "state", "worker-health.json")

@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,7 @@ import urllib.request
 
 CONTRACT = "agent-sync-health/1"
 SIGNATURE_HEADER = "x-agent-sync-health-signature"
+USER_AGENT = "fleet-worker-health/1 (AI-Fleet-Coordinator)"
 DEFAULT_URL = "https://agents.simplewithus.com/internal/health/linear"
 DEFAULT_PATH = os.path.expanduser("~/.local/state/fleet-tools/worker-health.json")
 SCHEMA_VERSION = 1
@@ -49,9 +51,11 @@ def read_key():
     key = os.environ.get("HEALTH_HMAC_KEY", "").strip()
     if key:
         return key
-    out = subprocess.run(
-        ["fleet-secrets", "get", "HEALTH_HMAC_KEY"], capture_output=True, text=True, timeout=30
-    )
+    binary = shutil.which("fleet-secrets") or os.path.expanduser("~/.local/bin/fleet-secrets")
+    try:
+        out = subprocess.run([binary, "get", "HEALTH_HMAC_KEY"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
@@ -61,7 +65,11 @@ def fetch(url, key, now=None):
         url,
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json", SIGNATURE_HEADER: sign(key, body)},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+            SIGNATURE_HEADER: sign(key, body),
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
