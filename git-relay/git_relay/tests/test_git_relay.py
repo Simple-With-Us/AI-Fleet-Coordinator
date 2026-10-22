@@ -1680,6 +1680,34 @@ class LegacyStateAdoption(unittest.TestCase):
         self.assertFalse((directory / "git-relay-outcomes.json").exists())
         self.assertTrue(legacy.exists(), "a refused adoption leaves the old ledger alone")
 
+    def test_a_stale_lock_from_a_dead_process_is_reclaimed(self):
+        # A crash between creating the lock and finishing the adoption must not
+        # wedge every later startup:  a lock owned by a dead PID, or older than
+        # the bound, is taken over and the adoption completes.
+        from git_relay import server
+
+        for label, pid_text, old_mtime in (
+            ("dead owner", "999999999", False),
+            ("ancient lock", str(os.getpid()), True),
+        ):
+            with self.subTest(label):
+                directory = pathlib.Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, directory, True)
+                legacy = self._legacy_ledger(directory)
+                lock = directory / ".git-relay-outcomes.json.adopt.lock"
+                lock.write_text(f"{pid_text}\n", encoding="utf-8")
+                if old_mtime:
+                    old = time.time() - server.ADOPT_LOCK_STALE_SECONDS - 60.0
+                    os.utime(lock, (old, old))
+
+                adopted = server.adopt_legacy_state(
+                    str(directory / "git-relay-outcomes.json")
+                )
+
+                self.assertTrue(pathlib.Path(adopted).exists())
+                self.assertFalse(legacy.exists(), "the stale lock must not stop the move")
+                self.assertFalse(lock.exists(), "the reclaimed lock is cleaned up")
+
     def test_adoption_stages_through_a_temporary_file_and_leaves_none_behind(self):
         from git_relay.server import adopt_legacy_state
 

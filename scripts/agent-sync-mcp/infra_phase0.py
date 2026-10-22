@@ -164,16 +164,16 @@ def dns_records(cf: Cloudflare, zid: str, host: str = HOST) -> list[dict]:
     return cf.ok("GET", f"/zones/{zid}/dns_records", name=host).get("result") or []
 
 
-def tunnel_ingress(cf: Cloudflare, tid: str) -> list[dict]:
-    """The tunnel's ingress rules, shape-checked.
+def tunnel_ingress_from_config(config: dict, tid: str) -> list[dict]:
+    """The tunnel's ingress rules from one already-fetched configuration.
 
-    Cloudflare's response is a third party, and every caller here reads
-    `rule["hostname"]` and `rule["service"]`.  A malformed answer should be a
-    precise refusal rather than an incidental AttributeError that looks like a
-    bug in this script - especially in `check`, where a crash would be read as
-    "could not verify" rather than "the answer was not understood".
+    Shape-checked:  Cloudflare's response is a third party, and every caller
+    here reads `rule["hostname"]` and `rule["service"]`.  A malformed answer
+    should be a precise refusal rather than an incidental AttributeError that
+    looks like a bug in this script - especially in `check`, where a crash
+    would be read as "could not verify" rather than "the answer was not
+    understood".
     """
-    config = tunnel_config(cf, tid)
     if not isinstance(config, dict):
         raise SystemExit(f"error: tunnel {tid} configuration is not an object")
     ingress = config.get("ingress")
@@ -191,6 +191,11 @@ def tunnel_ingress(cf: Cloudflare, tid: str) -> list[dict]:
         if not isinstance(service, str):
             raise SystemExit(f"error: tunnel {tid} ingress service is not a string: {service!r}")
     return ingress
+
+
+def tunnel_ingress(cf: Cloudflare, tid: str) -> list[dict]:
+    """The tunnel's ingress rules, shape-checked, in one fetch."""
+    return tunnel_ingress_from_config(tunnel_config(cf, tid), tid)
 
 
 def tunnel_hosts(cf: Cloudflare, hosts=RETIRED_HOSTS) -> dict[str, list[str]]:
@@ -379,10 +384,13 @@ def cmd_kv(cf: Cloudflare, apply: bool) -> None:
 # wrangler documents.  Replacing known secrets is a denylist and cannot cover
 # what a response body happens to contain;  an allow-list can.
 _WRANGLER_CODE = re.compile(r"\bcode:\s*(\d{1,12})\b")
-_WRANGLER_REQUEST_ID = re.compile(r"\brequest id:\s*([0-9a-f]{8,64})\b", re.IGNORECASE)
+# Cloudflare request ids are fixed 32-hex-character strings;  matching exactly
+# that shape keeps a longer or shorter lookalike (an API key, a token fragment)
+# from being captured as a request id.
+_WRANGLER_REQUEST_ID = re.compile(r"\brequest id:\s*([0-9a-f]{32})\b", re.IGNORECASE)
 
 
-def _wrangler_diagnostic(stdout: str, stderr: str, secret: str) -> str:
+def _wrangler_diagnostic(stdout: str, stderr: str, secret: str, api_key: str = "") -> str:
     """The allow-listed facts from wrangler's output, or nothing."""
     output = f"{stderr}\n{stdout}"
     found = []
@@ -393,10 +401,13 @@ def _wrangler_diagnostic(stdout: str, stderr: str, secret: str) -> str:
     if request_id:
         found.append(f"request id {request_id.group(1)}")
     # A captured value would already be one of the two documented fields, but
-    # the check costs nothing and keeps the rule true by construction.
+    # the check costs nothing and keeps the rule true by construction:  if
+    # wrangler ever labels the secret or the API key as a request id, the whole
+    # detail is withheld rather than relayed.
     detail = ", ".join(found)
-    if secret and secret in detail:
-        return ""
+    for sensitive in (secret, api_key):
+        if sensitive and sensitive in detail:
+            return ""
     return detail
 
 
@@ -493,7 +504,8 @@ def put_worker_secret(cf: Cloudflare, name: str, value: str) -> None:
         if previous is not None:
             signal.signal(signal.SIGTERM, previous)
     if proc.returncode != 0:
-        detail = _wrangler_diagnostic(stdout or "", stderr or "", value)
+        api_key = cf.wrangler_env().get("CLOUDFLARE_API_KEY", "") or ""
+        detail = _wrangler_diagnostic(stdout or "", stderr or "", value, api_key)
         raise SystemExit(
             f"error: wrangler secret put {name} failed (exit {proc.returncode})"
             + (f": {detail}" if detail else "")
@@ -583,8 +595,11 @@ def cmd_tunnel(cf: Cloudflare, apply: bool) -> None:
     t = tunnel(cf)
     if not t:
         raise SystemExit(f"error: tunnel {TUNNEL_NAME} not found")
+    # One read:  the PUT below writes {**config, "ingress": keep}, so the
+    # validated rules must come from the same object the backup keeps, not a
+    # second fetch that a concurrent change could slip between.
     config = tunnel_config(cf, t["id"])
-    ingress = tunnel_ingress(cf, t["id"])
+    ingress = tunnel_ingress_from_config(config, t["id"])
     # Drop a rule for the served host OR the retired one:  either keeps a public
     # hostname aimed at the Mac alive.
     keep = [r for r in ingress if r.get("hostname") not in RETIRED_HOSTS]

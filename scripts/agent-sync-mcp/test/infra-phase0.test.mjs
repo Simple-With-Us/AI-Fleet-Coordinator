@@ -26,12 +26,16 @@ const ProbeSchema = z.object({
   queried: z.array(z.string()),
   output: z.string(),
   malformed_errors: z.record(z.string(), z.string()),
+  tunnel_config_reads: z.number(),
   secrets: z.object({
     diagnostic: SecretRunSchema,
     quiet_failure: SecretRunSchema,
     no_wrangler_on_path: SecretRunSchema,
     popen_missing: SecretRunSchema,
     interrupted: SecretRunSchema,
+    api_key_labelled: SecretRunSchema,
+    short_id: SecretRunSchema,
+    sigterm_handler_restored: z.boolean(),
   }),
 });
 
@@ -103,6 +107,35 @@ test("a failing secret put reports only allow-listed fields of wrangler's output
   );
   // With nothing allow-listed in the output, the exit code is the whole report.
   assert.match(quiet.error, /^error: wrangler secret put ACCESS_AUD failed \(exit 1\)$/);
+});
+
+test("tunnel --apply reads the configuration once, not twice", () => {
+  const result = readProbe();
+  // The PUT writes {**config, "ingress": keep}:  a second fetch between the
+  // two reads would let a concurrent change be silently reverted and missed
+  // by the backup.
+  assert.equal(result.tunnel_config_reads, 1, "one GET configurations per tunnel --apply");
+});
+
+test("a request id shaped like the API key is withheld, and a short id is ignored", () => {
+  const { api_key_labelled: labelled, short_id: short } = readProbe().secrets;
+  // Wrangler labelled the API key itself as the request id:  the whole detail
+  // is withheld rather than relayed into the error and CI logs.
+  assert.equal(labelled.raised, "SystemExit");
+  assert.match(
+    labelled.error,
+    /^error: wrangler secret put ACCESS_AUD failed \(exit 1\)$/,
+    "no allow-listed detail may survive when it contains the key",
+  );
+  assert.doesNotMatch(labelled.error, /c{32}/, "the Cloudflare API key leaked");
+  // A request id that is not Cloudflare's fixed 32-hex shape is not relayed.
+  assert.match(short.error, /cf code 10001/);
+  assert.doesNotMatch(short.error, /request id/, "a short lookalike is not a request id");
+});
+
+test("the probe restores the caller's SIGTERM handler", () => {
+  const { sigterm_handler_restored: restored } = readProbe().secrets;
+  assert.equal(restored, true, "cleanup must not reset a custom handler to SIG_DFL");
 });
 
 test("a missing wrangler executable exits 127, not 1", () => {

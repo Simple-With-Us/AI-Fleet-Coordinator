@@ -63,7 +63,7 @@ The Access AUD is a private Cloudflare resource identifier and is **not** commit
 
 Two things about that call, because a failure here is otherwise a bare exit code:
 
-- **It authenticates itself.**  `put_worker_secret` builds the child environment from the same `fleet-secrets` credentials `access --apply` used (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_EMAIL`, `CLOUDFLARE_API_KEY`), so step 3 does **not** need the exports from step 5.  On failure it relays wrangler's own output with the AUD and the API key replaced by `***`, so the reason is readable without printing a secret.  Exit 124 is a hung wrangler and 127 is a missing one.
+- **It authenticates itself.**  `put_worker_secret` builds the child environment from the same `fleet-secrets` credentials `access --apply` used (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_EMAIL`, `CLOUDFLARE_API_KEY`), so step 3 does **not** need the exports from step 5.  On failure it reports only the exit code plus two allow-listed fields taken from wrangler's output (the Cloudflare error code and the request id); none of wrangler's own text is relayed, so no secret can ride along.  Exit 124 is a hung wrangler and 127 is a missing one.
 - **It needs the Worker to already exist.**  On a brand-new endpoint, run this step again *after* step 5: `wrangler secret put` has nothing to attach to until the Worker is deployed.  Setting it later needs no redeploy, so it can equally be run after `check`.
 
 ## Step 4:  Remove the tunnel CNAME

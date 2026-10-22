@@ -46,6 +46,7 @@ class FakeCloudflare:
         self.deleted = []
         self.puts = []
         self.queried = []
+        self.config_reads = 0
         # When set, the tunnel answers with a shape this script must refuse to
         # interpret rather than crash on.
         self.malformed = None
@@ -63,6 +64,7 @@ class FakeCloudflare:
             if method == "PUT":
                 self.puts.append(body["config"]["ingress"])
                 return {"success": True, "result": {}}
+            self.config_reads += 1
             if self.malformed is not None:
                 return {"success": True, "result": {"config": {"ingress": self.malformed}}}
             return {
@@ -102,7 +104,7 @@ class FakeSecretCloudflare:
     """Just the two things put_worker_secret reads off the Cloudflare handle."""
 
     _key = "cf-api-key-value-0123456789"
-    _email = "mail@jays.services"
+    _email = "operator@example.test"
 
     def wrangler_env(self):
         return {"CLOUDFLARE_API_KEY": self._key, "CLOUDFLARE_EMAIL": self._email}
@@ -174,6 +176,7 @@ def run_with_fake_child(child, secret=("a" * 64), which="wrangler"):
     infra.subprocess.Popen = fake_popen
     infra.shutil.which = lambda name: name if which else None
     os.killpg = fake_killpg
+    previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
     try:
         cf = FakeSecretCloudflare()
         error = None
@@ -190,7 +193,7 @@ def run_with_fake_child(child, secret=("a" * 64), which="wrangler"):
         subprocess.Popen = real_popen
         infra.shutil.which = real_which
         os.killpg = real_killpg
-        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, previous_sigterm_handler)
     state.update(
         {
             "raised": raised,
@@ -263,12 +266,51 @@ def secret_probes() -> dict:
         FakeChild(None, raise_on_communicate=KeyboardInterrupt()), secret=secret
     )
 
+    # Wrangler labels the API key itself as the request id:  the whole detail is
+    # withheld rather than relayed, so the key never reaches the error or CI logs.
+    hex_key = "c" * 32
+    real_key = FakeSecretCloudflare._key
+    FakeSecretCloudflare._key = hex_key
+    try:
+        api_key_labelled = run_with_fake_child(
+            FakeChild(
+                None,
+                returncode=1,
+                stdout="",
+                stderr=f"code: 10000\nrequest id: {hex_key}\n",
+            ),
+            secret=secret,
+        )
+    finally:
+        FakeSecretCloudflare._key = real_key
+
+    # A request id that is not Cloudflare's fixed 32-hex shape is not a request
+    # id at all:  only the code survives.
+    short_id = run_with_fake_child(
+        FakeChild(None, returncode=1, stdout="", stderr="code: 10001\nrequest id: abc123\n"),
+        secret=secret,
+    )
+
+    # The probe's own cleanup must restore the caller's SIGTERM handler, not
+    # reset it to the default.
+    real_handler = signal.getsignal(signal.SIGTERM)
+    marker = lambda *args: None  # noqa: E731
+    signal.signal(signal.SIGTERM, marker)
+    try:
+        run_with_fake_child(FakeChild(None, returncode=0, stdout="", stderr=""), secret=secret)
+        sigterm_handler_restored = signal.getsignal(signal.SIGTERM) is marker
+    finally:
+        signal.signal(signal.SIGTERM, real_handler)
+
     return {
         "diagnostic": diagnostic,
         "quiet_failure": quiet,
         "no_wrangler_on_path": no_wrangler,
         "popen_missing": child_missing,
         "interrupted": interrupted,
+        "api_key_labelled": api_key_labelled,
+        "short_id": short_id,
+        "sigterm_handler_restored": sigterm_handler_restored,
     }
 
 
@@ -290,7 +332,9 @@ def main() -> None:
     infra.say = fake_say
     infra.plan = fake_plan
 
+    cf.config_reads = 0
     infra.cmd_tunnel(cf, True)
+    tunnel_config_reads = cf.config_reads
     ingress_after = cf.puts[-1] if cf.puts else None
 
     infra.cmd_dns(cf, True)
@@ -321,6 +365,7 @@ def main() -> None:
                 "queried": sorted(f"{zone}:{host}" for zone, host in cf.queried),
                 "output": "\n".join(lines),
                 "malformed_errors": malformed_errors,
+                "tunnel_config_reads": tunnel_config_reads,
                 "secrets": secret_probes(),
             }
         )

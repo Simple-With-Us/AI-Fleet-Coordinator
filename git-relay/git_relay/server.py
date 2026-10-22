@@ -528,6 +528,10 @@ LEGACY_STATE_FILES = {
 # this is generous; it exists to fail loudly rather than silently start with an
 # empty ledger.
 ADOPT_LOCK_WAIT_SECONDS = 5.0
+# A lock older than this outlived any adoption (a copy of one small file), so
+# its owner must have died between creating it and finishing.  Reclaiming it
+# keeps a crash from wedging every later startup on the same directory.
+ADOPT_LOCK_STALE_SECONDS = 120.0
 
 
 def _fsync_dir(directory: str) -> None:
@@ -537,6 +541,30 @@ def _fsync_dir(directory: str) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _adopt_lock_is_stale(lock_path: str) -> bool:
+    """A lock its owner cannot still hold:  the owner is dead or it is too old."""
+    try:
+        age = time.time() - os.path.getmtime(lock_path)
+    except OSError:
+        return False
+    if age > ADOPT_LOCK_STALE_SECONDS:
+        return True
+    try:
+        with open(lock_path, encoding="utf-8") as handle:
+            pid = int(handle.read().strip())
+    except (OSError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
 
 
 def adopt_legacy_state(default_path: str) -> str:
@@ -561,13 +589,32 @@ def adopt_legacy_state(default_path: str) -> str:
     while True:
         try:
             lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(lock_fd, f"{os.getpid()}\n".encode())
+                os.fsync(lock_fd)
+            except BaseException:
+                try:
+                    os.close(lock_fd)
+                except OSError:
+                    pass
+                try:
+                    os.unlink(lock_path)
+                except OSError:
+                    pass
+                raise
             break
         except FileExistsError:
             # Someone else is adopting, or already did.  Either way the answer is
-            # the same, and a lock left behind by a dead process cannot wedge
-            # startup because the current file is checked first.
+            # the same, unless the lock is stale:  its owner died mid-adoption,
+            # so take it over instead of wedging every later startup.
             if os.path.exists(current_path) or not os.path.exists(legacy_path):
                 return default_path
+            if _adopt_lock_is_stale(lock_path):
+                try:
+                    os.unlink(lock_path)
+                except OSError:
+                    pass
+                continue
             if time.monotonic() > deadline:
                 raise SystemExit(
                     f"error: {lock_path} is held; another git-relay is adopting "
