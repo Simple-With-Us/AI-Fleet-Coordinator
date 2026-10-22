@@ -10,6 +10,6 @@ The app-server has to be running for it to answer:
   python3 scripts/probe-minimax-app-server.py
   mcode app-server daemon stop
 
-What it proves, and what it does not.  It proves the channel is reachable from outside a MiniMax process and that the DesktopService contract rides inside one JSON-RPC method, `desktopService/transport`, whose request frame is a RuntimeTransportWireRequestFrame.  It does not yet send a DesktopService request, so the exact field names of that frame are still open, and so is the question of whether the app-server runtime can take over a session the GUI runtime owns.  Those are the next two steps, and the finding is written up on AFC-412.
+What it proves, and what it does not.  It proves the channel is reachable from outside a MiniMax process and that the server lists one JSON-RPC method, `desktopService/transport`, which is where a DesktopService contract could ride.  A method list cannot show what that method's request frame looks like, so the frame shape (a RuntimeTransportWireRequestFrame, per the runtime's own client) is an open question until a request is sent.  The probe sends no DesktopService request, so the exact field names are still open, and so is the question of whether the app-server runtime can take over a session the GUI runtime owns.  Those are the next two steps, and the finding is written up on AFC-412.
 
 The server's own method catalogue, for reference:  account/read, account/login/start, account/login/cancel, account/logout, server/prepareRestart and desktopService/transport.

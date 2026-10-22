@@ -50,8 +50,47 @@ def upgrade(sock_path, path="/", host=HOST):
 
 def send_text(s, text):
     """One masked WebSocket text frame, as a client must send."""
-    payload = text.encode("utf-8")
-    header = bytearray([0x81])
+    send_frame(s, 0x1, text.encode("utf-8"))
+
+
+MAX_FRAME = 1024 * 1024
+INITIALIZE_TIMEOUT = 300  # the sibling MiniMax client (scripts/lark-mm-bridge.py) waits this long
+
+
+class Reader:
+    """Buffered frame reader:  keeps the bytes the upgrade read past its headers."""
+
+    def __init__(self, sock, buffered=b""):
+        self.sock = sock
+        self.buf = bytearray(buffered)
+
+    def _exactly(self, n):
+        while len(self.buf) < n:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise EOFError("connection closed")
+            self.buf += chunk
+        data = bytes(self.buf[:n])
+        del self.buf[:n]
+        return data
+
+    def frame(self):
+        """(fin, opcode, payload) for one frame.  Raises ValueError for an oversized one."""
+        head = self._exactly(2)
+        fin = bool(head[0] & 0x80)
+        length = head[1] & 0x7F
+        if length == 126:
+            length = struct.unpack(">H", self._exactly(2))[0]
+        elif length == 127:
+            length = struct.unpack(">Q", self._exactly(8))[0]
+        if length > MAX_FRAME:
+            raise ValueError("frame of %d bytes exceeds the %d byte cap" % (length, MAX_FRAME))
+        return fin, head[0] & 0x0F, self._exactly(length)
+
+
+def send_frame(s, opcode, payload=b""):
+    """One masked frame (a client must mask)."""
+    header = bytearray([0x80 | opcode])
     mask = os.urandom(4)
     length = len(payload)
     if length < 126:
@@ -67,27 +106,40 @@ def send_text(s, text):
     s.sendall(bytes(header))
 
 
-def read_frame(s, timeout=15):
-    """One WebSocket frame, unmasked from the server."""
+def read_message(s, reader, timeout=INITIALIZE_TIMEOUT):
+    """The next complete text message:  answers pings, joins fragments, stops on close.
+
+    Returns (text, None) or (None, reason)."""
     s.settimeout(timeout)
+    parts = []
     try:
-        head = s.recv(2)
-    except TimeoutError:
-        return None, b""
-    if not head:
-        return None, b""
-    length = head[1] & 0x7F
-    if length == 126:
-        length = struct.unpack(">H", s.recv(2))[0]
-    elif length == 127:
-        length = struct.unpack(">Q", s.recv(8))[0]
-    body = b""
-    while len(body) < length:
-        chunk = s.recv(length - len(body))
-        if not chunk:
-            break
-        body += chunk
-    return head[0] & 0x0F, body
+        while True:
+            fin, opcode, payload = reader.frame()
+            if opcode == 0x9:  # ping
+                send_frame(s, 0xA, payload)
+            elif opcode == 0xA:  # pong
+                continue
+            elif opcode == 0x8:
+                return None, "the server closed the connection"
+            elif opcode in (0x1, 0x0):
+                parts.append(payload)
+                if sum(len(p) for p in parts) > MAX_FRAME:
+                    return None, "message exceeds the %d byte cap" % MAX_FRAME
+                if fin:
+                    return b"".join(parts).decode("utf-8", "replace"), None
+            # binary and unknown opcodes are ignored
+    except (TimeoutError, socket.timeout):
+        return None, "no reply within %ds" % timeout
+    except (EOFError, ValueError, OSError) as exc:
+        return None, "%s: %s" % (type(exc).__name__, exc)
+
+
+def close_cleanly(s):
+    try:
+        send_frame(s, 0x8, struct.pack(">H", 1000))
+    except OSError:
+        pass
+    s.close()
 
 
 def main():
@@ -120,21 +172,43 @@ def main():
             }
         ),
     )
-    opcode, body = read_frame(s)
-    print("--- initialize reply (opcode %s) ---" % opcode)
-    text = body.decode("utf-8", "replace")
-    print(text[:1500])
+    text, problem = read_message(s, Reader(s, rest))
+    if problem:
+        print("no initialize reply: %s" % problem)
+        close_cleanly(s)
+        return 3
     try:
         reply = json.loads(text)
-    except Exception:
+    except (ValueError, RecursionError):
+        print("the initialize reply is not valid JSON (%d bytes)" % len(text))
+        close_cleanly(s)
         return 3
-    result = reply.get("result") or {}
-    methods = (result.get("capabilities") or {}).get("methods") or []
+    if not isinstance(reply, dict) or reply.get("id") != "lifecycle-1":
+        print("the reply is not the initialize response (wrong shape or id)")
+        close_cleanly(s)
+        return 3
+    error = reply.get("error")
+    if error is not None:
+        if isinstance(error, dict):
+            print("initialize failed: code %s, message %s" % (error.get("code"), str(error.get("message"))[:200]))
+        else:
+            print("initialize failed")
+        close_cleanly(s)
+        return 3
+    result = reply.get("result")
+    if not isinstance(result, dict):
+        print("the initialize reply has no result object")
+        close_cleanly(s)
+        return 3
+    print("--- initialize reply ---")
+    capabilities = result.get("capabilities")
+    methods = capabilities.get("methods") if isinstance(capabilities, dict) else None
+    methods = [m for m in methods if isinstance(m, str)] if isinstance(methods, list) else []
     print("--- the server's method catalogue (%d) ---" % len(methods))
     for name in methods:
-        print("   ", name)
+        print("   ", name[:200])
     send_text(s, json.dumps({"method": "initialized"}))
-    s.close()
+    close_cleanly(s)
     return 0
 
 
