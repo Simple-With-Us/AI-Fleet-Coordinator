@@ -228,11 +228,22 @@ export function fromSentry(payload) {
   // A resolution says so in the action; a metric alert says it in its status.
   // An unrecognized status stays firing, which is the safe direction: a
   // status-less delivery must never close a live incident.
-  const firing = action
-    ? !/^(resolved|closed|complete|completed|ok)$/.test(action)
-    : !/^(ok|resolved|recovered|closed)$/.test(level);
+  // Only the actions that mean "alert is live" fire.  Housekeeping actions
+  // (assigned, archived, ignored, ...) say nothing about the alert itself, so
+  // they fall back to the level or status signal instead of reopening a
+  // resolved incident.
+  const FIRING_ACTIONS = /^(created|triggered|reopened|unresolved|escalated|critical|warning)$/;
+  const CLOSING_ACTIONS = /^(resolved|closed|complete|completed|ok|archived|ignored)$/;
+  const closedByLevel = /^(ok|resolved|recovered|closed)$/.test(level);
+  const firing = FIRING_ACTIONS.test(action)
+    ? true
+    : CLOSING_ACTIONS.test(action)
+      ? false
+      : !closedByLevel;
 
-  const severity = SENTRY_SEVERITY[level] || (firing ? "SEVERE" : "INFO");
+  const severity =
+    (Object.hasOwn(SENTRY_SEVERITY, level) && SENTRY_SEVERITY[level]) ||
+    (firing ? "SEVERE" : "INFO");
 
   const project = issue?.project && typeof issue.project === "object" ? issue.project : {};
   const service = issue

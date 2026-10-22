@@ -8,9 +8,13 @@
 // Run: node --test workers/alert-ingress/src/*.test.js
 
 import test from "node:test";
+import { createHmac } from "node:crypto";
 import assert from "node:assert/strict";
 import { __testing } from "./index.js";
 import { fromSentry } from "./normalize.js";
+
+const sentrySig = (body, secret = "fixture") =>
+  createHmac("sha256", secret).update(body).digest("hex");
 
 const {
   handleEvent,
@@ -1121,7 +1125,9 @@ test("S1 a Sentry issue webhook is accepted and posts under the Sentry identity"
     const response = await handler.fetch(
       new Request("https://test/webhook/sentry", {
         method: "POST",
-        headers: { "sentry-hook-secret": "fixture" },
+        headers: {
+          "sentry-hook-signature": sentrySig(JSON.stringify(SENTRY_ISSUE_PAYLOAD)),
+        },
         body: JSON.stringify(SENTRY_ISSUE_PAYLOAD),
       }),
       env,
@@ -1153,7 +1159,9 @@ test("S1 a Sentry webhook without its own secret is refused", async () => {
     const response = await handler.fetch(
       new Request("https://test/webhook/sentry", {
         method: "POST",
-        headers: { "sentry-hook-secret": "wrong" },
+        headers: {
+          "sentry-hook-signature": sentrySig(JSON.stringify(SENTRY_ISSUE_PAYLOAD), "wrong"),
+        },
         body: JSON.stringify(SENTRY_ISSUE_PAYLOAD),
       }),
       env,
@@ -1331,5 +1339,80 @@ test("O1 a write that cannot be confirmed answers as a failure, not a refresh", 
     assert.equal(body.outcome, "unknown");
   } finally {
     zulip.restore();
+  }
+});
+
+test("S1 a vendor-controlled level cannot read the severity table's prototype", () => {
+  const event = fromSentry({
+    action: "created",
+    data: { issue: { shortId: "PROJ-9", level: "constructor", title: "t" } },
+  });
+  assert.equal(event.severity, "SEVERE");
+});
+
+test("S1 housekeeping actions do not reopen a resolved incident", () => {
+  for (const action of ["assigned", "archived", "ignored"]) {
+    const event = fromSentry({
+      action,
+      data: { issue: { shortId: "PROJ-9", level: "resolved", title: "t" } },
+    });
+    assert.equal(event.firing, false, action);
+  }
+  const live = fromSentry({
+    action: "created",
+    data: { issue: { shortId: "PROJ-9", level: "error", title: "t" } },
+  });
+  assert.equal(live.firing, true);
+});
+
+test("S1 an oversized or too-wide Sentry body is refused before it is parsed", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv);
+  const zulip = stubZulip();
+  try {
+    const body = JSON.stringify({ pad: "x".repeat(300 * 1024) });
+    const response = await handler.fetch(
+      new Request("https://test/webhook/sentry", {
+        method: "POST",
+        headers: { "sentry-hook-signature": sentrySig(body) },
+        body,
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 413);
+    assert.equal(zulip.calls.length, 0);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("F4 a reconciliation cannot adopt a message another source owns", async () => {
+  const kv = fakeKV();
+  seedSignal(kv, {
+    source: "datadog",
+    key: "datadog:1",
+    service: "Shared.Service",
+    state: pendingState(),
+  });
+  kv.store.set(statusOwnerKey(4242), JSON.stringify("betterstack"));
+  const storage = fakeStorage();
+  const env = envFor(kv, { WRITER_STORAGE: storage });
+  const working = stubZulip();
+  try {
+    const response = await handler.fetch(
+      new Request(
+        "https://test/status/datadog/alerts/Shared.Service?reconcile=4242",
+        { headers: { authorization: "Bearer fixture" } },
+      ),
+      env,
+      {},
+    );
+    assert.equal(response.status, 409);
+    assert.equal(working.patches().length, 0);
+    assert.equal(working.posts().length, 0);
+    assert.equal(kv.store.get(statusOwnerKey(4242)), JSON.stringify("betterstack"));
+  } finally {
+    working.restore();
   }
 });

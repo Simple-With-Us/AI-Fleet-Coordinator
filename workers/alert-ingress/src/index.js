@@ -324,11 +324,15 @@ async function verify(request, raw, env, source) {
   if (source === "sentry") {
     const secret = env.SENTRY_WEBHOOK_SECRET;
     if (!secret) return false;
-    // Sentry sends the shared webhook secret in the sentry-hook-secret
-    // header.  A Sentry route with no verifier of its own would fall
+    // Sentry's integration platform signs the request body with the app's
+    // client secret and sends the lowercase hex HMAC-SHA256 digest in the
+    // Sentry-Hook-Signature header (docs.sentry.io, integration platform
+    // webhooks).  A Sentry route with no verifier of its own would fall
     // through to the shared bearer token, which means any holder of that
     // token could inject a Sentry alert, so the source is refused instead.
-    return safeEqual(request.headers.get("sentry-hook-secret") || "", secret);
+    const sig = request.headers.get("sentry-hook-signature") || "";
+    if (!sig) return false;
+    return safeEqual(sig, await hmacHex(secret, raw));
   }
   return authorized(request, env);
 }
@@ -631,7 +635,10 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
   if (barrier?.outcome === "unknown" && !barrier.id) {
     throw deliveryError(source, "unknown", { code: null, retryAfter: null });
   }
+  // A message id the operator just adopted wins over an id left on an older
+  // outcome row, so a reconcile edits the adopted message, not a stale one.
   let statusId =
+    options.adoptId ||
     prior?.id ||
     Number(await env.ALERT_STATE.get(statusKey(source, channel, topic), "json")) ||
     null;
@@ -1096,6 +1103,7 @@ const handler = {
         // the Zulip channel; the worker adopts it, claims it for this source
         // and releases the barrier, so the topic resumes on its own.
         const reconcile = url.searchParams.get("reconcile");
+        let adoptId = null;
         if (reconcile !== null) {
           const id = Number(reconcile);
           if (!Number.isSafeInteger(id) || id <= 0) {
@@ -1104,11 +1112,21 @@ const handler = {
           if (!env.WRITER_STORAGE) {
             return json({ error: "durable writer required" }, 503);
           }
+          // A message another source pinned is never adopted: that would let
+          // this source edit, or duplicate, another vendor's standing message.
+          const pinned = await env.ALERT_STATE.get(statusOwnerKey(id), "json");
+          if (pinned && pinned !== source) {
+            return json(
+              { error: "message owned by another source", source, id },
+              409,
+            );
+          }
           await env.ALERT_STATE.put(
             statusKey(source, DEFAULT_CHANNEL, topic),
             JSON.stringify(id),
           );
           await env.ALERT_STATE.put(statusOwnerKey(id), JSON.stringify(source));
+          adoptId = id;
           await env.WRITER_STORAGE.put(
             deliveryBarrierKey(source, DEFAULT_CHANNEL, topic),
             { outcome: "ok", id, reconciled: true },
@@ -1120,6 +1138,7 @@ const handler = {
             source,
             DEFAULT_CHANNEL,
             topic,
+            { adoptId },
           );
           return json({ source, channel: DEFAULT_CHANNEL, topic, content });
         } catch (error) {
@@ -1226,6 +1245,10 @@ const handler = {
 
     const source = hookMatch[1].toLowerCase();
     const raw = await request.text();
+    // Bound the work a Sentry body can cause before it is verified or parsed.
+    if (source === "sentry" && raw.length > MAX_SENTRY_BODY_CHARS) {
+      return json({ error: "payload too large" }, 413);
+    }
     if (!(await verify(request, raw, env, source))) {
       return json({ error: "bad signature" }, 401);
     }
@@ -1432,6 +1455,9 @@ function validatePayload(payload, depth = 0) {
  * characters are refused.  The parser reads only text, so a nested blob can
  * never become a topic name, a label or a link.
  */
+const MAX_SENTRY_BODY_CHARS = 256 * 1024;
+const MAX_SENTRY_NODES = 2000;
+
 function validateSentryPayload(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("invalid payload");
@@ -1457,7 +1483,9 @@ function validateSentryPayload(payload) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new Error("invalid payload");
   }
+  let nodes = 0;
   const walk = (value, depth) => {
+    if (++nodes > MAX_SENTRY_NODES) throw new Error("payload too large");
     if (depth > MAX_PAYLOAD_DEPTH) throw new Error("payload nested too deep");
     if (value === null || value === undefined) return;
     if (typeof value === "string") {
