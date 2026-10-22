@@ -93,6 +93,12 @@ jobs:
     - name: pr-sweep tests
       run: |
         cd scripts && python3 -m unittest discover -s pr_sweep/tests -t . -v
+    # git-relay / GR-MCP:  seat-policy allowlists, constant-time auth, the one-bearer-one-bot
+    # identity rule, fsynced audit rows (bodies hashed, never logged), the bounded GitHub
+    # client and the HTTP surface.  Fakes only;  no network.
+    - name: git-relay tests
+      run: |
+        python3 -m unittest discover -s git-relay/git_relay/tests -t git-relay -v
     - name: Code-only Coolify fleet CLI sync tests
       run: |
         python3 scripts/test_fleet_cli_release.py
@@ -315,8 +321,12 @@ jobs:
       run: node --test scripts/safari-start/worker.test.mjs
     # Shared alert ingress: state transitions, vendor normalization, and the
     # Zulip status rendering.  Pure functions, so no Workers runtime needed.
+    # The test files are named explicitly: on Node 24 the directory form
+    # (`node --test workers/alert-ingress/src/`) resolves src/index.js as a
+    # single module and reports one passing test without running any test
+    # file, which left this gate vacuous.
     - name: Alert ingress unit tests
-      run: node --test workers/alert-ingress/src/
+      run: node --test workers/alert-ingress/src/*.test.js
     # Hosted agent-sync MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
     - name: agent-sync MCP Worker unit tests

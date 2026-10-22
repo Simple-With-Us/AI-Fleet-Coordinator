@@ -31,14 +31,18 @@ import urllib.parse
 import urllib.request
 
 ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision D1)
-ZONE_NAME = "jays.services"
-HOST = "agent-sync.jays.services"
+# Hard cutover (owner ruling Oct 22, 2026):  the served host moved from
+# agent-sync.jays.services to agents.simplewithus.com, which lives in the
+# simplewithus.com zone (same Cloudflare account as jays.services).  There is
+# no fallback host and no alias:  this script provisions the one true host.
+ZONE_NAME = "simplewithus.com"
+HOST = "agents.simplewithus.com"
 ISSUER = f"https://{HOST}"
 RESOURCE = f"{ISSUER}/mcp"
 TEAM_DOMAIN = "silent-frost-37e0.cloudflareaccess.com"
 TUNNEL_NAME = "Jay's Tunnel"
 MIRROR_APP_UUID = "1e1a5fc4-0f7d-44ac-bb0d-5fa6d5d73ddf"  # agents.jays.services
-ACCESS_APP_NAME = "agent-sync.jays.services consent and admin"
+ACCESS_APP_NAME = "agents.simplewithus.com consent and admin"
 ACCESS_PATHS = [f"{HOST}/authorize", f"{HOST}/admin"]
 # Spec 3.3:  mail@jays.services only.  The identity provider is One-time PIN, so every
 # address on this list is an admin credential for the server;  keep it to one.

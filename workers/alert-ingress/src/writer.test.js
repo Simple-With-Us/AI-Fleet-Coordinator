@@ -26,7 +26,16 @@ const legacy = {
     return { keys: [], list_complete: true };
   },
 };
-const env = { ALERT_STATE: legacy, INGRESS_SHARED_TOKEN: "fixture" };
+// The generic source owns the legacy un-suffixed pair; every vendor source
+// owns a pair of its own.
+const env = {
+  ALERT_STATE: legacy,
+  INGRESS_SHARED_TOKEN: "fixture",
+  ZULIP_BOT_EMAIL: "generic-bot@example.invalid",
+  ZULIP_BOT_API_KEY: "generic-key",
+  ZULIP_BOT_EMAIL_BETTERSTACK: "betterstack-bot@example.invalid",
+  ZULIP_BOT_API_KEY_BETTERSTACK: "betterstack-key",
+};
 test("authenticated Better Stack default incident ingests and resolves", async () => {
   const saved = globalThis.fetch;
   globalThis.fetch = async () => ({ ok: true, json: async () => ({ result: "success", id: 8 }) });
@@ -157,7 +166,7 @@ test("lost reply remains unknown after restart without replay", async () => {
   let sends = 0;
   globalThis.fetch = async () => {
     sends++;
-    assert.equal(db.data.get('delivery:["alerts","svc"]').outcome, "unknown");
+    assert.equal(db.data.get('delivery:["generic","alerts","svc"]').outcome, "unknown");
     throw new Error("private response");
   };
   try {
@@ -259,8 +268,8 @@ test("durable overlay preserves historical KV and reads its own writes", async (
       },
     };
   const writer = new AlertWriter({ storage: db }, { ALERT_STATE: historical });
-  db.data.set("kv:topic:alerts:svc", "1");
-  db.data.set("kv:idx:alerts:svc:historic", "1");
+  db.data.set("kv:topic:generic:alerts:svc", "1");
+  db.data.set("kv:idx:generic:alerts:svc:historic", "1");
   const response = await writer.fetch(new Request("https://test/status"));
   assert.equal(response.status, 200);
   assert.equal((await response.json()).summary.alerts, 1);
@@ -286,7 +295,11 @@ test("definite pre-send inventory failure cannot advance event state", async () 
     __testing.handleEvent(
       "custom",
       { id: "one", service: "svc", status: "recovered" },
-      { ALERT_STATE: kv },
+      {
+        ALERT_STATE: kv,
+        ZULIP_BOT_EMAIL_CUSTOM: "custom-bot@example.invalid",
+        ZULIP_BOT_API_KEY_CUSTOM: "custom-key",
+      },
     ),
   );
   assert.equal(writes, 0);

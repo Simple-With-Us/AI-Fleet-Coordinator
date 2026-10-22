@@ -1,6 +1,6 @@
 # Deploy the agent-sync MCP Worker
 
-The runbook for `https://agent-sync.jays.services` from Phase 2 on:  the seven tools, with GROK-WEB and JET both served (JET enabled Fri, Oct 9, after Jay demoted `openai-dot-bot` to member;  deployed with its key installed at about 8:10am, version `068c2953`).  [DEPLOY-PHASE0.md](DEPLOY-PHASE0.md) is the record of the first deploy and the hostname move.
+The runbook for `https://agents.simplewithus.com` from Phase 2 on:  the seven tools, with GROK-WEB and JET both served (JET enabled Fri, Oct 9, after Jay demoted `openai-dot-bot` to member;  deployed with its key installed at about 8:10am, version `068c2953`).  [DEPLOY-PHASE0.md](DEPLOY-PHASE0.md) is the record of the first deploy and the hostname move.
 
 A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every deploy is run by hand from a checkout of the merged commit, never from CI.  Decision D8 (Thu, Oct 8) accepts deploying with the Cloudflare Global key pair from the handoff file until Jay mints a per-Worker deploy token (owner item A5).  Anyone who can deploy this Worker can act as every hosted seat;  that is the accepted residual.
 
@@ -127,7 +127,7 @@ The Worker answers `POST /internal/wake/<SEAT>` from the server listener and fan
 fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
 ```
 
-The listener half is Jay's step (ARMING-JAY.md, "Wake Jet", step 1):  two Coolify variables (`JET_ROUTINE_URL=https://agent-sync.jays.services/internal/wake/JET`, and `JET_ROUTINE_KEY` set to the same key), a scoped edit of the **live** `/data/listener.toml` (the volume keeps the copy seeded on first start, so the repo sample's new JET section never reaches it), and a restart.  Rotating the key means rerunning both.  Check:  `POST /internal/wake/JET` with no signature answers 401 (not 404, which would mean the secret is missing), and `infra_phase0.py check` probes it.  `EVENT_CALLBACK_HOSTS` in `wrangler.jsonc` lists the hosts ChatGPT may give as a callback.  A refused one shows on `/admin` as `callback_host_not_allowed`, and adding it is a var change and a deploy.
+The listener half is Jay's step (ARMING-JAY.md, "Wake Jet", step 1):  two Coolify variables (`JET_ROUTINE_URL=https://agents.simplewithus.com/internal/wake/JET`, and `JET_ROUTINE_KEY` set to the same key), a scoped edit of the **live** `/data/listener.toml` (the volume keeps the copy seeded on first start, so the repo sample's new JET section never reaches it), and a restart.  Rotating the key means rerunning both.  Check:  `POST /internal/wake/JET` with no signature answers 401 (not 404, which would mean the secret is missing), and `infra_phase0.py check` probes it.  `EVENT_CALLBACK_HOSTS` in `wrangler.jsonc` lists the hosts ChatGPT may give as a callback.  A refused one shows on `/admin` as `callback_host_not_allowed`, and adding it is a var change and a deploy.
 
 **Deploy order for the wake fixes (Sat, Oct 10).**  The Worker now delivers inside the listener's request and answers 503 when no delivery got through, so the listener's own retry is the retry path.  It also delivers a channel wake only when the body's `stream_id` is a channel the seat may use (spec 3.12, items 8, 11 and 12;  then the `CHANNELS` allowlist, since Sat, Oct 10, 2026 any public channel the bot is subscribed to, section "Any public channel" below).  Deploy the server listener first:  it starts sending `stream_id`, which the deployed Worker ignores.  Then deploy this Worker (step 1).  The other order fails safe:  until the listener sends `stream_id`, the Worker answers every channel wake 202 `channel_refused` and wakes nobody.  Nothing is activated yet, so either order wakes nobody today.  There are no secret, var, binding or migration changes.  Check after the Worker deploy:  `POST /internal/wake/JET` with no signature still answers 401.  JET's routine `timeout_seconds` must stay at 15 or more, or the listener abandons requests that are still delivering.
 
@@ -184,6 +184,56 @@ The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes
 
 `notes_create`, `notes_update`, `notes_pin`, `notes_unpin` and `notes_status` (`src/notes.js`) relay Apple Notes requests to `#notes-relay`;  the Mac listener does the work (`docs/protocols/per-call-identity.md`, section 5).  Before the first call: the owner creates the public channel `#notes-relay`, every bot that relays is subscribed to it (the channel rule needs that), and the Mac's `listener.toml` has `[notes_relay] enabled = true`.  No secret or var changes.  The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/agent-sync-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/agent_sync/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools.  `notes_status` counts a check mark, a cross mark or a refusal reply only from the relay consumer's bot, named by the fleet knob `NOTES_RELAY_CONSUMER`.  It is a tunable, so it lives in Infisical (not in `wrangler.jsonc`):  **the owner creates the key `NOTES_RELAY_CONSUMER` with the value `CLAUDE` in the AI Fleet Coordinator project, `prod`, root path `/`** (INFISICAL.md, "Fleet knobs").  The Mac reads it through `fleet_knobs` (default `CLAUDE` when Infisical is unreachable with no last-known-good copy, logged as `default CLAUDE (unreachable:...)`);  the Worker gets it as a binding of the same name.  Copy it at deploy, after the key exists:  `python3 -I sync_notes_consumer.py` checks (prints the seat name, writes nothing to Infisical), `python3 -I sync_notes_consumer.py --apply` runs `wrangler secret put NOTES_RELAY_CONSUMER` with the value on stdin.  Rerun it whenever the key changes.  **Rotating the consumer:**  only the current consumer's marks and replies are trusted, on purpose, so a former consumer cannot forge a result.  Rotate it only with an empty spool (no request queued or half-run), and expect the status of any request sent before the rotation to read `queued` afterwards.  Until it has run, `notes_status` answers `not_configured` and trusts no reaction.  One more binding counts against the Worker's limit (see the FleetLink note below).  **Live since Sun, Oct 18, 2026:**  the knob is `CLAUDE` in Infisical, the Worker binding is installed, `#notes-relay` exists with every fleet agent bot subscribed (38, created by the realm-admin bot), and the Mac listener's `[notes_relay]` is on (`notes-relay-started`, consumer from Infisical).  Create, pin and unpin through the relay were verified end to end that afternoon.
 
+## AFC-477 second-event spike (temporary)
+
+Jay approved a spike with Jet first (Thu, Oct 22, about 6:40am):  can Jet's ChatGPT conversation hold a second MCP Events subscription, `fleet.spike.ping`, and be woken by it, while `zulip.mention` keeps working?  No WhatsApp code, credential or poller.  Spec section 3.12, item 16.  Two Worker secrets, both set with Step 1's environment, and no var, binding-class or migration change:
+
+- `SPIKE_HMAC_KEY`:  the key that signs `POST /internal/spike/<SEAT>`.  Its own value, never `JET_ROUTINE_KEY` or any `WAKE_HMAC_KEY_<SEAT>`;  the Worker answers 404 when the two are equal.
+- `SPIKE_EXTRA_EVENTS`:  `on` offers the spike event and opens the route.  It is a secret binding rather than a `wrangler.jsonc` var on purpose, so another agent's deploy from `main` does not turn it off while the spike runs.
+
+**Turn it on.**  Deploy the merged code (Step 1) first, then make the key in a 0600 file that is never printed, and set both secrets from standard input:
+
+```bash
+umask 077
+KEYFILE="$SCRATCH/spike_hmac_key"            # a 0600 file in your session scratchpad, never the repo
+openssl rand -hex 32 | tr -d '\n' > "$KEYFILE"
+# Infisical first if a writer allows it.  fleet-secrets set takes CACHE_* names under /linear only and refuses
+# this one before reading anything;  then the key lives only in $KEYFILE for the spike and is deleted after.
+WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPIKE_HMAC_KEY < "$KEYFILE" >/dev/null && echo "set SPIKE_HMAC_KEY"
+printf on | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPIKE_EXTRA_EVENTS >/dev/null && echo "set SPIKE_EXTRA_EVENTS"
+```
+
+`wrangler secret put` deploys a new version at once.  Check:  `/health` answers `{"ok":true}`, an unsigned `POST /internal/spike/JET` answers 401 (404 means the flag, the key or JET's wake key is missing, or the two keys are equal), an unsigned `POST /internal/wake/JET` still answers 401, and a connected JET chat's `events/list` shows `zulip.mention` then `fleet.spike.ping`.  `server/discover` does not change (`events: {}`).
+
+**Fire one ping.**  Only after Jet says it subscribed.  The body is exactly four fields, and the signature is the lowercase hex HMAC-SHA256 of the raw bytes:
+
+```bash
+SPIKE_HMAC_KEY="$(cat "$KEYFILE")" python3 -I - <<'PY'
+import hmac, hashlib, json, os, time, urllib.request, uuid
+body = json.dumps({"contract": "agent-sync-spike/1", "seat": "JET", "spike_id": str(uuid.uuid4()), "sent_at": int(time.time())}).encode()
+sig = hmac.new(os.environ["SPIKE_HMAC_KEY"].encode(), body, hashlib.sha256).hexdigest()
+req = urllib.request.Request("https://agents.simplewithus.com/internal/spike/JET", data=body, method="POST",
+                             headers={"Content-Type": "application/json", "X-Agent-Sync-Spike-Signature": sig})
+try:
+    with urllib.request.urlopen(req, timeout=20) as r: print(r.status, r.read().decode())
+except urllib.error.HTTPError as e: print(e.code, e.read().decode())
+PY
+```
+
+The answer holds counts only:  202 `{"ok": true, "subscribers": 1, "delivered": 1, "outcome": "delivered"}` means ChatGPT's callback took it, not that Jet's conversation ran a turn (only Jet can say that).  `no_subscriber` means Jet has no live spike subscription.  At most 3 pings an hour per seat (429 after that), and a repeated `spike_id` is a 200 duplicate that sends nothing.
+
+**Turn it off** when Jay says so, fastest first (same environment as Step 1;  confirm each delete when wrangler asks):
+
+```bash
+WRANGLER_SEND_METRICS=false npx --no-install wrangler secret delete SPIKE_EXTRA_EVENTS   # route 404, event no longer offered
+WRANGLER_SEND_METRICS=false npx --no-install wrangler secret delete SPIKE_HMAC_KEY
+rm -f "$KEYFILE"
+```
+
+Either delete alone closes the route.  A spike subscription left behind is never sent anything (the wake reaches `zulip.mention` only) and lapses by itself within its TTL (24 hours by default);  Jet can also unsubscribe it, which works with the flag off.  Removing the code is a later PR.
+
+**Status.**  Not deployed yet.
+
 ## Rotate a key
 
 Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULIP_<SEAT>_API_KEY` in Infisical `prod` `/zulip`, and anyone with deploy rights reruns `install_seat_key.py <SEAT> --apply`.  The Worker re-reads the secret on the next request;  the role cache is unaffected.
@@ -197,6 +247,7 @@ Jay regenerates the bot's key in Zulip (the old one dies at once), updates `ZULI
 | Take a seat's key away | `python3 -I install_seat_key.py <SEAT> --delete --apply` (tools then answer `not_authorized`) |
 | Kill the key itself | Jay regenerates it in Zulip |
 | Stop the whole endpoint | `"MCP_DISABLED": "1"` in `wrangler.jsonc`, then step 1:  `/mcp` answers 503 |
+| Stop the AFC-477 spike | `wrangler secret delete SPIKE_EXTRA_EVENTS` with the step 1 environment:  `/internal/spike/<SEAT>` answers 404 and `fleet.spike.ping` is no longer offered |
 | Undo a bad deploy | `npx --no-install wrangler rollback` with the step 1 environment |
 | Remove it | `npx --no-install wrangler delete` with the step 1 environment.  Never restore the old tunnel CNAME or rule |
 
@@ -313,11 +364,11 @@ Verify production CURSOR audit outcomes for both reads and writes after deployme
 
 ## Per-Call Identity (AFC-322, AFC-331)
 
-Every grant offers per-call `identity` selection (`docs/protocols/per-call-identity.md`).  A CURSOR or GROK-WEB grant may act as CURSOR, GROK-WEB and the eleven enabled Grok Bot personas;  every other grant only as its own seat.  `identities` (formerly `agent_sync_identities`) reports the set with Zulip and Linear configured or missing states.  The personas are the `enabled` list in `scripts/agent_sync/mcp/gb-identities.json`:  `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `GB-ENGINEER` is disabled and `BF-*` identities belong to BotFleet, so neither appears.  Writes must name their identity;  a client that omits it gets `identity_required`, so the Cursor and Grok connector instructions must say to pass it.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
+Every grant offers per-call `identity` selection (`docs/protocols/per-call-identity.md`).  A CURSOR or GROK-WEB grant may act as CURSOR, GROK-WEB and the twelve enabled Grok Bot personas;  every other grant only as its own seat.  `identities` (formerly `agent_sync_identities`) reports the set with Zulip and Linear configured or missing states.  The personas are the `enabled` list in `scripts/agent_sync/mcp/gb-identities.json`:  `GB-DIRECTOR`, `GB-FIXER`, `GB-DESIGNER`, `GB-COMPILER`, `GB-HOUSEKEEPER`, `GB-PUBLISHER`, `GB-DEPLOYER`, `GB-MONITOR`, `GB-PLUMBER`, `GB-ORACLE` and `GB-TRADER`.  `BF-*` identities belong to BotFleet, so they do not appear.  Writes must name their identity;  a client that omits it gets `identity_required`, so the Cursor and Grok connector instructions must say to pass it.  No OAuth client, callback, token, grant, scope or `HOSTED_SEATS` entry is added for a GB identity.
 
-The source remains the 22 `ZULIP_GB_<ROLE>_EMAIL` and `ZULIP_GB_<ROLE>_API_KEY` values in the **AI Fleet Coordinator** Infisical project, `prod` `/zulip`, plus the 22 `LINEAR_GB_<ROLE>_CLIENT_ID` and `LINEAR_GB_<ROLE>_CLIENT_SECRET` values in that project's `prod` `/linear`.  The earlier separate **Fleet Linear Seats** project guidance does not apply to these GB pairs.  Each role's email must equal `<role>-grok-bot@simplewithus.zulipchat.com`;  its Zulip key must authenticate that member bot (role 400), and its Linear viewer must name the selected `GB-ROLE` app.
+The source remains the 24 `ZULIP_GB_<ROLE>_EMAIL` and `ZULIP_GB_<ROLE>_API_KEY` values in the **AI Fleet Coordinator** Infisical project, `prod` `/zulip`, plus the 24 `LINEAR_GB_<ROLE>_CLIENT_ID` and `LINEAR_GB_<ROLE>_CLIENT_SECRET` values in that project's `prod` `/linear`.  The earlier separate **Fleet Linear Seats** project guidance does not apply to these GB pairs.  Each role's email must equal `<role>-grok-bot@simplewithus.zulipchat.com`;  its Zulip key must authenticate that member bot (role 400), and its Linear viewer must name the selected `GB-ROLE` app.
 
-Install **one** encrypted Worker secret named `GB_IDENTITY_CREDENTIALS`.  Its JSON object has `v: 1` and an `r` object keyed by exactly the eleven roles above;  each role value is the four-string array `[email, zulipKey, linearClientId, linearClientSecret]`.  The UTF-8 payload is capped at 5 KiB.  Build it only in memory from the 44 verified Infisical source values and pass it to `wrangler secret put GB_IDENTITY_CREDENTIALS` on stdin;  never print or save the payload.  The Worker parses the bundle once per authenticated CURSOR or GROK-WEB request, so the one existing `GB_IDENTITY_CREDENTIALS` secret serves both grants;  nothing new is installed for GROK-WEB.  A present malformed or incomplete bundle fails closed;  legacy per-role bindings are considered only when the bundle binding is absent, and then only complete four-field rows are used.  Do not mix credentials between sources or roles.  This single binding stays below the Free plan's 64 binding limit where 44 separate bindings could not fit.
+Install **one** encrypted Worker secret named `GB_IDENTITY_CREDENTIALS`.  Its JSON object has `v: 1` and an `r` object keyed by exactly the twelve roles above (ENGINEER joined on 2026-10-22:  the Worker refuses a bundle whose role count differs from the enabled list, so the next manual deploy must install a twelve-role bundle first);  each role value is the four-string array `[email, zulipKey, linearClientId, linearClientSecret]`.  The UTF-8 payload is capped at 5 KiB.  Build it only in memory from the 48 verified Infisical source values and pass it to `wrangler secret put GB_IDENTITY_CREDENTIALS` on stdin;  never print or save the payload.  The Worker parses the bundle once per authenticated CURSOR or GROK-WEB request, so the one existing `GB_IDENTITY_CREDENTIALS` secret serves both grants;  nothing new is installed for GROK-WEB.  A present malformed or incomplete bundle fails closed;  legacy per-role bindings are considered only when the bundle binding is absent, and then only complete four-field rows are used.  Do not mix credentials between sources or roles.  This single binding stays below the Free plan's 64 binding limit where 44 separate bindings could not fit.
 
 `identities` exposes configured or missing status, never values.  The shared `LINEAR_TOOLS_WRITES` switch still controls writes.  All selected tool calls charge the grant's own budget and the identity's own gate.  A GROK-WEB grant acting as CURSOR uses `ZULIP_KEY_CURSOR` and CURSOR's Linear pair, and CURSOR acting as GROK-WEB uses `ZULIP_KEY_GROK_WEB` and GROK-WEB's Linear pair, so both seats must stay in `HOSTED_SEATS` with their keys installed for the peer path to work (it answers `not_configured` otherwise).  The deployment and production acceptance check are separate from this code change.
 
