@@ -439,3 +439,25 @@ test("real severity cycles advance delivery revision but ordinary refreshes do n
     3,
   );
 });
+test("the webhook path and the cron sweep reach the same writer object", async () => {
+  // The delivery barrier lives in the writer object's storage, so the two
+  // entry points must resolve to one object.  Two names would be two writers,
+  // each blind to the other's barrier.
+  const names = [];
+  const env = {
+    INGRESS_SHARED_TOKEN: "fixture",
+    ALERT_WRITER: {
+      idFromName: (name) => {
+        names.push(name);
+        return { name };
+      },
+      get: () => ({ fetch: async () => new Response("{}") }),
+    },
+  };
+  await worker.fetch(new Request("https://test/status/alerts/x"), env);
+  const pending = [];
+  await worker.scheduled({}, env, { waitUntil: (p) => pending.push(p) });
+  await Promise.all(pending);
+  assert.equal(names.length, 2);
+  assert.equal(names[0], names[1]);
+});

@@ -170,7 +170,7 @@ Owner, Thu, Oct 15:  "I'd like Agent-Sync and whatever local agents use to be ab
 
 ## Listener read API (AFC-330)
 
-The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes` and `listener_held_back` tools (spec section 1.7) read the server listener's signed read API with the seat's `WAKE_HMAC_KEY_<SEAT>`.  Until both halves are set up they answer `not_configured` and nothing else changes.
+The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes` and `eavesdropper_held_back` tools (spec section 1.7) read the server listener's signed read API with the seat's `WAKE_HMAC_KEY_<SEAT>`.  Until both halves are set up they answer `not_configured` and nothing else changes.
 
 1. The listener half first:  `docs/protocols/agent-sync-server.md`, "The Read API", steps 1 to 5 (redeploy, keys, `[listener_api]`, the proxy route, the checks).
 2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://listener.jays.services"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
@@ -178,7 +178,7 @@ The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes
    ```bash
    fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
    ```
-4. Deploy (step 1).  From a connected JET chat, `listener_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
+4. Deploy (step 1).  From a connected JET chat, `eavesdropper_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
 
 ## Notes, recall and the guide (AFC-331)
 
@@ -205,7 +205,7 @@ printf on | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPI
 
 `wrangler secret put` deploys a new version at once.  Check:  `/health` answers `{"ok":true}`, an unsigned `POST /internal/spike/JET` answers 401 (404 means the flag, the key or JET's wake key is missing, or `SPIKE_HMAC_KEY` equals any seat's wake key, not only JET's), an unsigned `POST /internal/wake/JET` still answers 401, and a connected JET chat's `events/list` shows `zulip.mention` then `fleet.spike.ping`.  `server/discover` does not change (`events: {}`).
 
-**Fire one ping.**  Only after Jet says it subscribed.  The body is exactly four fields, and the signature is the lowercase hex HMAC-SHA256 of the raw bytes.  The key comes from an inherited `SPIKE_HMAC_KEY` first, else from `$KEYFILE` (the only other place it lives, because no Infisical writer takes it), and is never printed, not even in part.  The script exits non-zero on anything but a 2xx:
+**Fire one ping.**  Only after Jet says it subscribed.  The body is exactly four fields, and the signature is the lowercase hex HMAC-SHA256 of the raw bytes.  The key comes from an inherited `SPIKE_HMAC_KEY` first, else from `$KEYFILE` (the only other place it lives, because no Infisical writer takes it), and is never printed, not even in part.  The request sets its own `User-Agent`, because the edge blocks Python's default one with error 1010 before the Worker sees it.  The script exits non-zero on anything but a 2xx:
 
 ```bash
 SPIKE_HMAC_KEY="${SPIKE_HMAC_KEY:-$(cat "$KEYFILE")}" python3 -I - <<'PY'
@@ -216,7 +216,8 @@ spike_id = str(uuid.uuid4())
 body = json.dumps({"contract": "agent-sync-spike/1", "seat": "JET", "spike_id": spike_id, "sent_at": int(time.time())}).encode()
 sig = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
 req = urllib.request.Request("https://agents.simplewithus.com/internal/spike/JET", data=body, method="POST",
-                             headers={"Content-Type": "application/json", "X-Agent-Sync-Spike-Signature": sig})
+                             headers={"Content-Type": "application/json", "X-Agent-Sync-Spike-Signature": sig,
+                                      "User-Agent": "agent-sync-spike/1"})  # Cloudflare answers 1010 to Python's default UA
 try:
     with urllib.request.urlopen(req, timeout=25) as r: print(spike_id, r.status, r.read().decode()[:300])
 except urllib.error.HTTPError as e:
@@ -406,17 +407,17 @@ Check with `fleetlink_whoami` from any seat:  `user.id` is `usr_agent_<seat>` an
 
 ## Linear token health (AFC-478 follow-up, deploy step)
 
-`POST /internal/health/linear` answers each seat's Linear token state (age, days to the day-28 re-mint, expiry, mint count, last mint ok and failure kind, and `state` ok, warn or fail) for the six Linear seats and the twelve Grok Bot personas. It holds no token, client id, secret or upstream message text. It is signed with its own `HEALTH_HMAC_KEY` (at least 32 characters, never a seat's wake key; equal to one means 404) and is outside Access like the wake. Without the secret the route is a 404.
+`POST /internal/health/linear` answers each seat's Linear token state (age, days to the day-28 re-mint, expiry, mint count, last mint ok and failure kind, and `state` ok, warn or fail) for the six Linear seats and the twelve Grok Bot personas.  It holds no token, client id, secret or upstream message text.  It is signed with its own `HEALTH_HMAC_KEY` (at least 32 characters, never a seat's wake key; equal to one means 404) and is outside Access like the wake.  Without the secret the route is a 404.
 
-Deploy step (by hand, after the merge, with Jay's go): `openssl rand -hex 32 | wrangler secret put HEALTH_HMAC_KEY`, store the same value in Fleet-OPS as `HEALTH_HMAC_KEY`, then deploy. Muster reads the file written by `scripts/fleet-worker-health.py` (`--dry-run` first), run on the Mac by a launchd job like `com.jay.fleet-tools-doctor`, to `~/.local/state/fleet-tools/worker-health.json` (0600, atomic, `schemaVersion` 1, unknown when older than 45 minutes). No timer is installed by this change.
+Deploy step (by hand, after the merge, with Jay's go): `openssl rand -hex 32 | wrangler secret put HEALTH_HMAC_KEY`, store the same value in Fleet-OPS as `HEALTH_HMAC_KEY`, then deploy.  Muster reads the file written by `scripts/fleet-worker-health.py` (`--dry-run` first), run on the Mac by a launchd job like `com.jay.fleet-tools-doctor`, to `~/.local/state/fleet-tools/worker-health.json` (0600, atomic, `schemaVersion` 1, unknown when older than 45 minutes).  No timer is installed by this change.
 
 ## Per-bot MCP bearers for the Grok Bot personas
 
-Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers"), which sits behind the Cloudflare Access gate. No new secret and no new machine identity is needed.
+Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers"), which sits behind the Cloudflare Access gate.  No new secret and no new machine identity is needed.
 
-- The token looks like `gbb_<role>_<43 characters>`. It is shown once, on the response to the mint button (no-store). The Worker keeps only its SHA-256 hash in the persona's Durable Object. It is not in Infisical, KV, logs or audit rows.
-- A bearer works on `/mcp` only, and only as its own persona. Any other `identity` is refused. It cannot create identities and cannot reach ECHO, JET or any hosted seat.
-- Rotate is mint again: the old token stops at once. Revoke is the Revoke button. Tokens expire after 90 days. A paused persona is refused.
+- The token looks like `gbb_<role>_<43 characters>`.  It is shown once, on the response to the mint button (no-store).  The Worker keeps only its SHA-256 hash in the persona's Durable Object.  It is not in Infisical, KV, logs or audit rows.
+- A bearer works on `/mcp` only, and only as its own persona.  Any other `identity` is refused.  It cannot create identities and cannot reach ECHO, JET or any hosted seat.
+- Rotate is mint again: the old token stops at once.  Revoke is the Revoke button.  Tokens expire after 90 days.  A paused persona is refused.
 - A persona with no credentials in the bindings cannot mint.
 - Leak paths to know: whoever holds an Access session for the admin email can mint; the page response is the only place the token appears.
-- Deploy is normal. Nothing to configure first.
+- Deploy is normal.  Nothing to configure first.

@@ -54,7 +54,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Where:
 |---|---|---|---|
 | (none) `whoami`, `identities`, `guide` | 3 | both | Identity and this guide (above) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
-| `listener_*` | 6 stdio, 5 hosted | both | This seat's listener records |
+| `eavesdropper_*` | 6 stdio, 5 hosted | both | This seat's listener records |
 | `notes_*` | 5 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
@@ -109,18 +109,18 @@ Same names and arguments on both servers.  Content that comes back from Zulip is
 | `zulip_draft_delete` | W | `simple-chat drafts delete` | Delete a draft. |
 | `zulip_typing` | W | `simple-chat typing` | Send a typing notification. |
 
-### listener
+### eavesdropper
 
 The local listener's records for the identity.  Stdio reads them from this host's listener state;  hosted reads them through the listener's signed read API.  Content is fenced as untrusted, like Zulip.
 
 | Tool | R/W | Where | Purpose |
 |---|---|---|---|
-| `listener_status` | R | both | Counts:  seat inbox, owner queue, wakes, held back, leases, nudges, pause |
-| `listener_inbox` | R | both | The seat inbox after the acknowledged cursor (`since_seq`);  never moves the cursor |
-| `listener_owner_queue` | R | both | Notes queued for the owner, after the surfaced mark (`all` for every one) |
-| `listener_wakes` | R | both | The wake ledger, filtered by `since_hours` and `state` |
-| `listener_held_back` | R | both | Wakes held back for the budget, with reason and link |
-| `listener_ack` | W | stdio only | Move the inbox cursor or surfaced mark forward, or clear one held-back entry |
+| `eavesdropper_status` | R | both | Counts:  seat inbox, owner queue, wakes, held back, leases, nudges, pause |
+| `eavesdropper_inbox` | R | both | The seat inbox after the acknowledged cursor (`since_seq`);  never moves the cursor |
+| `eavesdropper_owner_queue` | R | both | Notes queued for the owner, after the surfaced mark (`all` for every one) |
+| `eavesdropper_wakes` | R | both | The wake ledger, filtered by `since_hours` and `state` |
+| `eavesdropper_held_back` | R | both | Wakes held back for the budget, with reason and link |
+| `eavesdropper_ack` | W | stdio only | Move the inbox cursor or surfaced mark forward, or clear one held-back entry |
 
 ### notes
 
@@ -239,6 +239,12 @@ Removed names are not aliased.  Calling one returns `unknown_tool` with the repl
 | `draft_delete` | `zulip_draft_delete` |
 | `typing` | `zulip_typing` |
 | `agent_sync_identities` | `identities` |
+| `listener_status` | `eavesdropper_status` |
+| `listener_inbox` | `eavesdropper_inbox` |
+| `listener_owner_queue` | `eavesdropper_owner_queue` |
+| `listener_wakes` | `eavesdropper_wakes` |
+| `listener_held_back` | `eavesdropper_held_back` |
+| `listener_ack` | `eavesdropper_ack` |
 
 A name that was never served is a protocol error (`Unknown tool`), not a tool error.
 

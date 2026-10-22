@@ -45,9 +45,9 @@ class InstallTests(ListenerHarness):
             "daemon", "install", "--python", sys.executable, env=self.install_env()
         )
         self.assertEqual(result.code, 0, result.err)
-        plist_file = self.home / "Library" / "LaunchAgents" / "com.jay.agent-sync-listener.plist"
+        plist_file = self.home / "Library" / "LaunchAgents" / "com.jay.operator.plist"
         data = plistlib.loads(plist_file.read_bytes())
-        self.assertEqual(data["Label"], "com.jay.agent-sync-listener")
+        self.assertEqual(data["Label"], "com.jay.operator")
         self.assertEqual(
             data["ProgramArguments"],
             [sys.executable, str(self.home / ".local/bin/simple-chat"), "daemon", "run"],
@@ -101,10 +101,10 @@ class InstallTests(ListenerHarness):
         self.run_cli("daemon", "install", "--python", sys.executable, env=self.install_env())
         result = self.run_cli("daemon", "uninstall", env=self.install_env())
         self.assertIn(
-            "launchctl bootout gui/%d/com.jay.agent-sync-listener" % os.getuid(), result.out
+            "launchctl bootout gui/%d/com.jay.operator" % os.getuid(), result.out
         )
         self.assertFalse(
-            (self.home / "Library/LaunchAgents/com.jay.agent-sync-listener.plist").exists()
+            (self.home / "Library/LaunchAgents/com.jay.operator.plist").exists()
         )
         self.assertTrue((self.home / ".agent-sync" / "listener.toml").exists(), "state is kept")
 

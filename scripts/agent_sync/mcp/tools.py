@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import cli as CLI
+from .. import dm_policy as DMP
 from .. import identity as IDENT
 from .. import listener_records as LR
 from .. import live as LIVE
@@ -66,7 +67,7 @@ from . import recall_tools as RECALL
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS_PATH = os.path.join(HERE, "tools.json")
-LISTENER_TOOLS_PATH = os.path.join(HERE, "listener-tools.json")
+EAVESDROPPER_TOOLS_PATH = os.path.join(HERE, "eavesdropper-tools.json")
 NOTES_TOOLS_PATH = os.path.join(HERE, "notes-tools.json")
 RECALL_TOOLS_PATH = os.path.join(HERE, "recall-tools.json")
 FLEETLINK_TOOLS_PATH = os.path.join(HERE, "fleetlink-tools.json")
@@ -117,7 +118,7 @@ WRITE_TOOLS = (
             "zulip_draft_edit",
             "zulip_draft_delete",
             "zulip_typing",
-            "listener_ack",
+            "eavesdropper_ack",
             "notes_create",
             "notes_update",
             "notes_pin",
@@ -151,11 +152,11 @@ READ_TOOLS = (
             "zulip_custom_emoji",
             "zulip_scheduled_list",
             "zulip_drafts_list",
-            "listener_status",
-            "listener_inbox",
-            "listener_owner_queue",
-            "listener_wakes",
-            "listener_held_back",
+            "eavesdropper_status",
+            "eavesdropper_inbox",
+            "eavesdropper_owner_queue",
+            "eavesdropper_wakes",
+            "eavesdropper_held_back",
             "notes_status",
             "recall_search",
             "recall_stats",
@@ -166,7 +167,7 @@ READ_TOOLS = (
 )
 # Every MCP tool and the CLI command that does the same job (AFC-330:  "keeping the CLI, stdio and
 # hosted in step").  tools.json is the contract;  a test checks that every tool in it and in
-# listener-tools.json is here and that each command parses.  One tool may map to several commands.
+# eavesdropper-tools.json is here and that each command parses.  One tool may map to several commands.
 CLI_VERBS: dict[str, tuple[str, ...]] = {
     "whoami": ("whoami",),
     "identities": ("identities",),
@@ -212,12 +213,12 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
     "zulip_draft_edit": ("drafts edit",),
     "zulip_draft_delete": ("drafts delete",),
     "zulip_typing": ("typing",),
-    "listener_status": ("listener status",),
-    "listener_inbox": ("listener inbox",),
-    "listener_owner_queue": ("listener owner-queue",),
-    "listener_wakes": ("listener wakes",),
-    "listener_held_back": ("listener held-back",),
-    "listener_ack": ("listener ack", "listener surface", "listener clear-held"),
+    "eavesdropper_status": ("listener status",),
+    "eavesdropper_inbox": ("listener inbox",),
+    "eavesdropper_owner_queue": ("listener owner-queue",),
+    "eavesdropper_wakes": ("listener wakes",),
+    "eavesdropper_held_back": ("listener held-back",),
+    "eavesdropper_ack": ("listener ack", "listener surface", "listener clear-held"),
     "guide": ("guide",),
     "notes_create": ("create",),
     "notes_update": ("update",),
@@ -285,10 +286,10 @@ def load_tools() -> dict[str, Any]:
         return json.load(fh)
 
 
-def load_listener_tools() -> dict[str, Any]:
-    """listener-tools.json:  the listener_* tools (AFC-330 part B).  Not in tools.json, because the
+def load_eavesdropper_tools() -> dict[str, Any]:
+    """eavesdropper-tools.json:  the eavesdropper_* tools (AFC-330 part B).  Not in tools.json, because the
     hosted Worker serves only the read-only ones (it has no write path into the server listener)."""
-    with open(LISTENER_TOOLS_PATH, encoding="utf-8") as fh:
+    with open(EAVESDROPPER_TOOLS_PATH, encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -298,13 +299,13 @@ def _load(path: str) -> dict[str, Any]:
 
 
 def load_served_tools() -> dict[str, Any]:
-    """What stdio tools/list serves:  tools.json, then listener-tools.json, notes-tools.json (the notes_*
+    """What stdio tools/list serves:  tools.json, then eavesdropper-tools.json, notes-tools.json (the notes_*
     tools), recall-tools.json (the recall_* tools, generated from the hosted src/recall.js), the linear_*
     tools from the board catalogs (linear_tools.py) and fleetlink-tools.json (the fleetlink_* tools, generated
     from the hosted src/fleetlink.js).  The hosted Worker serves the same names."""
     return {
         "tools": load_tools()["tools"]
-        + load_listener_tools()["tools"]
+        + load_eavesdropper_tools()["tools"]
         + _load(NOTES_TOOLS_PATH)["tools"]
         + _load(RECALL_TOOLS_PATH)["tools"]
         + LINEAR.tool_specs()
@@ -1510,6 +1511,56 @@ class Tools:
             },
         )
 
+    def _dm_exists(self, ids: Sequence[int]) -> list[Mapping[str, Any]]:
+        """The messages already in this conversation, oldest included, so a seat can tell an
+        Operator-opened DM (which it may answer) from one it would be opening itself.
+
+        Only a *definitive* refusal of this narrow is an empty conversation, so the rule falls
+        through to its refusal.  Everything else propagates, because collapsing it into an empty
+        conversation reads as "no conversation exists" and the rule then answers a seat's
+        legitimate reply inside an Operator-opened conversation with a terminal `dm_not_allowed`
+        refusal that no retry can clear.  Two failures are separated for that reason:
+
+        - a **credential rejection** (401, 403) means this bot's key was refused, which says
+          nothing at all about the conversation.  It is re-raised so `map_exception` renders it as
+          `not_authorized` (401) or `zulip_error` (403) with the HTTP status and Zulip's code, never
+          as "no such DM".  The rendered error carries no part of the key, not even a masked
+          preview:  the status and code identify the refusal, and the seat's key is named by the
+          seat itself.
+        - a **rate limit** (429) is re-raised unchanged, so `map_exception` renders it as
+          `rate_limited` with the `retry_after_s` hint instead of a generic outage.
+        - a **transient** failure (408, a gateway or any other 5xx) becomes a `NetworkError`,
+          which the caller turns into a retryable `unavailable` rather than a terminal refusal."""
+        me = _int(self.me.get("user_id"))
+        everyone = ids or ([me] if me else [])
+        if not everyone:
+            return []
+        try:
+            # Anchored at the head of the conversation, like the hosted dmOpener:  the rule asks whether
+            # the OLDEST message came from Operator, so the window has to contain the opener.  A newest
+            # window cannot see the opener of a long-running Operator-opened DM and would refuse a seat's
+            # legitimate reply inside it.
+            return [
+                m
+                for m in self.agent.fetch(
+                    [{"operator": "dm", "operand": everyone}], anchor="oldest", num_after=200
+                )
+                if m.get("type") == "private"
+            ]
+        except Z.ApiError as exc:
+            status = exc.status
+            if exc.code == "RATE_LIMIT_HIT" or status == 429:
+                # A rate limit is a definitive answer from Zulip, not a transport failure:
+                # map_exception renders it as `rate_limited` with the retry_after_s hint.
+                raise
+            if status == 408 or (isinstance(status, int) and status >= 500):
+                raise Z.NetworkError(
+                    "Zulip answered HTTP %s for the direct message narrow" % status
+                ) from exc
+            if status in (401, 403):
+                raise
+            return []
+
     @staticmethod
     def _need_people(args: Mapping[str, Any]) -> None:
         if not args.get("user_ids") and not args.get("emails"):
@@ -1550,6 +1601,78 @@ class Tools:
             "dm_read", [("with", ",".join(str(i) for i in ids))], shown, next_since_id
         )
 
+    def _check_dm_rule(self, people: Sequence[Mapping[str, Any]], args: Mapping[str, Any]) -> None:
+        """The DM rule (owner decision, Oct 22 2026) for one direct-message target:  a seat may not
+        open a new direct message, and a reply inside a conversation Operator already opened is
+        allowed.
+
+        Every path that builds a `direct` target goes through here, so the rule cannot be stepped
+        around by delivering the same message later:  a scheduled or draft direct message is the same
+        act as sending it now.  A refusal is audited (ids and the reason only) before it is raised.
+
+        The rule's own switch is read first, because `check_new_dm` short-circuits on it:  with the
+        block off there is nothing to decide, and reading the conversation from Zulip first would
+        cost a network round-trip per direct-message write (and would turn an outage into a retryable
+        failure) for a result that is then thrown away."""
+        env = getattr(getattr(self.agent, "rt", None), "env", None) or os.environ
+        if not DMP.rule_enabled(env):
+            return
+        ids = [int(p["user_id"]) for p in people]
+        try:
+            existing = self._dm_exists(ids)
+        except Z.NetworkError as exc:
+            # The conversation could not be read.  Say so, retryable:  refusing the send as
+            # `dm_not_allowed` would be a terminal answer to a question we never got to ask, and it
+            # would be the wrong answer whenever Operator did open this conversation.  The seat that
+            # was authenticated and the identity it acted as ride along exactly as they do on the
+            # refusal below, so an admin reading a failed send knows which grant was used.
+            raise ToolError(
+                "unavailable",
+                "could not read this direct message conversation from Zulip, so the DM rule "
+                "cannot decide; retry once the connection is back",
+                retryable=True,
+                extra={
+                    "authenticated_seat": self.seat,
+                    "acting_identity": self.agent.tag,
+                },
+            ) from exc
+        try:
+            DMP.check_new_dm(
+                env,
+                identity=self.agent.tag,
+                recipients=people,
+                operator_opened=DMP.operator_opened_dm(
+                    people,
+                    existing,
+                    operator_user_id=DMP.operator_user_id(env),
+                    self_id=_int(self.me.get("user_id")),
+                ),
+                clarifying=bool(args.get("clarifying_question")),
+                owner_user_id=self.owner_user_id or None,
+            )
+        except DMP.DmRefused as refused:
+            DMP.audit_refusal(
+                env,
+                None,
+                transport=TRANSPORT,
+                identity=self.agent.tag,
+                authenticated_seat=self.seat,
+                recipients=people,
+                reason=refused.reason,
+                message=str(refused),
+            )
+            # The seat that was authenticated and the identity it acted as ride along, so an admin
+            # reading the refusal knows which grant and which claimed bot it came from.
+            raise ToolError(
+                DMP.DmRefused.code,
+                str(refused),
+                extra={
+                    "replacement": "side_chats",
+                    "authenticated_seat": self.seat,
+                    "acting_identity": self.agent.tag,
+                },
+            ) from None
+
     def _tool_zulip_dm_send(self, args: Mapping[str, Any]) -> dict[str, Any]:
         self._scan(text=args["text"])
         text = self._text(args["text"])
@@ -1560,7 +1683,10 @@ class Tools:
                 "invalid_argument", "that is only this bot:  name at least one other person"
             )
         ids = [int(p["user_id"]) for p in people]
+        # The acting identity is resolved BEFORE the rule, so the decision, the audit row and the error
+        # context all name the seat this call acts as and not the previous actor's tag.
         self._use_tag(self._call_tag or Z.session_tag(args.get("session")), args.get("session"))
+        self._check_dm_rule(people, args)
         explicit = args.get("idempotency_key")
         key = self._key(
             "dm:" + explicit if explicit else None, ["dm_send", self.agent.tag, ids, text]
@@ -1989,7 +2115,7 @@ class Tools:
         )
 
     # ---- scheduled messages and drafts ----------------------------------------------------
-    def _target(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _target(self, args: Mapping[str, Any], *, dm_rule: bool = True) -> dict[str, Any]:
         user_ids = list(args.get("user_ids") or [])
         if user_ids:
             if args.get("topic") is not None:
@@ -2002,6 +2128,12 @@ class Tools:
                 raise ToolError(
                     "invalid_argument", "that is only this bot:  name at least one other person"
                 )
+            # The DM rule runs here, where every `direct` target is built, so a scheduled or draft
+            # message cannot deliver a DM that `zulip_dm_send` would have refused.  A caller that opens
+            # no conversation (the typing notice) opts out:  it sends no message, so it is not the act
+            # the rule governs, and the hosted twin applies no rule to it either.
+            if dm_rule:
+                self._check_dm_rule(people, args)
             return {"type": "direct", "to": [int(p["user_id"]) for p in people]}
         if args.get("topic") is None:
             raise ToolError(
@@ -2137,7 +2269,7 @@ class Tools:
         )
 
     def _tool_zulip_typing(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        target = self._zulip_target(self._target(args))
+        target = self._zulip_target(self._target(args, dm_rule=False))
         return self._write_result(self._write(lambda: OPS.typing(self.agent, args["op"], target)))
 
     # ---- the guide (connection-level;  the router answers it without an identity) ----------
@@ -2744,7 +2876,7 @@ class Tools:
         except Z.UsageError as exc:
             raise ToolError("invalid_argument", str(exc)) from None
 
-    def _listener_items(self, items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    def _eavesdropper_items(self, items: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
         out = []
         for item in items:
             out.append(
@@ -2759,7 +2891,7 @@ class Tools:
             )
         return out
 
-    def _tool_listener_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_status(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("status", args)
         structured = {
             k: view[k]
@@ -2774,9 +2906,9 @@ class Tools:
         }
         return self.ok(json.dumps(dict(view, seat=self.seat), ensure_ascii=False), structured)
 
-    def _tool_listener_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_inbox(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("inbox", args)
-        items = self._listener_items(view["items"])
+        items = self._eavesdropper_items(view["items"])
         summary = "%s, %d pending after cursor %d, next_seq %s" % (
             self._plural(len(items), "item"),
             view["pending"],
@@ -2784,7 +2916,7 @@ class Tools:
             view["next_seq"],
         )
         return self._list_result(
-            "listener_inbox",
+            "eavesdropper_inbox",
             [],
             summary,
             items,
@@ -2796,40 +2928,40 @@ class Tools:
             },
         )
 
-    def _tool_listener_owner_queue(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_owner_queue(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("owner-queue", args)
-        items = self._listener_items(view["items"])
+        items = self._eavesdropper_items(view["items"])
         return self._list_result(
-            "listener_owner_queue",
+            "eavesdropper_owner_queue",
             [],
             "%s, %d not surfaced" % (self._plural(len(items), "note"), view["pending"]),
             items,
             {"count": len(items), "seqs": [i["seq"] for i in items]},
         )
 
-    def _tool_listener_wakes(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_wakes(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("wakes", args)
-        items = self._listener_items(view["items"])
+        items = self._eavesdropper_items(view["items"])
         return self._list_result(
-            "listener_wakes",
+            "eavesdropper_wakes",
             [],
             "%s of %d" % (self._plural(len(items), "wake"), view["total"]),
             items,
             {"count": len(items), "ids": [i for w in items for i in w.get("trigger_ids") or []]},
         )
 
-    def _tool_listener_held_back(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_held_back(self, args: Mapping[str, Any]) -> dict[str, Any]:
         view = self._listener("held-back", args)
-        items = self._listener_items(view["items"])
+        items = self._eavesdropper_items(view["items"])
         return self._list_result(
-            "listener_held_back",
+            "eavesdropper_held_back",
             [],
             "%d held back, %d lost" % (view["count"], view["lost"]),
             items,
             {"count": len(items), "ids": [i["message_id"] for i in items], "lost": view["lost"]},
         )
 
-    def _tool_listener_ack(self, args: Mapping[str, Any]) -> dict[str, Any]:
+    def _tool_eavesdropper_ack(self, args: Mapping[str, Any]) -> dict[str, Any]:
         if all(
             args.get(k) is None for k in ("inbox_seq", "owner_queue_seq", "held_back_message_id")
         ):

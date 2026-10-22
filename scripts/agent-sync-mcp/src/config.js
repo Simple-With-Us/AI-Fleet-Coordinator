@@ -18,6 +18,13 @@ import { DEFAULT_CALLBACK_HOSTS, isHostPattern } from "./events.js";
 // host without a new owner decision.
 export const PUBLIC_HOST = "agents.simplewithus.com";
 export const ISSUER = `https://${PUBLIC_HOST}`;
+
+// The Operator bot's Zulip user id, pinned (owner decision, Oct 22 2026) and the same value as
+// scripts/agent_sync/zulip.py OPERATOR_USER_ID.  It is an identity, not a credential, and it is only
+// ever compared against the opener of a conversation.  OPERATOR_ZULIP_USER_ID overrides it where the
+// deployment pins a different one;  when it is absent this pinned value is the whole truth, so there
+// is nothing to fail closed on.  Exported so the Worker and the tests never carry a second copy.
+export const PINNED_OPERATOR_USER_ID = 1217148;
 export const RESOURCE = `${ISSUER}/mcp`;
 export const RESOURCE_METADATA_URL = `${ISSUER}/.well-known/oauth-protected-resource/mcp`;
 
@@ -227,8 +234,34 @@ export function loadConfig(env) {
   const accessAud = String(env.ACCESS_AUD ?? "").trim();
   const ownerEmails = parseList(env, "OWNER_EMAILS").map((e) => e.toLowerCase());
 
+  // Which Access variables are absent or malformed.  Naming them is what lets a
+  // fail-closed /authorize or /admin answer say what to provision instead of a
+  // bare "not configured".  A placeholder AUD counts as missing.
+  const accessMissing = [];
+  if (!/^[a-z0-9-]+\.cloudflareaccess\.com$/.test(teamDomain)) accessMissing.push("ACCESS_TEAM_DOMAIN");
+  if (!/^[0-9a-f]{64}$/.test(accessAud)) accessMissing.push("ACCESS_AUD");
+  if (ownerEmails.length === 0) accessMissing.push("OWNER_EMAILS");
+
   return Object.freeze({
     host: PUBLIC_HOST,
+    // The DM rule (owner decision, Oct 22 2026, hard cutover):  a seat may not open a new direct
+    // message.  Mirrors scripts/agent_sync/dm_policy.py rule_enabled();  default on.
+    dmRule: !["off", "0", "false", "no", "none", "disabled"].includes(
+      String(env.AGENT_SYNC_DM_RULE ?? "").trim().toLowerCase(),
+    ),
+    dmClarifyTimeoutMinutes: (() => {
+      const raw = String(env.AGENT_SYNC_DM_CLARIFY_TIMEOUT_MINUTES ?? "").trim();
+      const minutes = raw === "" ? 30 : Number(raw);
+      return Number.isFinite(minutes) && minutes >= 0 ? minutes : 30;
+    })(),
+    operatorUserId: (() => {
+      const raw = String(env.OPERATOR_ZULIP_USER_ID ?? "").trim();
+      const id = raw === "" ? PINNED_OPERATOR_USER_ID : Number(raw);
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        throw new Error(`config: OPERATOR_ZULIP_USER_ID must be a positive Zulip user id, not ${raw}`);
+      }
+      return id;
+    })(),
     cursorToolBudgets: Object.freeze(cursorToolBudgets),
     issuer: ISSUER,
     resource: RESOURCE,
@@ -243,9 +276,10 @@ export function loadConfig(env) {
       teamDomain,
       aud: accessAud,
       ownerEmails: Object.freeze(ownerEmails),
-      // Fail closed:  until the Access app exists and its AUD is in vars,
+      // Fail closed:  until the Access app exists and its AUD is provisioned,
       // nothing behind Access can be reached.
-      configured: /^[a-z0-9-]+\.cloudflareaccess\.com$/.test(teamDomain) && /^[0-9a-f]{64}$/.test(accessAud) && ownerEmails.length > 0,
+      configured: accessMissing.length === 0,
+      missing: Object.freeze(accessMissing),
     }),
     mcpDisabled: String(env.MCP_DISABLED ?? "") === "1",
     channelsDeny: Object.freeze(channelsDeny),

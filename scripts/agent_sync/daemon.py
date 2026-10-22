@@ -72,6 +72,9 @@ FLEET_ROLES = (
     300,
     400,
 )  # moderator and member (owner decision 2026-10-07); owner 100 and admin 200 refused
+# The Operator seat is Z.OPERATOR_SEAT:  the admin [Operator] Zulip bot (owner decision, Oct 22 2026).
+# It is the only seat whose key may be an administrator's;  see admin_allowed.
+OPERATOR_SEAT = Z.OPERATOR_SEAT
 BACKOFF = (5.0, 30.0, 60.0, 120.0)
 DEAD_QUEUE_SECONDS = 180.0
 DOWN_NOTIFY_SECONDS = 30 * 60.0
@@ -139,9 +142,15 @@ def role_refused(person: Mapping[str, Any], admin_ok: bool = False) -> bool:
 
 
 def admin_allowed(config: Any, seat_cfg: Any) -> bool:
-    """Only the [notes_relay] seat, and only while it is inbox-only, may hold an administrator key (AFC-331,
-    owner 2026-10-18).  That seat runs deterministic code (the notes relay) and never wakes a model;  every
-    other seat keeps the member-only rule.  A fixed rule, not a setting, so nothing can be misconfigured."""
+    """Which seats may hold an administrator (200) key:  the [notes_relay] seat while it is inbox-only
+    (AFC-331, owner 2026-10-18) and the OPERATOR seat (owner decision, Oct 22 2026).
+
+    OPERATOR is the admin [Operator] Zulip bot (user 1217148, role 200, GitHub `swu-operator`), so the
+    refusal below would otherwise stop it from ever authenticating.  The exception is by seat name and
+    only for an administrator:  an owner (100) key is still refused, and every other seat keeps the
+    member-only rule.  A fixed rule, not a setting, so nothing can be misconfigured."""
+    if seat_cfg.seat == OPERATOR_SEAT:
+        return True
     return bool(
         getattr(config, "notes_relay_enabled", False)
         and seat_cfg.seat == getattr(config, "notes_relay_seat", None)
@@ -152,7 +161,8 @@ def admin_allowed(config: Any, seat_cfg: Any) -> bool:
 def role_refusal(seat: str, role: Any) -> str:
     return (
         "the %s bot has role %s; the listener accepts only moderator (300) and member (400) bots and refuses "
-        "admin and owner keys" % (seat, role)
+        "admin and owner keys, except for the OPERATOR seat, which accepts an administrator (200) but never an "
+        "owner" % (seat, role)
     )
 
 

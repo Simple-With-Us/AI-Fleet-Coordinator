@@ -1,6 +1,6 @@
 """The server listener's read API (AFC-330 part B):  signed GET endpoints for one seat's records, so the
-hosted MCP Worker can answer listener_status, listener_inbox, listener_owner_queue, listener_wakes and
-listener_held_back for a hosted seat.
+hosted MCP Worker can answer eavesdropper_status, eavesdropper_inbox, eavesdropper_owner_queue, eavesdropper_wakes and
+eavesdropper_held_back for a hosted seat.
 
     GET /listener/v1/<SEAT>/<record>?<query>      record:  status, inbox, owner-queue, wakes, held-back
 
@@ -21,6 +21,7 @@ read-only on purpose:  nothing a request carries can move a cursor or clear an e
 Bodies in the views are Zulip-authored:  the Worker fences them as untrusted before any model sees
 them.  Nothing here logs a key, a signature or a body.  Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -29,8 +30,9 @@ import json
 import re
 import threading
 import time
+from collections.abc import Callable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Mapping
+from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 from . import listener_records as LR
@@ -44,7 +46,9 @@ MIN_KEY_LEN = 32
 MAX_QUERY = 512
 REQUEST_TIMEOUT_SECONDS = 5.0
 DEFAULT_PORT = 8788
-_PATH_RE = re.compile(r"^/listener/v1/([A-Z0-9][A-Z0-9_-]{0,31})/(status|inbox|owner-queue|wakes|held-back)$")
+_PATH_RE = re.compile(
+    r"^/listener/v1/([A-Z0-9][A-Z0-9_-]{0,31})/(status|inbox|owner-queue|wakes|held-back)$"
+)
 # The query parameters each record takes, and how each is checked.
 _INT = re.compile(r"^\d{1,9}$")
 _STAMP = re.compile(r"^\d{1,12}$")
@@ -53,7 +57,11 @@ PARAMS: dict[str, dict[str, Callable[[str], Any]]] = {
     "status": {},
     "inbox": {"since_seq": lambda v: _num(v, 0, 10**9), "limit": lambda v: _num(v, 1, 50)},
     "owner-queue": {"all": lambda v: _flag(v), "limit": lambda v: _num(v, 1, 50)},
-    "wakes": {"since_hours": lambda v: _num(v, 1, 720), "state": lambda v: _match(_STATE, v), "limit": lambda v: _num(v, 1, 100)},
+    "wakes": {
+        "since_hours": lambda v: _num(v, 1, 720),
+        "state": lambda v: _match(_STATE, v),
+        "limit": lambda v: _num(v, 1, 100),
+    },
     "held-back": {"limit": lambda v: _num(v, 1, 100)},
 }
 
@@ -81,7 +89,9 @@ def signing_string(path: str, query: str, timestamp: str) -> bytes:
 
 
 def sign(key: str, path: str, query: str, timestamp: str) -> str:
-    return hmac.new(key.encode("utf-8"), signing_string(path, query, timestamp), hashlib.sha256).hexdigest()
+    return hmac.new(
+        key.encode("utf-8"), signing_string(path, query, timestamp), hashlib.sha256
+    ).hexdigest()
 
 
 def parse_params(record: str, query: str) -> dict[str, Any]:
@@ -97,11 +107,24 @@ def parse_params(record: str, query: str) -> dict[str, Any]:
 class ListenerReadApi:
     """A small threaded HTTP server over one state root.  `keys` maps seat -> shared HMAC key."""
 
-    def __init__(self, bind: str, port: int, root: str, keys: Mapping[str, str], *,
-                 clock: Callable[[], float] = time.time, log: Callable[..., None] | None = None) -> None:
+    def __init__(
+        self,
+        bind: str,
+        port: int,
+        root: str,
+        keys: Mapping[str, str],
+        *,
+        clock: Callable[[], float] = time.time,
+        log: Callable[..., None] | None = None,
+    ) -> None:
         self.root = root
-        self.keys = {seat.upper(): key for seat, key in keys.items()
-                     if LR.SEAT_RE.fullmatch(seat.upper()) and isinstance(key, str) and len(key) >= MIN_KEY_LEN}
+        self.keys = {
+            seat.upper(): key
+            for seat, key in keys.items()
+            if LR.SEAT_RE.fullmatch(seat.upper())
+            and isinstance(key, str)
+            and len(key) >= MIN_KEY_LEN
+        }
         self.clock = clock
         self.log = log or (lambda *_args, **_kwargs: None)
         owner = self
@@ -139,7 +162,9 @@ class ListenerReadApi:
                 return
 
             def _respond(self, status: int, body: Mapping[str, Any]) -> None:
-                data = json.dumps(body, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
+                data = json.dumps(
+                    body, ensure_ascii=False, separators=(",", ":"), default=str
+                ).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
@@ -155,19 +180,28 @@ class ListenerReadApi:
                 self.close_connection = True
                 self._respond(405, {"error": "method not allowed"})
 
-            do_POST = do_PUT = do_PATCH = do_DELETE = _refuse_method  # noqa: N815
+            do_POST = do_PUT = do_PATCH = do_DELETE = _refuse_method
 
-            def do_GET(self) -> None:  # noqa: N802
+            def do_GET(self) -> None:
                 self.close_connection = True
-                status, body = owner.handle(self.path, self.headers.get(TIMESTAMP_HEADER),
-                                            self.headers.get(SIGNATURE_HEADER))
+                status, body = owner.handle(
+                    self.path,
+                    self.headers.get(TIMESTAMP_HEADER),
+                    self.headers.get(SIGNATURE_HEADER),
+                )
                 self._respond(status, body)
 
         self.server = Server((bind, port), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.2},
-                                       name="listener-read-api", daemon=True)
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            kwargs={"poll_interval": 0.2},
+            name="listener-read-api",
+            daemon=True,
+        )
 
-    def handle(self, raw_path: str, timestamp: str | None, signature: str | None) -> tuple[int, dict[str, Any]]:
+    def handle(
+        self, raw_path: str, timestamp: str | None, signature: str | None
+    ) -> tuple[int, dict[str, Any]]:
         """(status, body) for one GET.  Pure, so tests call it without a socket."""
         parts = urlsplit(raw_path)
         match = _PATH_RE.fullmatch(parts.path)
@@ -178,7 +212,11 @@ class ListenerReadApi:
         if key is None:
             return 404, {"error": "not found"}
         now = self.clock()
-        if not timestamp or not _STAMP.fullmatch(timestamp.strip()) or abs(now - int(timestamp)) > MAX_SKEW_S:
+        if (
+            not timestamp
+            or not _STAMP.fullmatch(timestamp.strip())
+            or abs(now - int(timestamp)) > MAX_SKEW_S
+        ):
             self.log("listener-api-refused", seat=seat, reason="timestamp")
             return 401, {"error": "unauthorized"}
         expected = sign(key, parts.path, parts.query, timestamp.strip())

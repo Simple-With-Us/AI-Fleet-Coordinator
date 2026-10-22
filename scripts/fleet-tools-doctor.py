@@ -123,7 +123,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/fleet-cli-release.py",
         "scripts/agent_sync/mcp/tools.json",
         "scripts/agent_sync/mcp/fixtures.jsonl",
-        "scripts/agent_sync/mcp/listener-tools.json",
+        "scripts/agent_sync/mcp/eavesdropper-tools.json",
         "scripts/agent_sync/mcp/renamed-tools.json",
         "scripts/agent_sync/mcp/gb-identities.json",
         "scripts/agent_sync/mcp/notes-tools.json",
@@ -2607,7 +2607,7 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
                 "simple-chat",
                 "post",
                 "--channel",
-                "agent-sync",
+                "Work-In-Progress",
                 "--topic",
                 "fleet tools doctor",
                 body,
@@ -2650,7 +2650,7 @@ def run(
     parser.add_argument(
         "--post",
         action="store_true",
-        help="when the set of failing checks changes, post it with agent-sync to #agent-sync, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as agent-sync resolves it)",
+        help="when the set of failing checks changes, post it with agent-sync to #Work-In-Progress, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as agent-sync resolves it)",
     )
     parser.add_argument(
         "--no-registry",

@@ -804,6 +804,12 @@ class FakeZulip:
         anchor = params["anchor"]
         if anchor == "newest":
             chosen = matching[-before:] if before else []
+        elif anchor in ("oldest", "first"):
+            # The head of the conversation, as the live server reads it:  the anchor plus the next
+            # `after` messages.  The DM rule asks whether the OLDEST message came from Operator, so
+            # a read anchored here is the only window that can contain the opener of a long
+            # conversation (mirrors fake-zulip.mjs).
+            chosen = matching[: max(after, 1)]
         else:
             anchor_id = int(anchor)
             lower = [m for m in matching if m["id"] < anchor_id or (include and m["id"] == anchor_id)]

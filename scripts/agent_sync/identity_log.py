@@ -5,19 +5,23 @@ One JSON line per write in <state>/logs/identity.jsonl (the state dir is AGENT_S
 ~/.agent-sync), mode 600:  when, which transport and process, which MCP client (from `initialize`
 clientInfo), the connection's default identity, the identity the call claimed, the tool or command,
 the outcome and the message id when there is one.  Ids only:  never a body, a topic, a key or any
-other Zulip-authored text.  A failure to write the log never fails the write it records.
+other Zulip-authored text.  A failure to write the log never fails the write it records, and neither
+does a label the secret scanner refuses (the field is withheld instead).
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
+from . import secretscan
 from .state import state_root
 
 LOG_NAME = "identity.jsonl"
@@ -36,6 +40,24 @@ def safe_text(value: Any, limit: int = FIELD_LIMIT) -> str | None:
     return _SAFE.sub("?", value.strip())[:limit]
 
 
+def scanned_text(value: Any, limit: int = FIELD_LIMIT) -> str | None:
+    """`safe_text` for a caller-supplied label that is persisted, after a secret scan.
+
+    A credential-shaped seat label is never written, not even in part:  the row keeps the shape of
+    the log (the field is None) rather than the value, so the audit stays readable and the label
+    cannot become durable secret material in a file an admin reads.
+
+    This *withholds* rather than raising.  `append` is called on the way out of a write that has
+    already been decided, and this module's contract is that a log problem never fails the write it
+    records;  raising `secret_detected` here would turn an audit row into a second, worse refusal of
+    somebody else's message.  The caller of the write is the right place to refuse a bad seat, and
+    the DM rule already scans its own inputs (dm_policy, tools._scan)."""
+    label = safe_text(value, limit)
+    if label is None:
+        return None
+    return None if secretscan.scan(label) else label
+
+
 def client_label(info: Any) -> dict[str, str | None] | None:
     """{name, version} from an MCP clientInfo object, cleaned;  None when there is none."""
     if not isinstance(info, Mapping):
@@ -46,20 +68,38 @@ def client_label(info: Any) -> dict[str, str | None] | None:
     return {"name": name, "version": version}
 
 
-def append(env: Mapping[str, str], home: Path | None, *, transport: str, default_identity: str | None,
-           identity: str | None, tool: str, outcome: str, message_id: int | None = None,
-           client: Mapping[str, Any] | None = None, clock: Any = time.time) -> bool:
-    """Append one row.  True when it was written."""
+def append(
+    env: Mapping[str, str],
+    home: Path | None,
+    *,
+    transport: str,
+    default_identity: str | None,
+    identity: str | None,
+    tool: str,
+    outcome: str,
+    message_id: int | None = None,
+    client: Mapping[str, Any] | None = None,
+    seat: str | None = None,
+    clock: Any = time.time,
+) -> bool:
+    """Append one row.  True when it was written.
+
+    `seat` is the seat the caller was authenticated as, which is not always the identity it acted
+    as (a grant for one seat may act as another), so a row keeps both.
+    """
     row = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock())),
         "transport": transport,
         "pid": os.getpid(),
         "client": client_label(client) if client is not None else None,
         "default_identity": safe_text(default_identity),
+        "seat": scanned_text(seat),
         "identity": safe_text(identity),
         "tool": safe_text(tool),
         "outcome": safe_text(outcome),
-        "message_id": message_id if isinstance(message_id, int) and not isinstance(message_id, bool) else None,
+        "message_id": message_id
+        if isinstance(message_id, int) and not isinstance(message_id, bool)
+        else None,
     }
     path = log_path(env, home)
     try:
@@ -67,7 +107,10 @@ def append(env: Mapping[str, str], home: Path | None, *, transport: str, default
         fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
             os.fchmod(fd, 0o600)
-            os.write(fd, (json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n").encode("ascii"))
+            os.write(
+                fd,
+                (json.dumps(row, ensure_ascii=True, separators=(",", ":")) + "\n").encode("ascii"),
+            )
         finally:
             os.close(fd)
     except OSError:

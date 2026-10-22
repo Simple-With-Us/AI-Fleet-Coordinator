@@ -295,7 +295,7 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
 
 ## Sentry Heartbeat
 
-Added Sat, Oct 10 (CLAUDE, board `1d688c1d`).  The server instance reports to Sentry that it is running, as the cron monitor `agent-sync-listener-server` in the `fleet-infra` project of org `simple-with-us` (Crons).  The full design, the degraded rules and the Mac side are in [agent-sync-listener.md](agent-sync-listener.md#sentry-heartbeat).
+Added Sat, Oct 10 (CLAUDE, board `1d688c1d`).  The server instance reports to Sentry that it is running, as the cron monitor `operator-server` in the `fleet-infra` project of org `simple-with-us` (Crons).  The full design, the degraded rules and the Mac side are in [agent-sync-listener.md](agent-sync-listener.md#sentry-heartbeat).
 
 - **Variable.**  `SENTRY_FLEET_DSN`, in Infisical `prod` `/zulip` (created Sat, Oct 10).  `infisical_env.py` allowlists it and `AGENT_SYNC_SENTRY_DSN` alongside the seat names, so the machine identity of [Infisical at Start](#infisical-at-start) delivers it at the next restart.  Without that identity, add `SENTRY_FLEET_DSN` to the Coolify app as a runtime-only variable.  Nothing else about the app changes, and no port opens:  the container only makes outbound HTTPS calls to Sentry.
 - **After a restart** the monitor appears in Sentry Crons with its first check-in within a minute (the first tick).  `status` stays the same;  look for `sentry-heartbeat-ok` in `logs/listener.log`, or `sentry-heartbeat-off` if the DSN did not arrive.
