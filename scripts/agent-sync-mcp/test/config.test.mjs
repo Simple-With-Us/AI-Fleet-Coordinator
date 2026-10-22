@@ -9,7 +9,7 @@ import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT } from "./helpers.mjs";
 test("wrangler.jsonc vars load, and Access fails closed until the AUD is set", () => {
   const vars = wranglerConfig().vars;
   const cfg = loadConfig(vars);
-  assert.equal(cfg.host, "agent-sync.jays.services");
+  assert.equal(cfg.host, "agents.simplewithus.com");
   // Production serves both seats.  JET was held back while openai-dot-bot was a
   // realm administrator (hosted seats accept member (400) only, spec 3.6);  Jay
   // demoted it on Fri, Oct 9, and JET was deployed with its key at about 8:10am
@@ -63,9 +63,9 @@ test("GROK-WEB uses Grok's published client metadata document, and both ids pass
 });
 
 test("issuer, resource and metadata URL are fixed to the D1 hostname", () => {
-  assert.equal(PUBLIC_HOST, "agent-sync.jays.services");
-  assert.equal(ISSUER, "https://agent-sync.jays.services");
-  assert.equal(RESOURCE, "https://agent-sync.jays.services/mcp");
+  assert.equal(PUBLIC_HOST, "agents.simplewithus.com");
+  assert.equal(ISSUER, "https://agents.simplewithus.com");
+  assert.equal(RESOURCE, "https://agents.simplewithus.com/mcp");
   assert.ok(!KNOWN_SEATS.includes(GATE_LOG_NAME));
 });
 
@@ -149,7 +149,9 @@ test("wrangler.jsonc keeps every hostname but the custom domain off", () => {
   const w = wranglerConfig();
   assert.equal(w.workers_dev, false);
   assert.equal(w.preview_urls, false);
-  assert.deepEqual(w.routes, [{ pattern: "agent-sync.jays.services", custom_domain: true }]);
+  // Hard cutover (owner ruling Oct 22, 2026):  exactly one custom domain.  The
+  // old host is not a route, an alias or a redirect; policy.js refuses it too.
+  assert.deepEqual(w.routes, [{ pattern: "agents.simplewithus.com", custom_domain: true }]);
   assert.equal(w.account_id, "3a9368057468d0909cafaa85df12d1b7");
   assert.ok(w.compatibility_flags.includes("nodejs_compat"));
   assert.ok(w.compatibility_flags.includes("global_fetch_strictly_public"));

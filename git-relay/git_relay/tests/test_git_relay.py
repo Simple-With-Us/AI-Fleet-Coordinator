@@ -9,7 +9,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import pathlib
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -19,10 +21,10 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
-from ghr.audit import AuditLog
-from ghr.github_client import GitHubClient, RelayGitHubError
-from ghr.policy import PolicyError, SeatPolicy
-from ghr.server import MAX_REQUEST_BYTES, Relay, make_handler
+from git_relay.audit import AuditLog
+from git_relay.github_client import GitHubClient, RelayGitHubError
+from git_relay.policy import PolicyError, SeatPolicy
+from git_relay.server import MAX_REQUEST_BYTES, Relay, make_handler
 
 SEAT_TOKEN = "s" * 32
 OTHER_TOKEN = "o" * 32
@@ -307,7 +309,7 @@ class TestNonPrActionsRejected(unittest.TestCase):
 
 class TestMcpWrapper(unittest.TestCase):
     def _server(self, payload=None, opener=None):
-        from ghr.mcp_server import RelayMcp
+        from git_relay.mcp_server import RelayMcp
 
         if opener is None:
             opener = FakeOpener(payload or {"number": 9})
@@ -316,7 +318,7 @@ class TestMcpWrapper(unittest.TestCase):
     def test_initialize_and_tools_list(self):
         server = self._server()
         reply = server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
-        self.assertEqual(reply["result"]["serverInfo"]["name"], "swu-pr-relay")
+        self.assertEqual(reply["result"]["serverInfo"]["name"], "GR-MCP")
         reply = server.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = [t["name"] for t in reply["result"]["tools"]]
         self.assertEqual(
@@ -497,7 +499,7 @@ class TestAppActions(unittest.TestCase):
 
 class TestMinter(unittest.TestCase):
     def test_mints_and_caches_and_refreshes(self):
-        from ghr.app_tokens import AppTokenMinter
+        from git_relay.app_tokens import AppTokenMinter
 
         class Source:
             def secret(self, name):
@@ -530,7 +532,7 @@ class TestMinter(unittest.TestCase):
         self.assertEqual(len(mints), 1)
 
     def test_permission_outside_mint_ceiling_refused(self):
-        from ghr.app_tokens import AppTokenError, AppTokenMinter
+        from git_relay.app_tokens import AppTokenError, AppTokenMinter
 
         minter = AppTokenMinter(None, None, clock=lambda: 0)
         with self.assertRaises(AppTokenError):
@@ -570,7 +572,7 @@ class TestAppClientShapes(unittest.TestCase):
 
 class TestSecretScan(unittest.TestCase):
     def test_flags_credential_shapes(self):
-        from ghr.secret_scan import find_secret
+        from git_relay.secret_scan import find_secret
 
         self.assertEqual(find_secret("token: ghp_" + "a" * 30), "github_token")
         self.assertEqual(find_secret("use github_pat_" + "b" * 40), "github_fine_grained_pat")
@@ -578,7 +580,7 @@ class TestSecretScan(unittest.TestCase):
         self.assertEqual(find_secret("st." + "c" * 30), "infisical_service_token")
 
     def test_clean_text_passes(self):
-        from ghr.secret_scan import find_secret
+        from git_relay.secret_scan import find_secret
 
         self.assertIsNone(find_secret("fix: resolve the latest.stable parser bug"))
         self.assertIsNone(find_secret("list.everything and st. short prose"))
@@ -646,7 +648,7 @@ class TestSecretScan(unittest.TestCase):
 
 class TestAuditSecretHashing(unittest.TestCase):
     def test_token_shaped_value_under_unknown_key_is_hashed(self):
-        from ghr.audit import AuditLog
+        from git_relay.audit import AuditLog
 
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "audit.jsonl")
@@ -666,7 +668,7 @@ class TestFleetSecretsSource(unittest.TestCase):
     Infisical HTTP."""
 
     def _source(self, stdout=b"", returncode=0, calls=None):
-        from ghr.app_tokens import FleetSecretsSource
+        from git_relay.app_tokens import FleetSecretsSource
 
         def runner(argv, capture_output, timeout):
             if calls is not None:
@@ -690,7 +692,7 @@ class TestFleetSecretsSource(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_missing_value_names_the_variable_only(self):
-        from ghr.app_tokens import AppTokenError
+        from git_relay.app_tokens import AppTokenError
 
         source = self._source(returncode=1)
         with self.assertRaises(AppTokenError) as ctx:
@@ -698,7 +700,7 @@ class TestFleetSecretsSource(unittest.TestCase):
         self.assertIn("GH_APP_SWU_ECHO_PRIVATE_KEY", str(ctx.exception))
 
     def test_timeout_and_missing_executable_are_named_errors(self):
-        from ghr.app_tokens import AppTokenError, FleetSecretsSource
+        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
 
         def hanging(argv, capture_output, timeout):
             raise subprocess.TimeoutExpired(argv, timeout)
@@ -715,14 +717,14 @@ class TestFleetSecretsSource(unittest.TestCase):
         self.assertIn("not found", str(ctx.exception))
 
     def test_empty_value_is_refused(self):
-        from ghr.app_tokens import AppTokenError
+        from git_relay.app_tokens import AppTokenError
 
         source = self._source(stdout=b"  \n")
         with self.assertRaises(AppTokenError):
             source.secret("GH_APP_X_ID")
 
     def test_secret_value_never_appears_in_errors(self):
-        from ghr.app_tokens import AppTokenError, FleetSecretsSource
+        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
 
         def runner(argv, capture_output, timeout):
             return subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=b"backend detail")
@@ -878,7 +880,7 @@ class TestGithubErrorSplit(unittest.TestCase):
             self.assertEqual(client.open_calls, 1)
 
     def test_pending_rows_load_as_unknown(self):
-        from ghr.outcomes import OutcomeStore, key_for
+        from git_relay.outcomes import OutcomeStore, key_for
 
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "outcomes.json")
@@ -894,7 +896,7 @@ class TestGithubErrorSplit(unittest.TestCase):
 
 class TestOutcomeStoreHardening(unittest.TestCase):
     def test_corrupt_store_blocks_startup_and_is_preserved(self):
-        from ghr.outcomes import OutcomeStore, OutcomeStoreError
+        from git_relay.outcomes import OutcomeStore, OutcomeStoreError
 
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "o.json")
@@ -906,7 +908,7 @@ class TestOutcomeStoreHardening(unittest.TestCase):
             self.assertTrue(os.path.exists(path))
 
     def test_invalid_row_shape_blocks_startup_with_path_and_key(self):
-        from ghr.outcomes import OutcomeStore, OutcomeStoreError
+        from git_relay.outcomes import OutcomeStore, OutcomeStoreError
 
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "o.json")
@@ -917,7 +919,7 @@ class TestOutcomeStoreHardening(unittest.TestCase):
             self.assertIn("not-a-hash-key", str(ctx.exception))
 
     def test_interrupted_rename_recovers_from_temp_and_preserves_corrupt(self):
-        from ghr.outcomes import OutcomeStore, key_for
+        from git_relay.outcomes import OutcomeStore, key_for
 
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "o.json")
@@ -934,8 +936,8 @@ class TestOutcomeStoreHardening(unittest.TestCase):
                 self.assertEqual(fh.read(), "{torn")
 
     def test_trim_evicts_only_oldest_refused_rows(self):
-        import ghr.outcomes as oc
-        from ghr.outcomes import OutcomeStore
+        import git_relay.outcomes as oc
+        from git_relay.outcomes import OutcomeStore
 
         ceiling = oc.MAX_ENTRIES
         oc.MAX_ENTRIES = 3
@@ -957,7 +959,7 @@ class TestOutcomeStoreHardening(unittest.TestCase):
             oc.MAX_ENTRIES = ceiling
 
     def test_trim_evicts_stale_ok_rows_past_the_replay_window(self):
-        from ghr.outcomes import OK_TTL_SECONDS, OutcomeStore
+        from git_relay.outcomes import OK_TTL_SECONDS, OutcomeStore
 
         now = 1_700_000_000.0
         store = OutcomeStore(None, clock=lambda: now)
@@ -972,8 +974,8 @@ class TestOutcomeStoreHardening(unittest.TestCase):
         self.assertIn("held", store._rows)  # unknown is held past any TTL
 
     def test_begin_refuses_when_full_of_held_rows(self):
-        import ghr.outcomes as oc
-        from ghr.outcomes import OutcomeStore, OutcomeStoreError
+        import git_relay.outcomes as oc
+        from git_relay.outcomes import OutcomeStore, OutcomeStoreError
 
         ceiling = oc.MAX_ENTRIES
         oc.MAX_ENTRIES = 2
@@ -1105,7 +1107,7 @@ class TestPolicyMintPermissionsValidation(unittest.TestCase):
             SeatPolicy(
                 json.dumps(
                     {
-                        "seat": {
+                        "swu-echo": {
                             "token": "x" * 16,
                             "actions": ["mint_token"],
                             "repos": ["a/b"],
@@ -1121,7 +1123,7 @@ class TestPolicyMintPermissionsValidation(unittest.TestCase):
             SeatPolicy(
                 json.dumps(
                     {
-                        "seat": {
+                        "swu-echo": {
                             "token": "x" * 16,
                             "actions": ["mint_token"],
                             "repos": ["a/b"],
@@ -1160,7 +1162,7 @@ class TestMintTokenExpiry(unittest.TestCase):
 
 class TestAppTokenErrorMapped(unittest.TestCase):
     def test_mint_failure_is_503_not_dropped(self):
-        from ghr.app_tokens import AppTokenError
+        from git_relay.app_tokens import AppTokenError
 
         with tempfile.TemporaryDirectory() as tmp:
 
@@ -1183,7 +1185,7 @@ class TestAppTokenErrorMapped(unittest.TestCase):
 
 class TestMcpSchemaEnforcement(unittest.TestCase):
     def _server(self):
-        from ghr.mcp_server import RelayMcp
+        from git_relay.mcp_server import RelayMcp
 
         return RelayMcp("http://relay.test", "seat-token", opener=None)
 
@@ -1280,7 +1282,7 @@ class TestScanBounds(unittest.TestCase):
 
 class TestValidationGate(unittest.TestCase):
     def test_unexpected_fields_are_rejected_and_create_no_durable_state(self):
-        from ghr.outcomes import OutcomeStore
+        from git_relay.outcomes import OutcomeStore
 
         with tempfile.TemporaryDirectory() as tmp:
             outcomes = OutcomeStore(os.path.join(tmp, "out.json"))
@@ -1307,7 +1309,7 @@ class TestValidationGate(unittest.TestCase):
             self.assertEqual(outcomes._rows, {})  # malformed input leaves no durable row
 
     def test_bad_shape_creates_no_durable_state(self):
-        from ghr.outcomes import OutcomeStore
+        from git_relay.outcomes import OutcomeStore
 
         with tempfile.TemporaryDirectory() as tmp:
             outcomes = OutcomeStore(os.path.join(tmp, "out.json"))
@@ -1326,7 +1328,7 @@ class TestValidationGate(unittest.TestCase):
             self.assertEqual(outcomes._rows, {})
 
     def test_policy_denial_runs_before_the_idempotency_gate(self):
-        from ghr.outcomes import OutcomeStore
+        from git_relay.outcomes import OutcomeStore
 
         with tempfile.TemporaryDirectory() as tmp:
             outcomes = OutcomeStore(os.path.join(tmp, "out.json"))
@@ -1409,7 +1411,7 @@ class TestCredentialPreview(unittest.TestCase):
         self.assertFalse(payload["retryable"])
 
     def test_mask_credential_shape(self):
-        from ghr.secret_scan import mask_credential
+        from git_relay.secret_scan import mask_credential
 
         self.assertEqual(mask_credential("ghp_abcdefghijklmnop"), "ghp_abcd\u2026mnop")
         self.assertEqual(mask_credential("short"), "<masked>")
@@ -1418,7 +1420,7 @@ class TestCredentialPreview(unittest.TestCase):
 
 class Round6Tests(unittest.TestCase):
     def test_outcome_store_at_capacity_evicts_a_refused_row(self):
-        from ghr import outcomes
+        from git_relay import outcomes
 
         cap = 20
         with unittest.mock.patch.object(outcomes, "MAX_ENTRIES", cap):
@@ -1432,7 +1434,7 @@ class Round6Tests(unittest.TestCase):
             self.assertLessEqual(len(store._rows), cap)
 
     def test_mcp_wrapper_thread_id_matches_the_relay_shape(self):
-        from ghr import mcp_server
+        from git_relay import mcp_server
 
         base = {"repo": "Example-Org/widget-repo"}
         for bad in ("PRRT_a b", "PRRT_short", "PRRT_" + "a" * 129):
@@ -1444,7 +1446,7 @@ class Round6Tests(unittest.TestCase):
         )
 
     def test_thread_id_shape_and_unexpected_names_are_400s(self):
-        from ghr.server import _validate_args
+        from git_relay.server import _validate_args
 
         base = {"repo": "Example-Org/widget-repo"}
         with self.assertRaises(ValueError):
@@ -1452,3 +1454,126 @@ class Round6Tests(unittest.TestCase):
         with self.assertRaises(ValueError) as c:
             _validate_args("comment_pr", {**base, "number": 1, "body": "x", "ghp_" + "a" * 30: 1})
         self.assertNotIn("ghp_", str(c.exception))
+
+
+class BotIdentityTests(unittest.TestCase):
+    """Q7: one bearer per bot identity;  a bot's Zulip bot and GitHub App are
+    the same identity.  A bearer whose App is not its own bot's App is refused.
+    """
+
+    def _seats(self, **overrides):
+        seat = {
+            "token": "x" * 32,
+            "actions": ["mint_token", "merge_pr"],
+            "repos": ["example/fixture-repo"],
+            "app_slug": "swu-echo",
+            "mint_permissions": {"contents": "write", "pull_requests": "write"},
+        }
+        seat.update(overrides)
+        return json.dumps({"swu-echo": seat})
+
+    def test_app_must_be_the_seats_own_bot(self):
+        # A well-formed App that belongs to ANOTHER bot is the Q7 case.
+        for other in ("swu-wise", "swu-echo-bot", "swu-echo-2"):
+            with self.assertRaises(PolicyError, msg=other) as ctx:
+                SeatPolicy(self._seats(app_slug=other))
+            self.assertIn("own bot identity", str(ctx.exception))
+
+    def test_malformed_or_missing_app_is_still_refused(self):
+        for other in ("echo", "SWU-ECHO", ""):
+            with self.assertRaises(PolicyError, msg=other):
+                SeatPolicy(self._seats(app_slug=other))
+
+    def test_matching_bot_and_app_loads(self):
+        policy = SeatPolicy(self._seats())
+        self.assertEqual(policy.bot_identities(), {"swu-echo": "swu-echo"})
+
+    def test_a_bearer_cannot_act_as_another_bots_app(self):
+        policy = SeatPolicy(self._seats())
+        # ECHO's bearer authenticates as ECHO and nothing else, and both the
+        # accessor and the App dispatch read that seat's own entry.
+        self.assertEqual(policy.authenticate("x" * 32), "swu-echo")
+        self.assertIsNone(policy.authenticate("z" * 32))
+        self.assertEqual(policy.app_identity("swu-echo")[0], "swu-echo")
+        with self.assertRaises(KeyError):
+            policy.app_identity("swu-wise")
+
+    def test_seats_without_app_actions_have_no_app_identity(self):
+        seats = json.dumps(
+            {
+                "swu-echo": {
+                    "token": "x" * 32,
+                    "actions": ["comment_pr"],
+                    "repos": ["example/fixture-repo"],
+                }
+            }
+        )
+        policy = SeatPolicy(seats)
+        self.assertEqual(policy.bot_identities(), {})
+
+    def test_no_two_seats_share_one_app(self):
+        # Config load already refuses a foreign App, so a policy that loads at
+        # all maps each App to exactly one seat.
+        seats = json.dumps(
+            {
+                "swu-echo": {
+                    "token": "a" * 32,
+                    "actions": ["mint_token"],
+                    "repos": ["a/b"],
+                    "app_slug": "swu-echo",
+                    "mint_permissions": {"contents": "read"},
+                },
+                "swu-wise": {
+                    "token": "b" * 32,
+                    "actions": ["mint_token"],
+                    "repos": ["a/b"],
+                    "app_slug": "swu-wise",
+                    "mint_permissions": {"contents": "read"},
+                },
+            }
+        )
+        mapping = SeatPolicy(seats).bot_identities()
+        self.assertEqual(mapping, {"swu-echo": "swu-echo", "swu-wise": "swu-wise"})
+        self.assertEqual(len(set(mapping.values())), len(mapping))
+
+
+class CliEntryTests(unittest.TestCase):
+    """The CLI/binary name is git-relay (hard cutover, no alias)."""
+
+    BIN = pathlib.Path(__file__).resolve().parents[2] / "bin" / "git-relay"
+
+    def _run(self, *args):
+        return subprocess.run(
+            [sys.executable, str(self.BIN), *args], capture_output=True, text=True, timeout=60
+        )
+
+    def test_bin_is_named_git_relay_and_executable(self):
+        self.assertTrue(self.BIN.exists(), f"missing {self.BIN}")
+        self.assertEqual(self.BIN.name, "git-relay")
+        self.assertTrue(os.access(self.BIN, os.X_OK), "bin/git-relay must be executable")
+
+    def test_help_names_the_cli_and_its_mcp_server(self):
+        out = self._run("--help")
+        self.assertEqual(out.returncode, 0)
+        self.assertIn("usage: git-relay", out.stdout)
+        self.assertIn("GR-MCP", out.stdout)
+        # Hard cutover:  no legacy name anywhere in the help text.
+        self.assertNotIn("pr-relay", out.stdout.lower())
+
+    def test_unknown_command_exits_2_without_starting_a_service(self):
+        out = self._run("definitely-not-a-command")
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("unknown command", out.stderr)
+
+    def test_serve_fails_closed_without_seat_policy(self):
+        env = dict(os.environ, GIT_RELAY_SEATS_JSON="")
+        env.pop("GIT_RELAY_SEATS_JSON", None)
+        out = subprocess.run(
+            [sys.executable, str(self.BIN), "serve"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+        )
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("git-relay config", out.stderr)

@@ -1,4 +1,4 @@
-"""HTTP surface for the PR relay.
+"""HTTP surface for git-relay.
 
 Endpoints (all JSON in, JSON out):
     GET  /healthz
@@ -10,6 +10,8 @@ Endpoints (all JSON in, JSON out):
     POST /v1/merge_pr          {repo, number, method?}              (seat's App)
     POST /v1/workflow_dispatch {repo, workflow, ref, inputs?}       (seat's App)
     POST /v1/resolve_thread    {repo, thread_id}                    (seat's App)
+
+Run it as `git-relay serve` (or `python3 -m git_relay.server`).
 
 Auth: "Authorization: Bearer <seat token>".  Every call, allowed or denied,
 writes one audit row.  The GitHub token comes from GITHUB_TOKEN in the
@@ -457,7 +459,7 @@ Relay._dispatch_app = _app_dispatch
 
 def make_handler(relay: Relay):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "swu-pr-relay/1"
+        server_version = "swu-git-relay/1"
 
         def log_message(self, fmt, *fmt_args):  # keep default stderr log out of the audit path
             return
@@ -510,21 +512,21 @@ def make_handler(relay: Relay):
 def from_env() -> Relay:
     try:
         policy = SeatPolicy(
-            os.environ.get("PR_RELAY_SEATS_JSON", ""),
-            rate_per_hour=int(os.environ.get("PR_RELAY_RATE_PER_HOUR", "120")),
+            os.environ.get("GIT_RELAY_SEATS_JSON", ""),
+            rate_per_hour=int(os.environ.get("GIT_RELAY_RATE_PER_HOUR", "120")),
         )
     except PolicyError as exc:
-        raise SystemExit(f"ghr config: {exc}") from exc
+        raise SystemExit(f"git-relay config: {exc}") from exc
     client = GitHubClient(os.environ.get("GITHUB_TOKEN", ""))
-    audit = AuditLog(os.environ.get("PR_RELAY_AUDIT_PATH", "pr-relay-audit.jsonl"))
-    outcomes = OutcomeStore(os.environ.get("PR_RELAY_OUTCOMES_PATH", "pr-relay-outcomes.json"))
+    audit = AuditLog(os.environ.get("GIT_RELAY_AUDIT_PATH", "git-relay-audit.jsonl"))
+    outcomes = OutcomeStore(os.environ.get("GIT_RELAY_OUTCOMES_PATH", "git-relay-outcomes.json"))
     app_minter = None
-    if os.environ.get("PR_RELAY_APP_MINT", "1") != "0":
+    if os.environ.get("GIT_RELAY_APP_MINT", "1") != "0":
         # App-credential reads go through the fleet-secrets CLI only (owner
         # decision 2026-10-21:  no env secrets, no direct Infisical).  The CLI
         # must be installed on this host or App actions stay unavailable.
         if not shutil.which("fleet-secrets"):
-            raise SystemExit("ghr config: fleet-secrets executable not found on PATH")
+            raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
         from .app_tokens import AppTokenMinter, FleetSecretsSource
 
         app_minter = AppTokenMinter(
@@ -538,10 +540,10 @@ def from_env() -> Relay:
 
 def main() -> None:
     relay = from_env()
-    host = os.environ.get("PR_RELAY_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("PR_RELAY_PORT", str(DEFAULT_PORT)))
+    host = os.environ.get("GIT_RELAY_HOST", DEFAULT_HOST)
+    port = int(os.environ.get("GIT_RELAY_PORT", str(DEFAULT_PORT)))
     server = ThreadingHTTPServer((host, port), make_handler(relay))
-    print(f"ghr listening on {host}:{port}")
+    print(f"git-relay listening on {host}:{port}")
     server.serve_forever()
 
 

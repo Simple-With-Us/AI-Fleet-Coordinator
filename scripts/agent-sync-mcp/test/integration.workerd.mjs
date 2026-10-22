@@ -76,7 +76,7 @@ linear.graphqlResponse = (entry) => {
   return linearGraphqlResponse(entry);
 };
 
-const HOST = "https://agent-sync.jays.services";
+const HOST = "https://agents.simplewithus.com";
 const TEAM = "silent-frost-37e0.cloudflareaccess.com";
 const AUD = "d".repeat(64);
 const CHATGPT_CIMD = {
@@ -221,6 +221,19 @@ function startWorker(upstream, bindingOverrides = {}) {
         const res = await raw.dispatchFetch(url);
         assert.equal(res.status, 404, url);
         assert.equal(await res.text(), "Not Found");
+      }
+    });
+
+    // Hard cutover (owner ruling Oct 22, 2026):  the old agent-sync.jays.services
+    // host is gone.  Every path on it answers 404 "Not Found" with no Location
+    // header:  not an alias, not a redirect to the new host, no hanging
+    // fallback.  An old client pointed here fails fast and visibly.
+    await step("the old agent-sync.jays.services host is refused, not redirected", async () => {
+      for (const path of ["/mcp", "/health", "/authorize", "/oauth/token", "/admin", "/.well-known/oauth-authorization-server"]) {
+        const res = await raw.dispatchFetch(`https://agent-sync.jays.services${path}`);
+        assert.equal(res.status, 404, path);
+        assert.equal(res.headers.get("location"), null, `${path} must not redirect`);
+        assert.equal(await res.text(), "Not Found", path);
       }
     });
   } finally {
@@ -399,7 +412,7 @@ try {
   await step("unauthenticated initialize gets 401 with resource_metadata", async () => {
     const r = await mcp(null, "initialize", INIT);
     assert.equal(r.status, 401);
-    assert.match(r.headers.get("www-authenticate"), /resource_metadata="https:\/\/agent-sync\.jays\.services\/\.well-known\/oauth-protected-resource\/mcp"/);
+    assert.match(r.headers.get("www-authenticate"), /resource_metadata="https:\/\/agents\.simplewithus\.com\/\.well-known\/oauth-protected-resource\/mcp"/);
   });
 
   await step("/authorize and /admin without an Access JWT are 403", async () => {
@@ -970,7 +983,8 @@ try {
       const enumOf = listed.find((tool) => tool.name === "zulip_post").inputSchema.properties.identity.enum;
       assert.deepEqual(enumOf.slice(0, 2), ["GROK-WEB", "CURSOR"]);
       assert.ok(enumOf.every((name) => ["GROK-WEB", "CURSOR"].includes(name) || name.startsWith("GB-")));
-      assert.ok(!enumOf.includes("GB-ENGINEER"));
+      assert.ok(enumOf.includes("GB-ENGINEER"));
+      assert.ok(!enumOf.includes("GB-RETIRED"));
       const ids = (await call(t.body.access_token, "identities")).json.result.structuredContent;
       assert.equal(ids.default_identity, "GROK-WEB");
       assert.deepEqual(ids.identities.map((row) => row.identity), enumOf);
