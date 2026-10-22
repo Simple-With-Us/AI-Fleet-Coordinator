@@ -43,6 +43,9 @@ class FakeCloudflare:
         self.deleted = []
         self.puts = []
         self.queried = []
+        # When set, the tunnel answers with a shape this script must refuse to
+        # interpret rather than crash on.
+        self.malformed = None
 
     def ok(self, method, path, body=None, **params):
         if path == "/zones":
@@ -54,6 +57,8 @@ class FakeCloudflare:
             if method == "PUT":
                 self.puts.append(body["config"]["ingress"])
                 return {"success": True, "result": {}}
+            if self.malformed is not None:
+                return {"success": True, "result": {"config": {"ingress": self.malformed}}}
             return {
                 "success": True,
                 "result": {
@@ -112,6 +117,24 @@ def main() -> None:
 
     infra.cmd_dns(cf, True)
 
+    # A third-party answer that is not the documented shape must be a precise
+    # refusal, not an incidental AttributeError - in `check` that crash would
+    # read as "could not verify" instead of "the answer was not understood".
+    malformed_errors = {}
+    for label, ingress in (
+        ("entry_is_an_object", ["not-an-object"]),
+        ("hostname_is_a_string", [{"hostname": 7, "service": "http_status:404"}]),
+        ("service_is_a_string", [{"hostname": infra.HOST, "service": {"port": 8787}}]),
+        ("ingress_is_a_list", {"hostname": infra.HOST}),
+    ):
+        cf.malformed = ingress
+        try:
+            infra.tunnel_ingress(cf, TUNNEL_ID)
+            malformed_errors[label] = "ACCEPTED"
+        except SystemExit as exc:
+            malformed_errors[label] = str(exc)
+    cf.malformed = None
+
     print(
         json.dumps(
             {
@@ -119,6 +142,7 @@ def main() -> None:
                 "deleted_record_ids": cf.deleted,
                 "queried": sorted(f"{zone}:{host}" for zone, host in cf.queried),
                 "output": "\n".join(lines),
+                "malformed_errors": malformed_errors,
             }
         )
     )

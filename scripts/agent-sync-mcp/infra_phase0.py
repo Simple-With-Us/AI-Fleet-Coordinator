@@ -95,6 +95,25 @@ class Cloudflare:
         self._email = _load("CLOUDFLARE_JAY_ACCOUNT_EMAIL")
         self._key = _load("CLOUDFLARE_JAY_API_KEY")
 
+    def wrangler_env(self) -> dict:
+        """The environment a wrangler child needs to authenticate.
+
+        Wrangler reads CLOUDFLARE_EMAIL / CLOUDFLARE_API_KEY / CLOUDFLARE_ACCOUNT_ID,
+        while this script loads the first two under the fleet's own names and keeps
+        them inside this object.  Nothing here is printed or logged; the mapping is
+        the same one install_seat_key.py already uses.
+        """
+        env = dict(os.environ)
+        env.update(
+            {
+                "CLOUDFLARE_ACCOUNT_ID": ACCOUNT_ID,
+                "CLOUDFLARE_EMAIL": self._email,
+                "CLOUDFLARE_API_KEY": self._key,
+                "WRANGLER_SEND_METRICS": "false",
+            }
+        )
+        return env
+
     def call(self, method: str, path: str, body: dict | None = None, **params) -> dict:
         url = API + path + ("?" + urllib.parse.urlencode(params) if params else "")
         data = None if body is None else json.dumps(body).encode()
@@ -144,13 +163,42 @@ def dns_records(cf: Cloudflare, zid: str, host: str = HOST) -> list[dict]:
     return cf.ok("GET", f"/zones/{zid}/dns_records", name=host).get("result") or []
 
 
+def tunnel_ingress(cf: Cloudflare, tid: str) -> list[dict]:
+    """The tunnel's ingress rules, shape-checked.
+
+    Cloudflare's response is a third party, and every caller here reads
+    `rule["hostname"]` and `rule["service"]`.  A malformed answer should be a
+    precise refusal rather than an incidental AttributeError that looks like a
+    bug in this script - especially in `check`, where a crash would be read as
+    "could not verify" rather than "the answer was not understood".
+    """
+    config = tunnel_config(cf, tid)
+    if not isinstance(config, dict):
+        raise SystemExit(f"error: tunnel {tid} configuration is not an object")
+    ingress = config.get("ingress")
+    if ingress is None:
+        return []
+    if not isinstance(ingress, list):
+        raise SystemExit(f"error: tunnel {tid} ingress is not a list")
+    for rule in ingress:
+        if not isinstance(rule, dict):
+            raise SystemExit(f"error: tunnel {tid} ingress entry is not an object: {rule!r}")
+        hostname = rule.get("hostname")
+        service = rule.get("service")
+        if hostname is not None and not isinstance(hostname, str):
+            raise SystemExit(f"error: tunnel {tid} ingress hostname is not a string: {hostname!r}")
+        if not isinstance(service, str):
+            raise SystemExit(f"error: tunnel {tid} ingress service is not a string: {service!r}")
+    return ingress
+
+
 def tunnel_hosts(cf: Cloudflare, hosts=RETIRED_HOSTS) -> dict[str, list[str]]:
     """Map each hostname to the tunnel services an ingress rule points it at."""
     t = tunnel(cf)
     if not t:
         return {}
     found = {}
-    for rule in tunnel_config(cf, t["id"]).get("ingress") or []:
+    for rule in tunnel_ingress(cf, t["id"]):
         hostname = rule.get("hostname")
         if hostname in hosts:
             found.setdefault(hostname, []).append(rule.get("service"))
@@ -240,9 +288,7 @@ def cmd_status(cf: Cloudflare, _apply: bool) -> None:
         )
     t = tunnel(cf)
     if t:
-        rules = [
-            r for r in tunnel_config(cf, t["id"]).get("ingress") or [] if r.get("hostname") == HOST
-        ]
+        rules = [r for r in tunnel_ingress(cf, t["id"]) if r.get("hostname") == HOST]
         say(
             f"tunnel {TUNNEL_NAME} ({t['id']}, {t.get('status')}): {len(rules)} ingress rule(s) for {HOST}"
         )
@@ -326,17 +372,22 @@ def cmd_kv(cf: Cloudflare, apply: bool) -> None:
         say(f"created {KV_TITLE} id={res.get('id')}")
 
 
-def put_worker_secret(name: str, value: str) -> None:
+def put_worker_secret(cf: Cloudflare, name: str, value: str) -> None:
     """Set an encrypted Worker secret.
 
-    The value is fed on stdin, never argv, and wrangler's own output is
-    captured rather than relayed:  it can echo the value, so only the exit
-    status is reported.  Naming the secret is safe; its value is not.
+    The value is fed on stdin, never argv.  The child gets the credentials
+    wrangler actually reads plus cwd=HERE, because a bare inherited environment
+    runs `wrangler secret put` unauthenticated and fails with no usable reason.
+    Wrangler's own output is relayed on failure with the value and the API key
+    replaced:  a secret put that dies on a missing Worker or a wrong account is
+    otherwise just "exit 1", which is not enough to act on.
     """
     if shutil.which("wrangler"):
         argv = ["wrangler"]
     elif shutil.which("npx"):
-        argv = ["npx", "wrangler"]
+        # --no-install keeps the pinned devDependency (4.139.0, DEPLOY-PHASE0.md
+        # step 1) instead of whatever a global install happens to be.
+        argv = ["npx", "--no-install", "wrangler"]
     else:
         raise SystemExit(f"error: wrangler is not on PATH; cannot provision {name}")
     try:
@@ -346,11 +397,24 @@ def put_worker_secret(name: str, value: str) -> None:
             capture_output=True,
             text=True,
             timeout=300,
+            cwd=HERE,
+            env=cf.wrangler_env(),
         )
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(124) from exc
+    except FileNotFoundError as exc:
+        raise SystemExit(f"error: {argv[0]} is not on PATH; cannot provision {name}") from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise SystemExit(f"error: could not run wrangler to set {name}: {exc}") from exc
     if proc.returncode != 0:
-        raise SystemExit(f"error: wrangler secret put {name} failed (exit {proc.returncode})")
+        detail = (proc.stderr or proc.stdout or "").strip()
+        for secret in (value, cf._key):
+            if secret:
+                detail = detail.replace(secret, "***")
+        raise SystemExit(
+            f"error: wrangler secret put {name} failed (exit {proc.returncode})"
+            + (f": {detail}" if detail else "")
+        )
 
 
 def cmd_write_config(cf: Cloudflare, apply: bool) -> None:
@@ -385,7 +449,7 @@ def cmd_write_config(cf: Cloudflare, apply: bool) -> None:
     # /authorize and /admin fail closed naming ACCESS_AUD until it is set.
     say(f"ACCESS_AUD -> provisioned as a Worker secret from the {ACCESS_APP_NAME!r} app")
     if plan(apply, "wrangler secret put ACCESS_AUD (deploys a new Worker version)"):
-        put_worker_secret("ACCESS_AUD", app["aud"])
+        put_worker_secret(cf, "ACCESS_AUD", app["aud"])
         say("ACCESS_AUD secret is set; redeploy is not required for it to take effect")
 
 
@@ -437,7 +501,7 @@ def cmd_tunnel(cf: Cloudflare, apply: bool) -> None:
     if not t:
         raise SystemExit(f"error: tunnel {TUNNEL_NAME} not found")
     config = tunnel_config(cf, t["id"])
-    ingress = config.get("ingress") or []
+    ingress = tunnel_ingress(cf, t["id"])
     # Drop a rule for the served host OR the retired one:  either keeps a public
     # hostname aimed at the Mac alive.
     keep = [r for r in ingress if r.get("hostname") not in RETIRED_HOSTS]

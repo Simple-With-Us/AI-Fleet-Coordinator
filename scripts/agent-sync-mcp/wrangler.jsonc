@@ -169,7 +169,7 @@
     // deliberately absent:  it is a private Cloudflare resource identifier and
     // this repo does not commit those.  `infra_phase0.py write-config --apply`
     // provisions it as an encrypted Worker secret (wrangler secret put).  Until
-    // it is set, /authorize and /admin answer 403 and say which variable is
+    // it is set, /authorize and /admin answer 500 and say which variable is
     // missing (fail closed).
     "ACCESS_TEAM_DOMAIN": "silent-frost-37e0.cloudflareaccess.com",
     // Must match the Access policy's emails exactly.  Spec 3.3:  mail@jays.services

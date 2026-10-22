@@ -54,7 +54,19 @@ test("the wrangler file carries no Access aud, and infra_phase0.py provisions on
   const infra = readFileSync(path.join(ROOT, "infra_phase0.py"), "utf8");
   // write-config must write live values, not only the original placeholders.
   assert.ok(!/REPLACE_WITH_ACCESS_AUD/.test(infra), "the dead placeholder substitution is gone");
-  assert.match(infra, /put_worker_secret\(\s*"ACCESS_AUD"/, "the aud is provisioned as a Worker secret");
+  // The aud is provisioned through put_worker_secret, which also hands wrangler
+  // the credentials it authenticates with - so the call carries the Cloudflare
+  // handle first, then the name.
+  assert.match(
+    infra,
+    /put_worker_secret\(\s*\w+\s*,\s*"ACCESS_AUD"/,
+    "the aud is provisioned as a Worker secret",
+  );
+  // A child that inherits the environment runs `wrangler secret put` with none
+  // of the credentials wrangler reads, which fails for a reason the operator
+  // cannot see.  Pin the env and the working directory.
+  assert.match(infra, /env=cf\.wrangler_env\(\)/, "wrangler gets the Cloudflare credentials");
+  assert.match(infra, /cwd=HERE/, "wrangler runs in the Worker directory");
   // The retired host still has to be cleaned up and checked.
   assert.match(infra, /^RETIRED_HOST = "agent-sync\.jays\.services"$/m);
   assert.match(infra, /^RETIRED_ZONE_NAME = "jays\.services"$/m);

@@ -1637,6 +1637,65 @@ class LegacyStateAdoption(unittest.TestCase):
         self.assertEqual(adopted, str(directory / "git-relay-outcomes.json"))
         self.assertFalse(pathlib.Path(adopted).exists())
 
+    def test_a_lost_race_keeps_the_winners_ledger_and_the_legacy_file(self):
+        # Another relay holds the adoption lock and has already produced the
+        # current file.  Clobbering it would orphan the live ledger, which is the
+        # one thing this migration must never do.
+        from git_relay.server import adopt_legacy_state
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        legacy = self._legacy_ledger(directory)
+        current = directory / "git-relay-outcomes.json"
+        current.write_text(json.dumps({"winner": {"state": "applied"}}), encoding="utf-8")
+        (directory / ".git-relay-outcomes.json.adopt.lock").write_text("", encoding="utf-8")
+
+        adopted = adopt_legacy_state(str(current))
+
+        self.assertEqual(adopted, str(current))
+        self.assertEqual(
+            json.loads(current.read_text(encoding="utf-8")),
+            {"winner": {"state": "applied"}},
+            "the current ledger must survive untouched",
+        )
+        self.assertTrue(legacy.exists())
+
+    def test_a_lock_with_no_result_fails_closed_instead_of_racing(self):
+        # The lock is held, nothing has been adopted yet and the deadline passed.
+        # Starting with an empty ledger would re-arm held writes, so refuse.
+        from git_relay import server
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        legacy = self._legacy_ledger(directory)
+        (directory / ".git-relay-outcomes.json.adopt.lock").write_text("", encoding="utf-8")
+        saved = server.ADOPT_LOCK_WAIT_SECONDS
+        server.ADOPT_LOCK_WAIT_SECONDS = 0.0
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                server.adopt_legacy_state(str(directory / "git-relay-outcomes.json"))
+        finally:
+            server.ADOPT_LOCK_WAIT_SECONDS = saved
+        self.assertIn("adopt.lock", str(caught.exception))
+        self.assertFalse((directory / "git-relay-outcomes.json").exists())
+        self.assertTrue(legacy.exists(), "a refused adoption leaves the old ledger alone")
+
+    def test_adoption_stages_through_a_temporary_file_and_leaves_none_behind(self):
+        from git_relay.server import adopt_legacy_state
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        self._legacy_ledger(directory)
+
+        adopt_legacy_state(str(directory / "git-relay-outcomes.json"))
+
+        leftovers = [
+            p.name
+            for p in directory.iterdir()
+            if p.name.endswith(".adopt") or p.name.endswith(".adopt.lock")
+        ]
+        self.assertEqual(leftovers, [], "the staged copy and its lock are both cleaned up")
+
     def test_from_env_adopts_the_default_but_never_an_explicit_path(self):
         from git_relay import server
 

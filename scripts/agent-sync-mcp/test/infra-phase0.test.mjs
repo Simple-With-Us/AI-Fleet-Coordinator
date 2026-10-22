@@ -34,3 +34,18 @@ test("dns --apply finds the tunnel CNAME in both the new and the retired zone", 
   ]);
   assert.deepEqual(result.deleted_record_ids, ["rec-new", "rec-old"]);
 });
+
+test("a malformed tunnel answer is refused by name, not crashed on", () => {
+  const probe = spawnSync("python3", [path.join(ROOT, "test", "infra_phase0_probe.py")], {
+    encoding: "utf8",
+  });
+  assert.equal(probe.status, 0, probe.stderr);
+  const { malformed_errors } = JSON.parse(probe.stdout);
+  // Every caller reads rule["hostname"] / rule["service"];  an answer that is
+  // not the documented shape has to stop with a precise error, because in
+  // `check` a crash reads as "could not verify" rather than "not understood".
+  for (const [label, message] of Object.entries(malformed_errors)) {
+    assert.notEqual(message, "ACCEPTED", `${label}: a malformed ingress was accepted`);
+    assert.match(message, /^error: tunnel tunnel-1 /, `${label}: ${message}`);
+  }
+});

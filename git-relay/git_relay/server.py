@@ -25,6 +25,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -522,6 +523,20 @@ LEGACY_STATE_FILES = {
     DEFAULT_AUDIT_PATH: "pr-relay-audit.jsonl",
     DEFAULT_OUTCOMES_PATH: "pr-relay-outcomes.json",
 }
+# How long a starting relay waits for another one to finish adopting the same
+# legacy file before it refuses.  Adoption is a copy of one small jsonl file, so
+# this is generous; it exists to fail loudly rather than silently start with an
+# empty ledger.
+ADOPT_LOCK_WAIT_SECONDS = 5.0
+
+
+def _fsync_dir(directory: str) -> None:
+    """Make a rename or unlink durable, not just visible to this process."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def adopt_legacy_state(default_path: str) -> str:
@@ -532,10 +547,62 @@ def adopt_legacy_state(default_path: str) -> str:
         return default_path
     directory = os.path.dirname(default_path) or "."
     legacy_path = os.path.join(directory, legacy_name)
+    current_path = os.path.join(directory, default_name)
     # An existing current file always wins:  it is the live ledger.
-    if os.path.exists(os.path.join(directory, default_name)) or not os.path.exists(legacy_path):
+    if os.path.exists(current_path) or not os.path.exists(legacy_path):
         return default_path
-    os.replace(legacy_path, os.path.join(directory, default_name))
+    # A check-then-act is not enough here.  Two relays starting in one directory
+    # both see "no current file", and the loser of the race would either crash in
+    # os.replace or overwrite a live ledger that appeared in between - exactly the
+    # orphaning this migration exists to prevent.  The lock makes the adoption
+    # exclusive and the re-check under it makes the winner's file authoritative.
+    lock_path = os.path.join(directory, f".{default_name}.adopt.lock")
+    deadline = time.monotonic() + ADOPT_LOCK_WAIT_SECONDS
+    while True:
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            break
+        except FileExistsError:
+            # Someone else is adopting, or already did.  Either way the answer is
+            # the same, and a lock left behind by a dead process cannot wedge
+            # startup because the current file is checked first.
+            if os.path.exists(current_path) or not os.path.exists(legacy_path):
+                return default_path
+            if time.monotonic() > deadline:
+                raise SystemExit(
+                    f"error: {lock_path} is held; another git-relay is adopting "
+                    f"{legacy_name} into {default_name}.  Retry once it finishes."
+                )
+            time.sleep(0.05)
+    try:
+        # Re-check under the lock:  the current file always wins.
+        if os.path.exists(current_path) or not os.path.exists(legacy_path):
+            return default_path
+        # Stage the contents in the same directory, fsync them, then replace the
+        # final path, so a crash cannot leave the ledger half-written or lose the
+        # rename that gives it its new name.
+        fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=f".{default_name}.", suffix=".adopt")
+        try:
+            with os.fdopen(fd, "wb") as target, open(legacy_path, "rb") as source:
+                shutil.copyfileobj(source, target)
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(tmp_path, current_path)
+            _fsync_dir(directory)
+            os.unlink(legacy_path)
+            _fsync_dir(directory)
+        except Exception:
+            # The legacy file is untouched unless the unlink was reached, so a
+            # retry is safe; only the staged copy goes.
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+    finally:
+        os.close(lock_fd)
+        try:
+            os.unlink(lock_path)
+        except OSError:
+            pass
     print(
         f"git-relay: adopted the pre-rename {legacy_name} as {default_name}; "
         "its held write outcomes still apply",

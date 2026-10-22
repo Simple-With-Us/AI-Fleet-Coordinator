@@ -70,13 +70,83 @@ class MintScanError(RuntimeError):
     """The mint-site inventory could not be built, so no claim may rest on it."""
 
 
+def _is_docstring(node: ast.AST, parent: ast.AST | None) -> bool:
+    """True when `node` is the leading statement of a module/class/function body.
+
+    Prose about minting is not a mint site.  Without this, a module or function
+    docstring that merely names the endpoint would be indistinguishable from a
+    live call.
+    """
+    body = getattr(parent, "body", None)
+    return bool(body) and body[0] is node
+
+
+def _module_level_mentions(tree: ast.AST) -> bool:
+    """True when the endpoint appears in a string that lives outside every function.
+
+    A module-level constant (MINT_PATH = "/app/installations/1/" + MINT_ENDPOINT)
+    or a module-level call is a mint site in its own right:  no per-function
+    guard can cover code that runs at import time, so a guarded function in the
+    same file must not be able to vouch for it.  The endpoint is written in two
+    pieces here for the same reason MINT_ENDPOINT itself is:  this module must
+    not contain the literal, or it becomes its own mint site.
+
+    The walk descends into classes but stops at every function boundary, so a
+    mention inside a function stays that function's business (_mint_functions).
+    """
+    stack: list[tuple[ast.AST, ast.AST | None]] = [
+        (child, tree) for child in ast.iter_child_nodes(tree)
+    ]
+    while stack:
+        node, parent = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        # A docstring is a Constant wrapped in a leading Expr statement.
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and _is_docstring(node, parent)
+        ):
+            continue
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and MINT_ENDPOINT in node.value
+        ):
+            return True
+        stack.extend((child, node) for child in ast.iter_child_nodes(node))
+    return False
+
+
+def _has_direct_guard(node: ast.AST) -> bool:
+    """True when refuse_minting() is a statement of the function body itself.
+
+    Scoped to `node.body` on purpose.  An unscoped search over the whole subtree
+    accepts a guard that can never run - `if False: refuse_minting()` - or one
+    that is swallowed (`try: refuse_minting() except Exception: pass`), and
+    either of those lets a live mint path pass as "guarded".
+    """
+    for stmt in getattr(node, "body", []):
+        if (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Call)
+            and (
+                getattr(stmt.value.func, "id", None) == GUARD_CALL
+                or getattr(stmt.value.func, "attr", None) == GUARD_CALL
+            )
+        ):
+            return True
+    return False
+
+
 def _mint_functions(text: str) -> list[tuple[str, bool]]:
     """(function name, guarded) for every function that owns a mint site.
 
     Guardedness is decided per CALL SITE, never per file:  a file that merely
     mentions refuse_minting once must not be able to hide a second, unguarded
     mint path behind that mention.  Every function whose own source mentions
-    the mint endpoint must call refuse_minting somewhere inside itself.
+    the mint endpoint must call refuse_minting as a statement of its own body.
 
     The guard itself is skipped:  refuse_minting is the refusal, not a mint
     site, and its docstring talks about minting by design.
@@ -94,15 +164,7 @@ def _mint_functions(text: str) -> list[tuple[str, bool]]:
         source = ast.get_source_segment(text, node) or ""
         if MINT_ENDPOINT not in source:
             continue
-        guarded = any(
-            isinstance(inner, ast.Call)
-            and (
-                getattr(inner.func, "id", None) == GUARD_CALL
-                or getattr(inner.func, "attr", None) == GUARD_CALL
-            )
-            for inner in ast.walk(node)
-        )
-        found.append((node.name, guarded))
+        found.append((node.name, _has_direct_guard(node)))
     return found
 
 
@@ -125,10 +187,14 @@ def scan_mint_sites(root: Path) -> dict[str, bool]:
         if MINT_ENDPOINT not in text:
             continue
         functions = _mint_functions(text)
-        # No function owns the endpoint (module-level constant or comment):
-        # nothing can be proven guarded, so the file counts as a mint site.
-        sites[path.relative_to(root).as_posix()] = bool(functions) and all(
-            guarded for _name, guarded in functions
+        tree = ast.parse(text)
+        # A mention outside every function (module constant, module-level call)
+        # runs at import time and no per-function guard can cover it, so it
+        # makes the file unguarded on its own.
+        sites[path.relative_to(root).as_posix()] = (
+            not _module_level_mentions(tree)
+            and bool(functions)
+            and all(guarded for _name, guarded in functions)
         )
     return sites
 
@@ -205,6 +271,68 @@ class MintScanItself(unittest.TestCase):
         with self.assertRaises(MintScanError) as caught:
             scan_mint_sites(self.root)
         self.assertIn("bad.py", str(caught.exception))
+
+    def test_a_module_level_mint_site_is_unguarded_despite_a_guarded_function(self):
+        # Code that runs at import time cannot be covered by a guard living
+        # inside some function, so the file is unguarded.
+        self._write(
+            "module_level.py",
+            "MINT_PATH = '/app/installations/1/" + MINT_ENDPOINT + "'\n"
+            "def guarded():\n"
+            f"    {GUARD_CALL}()\n"
+            "    return post('/app/installations/1/" + MINT_ENDPOINT + "')\n",
+        )
+        self.assertEqual(scan_mint_sites(self.root), {"module_level.py": False})
+
+    def test_a_docstring_that_only_names_the_endpoint_is_not_a_mint_site(self):
+        # Prose about minting must not turn every module into a mint site, or
+        # the verdict stops meaning anything.
+        self._write(
+            "documented.py",
+            '"""This module posts to /app/installations/1/'
+            + MINT_ENDPOINT
+            + ' - see below."""\n'
+            "def guarded():\n"
+            f"    {GUARD_CALL}()\n"
+            "    return post('/app/installations/1/" + MINT_ENDPOINT + "')\n",
+        )
+        self.assertEqual(scan_mint_sites(self.root), {"documented.py": True})
+
+    def test_a_guard_that_can_never_run_does_not_count_as_guarded(self):
+        # `if False: refuse_minting()` is present but unreachable, so the live
+        # mint path below it is exactly the second path this scan exists to find.
+        self._write(
+            "dead_guard.py",
+            "def live():\n"
+            "    if False:\n"
+            f"        {GUARD_CALL}()\n"
+            "    return post('/app/installations/1/" + MINT_ENDPOINT + "')\n",
+        )
+        self.assertEqual(scan_mint_sites(self.root), {"dead_guard.py": False})
+
+    def test_a_swallowed_guard_does_not_count_as_guarded(self):
+        self._write(
+            "swallowed.py",
+            "def live():\n"
+            "    try:\n"
+            f"        {GUARD_CALL}()\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "    return post('/app/installations/1/" + MINT_ENDPOINT + "')\n",
+        )
+        self.assertEqual(scan_mint_sites(self.root), {"swallowed.py": False})
+
+    def test_a_guard_in_a_nested_helper_does_not_guard_the_caller(self):
+        # The guard must dominate this function's own mint call.
+        self._write(
+            "nested.py",
+            f"def {GUARD_CALL}():\n"
+            "    raise SystemExit('refused')\n"
+            "def live():\n"
+            "    helper()\n"
+            "    return post('/app/installations/1/" + MINT_ENDPOINT + "')\n",
+        )
+        self.assertEqual(scan_mint_sites(self.root), {"nested.py": False})
 
 
 class OperatorMintPrimitivesRefuse(unittest.TestCase):
