@@ -161,6 +161,25 @@ ${replaceLine}
   return htmlResponse(`Connect ${seat}`, body, { headers });
 }
 
+function gbBearerSection(rows, csrf) {
+  if (!rows.length) return "";
+  const body = rows
+    .map((r) => {
+      const st = r.status ?? {};
+      const state = r.status === null ? "Unknown (diagnostic read failed)" : st.active ? `<span class="ok">Active</span>` : st.expired ? `<span class="warn">Expired</span>` : "None";
+      const detail = st.created_at ? `minted ${escapeHtml(ownerTime(st.created_at))}, expires ${escapeHtml(ownerTime(st.expires_at))}${st.last_used_at ? `, last used ${escapeHtml(ownerTime(st.last_used_at))}` : ", never used"}` : "";
+      const buttons = [
+        r.credentials ? actionButton(csrf, "mint_gb_bearer", st.active || st.expired ? "Rotate (Mint New)" : "Mint", { identity: r.identity }) : `<span class="warn">No credentials loaded</span>`,
+        st.active || st.expired ? actionButton(csrf, "revoke_gb_bearer", "Revoke", { identity: r.identity }) : "",
+      ].join("");
+      return `<tr><td><strong>${escapeHtml(r.identity)}</strong></td><td>${state}<br><small>${detail}</small></td><td>${buttons}</td></tr>`;
+    })
+    .join("");
+  return `<h2>Grok Bot Bearers</h2>
+<p>${sentences("A bearer lets one Grok Bot reach the MCP server as itself only, without the consent flow.", "Minting shows it once and stores only a hash here.", "Rotating replaces the old one at once.", "Each lasts 90 days.")}</p>
+<table><tr><th>Bot</th><th>Bearer</th><th>Actions</th></tr>${body}</table>`;
+}
+
 function csrfField(csrf) {
   return `<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">`;
 }
@@ -172,8 +191,21 @@ function actionButton(csrf, action, label, fields = {}) {
   return `<form class="inline" method="post" action="/admin/action">${csrfField(csrf)}<input type="hidden" name="action" value="${escapeHtml(action)}">${hidden}<button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
+/**
+ * The one place a per-bot bearer is ever shown (src/gb-bearer.js).  Sent no-store with the page headers;
+ * the Worker keeps only the hash, so reloading cannot show it again.
+ */
+export function gbBearerRevealPage({ identity, token, expiresAt }) {
+  const body = `<h1>Bearer For ${escapeHtml(identity)}</h1>
+<p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only a hash, so it cannot show it again.", "To get another, mint a new one here, which replaces this one.")}</p>
+<p><code id="gb-bearer-token">${escapeHtml(token)}</code></p>
+<p>${sentences(`Expires ${ownerTime(expiresAt)}.`, "Send it as an Authorization: Bearer header to the MCP URL, and it acts only as this bot.")}</p>
+<p><a href="/admin">Back to Agent-Sync Admin</a></p>`;
+  return htmlResponse(`Bearer For ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
+}
+
 /** /admin (spec 3.9):  seat state, keys, grants, clients, refusals, tool calls, audit. */
-export function adminPage({ email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [] }, headers) {
+export function adminPage({ gbBearers = [], email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [] }, headers) {
   const seatRows = seats
     .map((s) => {
       const unavailable = new Set(s.unavailableFields ?? []);
@@ -255,6 +287,7 @@ export function adminPage({ email, seats, clients, refusals, tokenRefusals = [],
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Seats</h2>
 <table><tr><th>Seat</th><th>Arming</th><th>State</th><th>Epoch</th><th>Zulip Key</th><th>Grants</th><th>Actions</th></tr>${seatRows}</table>
+${gbBearerSection(gbBearers, csrf)}
 <h2>Hand-Registered Clients (Manual Forms)</h2>
 <p>${sentences(
     "ChatGPT and Grok normally connect with a published client metadata document and need no manual client.",
