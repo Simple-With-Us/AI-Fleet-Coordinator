@@ -399,7 +399,7 @@ try {
   await step("unauthenticated initialize gets 401 with resource_metadata", async () => {
     const r = await mcp(null, "initialize", INIT);
     assert.equal(r.status, 401);
-    assert.match(r.headers.get("www-authenticate"), /resource_metadata="https:\/\/agent-sync\.jays\.services\/\.well-known\/oauth-protected-resource\/mcp"/);
+    assert.match(r.headers.get("www-authenticate"), /resource_metadata="https:\/\/agents\.simplewithus\.com\/\.well-known\/oauth-protected-resource\/mcp"/);
   });
 
   await step("/authorize and /admin without an Access JWT are 403", async () => {
