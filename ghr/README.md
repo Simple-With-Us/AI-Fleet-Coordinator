@@ -1,9 +1,10 @@
 # GHR - the GitHub relay (ghr/)
 
-One scoped GitHub token, narrow audited PR actions for fleet seats. Seats never hold the token:
-they authenticate to this service with their own bearer tokens and call four actions; the service
-holds the only copy of the GitHub token in its environment, checks each call against per-seat
-policy, and writes an audit row for every call, allowed or denied.
+GHR knows each seat from its bearer token and picks the credential by task:  PR-write authoring
+runs under the owner's scoped PR-only token (the only copy lives in the service's environment),
+and every other GitHub task runs under the seat's own GitHub App token, which the relay mints and
+refreshes from App keys in Infisical.  Every call is checked against per-seat policy and written
+to the audit log, allowed or denied.
 
 This is deliberately separate from the OPS-966 operator broker: that stays disabled and
 unwired; this package is its own service with its own token and its own (much smaller) surface.
