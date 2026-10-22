@@ -750,3 +750,49 @@ test("the sweep backfills per-source indices for pre-routing records", async () 
   assert.equal(collected.topics["Legacy.Service"].total, 2);
   assert.equal(collected.firing, 2);
 });
+
+test("a source named like an Object member does not erase the refresh response", async () => {
+  const kv = fakeKV();
+  const env = envFor(kv, {
+    INGRESS_SHARED_TOKEN: "fixture",
+    ZULIP_BOT_EMAIL__PROTO_: "proto-bot@example.invalid",
+    ZULIP_BOT_API_KEY__PROTO_: "proto-key",
+  });
+  // The route name is the source name, so a route named "__proto__" is a
+  // source named "__proto__".  On a plain object the write to it sets the
+  // prototype instead of adding a key, and the whole response is lost.
+  seedSignal(kv, {
+    source: "__proto__",
+    key: "__proto__:1",
+    service: "Shared.Service",
+    state: {
+      phase: "alerting",
+      severity: "MODERATE",
+      since: 1,
+      updated: 2,
+      text: "odd source",
+      link: "",
+    },
+  });
+  const zulip = stubZulip();
+  try {
+    const response = await handler.fetch(
+      new Request("https://test/status/alerts/Shared.Service", {
+        headers: { authorization: "Bearer fixture" },
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    // An own key, not the inherited prototype: a plain object would answer
+    // body.sources["__proto__"] with Object.prototype and lose the entry.
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(body.sources, "__proto__"),
+      "the hostile source is an own key",
+    );
+    assert.deepEqual(Object.keys(body.sources), ["__proto__"]);
+  } finally {
+    zulip.restore();
+  }
+});

@@ -760,7 +760,11 @@ const handler = {
       // is what this route always did.
       const sources = await sourcesForTopic(env, DEFAULT_CHANNEL, topic);
       const tracked = sources.length > 0;
-      const rendered = {};
+      // Null-prototype map, like the inventory in collectTopics: a source
+      // name comes from the vendor route name, so a route literally named
+      // "__proto__" must not set this object's prototype and erase the
+      // response that carries it.
+      const rendered = Object.create(null);
       const unavailable = [];
       for (const source of tracked ? sources : ["generic"]) {
         if (!resolveCredential(env, source)) {
