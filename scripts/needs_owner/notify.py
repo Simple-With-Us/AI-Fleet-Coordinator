@@ -18,6 +18,7 @@ bot of the filing seat (or CLAUDE, whose fallback notifier posts for any seat), 
 a line of its own that is not quoted, and then the oldest such message, so a person's quote-and-reply or
 a peer who copies the (public) uid can never become the notice.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,16 +26,17 @@ import os
 import re
 from dataclasses import dataclass
 
-from . import f3
+from . import f3, records
 from . import links as linkmod
-from . import records
 from . import text as T
 from .errors import Refusal
 from .items import Item
 from .proc import Result, Runner
 
 SESSION = "needsown"  # agent-sync cuts a session label to 8 characters
-CHANNEL = os.environ.get("AGENT_SYNC_CHANNEL", "").strip() or "work-in-progress"  # the realm renamed #agent-sync; the env var overrides
+CHANNEL = (
+    os.environ.get("AGENT_SYNC_CHANNEL", "").strip() or "work-in-progress"
+)  # the realm renamed #agent-sync; the env var overrides
 READ_BACK = 30  # messages read when looking for a post that may have landed
 MAYBE_SENT_CODES = (5, 6)
 FALLBACK_SEAT = "CLAUDE"  # CLAUDE's fallback notifier (C6-2) posts a pending notice for any seat
@@ -52,8 +54,15 @@ class Notice:
     linkback: str | None = None  # mirror items:  ok | failed
 
     def to_json(self) -> dict:
-        return {"state": self.state, "notified_msg_id": self.msg_id, "topic": self.topic, "reason": self.reason,
-                "recorded": self.recorded, "already_notified": self.already, "linkback": self.linkback}
+        return {
+            "state": self.state,
+            "notified_msg_id": self.msg_id,
+            "topic": self.topic,
+            "reason": self.reason,
+            "recorded": self.recorded,
+            "already_notified": self.already,
+            "linkback": self.linkback,
+        }
 
 
 def _quote(text: str, cap: int) -> str:
@@ -74,14 +83,22 @@ def compose_body(item: Item, header: str | None = None) -> str:
         raise Refusal("%s has no readable needs-owner block" % item.identifier)
     urgent = item.severity == "P1"
     paragraphs = [header] if header else []
-    paragraphs.append("**%s** from %s:  %s" % ("Urgent decision needed" if urgent else "Decision needed", b.filed_by,
-                                              _quote(b.question, 260)))
+    paragraphs.append(
+        "**%s** from %s:  %s"
+        % (
+            "Urgent decision needed" if urgent else "Decision needed",
+            b.filed_by,
+            _quote(b.question, 260),
+        )
+    )
     if b.again_of:
         paragraphs.append("Asking again.  The earlier question was %s." % _again_phrase(b.again_of))
     lines = []
     for n, option in enumerate(b.options, 1):
         if n in b.low_stakes:
-            lines.append("%s Option %d:  %s  (Tap to answer)" % (T.option_emoji(n), n, _quote(option, 220)))
+            lines.append(
+                "%s Option %d:  %s  (Tap to answer)" % (T.option_emoji(n), n, _quote(option, 220))
+            )
         else:
             lines.append("Option %d:  %s  (reply here to choose)" % (n, _quote(option, 220)))
     paragraphs.append("\n".join(lines))
@@ -149,8 +166,21 @@ def find_notice(runner: Runner, topic: str, uid: str, *, filer: str | None = Non
     anyone, does not count).  The result is the lowest matching id, because the first post is the notice.
     A sender whose kind agent-sync could not look up has `is_bot` null and is left out:  the worst result
     is a repeated post, never an answer or a quote taken for the notice."""
-    result = runner.agent_sync("read", "--as", runner.seat, "--session", SESSION, "--json", "--channel", CHANNEL,
-                               "--topic", topic, "--include-self", "--limit", str(READ_BACK))
+    result = runner.agent_sync(
+        "read",
+        "--as",
+        runner.seat,
+        "--session",
+        SESSION,
+        "--json",
+        "--channel",
+        CHANNEL,
+        "--topic",
+        topic,
+        "--include-self",
+        "--limit",
+        str(READ_BACK),
+    )
     if not result.ok:
         return None
     allowed = notice_seats(runner.seat) | (notice_seats(filer) if filer else frozenset())
@@ -160,9 +190,16 @@ def find_notice(runner: Runner, topic: str, uid: str, *, filer: str | None = Non
             message = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(message, dict) or not isinstance(message.get("id"), int) or isinstance(message.get("id"), bool):
+        if (
+            not isinstance(message, dict)
+            or not isinstance(message.get("id"), int)
+            or isinstance(message.get("id"), bool)
+        ):
             continue
-        if message.get("is_bot") is not True or f3.identity.canonical_seat(message.get("seat")) not in allowed:
+        if (
+            message.get("is_bot") is not True
+            or f3.identity.canonical_seat(message.get("seat")) not in allowed
+        ):
             continue
         if carries_ref(str(message.get("content") or ""), uid):
             found.append(message["id"])
@@ -173,7 +210,9 @@ def _record(runner: Runner, item: Item, text: str) -> bool:
     """One comment on the item, tried twice."""
     for _ in range(2):
         with runner.private_file(text) as path:
-            if runner.board("comment", item.identifier, "--by", runner.seat, "--text-file", path).ok:
+            if runner.board(
+                "comment", item.identifier, "--by", runner.seat, "--text-file", path
+            ).ok:
                 return True
     return False
 
@@ -184,25 +223,38 @@ def record(runner: Runner, item: Item, text: str) -> bool:
 
 
 def _announce(runner: Runner, item: Item, msg_id: int, topic: str) -> Notice:
-    return Notice("notified", msg_id, topic, None, _record(runner, item, records.notified_text(msg_id, topic)))
+    return Notice(
+        "notified", msg_id, topic, None, _record(runner, item, records.notified_text(msg_id, topic))
+    )
 
 
 def _pending(runner: Runner, item: Item, topic: str, reason: str) -> Notice:
     recorded = True
-    if item.pending in (None, "held"):  # one record is enough (a rerun does not pile more on);  a "held" mark is replaced
+    if item.pending in (
+        None,
+        "held",
+    ):  # one record is enough (a rerun does not pile more on);  a "held" mark is replaced
         recorded = _record(runner, item, records.pending_text(reason))
     return Notice("notify_pending", None, topic, reason, recorded)
 
 
-def notify(runner: Runner, item: Item, *, rescan: bool = False, environ: dict | None = None,
-           header: str | None = None) -> Notice:
+def notify(
+    runner: Runner,
+    item: Item,
+    *,
+    rescan: bool = False,
+    environ: dict | None = None,
+    header: str | None = None,
+) -> Notice:
     """Announce `item` unless it already is.  `rescan` looks in the topic for an earlier post of this item
     first (a rerun after a crash between the post and its record).  `header` goes first in the message."""
     b = item.block
     if b is None:
         raise Refusal("%s has no readable needs-owner block;  adopt it first" % item.identifier)
     if item.notified:
-        return Notice("notified", item.notified[0], item.notified[1] or item.topic, None, True, already=True)
+        return Notice(
+            "notified", item.notified[0], item.notified[1] or item.topic, None, True, already=True
+        )
     if b.mirror_of:
         return _mirror(runner, item, linkmod.parse_topic_link(b.mirror_of, environ))
     topic = T.topic_for(item.identifier, b.question)
@@ -210,14 +262,32 @@ def notify(runner: Runner, item: Item, *, rescan: bool = False, environ: dict | 
         earlier = find_notice(runner, topic, b.uid, filer=b.filed_by)
         if earlier is not None:
             return _announce(runner, item, earlier, topic)
-    result = runner.agent_sync("post", "--as", runner.seat, "--session", SESSION, "--json", "--topic", topic,
-                               "--to-owner", "--", "-", stdin=compose_body(item, header))
+    result = runner.agent_sync(
+        "post",
+        "--as",
+        runner.seat,
+        "--session",
+        SESSION,
+        "--json",
+        "--topic",
+        topic,
+        "--to-owner",
+        "--",
+        "-",
+        stdin=compose_body(item, header),
+    )
     if result.ok:
         msg_id = _message_id(result)
         if msg_id is not None:
             return _announce(runner, item, msg_id, topic)
-        landed = find_notice(runner, topic, b.uid, filer=b.filed_by)  # posted, but the answer carried no id
-        return _announce(runner, item, landed, topic) if landed is not None else _pending(runner, item, topic, "send_failed")
+        landed = find_notice(
+            runner, topic, b.uid, filer=b.filed_by
+        )  # posted, but the answer carried no id
+        return (
+            _announce(runner, item, landed, topic)
+            if landed is not None
+            else _pending(runner, item, topic, "send_failed")
+        )
     if result.missing:
         return _pending(runner, item, topic, "no_agent_sync")
     if result.timed_out or result.code in MAYBE_SENT_CODES:
@@ -234,8 +304,22 @@ def _mirror(runner: Runner, item: Item, link: linkmod.TopicLink) -> Notice:
     """A Grok Bot persona already opened the topic:  record its message as the notice, then reply there
     with the Linear link (the reply is a courtesy;  its failure is reported and does not undo the record)."""
     notice = _announce(runner, item, link.message_id, link.topic)
-    reply = ("Filed in Linear as %s:  %s\n\nAnswer here or as a comment on the Linear issue.\n" % (item.identifier, item.url))
-    result = runner.agent_sync("reply", "--as", runner.seat, "--session", SESSION, "--json", "--id", str(link.message_id),
-                               "--", "-", stdin=reply)
+    reply = "Filed in Linear as %s:  %s\n\nAnswer here or as a comment on the Linear issue.\n" % (
+        item.identifier,
+        item.url,
+    )
+    result = runner.agent_sync(
+        "reply",
+        "--as",
+        runner.seat,
+        "--session",
+        SESSION,
+        "--json",
+        "--id",
+        str(link.message_id),
+        "--",
+        "-",
+        stdin=reply,
+    )
     notice.linkback = "ok" if result.ok else "failed"
     return notice
