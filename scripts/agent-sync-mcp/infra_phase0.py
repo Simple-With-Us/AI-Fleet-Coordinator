@@ -214,7 +214,9 @@ def tunnel_ingress(cf: Cloudflare, tid: str) -> list[dict]:
     return tunnel_ingress_from_config(tunnel_config(cf, tid), tid)
 
 
-def tunnel_hosts(cf: Cloudflare, hosts=RETIRED_HOSTS, tid: str | None = None) -> dict[str, list[str]]:
+def tunnel_hosts(
+    cf: Cloudflare, hosts=RETIRED_HOSTS, tid: str | None = None
+) -> dict[str, list[str]]:
     """Map each hostname to the tunnel services an ingress rule points it at.
 
     `tid` reuses a tunnel id the caller already resolved, so a caller that

@@ -95,12 +95,7 @@ class FakeCloudflare:
             if host is None:
                 return {
                     "success": True,
-                    "result": [
-                        r
-                        for (z, _h), recs in RECORDS.items()
-                        if z == zone
-                        for r in recs
-                    ],
+                    "result": [r for (z, _h), recs in RECORDS.items() if z == zone for r in recs],
                 }
             self.queried.append((zone, host))
             return {"success": True, "result": RECORDS.get((zone, host), [])}
