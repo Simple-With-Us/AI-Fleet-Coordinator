@@ -154,7 +154,9 @@ def notice_seats(seat: str) -> frozenset[str]:
     return frozenset({f3.identity.canonical_seat(seat), FALLBACK_SEAT})
 
 
-def find_notice(runner: Runner, topic: str, uid: str, *, filer: str | None = None, channel: str | None = None) -> int | None:
+def find_notice(
+    runner: Runner, topic: str, uid: str, *, filer: str | None = None, channel: str | None = None
+) -> int | None:
     """The id of the message that announced the item whose uid is `uid`, else None.  `filer` is the seat that
     filed the item when the caller is not that seat (the fallback notifier runs as CLAUDE, so the filer's own bot
     must be allowed too, or a post the filer's bot landed but did not record would be posted a second time).
