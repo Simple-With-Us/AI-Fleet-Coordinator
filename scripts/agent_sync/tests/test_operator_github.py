@@ -187,6 +187,15 @@ class ReviewFixTests(unittest.TestCase):
             self.request()
         self.assertEqual(c.exception.status,503)
         self.assertIn('OPERATOR_GITHUB_CALLER_CODEX_HMAC',c.exception.reason)
+    def test_caller_key_lookup_timeout_is_retryable_503_and_audited_retryable(self):
+        from agent_sync.github_token_router import RoutingError
+        def boom(seat):
+            raise RoutingError('lookup timed out',outcome='retryable')
+        self.broker.key_for=boom
+        with self.assertRaises(Refused) as c:
+            self.request()
+        self.assertEqual(c.exception.status,503)
+        self.assertEqual(self.audit[-1]['outcome'],'retryable')
     def test_malformed_key_is_503_naming_per_seat_variable(self):
         self.broker.key_for=lambda seat:'tooshort'
         with self.assertRaises(Refused) as c:

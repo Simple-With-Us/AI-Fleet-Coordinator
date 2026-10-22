@@ -195,7 +195,17 @@ class Broker:
                 if len(bucket) >= MAX_REQUESTS_PER_MINUTE:
                     raise Refused(429, "rate limited")
                 self.rates[seat] = bucket + [now]
-            key = self.key_for(seat)
+            try:
+                key = self.key_for(seat)
+            except RoutingError as exc:
+                # Keep the lookup's own outcome ("retryable" for a timeout)
+                # in the audit row;  nothing was minted and no nonce is claimed.
+                audit_state["outcome"] = getattr(exc, "outcome", None) or "refused"
+                raise Refused(
+                    503,
+                    "OPERATOR_GITHUB_CALLER_" + seat + "_HMAC lookup unavailable"
+                    + ("; retry" if audit_state["outcome"] == "retryable" else ""),
+                ) from None
             if key is None:
                 if self.policy_for(seat) is None:
                     # Unknown seat:  an authentication failure, never a

@@ -1,3 +1,4 @@
+import os
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -120,3 +121,15 @@ class LocalFailureOutcomeTests(unittest.TestCase):
                     with self.assertRaises(RoutingError) as c:
                         fleet_secrets_get("/github-apps", "GH_APP_SWU_EXAMPLE_ID")
                 self.assertEqual(c.exception.outcome, outcome)
+
+
+class HomeFailureKeepsExplicitBinary(unittest.TestCase):
+    def test_pinned_binary_survives_a_failing_home_lookup(self):
+        from unittest import mock
+        from pathlib import Path
+        with mock.patch.dict(os.environ, {"FLEET_SECRETS_BIN": "/opt/pinned/fleet-secrets"}), \
+                mock.patch.object(Path, "home", side_effect=RuntimeError("no home")), \
+                mock.patch("agent_sync.operator_github_secrets.subprocess.run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout=b"v")
+            fleet_secrets_get("/p", "N")
+        self.assertEqual(run.call_args[0][0][0], "/opt/pinned/fleet-secrets")

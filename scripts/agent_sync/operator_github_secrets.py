@@ -22,10 +22,12 @@ def fleet_secrets_get(path, name):
     errors name the variable, never a value or backend detail.  Every local failure
     happens before any provider request, so the broker releases the caller nonce:
     "refused" for a missing or rejecting store, "retryable" for a timeout."""
+    # An explicit FLEET_SECRETS_BIN override must survive a failing Path.home().
     try:
         binary = fleet_secrets_bin(os.environ, Path.home())
     except (OSError, RuntimeError):
-        binary = None
+        explicit = (os.environ.get("FLEET_SECRETS_BIN") or "").strip()
+        binary = os.path.expanduser(explicit) if explicit else None
     if not binary:
         raise RoutingError(
             name + " unavailable: fleet-secrets executable not found", outcome="refused"
