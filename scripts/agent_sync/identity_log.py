@@ -5,7 +5,8 @@ One JSON line per write in <state>/logs/identity.jsonl (the state dir is AGENT_S
 ~/.agent-sync), mode 600:  when, which transport and process, which MCP client (from `initialize`
 clientInfo), the connection's default identity, the identity the call claimed, the tool or command,
 the outcome and the message id when there is one.  Ids only:  never a body, a topic, a key or any
-other Zulip-authored text.  A failure to write the log never fails the write it records.
+other Zulip-authored text.  A failure to write the log never fails the write it records, and neither
+does a label the secret scanner refuses (the field is withheld instead).
 
 Python 3.11+, standard library only.
 """
@@ -20,6 +21,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from . import secretscan
 from .state import state_root
 
 LOG_NAME = "identity.jsonl"
@@ -36,6 +38,24 @@ def safe_text(value: Any, limit: int = FIELD_LIMIT) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     return _SAFE.sub("?", value.strip())[:limit]
+
+
+def scanned_text(value: Any, limit: int = FIELD_LIMIT) -> str | None:
+    """`safe_text` for a caller-supplied label that is persisted, after a secret scan.
+
+    A credential-shaped seat label is never written, not even in part:  the row keeps the shape of
+    the log (the field is None) rather than the value, so the audit stays readable and the label
+    cannot become durable secret material in a file an admin reads.
+
+    This *withholds* rather than raising.  `append` is called on the way out of a write that has
+    already been decided, and this module's contract is that a log problem never fails the write it
+    records;  raising `secret_detected` here would turn an audit row into a second, worse refusal of
+    somebody else's message.  The caller of the write is the right place to refuse a bad seat, and
+    the DM rule already scans its own inputs (dm_policy, tools._scan)."""
+    label = safe_text(value, limit)
+    if label is None:
+        return None
+    return None if secretscan.scan(label) else label
 
 
 def client_label(info: Any) -> dict[str, str | None] | None:
@@ -73,7 +93,7 @@ def append(
         "pid": os.getpid(),
         "client": client_label(client) if client is not None else None,
         "default_identity": safe_text(default_identity),
-        "seat": safe_text(seat),
+        "seat": scanned_text(seat),
         "identity": safe_text(identity),
         "tool": safe_text(tool),
         "outcome": safe_text(outcome),

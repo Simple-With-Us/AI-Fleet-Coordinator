@@ -191,6 +191,17 @@ test("the DM-rule check is metered as a read, and a cached send does not pay for
   assert.equal(openerReads(), readsAfterFirst, "a cached send issues no further Zulip read");
 });
 
+test("a malformed messages answer is a retryable read failure, never a terminal refusal", async () => {
+  const { tools, fake, codex } = harness();
+  // Zulip answered 200 with a body that holds no message list.  Reading that as "no
+  // conversation exists" would refuse a seat's legitimate reply inside an Operator-opened DM
+  // with a terminal dm_not_allowed no retry can clear, so the rule fails retryable instead.
+  fake.failNext("GET", "messages", () => fake.ok({ messages: "not-a-list" }));
+  const error = errorOf(await tools.call("zulip_dm_send", { user_ids: [codex.user_id], text: "hello" }), "unavailable");
+  assert.equal(error.retryable, true, "the seat retries once the connection is back");
+  assert.deepEqual(directMessages(fake), [], "nothing was sent while the rule could not decide");
+});
+
 test("AGENT_SYNC_DM_RULE=off restores today's behaviour", async () => {
   const fake = new FakeZulip();
   const clock = { now: Date.parse("2026-10-22T10:00:00Z") };

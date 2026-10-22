@@ -1514,12 +1514,17 @@ class Tools:
         """The messages already in this conversation, oldest included, so a seat can tell an
         Operator-opened DM (which it may answer) from one it would be opening itself.
 
-        A definitive `ApiError` (Zulip said no to this narrow) is an empty conversation, so the
-        rule falls through to its refusal.  A `NetworkError` is a *transient* failure and is left to
-        propagate:  collapsing it into an empty conversation would read as "no conversation exists",
-        and the DM rule would then answer a seat's legitimate reply inside an Operator-opened
-        conversation with a terminal `dm_not_allowed` refusal that no retry can clear.  The caller
-        turns that error into a retryable `unavailable` instead."""
+        Only a *definitive* refusal of this narrow is an empty conversation, so the rule falls
+        through to its refusal.  Everything else propagates, because collapsing it into an empty
+        conversation reads as "no conversation exists" and the rule then answers a seat's
+        legitimate reply inside an Operator-opened conversation with a terminal `dm_not_allowed`
+        refusal that no retry can clear.  Two failures are separated for that reason:
+
+        - a **credential rejection** (401, 403) means this bot's key was refused, which says
+          nothing at all about the conversation.  It is re-raised so `map_exception` renders it as
+          `not_authorized`/`zulip_error` with the masked preview, never as "no such DM".
+        - a **transient** failure (408, 429, a gateway or any other 5xx) becomes a `NetworkError`,
+          which the caller turns into a retryable `unavailable` rather than a terminal refusal."""
         me = _int(self.me.get("user_id"))
         everyone = ids or ([me] if me else [])
         if not everyone:
@@ -1532,7 +1537,18 @@ class Tools:
                 )
                 if m.get("type") == "private"
             ]
-        except Z.ApiError:
+        except Z.ApiError as exc:
+            status = exc.status
+            if exc.code == "RATE_LIMIT_HIT" or status == 429 or status == 408:
+                raise Z.NetworkError(
+                    "Zulip answered HTTP %s for the direct message narrow" % status
+                ) from exc
+            if isinstance(status, int) and (status >= 500 or status in Z.GATEWAY_STATUSES):
+                raise Z.NetworkError(
+                    "Zulip answered HTTP %s for the direct message narrow" % status
+                ) from exc
+            if status in (401, 403):
+                raise
             return []
 
     @staticmethod
@@ -1597,12 +1613,18 @@ class Tools:
         except Z.NetworkError as exc:
             # The conversation could not be read.  Say so, retryable:  refusing the send as
             # `dm_not_allowed` would be a terminal answer to a question we never got to ask, and it
-            # would be the wrong answer whenever Operator did open this conversation.
+            # would be the wrong answer whenever Operator did open this conversation.  The seat that
+            # was authenticated and the identity it acted as ride along exactly as they do on the
+            # refusal below, so an admin reading a failed send knows which grant was used.
             raise ToolError(
                 "unavailable",
                 "could not read this direct message conversation from Zulip, so the DM rule "
                 "cannot decide; retry once the connection is back",
                 retryable=True,
+                extra={
+                    "authenticated_seat": self.seat,
+                    "acting_identity": self.agent.tag,
+                },
             ) from exc
         try:
             DMP.check_new_dm(

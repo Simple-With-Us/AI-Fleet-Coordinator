@@ -1,5 +1,6 @@
 import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
 import { callNamedLinear } from "./linear-named.js";
+import { z } from "zod";
 import { LINEAR_MCP_BY_NAME } from "./linear-mcp-specs.js";
 import { callLinearMcp } from "./linear-mcp.js";
 import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
@@ -212,6 +213,23 @@ export class UnknownTool extends Error {
 }
 
 const isInt = (v) => typeof v === "number" && Number.isSafeInteger(v);
+
+// The Zulip answer `dmOpener` reads, validated at the trust boundary before anything reads it.
+// Only what the DM rule actually reads is required (the id it sorts by, the type it filters on and
+// the participants it matches) and the rest of the message is passed through:  Zulip's message
+// object carries many fields the rule never looks at, and an unfamiliar one must not fail a read.
+//
+// A response that does not match is NOT read as "no conversation exists".  That would turn a
+// malformed answer into a terminal dm_not_allowed refusal against a seat that was answering inside
+// a conversation Operator opened, which no retry could clear, so a bad shape is a retryable read
+// failure instead -- the same treatment the stdio server gives a transient failure.
+const ZulipMessage = z.looseObject({
+  id: z.number().int(),
+  type: z.string(),
+  sender_id: z.number().int().optional(),
+  display_recipient: z.array(z.looseObject({ id: z.number().int() })).optional(),
+});
+const ZulipMessagesResponse = z.looseObject({ messages: z.array(ZulipMessage) });
 
 /** The people in a direct message ({id, email, full_name}), from its display_recipient (sender included). */
 export function dmPeople(message) {
@@ -1026,7 +1044,7 @@ export class HostedTools {
   // the window really holds no opener.  Fail-closed stays correct — a genuine new DM is refused, and
   // a conversation older than the window is refused rather than wrongly allowed.
   async dmOpener(userIds, expected) {
-    const result = await this.zulip.get("messages", {
+    const answer = await this.zulip.get("messages", {
       narrow: [{ operator: "dm", operand: userIds }],
       anchor: "oldest",
       num_before: 0,
@@ -1034,14 +1052,20 @@ export class HostedTools {
       include_anchor: true,
       apply_markdown: false,
     });
+    const parsed = ZulipMessagesResponse.safeParse(answer);
+    if (!parsed.success) {
+      throw new ToolError(
+        "unavailable",
+        "Zulip's answer for this direct message conversation did not have the expected shape, so " +
+          "the DM rule cannot decide whether Operator opened it; retry once the connection is back",
+        { retryable: true },
+      );
+    }
     return (
-      [...(Array.isArray(result?.messages) ? result.messages : [])]
+      [...parsed.data.messages]
         .filter(
           (m) =>
-            m &&
-            isInt(m.id) &&
-            m.type === "private" &&
-            dmPeople(m).map((p) => p.id).sort((a, b) => a - b).join(",") === expected,
+            m.type === "private" && dmPeople(m).map((p) => p.id).sort((a, b) => a - b).join(",") === expected,
         )
         .sort((a, b) => a.id - b.id)[0] ?? null
     );

@@ -26,6 +26,7 @@ from typing import Any
 
 from agent_sync import clarify
 from agent_sync import dm_policy as DMP
+from agent_sync import identity_log as AUDIT
 from agent_sync import zulip as Z
 from agent_sync.mcp import tools as T
 
@@ -113,6 +114,31 @@ class SeatDmRefusedTests(unittest.TestCase):
             # the call next to the identity it claimed:  the rendered error carries both as well.
             self.assertEqual(row["seat"], "GROK-WEB")
             self.assertEqual(row["identity"], "CLAUDE", "the acting identity is kept separately")
+
+    def test_a_credential_shaped_seat_label_is_never_written_to_the_log(self) -> None:
+        # The seat is caller-supplied text and this row is durable, so a credential hidden in a
+        # seat label must not survive into a file an admin reads -- not even in part.
+        for label in (
+            "ghp_" + "a" * 36,
+            "aB3xQ7mZ9pL2kR8sT4vW6yH1nC5dF0gJ",  # 32 mixed-case letters and digits:  Zulip-shaped
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertTrue(
+                    DMP.audit_refusal(
+                        {"AGENT_SYNC_STATE_DIR": tmp}, None, transport="stdio", identity="CLAUDE",
+                        recipients=[bot(7)], reason="seat", message="refused", authenticated_seat=label,
+                    )
+                )
+                written = (Path(tmp) / "logs" / "identity.jsonl").read_text()
+                self.assertNotIn(label, written)
+                row = json.loads(written.strip())
+                self.assertIsNone(row["seat"], "the seat is withheld, the row is still written")
+                self.assertEqual(row["outcome"], "dm_refused:seat", "the refusal is still audited")
+
+    def test_a_real_seat_label_is_still_written(self) -> None:
+        # Withholding is narrow:  an ordinary seat name (and a short dashed one) survives.
+        for label in ("GROK-WEB", "OPERATOR", "CURSOR-WEB-2"):
+            self.assertEqual(AUDIT.scanned_text(label), label)
 
     def test_a_reply_inside_a_dm_operator_opened_is_allowed(self) -> None:
         # Nothing to refuse:  the conversation is Operator's and the seat is answering in it.
@@ -509,6 +535,7 @@ class DmExistsFetchFailureTests(unittest.TestCase):
     def _tools(raising: Exception) -> Any:
         class RaisingAgent:
             seat = "CODEX"
+            tag = "codex/1"
             calls: list[dict[str, Any]] = []
 
             def fetch(self, operands: Any, **kw: Any) -> list[dict[str, Any]]:
@@ -518,6 +545,7 @@ class DmExistsFetchFailureTests(unittest.TestCase):
         tools = T.Tools.__new__(T.Tools)
         tools.agent = RaisingAgent()
         tools.me = {"user_id": 7}
+        tools.seat = "CODEX"
         return tools
 
     def test_an_api_error_means_no_existing_messages(self) -> None:
@@ -543,6 +571,66 @@ class DmExistsFetchFailureTests(unittest.TestCase):
         self.assertTrue(hasattr(Z, "ApiError"))
         self.assertTrue(hasattr(Z, "NetworkError"))
         self.assertEqual(self._tools(Z.ApiError("boom"))._dm_exists([]), [], "empty id list short-circuits")
+
+
+class DmLookupCredentialTests(unittest.TestCase):
+    """A rejected key and an outage both say nothing about whether the conversation exists.
+
+    Returning `[]` for either one tells the rule "no conversation", and it then refuses a seat's
+    legitimate reply inside an Operator-opened DM with a terminal `dm_not_allowed` that no retry
+    can clear.  A 401/403 carries no masked preview if it is swallowed, and a 429/5xx is not
+    terminal at all.  So credential rejection propagates (and `map_exception` renders it), and
+    transient statuses are re-raised as `NetworkError`, which the caller makes retryable."""
+
+    @staticmethod
+    def _tools(raising: Exception) -> Any:
+        class RaisingAgent:
+            seat = "CLAUDE"
+            tag = "claude-code/1.2.3"
+
+            def fetch(self, operands: Any, **kw: Any) -> list[dict[str, Any]]:
+                raise raising
+
+        tools = T.Tools.__new__(T.Tools)
+        tools.agent = RaisingAgent()
+        tools.me = {"user_id": 7}
+        tools.seat = "CLAUDE"
+        return tools
+
+    def test_a_rejected_key_is_not_an_empty_conversation(self) -> None:
+        for status in (401, 403):
+            with self.assertRaises(Z.ApiError) as caught:
+                self._tools(Z.ApiError("zulip refused the key", status=status))._dm_exists([9])
+            self.assertEqual(caught.exception.status, status, "the credential error survives")
+
+    def test_a_rejected_key_surfaces_as_not_authorized_not_as_a_dm_refusal(self) -> None:
+        # The rendered error names the status and Zulip's code;  it never carries the key itself.
+        error = T.map_exception(Z.ApiError("zulip refused", status=401, code="UNAUTHORIZED"))
+        self.assertEqual(error.code, "not_authorized")
+        self.assertEqual(error.extra["status"], 401)
+        self.assertEqual(error.extra["zulip_code"], "UNAUTHORIZED")
+
+    def test_a_transient_status_is_retryable_not_an_empty_conversation(self) -> None:
+        for status in (408, 429, 500, 502, 503):
+            with self.assertRaises(Z.NetworkError):
+                self._tools(Z.ApiError("zulip said no", status=status))._dm_exists([9])
+
+    def test_a_definitive_narrow_error_is_still_an_empty_conversation(self) -> None:
+        # 400 is Zulip saying no to this narrow, which is a real answer:  the rule may refuse.
+        self.assertEqual(self._tools(Z.ApiError("bad narrow", status=400))._dm_exists([9]), [])
+        self.assertEqual(self._tools(Z.ApiError("zulip said no"))._dm_exists([9]), [])
+
+    def test_an_outage_carries_the_authenticated_seat_and_acting_identity(self) -> None:
+        tools = self._tools(Z.NetworkError("connection reset"))
+        with self.assertRaises(T.ToolError) as caught:
+            tools._check_dm_rule([bot(9)], {})
+        error = caught.exception
+        self.assertEqual(error.code, "unavailable")
+        self.assertTrue(error.retryable)
+        # Same delegation context the refusal path carries, so an admin reading a failed send knows
+        # which grant was used and what it claimed to be.
+        self.assertEqual(error.extra["authenticated_seat"], "CLAUDE")
+        self.assertEqual(error.extra["acting_identity"], "claude-code/1.2.3")
 
     def test_a_working_fetch_still_reports_the_conversation(self) -> None:
         class WorkingAgent:
