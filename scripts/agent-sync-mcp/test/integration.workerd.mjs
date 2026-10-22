@@ -223,6 +223,19 @@ function startWorker(upstream, bindingOverrides = {}) {
         assert.equal(await res.text(), "Not Found");
       }
     });
+
+    // Hard cutover (owner ruling Oct 22, 2026):  the old agent-sync.jays.services
+    // host is gone.  Every path on it answers 404 "Not Found" with no Location
+    // header:  not an alias, not a redirect to the new host, no hanging
+    // fallback.  An old client pointed here fails fast and visibly.
+    await step("the old agent-sync.jays.services host is refused, not redirected", async () => {
+      for (const path of ["/mcp", "/health", "/authorize", "/oauth/token", "/admin", "/.well-known/oauth-authorization-server"]) {
+        const res = await raw.dispatchFetch(`https://agent-sync.jays.services${path}`);
+        assert.equal(res.status, 404, path);
+        assert.equal(res.headers.get("location"), null, `${path} must not redirect`);
+        assert.equal(await res.text(), "Not Found", path);
+      }
+    });
   } finally {
     await raw.dispose();
   }
@@ -399,7 +412,7 @@ try {
   await step("unauthenticated initialize gets 401 with resource_metadata", async () => {
     const r = await mcp(null, "initialize", INIT);
     assert.equal(r.status, 401);
-    assert.match(r.headers.get("www-authenticate"), /resource_metadata="https:\/\/agent-sync\.jays\.services\/\.well-known\/oauth-protected-resource\/mcp"/);
+    assert.match(r.headers.get("www-authenticate"), /resource_metadata="https:\/\/agents\.simplewithus\.com\/\.well-known\/oauth-protected-resource\/mcp"/);
   });
 
   await step("/authorize and /admin without an Access JWT are 403", async () => {

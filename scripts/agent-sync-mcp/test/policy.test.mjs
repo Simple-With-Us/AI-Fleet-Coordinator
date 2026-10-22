@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, PUBLIC_HOST } from "../src/config.js";
 import {
   strictRedirectProblem,
   hostAllowed,
@@ -54,9 +54,26 @@ test("strict redirect refuses every bypass shape", () => {
   }
 });
 
-test("host check keeps answering the legacy host", () => {
-  assert.equal(hostAllowed(new Request("https://agent-sync.jays.services/mcp"), ["agents.simplewithus.com", "agent-sync.jays.services"]), true);
-  assert.equal(hostAllowed(new Request("https://agent-sync.jays.services/mcp"), "agents.simplewithus.com"), false);
+// Hard cutover (owner ruling, Oct 22, 2026):  the old agent-sync.jays.services
+// host is refused outright.  No alias, no redirect, no fallback, and no list of
+// accepted hosts that a later edit could widen.
+test("host check refuses the old agent-sync.jays.services host", () => {
+  for (const path of ["/mcp", "/authorize", "/oauth/token", "/health", "/admin"]) {
+    const old = new Request(`https://agent-sync.jays.services${path}`);
+    assert.equal(hostAllowed(old, config.host), false, path);
+    assert.equal(hostAllowed(old, PUBLIC_HOST), false, path);
+  }
+  // A host that merely ends with, or embeds, the old name is not the host.
+  assert.equal(hostAllowed(new Request("https://agent-sync.jays.services.evil.example/mcp"), config.host), false);
+  assert.equal(hostAllowed(new Request("https://evil.example/?h=agent-sync.jays.services"), config.host), false);
+});
+
+test("hostAllowed takes one host, never a list (no fallback can creep back)", () => {
+  const old = new Request("https://agent-sync.jays.services/mcp");
+  // Even an array naming the old host cannot be smuggled in:  a list is not a host.
+  assert.equal(hostAllowed(old, [PUBLIC_HOST, "agent-sync.jays.services"]), false);
+  assert.equal(hostAllowed(old, [PUBLIC_HOST]), false);
+  assert.equal(hostAllowed(new Request("https://agents.simplewithus.com/mcp"), PUBLIC_HOST), true);
 });
 
 test("host check:  only agents.simplewithus.com on https and the default port", () => {

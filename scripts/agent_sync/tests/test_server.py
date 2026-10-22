@@ -1804,7 +1804,8 @@ class ContainerTests(unittest.TestCase):
         self.assertNotRegex(
             text, r"(?im)^\s*(ARG|ENV)\b[^\n]*(KEY|TOKEN|SECRET|PASSWORD)", "no secret is baked in"
         )
-        self.assertNotIn("agent-sync.jays.services", text)
+        for host in ("agent-sync.jays.services", "agents.simplewithus.com"):
+            self.assertNotIn(host, text, "no hosted MCP host is baked into the image")
         ignore = (SERVER_DIR / "Dockerfile.dockerignore").read_text().splitlines()
         self.assertEqual(ignore[[i for i, l in enumerate(ignore) if not l.startswith("#")][0]], "*")
         for keep in (
