@@ -676,6 +676,13 @@ class Daemon:
         # Why that seat refuses:  the relay is off, or this host cannot run the notes script.  The requester reads
         # it in the refusal reply, so it says what to fix.
         self.notes_relay_refusal_reason: str = NR.NO_CONSUMER_REASON
+        # The durable ledger of what was answered, shared by the consumer and by the host that refuses what
+        # nobody will write, so one request never gets two answers.
+        self.notes_processed = NR.Processed(
+            os.path.join(self.root, NR.RELAY_DIR, NR.STATE_FILE), self.clock.time
+        )
+        # One lock file per (bot, request id), for the host that refuses.
+        self.notes_lock_dir = os.path.join(self.root, NR.RELAY_DIR, NR.LOCK_DIR)
         self.notes_relay_lock = (
             threading.RLock()
         )  # a reload (main thread) and a handover (seat thread) never overlap
@@ -1025,9 +1032,28 @@ class Daemon:
                 del self.notes_relay_retry[key]
                 gave_up.append(key[1])
                 continue
+            request = NR.request_of(
+                message,
+                reader.users.get(message.get("sender_id")),
+                owner_user_id=int(self.config.owner_user_id or 0),
+            )
+            if request is None:
+                # Not a request this fleet may act on:  there is nothing to refuse, so the hold falls.
+                self.log.write(
+                    "notes-relay-refusal-gave-up", seat=reader.seat, id=key[1], status="unauthorized"
+                )
+                del self.notes_relay_retry[key]
+                gave_up.append(key[1])
+                continue
             try:
                 landed = NR.refuse_unconsumed(
-                    reader, message, self.notes_relay_refusal_reason, self.log.write
+                    reader,
+                    message,
+                    self.notes_relay_refusal_reason,
+                    self.log.write,
+                    request=request,
+                    processed=self.notes_processed,
+                    lock_dir=self.notes_lock_dir,
                 )
             except Exception:  # noqa: BLE001 - a retryable error:  the next tick tries again
                 continue
@@ -1269,6 +1295,7 @@ class Daemon:
             owner_user_id=lambda: self.config.owner_user_id,
             log=self.log.write,
             clock=self.clock.time,
+            processed=self.notes_processed,
         )
         self.log.write(
             "notes-relay-started",
@@ -1825,49 +1852,64 @@ class Daemon:
             return
         runner.ring.add(message_id)
         relay = self.notes_relay
-        if relay is None and NR.in_relay_channel(message) and NR.is_request(message):
-            # No consumer is running on this Mac:  a notes request is still not a message for any session, so it
-            # must not become an inbox row or a wake.  The consumer seat refuses it, so the requester learns at
-            # once that nothing was written instead of waiting on "queued" for ever (AFC-407).  A message in the
-            # channel that is not a request stays an ordinary message, as when the relay has never been set up.
-            if runner.seat == self.notes_relay_refuser:
-                try:
-                    NR.refuse_unconsumed(
-                        runner, message, self.notes_relay_refusal_reason, self.log.write
-                    )
-                except Exception as exc:  # noqa: BLE001 - a refusal must never stop the routing
+        if relay is None and NR.in_relay_channel(message):
+            # Is this a request the fleet may act on?  The consumer's own rules decide it, through the same
+            # `validate`, so a host that refuses a request refuses only one the consumer would have acted on,
+            # and a message from an unauthorized sender stays ordinary chatter.
+            request = NR.request_of(
+                message,
+                runner.users.get(message.get("sender_id")),
+                owner_user_id=int(self.config.owner_user_id or 0),
+            )
+            if request is not None:
+                # No consumer is running on this Mac:  a notes request is still not a message for any session, so it
+                # must not become an inbox row or a wake.  The consumer seat refuses it, so the requester learns at
+                # once that nothing was written instead of waiting on "queued" for ever (AFC-407).  A message in the
+                # channel that is not a request stays an ordinary message, as when the relay has never been set up.
+                if runner.seat == self.notes_relay_refuser:
+                    try:
+                        NR.refuse_unconsumed(
+                            runner,
+                            message,
+                            self.notes_relay_refusal_reason,
+                            self.log.write,
+                            request=request,
+                            processed=self.notes_processed,
+                            lock_dir=self.notes_lock_dir,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - a refusal must never stop the routing
+                        self.log.write(
+                            "notes-relay-refusal-failed", id=message_id, error=type(exc).__name__
+                        )
+                        # The reply is part of the result, so a refusal that failed is not a lost request:  take the id
+                        # back out of the ring, hold the cursor below it and keep it for the retry, or the next message
+                        # would carry the cursor past a request nobody was ever told about.
+                        runner.ring.discard(message_id)
+                        hold = runner.hold_at_or_below(message_id)
+                        self.log.write(
+                            "notes-relay-refusal-held",
+                            seat=runner.seat,
+                            id=message_id,
+                            hold_below=hold,
+                            warning="could not refuse the request;  the cursor is held below it until the retry lands",
+                        )
+                        self._keep_for_relay_retry(runner, message)
+                        return
+                else:
+                    # This host is not the consumer and cannot say who is:  the knob names another seat, or it could
+                    # not be read.  It says so in the log rather than letting the request pass in silence, because a
+                    # request nobody claims is a request nobody writes.  It does not refuse:  a refusal outranks a
+                    # completion in `notes_status`, so a wrong refusal would report a note that another host wrote
+                    # as failed.
                     self.log.write(
-                        "notes-relay-refusal-failed", id=message_id, error=type(exc).__name__
-                    )
-                    # The reply is part of the result, so a refusal that failed is not a lost request:  take the id
-                    # back out of the ring, hold the cursor below it and keep it for the retry, or the next message
-                    # would carry the cursor past a request nobody was ever told about.
-                    runner.ring.discard(message_id)
-                    hold = runner.hold_at_or_below(message_id)
-                    self.log.write(
-                        "notes-relay-refusal-held",
-                        seat=runner.seat,
+                        "notes-relay-unclaimed",
                         id=message_id,
-                        hold_below=hold,
-                        warning="could not refuse the request;  the cursor is held below it until the retry lands",
+                        seat=runner.seat,
+                        consumer=self.notes_relay_consumer_seat,
                     )
-                    self._keep_for_relay_retry(runner, message)
-                    return
-            else:
-                # This host is not the consumer and cannot say who is:  the knob names another seat, or it could
-                # not be read.  It says so in the log rather than letting the request pass in silence, because a
-                # request nobody claims is a request nobody writes.  It does not refuse:  a refusal outranks a
-                # completion in `notes_status`, so a wrong refusal would report a note that another host wrote
-                # as failed.
-                self.log.write(
-                    "notes-relay-unclaimed",
-                    id=message_id,
-                    seat=runner.seat,
-                    consumer=self.notes_relay_consumer_seat,
-                )
-            if advance_cursor:
-                runner.advance(message_id)
-            return
+                if advance_cursor:
+                    runner.advance(message_id)
+                return
         if relay is not None and relay.in_channel(message):
             # A notes request is not a message for any session:  every seat's runner treats it as consumed (no
             # inbox row, no wake from an @-mention inside an envelope) and only the configured seat acts on it.

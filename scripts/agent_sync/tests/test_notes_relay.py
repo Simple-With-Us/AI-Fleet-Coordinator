@@ -45,8 +45,10 @@ class FakeClient:
             dict
         ] = []  # other people's messages in the topic, newer than the request
         self.message_gets: list[dict] = []
+        self.timeouts: list[float | None] = []  # the budget every request in one scan was given
 
-    def get(self, path, params=None):
+    def get(self, path, params=None, **kw):
+        self.timeouts.append((path, kw.get("timeout")))
         if (
             path == "messages"
         ):  # the topic after the anchor:  the backlog, then the replies this bot has posted
@@ -183,6 +185,142 @@ class RelayHarness(unittest.TestCase):
         reply = self.client.replies[-1]
         self.assertTrue(reply.startswith(N.REFUSAL_PREFIX), reply)
         self.assertIn(fragment, reply)
+
+
+class UnconsumedRefusalTests(RelayHarness):
+    """The host that refuses what nobody will write (AFC-407).
+
+    A refusal is a reply to another bot, and a reply is a retry-prone write:  Zulip has no idempotency key, so
+    a reply that landed and a reply that timed out look the same to the client.  These are the guards that keep
+    one request from getting two answers, and the rules that decide what this host may refuse at all.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.processed = NR.Processed(os.path.join(self.state, "notes-relay", "processed.json"))
+        self.lock_dir = os.path.join(self.state, "notes-relay", "locks")
+
+    def log(self, event, **fields):
+        self.logs.append((event, fields))
+
+    def request_of(self, message, identity="CURSOR"):
+        return NR.request_of(
+            message, USERS[SENDERS[identity]], owner_user_id=OWNER_ID
+        )
+
+    def refuse(self, message, request, reason="nothing was written"):
+        return NR.refuse_unconsumed(
+            self.runner,
+            message,
+            reason,
+            self.log,
+            request=request,
+            processed=self.processed,
+            lock_dir=self.lock_dir,
+        )
+
+    def test_a_request_is_refused_once_and_a_replay_publishes_nothing(self):
+        """The durable ledger is what makes a replay safe:  the second attempt reads the earlier outcome and
+        publishes no second reply."""
+        message = self.request("CURSOR", "[AFC, Cursor] relay check", rid="refusal-dup-1")
+        request = self.request_of(message)
+        self.assertIsNotNone(request)
+        self.assertTrue(self.refuse(message, request))
+        self.assertEqual(len(self.client.replies), 1)
+        self.assertTrue(self.refuse(message, request), "the replay is answered, not published again")
+        self.assertEqual(len(self.client.replies), 1, "one request gets one reply")
+        self.assertIn("notes-relay-refusal-duplicate", [e for e, _ in self.logs])
+
+    def test_a_reply_the_server_may_have_taken_is_not_published_again(self):
+        """The server took the reply and the answer was lost:  the outcome is unknown, so the retry must not
+        publish a second reply."""
+        message = self.request("CURSOR", "[AFC, Cursor] relay check", rid="refusal-unknown-1")
+        request = self.request_of(message)
+        real_post = self.client.post
+
+        def post(path, params=None):
+            if path == "messages":
+                raise Z.NetworkError("the reply timed out", timeout=True, maybe_sent=True)
+            return real_post(path, params)
+
+        with mock.patch.object(self.client, "post", post):
+            self.assertTrue(
+                self.refuse(message, request),
+                "the refusal stands:  the requester learns that nothing was written",
+            )
+        self.assertEqual(len(self.client.replies), 0, "the reply never arrived")
+        self.assertTrue(self.refuse(message, request), "the retry is answered")
+        self.assertEqual(len(self.client.replies), 0, "a reply that may have landed is not sent again")
+        self.assertIn("notes-relay-refusal-unknown", [e for e, _ in self.logs])
+
+    def test_another_writer_holding_the_lock_publishes_nothing(self):
+        """Two writers would both see that no reply exists and both publish one.  The lock, keyed by the bot and
+        the request id, keeps the second one out."""
+        message = self.request("CURSOR", "[AFC, Cursor] relay check", rid="refusal-lock-1")
+        request = self.request_of(message)
+        with NR.refusal_lock(self.lock_dir, "CURSOR", "refusal-lock-1") as locked:
+            self.assertTrue(locked)
+            with self.assertRaises(NR.RefusalBusy):
+                self.refuse(message, request)
+        self.assertEqual(len(self.client.replies), 0, "the second writer publishes nothing")
+        self.assertTrue(self.refuse(message, request), "and the lock is free again")
+        self.assertEqual(len(self.client.replies), 1)
+
+    def test_a_message_without_a_destination_publishes_nothing(self):
+        """The reply's destination comes from the server, so its shape is checked before it is used:  a message
+        with no stream and no topic would send the reply nowhere."""
+        message = self.request("CURSOR", "[AFC, Cursor] relay check", rid="refusal-dest-1")
+        request = self.request_of(message)
+        self.client.messages[message["id"]] = {
+            "id": message["id"],
+            "sender_id": SENDERS["CURSOR"],
+            "content": message["content"],
+        }
+        with self.assertRaises(ValueError):
+            self.refuse(message, request)
+        self.assertEqual(len(self.client.replies), 0, "nothing is published without a destination")
+
+    def test_a_scan_that_ran_out_of_time_publishes_nothing(self):
+        """A scan that did not finish is not evidence that no reply exists, so nothing is published on it."""
+        message = self.request("CURSOR", "[AFC, Cursor] relay check", rid="refusal-deadline-1")
+        request = self.request_of(message)
+        with mock.patch.object(NR, "REPLY_SCAN_SECONDS", 0.0):
+            with self.assertRaises(NR.ScanIncomplete):
+                self.refuse(message, request)
+        self.assertEqual(len(self.client.replies), 0, "an unfinished scan publishes nothing")
+        self.assertIn("notes-relay-reply-scan-expired", [e for e, _ in self.logs])
+
+    def test_every_request_in_one_scan_gets_the_budget_that_is_left(self):
+        """One deadline for the whole scan, and the rest of it handed to every request inside it."""
+        message = self.request("CURSOR", "[AFC, Cursor] relay check", rid="refusal-budget-1")
+        request = self.request_of(message)
+        self.assertTrue(self.refuse(message, request))
+        budgets = [t for path, t in self.client.timeouts if path == "messages"]
+        self.assertTrue(budgets, "the scan passes a budget to every request")
+        for budget in budgets:
+            self.assertIsNotNone(budget)
+            self.assertGreater(budget, 0.0)
+            self.assertLessEqual(budget, NR.REPLY_SCAN_SECONDS)
+
+    def test_a_message_that_may_not_send_a_request_is_not_a_request(self):
+        """The consumer's own rules decide what a request is, so a host that refuses a request refuses only one
+        the consumer would have acted on."""
+        env = N.render_message(
+            make_envelope("create", "[AFC, Claude] relay check", "body", {}, "refusal-unauth-1", "CLAUDE")
+        )
+        message = self.message(OWNER_ID, env)
+        self.assertIsNone(
+            NR.request_of(message, USERS[OWNER_ID], owner_user_id=OWNER_ID),
+            "the owner's own account does not send notes requests",
+        )
+        env = N.render_message(
+            make_envelope("create", "[AFC, Cursor] relay check", "body", {}, "refusal-unauth-2", "CURSOR")
+        )
+        message = self.message(OWNER_ID, env)
+        self.assertIsNone(
+            NR.request_of(message, USERS[OWNER_ID], owner_user_id=OWNER_ID),
+            "and the envelope identity is not the sender's own",
+        )
 
 
 class SenderTests(RelayHarness):
@@ -994,7 +1132,9 @@ class RefusalReplayTests(RelayHarness):
             anchors[1:3], [2099, 2199], "each page continues after the last id of the one before"
         )
 
-    def test_a_scan_that_hits_its_bound_logs_and_answers(self):
+    def test_a_scan_that_hits_its_bound_does_not_answer(self):
+        """A scan that did not finish is not evidence that no reply exists, so nothing is published on it:  the
+        request stays where it is and the scan runs again."""
         message = self.request("CURSOR", "[AFC, Claude] wrong agent", rid="replay-request-05")
         self.client.backlog = [
             {"id": 2000 + i, "sender_id": READER_ID, "content": "x"} for i in range(60)
@@ -1003,8 +1143,9 @@ class RefusalReplayTests(RelayHarness):
             mock.patch.object(NR, "REPLY_SCAN_PAGE", 10),
             mock.patch.object(NR, "REPLY_SCAN_PAGES", 3),
         ):
-            self.assertEqual(self.process(message), "refused")
-        self.assertEqual(len(self.client.replies), 1)
+            with self.assertRaises(NR.ScanIncomplete):
+                self.process(message)
+        self.assertEqual(len(self.client.replies), 0, "an unfinished scan publishes nothing")
         self.assertEqual(len(self.client.message_gets), 3)
         self.assertIn("notes-relay-reply-scan-capped", [e for e, _ in self.logs])
 

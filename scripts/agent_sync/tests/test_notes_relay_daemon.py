@@ -275,6 +275,32 @@ class DaemonRelayTests(DaemonHarness):
         log = (self.state_dir / "logs" / "listener.log").read_text()
         self.assertIn("notes-relay-unconsumed", log)
 
+    def test_a_message_that_may_not_send_a_request_is_not_refused(self):
+        """The refusal path applies the consumer's own rules, so it refuses only a request the consumer would
+        have acted on.  A message from an unauthorized sender is not a request:  it is ordinary chatter, and
+        nothing is published for it.  A refusal outranks a completion in `notes_status`, so a wrong refusal
+        would report a note that another host wrote as failed."""
+        self.fake.streams["notes-relay"] = 140
+        daemon = self.started()
+        self.assertEqual(daemon.notes_relay_refuser, "CLAUDE")
+        env = make_envelope(
+            "create", "[AFC, Claude] relay", "relay body", {}, "unauthorized-1", "CLAUDE"
+        )
+        mid = self.fake.add_message(
+            "Jay Wedgeworth", "notes-relay", "[AFC, Claude] relay", N.render_message(env)
+        )
+        daemon.route_message(daemon.seats["CLAUDE"], self.fake.messages[-1])
+        self.assertFalse(
+            [r for r in self.fake.reactions if r[0] == mid],
+            "a message that may not send a request carries no cross mark",
+        )
+        self.assertFalse(
+            [m for m in self.fake.messages if "notes-relay refused" in str(m.get("content") or "")],
+            "and this host does not refuse it either",
+        )
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertNotIn("notes-relay-unconsumed", log)
+
     def test_a_host_that_is_not_the_consumer_does_not_answer_a_request(self):
         """AFC-407:  the knob names one consumer.  A host that is not it must leave the request alone:  it
         belongs to the Mac that is the consumer."""
@@ -306,11 +332,11 @@ class DaemonRelayTests(DaemonHarness):
         real = NR.refuse_unconsumed
         attempts = []
 
-        def flaky(r, message, reason, log):
+        def flaky(r, message, reason, log, **kw):
             attempts.append(message.get("id"))
             if len(attempts) == 1:
                 raise Z.ApiError("zulip is busy", code="RATE_LIMIT_HIT", status=429)
-            return real(r, message, reason, log)
+            return real(r, message, reason, log, **kw)
 
         mid = self.envelope_message()
         before = runner.cursor

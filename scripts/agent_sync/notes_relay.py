@@ -32,7 +32,17 @@ a full queue, a restart or a failed reaction never loses a request.  The process
 A refusal reply is posted at most once:  Zulip's send-message API has no idempotency key (only `local_id` and
 `queue_id`, which echo a message back to the sender's own queue), so before posting `_answer` looks for this
 bot's earlier reply with the same label in the topic, and a crash between the reaction and the reply replays
-to exactly one reply.
+to exactly one reply.  The scan that looks for it is bounded by a page count and by one absolute deadline
+that every request inside it shares;  a scan that did not finish is not evidence that no reply exists, so it
+raises and nothing is published on it.
+
+A request that no consumer on this Mac will write is refused instead of being left to wait on "queued" for
+ever (`refuse_unconsumed`):  the cross mark and one reply with the reason.  That host applies the rules above
+before it refuses, so it refuses only a request the consumer would have acted on, and a message from an
+unauthorized sender is ordinary chatter.  A refusal reply is a retry-prone write, so the durable ledger
+records its outcome per (bot, request id) -- `refused_pending` is a reply still to come, `refused` is a
+published one, and `unknown` is one the server may have taken, which a retry never publishes again -- and a
+lock keyed by the bot and the request id keeps two writers from both publishing.
 
 Python 3.11+, standard library only.
 """
@@ -41,6 +51,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import queue
@@ -77,6 +88,8 @@ NO_SCRIPT_REASON = (
     "Install apple-notes-coding.sh, then send the request again."
 )
 REPLY_SCAN_PAGES = 20  # at most this many pages (2000 of the bot's own messages in one topic) before it answers anyway
+REPLY_SCAN_SECONDS = 30.0  # one absolute deadline for a whole reply scan, so a slow server cannot stretch it
+LOCK_DIR = "locks"  # <state>/notes-relay/locks/:  one lock file per (bot, request id)
 LOCK_FILE = "lock"
 REASON_LIMIT = 300
 STATE_FILE = "processed.json"
@@ -98,6 +111,44 @@ def retryable(exc: Z.ApiError) -> bool:
     """An API failure a later attempt can fix:  rate limit, server error, timeout, or a credential or permission
     error (the owner can repair those).  Anything else 4xx is a permanent refusal."""
     return exc.status is None or exc.status in (401, 403, 408, 429) or exc.status >= 500
+
+
+class ScanIncomplete(Exception):
+    """The reply scan could not finish:  the page cap or the deadline stopped it.  It is not evidence that no
+    reply exists, so nothing may be published on it:  the request stays where it is and the scan runs again."""
+
+
+class RefusalBusy(Exception):
+    """Another writer holds this request's refusal lock.  The next attempt takes it; nothing is published now."""
+
+
+def reply_destination(original: Mapping[str, Any]) -> tuple[int, str]:
+    """The stream and topic a refusal reply must go to.  The message comes from the server, so its shape is
+    checked before it is used as a destination:  a missing stream or topic would send the reply nowhere, or
+    to the wrong place."""
+    if not isinstance(original, Mapping):
+        raise ValueError("Zulip message response must be a mapping")
+    stream_id = original.get("stream_id")
+    if not isinstance(stream_id, int) or isinstance(stream_id, bool):
+        raise ValueError("Zulip message is missing a valid stream_id")
+    # Zulip names a message's topic `subject` in some answers and `topic` in others:  the first one that is
+    # there is the topic, and it has to be a string, or the reply would go nowhere.
+    topic = original.get("subject") if original.get("subject") is not None else original.get("topic")
+    if not isinstance(topic, str) or not topic:
+        raise ValueError("Zulip message is missing a valid topic")
+    return stream_id, topic
+
+
+def original_message(runner: Any, message_id: int) -> Mapping[str, Any]:
+    """The request message as the server holds it, for the reply's destination.  The response is checked before
+    it is used:  a message that is not there, or not a message, is not a destination."""
+    response = runner.client.get("messages/%d" % message_id, {"apply_markdown": False})
+    if not isinstance(response, Mapping):
+        raise ValueError("Zulip message response must be a mapping")
+    original = response.get("message")
+    if not isinstance(original, Mapping):
+        raise ValueError("Zulip message response must include a message object")
+    return original
 
 
 def _fsync_dir(path: str) -> None:
@@ -367,20 +418,33 @@ def already_replied(
     message_id: int,
     prefix: str,
     log: Callable[..., None],
+    *,
+    deadline: float | None = None,
 ) -> bool:
     """Did this bot already post the refusal?  Reads this bot's own messages in the topic after the request,
     forward in pages until the reply is found or the topic's newest message is reached, so a refusal posted
-    after a long backlog is still seen.  The scan is bounded;  past the bound it logs and answers anyway."""
+    after a long backlog is still seen.
+
+    The scan is bounded twice:  by a page count and by one absolute deadline that every request inside it
+    shares, so a slow server cannot stretch the scan to a page count of timeouts.  A scan that did not
+    finish is not evidence that no reply exists, so it raises `ScanIncomplete` and nothing is published on
+    it:  the request stays where it is and the scan runs again."""
     me = getattr(runner.me, "user_id", None)
+    stream_id, topic = reply_destination(original)
     narrow = json.dumps(
         [
-            {"operator": "channel", "operand": original.get("stream_id")},
-            {"operator": "topic", "operand": Z.message_topic(original)},
+            {"operator": "channel", "operand": stream_id},
+            {"operator": "topic", "operand": topic},
         ]
         + ([{"operator": "sender", "operand": me}] if isinstance(me, int) else [])
     )
+    limit = deadline if deadline is not None else time.monotonic() + REPLY_SCAN_SECONDS
     anchor = message_id
-    for _ in range(REPLY_SCAN_PAGES):
+    for page_number in range(REPLY_SCAN_PAGES):
+        remaining = limit - time.monotonic()
+        if remaining <= 0:
+            log("notes-relay-reply-scan-expired", id=message_id, pages=page_number)
+            raise ScanIncomplete("the reply scan ran out of time")
         found = runner.client.get(
             "messages",
             {
@@ -391,6 +455,7 @@ def already_replied(
                 "include_anchor": "false",
                 "apply_markdown": "false",
             },
+            timeout=max(1.0, remaining),
         )
         page = [m for m in found.get("messages") or [] if isinstance(m, dict)]
         if any(
@@ -414,17 +479,53 @@ def already_replied(
             raise ValueError("Zulip messages response omitted a valid next anchor")
         anchor = max(ids)
     log("notes-relay-reply-scan-capped", id=message_id, pages=REPLY_SCAN_PAGES)
-    return False
+    raise ScanIncomplete("the reply scan hit its page cap")
 
 
-def is_request(message: Mapping[str, Any]) -> bool:
-    """Does this message hold a notes envelope?  A message in the relay channel that is not a request is not work
-    for the consumer, and a refusal must not answer it."""
+def request_of(
+    message: Mapping[str, Any],
+    person: Mapping[str, Any] | None,
+    *,
+    owner_user_id: int = 0,
+    registry_path: str | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """(identity, envelope) when this message is a request the fleet may act on, else None.  The rules the
+    consumer applies are applied here, through the same `validate`, so a host that refuses a request refuses
+    only a request the consumer would have acted on.  A message from an unauthorized sender is not a request:
+    it is ordinary chatter, and a refusal must not answer it."""
     try:
-        N.parse_message(message.get("content"))
-    except Exception:  # noqa: BLE001 - a body that does not parse is not a request
-        return False
-    return True
+        return validate(
+            message, person, owner_user_id=owner_user_id, registry_path=registry_path
+        )
+    except Refusal:
+        return None
+
+
+def refusal_lock_path(lock_dir: str, identity: str, request_id: str) -> str:
+    """The lock file of one (bot, request id).  The key is hashed, so a request id never becomes a file name."""
+    digest = hashlib.sha256(("%s:%s" % (identity, request_id)).encode("utf-8")).hexdigest()[:32]
+    return os.path.join(lock_dir, "%s.lock" % digest)
+
+
+@contextlib.contextmanager
+def refusal_lock(lock_dir: str, identity: str, request_id: str):
+    """An exclusive, non-blocking flock on the lock file of one (bot, request id).  It is held across the reply
+    scan, the reply itself and the recording of the outcome, so two writers cannot both see that no reply
+    exists and both publish one.  False means another writer holds it:  the next attempt takes it."""
+    os.makedirs(lock_dir, mode=0o700, exist_ok=True)
+    fd = os.open(refusal_lock_path(lock_dir, identity, request_id), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def refuse_unconsumed(
@@ -432,48 +533,80 @@ def refuse_unconsumed(
     message: Mapping[str, Any],
     reason: str,
     log: Callable[..., None],
+    *,
+    request: tuple[str, dict[str, Any]],
+    processed: "Processed",
+    lock_dir: str,
 ) -> bool:
     """Refuse a relay request that no consumer on this Mac will write (the relay is off, or this host cannot run
     the notes script).  The requester reads the cross mark and the reply, so `notes_status` answers "refused"
     with the reason instead of "queued" for ever.  The reply relays the request's own id, so that text goes
     through the same credential scan and mention neutralising as the reason.  The log carries the id and a code,
-    never the reason text."""
+    never the reason text.
+
+    `request` is the validated (identity, envelope) of `request_of`, so a refusal can only be published for a
+    request the consumer would have acted on:  a message from an unauthorized sender never gets here.
+
+    The reply is a retry-prone write:  Zulip has no idempotency key, so a reply that landed and a reply that
+    timed out look the same to the client.  Two guards keep one request from getting two answers.  The durable
+    ledger records the outcome per (bot, request id):  `refused_pending` is a reason that is recorded and a
+    reply that is still to come, `refused` is a published reply, and `unknown` is a reply the server may have
+    taken, which a retry must never publish again.  The lock, keyed by the bot and the request id, keeps two
+    writers from both deciding to publish."""
+    identity, envelope = request
+    request_id = str(envelope["request_id"])
     message_id = message.get("id")
     if not isinstance(message_id, int) or isinstance(message_id, bool):
         return False
-    request_id: str | None = None
-    try:
-        parsed = N.parse_message(message.get("content"))
-    except Exception:  # noqa: BLE001 - a body that does not parse has no label
-        parsed = None
-    if isinstance(parsed, dict):
-        candidate = parsed.get("request_id")
-        request_id = candidate if isinstance(candidate, str) and candidate else None
+    earlier = processed.begin(identity, request_id, message_id)
+    if earlier is not None:
+        if earlier in ("refused", "unknown"):
+            # Published, or the server may have taken it:  a retry must not publish a second reply.
+            log("notes-relay-refusal-duplicate", id=message_id, earlier=earlier)
+            return True
+        # `started` is a death before the reply was composed and `refused_pending` is a reply that is still to
+        # come:  both are published below, and the scan there decides whether one is already there.
+        reason = processed.reason(identity, request_id) or reason
     label = W.neutralize_mentions(safe_reason(request_id or "(message %d)" % message_id))
     prefix = N.refusal_label(label)
-    try:
+    text = W.neutralize_mentions(safe_reason(" ".join(reason.split())[:REASON_LIMIT]))
+    # The reason is on disk before the reply is published, so a retry publishes the same words and never a
+    # different answer.
+    processed.finish(identity, request_id, "refused_pending", text)
+    with refusal_lock(lock_dir, identity, request_id) as locked:
+        if not locked:
+            raise RefusalBusy("another writer holds this refusal")
         react(runner, message_id, N.REFUSED_EMOJI, log)
-        original = (
-            runner.client.get("messages/%d" % message_id, {"apply_markdown": False}).get("message")
-            or {}
-        )
+        original = original_message(runner, message_id)
         if already_replied(runner, original, message_id, prefix, log):
+            processed.finish(identity, request_id, "refused")
             return True
-        text = W.neutralize_mentions(safe_reason(" ".join(reason.split())[:REASON_LIMIT]))
-        runner.client.post(
-            "messages",
-            {
-                "type": "stream",
-                "to": original.get("stream_id"),
-                "topic": Z.message_topic(original),
-                "content": "%s %s" % (prefix, text),
-            },
-        )
-    except Z.ApiError as exc:
-        if retryable(exc):
-            raise  # the reply is part of the result:  the next pass publishes it
-        log("notes-relay-reply-failed", id=message_id, status=exc.status)
-        return False
+        stream_id, topic = reply_destination(original)
+        try:
+            runner.client.post(
+                "messages",
+                {
+                    "type": "stream",
+                    "to": stream_id,
+                    "topic": topic,
+                    "content": "%s %s" % (prefix, text),
+                },
+            )
+        except Z.ApiError as exc:
+            if retryable(exc):
+                raise  # the reply is part of the result:  the next pass publishes it
+            log("notes-relay-reply-failed", id=message_id, status=exc.status)
+            processed.finish(identity, request_id, "refused")  # permanent:  it will never be published
+            return False
+        except Z.NetworkError as exc:
+            if not exc.maybe_sent:
+                raise  # nothing reached the server:  the next attempt publishes it
+            # The server may have taken the reply and the answer was lost:  the outcome is unknown, so a retry
+            # must not publish a second one.
+            processed.finish(identity, request_id, "unknown")
+            log("notes-relay-refusal-unknown", id=message_id)
+            return True
+        processed.finish(identity, request_id, "refused")
     log("notes-relay-unconsumed", id=message_id, code="no_consumer")
     return True
 
@@ -495,6 +628,7 @@ class Consumer:
         clock: Callable[[], float] = time.time,
         registry_path: str | None = None,
         channel: str = N.RELAY_CHANNEL,
+        processed: "Processed | None" = None,
     ) -> None:
         self.seat = seat
         self.channel = channel
@@ -507,7 +641,9 @@ class Consumer:
         # One relay state directory under the state root, whichever seat consumes:  when the consumer seat changes (the
         # fleet knob or the local config), the new consumer drains the old one's pending requests, whose cursor has
         # already moved on.  The lock file in it is the single owner, across seats and processes.
-        self.processed = Processed(os.path.join(state_dir, RELAY_DIR, STATE_FILE), clock)
+        self.processed = processed if processed is not None else Processed(
+            os.path.join(state_dir, RELAY_DIR, STATE_FILE), clock
+        )
         self.spool = Spool(os.path.join(state_dir, RELAY_DIR, SPOOL_DIR))
         self.jobs: queue.Queue[bool | None] = queue.Queue(
             1
@@ -805,26 +941,24 @@ class Consumer:
         self, runner: Any, message_id: int, request_id: str | None, *, refused: str
     ) -> None:
         """Cross mark, then one reply with the reason.  Safe to replay after a crash at any point:  the reaction
-        is idempotent and the reply is skipped when this bot already posted one with the same label."""
+        is idempotent and the reply is skipped when this bot already posted one with the same label.  A reply
+        scan that did not finish raises, so the request stays on disk and the reply is published on the retry:
+        a reply published on an unfinished scan could be a second one."""
         self._react(runner, message_id, N.REFUSED_EMOJI)
         reason = W.neutralize_mentions(safe_reason(" ".join(refused.split())[:REASON_LIMIT]))
         label = request_id or "(message %d)" % message_id
         prefix = N.refusal_label(label)
         try:
-            original = (
-                runner.client.get("messages/%d" % message_id, {"apply_markdown": False}).get(
-                    "message"
-                )
-                or {}
-            )
+            original = original_message(runner, message_id)
             if self._already_replied(runner, original, message_id, prefix):
                 return
+            stream_id, topic = reply_destination(original)
             runner.client.post(
                 "messages",
                 {
                     "type": "stream",
-                    "to": original.get("stream_id"),
-                    "topic": Z.message_topic(original),
+                    "to": stream_id,
+                    "topic": topic,
                     "content": "%s %s" % (prefix, reason),
                 },
             )
