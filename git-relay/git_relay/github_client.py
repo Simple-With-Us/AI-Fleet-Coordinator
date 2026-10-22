@@ -92,7 +92,7 @@ class GitHubClient:
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {bearer or self._token}",
                 "Content-Type": "application/json",
-                "User-Agent": "swu-pr-relay",
+                "User-Agent": "swu-git-relay",
             },
         )
         try:
