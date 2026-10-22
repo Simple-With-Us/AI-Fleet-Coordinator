@@ -135,10 +135,11 @@ try:
     #    while that reclaimer still believes it holds the lock.
     shutil.rmtree(lock)
     lock.mkdir(parents=True)
+    peer_inode = lock.stat().st_ino
     aside = state / ".housekeeper.lock.stale-9.9"
     aside.mkdir(parents=True)
     assert mod._restore_housekeeper_lock(aside) is False, "a restore onto an occupied lock must be refused"
-    assert lock.is_dir(), "a refused restore must leave the canonical lock alone"
+    assert lock.stat().st_ino == peer_inode, "a refused restore must not replace the peer's lock"
     assert aside.is_dir(), "a refused restore must leave the moved-aside copy where it is"
 
     # 9. A restore onto a free canonical path puts the copy back.
@@ -162,6 +163,64 @@ try:
     owner.write_text('{"pid": %d}' % os.getpid(), encoding="utf-8")
     mod._clear_housekeeper_owner(only_pid=os.getpid())
     assert not owner.exists(), "an owner file that names us must be removed"
+
+    # 11. The no-replace rename is ATOMIC, so there is no window between a
+    #     check and a move for a peer to slip into.
+    #
+    #     os.rename onto an existing EMPTY directory SUCCEEDS and replaces it,
+    #     so a restore built on "check that the path is free, then rename"
+    #     has a window in which a third reclaimer's fresh lock is silently
+    #     replaced while that reclaimer keeps sweeping beside us.  The move
+    #     and the refusal have to be one decision.
+    src = state / ".rename-src"
+    src.mkdir()
+    dst = state / ".rename-dst"
+    dst.mkdir()
+    occupied_inode = dst.stat().st_ino
+    assert mod._rename_exclusive(src, dst) is False, "the no-replace rename must refuse an occupied path"
+    assert dst.stat().st_ino == occupied_inode, "the occupied path must not be replaced"
+    assert src.is_dir(), "the source must stay where it is"
+
+    free = state / ".rename-free"
+    assert mod._rename_exclusive(src, free) is True, "the no-replace rename must move onto a free path"
+    assert free.is_dir(), "the move must have happened"
+    assert not src.exists(), "the source must be gone after the move"
+
+    # 12. The restore must not reach os.rename, and a peer that takes the
+    #     canonical path in the window must not be clobbered.
+    #
+    #     os.rename onto an existing EMPTY directory SUCCEEDS and replaces it,
+    #     so a restore built on "check that the path is free, then rename"
+    #     has a window in which a third reclaimer's fresh lock is silently
+    #     replaced while that reclaimer keeps sweeping beside us.  The move
+    #     and the refusal have to be ONE decision.
+    #
+    #     The peer is injected at the moment the move happens, which is the
+    #     only point at which the window exists.  The restore must never get
+    #     there, so the spy must never fire.
+    shutil.rmtree(lock, ignore_errors=True)   # the canonical path starts free
+    source = state / ".rename-source"
+    source.mkdir()
+    rename_calls = []
+    peer_inode = {}
+    real_rename = mod.os.rename
+    def racy_rename(src_path, dst_path, *args, **kwargs):
+        # A third reclaimer takes the canonical path in the window between
+        # the check and the move.
+        rename_calls.append((str(src_path), str(dst_path)))
+        Path(dst_path).mkdir(parents=True, exist_ok=True)
+        peer_inode["ino"] = Path(dst_path).stat().st_ino
+        return real_rename(src_path, dst_path, *args, **kwargs)
+    mod.os.rename = racy_rename
+    try:
+        mod._restore_housekeeper_lock(source)
+    finally:
+        mod.os.rename = real_rename
+    assert not rename_calls, (
+        "the restore must not go through os.rename: it replaces an empty "
+        "directory, so a check-then-rename window clobbers a peer's lock "
+        "(calls: %r)" % (rename_calls,))
+    assert not peer_inode, "the restore must never displace a peer that takes the lock"
 finally:
     shutil.rmtree(scratch, ignore_errors=True)
 print("housekeeper lock behaviour ok")

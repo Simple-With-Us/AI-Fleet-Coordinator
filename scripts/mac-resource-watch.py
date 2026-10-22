@@ -12,6 +12,7 @@ No credential file is read (AFC-359).  BotFleet is the primary wake.  Grok Bot i
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
@@ -66,6 +67,12 @@ LOCK_STALE_SEC = int(os.environ.get("RESOURCE_LOCK_STALE_SEC", "1800"))
 # stale after 120 minutes -- the same lock and the same age mac-auto-cleanup.sh uses.
 HOUSEKEEPER_LOCK = STATE_DIR / ".housekeeper.lock"
 HOUSEKEEPER_LOCK_STALE_SEC = int(os.environ.get("RESOURCE_HOUSEKEEPER_LOCK_STALE_SEC", "7200"))
+
+# macOS renamex_np flag: fail the rename when the destination already exists.
+# This is the atomic no-replace primitive the housekeeper lock needs.
+_RENAME_EXCL = 0x00000004
+_RENAMEX_UNSET = object()
+_RENAMEX_NP = _RENAMEX_UNSET
 
 # The inode of the lock directory this process created.  The release only removes
 # that directory, so a lock that was taken over as stale while this process was
@@ -330,6 +337,51 @@ def _clear_housekeeper_owner(only_pid: int | None = None) -> None:
         pass
 
 
+def _renamex_np():
+    """macOS's renamex_np, or None where it does not exist."""
+    global _RENAMEX_NP
+    if _RENAMEX_NP is _RENAMEX_UNSET:
+        try:
+            libc = ctypes.CDLL(None, use_errno=True)
+            fn = libc.renamex_np
+        except (OSError, AttributeError):
+            _RENAMEX_NP = None
+        else:
+            fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            fn.restype = ctypes.c_int
+            _RENAMEX_NP = fn
+    return _RENAMEX_NP
+
+
+def _rename_exclusive(src: Path, dst: Path) -> bool:
+    """Rename src to dst, refusing to replace anything already at dst.
+
+    os.rename is not that primitive.  On POSIX a rename onto an existing EMPTY
+    directory SUCCEEDS and replaces it, and the housekeeper lock marker is an
+    empty directory, so a plain rename can replace a third reclaimer's fresh
+    lock while that reclaimer still believes it holds the lock and sweeps at
+    the same time.
+
+    macOS has renamex_np with RENAME_EXCL, which is the atomic no-replace
+    rename: the move and the refusal are one decision, so there is no window
+    between a check and a rename for a peer to slip into.  Elsewhere the
+    fallback checks and then renames, which is strictly weaker but still
+    refuses an occupied destination.
+    """
+    fn = _renamex_np()
+    if fn is not None:
+        if fn(os.fsencode(str(src)), os.fsencode(str(dst)), _RENAME_EXCL) == 0:
+            return True
+        return False
+    try:
+        if dst.exists() or dst.is_symlink():
+            return False
+        os.rename(src, dst)
+        return True
+    except OSError:
+        return False
+
+
 def _restore_housekeeper_lock(aside: Path) -> bool:
     """Put a moved-aside lock back without replacing anybody else's lock.
 
@@ -340,22 +392,16 @@ def _restore_housekeeper_lock(aside: Path) -> bool:
     fresh lock, and that reclaimer goes on believing it holds the lock while
     this one sweeps at the same time.
 
-    The restore therefore only runs when the canonical path is free, where a
-    plain rename is an atomic move onto a free path.  When the canonical path
-    is occupied there is nothing safe to do: the moved-aside copy stays where
-    it is and the caller reports the failure, because the alternative is
-    clobbering a live holder.
+    Checking that the canonical path is free and then renaming is not enough
+    either: the check and the rename are two steps, so a third reclaimer can
+    take the canonical path in between and be silently replaced by the move.
+    The restore therefore makes the move and the no-replace check ONE decision,
+    with the atomic no-replace rename.  When the canonical path is occupied
+    there is nothing safe to do: the moved-aside copy stays where it is and
+    the caller reports the failure, because the alternative is clobbering a
+    live holder.
     """
-    try:
-        if HOUSEKEEPER_LOCK.exists() or HOUSEKEEPER_LOCK.is_symlink():
-            return False
-    except OSError:
-        return False
-    try:
-        os.rename(aside, HOUSEKEEPER_LOCK)
-    except OSError:
-        return False
-    return True
+    return _rename_exclusive(aside, HOUSEKEEPER_LOCK)
 
 
 def _acquire_housekeeper_lock() -> bool:
