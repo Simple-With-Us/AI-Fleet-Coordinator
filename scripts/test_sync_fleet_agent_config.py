@@ -232,10 +232,9 @@ class RetentionTests(unittest.TestCase):
         self.make_backup("2026-10-01")
 
         err = io.StringIO()
-        with refusing_listing():
-            with contextlib.redirect_stderr(err):
-                found = self.mod.dated_backup_folders(self.gdrive)
-                removed = self.mod.prune_old_backups(self.gdrive, keep=0)
+        with refusing_listing(), contextlib.redirect_stderr(err):
+            found = self.mod.dated_backup_folders(self.gdrive)
+            removed = self.mod.prune_old_backups(self.gdrive, keep=0)
 
         self.assertIsNone(
             found,
@@ -281,9 +280,8 @@ class RetentionTests(unittest.TestCase):
         )
 
         refused_err = io.StringIO()
-        with refusing_listing():
-            with contextlib.redirect_stderr(refused_err):
-                refused = self.mod.prune_old_backups(self.gdrive, keep=14)
+        with refusing_listing(), contextlib.redirect_stderr(refused_err):
+            refused = self.mod.prune_old_backups(self.gdrive, keep=14)
 
         self.assertIsNone(refused, "a Drive that cannot be listed is a refusal")
         self.assertIn(
@@ -307,9 +305,8 @@ class RetentionTests(unittest.TestCase):
         self.make_backup("2026-10-03")
 
         err = io.StringIO()
-        with refusing_entry_stat(oldest.name):
-            with contextlib.redirect_stderr(err):
-                removed = self.mod.prune_old_backups(self.gdrive, keep=1)
+        with refusing_entry_stat(oldest.name), contextlib.redirect_stderr(err):
+            removed = self.mod.prune_old_backups(self.gdrive, keep=1)
 
         self.assertEqual(
             [p.name for p in removed],
