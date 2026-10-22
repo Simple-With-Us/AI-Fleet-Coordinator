@@ -1,7 +1,7 @@
 # simple-chat listener seat partition.  Owner decision, Thu, Oct 8 (2026-10-08).
 #
 # The listener runs as two instances of the same package (scripts/agent_sync):
-#   mac     the owner's Mac (LaunchAgent com.jay.agent-sync-listener):  every seat that runs on
+#   mac     the owner's Mac (LaunchAgent com.jay.operator):  every seat that runs on
 #           the Mac.  CLAUDE gets live delivery and the tool-less claude -p wake; the others get
 #           inbox capture (owner, Thu, Oct 8:  "grok build is on the mac too").
 #   server  the Coolify container on the Hetzner box:  the cloud seats (owner, Thu, Oct 8:

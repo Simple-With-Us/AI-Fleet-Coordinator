@@ -1,7 +1,7 @@
 """Sentry Crons heartbeat:  the listener reports to Sentry that it is running.
 
 Owner ask (Sat, Oct 10, 2026):  "have the listener report if it is running on Mac and Coolify to Sentry".
-The daemon checks in to one Sentry cron monitor per instance, `agent-sync-listener-<instance>` (`mac` and
+The daemon checks in to one Sentry cron monitor per instance, `operator-<instance>` (`mac` and
 `server`), in the fleet-infra project.  A check-in goes out about every five minutes from inside the daemon
 (no LaunchAgent, no cron, no SDK):  `ok` when the listener is healthy, `error` when it is degraded.  The
 monitor is created by the first check-in (its `monitor_config` upserts), with a five-minute interval, a
@@ -60,7 +60,7 @@ DSN_FETCH_TIMEOUT = 15.0
 DSN_RETRY_SECONDS = (
     600.0  # after a failed Infisical read, the heartbeat stays off this long before asking again
 )
-MONITOR_PREFIX = "agent-sync-listener-"
+MONITOR_PREFIX = "operator-"
 REASON_LIMIT = 120
 REASONS_SHOWN = 4
 
@@ -268,8 +268,8 @@ def build_envelope(
                     % (instance, "; ".join(shown), "; +%d more" % more if more else ""),
                     "environment": environment,
                     "release": "agent-sync@%s" % version,
-                    "tags": {"app": "agent-sync-listener", "instance": instance},
-                    "fingerprint": ["agent-sync-listener", instance, "degraded"],
+                    "tags": {"app": "operator", "instance": instance},
+                    "fingerprint": ["operator", instance, "degraded"],
                 },
             )
         )
@@ -426,7 +426,7 @@ class SentryHeartbeat:
         )
         headers = {
             "Content-Type": "application/x-sentry-envelope",
-            "X-Sentry-Auth": "Sentry sentry_version=7, sentry_client=agent-sync-listener/%s, sentry_key=%s"
+            "X-Sentry-Auth": "Sentry sentry_version=7, sentry_client=operator/%s, sentry_key=%s"
             % (__version__, dsn.key),
         }
         # Provisional next time, so a slow send is not started twice;  the outcome sets the real one.

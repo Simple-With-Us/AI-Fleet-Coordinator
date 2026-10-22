@@ -90,31 +90,25 @@ What "current" means for a vendor CLI is one constant, `VENDOR_CURRENCY_POLICY`,
 
 Each host document carries `schemaVersion` 1, `host`, `generatedAt`, `doctorCommit`, `expected` (the tip and how it was read) and its rows.  A reader treats a report older than 45 minutes, a missing or malformed file, or any other `schemaVersion` as unknown, and leaves `harness`, `human-tree` and `presence` rows out of its verdict.  A `presence` row (`command:`, `tool-file:`, and `catalog:` on the server) only says a command or file exists, so its `current` means present;  every fleet tool's currency, a missing one included, is on its `tool:` row.
 
-### The server route (owner step)
+### The server route (installed)
 
-The server half is read over a key that can do one thing:  run this doctor with `--json`.  Nothing is written on the server and Infisical is not touched.  The doctor treats a missing alias as "no read-only route to the server", so the Mac half works without it.  Installing the key needs the owner's OK, because it is a new way into root (limited by `restrict`, `from=` and a fixed command;  the hourly updater already runs main as root).
+The server half is read over a key that can do one thing:  run this doctor with `--json`.  Nothing is written on the server and Infisical is not touched.  The doctor treats a missing alias as "no read-only route to the server", so the Mac half works without it.  The route is installed on this Mac and on the server, so the server half of the report is real and the server's rows are read, not `unknown`.
 
-1. On the Mac, a dedicated key with no passphrase (launchd has no agent):
-   ```bash
-   ssh-keygen -t ed25519 -N "" -C "fleet-tools-ro (read-only doctor)" -f ~/.ssh/fleet-tools-ro
+**What is installed**
+
+1. On the Mac, a dedicated key with no passphrase (launchd has no agent):  `~/.ssh/fleet-tools-ro`.
+2. On the Mac, a `Host fleet-tools-ro` block in `~/.ssh/config` naming the server's **public** address `167.233.254.55`, `User root`, `IdentityFile ~/.ssh/fleet-tools-ro`, `IdentitiesOnly yes`, `BatchMode yes`, `StrictHostKeyChecking yes` and `UserKnownHostsFile ~/.ssh/known_hosts_hetzner`.
+3. On the server, one line in `/root/.ssh/authorized_keys`:
    ```
-2. On the Mac, this block in `~/.ssh/config`, **above** the `Host *` block (ssh keeps the first value it finds).  `HostName` is the server's Tailscale name, the same one the existing `coolify` block uses, so its host key is already in `known_hosts`:
+   restrict,command="/usr/bin/python3 -I /root/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --json" ssh-ed25519 AAAA... fleet-tools-ro@jay-macbook
    ```
-   Host fleet-tools-ro
-     HostName <the server's Tailscale name>
-     User root
-     IdentityFile ~/.ssh/fleet-tools-ro
-     IdentitiesOnly yes
-     BatchMode yes
-     StrictHostKeyChecking yes
-     ForwardAgent no
-     ControlMaster no
-     ControlPath none
-   ```
-3. On the server, one line in `/root/.ssh/authorized_keys`, with the Mac's Tailscale IP and the contents of `~/.ssh/fleet-tools-ro.pub`:
-   ```
-   restrict,from="<Mac Tailscale IP>",command="/usr/bin/python3 -I /root/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --json" ssh-ed25519 AAAA... fleet-tools-ro (read-only doctor)
-   ```
-4. Check it:  `ssh fleet-tools-ro | head -c 200` and `ssh fleet-tools-ro whoami` both print the doctor's JSON (the forced command ignores what is asked), `ssh -N -L 9999:localhost:22 fleet-tools-ro` is refused, and `python3 scripts/fleet-tools-doctor.py --remote fleet-tools-ro` lists the server's rows.  Renaming the key turns them `unknown` again.
+   `restrict` and the fixed command are the whole permission:  the key can run that one command and nothing else, so it cannot open a shell, forward a port, use the agent, or reach the machine another way.  Removing the line revokes it.
+
+**Why the public address and not the Tailscale one.**  Tailscale SSH is enabled on that host (`tailscale debug prefs` shows `RunSSH: true`), and it intercepts port 22 on the tailnet address.  It authenticates by tailnet identity and ignores the server's own `authorized_keys`, so a forced command never applies there:  the session opens a shell, reads nothing, and exits 0.  The route therefore uses the server's public address, where the real `sshd` applies the forced command.  The consequence is that the `from=` pin to the Mac's tailnet IP cannot be used (the source address over the public route is the Mac's routable address, which changes), so the key's own restriction carries the whole weight:  `restrict` plus one fixed command.
+
+**Check it.**  `ssh fleet-tools-ro | head -c 200` prints the doctor's JSON (the forced command ignores what is asked), `ssh -N -L 9999:localhost:22 fleet-tools-ro` is refused, and `python3 scripts/fleet-tools-doctor.py --remote fleet-tools-ro` lists the server's rows.  Renaming the key turns them `unknown` again.
 
 The doctor calls it with `-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=yes` and no command.  An exit of 1 with a document is still an answer (the server has a FAIL row);  a timeout, any other exit, something that is not JSON, an answer nested past 32 levels or 100,000 nodes, a malformed row, or a doctor too old to report `schemaVersion` 1 makes the server `reachable: false` and every server row `unknown`.  The report names a known ssh failure with a fixed phrase (the key was refused, the connection timed out, and so on) and never copies ssh's own text, which can carry host names and addresses.  Removing the `authorized_keys` line revokes it.
+
+**What the server's rows look like now.**  The server runs its project mirrors and its lanes on the `fleet-extra` volume (`/mnt/fleet-extra`), with `~/Code` and `~/apps` resolving to it.  That layout is sanctioned and is not a difference the doctor reports:  the doctor's own root lookup follows the symlinks, so the server's rows are about the tools, not about where the trees live.  A server row that says `stale` means a tool is behind its upstream, and `missing` means a required command is absent;  neither says the host is set up wrongly.
+

@@ -20,7 +20,7 @@ from typing import TextIO
 from . import live as L
 from . import zulip as Z
 
-LABEL = "com.jay.agent-sync-listener"
+LABEL = "com.jay.operator"
 # Fleet seats with a reader on this Mac (they can be enabled), then bots that have none.
 READER_SEATS = [
     "CLAUDE",

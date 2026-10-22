@@ -101,6 +101,19 @@ A server host (the Hetzner VPS) keeps the project mirrors and the lanes on their
 
 **The layout.**  The volume is `/mnt/fleet-extra`: `Code/` holds the project mirrors (the GitHub checkouts a seat picks to work in) and `apps/` holds the apps, `lanes/` among them.  `~/Code` and `~/apps` resolve to them, so the policy path an agent uses is unchanged: `~/apps/lanes/<Repo>/<seat>-<slug>`, and `~/Code/<Repo>` is the integration tree.  The lanes root has two spellings on that host, `~/apps/lanes` and `/mnt/fleet-extra/apps/lanes`, and they are the same directory, so a config may name either one.
 
+**What is on the volume.**  Everything the host owns that used to sit on its main disk lives on that volume now, and the old paths are symlinks into it, so a path an agent uses never changes:
+
+| On the volume | Reached as | What it is |
+|---|---|---|
+| `/mnt/fleet-extra/Code` | `~/Code` | the project mirrors.  `~/Code/<Repo>` is the integration tree. |
+| `/mnt/fleet-extra/apps` | `~/apps` | the apps, `lanes/` among them. |
+| `/mnt/fleet-extra/apps/lanes` | `~/apps/lanes` | the lanes root, the directory every server tool session starts in. |
+| `/mnt/fleet-extra/ops-salvage` | `~/ops-salvage` | the old tree archive: the git bundles of the uncommitted branches that were salvaged when the trees moved, with a `MANIFEST.sha256` beside them. |
+
+`/fleet-extra` is a second symlink for the volume itself, so `/fleet-extra/apps/lanes` and `/mnt/fleet-extra/apps/lanes` are the same directory too.
+
+**A symlinked root is one place, not a variation.**  `git`, `lsof` and `os.path.realpath` report the real path, so a lane on that host prints as `/mnt/fleet-extra/apps/lanes/<Repo>/<name>`.  The lane tools resolve the roots before they judge a path: `make_roots` in `scripts/fleet_lanes/layout.py` takes the real path of `~/Code`, `~/apps` and the lanes root, so the volume spelling and the `~/` spelling are one place for the doctor, the guard and the janitor.  A host whose roots are symlinks into a volume is a sanctioned layout, not a deviation, and no tool may report such a path as outside the map.
+
 **The rule.**  A tool session starts in the lanes root, not in a project.  The agent then runs `lane new <app> <slug>` and works in the lane it made.  This is the same policy the Mac follows, where the OpenCode session directory is `~/apps/lanes`.
 
 **Where each tool's working directory is set on a server host.**

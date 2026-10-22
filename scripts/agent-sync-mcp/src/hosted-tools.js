@@ -1,5 +1,6 @@
 import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
 import { callNamedLinear } from "./linear-named.js";
+import { z } from "zod";
 import { LINEAR_MCP_BY_NAME } from "./linear-mcp-specs.js";
 import { callLinearMcp } from "./linear-mcp.js";
 import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
@@ -70,7 +71,7 @@ import {
   fleetlinkSummary,
   mapFleetLinkError,
 } from "./fleetlink.js";
-import { DM_READ_TOOLS, DM_WRITE_TOOLS, DM_MAX_RECIPIENTS, DM_SCAN_LIMIT, DM_INSTRUCTIONS } from "./dm.js";
+import { DM_READ_TOOLS, DM_WRITE_TOOLS, DM_MAX_RECIPIENTS, DM_SCAN_LIMIT, DM_OPENER_WINDOW, DM_INSTRUCTIONS } from "./dm.js";
 import {
   LINEAR_TOOLS,
   LINEAR_READ_TOOLS,
@@ -123,9 +124,14 @@ import {
 import { fixOutbound, sentenceGap } from "./textfmt.js";
 import { ZULIP_PUBLIC_TOOLS, ZULIP_FULL_PUBLIC_TOOLS, ZULIP_FULL_NAMES, ZULIP_LEGACY_NAMES } from "./zulip-tool-specs.js";
 import { ZULIP_FULL_METHODS, FULL_WRITE_KIND } from "./zulip-full.js";
-import { LISTENER_TOOLS, LISTENER_READ_TOOLS, LISTENER_METHODS } from "./listener.js";
+import { EAVESDROPPER_TOOLS, EAVESDROPPER_READ_TOOLS, EAVESDROPPER_METHODS } from "./eavesdropper.js";
 import { NOTES_TOOLS, NOTES_READ_TOOLS, NOTES_WRITE_TOOLS, NOTES_METHODS } from "./notes.js";
 import { REALM } from "./zulip.js";
+import { PINNED_OPERATOR_USER_ID } from "./config.js";
+
+// Jay spells the channel Side-Chats and the live stream shows a different display name,  so the
+// code keys on the id (owner decision (d), Oct 22 2026).  Mirrors dm_policy.SIDE_CHATS_STREAM_ID.
+const SIDE_CHATS_STREAM_ID = 646987;
 import { CHANNEL_CACHE, lookupChannel, loadChannelSet } from "./channels.js";
 
 export const TRANSPORT = "hosted";
@@ -151,7 +157,7 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
 // (every tools.json tool after the first ten, as zulip_<name>) and the read-only listener tools
 // after those, so every earlier tool keeps its place.
-export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...LISTENER_TOOLS, ...NOTES_TOOLS]);
+export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS]);
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
 export const HOSTED_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])));
 // Every hosted tool is classified here, explicitly, as a read or a write (AFC-331:  a write must name its
@@ -164,7 +170,7 @@ const ZULIP_WRITE_NAMES = [...WRITE_TOOLS, ...DM_WRITE_TOOLS].map(publicZulip);
 const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
 const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
-export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...LISTENER_READ_TOOLS, ...NOTES_READ_TOOLS]));
+export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS]));
 export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS]));
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
@@ -207,6 +213,23 @@ export class UnknownTool extends Error {
 }
 
 const isInt = (v) => typeof v === "number" && Number.isSafeInteger(v);
+
+// The Zulip answer `dmOpener` reads, validated at the trust boundary before anything reads it.
+// Only what the DM rule actually reads is required (the id it sorts by, the type it filters on and
+// the participants it matches) and the rest of the message is passed through:  Zulip's message
+// object carries many fields the rule never looks at, and an unfamiliar one must not fail a read.
+//
+// A response that does not match is NOT read as "no conversation exists".  That would turn a
+// malformed answer into a terminal dm_not_allowed refusal against a seat that was answering inside
+// a conversation Operator opened, which no retry could clear, so a bad shape is a retryable read
+// failure instead -- the same treatment the stdio server gives a transient failure.
+const ZulipMessage = z.looseObject({
+  id: z.number().int(),
+  type: z.string(),
+  sender_id: z.number().int().optional(),
+  display_recipient: z.array(z.looseObject({ id: z.number().int() })).optional(),
+});
+const ZulipMessagesResponse = z.looseObject({ messages: z.array(ZulipMessage) });
 
 /** The people in a direct message ({id, email, full_name}), from its display_recipient (sender included). */
 export function dmPeople(message) {
@@ -1006,6 +1029,88 @@ export class HostedTools {
     return this.messagesResult("dm_read", [["with", userIds.join(",")]], shown, next);
   }
 
+  // The opener of one DM conversation:  its oldest message, fetched anchored at "oldest".
+  //
+  // This must not be read out of the newest-50 window.  Once a conversation runs past 50 messages the
+  // opener has scrolled out of that window, so the lowest id left is one the seat sent itself and a
+  // reply inside a DM Operator opened is refused as though it were a new DM.  Anchoring at "oldest"
+  // asks Zulip for the head of the conversation instead of paging back through the thread.
+  //
+  // The narrow is `dm:[...]`, which is a **union**:  for a group conversation it also carries the
+  // 1:1 threads with each named person, so the very first message Zulip returns is often from a
+  // different conversation than the one asked about.  Asking for a single message (num_after 1)
+  // therefore threw away the opener whenever an earlier 1:1 thread existed, and dmRuleCheck refused
+  // a reply inside a conversation Operator had opened.  So: read a window, keep the oldest message
+  // whose participant set is exactly this conversation, and only fall through to the refusal when
+  // the window really holds no opener.  Fail-closed stays correct — a genuine new DM is refused, and
+  // a conversation older than the window is refused rather than wrongly allowed.
+  async dmOpener(userIds, expected) {
+    const answer = await this.zulip.get("messages", {
+      narrow: [{ operator: "dm", operand: userIds }],
+      anchor: "oldest",
+      num_before: 0,
+      num_after: DM_OPENER_WINDOW,
+      include_anchor: true,
+      apply_markdown: false,
+    });
+    const parsed = ZulipMessagesResponse.safeParse(answer);
+    if (!parsed.success) {
+      throw new ToolError(
+        "unavailable",
+        "Zulip's answer for this direct message conversation did not have the expected shape, so " +
+          "the DM rule cannot decide whether Operator opened it; retry once the connection is back",
+        { retryable: true },
+      );
+    }
+    return (
+      [...parsed.data.messages]
+        .filter(
+          (m) =>
+            m.type === "private" && dmPeople(m).map((p) => p.id).sort((a, b) => a - b).join(",") === expected,
+        )
+        .sort((a, b) => a.id - b.id)[0] ?? null
+    );
+  }
+
+  // The DM rule (owner decision, Oct 22 2026, hard cutover).  Mirrors scripts/agent_sync/dm_policy.py
+  // so both transports refuse the same calls with the same guidance.  A seat may not open a new
+  // direct message;  a reply inside a conversation Operator already opened is allowed, because that
+  // conversation is Operator's and the seat is answering rather than opening.  Operator itself may
+  // open one DM per ambiguous wake, to ask the sender a clarifying question.
+  async dmRuleCheck(args, { userIds, users }) {
+    if (this.config?.dmRule === false) return;
+    const selfId = this.me.user_id;
+    const operatorId = this.config?.operatorUserId ?? PINNED_OPERATOR_USER_ID;
+    let opener = null;
+    if (userIds.length) {
+      // Metered like every other read path:  without the reserve the seat's hourly read budget is
+      // never charged for this Zulip call, so a seat at its cap still spends one.
+      await this.reserve("read");
+      const expected = [...new Set([selfId, ...userIds])].sort((a, b) => a - b).join(",");
+      opener = await this.dmOpener(userIds, expected);
+    }
+    // Oldest message in this exact conversation:  if Operator sent it, this seat may reply inside.
+    if (opener && Number(opener.sender_id) === Number(operatorId)) return;
+    if (this.seat === "OPERATOR" && args.clarifying_question) return;
+
+    const bots = users.filter((u) => u.is_bot);
+    const ownerId = this.config?.ownerUserId ?? null;
+    const isOwner = ownerId !== null && users.some((u) => Number(u.user_id) === Number(ownerId));
+    const kind = bots.length ? "seat" : isOwner ? "owner" : "people";
+    const guidance = kind === "seat"
+      ? `Seat-to-seat work happens in a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}):  one topic per discussion, mentioning only the participants, never a direct message.`
+      : kind === "owner"
+        ? `Jay is reached through the Pending-for-Jay post in #Side-Chats (stream ${SIDE_CHATS_STREAM_ID}) or a topic there, not a new direct message.`
+        : `Direct messages are Operator's to open.  Put this in a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}) instead, or let Operator ask one clarifying question if a wake could not be routed.`;
+    if (this.seat === "OPERATOR") {
+      throw new ToolError(
+        "dm_not_allowed",
+        `OPERATOR may open a direct message only to ask the sender one clarifying question when a wake could not be routed.  Bot-to-bot work goes to a #Side-Chats topic (stream ${SIDE_CHATS_STREAM_ID}).`,
+      );
+    }
+    throw new ToolError("dm_not_allowed", `this seat may not open a new direct message (${kind}).  ${guidance}`);
+  }
+
   async tool_dm_send(args, audit) {
     // The scan runs on everything the caller wrote, before any request (spec 1).
     this.scan({ text: args.text });
@@ -1019,8 +1124,12 @@ export class HostedTools {
     // An explicit key is namespaced, so a post and a DM never share a row.
     const idem = await this.idemKey(args.idempotency_key ? `dm:${args.idempotency_key}` : undefined, ["dm_send", tag, userIds, text]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
+    // The cached answer comes before the rule check:  a retry of a send that already landed sends
+    // nothing, so it must not pay for the DM-rule read again.
     const prior = await this.gate.idemPeek({ key: idem.key });
     if (prior) return this.dmResult({ id: prior.id, userIds, duplicate: true });
+    await this.dmRuleCheck(args, { userIds, users });
+    audit.outcome_detail = "dm_rule";
     let content, reformatted;
     try {
       [content, reformatted] = fixOutbound(composeBody(tagPrefix(this.seat, tag), text, { labels: users.map(seatTagFor) }), { limit: MAX_CONTENT_LENGTH });
@@ -1605,7 +1714,7 @@ export class HostedTools {
 }
 
 // AFC-330:  the rest of Zulip (src/zulip-full.js) and the listener's records (src/listener.js).
-Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, LISTENER_METHODS, NOTES_METHODS);
+Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, EAVESDROPPER_METHODS, NOTES_METHODS);
 
 /** Why `me` cannot serve `seat`, or null (spec 3.6). */
 export function seatProblem(me, { seat, email }) {

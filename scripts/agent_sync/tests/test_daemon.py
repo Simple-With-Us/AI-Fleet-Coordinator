@@ -9,13 +9,16 @@ import secrets
 import shutil
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from agent_sync import adapters as A
+from agent_sync import daemon as D
 from agent_sync import heldback as HELD
 from agent_sync import host_load as HL
 from agent_sync import live as L
@@ -1482,6 +1485,27 @@ class RecoveryTests(DaemonHarness):
 
 
 class SecurityTests(DaemonHarness):
+    def test_the_operator_seat_may_hold_an_admin_key_and_no_other_seat_may(self) -> None:
+        """Operator is the admin [Operator] bot (owner decision, Oct 22 2026), so the member-only rule
+        above lifts for that seat alone.  An owner key is still refused, and a non-OPERATOR seat
+        holding an administrator key is still refused."""
+        seat = lambda name, wake="inbox": SimpleNamespace(seat=name, wake=wake)  # noqa: E731
+        config = SimpleNamespace(notes_relay_enabled=False, notes_relay_seat="CLAUDE")
+
+        # The rule itself:  OPERATOR is the one admin_ok seat.
+        self.assertTrue(D.admin_allowed(config, seat("OPERATOR")))
+        self.assertFalse(D.admin_allowed(config, seat("CLAUDE")))
+        self.assertFalse(D.admin_allowed(config, seat("OPERATOR-EXTRA")))
+
+        # admin (200) is accepted for OPERATOR, refused for every other seat;  owner (100) refused always.
+        admin = {"role": 200, "is_admin": True, "is_owner": False}
+        owner = {"role": 100, "is_admin": True, "is_owner": True}
+        member = {"role": 400, "is_admin": False, "is_owner": False}
+        self.assertFalse(D.role_refused(admin, D.admin_allowed(config, seat("OPERATOR"))))
+        self.assertTrue(D.role_refused(admin, D.admin_allowed(config, seat("CLAUDE"))))
+        self.assertTrue(D.role_refused(owner, D.admin_allowed(config, seat("OPERATOR"))))
+        self.assertFalse(D.role_refused(member, D.admin_allowed(config, seat("CLAUDE"))))
+
     def test_admin_and_owner_bot_keys_are_refused_and_moderators_accepted(self) -> None:
         for role, ok in ((200, False), (100, False), (300, True), (400, True), (600, False)):
             with self.subTest(role=role):

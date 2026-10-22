@@ -45,9 +45,14 @@ class Tests(unittest.TestCase):
             check_bot({"bot_owner_id":12,"is_bot": False, "user_id": OPERATOR_BOT_ID, "email": OPERATOR_EMAIL})
         )
 
-    def test_not_agent_roster(self):
+    def test_operator_is_now_an_agent_seat(self):
+        """Operator used to be deliberately off the seat registry:  it was a service, not a seat.
+        Jay made it the admin [Operator] bot (decision, Oct 22 2026), so it is a real seat now."""
+        self.assertEqual(I.strict_seat("OPERATOR"), "OPERATOR")
+        self.assertEqual(I.seat_app("OPERATOR"), "operator")
+        # A name that was never a seat is still refused.
         with self.assertRaises(I.UnknownSeat):
-            I.strict_seat("OPERATOR")
+            I.strict_seat("OPERATOR-EXTRA")
 
     def test_notes_consumer_names_missing_identity_configuration(self):
         from types import SimpleNamespace as NS

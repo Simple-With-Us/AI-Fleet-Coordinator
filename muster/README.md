@@ -4,12 +4,14 @@ Muster is a native SwiftUI macOS 14+ scaffold.  Its initial window explicitly re
 
 ## Scope
 
-- `Muster/` contains the app entry point, the fleet overview view and the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`).
+- `Muster/` contains the app entry point, the fleet overview view, the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`) and the Fleet Hosts panel (what the fleet tools doctor's own report says about each host, from `~/.local/state/fleet-tools/report.json`).
 - `project.yml` is the XcodeGen source of truth.  The generated Xcode project is ignored.
 - `script/build_and_run.sh` owns local project generation, signing, installation, and launch.
 - The repository's `.codex/environments/environment.toml` exposes the same script through the Codex **Run** action.
 
 The app makes no network calls and reads no credentials.  It has no sample fleet records or inferred health state.  The only CLI it runs is `fleet-config` (see Apply Preview below), and only when asked;  collector and grid integration remain separate work.
+
+The Fleet Hosts panel reads one local file and runs nothing:  the doctor's own report, which `com.jay.fleet-tools-doctor` writes every fifteen minutes and which covers the Mac and the server together.  A report that is missing, malformed, of another version, or older than 45 minutes reads as unknown, and a host the doctor could not reach reads as unknown rather than as a failure.
 
 ## Prerequisites
 

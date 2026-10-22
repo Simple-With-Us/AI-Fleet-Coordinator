@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE } from "../src/config.js";
+import { loadConfig, PUBLIC_HOST, ISSUER, RESOURCE, REFRESH_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S, GATE_LOG_NAME, KNOWN_SEATS, SEAT_SECRETS, PROPS_PHASE, PINNED_OPERATOR_USER_ID } from "../src/config.js";
 import { REALM } from "../src/zulip.js";
 import { ROOT, wranglerConfig, testEnv, CHATGPT_REDIRECT } from "./helpers.mjs";
 
@@ -70,6 +70,21 @@ test("the wrangler file carries no Access aud, and infra_phase0.py provisions on
   // The retired host still has to be cleaned up and checked.
   assert.match(infra, /^RETIRED_HOST = "agent-sync\.jays\.services"$/m);
   assert.match(infra, /^RETIRED_ZONE_NAME = "jays\.services"$/m);
+});
+
+test("the Operator user id is pinned, and a malformed override fails closed", () => {
+  // Unset:  the pinned fleet identity (the same constant as scripts/agent_sync/zulip.py), never a guess.
+  assert.equal(loadConfig(testEnv()).operatorUserId, PINNED_OPERATOR_USER_ID);
+  // Set to a real id:  that id is used.
+  assert.equal(loadConfig(testEnv({ OPERATOR_ZULIP_USER_ID: "43210" })).operatorUserId, 43210);
+  // Set to something that is not a Zulip user id:  refuse rather than act under a wrong identity.
+  for (const bad of ["0", "-1", "abc", "1e400"]) {
+    assert.throws(
+      () => loadConfig(testEnv({ OPERATOR_ZULIP_USER_ID: bad })),
+      /OPERATOR_ZULIP_USER_ID/,
+      `"${bad}" must fail closed`,
+    );
+  }
 });
 
 test("Access email list is mail@jays.services only, in the Worker and in the Access policy", () => {

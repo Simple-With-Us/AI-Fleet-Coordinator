@@ -60,6 +60,7 @@ targets:
       - path: Muster/Model/FleetConfigContract.swift
       - path: Muster/Model/FleetGrid.swift
       - path: Muster/Model/FleetStore.swift
+      - path: Muster/Model/FleetToolsReport.swift
       - path: Muster/Model/KnobRegistry.swift
       - path: Muster/Model/MiniMaxSurface.swift
       - path: Muster/Model/SeatManifest.swift

@@ -129,6 +129,11 @@ ENV_CHANNEL = "AGENT_SYNC_CHANNEL"
 # STREAM_DOES_NOT_EXIST, so the built-in default follows the realm and the name is
 # settable for a deployment that puts the fleet somewhere else.
 DEFAULT_CHANNEL = "work-in-progress"
+# The Operator seat:  the admin [Operator] Zulip bot (user 1217148, role 200) and the GitHub identity
+# `swu-operator` (owner decision, Oct 22 2026).  It is the only seat whose key may be an
+# administrator's;  every other seat, and the owner for every seat, stays moderator/member only.
+OPERATOR_SEAT = "OPERATOR"
+OPERATOR_USER_ID = 1217148
 
 
 def default_channel(env: Mapping[str, str] | None = None) -> str:
@@ -143,7 +148,6 @@ def default_channel(env: Mapping[str, str] | None = None) -> str:
         if override and override.strip():
             return override.strip()
     return DEFAULT_CHANNEL
-
 
 MAX_TOPIC_LENGTH = 60
 USER_AGENT = "agent-sync/1 (fleet)"

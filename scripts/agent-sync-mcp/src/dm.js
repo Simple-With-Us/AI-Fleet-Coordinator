@@ -13,6 +13,11 @@ import { TOOLS } from "./contract.js";
 
 export const DM_MAX_RECIPIENTS = 8; // other people in one conversation, the bot not counted
 export const DM_SCAN_LIMIT = 200; // direct messages dm_list looks at, newest first
+// How far back dmOpener reads for a conversation's opener.  The `dm:[...]` narrow is a union (the
+// group conversation plus each 1:1 thread with a named person), so one message is often from the
+// wrong conversation; the window is sized like DM_SCAN_LIMIT and matches the stdio 200 (tools.py
+// _dm_exists).  Mirrors dm_policy's window in spirit:  find the opener, never invent one.
+export const DM_OPENER_WINDOW = 200;
 export const DM_LIST_MAX = 50;
 
 /** The hosted inbox spec's description:  tools.json (the stdio contract) says DMs are left out. */

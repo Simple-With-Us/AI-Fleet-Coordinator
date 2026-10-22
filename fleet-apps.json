@@ -463,7 +463,8 @@
       "WISE": "instinct"
     },
     "extraSeats": {
-      "JET": "chatgpt"
+      "JET": "chatgpt",
+      "OPERATOR": "operator"
     },
     "patterns": [
       {

@@ -1,6 +1,6 @@
 """AFC-330:  the stdio MCP server's full-Zulip and listener tools, over real pipes against the fake
 server.  The shared write_secret fixtures, own-message rules, fences, idempotent creates, and the
-listener_* tools reading this seat's own records only."""
+eavesdropper_* tools reading this seat's own records only."""
 from __future__ import annotations
 
 import base64
@@ -201,7 +201,7 @@ class FullZulipToolTests(McpHarness):
         self.assert_tool_error(session.call("zulip_dm_read", {}), "invalid_argument")
 
 
-class ListenerToolTests(McpHarness):
+class EavesdropperToolTests(McpHarness):
     def seed(self, seat: str = "CLAUDE") -> L.SeatPaths:
         paths = L.SeatPaths(str(self.state_dir), seat)
         L.append_jsonl(paths.seat_inbox, [
@@ -214,28 +214,28 @@ class ListenerToolTests(McpHarness):
                                       "trigger_ids": [501], "channel": "agent-sync", "topic": "t"}])
         return paths
 
-    def test_listener_tools_read_this_seats_records_and_ack_moves_forward(self):
+    def test_eavesdropper_tools_read_this_seats_records_and_ack_moves_forward(self):
         self.seed()
         self.seed("CODEX")  # another seat's records exist and are never read
         session = self.session()
-        status = self.assert_structured("listener_status", session.call("listener_status", {}))
+        status = self.assert_structured("eavesdropper_status", session.call("eavesdropper_status", {}))
         self.assertEqual((status["inbox_pending"], status["owner_queue_pending"], status["wakes_24h"]), (2, 1, 1))
-        inbox = session.call("listener_inbox", {})
-        data = self.assert_structured("listener_inbox", inbox)
+        inbox = session.call("eavesdropper_inbox", {})
+        data = self.assert_structured("eavesdropper_inbox", inbox)
         self.assertEqual((data["ids"], data["seqs"], data["next_seq"]), ([501, 502], [1, 2], 2))
         items = self.assert_fence(inbox["content"][0]["text"])
         self.assertIn("[marker removed]", items[0]["body"])
-        acked = self.assert_structured("listener_ack", session.call("listener_ack", {"inbox_seq": 1, "owner_queue_seq": 9}))
+        acked = self.assert_structured("eavesdropper_ack", session.call("eavesdropper_ack", {"inbox_seq": 1, "owner_queue_seq": 9}))
         self.assertEqual(acked, {"inbox_cursor": 1, "owner_queue_surfaced": 1, "held_back_cleared": 0})
-        back = self.assert_structured("listener_ack", session.call("listener_ack", {"inbox_seq": 1}))
+        back = self.assert_structured("eavesdropper_ack", session.call("eavesdropper_ack", {"inbox_seq": 1}))
         self.assertEqual(back["inbox_cursor"], 1)
-        self.assertEqual(self.assert_structured("listener_inbox", session.call("listener_inbox", {}))["seqs"], [2])
-        self.assertEqual(self.assert_structured("listener_owner_queue", session.call("listener_owner_queue", {}))["count"], 0)
-        wakes = self.assert_structured("listener_wakes", session.call("listener_wakes", {"state": "surfaced"}))
+        self.assertEqual(self.assert_structured("eavesdropper_inbox", session.call("eavesdropper_inbox", {}))["seqs"], [2])
+        self.assertEqual(self.assert_structured("eavesdropper_owner_queue", session.call("eavesdropper_owner_queue", {}))["count"], 0)
+        wakes = self.assert_structured("eavesdropper_wakes", session.call("eavesdropper_wakes", {"state": "surfaced"}))
         self.assertEqual(wakes, {"count": 1, "ids": [501]})
-        held = self.assert_structured("listener_held_back", session.call("listener_held_back", {}))
+        held = self.assert_structured("eavesdropper_held_back", session.call("eavesdropper_held_back", {}))
         self.assertEqual(held, {"count": 0, "ids": [], "lost": 0})
-        self.assert_tool_error(session.call("listener_ack", {}), "invalid_argument")
+        self.assert_tool_error(session.call("eavesdropper_ack", {}), "invalid_argument")
         codex = L.SeatPaths(str(self.state_dir), "CODEX")
         self.assertEqual(L.read_json(codex.local_cursor), {})  # the other seat's cursor never moved
 
@@ -243,5 +243,5 @@ class ListenerToolTests(McpHarness):
         paths = self.seed()
         os.chmod(paths.seat_dir, 0o755)
         session = self.session()
-        error = self.assert_tool_error(session.call("listener_inbox", {}), "invalid_argument")
+        error = self.assert_tool_error(session.call("eavesdropper_inbox", {}), "invalid_argument")
         self.assertIn("readable by other users", error["message"])

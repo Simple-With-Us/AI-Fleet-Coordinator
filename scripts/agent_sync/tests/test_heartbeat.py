@@ -154,9 +154,9 @@ class PureTests(unittest.TestCase):
             self.assertEqual(HB._fleet_secrets_dsn(env, tmp), "")
 
     def test_monitor_slug_per_instance(self) -> None:
-        self.assertEqual(HB.monitor_slug("mac"), "agent-sync-listener-mac")
-        self.assertEqual(HB.monitor_slug("server"), "agent-sync-listener-server")
-        self.assertEqual(HB.monitor_slug("Odd Name!"), "agent-sync-listener-odd-name")
+        self.assertEqual(HB.monitor_slug("mac"), "operator-mac")
+        self.assertEqual(HB.monitor_slug("server"), "operator-server")
+        self.assertEqual(HB.monitor_slug("Odd Name!"), "operator-odd-name")
 
     def test_degraded_reasons(self) -> None:
         healthy = {"owner_user_id": 12, "config_errors": [], "seats": {"CLAUDE": {"red": []}}}
@@ -178,7 +178,7 @@ class PureTests(unittest.TestCase):
 
     def test_envelope_shape(self) -> None:
         body = HB.build_envelope(
-            slug="agent-sync-listener-server",
+            slug="operator-server",
             instance="server",
             environment="production",
             ok=False,
@@ -190,13 +190,13 @@ class PureTests(unittest.TestCase):
         self.assertEqual(len(lines), 5)
         self.assertEqual(json.loads(lines[1])["length"], len(lines[2].encode()))
         check_in = json.loads(lines[2])
-        self.assertEqual(check_in["monitor_slug"], "agent-sync-listener-server")
+        self.assertEqual(check_in["monitor_slug"], "operator-server")
         self.assertEqual(check_in["status"], "error")
         config = check_in["monitor_config"]
         self.assertEqual(config["schedule"], {"type": "interval", "value": 5, "unit": "minute"})
         self.assertEqual((config["checkin_margin"], config["failure_issue_threshold"]), (10, 2))
         event = json.loads(lines[4])
-        self.assertEqual(event["fingerprint"], ["agent-sync-listener", "server", "degraded"])
+        self.assertEqual(event["fingerprint"], ["operator", "server", "degraded"])
         self.assertIn("owner not pinned", event["message"])
 
 
@@ -276,7 +276,7 @@ class BeatTests(unittest.TestCase):
         check_in = self.sentry.checkin()
         self.assertEqual(
             (check_in["monitor_slug"], check_in["status"], check_in["environment"]),
-            ("agent-sync-listener-mac", "ok", "production"),
+            ("operator-mac", "ok", "production"),
         )
         self.assertEqual(
             check_in["monitor_config"]["schedule"],
@@ -300,7 +300,7 @@ class BeatTests(unittest.TestCase):
         check_in = self.sentry.checkin()
         self.assertEqual(
             (check_in["monitor_slug"], check_in["environment"]),
-            ("agent-sync-listener-server", "staging"),
+            ("operator-server", "staging"),
         )
 
     def test_degraded_is_error_and_one_event_per_distinct_problem(self) -> None:
@@ -393,7 +393,7 @@ class BeatTests(unittest.TestCase):
             ok,
             [
                 {
-                    "monitor": "agent-sync-listener-mac",
+                    "monitor": "operator-mac",
                     "state": "ok",
                     "recovered_after_failures": True,
                 }
@@ -489,7 +489,7 @@ class DaemonTests(ListenerHarness):
         self.assertEqual(len(self.sentry.requests), 1)
         self.assertEqual(
             (self.sentry.checkin()["monitor_slug"], self.sentry.checkin()["status"]),
-            ("agent-sync-listener-mac", "ok"),
+            ("operator-mac", "ok"),
         )
         written = self.everything_written(daemon)
         self.assertNotIn(KEY, written)

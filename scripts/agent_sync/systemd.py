@@ -12,7 +12,7 @@ from typing import TextIO
 from . import launchd
 from . import live as L
 
-UNIT = "agent-sync-listener.service"
+UNIT = "operator.service"
 DEFAULT_PYTHON = "/usr/bin/python3"
 MIN_PYTHON = (3, 11)
 
