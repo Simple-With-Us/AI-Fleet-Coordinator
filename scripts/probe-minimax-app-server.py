@@ -128,7 +128,7 @@ def read_message(s, reader, timeout=INITIALIZE_TIMEOUT):
                 if fin:
                     return b"".join(parts).decode("utf-8", "replace"), None
             # binary and unknown opcodes are ignored
-    except (TimeoutError, socket.timeout):
+    except TimeoutError:
         return None, "no reply within %ds" % timeout
     except (EOFError, ValueError, OSError) as exc:
         return None, "%s: %s" % (type(exc).__name__, exc)
@@ -190,7 +190,10 @@ def main():
     error = reply.get("error")
     if error is not None:
         if isinstance(error, dict):
-            print("initialize failed: code %s, message %s" % (error.get("code"), str(error.get("message"))[:200]))
+            print(
+                "initialize failed: code %s, message %s"
+                % (error.get("code"), str(error.get("message"))[:200])
+            )
         else:
             print("initialize failed")
         close_cleanly(s)
