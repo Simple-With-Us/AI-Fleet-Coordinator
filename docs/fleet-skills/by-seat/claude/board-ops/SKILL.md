@@ -1,6 +1,6 @@
 ---
 name: board-ops
-description: Use Linear through the `board` CLI as the first place to look and write.  File, claim, comment, and resolve fleet items (issue ids like BF-123).  Trigger whenever starting work, hunting open P0/P1s, reviewing a peer fix, closing a lane, or when the owner mentions the board, Linear, findings, or an issue id.
+description: Use Linear through the `simple-board` CLI as the first place to look and write.  File, claim, comment, and resolve fleet items (issue ids like BF-123).  Trigger whenever starting work, hunting open P0/P1s, reviewing a peer fix, closing a lane, or when the owner mentions the board, Linear, findings, or an issue id.
 ---
 
 # Board CLI on Linear (CLAUDE)
@@ -8,44 +8,44 @@ description: Use Linear through the `board` CLI as the first place to look and w
 > **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
 
 
-Linear is the system of record for fleet work (owner 2026-10-10), and `board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, C, FL, CC, SWU.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
+Linear is the system of record for fleet work (owner 2026-10-10), and `simple-board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, C, FL, CC, SWU.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
 
-Humans use Linear in the browser.  Agents use the `board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old `mac.jays.services/board` archive was retired on 2026-10-19;  `board.jays.services` now redirects to Linear (https://linear.app/simple-with-us).  The effort logs are archived.  Nothing mirrors to them any more.
+Humans use Linear in the browser.  Agents use the `simple-board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old `mac.jays.services/board` archive was retired on 2026-10-19;  `board.jays.services` now redirects to Linear (https://linear.app/simple-with-us).  The effort logs are archived.  Nothing mirrors to them any more.
 
 ## Invoke it literally
 
 ```bash
-board stats
-board list --status open,in_progress --severity P0,P1
-board list --app congress-trade --mine "$AGENT_SEAT"
-board show <id>
+simple-board stats
+simple-board list --status open,in_progress --severity P0,P1
+simple-board list --app congress-trade --mine "$AGENT_SEAT"
+simple-board show <id>
 ```
 
 `<id>` is a Linear identifier (`BF-123`), a full old board id, or the first 8 or more hex characters of an old board id.  Every output line ends with the identifier, so use it from then on.
 
 The CLI reads the Fleet app's credentials from Infisical Fleet-OPS (`fleet-secrets`) itself.  The secret must never appear on a command line, in `ps`, or in a transcript.  Do not use the claude.ai Linear connector or Composio to write to Linear: they act as Jay, not as a seat.
 
-Claude Code only offers "Always Allow" when the command has a stable prefix.  `board stats` allowlists.  `B=…/board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
+Claude Code only offers "Always Allow" when the command has a stable prefix.  `simple-board stats` allowlists.  `B=…/simple-board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
 **Writes need `AGENT_SEAT`.**  `file`, `claim`, `status` and `comment` exit 2 without it, and `--by` must equal it.  Reads (`list`, `show`, `stats`, `whoami`) need no seat.  Your shell may not keep exports between commands, so set it in the same command, from the seat you verified in `session-start`.  `--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`CLAUDE` in an ordinary Claude session).
 
-**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
+**Pass your session id.**  Every `simple-board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `simple-notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
 
 ## File / claim / talk / finish
 
 ```bash
-board file --title "Scout drops Senate rows on 502" --app congress-trade \
+simple-board file --title "Scout drops Senate rows on 502" --app congress-trade \
   --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
+simple-board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
 
-board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
+simple-board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
 
-board status <id> completed --resolution "Landed in #2894."
+simple-board status <id> completed --resolution "Landed in #2894."
 ```
 
-`--app` takes an app team key (`CT`) or the old slug (`congress-trade`, `socratic-trade`, `usage-monitor`, `congress-trading-shared`, `dealdex`, `personal-site`, `fleet-infra`, which files to OPS).  If unsure, `board stats` prints the live app list.
+`--app` takes an app team key (`CT`) or the old slug (`congress-trade`, `socratic-trade`, `usage-monitor`, `congress-trading-shared`, `dealdex`, `personal-site`, `fleet-infra`, which files to OPS).  If unsure, `simple-board stats` prints the live app list.
 
 Status values: `open`, `in_progress`, `addressed` (In Review), `completed` (Done), `deployed`, `wontfix`, `duplicate`, plus `parked`.  Two rules differ from the old board:
 
@@ -58,7 +58,7 @@ The full verb table, id forms and exit codes are in `scripts/linear-board/README
 
 1. **Before substantial work:** list the app.  Claim the existing issue or file then claim.  Name the branch `<seat>/<id>-<slug>` (`claude/afc-123-zulip-cutover`).
 2. **While working:** keep `--by "$AGENT_SEAT"`, `--env Mac`, and `--where "lane path @ branch"` accurate.
-3. **In the PR:** put `Fixes <ID>` in the body when the PR finishes the issue, and `Refs <ID>` for partial work.  A `Refs` PR never closes it, even with the id in the branch name.  Once Linear's GitHub automation is on (Jay enables it right after the cutover), a merge moves a `Fixes` issue to Done by itself;  `board status <id> completed` does the same by hand, works before then, and is always safe to run.
+3. **In the PR:** put `Fixes <ID>` in the body when the PR finishes the issue, and `Refs <ID>` for partial work.  A `Refs` PR never closes it, even with the id in the branch name.  Once Linear's GitHub automation is on (Jay enables it right after the cutover), a merge moves a `Fixes` issue to Done by itself;  `simple-board status <id> completed` does the same by hand, works before then, and is always safe to run.
 4. **When done:** `completed`, or `deployed` only after the production check, with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
 5. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.
 
@@ -68,15 +68,15 @@ The full verb table, id forms and exit codes are in `scripts/linear-board/README
 
 ## Do not
 
-- Write to Linear any way except `board` (no connector, no personal API key, no raw GraphQL with a borrowed token).
+- Write to Linear any way except `simple-board` (no connector, no personal API key, no raw GraphQL with a borrowed token).
 - Use Linear as the only closeout.  The work topic in Zulip still gets its `DONE` post.
-- File a duplicate because you did not `board list --search` first.
+- File a duplicate because you did not `simple-board list --search` first.
 - Edit an archived `*-EFFORT-LOG.md` or `docs/EFFORT-LOG.md`.  They carry an Archived header and nobody reads them.
 
 ## Canon
 
 - `/Users/jay/apps/AGENT-SYNC.md` § Linear and the Claim Lifecycle
 - `scripts/linear-board/README.md` and `docs/protocols/linear-migration.md` in AI-Fleet-Coordinator
-- `board --help` / `board file --help`
+- `simple-board --help` / `simple-board file --help`
 
 CLUTCH is the canonical app name. Its verified live Linear team key is `C`. `C`, `CLUTCH`, legacy `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Prior `CK-n` and `CLUTCH-n` identifiers remain resolvable after the rename.

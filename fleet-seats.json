@@ -433,7 +433,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "04a6a61d0f7a7e92aa3ff7f4930beb8b48f2511867164e05d90836fa4bd31853"
+            "sha256": "09198c0946c29da6b32b1725751e7f25cc5a7bf67b1bb7ded3d59a3b54dc7119"
           },
           "id": "clutch-instructions-lane-map",
           "kind": "instructions",
@@ -2053,7 +2053,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.config/opencode/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "93c7889583e32a7c37671de28334375ae4783fe2d110f43728af03929ccc81a1"
+            "sha256": "7c2c56a27f51e66a063028a4f09988b5e224855d77ea63554ee00ad2d8e9e645"
           },
           "id": "opencode-instructions-lane-map",
           "kind": "instructions",

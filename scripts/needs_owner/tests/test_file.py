@@ -29,7 +29,7 @@ class FileTests(unittest.TestCase):
         self.assertIsInstance(got["notified_msg_id"], int)
         self.assertTrue(got["uid"].startswith("needs-owner:CLAUDE:"))
         # the board filing:  Kind, label, uid, seat, severity, title, and a private description file
-        (filed,) = [c for c in self.w.calls("board") if c["argv"][0] == "file"]
+        (filed,) = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"]
         argv = filed["argv"]
         for pair in (["--kind", "agent-report"], ["--label", "needs-owner"], ["--by", "CLAUDE"], ["--severity", "P2"],
                      ["--uid", got["uid"]], ["--title", "OWNER DECISION:  " + Q], ["--app", "AFC"]):
@@ -44,7 +44,7 @@ class FileTests(unittest.TestCase):
         self.assertIn("Filed by: CLAUDE", description)
         self.assertNotIn("default", description.lower())
         # the notice:  the filer's bot, the fixed session label, the owner mention, the body on stdin
-        (post,) = self.w.calls("agent-sync")
+        (post,) = self.w.calls("simple-chat")
         self.assertEqual(post["argv"], ["post", "--as", "CLAUDE", "--session", "needsown", "--json", "--topic", got["topic"],
                                         "--to-owner", "--", "-"])
         body = post["stdin"]
@@ -63,14 +63,14 @@ class FileTests(unittest.TestCase):
     def test_urgent_files_p1_and_marks_the_post(self) -> None:
         r = self.w.file(Q, "Revive it", "Close it", extra=("--urgent",))
         self.assertEqual(r.code, 0, r.err)
-        (filed,) = [c for c in self.w.calls("board") if c["argv"][0] == "file"]
+        (filed,) = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"]
         self.assertEqual(filed["argv"][filed["argv"].index("--severity") + 1], "P1")
-        self.assertIn("**Urgent decision needed**", self.w.calls("agent-sync")[0]["stdin"])
+        self.assertIn("**Urgent decision needed**", self.w.calls("simple-chat")[0]["stdin"])
 
     def test_emoji_follow_the_option_position(self) -> None:
         r = self.w.file("Which one?", "A", "B", "C", extra=("--low-stakes", "3"))
         self.assertEqual(r.code, 0, r.err)
-        body = self.w.calls("agent-sync")[0]["stdin"]
+        body = self.w.calls("simple-chat")[0]["stdin"]
         self.assertIn("3️⃣ Option 3:", body)
         self.assertNotIn("1️⃣", body)
         self.assertNotIn("2️⃣", body)
@@ -78,19 +78,19 @@ class FileTests(unittest.TestCase):
     def test_text_in_the_post_is_made_inert(self) -> None:
         r = self.w.file("@**all** [fix](https://x.test/p) now?", "`rm -rf ~`", "/poll no")
         self.assertEqual(r.code, 0, r.err)
-        body = self.w.calls("agent-sync")[0]["stdin"]
+        body = self.w.calls("simple-chat")[0]["stdin"]
         self.assertNotIn("@**all**", body)
         self.assertNotIn("](https", body)
         self.assertNotIn("/poll", body)
         self.assertNotIn("rm -rf ~`\n", body.replace("`rm -rf ~`", ""))
-        topic = self.w.calls("agent-sync")[0]["argv"][self.w.calls("agent-sync")[0]["argv"].index("--topic") + 1]
+        topic = self.w.calls("simple-chat")[0]["argv"][self.w.calls("simple-chat")[0]["argv"].index("--topic") + 1]
         self.assertNotIn("@", topic)
         self.assertLessEqual(len(topic), 60)
 
     def test_a_backtick_in_the_question_cannot_close_the_block(self) -> None:
         r = self.w.file("Use ```code``` now?", "yes", "no")
         self.assertEqual(r.code, 0, r.err)
-        (filed,) = [c for c in self.w.calls("board") if c["argv"][0] == "file"]
+        (filed,) = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"]
         description = filed["files"]["--desc-file"]["text"]
         self.assertEqual(description.count("```"), 2)
         item = json.loads(self.w.run("status", "AFC-300", "--json").out)
@@ -116,7 +116,7 @@ class FileTests(unittest.TestCase):
         self.assertTrue(again["already_notified"])
         self.assertEqual(len(self.w.board_state()["issues"]), 1)
         self.assertEqual(len(self.w.zulip()["messages"]), 1)
-        self.assertEqual(len([c for c in self.w.calls("board") if c["argv"][0] == "file"]), 0 + 1)
+        self.assertEqual(len([c for c in self.w.calls("simple-board") if c["argv"][0] == "file"]), 0 + 1)
 
     # ---- changes to an item that exists ------------------------------------------------------
     def test_changed_options_after_notice_are_refused_unless_again(self) -> None:
@@ -132,11 +132,11 @@ class FileTests(unittest.TestCase):
         second = again.json()
         self.assertEqual(second["identifier"], "AFC-301")
         self.assertNotEqual(second["uid"], first["uid"])
-        description = self.w.calls("board")[-1]  # the comment record
-        filed = [c for c in self.w.calls("board") if c["argv"][0] == "file"][-1]["files"]["--desc-file"]["text"]
+        description = self.w.calls("simple-board")[-1]  # the comment record
+        filed = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"][-1]["files"]["--desc-file"]["text"]
         self.assertIn("Version: 2", filed)
         self.assertIn("Again of: AFC-300 msg %d" % first["notified_msg_id"], filed)
-        body = self.w.calls("agent-sync")[-1]["stdin"]
+        body = self.w.calls("simple-chat")[-1]["stdin"]
         self.assertIn("Asking again.  The earlier question was AFC-300 (message %d)." % first["notified_msg_id"], body)
         # the earlier item is not touched
         self.assertEqual(self.w.issue("AFC-300")["state"]["name"], "Todo")
@@ -182,8 +182,8 @@ class FileTests(unittest.TestCase):
         r = self.w.file(Q, "Revive it", "Close it", extra=("--parent", other))
         self.assertEqual(r.code, 2)
         self.assertIn("not claimed by CLAUDE", r.err)
-        self.assertEqual([c for c in self.w.calls("board") if c["argv"][0] == "file"], [])
-        self.assertEqual(self.w.calls("agent-sync"), [])
+        self.assertEqual([c for c in self.w.calls("simple-board") if c["argv"][0] == "file"], [])
+        self.assertEqual(self.w.calls("simple-chat"), [])
 
     def test_parent_scopes_the_uid_and_gets_one_comment(self) -> None:
         mine = self.w.seed_issue("My work", labels=("Kind/agent-report", "claimed:CLAUDE"))
@@ -192,7 +192,7 @@ class FileTests(unittest.TestCase):
         got = r.json()
         self.assertTrue(got["uid"].startswith("needs-owner:%s:" % mine))
         self.assertIn("waiting on owner:  AFC-301", self.w.comments(mine)[-1])
-        (filed,) = [c for c in self.w.calls("board") if c["argv"][0] == "file"]
+        (filed,) = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"]
         self.assertIn("Parent: " + mine, filed["files"]["--desc-file"]["text"])
         self.w.file(Q, "Revive it", "Close it", extra=("--parent", mine))  # a rerun adds no second comment
         self.assertEqual(len([c for c in self.w.comments(mine) if "waiting on owner" in c]), 1)
@@ -200,8 +200,8 @@ class FileTests(unittest.TestCase):
     # ---- what is refused before anything is sent ---------------------------------------------
     def _assert_nothing_sent(self, r) -> None:
         self.assertEqual(r.code, 2, (r.out, r.err))
-        self.assertEqual([c for c in self.w.calls("board") if c["argv"][0] in ("file", "comment", "label")], [])
-        self.assertEqual(self.w.calls("agent-sync"), [])
+        self.assertEqual([c for c in self.w.calls("simple-board") if c["argv"][0] in ("file", "comment", "label")], [])
+        self.assertEqual(self.w.calls("simple-chat"), [])
 
     def test_a_secret_is_refused_and_never_echoed(self) -> None:
         key = "lin_api_" + "A1b2C3d4E5" * 3
@@ -242,7 +242,7 @@ class FileTests(unittest.TestCase):
         }
         for name, r in cases.items():
             self.assertEqual(r.code, 2, (name, r.out, r.err))
-        self.assertEqual(self.w.calls("agent-sync"), [])
+        self.assertEqual(self.w.calls("simple-chat"), [])
         self.assertEqual(self.w.board_state()["issues"], {})
 
     def test_dry_run_changes_nothing(self) -> None:
@@ -250,7 +250,7 @@ class FileTests(unittest.TestCase):
         self.assertEqual(r.code, 0, r.err)
         self.assertTrue(r.json()["dry_run"])
         self.assertEqual(self.w.board_state()["issues"], {})
-        self.assertEqual(self.w.calls("agent-sync"), [])
+        self.assertEqual(self.w.calls("simple-chat"), [])
 
     # ---- argv --------------------------------------------------------------------------------
     def test_argv_never_holds_the_description(self) -> None:
@@ -272,12 +272,12 @@ class FileTests(unittest.TestCase):
             line = " ".join(argv)
             for word in ("zebra", "quokka", "wombat", "kangaroo", "ledger", "Recommendation"):
                 self.assertNotIn(word, line, call["argv"])
-        (filed,) = [c for c in self.w.calls("board") if c["argv"][0] == "file"]
+        (filed,) = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"]
         text = filed["files"]["--desc-file"]["text"]
         self.assertIn("kangaroo", text)
         self.assertIn("wombat", text)
-        self.assertIn("zebra", self.w.calls("agent-sync")[0]["stdin"])
-        for comment in [c for c in self.w.calls("board") if c["argv"][0] == "comment"]:
+        self.assertIn("zebra", self.w.calls("simple-chat")[0]["stdin"])
+        for comment in [c for c in self.w.calls("simple-board") if c["argv"][0] == "comment"]:
             self.assertIn("--text-file", comment["argv"])
 
     # ---- no cap ------------------------------------------------------------------------------
@@ -313,9 +313,9 @@ class FileTests(unittest.TestCase):
             self.assertEqual(call["seat"], "BF-PLUMBER", call["argv"])
             self.assertEqual(call["launch_seat"], "BF-PLUMBER")
             self.assertEqual(call["launcher"], "botfleet")
-        filed = [c for c in self.w.calls("board") if c["argv"][0] == "file"][0]
+        filed = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"][0]
         self.assertEqual(filed["argv"][filed["argv"].index("--by") + 1], "BF-PLUMBER")
-        post = self.w.calls("agent-sync")[0]
+        post = self.w.calls("simple-chat")[0]
         self.assertEqual(post["argv"][post["argv"].index("--as") + 1], "BF-PLUMBER")
         self.assertIn("Filed by: BF-PLUMBER", filed["files"]["--desc-file"]["text"])
 
@@ -378,10 +378,10 @@ class FileTests(unittest.TestCase):
     def test_board_writes_off_passes_the_exit_code_through(self) -> None:
         r = self.w.file(Q, "Yes", "No", env=self.w.env(FAKE_BOARD_WRITES_OFF="1"))
         self.assertEqual(r.code, 7, r.err)
-        self.assertEqual(self.w.calls("agent-sync"), [])
+        self.assertEqual(self.w.calls("simple-chat"), [])
 
     def test_no_board_is_an_error(self) -> None:
-        self.w.remove_tool("board")
+        self.w.remove_tool("simple-board")
         r = self.w.file(Q, "Yes", "No")
         self.assertEqual(r.code, 1)
         self.assertIn("board", r.err)

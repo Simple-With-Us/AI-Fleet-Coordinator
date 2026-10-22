@@ -27,10 +27,10 @@ class MirrorCase(NotifierCase):
         return self.w.add_message(topic, content if content is not None else request_text(), seat=seat, **kw)
 
     def files(self) -> list[dict]:
-        return [c for c in self.w.calls("board") if c["argv"][0] == "file"]
+        return [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"]
 
     def reply_calls(self) -> list[dict]:
-        return [c for c in self.w.calls("agent-sync") if c["argv"][0] == "reply" and c.get("code") == 0]
+        return [c for c in self.w.calls("simple-chat") if c["argv"][0] == "reply" and c.get("code") == 0]
 
     def mirrored_items(self) -> list[dict]:
         return [r for r in self.w.run("list", "--all", "--json").json() if r["for_seat"]]
@@ -53,7 +53,7 @@ class MirrorTests(MirrorCase):
         self.assertEqual(filed["argv"][filed["argv"].index("--by") + 1], "CLAUDE")
         self.assertIn("Mirror of: https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/", filed["files"]["--desc-file"]["text"])
         self.assertIn("/near/%d" % message, filed["files"]["--desc-file"]["text"])
-        self.assertEqual([c for c in self.w.calls("agent-sync") if c["argv"][0] == "post"], [], "no new topic")
+        self.assertEqual([c for c in self.w.calls("simple-chat") if c["argv"][0] == "post"], [], "no new topic")
         (reply,) = self.reply_calls()
         self.assertEqual(reply["argv"][reply["argv"].index("--id") + 1], str(message))
         self.assertIn(item["identifier"], reply["stdin"])
@@ -77,7 +77,7 @@ class MirrorTests(MirrorCase):
     def test_the_request_is_read_again_only_when_the_topic_changes(self) -> None:
         self.persona(content="No request here, just chatter.")
         self.run_notify()
-        reads = lambda: len([c for c in self.w.calls("agent-sync") if c["argv"][0] == "read" and "--since" in c["argv"]])  # noqa: E731
+        reads = lambda: len([c for c in self.w.calls("simple-chat") if c["argv"][0] == "read" and "--since" in c["argv"]])  # noqa: E731
         first = reads()
         self.run_notify()
         self.assertEqual(reads(), first, "unchanged topic, no read")

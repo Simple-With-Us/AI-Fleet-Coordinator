@@ -219,35 +219,36 @@ CLI_VERBS: dict[str, tuple[str, ...]] = {
     "listener_held_back": ("listener held-back",),
     "listener_ack": ("listener ack", "listener surface", "listener clear-held"),
     "guide": ("guide",),
-    "notes_create": ("notes create",),
-    "notes_update": ("notes update",),
-    "notes_pin": ("notes pin",),
-    "notes_unpin": ("notes unpin",),
-    "notes_status": ("notes status",),
+    "notes_create": ("create",),
+    "notes_update": ("update",),
+    "notes_pin": ("pin",),
+    "notes_unpin": ("unpin",),
+    "notes_status": ("status",),
 }
-# The tools whose command is not in the agent-sync CLI:  recall_* run the `recall` CLI and linear_* run
-# `board` (`board run NAME`, `board api ...`, `board mcp call ...`, and board's own verbs for the core ones).
-# fleetlink_* are FleetLink's own CLI, `fleet-share` (its MCP_TO_CLI table in the FleetLink repo,
-# test/cli-mcp-parity.test.mjs);  the stdio server runs each one as `fleet-share tool NAME` (fleetlink_tools.py).
+# The tools whose command is not in the simple-chat CLI:  recall_* run the `recall` CLI and linear_* run
+# `simple-board` (`simple-board run NAME`, `simple-board api ...`, `simple-board mcp call ...`, and its own verbs
+# for the core ones).
+# fleetlink_* are FleetLink's own CLI, `fleetlink` (its MCP_TO_CLI table in the FleetLink repo,
+# test/cli-mcp-parity.test.mjs);  the stdio server runs each one as `fleetlink tool NAME` (fleetlink_tools.py).
 EXTERNAL_CLI: dict[str, str] = {
     "recall_search": "recall search",
     "recall_stats": "recall stats",
     "recall_contribute": "recall contribute",
-    "fleetlink_create_share": "fleet-share upload",
-    "fleetlink_create_link": "fleet-share link",
-    "fleetlink_list_shares": "fleet-share list",
-    "fleetlink_get_share": "fleet-share info",
-    "fleetlink_list_teams": "fleet-share teams",
-    "fleetlink_share_to_team": "fleet-share share",
-    "fleetlink_make_personal": "fleet-share unshare",
-    "fleetlink_update_share": "fleet-share update",
-    "fleetlink_add_file": "fleet-share add",
-    "fleetlink_delete_file": "fleet-share rm-file",
-    "fleetlink_read_file": "fleet-share cat",
-    "fleetlink_upload_url": "fleet-share upload-url",
-    "fleetlink_renew_share": "fleet-share renew",
-    "fleetlink_delete_share": "fleet-share delete",
-    "fleetlink_whoami": "fleet-share whoami",
+    "fleetlink_create_share": "fleetlink upload",
+    "fleetlink_create_link": "fleetlink link",
+    "fleetlink_list_shares": "fleetlink list",
+    "fleetlink_get_share": "fleetlink info",
+    "fleetlink_list_teams": "fleetlink teams",
+    "fleetlink_share_to_team": "fleetlink share",
+    "fleetlink_make_personal": "fleetlink unshare",
+    "fleetlink_update_share": "fleetlink update",
+    "fleetlink_add_file": "fleetlink add",
+    "fleetlink_delete_file": "fleetlink rm-file",
+    "fleetlink_read_file": "fleetlink cat",
+    "fleetlink_upload_url": "fleetlink upload-url",
+    "fleetlink_renew_share": "fleetlink renew",
+    "fleetlink_delete_share": "fleetlink delete",
+    "fleetlink_whoami": "fleetlink whoami",
 }
 UPLOAD_MCP_MAX = 1024 * 1024  # an MCP upload carries the file in its arguments:  at most 1 MB
 UNTRUSTED_NOTE = (

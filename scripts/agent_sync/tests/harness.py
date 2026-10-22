@@ -159,10 +159,12 @@ class Harness(unittest.TestCase):
         timeout: float = 5.0,
         events_timeout: float = 3.0,
         stop: threading.Event | None = None,
+        prog: str = "simple-chat",
     ) -> Result:
         out, err = io.StringIO(), io.StringIO()
         code = cli.main(
             list(argv),
+            prog=prog,
             env=self.env() if env is None else env,
             stdin=io.StringIO(stdin),
             stdout=out,
