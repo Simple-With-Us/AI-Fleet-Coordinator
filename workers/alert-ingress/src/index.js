@@ -45,7 +45,13 @@ import {
   DEFAULT_MIN_OPEN_MS,
   PROD_DOWN_MIN_OPEN_MS,
 } from "./state.js";
-import { postEvent, writeStatus, renderStatus, fetchMessage } from "./zulip.js";
+import {
+  postEvent,
+  writeStatus,
+  renderStatus,
+  fetchMessage,
+  STANDING_BLOCK_HEADER,
+} from "./zulip.js";
 
 const DEFAULT_CHANNEL = "alerts";
 
@@ -668,6 +674,15 @@ async function refreshStatus(env, source, channel, topic, options = {}) {
       throw statusHeldError(source, "standing message owner unknown");
     }
   }
+  // A barrier that is still `unknown` means an earlier POST may have landed.
+  // Only a retry that edits the standing message we already own is safe,
+  // because it cannot create a second one.  If the id did not resolve to a
+  // message this source owns - the pin was cleared, or the outcome row that
+  // carried it is gone - the retry below would POST a fresh message on top of
+  // one that may already exist, so the topic stays held instead.
+  if (barrier?.outcome === "unknown" && !statusId) {
+    throw deliveryError(source, "unknown", { code: null, retryAfter: null });
+  }
   // Commit uncertainty before crossing the network.  A crash or ambiguous reply
   // cannot turn a possibly accepted create into another automatic POST.  The
   // barrier carries the message id as well: an id means the write can be
@@ -1156,7 +1171,18 @@ const handler = {
             channelName === String(DEFAULT_CHANNEL) &&
             String(message.subject || "") === String(topic);
           const sameSender = String(message.sender_email || "") === credential.email;
-          if (!sameTopic || !sameSender) {
+          // Channel, topic and sender do not prove the message is the standing
+          // block.  This source's one-line alert messages are posted to the
+          // same channel and topic by the same bot, so an alert line satisfies
+          // every one of those checks.  Adopting one would point the pin at an
+          // event message that refreshStatus then PATCHes with the rendered
+          // status block, silently destroying that alert's content.  Only the
+          // standing block carries the rendered status header, so that header is
+          // required before anything is adopted or mutated.
+          const isStandingBlock = String(message.content || "").startsWith(
+            STANDING_BLOCK_HEADER,
+          );
+          if (!sameTopic || !sameSender || !isStandingBlock) {
             return json(
               { error: "message is not this source's standing message", source, id },
               409,

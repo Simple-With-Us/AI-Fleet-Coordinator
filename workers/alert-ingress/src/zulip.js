@@ -128,19 +128,79 @@ export async function writeStatus({
 }
 
 /**
+ * The fields of a Zulip message the reconciliation contract reads.
+ *
+ * The worker validates the raw response with these hand-written checks instead
+ * of a Zod schema because this Worker ships with no runtime dependencies.  It
+ * is deliberately narrower than the response: only the fields the caller
+ * consumes are required, so an unrelated addition to the Zulip API cannot
+ * refuse a valid message, while a field the contract depends on can never be
+ * missing or wrongly typed.
+ */
+const READABLE_MESSAGE_FIELDS = [
+  ["id", "number"],
+  ["type", "string"],
+  ["subject", "string"],
+  ["sender_email", "string"],
+  ["content", "string"],
+];
+
+const isReadableMessage = (message) => {
+  if (!message || typeof message !== "object" || Array.isArray(message)) return false;
+  for (const [field, kind] of READABLE_MESSAGE_FIELDS) {
+    const value = message[field];
+    if (value === undefined || value === null) return false;
+    if (kind === "string") {
+      if (typeof value !== "string" || value === "") return false;
+    } else if (!Number.isSafeInteger(value) || value <= 0) {
+      return false;
+    }
+  }
+  // The channel arrives either as the stream name or as a recipient object,
+  // and either form is read, so both are accepted as long as one is present.
+  const recipient = message.display_recipient;
+  const hasChannelName =
+    typeof recipient === "string"
+      ? recipient !== ""
+      : !!(
+          recipient &&
+          typeof recipient === "object" &&
+          !Array.isArray(recipient) &&
+          typeof recipient.name === "string" &&
+          recipient.name !== ""
+        );
+  return hasChannelName;
+};
+
+/**
  * Fetch one message by id.
  *
  * A message id an operator supplies has to be proved before anything is adopted or
  * edited:  an id on its own names any message in the realm, so the caller needs to see
  * the channel, the topic and the sender to know it is the standing message it claims.
  *
+ * A response that does not carry every field the contract reads is not proof of
+ * anything, so it is refused here rather than handed on as a partial message:
+ * a caller that read a missing field as empty would accept a message on weaker
+ * evidence than it thinks it has.
+ *
  * @returns {Promise<object|null>} the message, or null when it cannot be read
  */
 export async function fetchMessage({ email, apiKey, messageId }) {
   const data = await zulip(`/messages/${messageId}`, { email, apiKey });
-  const msg = data && data.msg && typeof data.msg === "object" ? data.msg : null;
-  return msg;
+  return isReadableMessage(data?.msg) ? data.msg : null;
 }
+
+/**
+ * The first line of every rendered standing block.
+ *
+ * `renderStatus` opens with it, so a message that starts with it was produced
+ * by this worker as a standing block.  The one-line alert messages of the same
+ * source are posted to the same channel and topic by the same bot and carry no
+ * such header, so this is what tells a standing block apart from an alert line
+ * when an operator supplies a message id to reconcile.
+ */
+export const STANDING_BLOCK_HEADER = "**Status: ";
 
 /** Render the standing status block for a topic's current states. */
 export function renderStatus({ topic, states, updatedAt, source }) {
@@ -169,7 +229,7 @@ export function renderStatus({ topic, states, updatedAt, source }) {
     : `_Updated ${updatedAt}.  This message is edited in place; new events post below it._`;
 
   return [
-    `**Status: ${topic}**`,
+    `${STANDING_BLOCK_HEADER}${topic}**`,
     "",
     header,
     "",

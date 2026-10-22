@@ -196,6 +196,38 @@ function sentryFirst(...vals) {
 }
 
 /**
+ * Credential shapes worth refusing in a vendor-supplied identity.
+ *
+ * These are the high-confidence vendor prefixes this fleet actually holds, plus
+ * the two generic forms that carry no legitimate identity.  They are anchored
+ * and deliberately narrow: a Sentry identity is a short id such as `PROJ-1ABC`
+ * or a numeric metric-alert id, so nothing ordinary matches, and an over-broad
+ * pattern would refuse real alerts.  The patterns mirror the ones in
+ * `scripts/agent-sync-mcp/src/contract.js`, which scans the same fleet's
+ * credentials for the same reason.
+ */
+const CREDENTIAL_SHAPES = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/,
+  /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/,
+  /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b/,
+  /\b(?:xox[abposr]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,})\b/,
+  /\bAIza[0-9A-Za-z_-]{35}\b/,
+  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/,
+  /\blin_(?:api|oauth|wh)_[A-Za-z0-9]{20,}/,
+  /\bsntry[su]_[A-Za-z0-9+/=_-]{20,}/,
+  /\bst\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}\.[A-Za-z0-9]{8,}/,
+  /\bcf(?:ut|at|k)_[A-Za-z0-9]{30,}/,
+  /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
+];
+
+/** True when `value` carries a credential shape rather than an identity. */
+function credentialShape(value) {
+  const text = String(value || "");
+  return CREDENTIAL_SHAPES.some((shape) => shape.test(text));
+}
+
+/**
  * Sentry webhook.
  *
  * Sentry sends two shapes, and both carry the alert under `data`: an issue
@@ -240,15 +272,21 @@ export function fromSentry(payload) {
   // carries the issue's level, which still reads "error", so the level alone would
   // reopen an incident that is closed.  A missing status stays firing, which is the
   // safe direction:  a status-less delivery must never close a live incident.
+  // The issue's own status closes it whatever the action said, so it is read
+  // before the action tests.  Sentry reports a resolved issue as resolved; a
+  // delivery whose action happens to be a firing one must not reopen it and
+  // raise a fresh SEVERE line for an issue the vendor has already closed.
   const issueStatus = sentryFirst(issue?.status).toLowerCase();
   const closedByStatus = /^(ok|resolved|recovered|closed|complete|completed|ignored|archived)$/.test(
     issueStatus,
   );
-  const firing = FIRING_ACTIONS.test(action)
-    ? true
-    : CLOSING_ACTIONS.test(action)
-      ? false
-      : !(closedByLevel || closedByStatus);
+  const firing = closedByStatus
+    ? false
+    : FIRING_ACTIONS.test(action)
+      ? true
+      : CLOSING_ACTIONS.test(action)
+        ? false
+        : !closedByLevel;
 
   const severity =
     (Object.hasOwn(SENTRY_SEVERITY, level) && SENTRY_SEVERITY[level]) ||
@@ -277,6 +315,16 @@ export function fromSentry(payload) {
   if (!issue && !metric) throw new Error("sentry payload carries no alert");
   if (issue && !issueIdentity) throw new Error("sentry issue has no identity");
   if (metric && !metricIdentity) throw new Error("sentry metric alert has no identity");
+  // The identity is vendor-supplied text that becomes a durable storage key and
+  // is relayed into the standing block, so it is scanned for a credential
+  // before it is used as one.  A body that puts a token where an identity
+  // belongs is refused rather than filed:  persisting or relaying it would copy
+  // secret material out of the payload and into this worker's own storage.
+  // The message names the field and never the value or a prefix of it.
+  const identityField = issue ? "sentry issue identity" : "sentry metric identity";
+  if (credentialShape(issue ? issueIdentity : metricIdentity)) {
+    throw new Error(`${identityField} looks like a credential`);
+  }
   const key = issue
     ? `sentry:${issueIdentity.toLowerCase()}`
     : `sentry:metric:${metricIdentity.toLowerCase()}`;
@@ -367,4 +415,4 @@ export function normalize(source, payload) {
   return event;
 }
 
-export const __testing = { oneLine, first };
+export const __testing = { oneLine, first, credentialShape };
