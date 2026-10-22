@@ -67,8 +67,8 @@ struct SystemApplyNotifier: ApplyNotifying {
     /// The question is asked when the app starts,  and never on an apply's path:
     /// a permission prompt is the owner's to answer,  and an apply that waits for
     /// the answer holds its own result hostage  (Kody review 2026-10-21).  The
-    /// apply still waits for the notification itself,  so a session that reads
-    /// as finished is one the owner has been told about.
+    /// apply publishes its result before the notification goes out,  so the
+    /// notification can never hold the result.
     static func requestPermissionOnce() {
         _ = Task {
             // A process without an app bundle (a test host) cannot use the
@@ -247,18 +247,19 @@ final class ApplyCoordinator: ObservableObject {
             let outcome = ApplyOutcome.classify(
                 applyResult: applyResult, targetRuleID: session.ruleID, reproved: reproved
             )
-            // The notification goes out before the phase flips,  so a session that
-            // reads as finished is a session the owner has already been told about.
-            // The other order leaves a window where the apply is over and the owner
-            // has not been told yet.
-            await announce(session: session, outcome: outcome)
+            // The result is published before the notification goes out.  A notification
+            // can wait on the system,  and a session that is still open in .reproving
+            // blocks dismiss,  holds the app awake and stops a new plan,  so the owner
+            // would never see the green or the red.  The notification is posted off the
+            // session's completion path,  so it can never hold the result hostage.
             update(sessionID) { $0.phase = .finished(outcome) }
+            Task { await announce(session: session, outcome: outcome) }
         } catch {
             let outcome = ApplyOutcome.failed(error.localizedDescription)
-            if let session = self.session(id: sessionID) {
-                await announce(session: session, outcome: outcome)
-            }
             update(sessionID) { $0.phase = .finished(outcome) }
+            if let session = self.session(id: sessionID) {
+                Task { await announce(session: session, outcome: outcome) }
+            }
         }
     }
 
