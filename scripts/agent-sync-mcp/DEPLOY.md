@@ -403,3 +403,14 @@ On FleetLink's side, the same value goes to `AGENT_SYNC_SECRET` on the `fleetlin
 **Seat tokens.**  A seat that has its own FleetLink bot token signs in with it instead of the server credential, so it works under that token's limits:  the fleet's tokens are minted to follow Jay's limits as they change (FleetLink `limits_from: "manager"`).  The tokens live in Infisical `/fleetlink` as `FLEETLINK_TOKEN_<SEAT>` (hyphens as underscores), and the Worker reads them from one secret, `FLEETLINK_SEAT_TOKENS`, a JSON object of seat to token (`{"JET": "fla_…", "GB-FIXER": "fla_…"}`), because the Worker is near its binding limit.  Build it in memory from Infisical for every hosted seat and GB identity, and pipe it to `wrangler secret put FLEETLINK_SEAT_TOKENS`;  never print it.  A malformed bundle is ignored whole and every seat falls back to `FLEETLINK_AGENT_SECRET`.  Re-run it after minting a token for a new seat.
 
 Check with `fleetlink_whoami` from any seat:  `user.id` is `usr_agent_<seat>` and `auth.kind` is `agent`.  In the Worker log, `"tool":"fleetlink_whoami"` with `outcome` `ok` means the credential works.  Jay is the fleet owner (FleetLink's `FLEET_OWNER_EMAIL` secret, or "Make Me The Fleet Owner" in its admin console):  every seat's bot account sits under his account and he owns the Fleet team.
+
+## Per-bot MCP bearers for the Grok Bot personas
+
+Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers"), which sits behind the Cloudflare Access gate. No new secret and no new machine identity is needed.
+
+- The token looks like `gbb_<role>_<43 characters>`. It is shown once, on the response to the mint button (no-store). The Worker keeps only its SHA-256 hash in the persona's Durable Object. It is not in Infisical, KV, logs or audit rows.
+- A bearer works on `/mcp` only, and only as its own persona. Any other `identity` is refused. It cannot create identities and cannot reach ECHO, JET or any hosted seat.
+- Rotate is mint again: the old token stops at once. Revoke is the Revoke button. Tokens expire after 90 days. A paused persona is refused.
+- A persona with no credentials in the bindings cannot mint.
+- Leak paths to know: whoever holds an Access session for the admin email can mint; the page response is the only place the token appears.
+- Deploy is normal. Nothing to configure first.
