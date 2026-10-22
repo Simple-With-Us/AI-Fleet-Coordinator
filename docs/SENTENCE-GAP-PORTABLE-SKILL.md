@@ -23,6 +23,10 @@ notes, design docs.
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),
 inside a URL, email, filename, or a brand name containing a period.
 
+Do **not** add a gap after a colon, semicolon, comma or dash.  Owner ruling 2026-10-20:  a
+gap after a semicolon "isn't what I asked and is very weird".  The gap belongs after `.`,
+`!` and `?` only.
+
 ### The gap covers your CHAT PROSE, not only your artifacts
 
 Owner ruling 2026-10-20, after a session where every file, commit, PR, board row and

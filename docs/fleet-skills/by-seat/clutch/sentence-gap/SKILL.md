@@ -1,7 +1,7 @@
 ---
 name: sentence-gap
 description: >-
-  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows Monet's portable protocol. Mechanism by surface: type the literal &nbsp; entity plus a space in Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
+  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows Monet's portable protocol. Mechanism by surface: a REAL U+00A0 plus a space in the MiniMax Code chat pane (owner-verified 2026-10-20 — never the entity there, it renders as six literal characters); the literal &nbsp; entity plus a space in other Markdown chat panes (Claude Code Code tab, owner-verified 2026-10-08); a real U+00A0 plus a space in GitHub PR and issue text and Zulip; two ASCII spaces in files, commits and terminals. The gap goes after . ! and ? only, never after a colon, semicolon, comma or dash, and it covers chat prose as well as artifacts. The owner must never see the six characters &nbsp; as text. Use whenever writing any prose a human will read.
 ---
 
 # Sentence gap (portable — always on)
@@ -24,6 +24,10 @@ notes, design docs.
 
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),
 inside a URL, email, filename, or a brand name containing a period.
+
+Do **not** add a gap after a colon, semicolon, comma or dash.  Owner ruling 2026-10-20:  a
+gap after a semicolon "isn't what I asked and is very weird".  The gap belongs after `.`,
+`!` and `?` only.
 
 ### The gap covers your CHAT PROSE, not only your artifacts
 
