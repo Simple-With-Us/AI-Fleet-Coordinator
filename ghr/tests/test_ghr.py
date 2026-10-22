@@ -1436,8 +1436,12 @@ class Round6Tests(unittest.TestCase):
 
         base = {"repo": "Example-Org/widget-repo"}
         for bad in ("PRRT_a b", "PRRT_short", "PRRT_" + "a" * 129):
-            self.assertIsNotNone(mcp_server._validate_args("resolve_thread", {**base, "thread_id": bad}))
-        self.assertIsNone(mcp_server._validate_args("resolve_thread", {**base, "thread_id": "PRRT_kwDOAbc-123_x"}))
+            self.assertIsNotNone(
+                mcp_server._validate_args("resolve_thread", {**base, "thread_id": bad})
+            )
+        self.assertIsNone(
+            mcp_server._validate_args("resolve_thread", {**base, "thread_id": "PRRT_kwDOAbc-123_x"})
+        )
 
     def test_thread_id_shape_and_unexpected_names_are_400s(self):
         from ghr.server import _validate_args
