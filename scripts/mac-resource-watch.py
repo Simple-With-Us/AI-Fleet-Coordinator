@@ -370,9 +370,7 @@ def _housekeeper_guard():
                     # element, which a plain open would still follow.
                     dir_fd = os.open(
                         str(parent),
-                        os.O_RDONLY
-                        | getattr(os, "O_DIRECTORY", 0)
-                        | getattr(os, "O_NOFOLLOW", 0),
+                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
                     )
                     try:
                         os.fchmod(dir_fd, 0o700)
