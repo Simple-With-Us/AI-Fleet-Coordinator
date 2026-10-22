@@ -43,15 +43,51 @@ Python 3.9+ (the Mac's /usr/bin/python3), standard library only.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.request
 
-from .adapters import osascript_argv
-from .listener_api import sign
+# The signing and banner helpers below are vendored here (instead of importing
+# listener_api.sign and adapters.osascript_argv) so this client runs on the
+# Mac's /usr/bin/python3 (3.9) under `python3 -I`:  those packages are Python
+# 3.11+ and pull in Zulip and textfmt transitively.  Keep the wire format and
+# banner text identical to listener_api.CONTRACT/sign and
+# adapters.osascript_argv/clean_banner.
+READ_CONTRACT = "agent-sync-read/1"
+_NOTIFY_CUT = 120
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def sign(key: str, path: str, query: str, timestamp: str) -> str:
+    body = ("%s\nGET\n%s\n%s\n%s" % (READ_CONTRACT, path, query, timestamp)).encode("utf-8")
+    return hmac.new(key.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+
+def _clean_banner(text: object, limit: int = _NOTIFY_CUT) -> str:
+    cleaned = _CONTROL_RE.sub(" ", str(text))
+    cleaned = " ".join(cleaned.split())
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 1] + "…"
+
+
+def osascript_argv(osascript: str, text: str, title: str) -> list[str]:
+    return [
+        osascript,
+        "-e",
+        "on run argv",
+        "-e",
+        "display notification (item 1 of argv) with title (item 2 of argv)",
+        "-e",
+        "end run",
+        "--",
+        _clean_banner(text),
+        _clean_banner(title),
+    ]
 
 QUERY = "since_hours=1&limit=50"
 MAX_SEEN_WAKE_IDS = 500
@@ -173,7 +209,11 @@ def poll_once(
         seen.append(wake_id)
         handled += 1
     if handled:
-        _save_seen(state_path, seen)
+        try:
+            _save_seen(state_path, seen)
+        except OSError as exc:
+            print("wake_alerter: state write failed (%s); will retry next poll" % exc,
+                  file=sys.stderr)
     return handled
 
 

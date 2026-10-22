@@ -10,6 +10,9 @@
   Secrets stay out of this plist:  the wrapper sources
   ~/.secrets/agent-sync/wake-alerter.env (mode 0600) which must define
   AGENT_SYNC_SEAT, AGENT_SYNC_LISTENER_URL and <CODE>_ROUTINE_KEY.
+  The client runs by script path (not -m):  -I strips the working directory
+  from sys.path, so -m cannot resolve the package, and the vendored helpers in
+  wake_alerter.py keep it on the Mac's /usr/bin/python3 (3.9).
   Install:  cp this file to ~/Library/LaunchAgents/ and
             launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.agent-sync-wake-alerter.plist
   Stop:     launchctl bootout gui/$(id -u)/com.jay.agent-sync-wake-alerter
@@ -22,7 +25,7 @@
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>. "$HOME/.secrets/agent-sync/wake-alerter.env" &amp;&amp; exec /usr/bin/python3 -I -m agent_sync.wake_alerter</string>
+    <string>. "$HOME/.secrets/agent-sync/wake-alerter.env" &amp;&amp; exec /usr/bin/python3 -I /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/agent_sync/wake_alerter.py</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts</string>
