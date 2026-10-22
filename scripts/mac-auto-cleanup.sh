@@ -249,11 +249,6 @@ housekeeper_record_state() {
     } > "$HOUSEKEEPER_STATE_FILE"
 }
 
-# The acquire section.  It runs inside the helper process with the shared
-# guard held, so the mkdir, the staleness check, the takeover, the removal
-# and the second mkdir are one decision against every implementation of this
-# protocol.
-#
 # Whether the owner file proves the holder of a given lock directory is gone.
 #
 # This is what makes a lock whose release FAILED recoverable in one run
@@ -313,6 +308,11 @@ sys.exit(1)                          # the pid is alive:  the age rule decides
 PY
 }
 
+# The acquire section.  It runs inside the helper process with the shared
+# guard held, so the mkdir, the staleness check, the takeover, the removal
+# and the second mkdir are one decision against every implementation of this
+# protocol.
+#
 # Exit status:  0 the lock is ours, 17 a peer holds it, 75 the moved-aside
 # name was taken and the caller has to try another one, 76 a real error.
 housekeeper_acquire_section() {
