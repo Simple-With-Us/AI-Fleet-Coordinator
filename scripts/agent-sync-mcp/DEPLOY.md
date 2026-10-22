@@ -203,13 +203,13 @@ WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPIKE_HMAC_KEY 
 printf on | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPIKE_EXTRA_EVENTS >/dev/null && echo "set SPIKE_EXTRA_EVENTS"
 ```
 
-`wrangler secret put` deploys a new version at once.  Check:  `/health` answers `{"ok":true}`, an unsigned `POST /internal/spike/JET` answers 401 (404 means the flag, the key or JET's wake key is missing, or the two keys are equal), an unsigned `POST /internal/wake/JET` still answers 401, and a connected JET chat's `events/list` shows `zulip.mention` then `fleet.spike.ping`.  `server/discover` does not change (`events: {}`).
+`wrangler secret put` deploys a new version at once.  Check:  `/health` answers `{"ok":true}`, an unsigned `POST /internal/spike/JET` answers 401 (404 means the flag, the key or JET's wake key is missing, or `SPIKE_HMAC_KEY` equals any seat's wake key, not only JET's), an unsigned `POST /internal/wake/JET` still answers 401, and a connected JET chat's `events/list` shows `zulip.mention` then `fleet.spike.ping`.  `server/discover` does not change (`events: {}`).
 
 **Fire one ping.**  Only after Jet says it subscribed.  The body is exactly four fields, and the signature is the lowercase hex HMAC-SHA256 of the raw bytes.  The key comes from an inherited `SPIKE_HMAC_KEY` first, else from `$KEYFILE` (the only other place it lives, because no Infisical writer takes it), and is never printed, not even in part.  The script exits non-zero on anything but a 2xx:
 
 ```bash
 SPIKE_HMAC_KEY="${SPIKE_HMAC_KEY:-$(cat "$KEYFILE")}" python3 -I - <<'PY'
-import hmac, hashlib, json, os, sys, time, urllib.error, urllib.request, uuid
+import hmac, hashlib, http.client, json, os, sys, time, urllib.error, urllib.request, uuid
 key = os.environ.get("SPIKE_HMAC_KEY", "")
 if len(key) < 32: sys.exit("SPIKE_HMAC_KEY is missing or shorter than 32 characters")
 spike_id = str(uuid.uuid4())
@@ -222,7 +222,7 @@ try:
 except urllib.error.HTTPError as e:
     kind = "outcome_unknown" if e.code >= 500 else "retry_later" if e.code in (408, 429) else "refused"
     sys.exit(f"{spike_id} HTTP {e.code} {kind}:  {e.read().decode()[:200]}")
-except (urllib.error.URLError, TimeoutError) as e:
+except (OSError, http.client.HTTPException) as e:  # URLError, timeouts, resets, RemoteDisconnected, IncompleteRead
     sys.exit(f"{spike_id} no answer (outcome_unknown):  {type(e).__name__}")
 PY
 ```
