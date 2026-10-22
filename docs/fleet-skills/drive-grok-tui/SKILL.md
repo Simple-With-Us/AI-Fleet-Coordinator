@@ -27,7 +27,7 @@ python3 ~/apps/grok-acp-runtime/grok-drive.py list
 python3 ~/apps/grok-acp-runtime/grok-drive.py peek --session-id ID --tail 8
 python3 ~/apps/grok-acp-runtime/grok-drive.py tail --session-id ID --lines 12
 python3 ~/apps/grok-acp-runtime/grok-drive.py prompt \
-  --session-id ID --cwd DIR --prompt "…" --from-name CLAUDE
+  --session-id ID --cwd DIR --prompt "…" --from-name "<your seat tag>"
 python3 ~/apps/grok-acp-runtime/grok-drive.py await --session-id ID --timeout 180
 python3 ~/apps/grok-acp-runtime/grok-drive.py cancel --session-id ID --cwd DIR
 python3 ~/apps/grok-acp-runtime/grok-drive.py close --session-id ID --cwd DIR

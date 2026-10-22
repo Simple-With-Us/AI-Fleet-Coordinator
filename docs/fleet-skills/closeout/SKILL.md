@@ -1,9 +1,9 @@
 ---
 name: closeout
-description: Finish a Monet work unit — the Linear issue, the PR link, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
+description: Finish one seat's work unit — the Linear issue, the PR link, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
 ---
 
-# Closeout (MONET)
+# Closeout (<SEAT-NAME>)
 
 Start-of-work is a claim on the Linear issue and a post in its Zulip topic.  End-of-work is the same two surfaces, the PR that links the issue, plus Notes when the owner might ask "what happened?"
 
@@ -57,7 +57,7 @@ Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`sl
 
 ## 5. Apple Notes
 
-Substantial work: living Completion note, `--update` in place.  Title `[APP, Monet] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
+Substantial work: living Completion note, `--update` in place.  Title `[APP, <NOTES-NAME>] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
 
 ## 6. Mac local processes
 

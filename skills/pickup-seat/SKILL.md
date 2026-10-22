@@ -4,11 +4,11 @@ description: >-
   Pick up a capped-out or abandoned peer seat's in-flight work (owner-directed only). Inventory Linear, PRs, dirty worktrees, and Zulip; claim; adopt uncommitted work with authorship credit; disposition each item; hand back. Use when the owner says a seat hit a usage cap, died mid-task, or "take over X's lanes."
 ---
 
-# Pick up a seat (Universal)
+# Pick up a seat (<YOUR_TAG>)
 
 Owner-directed only.  Do not initiate a raid on a live peer.
 
-You are **<YOUR_AGENT_TAG>**.  Keep `<seat>/` branches.  If you continue a peer's `claude/` or `grok/` branch, say so in the work topic and do not rebrand their prefix as yours unless you are opening a new follow-up branch.
+You are **<YOUR_TAG>**.  Keep `<seat>/` branches.  If you continue a peer's `claude/` or `grok/` branch, say so in the work topic and do not rebrand their prefix as yours unless you are opening a new follow-up branch.
 
 ## INVENTORY
 
@@ -60,7 +60,7 @@ Landed as continuation during cap handoff; authorship credit retained.
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
 
-Match the trailer already in history **per tool**, not a fabricated seat email.  Monet and Claude Code both use `Claude <noreply@anthropic.com>`.  Codex/Grok/Cursor trailers stay those tools' trailers.
+Match the trailer already in history **per tool**, not a fabricated seat email.  Several Claude-family seats use `Claude <noreply@anthropic.com>`.  Codex/Grok/Cursor trailers stay those tools' trailers.
 
 Confirm no new commits or work-topic posts from that seat since the cap before you overwrite their narrative.
 
@@ -76,7 +76,7 @@ Confirm no new commits or work-topic posts from that seat since the cap before y
 | Claimed, not started | release (`board status <id> open`); work topic + Linear |
 | Genuinely blocked | `board comment` with the reason; escalate P0 |
 
-Do not kill `com.jay.claude-remote-control` while hunting "stuck Claude."  Monet/Renoir/Claude all look like `claude` in `ps`.
+Do not kill `com.jay.claude-remote-control` while hunting "stuck Claude."  The Claude-family seats all look like `claude` in `ps`.
 
 ## HAND BACK
 

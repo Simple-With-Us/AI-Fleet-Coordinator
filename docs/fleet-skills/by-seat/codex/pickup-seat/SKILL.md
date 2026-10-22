@@ -63,7 +63,7 @@ Landed as continuation during cap handoff; authorship credit retained.
 Co-Authored-By: <peer's existing trailer>"
 ```
 
-Match the trailer already in history **per tool**, not a fabricated seat email.  Monet and Claude Code both use `Claude <noreply@anthropic.com>`.  Codex/Grok/Cursor trailers stay those tools' trailers.
+Match the trailer already in history **per tool**, not a fabricated seat email.  Several Claude-family seats use `Claude <noreply@anthropic.com>`.  Codex/Grok/Cursor trailers stay those tools' trailers.
 
 Confirm no new commits or work-topic posts from that seat since the cap before you overwrite their narrative.
 
@@ -79,7 +79,7 @@ Confirm no new commits or work-topic posts from that seat since the cap before y
 | Claimed, not started | release (`board status <id> open`); work topic + Linear |
 | Genuinely blocked | `board comment` with the reason; escalate P0 |
 
-Do not kill `com.jay.claude-remote-control` while hunting "stuck Claude."  Monet/Renoir/Claude all look like `claude` in `ps`.
+Do not kill `com.jay.claude-remote-control` while hunting "stuck Claude."  The Claude-family seats all look like `claude` in `ps`.
 
 ## HAND BACK
 

@@ -1,6 +1,7 @@
 ---
 name: closeout
-description: Finish a Antigravity work unit — the Linear issue, the PR link, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
+description: >-
+  Finish one seat's work unit — the Linear issue, the PR link, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
 ---
 
 # Closeout (AG)

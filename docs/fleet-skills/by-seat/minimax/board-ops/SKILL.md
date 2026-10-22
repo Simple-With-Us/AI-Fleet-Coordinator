@@ -10,7 +10,7 @@ description: Use Linear through the `board` CLI as the first place to look and w
 > **Runtime (MiniMax).** MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
 
-Linear is the system of record for fleet work (owner 2026-10-10), and `board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
+Linear is the system of record for fleet work (owner 2026-10-10), and `board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, FL, CC.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
 
 Humans use Linear in the browser.  Agents use the `board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old `mac.jays.services/board` is a read-only archive until about day 30 after the cutover.  The effort logs are archived.  Nothing mirrors to them any more.
 
@@ -29,7 +29,7 @@ The CLI reads the Fleet app's credentials from `~/.secrets/Linear/Fleet.env` its
 
 Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlists.  `B=…/board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
-**Writes need `AGENT_SEAT`.**  `file`, `claim`, `status` and `comment` exit 2 without it, and `--by` must equal it.  Reads (`list`, `show`, `stats`, `whoami`) need no seat.  Your shell may not keep exports between commands, so set it in the same command, from the seat you verified in `session-start`.  `--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`MM` in an ordinary MiniMax session).
+**Writes need `AGENT_SEAT`.**  `file`, `claim`, `status` and `comment` exit 2 without it, and `--by` must equal it.  Reads (`list`, `show`, `stats`, `whoami`) need no seat.  Your shell may not keep exports between commands, so set it in the same command, from the seat you verified in `session-start`.  `--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`"$AGENT_SEAT"`).
 
 ## File / claim / talk / finish
 

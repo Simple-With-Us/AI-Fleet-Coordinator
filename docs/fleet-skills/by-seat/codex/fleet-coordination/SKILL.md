@@ -1,6 +1,6 @@
 ---
 name: fleet-coordination
-description: Comprehensive master skill for multi-agent fleet operations across all apps and platforms (Claude/CLAUDE, Codex, Cursor, Antigravity/AG, Grok, Grok-Web, Clutch, FX, MM, MC, MA). Use at session start, when claiming work in Linear, managing pull requests, handling secrets safely, writing owner-facing Apple Notes, ensuring sentence gap compliance, and deploying to production.
+description: Comprehensive master skill for multi-agent fleet operations across all apps and platforms (Claude Code, Codex, Cursor, Antigravity/AG, Grok, Grok-Web, Clutch, FX, MM, MC, MA). Use at session start, when claiming work in Linear, managing pull requests, handling secrets safely, writing owner-facing Apple Notes, ensuring sentence gap compliance, and deploying to production.
 ---
 
 # Fleet Coordination Protocol (Universal)

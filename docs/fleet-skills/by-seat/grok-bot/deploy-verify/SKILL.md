@@ -3,7 +3,7 @@ name: deploy-verify
 description: Verify production after a merge or deploy — per-app health URLs, Coolify vs Vercel vs library-tag, backup continuity, and known failure classes. Use after merging to main, after a Coolify/Vercel deploy, when health looks stale, or when the owner asks if prod is up. Do not treat Coolify API status as truth.
 ---
 
-# Deploy verification (GB role)
+# Deploy verification ($AGENT_TAG)
 
 > **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 

@@ -1,6 +1,7 @@
 ---
 name: unstick-pr
-description: Diagnose and repair a PR that will not merge — phantom vs real conflicts, unresolved review threads, CI dispatch misses, required-check failures, and known flakes. Use when mergeable is false, auto-merge sits idle, GitHub says CONFLICTING/BLOCKED/DIRTY, or a Muse Code/peer PR is green but stuck.
+description: >-
+  Diagnose and repair a PR that will not merge — phantom vs real conflicts, unresolved review threads, CI dispatch misses, required-check failures, and known flakes. Use when mergeable is false, auto-merge sits idle, GitHub says CONFLICTING/BLOCKED/DIRTY, or your own seat's PR is green but stuck.
 ---
 
 # Unstick a blocked PR (MC)

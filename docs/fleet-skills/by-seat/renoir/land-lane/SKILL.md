@@ -1,6 +1,7 @@
 ---
 name: land-lane
-description: Land a Renoir feature branch to main across the fleet — seat worktree, docs, verification gate, PR, auto-merge, then closeout. Use when finishing a unit, opening a PR, merging, or when the owner says land/ship/commit/push. Never wait for the owner to ask. Covers apps with and without scripts/land.sh.
+description: >-
+  Land a seat's feature branch to main across the fleet — seat worktree, docs, verification gate, PR, auto-merge, then closeout. Use when finishing a unit, opening a PR, merging, or when the owner says land/ship/commit/push. Never wait for the owner to ask. Covers apps with and without scripts/land.sh.
 ---
 
 # Land a feature branch (RENOIR)
@@ -10,7 +11,7 @@ description: Land a Renoir feature branch to main across the fleet — seat work
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
 
-Seat: **RENOIR**.  Branch: `renoir/<slug>`.  Never `claude/`.  Never `monet/`.  Never land from `~/Code/<repo>` or from branch `main`.
+Seat: **RENOIR**.  Branch: `renoir/<slug>`.  Never another seat's prefix.  Never land from `~/Code/<repo>` or from branch `main`.
 
 ## Preconditions
 

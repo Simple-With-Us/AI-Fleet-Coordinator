@@ -4,7 +4,7 @@ description: >-
   Fleet secret handling — handoff file, Zulip bot credentials, Infisical, Coolify token split, grep trap, leak response. Load BEFORE any command that might touch a credential, before reading ~/.secrets, Infisical, .env, or vault output, and before debugging auth. Trigger even when the user does not say "secret."
 ---
 
-# Secret handoff (GB role)
+# Secret handoff ($AGENT_TAG)
 
 > **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 

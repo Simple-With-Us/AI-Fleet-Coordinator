@@ -1,9 +1,10 @@
 ---
 name: closeout
-description: Finish a Grok Bot work unit — the Linear issue, the PR link, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
+description: >-
+  Finish one seat's work unit — the Linear issue, the PR link, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
 ---
 
-# Closeout (GB role)
+# Closeout ($AGENT_TAG)
 
 > **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 
@@ -60,7 +61,7 @@ Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`sl
 
 ## 5. Apple Notes
 
-Substantial work: living Completion note, `--update` in place.  Title `[APP, <GB role>] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
+Substantial work: living Completion note, `--update` in place.  Title `[APP, the GB role] short topic`.  See `apple-notes`.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
 
 ## 6. Mac local processes
 

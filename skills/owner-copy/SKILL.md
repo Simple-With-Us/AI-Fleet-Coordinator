@@ -3,14 +3,14 @@ name: owner-copy
 description: Fleet human-facing prose — two spaces between sentences, light theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation. Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read. Also when changing theme defaults or taking screenshots.
 ---
 
-# Owner-facing copy (Universal)
+# Owner-facing copy (<YOUR_TAG>)
 
 Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/AGENT-SYNC.md` § Two spaces, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
 Full protocol (always follow, do not weaken): skill `sentence-gap`
-(this pack's `sentence-gap` — Monet portable protocol).
+(this pack's `sentence-gap` — the fleet portable protocol).
 
 Binding for every paragraph a human reads — in-app UI, ASC description / promotional text / What’s New / review notes, push, email, help, Apple Notes, Linear issues and comments, **chat replies**, PR titles/bodies, commit messages, Zulip.
 

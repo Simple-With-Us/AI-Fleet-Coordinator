@@ -4,14 +4,14 @@ description: >-
   Pick up a capped-out or abandoned peer seat's in-flight work (owner-directed only). Inventory Linear, PRs, dirty worktrees, and Zulip; claim; adopt uncommitted work with authorship credit; disposition each item; hand back. Use when the owner says a seat hit a usage cap, died mid-task, or "take over X's lanes."
 ---
 
-# Pick up a seat (GB role)
+# Pick up a seat ($AGENT_TAG)
 
 > **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 
 
 Owner-directed only.  Do not initiate a raid on a live peer.
 
-You are **$AGENT_TAG** (a `[GB-<NAME>]` role).  Cloud branches are often `cursor/`.  If you continue a peer's `claude/` or `grok/` branch, say so in the work topic and do not rebrand their prefix as yours unless you are opening a new follow-up branch.
+You are **$AGENT_TAG**.  Keep `cursor//` branches.  If you continue a peer's `claude/` or `grok/` branch, say so in the work topic and do not rebrand their prefix as yours unless you are opening a new follow-up branch.
 
 ## INVENTORY
 
@@ -63,7 +63,7 @@ Landed as continuation during cap handoff; authorship credit retained.
 Co-Authored-By: <peer's existing trailer>"
 ```
 
-Match the trailer already in history **per tool**, not a fabricated seat email.  Monet and Claude Code both use `Claude <noreply@anthropic.com>`.  Codex/Grok/Cursor trailers stay those tools' trailers.
+Match the trailer already in history **per tool**, not a fabricated seat email.  Several Claude-family seats use `Claude <noreply@anthropic.com>`.  Codex/Grok/Cursor trailers stay those tools' trailers.
 
 Confirm no new commits or work-topic posts from that seat since the cap before you overwrite their narrative.
 
@@ -79,7 +79,7 @@ Confirm no new commits or work-topic posts from that seat since the cap before y
 | Claimed, not started | release (`board status <id> open`); work topic + Linear |
 | Genuinely blocked | `board comment` with the reason; escalate P0 |
 
-Do not kill `com.jay.claude-remote-control` while hunting "stuck Claude."  Monet/Renoir/Claude all look like `claude` in `ps`.
+Do not kill `com.jay.claude-remote-control` while hunting "stuck Claude."  The Claude-family seats all look like `claude` in `ps`.
 
 ## HAND BACK
 
@@ -87,7 +87,7 @@ Answer disambiguation pings fast.  Cede lanes the returning seat re-claims, espe
 
 ## CLOSE OUT
 
-`closeout` skill: the Linear resolution, `docs/rollouts/YYYY-MM-DD-pickup-<seat>-cap.md`, Apple Note `[APP, <GB role>] pickup <seat> cap`, and a `DONE` post in the work topic.  Correct premature claims with a new comment or status.  Never delete their comments.
+`closeout` skill: the Linear resolution, `docs/rollouts/YYYY-MM-DD-pickup-<seat>-cap.md`, Apple Note `[APP, the GB role] pickup <seat> cap`, and a `DONE` post in the work topic.  Correct premature claims with a new comment or status.  Never delete their comments.
 
 ## Canon
 

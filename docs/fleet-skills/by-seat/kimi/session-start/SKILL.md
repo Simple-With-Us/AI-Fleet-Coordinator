@@ -10,6 +10,8 @@ description: KIMI is retired.  Do not start a Kimi session.  Do not take work.  
 
 This pack is for **KIMI**.  Tag `[KIMI]`.  Notes name `Kimi`.  **KIMI is retired / unavailable long-term (owner 2026-08-21).** Do not start a Kimi session.  Do not take new work, do not leave Kimi In Progress, and do not reserve future lanes for Kimi.  If you are reading this after a mistaken spawn, say so in your own chat with the owner and stop.  Never sign as Monet.
 
+Seat identity comes from AGENT-SYNC § Identity Rules, never from the directory this file was loaded from:  Local `~/.claude` (hooks, memory, skills) is shared by several seats, and the worktree folder is **not** a seat signal.  If the owner did not name your seat and the worktree is anonymous, **ask** — do not default to another seat.  If this file still shows a `<PLACEHOLDER>` token, it is an unrendered source copy:  resolve your seat with `agent-sync whoami --as "$AGENT_SEAT"`, never from the placeholder.
+
 ## Stop
 
 KIMI is retired.  Do not start a Kimi session.  Do not take work.  If you are reading this after a mistaken spawn, say so in your own chat with the owner and stop.  Do not export `AGENT_SEAT=KIMI` to take work.  Do not claim work or pick a Kimi lane.  Coordinator self-id is `AFC`.  A fleet-wide wake is `@**all**` in #agent-sync topic `fleet`.

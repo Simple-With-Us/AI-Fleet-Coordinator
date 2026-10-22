@@ -10,7 +10,7 @@ description: Use Linear through the `board` CLI as the first place to look and w
 > **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-CONDUCTOR, GB-MONITOR, GB-FIXER, GB-DEPLOYER, GB-COMPILER, GB-NURSE, GB-HOUSEKEEPER, GB-ACCOUNTANT, GB-ORACLE) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
 
-Linear is the system of record for fleet work (owner 2026-10-10), and `board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
+Linear is the system of record for fleet work (owner 2026-10-10), and `board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app:  ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, FL, CC.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
 
 Humans use Linear in the browser.  Agents use the `board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old `mac.jays.services/board` is a read-only archive until about day 30 after the cutover.  The effort logs are archived.  Nothing mirrors to them any more.
 
@@ -29,7 +29,7 @@ The CLI reads the Fleet app's credentials from `~/.secrets/Linear/Fleet.env` its
 
 Some agent CLIs only allowlist a stable command prefix.  `board stats` allowlists.  `B=…/board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
-**Writes need `AGENT_SEAT`.**  `file`, `claim`, `status` and `comment` exit 2 without it, and `--by` must equal it.  Reads (`list`, `show`, `stats`, `whoami`) need no seat.  Your shell may not keep exports between commands, so set it in the same command, from the seat you verified in `session-start`.  `--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`CURSOR` in an ordinary Cursor session).
+**Writes need `AGENT_SEAT`.**  `file`, `claim`, `status` and `comment` exit 2 without it, and `--by` must equal it.  Reads (`list`, `show`, `stats`, `whoami`) need no seat.  Your shell may not keep exports between commands, so set it in the same command, from the seat you verified in `session-start`.  `--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`"$AGENT_SEAT"`).
 
 ## File / claim / talk / finish
 

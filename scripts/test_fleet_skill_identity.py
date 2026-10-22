@@ -20,6 +20,8 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
 from fleet_skill_identity import (  # noqa: E402
     _SEAT_PIN_SOURCE,
+    PLACEHOLDER_TOKENS,
+    SEAT_NAME_TOKEN,
     COORDINATOR_SELF_ID,
     FORBIDDEN_LOCAL_IOS_SHIP,
     GB_ROLE_TAGS,
@@ -37,6 +39,7 @@ from fleet_skill_identity import (  # noqa: E402
     skill_allowed_for_seat,
     specialize_from_monet,
     specialize_universal,
+    universal_pin_block,
     zulip_identity_sentence,
 )
 
@@ -190,10 +193,11 @@ class SpecializeTests(unittest.TestCase):
         with open(GAP, encoding="utf-8") as f:
             src = f.read()
         out = specialize_from_monet(src, SEATS["cursor"], skill_name="sentence-gap")
-        self.assertTrue(
-            "Monet portable" in out or "Monet's portable" in out,
-            out[:600],
-        )
+        # The protocol keeps its name in every render, and no seat owns it
+        # (owner 2026-10-11 made the canonical seat-neutral).
+        self.assertIn("portable protocol", out)
+        self.assertNotIn("Monet portable", out)
+        self.assertNotIn("Monet's portable", out)
 
     def test_quoted_description_folds_for_fx(self) -> None:
         out = specialize_from_monet(
@@ -731,16 +735,28 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         self.assertEqual((shared.zulip_bot, shared.zulip_rc), ("claude-bot", "Claude"))
         homes = dict((seat.seat_key, dest) for dest, seat in platform_installs())
         self.assertTrue(homes["claude_shared"].endswith("/.claude/skills"))
-        repo_claude = [
-            (dest, seat)
-            for dest, seat in repo_platform_copies(ROOT)
-            if dest.endswith(os.path.join(".claude", "skills"))
-        ]
-        self.assertEqual(len(repo_claude), 1)
-        self.assertEqual(repo_claude[0][1].tag, "CLAUDE")
         # The shared home is a second home for the claude pack, not another pack.
         self.assertNotIn(shared, catalog_seats())
         self.assertIn(SEATS["claude"], catalog_seats())
+
+    def test_repo_claude_skills_tree_is_not_rendered(self) -> None:
+        """The repo-level `.claude/skills` tree must not come back.
+
+        Every platform that scans a working directory scans `.claude/skills`,
+        so a committed copy there is loaded by whichever seat opened the repo
+        rather than the seat it names (owner 2026-10-11:  the MM seat read
+        CLAUDE identity from this tree).  Each seat reads its own tool home.
+        """
+        repo_claude = [
+            dest
+            for dest, _seat in repo_platform_copies(ROOT)
+            if os.path.basename(os.path.dirname(dest)) == ".claude"
+        ]
+        self.assertEqual(repo_claude, [], "the repo-level .claude/skills tree is back")
+        self.assertFalse(
+            (Path(ROOT, ".claude", "skills")).exists(),
+            ".claude/skills must stay out of the repo",
+        )
 
     def test_clutch_has_the_dsh_skill_home_and_its_own_identity(self) -> None:
         seat = SEATS["clutch"]
@@ -776,7 +792,9 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
             )
             self.assertIn(f"`[{seat.tag}·session8]` tag", ss, key)
             self.assertNotIn("[MONET·session8", ss, key)
-            self.assertIn(f"`--by` for this seat is your verified seat (`{seat.tag}` in an ordinary", board, key)
+            # The canonical resolves --by from the run-time seat rather than
+            # hard-coding one, so the rendered line names no platform seat.
+            self.assertIn('`--by` for this seat is your verified seat (`"$AGENT_SEAT"`)', board, key)
             self.assertIn('--by "$AGENT_SEAT"', board, key)
             self.assertNotIn(f"--by {seat.tag}", board, key)
         gb = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
@@ -843,17 +861,53 @@ class AgentSeatPinTests(unittest.TestCase):
         out.append(("universal", specialize_universal(src, skill_name="session-start")))
         return out
 
-    def test_canonical_block_is_the_monet_block_the_renderer_replaces(self) -> None:
-        # The canonical pack carries the retired MONET seat's own block (what
-        # seat_pin_block() renders for MONET, whose default arm fails), never a
-        # bare assignment.  If its shape drifts from the renderer's source
-        # pattern, this test names the dead replacement instead of letting it rot.
+    def test_canonical_block_is_the_placeholder_block_the_renderer_replaces(self) -> None:
+        # The canonical pack carries the seat-precedence block with placeholder
+        # tokens, never a seat's real name (owner 2026-10-11).  If its shape
+        # drifts from the renderer's source pattern, this test names the dead
+        # replacement instead of letting it rot.
         src = _session()
-        block = seat_pin_block(SEATS["monet"])
         self.assertEqual(self._exports(src), [self.EXPORT])
-        self.assertIn(block, src)
-        self.assertEqual(_SEAT_PIN_SOURCE.findall(src), [block])
-        self.assertIn("MONET is retired", block)
+        # _SEAT_PIN_SOURCE matches the block plus the prose around it, so the
+        # canonical must still be the one shape the renderer replaces.
+        self.assertEqual(len(_SEAT_PIN_SOURCE.findall(src)), 1)
+        for token in PLACEHOLDER_TOKENS:
+            self.assertIn(token, src, token)
+        self.assertNotIn(SEATS["monet"].tag, self._block(src))
+
+    def test_canonical_names_no_seat_and_leaves_no_token_unrendered(self) -> None:
+        # A canonical file that loads unrendered must read as unsubstituted, not
+        # as some other seat.  Two kinds of line legitimately name a seat:  the
+        # fleet-coordination seat roster, which documents every seat, and the
+        # session-start retired-seat and Mac `ps` notes.
+        allowed = {
+            "session-start": (
+                "MONET, RENOIR, HARNESS, DSH, KIMI",  # the retired-seat roster
+                "Monet, Renoir, and Claude Code all look like `claude`",  # Mac `ps`
+            ),
+            "fleet-coordination": (
+                "- Claude: `CLAUDE`",  # the seat roster
+                "Retired:  MONET, RENOIR, HARNESS, DSH, KIMI",  # retired roster
+            ),
+        }
+        for name in catalog_skill_names(DOCS):
+            text = _load_skill(name)
+            for line in text.splitlines():
+                for seat_name in ("MONET", "CLAUDE"):
+                    if seat_name in line and not any(
+                        phrase in line for phrase in allowed.get(name, ())
+                    ):
+                        self.fail(f"{name}: canonical names {seat_name}: {line[:120]}")
+
+    def test_every_seat_render_leaves_no_placeholder_token(self) -> None:
+        for seat in catalog_seats():
+            for name in catalog_skill_names(DOCS):
+                if not skill_allowed_for_seat(name, seat):
+                    continue
+                out = specialize_from_monet(_load_skill(name), seat, skill_name=name)
+                for token in PLACEHOLDER_TOKENS:
+                    self.assertNotIn(token, out, f"{seat.seat_key}/{name}: {token}")
+                self.assertNotIn("@@", out, f"{seat.seat_key}/{name}: token survived")
 
     def test_every_render_has_one_block_and_no_bare_assignment(self) -> None:
         for key, out in self._renders():
@@ -1104,11 +1158,14 @@ class InstallerRepoOnlyTests(unittest.TestCase):
 
     def test_repo_only_renders_platform_copies_and_skips_home(self) -> None:
         out = self._run(["--repo-only"])
-        for tree in (".claude", ".cursor", ".grok"):
+        for tree in (".cursor", ".grok"):
             self.assertTrue(
                 (self.repo / tree / "skills" / "session-start" / "SKILL.md").is_file(),
                 tree,
             )
+        # Never the repo-level .claude tree:  see
+        # test_repo_claude_skills_tree_is_not_rendered.
+        self.assertFalse((self.repo / ".claude" / "skills").exists())
         self.assertTrue((self.repo / "skills" / "session-start" / "SKILL.md").is_file())
         self.assertEqual(self._home_files(), [])
         self.assertIn("Home-dir installs: skipped (--repo-only)", out)

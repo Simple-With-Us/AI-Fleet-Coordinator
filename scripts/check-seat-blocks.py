@@ -25,10 +25,12 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# The repo-level `.claude/skills` tree is gone (owner 2026-10-11):  every
+# platform that scans a working directory scans it, so a committed copy is read
+# by whichever seat opened the repo.  Each seat reads its own tool home.
 REPO_TREES = (
     "skills",
     "docs/fleet-skills/by-seat",
-    ".claude/skills",
     ".cursor/skills",
     ".grok/skills",
 )

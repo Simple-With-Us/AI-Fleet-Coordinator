@@ -39,7 +39,7 @@ You may bypass `recall_search` ONLY for:
 
 ## How
 
-Mac seats (Claude, Codex, Cursor, Grok, Antigravity, Monet) have the `fleet-recall` MCP server
+Mac seats (Claude, Codex, Cursor, Grok, Antigravity, MiniMax) have the `fleet-recall` MCP server
 registered, so call the tools directly:
 
 - `recall_search(query, limit, category, app, source, seat, since_days)`

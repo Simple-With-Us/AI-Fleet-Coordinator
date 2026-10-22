@@ -1,16 +1,17 @@
 ---
 name: land-lane
-description: Land a Grok Bot feature branch to main across the fleet — seat worktree, docs, verification gate, PR, auto-merge, then closeout. Use when finishing a unit, opening a PR, merging, or when the owner says land/ship/commit/push. Never wait for the owner to ask. Covers apps with and without scripts/land.sh.
+description: >-
+  Land a seat's feature branch to main across the fleet — seat worktree, docs, verification gate, PR, auto-merge, then closeout. Use when finishing a unit, opening a PR, merging, or when the owner says land/ship/commit/push. Never wait for the owner to ask. Covers apps with and without scripts/land.sh.
 ---
 
-# Land a feature branch (GB role)
+# Land a feature branch ($AGENT_TAG)
 
 > **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 
 
 Always-commit is standing policy.  After each coherent finished unit: commit → push → PR → merge when CI is green.  A remote branch with no PR is unfinished.  Pause only for force-push, prod data wipe, or live-key revoke.
 
-Seat: **$AGENT_TAG**.  Branch: `cursor/<slug>`.  Never `[GROK-BOT]`.  Never `[CURSOR]`.  Never land from `~/Code/<repo>` or from branch `main`.
+Seat: **$AGENT_TAG**.  Branch: `cursor//<slug>`.  Never another seat's prefix.  Never land from `~/Code/<repo>` or from branch `main`.
 
 ## Preconditions
 
@@ -27,7 +28,7 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 1. Linear issue → In Progress with honest status (`board claim <id> ...`, branch `<seat>/<id>-<slug>`).  The effort logs are archived, so there is no `docs/EFFORT-LOG.md` row to mirror.  The PR body says `Fixes <ID>` if it finishes the issue, `Refs <ID>` if not.
 2. `STATUS.md` stanza: what landed, next action.
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
-4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[APP, <GB role>] …`.
+4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[APP, the GB role] …`.
 
 Prose: commit body, rollout docs and Notes source take two ASCII spaces between sentences.  PR titles, bodies and comments take a real U+00A0 plus a space (convert with the `perl` recipe in `sentence-gap`; never the `&nbsp;` entity there).  Chat replies to the owner use `&nbsp;` plus a space in a Markdown chat pane and two ASCII spaces in a terminal.  See `owner-copy`.
 

@@ -13,7 +13,7 @@ Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/
 ## Two spaces between sentences
 
 Full protocol (always follow, do not weaken): skill `sentence-gap`
-(`~/Desktop/fleet-skills/sentence-gap/SKILL.md` — Monet portable paste).
+(this pack's `sentence-gap` — the fleet portable protocol).
 
 Binding for every paragraph a human reads — in-app UI, ASC description / promotional text / What’s New / review notes, push, email, help, Apple Notes, Linear issues and comments, **chat replies**, PR titles/bodies, commit messages, Zulip.
 

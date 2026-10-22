@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Specialize Monet-canonical fleet SKILL.md text for a destination seat.
+"""Specialize the seat-neutral canonical fleet SKILL.md text for one seat.
 
-docs/fleet-skills stays the Monet / Claude.app upload pack.  Every other
-platform install must rewrite Zulip identity (the seat's bot, its zuliprc
-path, and its `[SEAT·session8]` tag), Notes names, branch prefixes,
-worktree suffixes, and reader-facing Claude/Monet voice, or that seat will
-sign as Monet.  Skills that are meaningless on a harness are skipped, not
-rewritten into a Claude-voiced copy.
+docs/fleet-skills is the canonical pack and carries placeholder tokens, never a
+seat's real name (owner 2026-10-11).  Every platform install resolves them for
+the destination seat: its Zulip bot, zuliprc path, `[SEAT·session8]` tag, Notes
+name, branch prefix, and lane suffix.  Before that change the canonical named a
+retired seat, so a platform that resolved an un-rendered copy inherited another
+seat's identity; now it reads `<SEAT-NAME>` and claims to be nobody.  Reader-
+facing voice is rewritten too.  Skills that are meaningless on a harness are
+skipped, not rewritten into a leftover copy.
 """
 
 from __future__ import annotations
@@ -21,6 +23,77 @@ YOU_ARE_TOKEN = "@@SEAT_YOU_ARE@@"
 SEAT_LINE_TOKEN = "@@SEAT_BRANCH_LINE@@"
 NEVER_PUSH_TOKEN = "@@SEAT_NEVER_PUSH@@"
 SEAT_PIN_TOKEN = "@@SEAT_PIN_BLOCK@@"
+TEAM_LIST_TOKEN = "@@LINEAR_TEAM_LIST@@"
+
+# Canonical-source placeholder tokens (owner 2026-10-11).
+#
+# docs/fleet-skills is the canonical pack and every platform home is rendered
+# from it.  The canonical text used to name a real seat (MONET, then CLAUDE),
+# so a platform that resolved an un-rendered copy inherited another seat's
+# identity.  The canonical now carries these tokens instead, and each render
+# substitutes the destination seat's values, so an un-rendered copy reads as
+# visibly unsubstituted rather than as some other seat.
+#
+# Not every value needs a token:  a branch prefix, a lane folder and a chat tag
+# are all derivable at run time from the verified seat, so the canonical says so
+# in words and keeps the token only where a literal must appear.
+SEAT_NAME_TOKEN = "<SEAT-NAME>"
+CHAT_TAG_TOKEN = "<CHAT-TAG>"
+BRANCH_PREFIX_TOKEN = "<BRANCH-PREFIX>"
+LANE_PREFIX_TOKEN = "<LANE-PREFIX>"
+NOTES_NAME_TOKEN = "<NOTES-NAME>"
+CREDENTIAL_FILE_TOKEN = "<CREDENTIAL-FILE>"
+BOT_EMAIL_TOKEN = "<BOT-EMAIL>"
+
+PLACEHOLDER_TOKENS = (
+    SEAT_NAME_TOKEN,
+    CHAT_TAG_TOKEN,
+    BRANCH_PREFIX_TOKEN,
+    LANE_PREFIX_TOKEN,
+    NOTES_NAME_TOKEN,
+    CREDENTIAL_FILE_TOKEN,
+    BOT_EMAIL_TOKEN,
+)
+
+
+def substitute_placeholders(text: str, seat: "Seat") -> str:
+    """Swap the canonical placeholder tokens for one seat's real values.
+
+    Run first in every render, so the seat-specific text below never sees a
+    token and never has to recognise one.  The tokens that name a Zulip bot or
+    its credential file resolve to worded guidance when the seat has no bot
+    (the retired seats), rather than to a file that does not exist.
+    """
+    if "<CREDENTIAL-FILE>" in text or "<BOT-EMAIL>" in text:
+        zulip = zulip_identity_sentence(seat)
+        text = text.replace(
+            "Zulip bot `<BOT-EMAIL>`, credential file `<CREDENTIAL-FILE>` (mode 600).",
+            zulip if zulip else "This seat has no Zulip bot; a launcher's seat brings its own.",
+        )
+    return (
+        text.replace(SEAT_NAME_TOKEN, seat.tag)
+        .replace(CHAT_TAG_TOKEN, f"[{seat.tag}·session8]")
+        .replace(BRANCH_PREFIX_TOKEN, seat.prefix)
+        .replace(LANE_PREFIX_TOKEN, seat.suffix)
+        .replace(NOTES_NAME_TOKEN, seat.notes)
+    )
+
+
+def substitute_placeholders_universal(text: str) -> str:
+    """Resolve the canonical tokens to guidance, not to a seat.
+
+    The root skills/ tree is the neutral copy, so a token there resolves to the
+    wording a reader acts on (`your seat`, `<seat>`) rather than to any seat's
+    real values.  This keeps the shared tokens in the canonical readable as
+    neutral text in every render.
+    """
+    return (
+        text.replace(SEAT_NAME_TOKEN, "<YOUR_TAG>")
+        .replace(CHAT_TAG_TOKEN, "[<YOUR_TAG>·session8]")
+        .replace(BRANCH_PREFIX_TOKEN, "<seat>")
+        .replace(LANE_PREFIX_TOKEN, "<seat>")
+        .replace(NOTES_NAME_TOKEN, "Agent")
+    )
 
 # The canonical pack's identity block is the retired MONET seat's own block,
 # exactly what seat_pin_block() renders for MONET (#405 made the canonical
@@ -632,20 +705,35 @@ SEATS: dict[str, Seat] = {
     ),
 }
 
-MONET_PACK_LINE = (
+# The canonical identity paragraph (owner 2026-10-11).  It carries placeholder
+# tokens, never a seat's real name, so a platform that reads an un-rendered
+# canonical copy sees `<SEAT-NAME>` and cannot mistake it for its own pack.
+# Each render swaps this whole paragraph for the destination seat's own, so the
+# per-seat wording (retired banners, the Claude/Monet history) stays in the
+# Seat table where it belongs.
+CANONICAL_PACK_LINE = (
+    "This pack is for the **<SEAT-NAME>** seat.  Chat tag `<CHAT-TAG>`.  "
+    "Zulip bot `<BOT-EMAIL>`, credential file `<CREDENTIAL-FILE>` (mode 600).  "
+    "Notes name `<NOTES-NAME>`.  Branches `<BRANCH-PREFIX>/<slug>` only.  "
+    "Lanes `~/apps/lanes/<Repo>/<LANE-PREFIX>-<slug>`."
+)
+
+# The pre-placeholder form of that paragraph, still matched so a canonical
+# written before 2026-10-11 still renders instead of silently losing its
+# identity block.  It names a retired seat, so it appears only here.
+LEGACY_MONET_PACK_LINE = (
     "This pack is for the **MONET** Claude account.  Session tag "
     "`[MONET·session8]`.  Notes name `Monet`.  Branches `monet/<slug>` only."
 )
-
-# The universal (root skills/) rendering of the same line.  `specialize_universal`
-# swaps this for the neutral seat-agnostic wording, so both forms must stay in
-# sync with the Zulip contract: a seat tag is the `[SEAT·session8]` session tag.
 MONET_PACK_LINE_UNIVERSAL = (
     "This pack is for the **<YOUR_AGENT_TAG>** Claude account.  Session tag "
     "`<YOUR_TAG>·session8`.  Notes name in Title Case (e.g. `Antigravity`, "
     "`Cursor`, `Codex`, `Grok`, `Claude`, `Monet`).  Branches "
     "`<seat>/<slug>` only."
 )
+# `specialize_universal` swaps this for the neutral seat-agnostic wording, so
+# both forms stay in sync with the Zulip contract: a seat tag is the
+# `[SEAT·session8]` session tag.
 
 MONET_CLAUDE_SHARED_PARA = (
     "CLAUDE and MONET are two different Claude accounts.  Local `~/.claude` "
@@ -893,6 +981,18 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
         f'AGENT_TAG="${{AGENT_TAG:?set {gb_role_pin_list()}}}"'
     )
     text = _stash_identity_source(text)
+    # Grok Bot has no fixed tag:  the role comes from the launcher, so the
+    # canonical tokens resolve to the role wording this pack is written for.
+    text = (
+        text.replace(BOT_EMAIL_TOKEN, "the role's launcher-provided bot")
+        .replace(CREDENTIAL_FILE_TOKEN, "the role's own credential file")
+        .replace(SEAT_NAME_TOKEN, "$AGENT_TAG")
+        .replace(CHAT_TAG_TOKEN, "[$AGENT_TAG]")
+        .replace(BRANCH_PREFIX_TOKEN, "cursor/")
+        .replace(LANE_PREFIX_TOKEN, "cursor")
+        .replace(NOTES_NAME_TOKEN, "the GB role")
+    )
+    text = text.replace(TEAM_LIST_TOKEN, linear_team_list())
     text = _protect(text)
     ordered = [
         ("AGENT_SEAT=MONET", pin.replace("AGENT_TAG", "AGENT_SEAT", 1)),
@@ -992,13 +1092,20 @@ def _insert_after_first_heading(text: str, block: str) -> str:
 
 
 def _stash_identity_source(text: str) -> str:
+    """Hide the canonical identity wording so the seat render supplies its own.
+
+    Runs BEFORE placeholder substitution, because the token form is what the
+    canonical carries and the seat's own paragraph replaces it whole.  The older
+    Monet-paragraph shapes are still matched so an older canonical still renders.
+    """
     text = _SEAT_PIN_SOURCE.sub(SEAT_PIN_TOKEN, text)
+    text = text.replace(CANONICAL_PACK_LINE, IDENTITY_TOKEN)
     text = text.replace(
-        MONET_PACK_LINE + "\n\n" + MONET_CLAUDE_SHARED_PARA,
+        LEGACY_MONET_PACK_LINE + "\n\n" + MONET_CLAUDE_SHARED_PARA,
         IDENTITY_TOKEN,
     )
     text = text.replace(MONET_PACK_LINE_UNIVERSAL, IDENTITY_TOKEN)
-    text = text.replace(MONET_PACK_LINE, IDENTITY_TOKEN)
+    text = text.replace(LEGACY_MONET_PACK_LINE, IDENTITY_TOKEN)
     text = text.replace(MONET_CLAUDE_SHARED_PARA, "")
     text = text.replace(
         "You are **MONET**.  Keep `monet/` branches.",
@@ -1126,11 +1233,41 @@ def _launcher_aware_prose(text: str) -> str:
     )
 
 
+def linear_team_list() -> str:
+    """The live Linear team keys, read from the board script's TEAM_KEYS.
+
+    The skill text used to carry a hand-copied list that went stale the moment a
+    team was created (FL and CC were both missing).  Reading the board's own
+    constant keeps the prose true without a runtime dependency in the rendered
+    skill:  this runs at render time, and the rendered file carries literals.
+    Falls back to the board's list when the file cannot be read, so a render
+    never fails on a moved file.
+    """
+    board = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts",
+        "linear-board",
+        "board",
+    )
+    try:
+        with open(board, encoding="utf-8") as handle:
+            source = handle.read()
+    except OSError:
+        return "ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, FL, CC"
+    match = re.search(r"^TEAM_KEYS\s*=\s*\(([^)]*)\)", source, re.MULTILINE)
+    if not match:
+        return "ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, CK, FL, CC"
+    keys = re.findall(r'"([A-Z0-9-]+)"', match.group(1))
+    return ", ".join(keys)
+
+
 def specialize_from_monet(text: str, seat: Seat, skill_name: str = "") -> str:
     if seat.mode == "grok_bot":
         return _specialize_grok_bot(text, seat, skill_name)
 
+    text = text.replace(TEAM_LIST_TOKEN, linear_team_list())
     text = _stash_identity_source(text)
+    text = substitute_placeholders(text, seat)
     text = _protect(text)
 
     ordered = [
@@ -1296,7 +1433,9 @@ def _apply_retired(text: str, seat: Seat, skill_name: str) -> str:
 
 def specialize_universal(text: str, skill_name: str = "") -> str:
     """Render a neutral, universal version of the fleet skill for root skills/."""
+    text = text.replace(TEAM_LIST_TOKEN, linear_team_list())
     text = _stash_identity_source(text)
+    text = substitute_placeholders_universal(text)
     text = _protect(text)
 
     universal_identity = (
@@ -1425,9 +1564,18 @@ def catalog_seats() -> list[Seat]:
 
 
 def repo_platform_copies(repo_root: str) -> list[tuple[str, Seat]]:
-    """Repo-tracked skill trees the installer must re-render."""
+    """Repo-tracked skill trees the installer must re-render.
+
+    The repo-level `.claude/skills` tree is deliberately NOT one of them
+    (owner 2026-10-11).  Every platform that scans a working directory scans
+    `.claude/skills`, so a copy committed here is loaded by whichever seat
+    opened the repo, not by the seat it names:  the MM seat resolved
+    `board-ops` from this tree and read instructions to sign as CLAUDE.  The
+    tree is deleted from the repo and the CLAUDE seat keeps its own home,
+    `~/.claude/skills`, which the installer still writes; deleting it costs no
+    seat its skills, because each one reads its own home first.
+    """
     return [
-        (os.path.join(repo_root, ".claude", "skills"), SEATS["claude_shared"]),
         (os.path.join(repo_root, ".cursor", "skills"), SEATS["cursor"]),
         (os.path.join(repo_root, ".grok", "skills"), SEATS["grok"]),
     ]

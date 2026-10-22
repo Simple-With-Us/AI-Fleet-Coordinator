@@ -1,9 +1,10 @@
 ---
 name: closeout
-description: Finish an agent work unit — the Linear issue, the PR link, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
+description: >-
+  Finish one seat's work unit — the Linear issue, the PR link, Zulip, Apple Notes, PR merge state, and Mac-process inventory. Use when a lane is merged, deployed, parked, or handed off. Never silently walk away from In Progress.
 ---
 
-# Closeout (Universal)
+# Closeout (<YOUR_TAG>)
 
 Start-of-work is a claim on the Linear issue and a post in its Zulip topic.  End-of-work is the same two surfaces, the PR that links the issue, plus Notes when the owner might ask "what happened?"
 

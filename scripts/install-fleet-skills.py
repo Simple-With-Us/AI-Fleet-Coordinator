@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 """Install fleet skills to every agent platform, specialized per seat.
 
-Canonical source: docs/fleet-skills (Monet / Claude.app pack).
+Canonical source: docs/fleet-skills, a seat-neutral pack whose identity blocks
+carry placeholder tokens (<SEAT-NAME>, <CHAT-TAG>, <BRANCH-PREFIX>,
+<LANE-PREFIX>, <NOTES-NAME>) rather than a real seat name (owner 2026-10-11).
 Home dirs, repo-tracked copies, and docs/fleet-skills/by-seat/<seat>/ get
-rewritten identity.  Skills in NEVER_INSTALL (ios-ship) are omitted, not
-copied as a Monet-voiced leftover.  Retired seats (Monet, Renoir, DSH, Kimi)
-have write_home=False: catalog/by-seat only, never a tool home (no
-~/Desktop/fleet-skills, ~/.deepseek, ~/.kimi, ~/.renoir).  Clutch renders to
-~/.clutch/dsh/skills, the DSH engine's own skill root (it outranks the shared
-~/.agents/skills, which no installer here writes).
+rewritten identity, so no platform can load another seat's identity.  Skills in
+NEVER_INSTALL (ios-ship) are omitted, not copied as a leftover.  Retired seats
+(Monet, Renoir, DSH, Kimi) have write_home=False: catalog/by-seat only, never a
+tool home (no ~/Desktop/fleet-skills, ~/.deepseek, ~/.kimi, ~/.renoir).
+Clutch renders to ~/.clutch/dsh/skills, the DSH engine's own skill root (it
+outranks the shared ~/.agents/skills, which no installer here writes).
 The shared ~/.claude/skills home renders as CLAUDE, the only Claude seat.
+
+There is deliberately no repo-level `.claude/skills` tree: every platform that
+scans a working directory scans it, so a committed copy is loaded by whichever
+seat opened the repo.  Each seat reads its own tool home instead.
 
 Usage:
     python3 scripts/install-fleet-skills.py              # repo trees AND tool homes
     python3 scripts/install-fleet-skills.py --repo-only  # repo trees only
 
 --repo-only re-renders everything tracked or catalogued inside this checkout
-(skills/, docs/fleet-skills zips, .claude/.cursor/.grok skills, by-seat) and
+(skills/, docs/fleet-skills zips, .cursor/.grok skills, by-seat) and
 writes nothing under the home directory: no tool-home skill dirs and no fx
 scan-tree description folding.  Use it from a lane after editing the canonical
 pack, so a session started in this repo loads the same text the pack says.

@@ -4,7 +4,7 @@ description: >-
   Fleet secret handling — handoff file, Zulip bot credentials, Infisical, Coolify token split, grep trap, leak response. Load BEFORE any command that might touch a credential, before reading ~/.secrets, Infisical, .env, or vault output, and before debugging auth. Trigger even when the user does not say "secret."
 ---
 
-# Secret handoff (MONET)
+# Secret handoff (<SEAT-NAME>)
 
 Load `~/.claude/skills/secret-safety/SKILL.md` as well when that file exists.  This skill is the fleet overlay.
 

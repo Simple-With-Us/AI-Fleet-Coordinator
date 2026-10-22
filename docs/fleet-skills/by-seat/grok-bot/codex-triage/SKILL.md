@@ -3,7 +3,7 @@ name: codex-triage
 description: Triage unresolved GitHub review threads (chatgpt-codex-connector, Cursor Bugbot, and any other review bot or human) — classify against current HEAD, fix real findings in one batch, reply, then resolve. Use when gating a merge, when branch protection blocks on conversation resolution, or when a bot re-reviews after push.
 ---
 
-# Review-thread triage (GB role)
+# Review-thread triage ($AGENT_TAG)
 
 > **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-CONDUCTOR]`, `[GB-MONITOR]`, `[GB-FIXER]`, `[GB-DEPLOYER]`, `[GB-COMPILER]` (Compiler), `[GB-NURSE]`, `[GB-HOUSEKEEPER]`, `[GB-ACCOUNTANT]`, `[GB-ORACLE]`.  Notes name is the role in Title Case (`Conductor`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 
@@ -72,7 +72,7 @@ If the PR is not MERGED, open a follow-up from the same branch.  Expect squash-m
 
 ## 6. Stop at round 2–3
 
-Later rounds on a merged PR are mostly noise.  Triage genuine hazards; surface the rest to the owner (Notes + a Linear comment).  this GB role's job on these is the security/contract read, not infinite bot ping-pong.
+Later rounds on a merged PR are mostly noise.  Triage genuine hazards; surface the rest to the owner (Notes + a Linear comment).  Your seat's job on these is the security/contract read, not infinite bot ping-pong.
 
 ## Canon
 
