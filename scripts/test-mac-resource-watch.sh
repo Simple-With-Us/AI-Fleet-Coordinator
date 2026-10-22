@@ -37,17 +37,44 @@ fi
 # index.  The lock protocol only needs to say that an equivalent helper in a
 # sibling repository implements the same rules.
 #
-# The names are ASSEMBLED here, so that this file does not carry them itself.
-PRIVATE_REPO='Hog'"Hunter"
-PRIVATE_PY_PATH='vacuum/lock''.py'
-PRIVATE_SWIFT_PATH='Sources/Storage/HousekeeperLock''.swift'
+# The forbidden strings are NOT committed here:  they are read from the
+# environment, so this file carries neither the name nor the layout of a real
+# private project.  A developer who wants the real check sets
+# PRIVATE_REPO_GUARD, PRIVATE_TEST_PY_PATH and PRIVATE_TEST_SWIFT_PATH outside
+# the repository; CI sets nothing and gets a synthetic sentinel, which still
+# exercises both guards end to end instead of letting them silently pass.
+PRIVATE_REPO="${PRIVATE_REPO_GUARD:-Synthetic-Private-Sibling-Repo}"
+PRIVATE_PY_PATH="${PRIVATE_TEST_PY_PATH:-synthetic-private-repo/internal/module.py}"
+PRIVATE_SWIFT_PATH="${PRIVATE_TEST_SWIFT_PATH:-synthetic-private-repo/internal/Module.swift}"
+# The guard definitions are the one place these strings are named, so they are
+# left out of the check on the fixtures themselves.
+guard_lines() {
+  cat "$@" | grep -vE '^[[:space:]]*PRIVATE_(REPO|PY_PATH|SWIFT_PATH)='
+}
 if grep -nF -e "$PRIVATE_PY_PATH" -e "$PRIVATE_SWIFT_PATH" \
-    "$ROOT/mac-auto-cleanup.sh" "$ROOT/mac-resource-watch.py" \
-    "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh"; then
+    "$ROOT/mac-auto-cleanup.sh" "$ROOT/mac-resource-watch.py"; then
   fail "the committed housekeeper scripts must not name a private sibling repository's internal source paths"
 fi
-if grep -nF "$PRIVATE_REPO" "$ROOT/test-mac-resource-watch.sh" "$ROOT/mac-resource-watch.py"; then
+if grep -nF "$PRIVATE_REPO" "$ROOT/mac-resource-watch.py"; then
   fail "the committed housekeeper scripts must not name a private sibling repository"
+fi
+if guard_lines "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh" \
+    | grep -nF -e "$PRIVATE_PY_PATH" -e "$PRIVATE_SWIFT_PATH" -e "$PRIVATE_REPO"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository"
+fi
+# A name split across two lines, or written with a space or a hyphen instead
+# of run together, defeats a fixed-string grep -- and a committed script must
+# not carry it that way either.  Both the haystack and the needle are stripped
+# of whitespace, comment markers and the separators a name can be broken on,
+# so every spelling and every split is caught without the guard having to name
+# either half.
+PRIVATE_REPO_SPELLED="$(printf '%s' "$PRIVATE_REPO" | tr -d '[:space:]#_-')"
+if tr -d '[:space:]#_-' < "$ROOT/mac-resource-watch.py" | grep -qF "$PRIVATE_REPO_SPELLED"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository, split across lines"
+fi
+if guard_lines "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh" \
+    | tr -d '[:space:]#_-' | grep -qF "$PRIVATE_REPO_SPELLED"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository, split across lines"
 fi
 python3 - "$ROOT/mac-resource-watch.py" <<'PY' || fail "evaluate swap conjunct"
 import importlib.util, sys
@@ -642,6 +669,61 @@ try:
         assert refused, "a symlinked housekeeper state directory must be refused"
         assert not (real_state / ".housekeeper.lock.guard").exists(), (
             "a refused state directory must not be used for the guard")
+
+        # The refusal above is its OWN exception type, so the acquire can tell
+        # it apart from a genuine I/O failure.  A symlinked state directory is
+        # still a clean "skip the cleanup", and not a crash.
+        mod.HOUSEKEEPER_LOCK = linked_state / ".housekeeper.lock"
+        assert mod._acquire_housekeeper_lock() is False, (
+            "a symlinked state directory must skip the cleanup, not raise")
+        mod.HOUSEKEEPER_LOCK = lock
+
+        # A GENUINE failure -- permissions, a full disk, a read-only
+        # filesystem -- is not "a peer holds the lock".  It must reach the
+        # caller, or a broken install is reported as a busy lock for ever.
+        real_acquire = mod._acquire_housekeeper_lock_locked
+        def boom_locked():
+            raise PermissionError(13, "Permission denied")
+        mod._acquire_housekeeper_lock_locked = boom_locked
+        propagated = False
+        try:
+            mod._acquire_housekeeper_lock()
+        except PermissionError:
+            propagated = True
+        finally:
+            mod._acquire_housekeeper_lock_locked = real_acquire
+        assert propagated, (
+            "a genuine OSError from the acquire must propagate, not be "
+            "reported as an unavailable lock")
+
+        # A failure AFTER the mkdir must not leave the lock behind.
+        # run_cleanup returns before its try/finally, so nothing else would
+        # release it, and every peer would read it as a live lock until it
+        # goes stale -- the machine would lose reclaim for the whole window.
+        orphan_state = scratch / "orphan-state"
+        mod.STATE_DIR = orphan_state
+        mod.HOUSEKEEPER_LOCK = orphan_state / ".housekeeper.lock"
+        mod._HOUSEKEEPER_LOCK_INODE = None
+        def created_then_failed():
+            mod.HOUSEKEEPER_LOCK.mkdir(parents=True, exist_ok=True)
+            # The inode is recorded immediately after the mkdir, so the
+            # failure path knows the lock is ours to drop.
+            mod._HOUSEKEEPER_LOCK_INODE = mod._lock_inode()
+            raise RuntimeError("failed after the lock was created")
+        mod._acquire_housekeeper_lock_locked = created_then_failed
+        try:
+            mod._acquire_housekeeper_lock()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("the post-mkdir failure must propagate")
+        assert not mod.HOUSEKEEPER_LOCK.exists(), (
+            "a lock created before a failure must not be orphaned: every peer "
+            "would skip reclaim until it went stale")
+        assert mod._HOUSEKEEPER_LOCK_INODE is None, (
+            "the recorded inode must be cleared when the lock is dropped")
+        mod._acquire_housekeeper_lock_locked = real_acquire
+        mod.STATE_DIR = state
     finally:
         os.umask(saved_umask)
         mod.HOUSEKEEPER_LOCK = saved_lock

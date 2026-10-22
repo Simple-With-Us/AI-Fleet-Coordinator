@@ -181,23 +181,50 @@ fi
 # index.  The lock protocol only needs to say that an equivalent helper in a
 # sibling repository implements the same rules.
 #
-# The names are ASSEMBLED here, so that this file does not carry them itself.
-PRIVATE_REPO='Hog'"Hunter"
-PRIVATE_PY_PATH='vacuum/lock''.py'
-PRIVATE_SWIFT_PATH='Sources/Storage/HousekeeperLock''.swift'
+# The forbidden strings are NOT committed here:  they are read from the
+# environment, so this file carries neither the name nor the layout of a real
+# private project.  A developer who wants the real check sets
+# PRIVATE_REPO_GUARD, PRIVATE_TEST_PY_PATH and PRIVATE_TEST_SWIFT_PATH outside
+# the repository; CI sets nothing and gets a synthetic sentinel, which still
+# exercises both guards end to end instead of letting them silently pass.
+PRIVATE_REPO="${PRIVATE_REPO_GUARD:-Synthetic-Private-Sibling-Repo}"
+PRIVATE_PY_PATH="${PRIVATE_TEST_PY_PATH:-synthetic-private-repo/internal/module.py}"
+PRIVATE_SWIFT_PATH="${PRIVATE_TEST_SWIFT_PATH:-synthetic-private-repo/internal/Module.swift}"
+# The guard definitions are the one place these strings are named, so they are
+# left out of the check on the fixtures themselves.
+guard_lines() {
+  cat "$@" | grep -vE '^[[:space:]]*PRIVATE_(REPO|PY_PATH|SWIFT_PATH)='
+}
 if grep -nF -e "$PRIVATE_PY_PATH" -e "$PRIVATE_SWIFT_PATH" \
-    "$ROOT/mac-auto-cleanup.sh" "$ROOT/mac-resource-watch.py" \
-    "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh"; then
+    "$ROOT/mac-auto-cleanup.sh" "$ROOT/mac-resource-watch.py"; then
   fail "the committed housekeeper scripts must not name a private sibling repository's internal source paths"
 fi
-if grep -nF "$PRIVATE_REPO" "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/mac-resource-watch.py"; then
+if grep -nF "$PRIVATE_REPO" "$ROOT/mac-resource-watch.py"; then
   fail "the committed housekeeper scripts must not name a private sibling repository"
 fi
+if guard_lines "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh" \
+    | grep -nF -e "$PRIVATE_PY_PATH" -e "$PRIVATE_SWIFT_PATH" -e "$PRIVATE_REPO"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository"
+fi
+# A name split across two lines, or written with a space or a hyphen instead
+# of run together, defeats a fixed-string grep -- and a committed script must
+# not carry it that way either.  Both the haystack and the needle are stripped
+# of whitespace, comment markers and the separators a name can be broken on,
+# so every spelling and every split is caught without the guard having to name
+# either half.
+PRIVATE_REPO_SPELLED="$(printf '%s' "$PRIVATE_REPO" | tr -d '[:space:]#_-')"
 # The reclaim-engine block below invokes a binary on this Mac, so its path
 # stays; the lock protocol's prose above it must not name the repository.
 if awk '/^# 2c\./{exit} {print}' "$ROOT/mac-auto-cleanup.sh" \
-    | grep -nF -e "$PRIVATE_REPO" -e 'Hog Hunter'; then
+    | tr -d '[:space:]#_-' | grep -qF "$PRIVATE_REPO_SPELLED"; then
   fail "the housekeeper lock protocol's prose must not name a private sibling repository"
+fi
+if tr -d '[:space:]#_-' < "$ROOT/mac-resource-watch.py" | grep -qF "$PRIVATE_REPO_SPELLED"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository, split across lines"
+fi
+if guard_lines "$ROOT/test-mac-auto-cleanup.sh" "$ROOT/test-mac-resource-watch.sh" \
+    | tr -d '[:space:]#_-' | grep -qF "$PRIVATE_REPO_SPELLED"; then
+  fail "the committed housekeeper scripts must not name a private sibling repository, split across lines"
 fi
 
 # Behavioural checks on the lock block itself.  The block is extracted from

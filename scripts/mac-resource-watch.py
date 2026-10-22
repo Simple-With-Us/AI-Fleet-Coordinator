@@ -12,6 +12,7 @@ No credential file is read (AFC-359).  BotFleet is the primary wake.  Grok Bot i
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import fcntl
 import json
@@ -311,6 +312,19 @@ _GUARD_FD: int | None = None
 _GUARD_DEPTH = 0
 
 
+class _UnsafeStateDirError(OSError):
+    """The state directory is not a real, non-symlink directory.
+
+    It is an OSError so that the callers which already swallow OSError -- the
+    read, the write and the clear of the owner record -- keep treating it as
+    "the state is unusable", but it is its OWN type so a caller that has to
+    tell this refusal apart from a genuine I/O failure can.  A permission
+    error, a full disk or a cross-device rename says the setup is broken;
+    this says the guard cannot be trusted, and only the second one means the
+    cleanup must be skipped.
+    """
+
+
 @contextmanager
 def _housekeeper_guard():
     """Hold the shared housekeeper guard for the duration of the block.
@@ -328,7 +342,9 @@ def _housekeeper_guard():
                 # the flock would then be taken on a file somewhere else
                 # entirely, and two implementations would not be sharing one
                 # guard.  Refuse it.
-                raise OSError(f"refusing a symlinked housekeeper state directory: {parent}")
+                raise _UnsafeStateDirError(
+                    f"refusing a symlinked housekeeper state directory: {parent}"
+                )
             if not parent.is_dir():
                 # The state directory is PRIVATE:  the guard and the owner
                 # record are shared state that must not be world readable.
@@ -336,16 +352,27 @@ def _housekeeper_guard():
                     parent.mkdir(mode=0o700, parents=True)
                 except FileExistsError:
                     # Another process created it between the check and here:
-                    # it is not ours to change.
-                    pass
+                    # it is not ours to change -- but it still has to be a real
+                    # directory and not a symlink.  The EEXIST may just as
+                    # well have been a competing actor creating a LINK at
+                    # this path, and carrying on would take the guard through
+                    # the redirected path the check above refused.
+                    if parent.is_symlink() or not parent.is_dir():
+                        raise _UnsafeStateDirError(
+                            f"refusing a symlinked housekeeper state directory: {parent}"
+                        )
                 else:
                     # mkdir's mode is masked by the umask, so the private
                     # mode is set explicitly.  The chmod goes through the
                     # opened directory and not through the path, so it cannot
-                    # follow a symlink that appeared in the meantime.
+                    # follow a symlink that appeared in the meantime --
+                    # O_NOFOLLOW is what makes that true for the LAST path
+                    # element, which a plain open would still follow.
                     dir_fd = os.open(
                         str(parent),
-                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                        os.O_RDONLY
+                        | getattr(os, "O_DIRECTORY", 0)
+                        | getattr(os, "O_NOFOLLOW", 0),
                     )
                     try:
                         os.fchmod(dir_fd, 0o700)
@@ -656,15 +683,59 @@ def _acquire_housekeeper_lock() -> bool:
     """
     if os.environ.get("HOUSEKEEPER_LOCK_OWNER") == "1":
         return True
-    try:
-        with _housekeeper_guard():
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(_housekeeper_guard())
+        except _UnsafeStateDirError as exc:
+            # The guard cannot be trusted, and without it there is no mutual
+            # exclusion, so the cleanup is skipped rather than run unguarded.
+            log(f"housekeeper lock unavailable ({exc}); skipping cleanup")
+            return False
+        # Every OTHER OSError here is a genuine failure of this setup -- no
+        # permission, no space, a read-only filesystem -- and NOT "a peer
+        # holds the lock".  It propagates, because reporting it as a busy lock
+        # would hide a broken install behind a log line for ever.
+        try:
             return _acquire_housekeeper_lock_locked()
-    except OSError as exc:
-        # A symlinked state directory is refused by the guard:  without the
-        # shared guard there is no mutual exclusion, so the cleanup is
-        # skipped rather than run unguarded.
-        log(f"housekeeper lock unavailable ({exc}); skipping cleanup")
-        return False
+        except BaseException:
+            # The mkdir may already have succeeded, so a failure from here on
+            # can leave a lock directory behind.  run_cleanup returns before
+            # its try/finally, so nothing else would release it, and every
+            # peer would read it as a live lock until it goes stale:  the
+            # machine would lose reclaim for the whole window, exactly when it
+            # is under the disk pressure that triggered the run.  Drop the
+            # lock this process created, then let the error through.
+            _drop_housekeeper_lock_created_here()
+            raise
+
+
+def _drop_housekeeper_lock_created_here() -> None:
+    """Drop the lock directory, but only the one this process created.
+
+    A lock that was taken over as stale while this process was running is not
+    ours to remove:  dropping it would delete the new holder's lock while it
+    is still working.  The inode recorded immediately after the mkdir is what
+    tells the two apart.
+    """
+    global _HOUSEKEEPER_LOCK_INODE
+    if _HOUSEKEEPER_LOCK_INODE is None:
+        # No mkdir of ours ever succeeded, so there is nothing of ours here.
+        return
+    inode, _HOUSEKEEPER_LOCK_INODE = _HOUSEKEEPER_LOCK_INODE, None
+    if _lock_inode() != inode:
+        # A peer already replaced it, so that one is theirs.
+        return
+    try:
+        _clear_housekeeper_owner(only_pid=os.getpid())
+    except OSError:
+        pass
+    try:
+        HOUSEKEEPER_LOCK.rmdir()
+    except OSError:
+        # Not the empty marker we made:  a lock directory with something in
+        # it is not ours to take.  Leaving it is the safe outcome -- it goes
+        # stale on the age rule like any other lock.
+        pass
 
 
 def _acquire_housekeeper_lock_locked() -> bool:
@@ -684,8 +755,11 @@ def _acquire_housekeeper_lock_locked() -> bool:
         except FileExistsError:
             pass
         else:
-            _write_housekeeper_owner()
+            # The inode is recorded BEFORE the owner record is written:  the
+            # write can fail, and a failure after the mkdir still has to be
+            # able to drop the lock this process just created.
             _HOUSEKEEPER_LOCK_INODE = _lock_inode()
+            _write_housekeeper_owner()
             return True
         try:
             age = time.time() - HOUSEKEEPER_LOCK.stat().st_mtime
@@ -746,8 +820,8 @@ def _acquire_housekeeper_lock_locked() -> bool:
         except OSError:
             log("failed to create the housekeeper lock")
             return False
-        _write_housekeeper_owner()
         _HOUSEKEEPER_LOCK_INODE = _lock_inode()
+        _write_housekeeper_owner()
         return True
     return False
 
@@ -797,9 +871,9 @@ def _release_housekeeper_lock_locked() -> None:
 
 
 def run_cleanup(pressure: bool) -> int:
-    # Hold the shared housekeeper lock while the reclaim runs: mac-cleanup, Hog
-    # Hunter's vacuum, the BotFleet routines and a live bot thread all take it,
-    # so two of them never reclaim at once.
+    # Hold the shared housekeeper lock while the reclaim runs: mac-cleanup, a
+    # sibling reclaimer's vacuum, the BotFleet routines and a live bot thread
+    # all take it, so two of them never reclaim at once.
     if not _acquire_housekeeper_lock():
         return 1
     try:
