@@ -30,8 +30,8 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | Skill | Purpose & Trigger |
 | :--- | :--- |
 | **`fleet-coordination`** | **Master Flagship Skill:** End-to-end multi-agent fleet operations (startup, the Linear claim, secrets, sentence gap, Apple Notes, PR landing, closeout). |
-| **`session-start`** | Systematic startup: read the Zulip inbox (`agent-sync inbox`), read Linear (the `board` CLI), lanes under `~/apps/lanes/<Repo>/` (made with `lane new`), claim before editing. |
-| **`board-ops`** | Operating the `board` CLI on Linear (`board stats`, `board list`, `board claim`, `board file`), ids like `BF-123`. |
+| **`session-start`** | Systematic startup: read the Zulip inbox (`simple-chat inbox`), read Linear (the `simple-board` CLI), lanes under `~/apps/lanes/<Repo>/` (made with `lane new`), claim before editing. |
+| **`board-ops`** | Operating the `simple-board` CLI on Linear (`simple-board stats`, `simple-board list`, `simple-board claim`, `simple-board file`), ids like `BF-123`. |
 | **`secret-handoff`** | Strict secret safety: `fleet-secrets` reads (the flat `global-api-keys` file is retired), Infisical runtime source of truth, grep-trap ban, safe helpers. |
 | **`sentence-gap`** | Visible double-space between sentences (`&nbsp;` plus a space in Markdown chat panes, including the MiniMax Code pane; U+00A0 plus a space in GitHub and Zulip text; two literal spaces in source files and terminals). |
 | **`owner-copy`** | Human-facing copy standards: two spaces, system theme default (owner ruling 2026-09-19), Title Case headings, no agent names in ASC release notes. |

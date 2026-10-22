@@ -20,7 +20,7 @@ from agent_sync.tests.harness import write_rc
 from agent_sync.tests.listener_harness import ListenerHarness, mode_of, reply_output
 
 REPO = Path(__file__).resolve().parents[3]
-ENTRY = REPO / "scripts" / "agent-sync"
+ENTRY = REPO / "scripts" / "simple-chat"
 
 
 class InstallTests(ListenerHarness):
@@ -50,7 +50,7 @@ class InstallTests(ListenerHarness):
         self.assertEqual(data["Label"], "com.jay.agent-sync-listener")
         self.assertEqual(
             data["ProgramArguments"],
-            [sys.executable, str(self.home / ".local/bin/agent-sync"), "daemon", "run"],
+            [sys.executable, str(self.home / ".local/bin/simple-chat"), "daemon", "run"],
         )
         self.assertTrue(data["KeepAlive"])
         self.assertEqual(data["ThrottleInterval"], 30)
@@ -452,7 +452,7 @@ class PluginTests(unittest.TestCase):
         commands = [h for group in hooks.values() for entry in group for h in entry["hooks"]]
         for hook in commands:
             self.assertEqual(hook["type"], "command")
-            self.assertIn('agent-sync" attach --', hook["command"])
+            self.assertIn('simple-chat" attach --', hook["command"])
         rewakes = [h for h in commands if h["command"].endswith("attach --rewake")]
         self.assertEqual(len(rewakes), 3)
         self.assertTrue(all(h["asyncRewake"] is True and h["timeout"] == 86400 for h in rewakes))
@@ -486,7 +486,7 @@ class PluginTests(unittest.TestCase):
                     env=env,
                 )
                 self.assertEqual(done.returncode, 0, done.stderr)
-                self.assertIn("usage: agent-sync", done.stdout)
+                self.assertIn("usage: simple-chat", done.stdout)
         top = subprocess.run(
             [sys.executable, str(ENTRY), "--help"],
             capture_output=True,

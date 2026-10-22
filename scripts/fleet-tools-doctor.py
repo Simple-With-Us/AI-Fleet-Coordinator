@@ -27,12 +27,12 @@ runs this doctor with `--json`;  `--write PATH` writes the combined Mac + server
 Muster reads (`-` prints it).  docs/protocols/fleet-tool-parity.md has both owner steps.
 
 Checks:
-  runtime     the installed fleet-cli release (agent-sync, board, recall, lane,
+  runtime     the installed fleet-cli release (simple-chat, simple-notes, simple-board, recall, lane,
               fleet-mode) was built from AI-Fleet-Coordinator origin/main
   checkout    each /root/Code (or ~/Code) checkout that ships a CLI is on
               origin/main:  AI-Fleet-Coordinator, FleetLink
-  commands    the five fleet tools (agent-sync, board, recall, lane, fleet-mode)
-              and fleet-share are on PATH (the Mac also keeps lane and fleet-mode
+  commands    the fleet tools (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode)
+              and fleetlink are on PATH (the Mac also keeps lane and fleet-mode
               in ~/apps, which counts)
   catalogs    the shared contracts ship with the runtime:  tools.json and,
               once AFC-329 lands, the board Linear catalog
@@ -42,8 +42,8 @@ Checks:
               (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
   mcp:codex   Codex registers agent-sync (and FleetLink when a token exists)
   mcp:claude  Claude Code registers agent-sync (and FleetLink likewise)
-  tool:<T>    each fleet tool's currency (agent-sync, board, recall, lane, fleet-mode,
-              fleet-secrets, fleet-share), then each registry tool's install and version
+  tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
+              fleet-secrets, fleetlink), then each registry tool's install and version
   updater:<U> the job that keeps the runtime on main (the Mac's runtime-sync LaunchAgent,
               the server's fleet-cli-git-update and fleet-tools-doctor timers)
 
@@ -73,18 +73,26 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 RUNTIME = HOME / ".local/share/fleet-cli"
 CODE_ROOTS = [Path("/root/Code"), HOME / "Code"]
 REPOS = ("AI-Fleet-Coordinator", "FleetLink")
-# The five tools both hosts carry (docs/protocols/fleet-tool-parity.md), then FleetLink's CLI.
-FLEET_TOOLS = ("agent-sync", "board", "recall", "lane", "fleet-mode")
-COMMANDS = (*FLEET_TOOLS, "fleet-share")
+# The tools both hosts carry (docs/protocols/fleet-tool-parity.md), then FleetLink's CLI.
+FLEET_TOOLS = ("simple-chat", "simple-notes", "simple-board", "recall", "lane", "fleet-mode")
+COMMANDS = (*FLEET_TOOLS, "fleetlink")
 # The Mac keeps lane and fleet-mode in ~/apps rather than on PATH.
 COMMAND_FALLBACK_DIRS = (HOME / "apps",)
 # Where a Mac finds the published runtime (the server reads RUNTIME/current).
 MAC_RUNTIME = HOME / "apps/lanes/_managed/fleet/agent-sync-runtime"
+# The simple-tools commands the Mac links into the managed runtime:  command name -> entry script.
+MAC_SIMPLE_TOOLS = (
+    ("simple-chat", "simple-chat"),
+    ("simple-notes", "simple-notes"),
+    ("simple-board", "simple-board"),
+)
 MAC_FLEET_MODE_DOC = HOME / "apps/FLEET-MODE.md"
 AFC_REMOTE_URL = "https://github.com/Simple-With-Us/AI-Fleet-Coordinator"
 # Coarse git pathspecs that bound the diff;  is_shipped() then applies the exact rules.
 SHIPPED = (
-    "scripts/agent-sync",
+    "scripts/simple-chat",
+    "scripts/simple-notes",
+    "scripts/simple-board",
     "scripts/agent_sync/",
     "scripts/linear-board/",
     "fleet-apps.json",
@@ -105,7 +113,9 @@ SHIPPED = (
 # copy to the release's EXACT.
 SHIPPED_EXACT = frozenset(
     {
-        "scripts/agent-sync",
+        "scripts/simple-chat",
+        "scripts/simple-notes",
+        "scripts/simple-board",
         "scripts/linear-board/board",
         "scripts/linear-board/board-ids.txt",
         "fleet-apps.json",
@@ -363,8 +373,9 @@ COPY_SETS = {
 }
 # The server's wrappers exec current/<script> (fleet-cli-release.py wrapper_files).
 SERVER_WRAPPERS = {
-    "agent-sync": "scripts/agent-sync",
-    "board": "scripts/linear-board/board",
+    "simple-chat": "scripts/simple-chat",
+    "simple-notes": "scripts/simple-notes",
+    "simple-board": "scripts/simple-board",
     "recall": "scripts/recall",
     "lane": "scripts/fleet_lanes/bin/lane",
     "fleet-mode": "scripts/fleet-mode",
@@ -1342,12 +1353,12 @@ def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
 def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.run) -> None:
     """Start the seat's stdio MCP the way a client does and ask for its tools.  A release that is
     missing a file the server reads fails here, before any agent notices (2026-10-16)."""
-    if not shutil.which("agent-sync"):
-        report.add(f"mcp-start:{seat}", "FAIL", "agent-sync is not on PATH")
+    if not shutil.which("simple-chat"):
+        report.add(f"mcp-start:{seat}", "FAIL", "simple-chat is not on PATH")
         return
     try:
         result = runner(
-            ["agent-sync", "mcp", "--default-seat", seat],
+            ["simple-chat", "mcp", "--default-seat=%s" % seat],
             input=MCP_PROBE,
             env={**registered_env(seat), **os.environ},
             capture_output=True,
@@ -1358,7 +1369,7 @@ def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.r
         report.add(f"mcp-start:{seat}", "FAIL", str(exc))
         return
     except subprocess.TimeoutExpired:
-        report.add(f"mcp-start:{seat}", "FAIL", "agent-sync mcp did not answer within 60 seconds")
+        report.add(f"mcp-start:{seat}", "FAIL", "simple-chat mcp did not answer within 60 seconds")
         return
     count = None
     for line in (result.stdout or b"").splitlines():
@@ -1369,7 +1380,7 @@ def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.r
         if reply.get("id") == 2:
             count = len(((reply.get("result") or {}).get("tools")) or [])
     if count:
-        report.add(f"mcp-start:{seat}", "OK", f"agent-sync mcp serves {count} tools")
+        report.add(f"mcp-start:{seat}", "OK", f"simple-chat mcp serves {count} tools")
     else:
         first = (result.stderr or b"").decode("utf-8", "replace").strip().splitlines()[:1]
         why = first[0][:160] if first else f"exit {result.returncode}"
@@ -1744,40 +1755,41 @@ def check_lane_tools(report: Report, rt: dict, runner: Callable = subprocess.run
 
 def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run) -> None:
     """Mac:  where each fleet tool runs from, and whether that is the tip of main."""
-    link = HOME / ".local/bin/agent-sync"
-    target = MAC_RUNTIME / "scripts/agent-sync"
-    if not link.exists():
-        why = f"{link} is not installed"
-        add_tool_row(
-            report,
-            "agent-sync",
-            dict(
-                status="FAIL",
-                state="missing",
-                detail=why,
-                reason=why,
-                category="fleet-tool",
-                tool="agent-sync",
-            ),
-        )
-    elif os.path.realpath(link) == os.path.realpath(target):
-        add_tool_row(
-            report, "agent-sync", inherit_row("agent-sync", rt, f"{link} links into the runtime")
-        )
-    else:
-        why = f"{link} resolves to {os.path.realpath(link)}, not the managed runtime"
-        add_tool_row(
-            report,
-            "agent-sync",
-            dict(
-                status="FAIL",
-                state="stale",
-                detail=why,
-                reason=why,
-                category="fleet-tool",
-                tool="agent-sync",
-            ),
-        )
+    for command, script in MAC_SIMPLE_TOOLS:
+        link = HOME / ".local/bin" / command
+        target = MAC_RUNTIME / "scripts" / script
+        if not link.exists():
+            why = f"{link} is not installed"
+            add_tool_row(
+                report,
+                command,
+                dict(
+                    status="FAIL",
+                    state="missing",
+                    detail=why,
+                    reason=why,
+                    category="fleet-tool",
+                    tool=command,
+                ),
+            )
+        elif os.path.realpath(link) == os.path.realpath(target):
+            add_tool_row(
+                report, command, inherit_row(command, rt, f"{link} links into the runtime")
+            )
+        else:
+            why = f"{link} resolves to {os.path.realpath(link)}, not the managed runtime"
+            add_tool_row(
+                report,
+                command,
+                dict(
+                    status="FAIL",
+                    state="stale",
+                    detail=why,
+                    reason=why,
+                    category="fleet-tool",
+                    tool=command,
+                ),
+            )
     board = HOME / ".local/bin/board"
     try:
         text = board.read_text(errors="replace")[:65536]
@@ -1816,18 +1828,18 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
     for name in ("recall", "fleet-mode", "fleet-secrets"):
         add_tool_row(report, name, compare_copy(name, COPY_SETS[name], MAC_RUNTIME, rt, runner))
     check_lane_tools(report, rt, runner)
-    share = command_path("fleet-share")
+    share = command_path("fleetlink")
     why = "presence only:  FleetLink has no managed runtime on the Mac, so currency is not checked"
     add_tool_row(
         report,
-        "fleet-share",
+        "fleetlink",
         dict(
             status="WARN" if share else "FAIL",
             state="unknown" if share else "missing",
-            detail=f"{share};  {why}" if share else "fleet-share is not on PATH",
+            detail=f"{share};  {why}" if share else "fleetlink is not on PATH",
             reason=why if share else "not found",
             category="fleet-tool",
-            tool="fleet-share",
+            tool="fleetlink",
         ),
     )
 
@@ -1836,7 +1848,7 @@ def check_server_tools(
     report: Report, rt: dict, checkouts: dict, runner: Callable = subprocess.run
 ) -> None:
     """Server:  each wrapper execs current/<script>, fleet-secrets points at its Linux entry point,
-    and fleet-share runs from a FleetLink checkout on main."""
+    and fleetlink runs from a FleetLink checkout on main."""
     for name, script in SERVER_WRAPPERS.items():
         path = HOME / ".local/bin" / name
         try:
@@ -1882,14 +1894,14 @@ def check_server_tools(
                 "fleet-secrets", COPY_SETS["fleet-secrets"], RUNTIME / "repo", rt, runner, extra
             ),
         )
-    share = HOME / ".local/bin/fleet-share"
-    common = {"category": "fleet-tool", "tool": "fleet-share"}
+    share = HOME / ".local/bin/fleetlink"
+    common = {"category": "fleet-tool", "tool": "fleetlink"}
     fleetlink = checkouts.get("FleetLink", "unknown")
     if not share.exists():
         why = f"{share} is not installed"
         add_tool_row(
             report,
-            "fleet-share",
+            "fleetlink",
             dict(common, status="FAIL", state="missing", detail=why, reason=why),
         )
     else:
@@ -1897,7 +1909,7 @@ def check_server_tools(
         status = {"current": "OK", "stale": "FAIL", "missing": "FAIL"}.get(fleetlink, "WARN")
         add_tool_row(
             report,
-            "fleet-share",
+            "fleetlink",
             dict(common, status=status, state=fleetlink, detail=how, reason=how),
         )
 
@@ -2332,7 +2344,7 @@ def host_document(
 
 def expected_server_checks() -> list[str]:
     checks = ["runtime"] + [f"updater:{unit}" for unit in SERVER_TIMERS]
-    checks += [f"tool:{name}" for name in (*SERVER_WRAPPERS, "fleet-secrets", "fleet-share")]
+    checks += [f"tool:{name}" for name in (*SERVER_WRAPPERS, "fleet-secrets", "fleetlink")]
     return checks
 
 
@@ -2592,7 +2604,7 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
     try:
         result = runner(
             [
-                "agent-sync",
+                "simple-chat",
                 "post",
                 "--channel",
                 "agent-sync",

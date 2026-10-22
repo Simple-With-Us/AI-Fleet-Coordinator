@@ -126,7 +126,7 @@ class StopContinuationTests(SeatInboxHarness):
         data = json.loads(out)
         self.assertEqual(data["decision"], "block")
         self.assertIn("latest id 3", data["reason"])
-        self.assertIn("agent-sync inbox --local", data["reason"])
+        self.assertIn("simple-chat inbox --local", data["reason"])
         self.assertNotIn(SECRET, out)
         self.assertEqual(self.stop(), "", "at most once per message")
         self.assertEqual(self.prompt(), "", "and the next prompt does not repeat it")

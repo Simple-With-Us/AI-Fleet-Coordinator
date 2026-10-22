@@ -6,6 +6,7 @@ temp file (mode 0600, removed afterwards) and `agent-sync` reads a message from 
 nothing a filer wrote shows up in `ps` or in a shell history.  Each tool is looked up on PATH, then in
 ~/.local/bin (a routine's PATH can be short).
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -14,8 +15,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Iterator, Mapping, Sequence
 
 from . import seat as seatmod
 from .errors import BoardFailed, NeedsOwnerError
@@ -41,7 +42,9 @@ def find_tool(name: str, environ: Mapping[str, str]) -> str | None:
     found = shutil.which(name, path=environ.get("PATH"))
     if found:
         return found
-    home = environ.get("HOME") or os.path.expanduser("~")  # the caller's HOME:  a test points it at a temp directory
+    home = environ.get("HOME") or os.path.expanduser(
+        "~"
+    )  # the caller's HOME:  a test points it at a temp directory
     candidate = os.path.join(home, ".local", "bin", name)
     return candidate if os.access(candidate, os.X_OK) else None
 
@@ -76,36 +79,66 @@ class Runner:
                 os.unlink(path)
 
     # ---- children --------------------------------------------------------------------------
-    def _run(self, tool: str, args: Sequence[str], stdin: str | None, timeout: int) -> Result:
+    def _run(
+        self,
+        tool: str,
+        args: Sequence[str],
+        stdin: str | None,
+        timeout: int,
+        env: Mapping[str, str] | None = None,
+    ) -> Result:
         exe = find_tool(tool, self.env)
         if exe is None:
             return Result(127, err="%s is not installed or not on PATH" % tool, missing=True)
         try:
-            done = subprocess.run([exe, *args], input=stdin, stdin=None if stdin is not None else subprocess.DEVNULL,
-                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                  env=self.env, timeout=timeout, check=False)
+            done = subprocess.run(
+                [exe, *args],
+                input=stdin,
+                stdin=None if stdin is not None else subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=dict(env) if env is not None else self.env,
+                timeout=timeout,
+                check=False,
+            )
         except subprocess.TimeoutExpired:
-            return Result(124, err="%s timed out after %d seconds" % (tool, timeout), timed_out=True)
+            return Result(
+                124, err="%s timed out after %d seconds" % (tool, timeout), timed_out=True
+            )
         except OSError as exc:
-            return Result(126, err="%s could not be run (%s)" % (tool, exc.strerror or type(exc).__name__), missing=True)
+            return Result(
+                126,
+                err="%s could not be run (%s)" % (tool, exc.strerror or type(exc).__name__),
+                missing=True,
+            )
         return Result(done.returncode, done.stdout or "", done.stderr or "")
 
     def board(self, *args: str) -> Result:
-        return self._run("board", args, None, BOARD_TIMEOUT)
+        # The retired board wrapper exported LINEAR_BOARD_WRITES=1;  simple-board is the board
+        # entry point itself, so without the opt-in every file/comment/label exits 7.
+        env = dict(self.env)
+        env["LINEAR_BOARD_WRITES"] = "1"
+        return self._run("simple-board", args, None, BOARD_TIMEOUT, env)
 
     def board_json(self, *args: str):
         """Run a `board ... --json` read and return the parsed JSON, or raise BoardFailed."""
         result = self.board(*args)
         if not result.ok:
-            raise BoardFailed("board %s failed:  %s" % (args[0], first_line(result.err) or "exit %d" % result.code), result.code)
+            raise BoardFailed(
+                "board %s failed:  %s"
+                % (args[0], first_line(result.err) or "exit %d" % result.code),
+                result.code,
+            )
         try:
             return json.loads(result.out)
         except ValueError:
             raise BoardFailed("board %s did not return JSON" % args[0]) from None
 
     def agent_sync(self, *args: str, stdin: str | None = None) -> Result:
-        return self._run("agent-sync", args, stdin, AGENT_SYNC_TIMEOUT)
+        return self._run("simple-chat", args, stdin, AGENT_SYNC_TIMEOUT)
 
     def require_board(self) -> None:
-        if find_tool("board", self.env) is None:
-            raise NeedsOwnerError("board is not installed or not on PATH")
+        if find_tool("simple-board", self.env) is None:
+            raise NeedsOwnerError("simple-board is not installed or not on PATH")
